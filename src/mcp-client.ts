@@ -24,11 +24,27 @@ async function rpc<T = unknown>(
   const id = ++rpcId;
   const res = await fetch(config.teamsMcp.baseUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    },
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
 
-  const json = (await res.json()) as JsonRpcResponse<T>;
+  // The MCP server may return SSE format (data: {...}) or plain JSON
+  const text = await res.text();
+  let jsonStr = text;
+
+  // Parse SSE: collect all `data:` lines and use the last JSON-RPC response
+  if (text.includes("data: ")) {
+    const dataLines = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice(6));
+    jsonStr = dataLines[dataLines.length - 1] || text;
+  }
+
+  const json = JSON.parse(jsonStr) as JsonRpcResponse<T>;
   if (json.error) {
     throw new Error(
       `MCP RPC error (${json.error.code}): ${json.error.message}`,
@@ -66,7 +82,7 @@ export async function listChannelMessages(
   teamId: string,
   channelId: string,
 ): Promise<string> {
-  const result = await callTool("teams-ListChannelMessages", {
+  const result = await callTool("ListChannelMessages", {
     teamId,
     channelId,
   });
@@ -78,7 +94,7 @@ export async function postChannelMessage(
   channelId: string,
   content: string,
 ): Promise<string> {
-  const result = await callTool("teams-PostChannelMessage", {
+  const result = await callTool("PostChannelMessage", {
     teamId,
     channelId,
     content,
@@ -93,7 +109,7 @@ export async function replyToChannelMessage(
   messageId: string,
   content: string,
 ): Promise<string> {
-  const result = await callTool("teams-ReplyToChannelMessage", {
+  const result = await callTool("ReplyToChannelMessage", {
     teamId,
     channelId,
     messageId,
