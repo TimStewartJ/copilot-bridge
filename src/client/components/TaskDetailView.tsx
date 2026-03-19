@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   fetchTask,
   patchTask,
+  deleteTask,
   linkResource,
   unlinkResource,
   createTaskSession,
@@ -15,20 +16,23 @@ interface TaskDetailViewProps {
   taskId: string;
   sessions: Session[];
   onTaskUpdated: () => void;
+  onTaskDeleted: () => void;
   onOpenSession: (sessionId: string) => void;
 }
 
-const STATUS_OPTIONS = ["active", "paused", "done"] as const;
+const STATUS_OPTIONS = ["active", "paused", "done", "archived"] as const;
 const STATUS_STYLES = {
   active: "bg-green-500/20 text-green-400 border-green-500/30",
   paused: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
   done: "bg-gray-500/20 text-gray-400 border-gray-500/30",
+  archived: "bg-gray-700/20 text-gray-600 border-gray-700/30",
 } as const;
 
 export default function TaskDetailView({
   taskId,
   sessions,
   onTaskUpdated,
+  onTaskDeleted,
   onOpenSession,
 }: TaskDetailViewProps) {
   const [task, setTask] = useState<Task | null>(null);
@@ -36,6 +40,7 @@ export default function TaskDetailView({
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const loadTask = useCallback(async () => {
     try {
@@ -144,6 +149,42 @@ export default function TaskDetailView({
           >
             + Link
           </button>
+          {task.status !== "archived" && (
+            <button
+              onClick={() => handleStatusChange("archived")}
+              className="px-4 py-2 text-gray-500 hover:text-yellow-400 text-sm transition-colors"
+              title="Archive task"
+            >
+              📦
+            </button>
+          )}
+          {!confirmDelete ? (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors"
+              title="Delete task"
+            >
+              🗑️
+            </button>
+          ) : (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={async () => {
+                  await deleteTask(task.id);
+                  onTaskDeleted();
+                }}
+                className="px-3 py-2 bg-red-500/20 text-red-400 border border-red-500/30 rounded-md text-xs hover:bg-red-500/30 transition-colors"
+              >
+                Confirm Delete
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

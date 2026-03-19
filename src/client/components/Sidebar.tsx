@@ -23,6 +23,7 @@ interface SidebarProps {
   // Navigation
   activeTab: TabMode;
   onTabChange: (tab: TabMode) => void;
+  onGoHome: () => void;
   // Tasks
   tasks: Task[];
   activeTaskId: string | null;
@@ -38,6 +39,7 @@ interface SidebarProps {
 export default function Sidebar({
   activeTab,
   onTabChange,
+  onGoHome,
   tasks,
   activeTaskId,
   onSelectTask,
@@ -51,7 +53,12 @@ export default function Sidebar({
     <div className="w-64 bg-[#16213e] border-r border-[#2a2a4a] flex flex-col shrink-0">
       {/* Header */}
       <div className="p-4 border-b border-[#2a2a4a]">
-        <h2 className="text-sm font-semibold text-indigo-400">🤖 Copilot Bridge</h2>
+        <button
+          onClick={onGoHome}
+          className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+        >
+          🤖 Copilot Bridge
+        </button>
       </div>
 
       {/* Tabs */}

@@ -17,7 +17,7 @@ export interface PRLink {
 export interface Task {
   id: string;
   title: string;
-  status: "active" | "paused" | "done";
+  status: "active" | "paused" | "done" | "archived";
   notes: string;
   priority: number; // lower = higher priority
   createdAt: string;

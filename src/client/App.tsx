@@ -89,6 +89,12 @@ export default function App() {
     setViewMode("task");
   };
 
+  const handleGoHome = () => {
+    setActiveSessionId(null);
+    setActiveTaskId(null);
+    setViewMode("none");
+  };
+
   // Open a session from within a task detail view
   const handleOpenSessionFromTask = (sessionId: string) => {
     setActiveSessionId(sessionId);
@@ -96,11 +102,18 @@ export default function App() {
     setActiveTab("sessions");
   };
 
+  const handleTaskDeleted = () => {
+    setActiveTaskId(null);
+    setViewMode("none");
+    loadTasks();
+  };
+
   return (
     <div className="flex h-screen bg-[#1a1a2e] text-gray-200">
       <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        onGoHome={handleGoHome}
         tasks={tasks}
         activeTaskId={activeTaskId}
         onSelectTask={handleSelectTask}
@@ -122,6 +135,7 @@ export default function App() {
             taskId={activeTaskId}
             sessions={sessions}
             onTaskUpdated={loadTasks}
+            onTaskDeleted={handleTaskDeleted}
             onOpenSession={handleOpenSessionFromTask}
           />
         )}

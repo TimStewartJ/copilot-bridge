@@ -1,10 +1,12 @@
+import { useState } from "react";
 import type { Task } from "../api";
 
-const STATUS_ORDER = { active: 0, paused: 1, done: 2 } as const;
+const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
 const STATUS_COLORS = {
   active: "bg-green-500/20 text-green-400",
   paused: "bg-yellow-500/20 text-yellow-400",
   done: "bg-gray-500/20 text-gray-400",
+  archived: "bg-gray-700/20 text-gray-600",
 } as const;
 
 function timeAgo(iso?: string): string {
@@ -39,7 +41,10 @@ export default function TaskList({
     active: sorted.filter((t) => t.status === "active"),
     paused: sorted.filter((t) => t.status === "paused"),
     done: sorted.filter((t) => t.status === "done"),
+    archived: sorted.filter((t) => t.status === "archived"),
   };
+
+  const [showArchived, setShowArchived] = useState(false);
 
   const renderGroup = (label: string, items: Task[]) => {
     if (items.length === 0) return null;
@@ -96,6 +101,17 @@ export default function TaskList({
       {renderGroup("Active", grouped.active)}
       {renderGroup("Paused", grouped.paused)}
       {renderGroup("Done", grouped.done)}
+      {grouped.archived.length > 0 && (
+        <>
+          <button
+            onClick={() => setShowArchived(!showArchived)}
+            className="w-full px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            {showArchived ? "▾" : "▸"} Archived ({grouped.archived.length})
+          </button>
+          {showArchived && renderGroup("Archived", grouped.archived)}
+        </>
+      )}
       {tasks.length === 0 && (
         <div className="text-center text-gray-500 text-sm py-8">
           No tasks yet
