@@ -90,15 +90,28 @@ app.post("/api/chat", async (req, res) => {
   console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
   const startTime = Date.now();
 
+  // SSE headers
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const sendEvent = (type: string, data?: any) => {
+    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  };
+
   try {
-    const response = await sessionManager.sendMessage(sessionId, prompt);
+    const response = await sessionManager.sendMessageStreaming(sessionId, prompt, sendEvent);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[web] [${sessionId.slice(0, 8)}] Response sent (${response.length} chars, ${elapsed}s)`);
-    res.json({ response });
+    console.log(`[web] [${sessionId.slice(0, 8)}] Done (${response.length} chars, ${elapsed}s)`);
+    sendEvent("done", { content: response });
   } catch (err) {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.error(`[web] Error after ${elapsed}s:`, err);
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    sendEvent("error", { message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    res.end();
   }
 });
 

@@ -141,6 +141,14 @@ export class SessionManager {
   }
 
   async sendMessage(sessionId: string, prompt: string): Promise<string> {
+    return this.sendMessageStreaming(sessionId, prompt);
+  }
+
+  async sendMessageStreaming(
+    sessionId: string,
+    prompt: string,
+    onEvent?: (type: string, data?: any) => void,
+  ): Promise<string> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     if (this.activeSessions.has(sessionId)) {
@@ -158,27 +166,35 @@ export class SessionManager {
       console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
 
       const unsub = session.on((event) => {
+        const data = (event as any).data;
         switch (event.type) {
           case "assistant.turn_start":
             console.log(`[sdk] ⏳ Turn started`);
+            onEvent?.("thinking");
+            break;
+          case "assistant.message_delta":
+            onEvent?.("delta", { content: data?.content ?? "" });
             break;
           case "assistant.message":
-            console.log(`[sdk] ✅ Response received (${(event as any).data?.content?.length ?? 0} chars)`);
+            console.log(`[sdk] ✅ Response received (${data?.content?.length ?? 0} chars)`);
             break;
           case "tool.execution_start":
-            console.log(`[sdk] 🔧 Tool: ${(event as any).data?.name ?? "unknown"}`);
+            console.log(`[sdk] 🔧 Tool: ${data?.name ?? "unknown"}`);
+            onEvent?.("tool_start", { name: data?.name ?? "unknown" });
             break;
           case "tool.execution_complete":
-            console.log(`[sdk] 🔧 Tool complete: ${(event as any).data?.name ?? "unknown"}`);
+            console.log(`[sdk] 🔧 Tool complete: ${data?.name ?? "unknown"}`);
+            onEvent?.("tool_done", { name: data?.name ?? "unknown" });
             break;
           case "session.error":
-            console.error(`[sdk] ❌ Error: ${(event as any).data?.message ?? "unknown"}`);
+            console.error(`[sdk] ❌ Error: ${data?.message ?? "unknown"}`);
+            onEvent?.("error", { message: data?.message ?? "unknown" });
             break;
           case "session.idle":
             console.log(`[sdk] 💤 Session idle`);
             break;
           default:
-            if (!["assistant.message_delta", "assistant.streaming_delta", "assistant.reasoning_delta"].includes(event.type)) {
+            if (!["assistant.streaming_delta", "assistant.reasoning_delta", "pending_messages.modified"].includes(event.type)) {
               console.log(`[sdk] 📡 Event: ${event.type}`);
             }
         }

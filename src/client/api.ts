@@ -69,15 +69,54 @@ export async function fetchMessages(sessionId: string): Promise<{ messages: Chat
   return data;
 }
 
-export async function sendChat(
+export interface StreamEvent {
+  type: "thinking" | "delta" | "tool_start" | "tool_done" | "done" | "error";
+  content?: string;
+  name?: string;
+  message?: string;
+}
+
+export async function sendChatStreaming(
   sessionId: string,
   prompt: string,
-): Promise<string> {
-  const data = await apiFetch<{ response: string }>("/api/chat", {
-    sessionId,
-    prompt,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, prompt }),
   });
-  return data.response;
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE lines
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? ""; // keep incomplete line in buffer
+
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const event = JSON.parse(line.slice(6)) as StreamEvent;
+          onEvent(event);
+        } catch { /* skip malformed */ }
+      }
+    }
+  }
 }
 
 // ── Task API ──────────────────────────────────────────────────────

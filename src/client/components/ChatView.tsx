@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchMessages, sendChat, type ChatMessage } from "../api";
+import { fetchMessages, sendChatStreaming, type ChatMessage, type StreamEvent } from "../api";
 import MessageBubble from "./MessageBubble";
 
 interface ChatViewProps {
@@ -12,6 +12,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [activeTools, setActiveTools] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevSessionRef = useRef<string | null>(null);
@@ -64,25 +66,56 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, thinking]);
+  }, [messages, thinking, streamingContent]);
 
   const handleSend = async () => {
     if (!input.trim() || !sessionId || thinking) return;
 
     const prompt = input.trim();
-    const targetSessionId = sessionId; // capture for stale check
+    const targetSessionId = sessionId;
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     setMessages((prev) => [...prev, { role: "user", content: prompt }]);
     setThinking(true);
+    setStreamingContent("");
+    setActiveTools([]);
 
     try {
-      const response = await sendChat(targetSessionId, prompt);
-      // Only update UI if we're still viewing the same session
-      if (targetSessionId !== prevSessionRef.current) return;
-      setMessages((prev) => [...prev, { role: "assistant", content: response }]);
-      onMessageSent();
+      await sendChatStreaming(targetSessionId, prompt, (event: StreamEvent) => {
+        if (targetSessionId !== prevSessionRef.current) return;
+
+        switch (event.type) {
+          case "thinking":
+            break; // already showing thinking state
+          case "delta":
+            setStreamingContent((prev) => prev + (event.content ?? ""));
+            break;
+          case "tool_start":
+            setActiveTools((prev) => [...prev, event.name ?? "unknown"]);
+            break;
+          case "tool_done":
+            setActiveTools((prev) => prev.filter((t) => t !== (event.name ?? "unknown")));
+            break;
+          case "done":
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: event.content ?? "" },
+            ]);
+            setStreamingContent("");
+            setThinking(false);
+            onMessageSent();
+            break;
+          case "error":
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: `⚠️ Error: ${event.message}` },
+            ]);
+            setStreamingContent("");
+            setThinking(false);
+            break;
+        }
+      });
     } catch (err: any) {
       if (targetSessionId !== prevSessionRef.current) return;
       setMessages((prev) => [
@@ -91,6 +124,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
       ]);
     } finally {
       if (targetSessionId === prevSessionRef.current) {
+        setStreamingContent("");
+        setActiveTools([]);
         setThinking(false);
       }
     }
@@ -132,7 +167,22 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         {messages.map((msg, i) => (
           <MessageBubble key={i} message={msg} />
         ))}
-        {thinking && (
+        {streamingContent && (
+          <MessageBubble
+            message={{ role: "assistant", content: streamingContent }}
+          />
+        )}
+        {activeTools.length > 0 && (
+          <div className="text-xs text-indigo-400/70 px-4 py-1 flex items-center gap-2">
+            <span className="animate-spin">⚙️</span>
+            {activeTools.map((t) => (
+              <span key={t} className="bg-indigo-500/10 px-2 py-0.5 rounded">
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+        {thinking && !streamingContent && activeTools.length === 0 && (
           <div className="text-indigo-400 italic animate-pulse">
             Thinking...
           </div>
