@@ -1,5 +1,5 @@
 // Copilot SDK session manager
-// Thin wrapper around SDK's built-in session management — no in-memory state
+// Universal tools — taskId is a parameter, same tools for every session
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
@@ -11,9 +11,77 @@ import * as taskStore from "./task-store.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
 
+// Universal tools — same instance for every session
+const BRIDGE_TOOLS = [
+  defineTool("task_link_work_item", {
+    description: "Link an ADO work item to a task by its ID",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The ADO work item ID" } }, required: ["taskId", "workItemId"] },
+    handler: async (args: any) => {
+      taskStore.linkWorkItem(args.taskId, args.workItemId);
+      return { success: true, message: `Work item #${args.workItemId} linked to task` };
+    },
+  }),
+  defineTool("task_unlink_work_item", {
+    description: "Remove an ADO work item from a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The ADO work item ID" } }, required: ["taskId", "workItemId"] },
+    handler: async (args: any) => {
+      taskStore.unlinkWorkItem(args.taskId, args.workItemId);
+      return { success: true, message: `Work item #${args.workItemId} unlinked from task` };
+    },
+  }),
+  defineTool("task_link_pr", {
+    description: "Link a pull request to a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" } }, required: ["taskId", "repoName", "prId"] },
+    handler: async (args: any) => {
+      taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId });
+      return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
+    },
+  }),
+  defineTool("task_unlink_pr", {
+    description: "Remove a pull request from a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" } }, required: ["taskId", "repoName", "prId"] },
+    handler: async (args: any) => {
+      taskStore.unlinkPR(args.taskId, args.repoName, args.prId);
+      return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
+    },
+  }),
+  defineTool("task_update_notes", {
+    description: "Update a task's notes. Overwrites existing notes.",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, notes: { type: "string", description: "New notes content (markdown)" } }, required: ["taskId", "notes"] },
+    handler: async (args: any) => {
+      taskStore.updateTask(args.taskId, { notes: args.notes });
+      return { success: true, message: "Task notes updated" };
+    },
+  }),
+  defineTool("task_get_info", {
+    description: "Get task details including title, status, linked work items, PRs, and notes",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
+    handler: async (args: any) => {
+      return taskStore.getTask(args.taskId) ?? { error: "Task not found" };
+    },
+  }),
+  defineTool("task_list", {
+    description: "List all tasks with their IDs, titles, and statuses",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      return { tasks: taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status })) };
+    },
+  }),
+  defineTool("self_restart", {
+    description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint, rebuild, and swap processes. Auto-rolls back on failure.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const dataDir = join(__dirname, "..", "..", "data");
+      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+      writeFileSync(SIGNAL_FILE, new Date().toISOString());
+      return { success: true, message: "Restart signal sent. Server will restart in ~15 seconds." };
+    },
+  }),
+];
+
 export class SessionManager {
   private client: CopilotClient | null = null;
-  private activeSessions = new Set<string>(); // track busy sessions
+  private activeSessions = new Set<string>();
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
@@ -27,118 +95,48 @@ export class SessionManager {
     return this.client.listSessions();
   }
 
-  async createSession(name?: string): Promise<{ sessionId: string }> {
+  async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const session = await this.client.createSession({
       onPermissionRequest: approveAll,
       mcpServers: config.sessionMcpServers as any,
-      systemMessage: {
-        mode: "append",
-        content: [
-          "You are a helpful assistant accessible via a web interface.",
-          "Be concise but thorough. Use markdown formatting for readability.",
-          "You have access to ADO, GitHub, and local tools.",
-        ].join("\n"),
-      },
+      tools: BRIDGE_TOOLS,
     });
 
-    // Rename if a name was provided
-    console.log(`[sdk] Created session ${session.sessionId}${name ? ` ("${name}")` : ""}`);
+    console.log(`[sdk] Created session ${session.sessionId}`);
     return { sessionId: session.sessionId };
   }
 
   async createTaskSession(taskId: string, taskTitle: string, workItemIds: number[], prDescriptions: string[], notes: string): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    const contextParts = [`You are helping with the task: "${taskTitle}".`];
+    const contextParts = [
+      `You are helping with task "${taskTitle}" (taskId: ${taskId}).`,
+      "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
+    ];
 
     if (workItemIds.length > 0) {
-      contextParts.push(`Related ADO work items: ${workItemIds.map((id) => `#${id}`).join(", ")}.`);
+      contextParts.push(`Currently linked work items: ${workItemIds.map((id) => `#${id}`).join(", ")}.`);
     }
     if (prDescriptions.length > 0) {
-      contextParts.push(`Related PRs: ${prDescriptions.join(", ")}.`);
+      contextParts.push(`Currently linked PRs: ${prDescriptions.join(", ")}.`);
     }
     if (notes.trim()) {
       contextParts.push(`Task notes:\n${notes}`);
     }
 
-    contextParts.push(
-      "You have tools to manage this task: link/unlink work items, PRs, and update task notes. Use them proactively when you discover relevant resources.",
-    );
-
-    const taskTools = [
-      defineTool("task_link_work_item", {
-        description: "Link an ADO work item to the current task by its ID",
-        parameters: { type: "object", properties: { workItemId: { type: "number", description: "The ADO work item ID to link" } }, required: ["workItemId"] },
-        handler: async (args: any) => {
-          taskStore.linkWorkItem(taskId, args.workItemId);
-          return { success: true, message: `Work item #${args.workItemId} linked to task` };
-        },
-      }),
-      defineTool("task_unlink_work_item", {
-        description: "Remove an ADO work item from the current task",
-        parameters: { type: "object", properties: { workItemId: { type: "number", description: "The ADO work item ID to unlink" } }, required: ["workItemId"] },
-        handler: async (args: any) => {
-          taskStore.unlinkWorkItem(taskId, args.workItemId);
-          return { success: true, message: `Work item #${args.workItemId} unlinked from task` };
-        },
-      }),
-      defineTool("task_link_pr", {
-        description: "Link a pull request to the current task",
-        parameters: { type: "object", properties: { repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "Pull request number" } }, required: ["repoName", "prId"] },
-        handler: async (args: any) => {
-          taskStore.linkPR(taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId });
-          return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
-        },
-      }),
-      defineTool("task_unlink_pr", {
-        description: "Remove a pull request from the current task",
-        parameters: { type: "object", properties: { repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "Pull request number" } }, required: ["repoName", "prId"] },
-        handler: async (args: any) => {
-          taskStore.unlinkPR(taskId, args.repoName, args.prId);
-          return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
-        },
-      }),
-      defineTool("task_update_notes", {
-        description: "Update the task's notes with new information, decisions, or observations. Overwrites existing notes.",
-        parameters: { type: "object", properties: { notes: { type: "string", description: "The new notes content (markdown)" } }, required: ["notes"] },
-        handler: async (args: any) => {
-          taskStore.updateTask(taskId, { notes: args.notes });
-          return { success: true, message: "Task notes updated" };
-        },
-      }),
-      defineTool("task_get_info", {
-        description: "Get the current task details including title, status, linked work items, PRs, and notes",
-        parameters: { type: "object", properties: {} },
-        handler: async () => {
-          const task = taskStore.getTask(taskId);
-          return task ?? { error: "Task not found" };
-        },
-      }),
-      defineTool("self_restart", {
-        description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint (git commit), rebuild (vite + tsc), and swap processes. If the build fails or health check fails, it auto-rolls back. Only use after you've finished editing and verified the build passes.",
-        parameters: { type: "object", properties: {} },
-        handler: async () => {
-          const dataDir = join(__dirname, "..", "..", "data");
-          if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-          writeFileSync(SIGNAL_FILE, new Date().toISOString());
-          return { success: true, message: "Restart signal sent. The launcher will rebuild and restart the server in ~15 seconds. This session will remain available after restart." };
-        },
-      }),
-    ];
-
     const session = await this.client.createSession({
       onPermissionRequest: approveAll,
       mcpServers: config.sessionMcpServers as any,
-      tools: taskTools,
+      tools: BRIDGE_TOOLS,
       systemMessage: {
         mode: "append",
         content: contextParts.join("\n"),
       },
     });
 
-    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" with ${taskTools.length} task tools`);
+    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
     return { sessionId: session.sessionId };
   }
 
@@ -155,6 +153,7 @@ export class SessionManager {
       console.log(`[sdk] Resuming session ${sessionId}...`);
       const session = await this.client.resumeSession(sessionId, {
         onPermissionRequest: approveAll,
+        tools: BRIDGE_TOOLS,
       });
       console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
 
@@ -185,11 +184,7 @@ export class SessionManager {
         }
       });
 
-      const response = await session.sendAndWait(
-        { prompt },
-        600_000,
-      );
-
+      const response = await session.sendAndWait({ prompt }, 600_000);
       unsub();
       return response?.data.content ?? "(no response)";
     } finally {
@@ -213,21 +208,13 @@ export class SessionManager {
         const data = event.data as any;
         const content = data.content ?? data.prompt ?? "";
         if (content.trim()) {
-          messages.push({
-            role: "user",
-            content,
-            timestamp: data.timestamp ?? (event as any).timestamp,
-          });
+          messages.push({ role: "user", content, timestamp: data.timestamp ?? (event as any).timestamp });
         }
       } else if (event.type === "assistant.message") {
         const data = event.data as any;
         const content = data.content ?? "";
         if (content.trim()) {
-          messages.push({
-            role: "assistant",
-            content,
-            timestamp: data.timestamp ?? (event as any).timestamp,
-          });
+          messages.push({ role: "assistant", content, timestamp: data.timestamp ?? (event as any).timestamp });
         }
       }
     }

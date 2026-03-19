@@ -68,7 +68,7 @@ app.get("/api/sessions/:id/messages", async (req, res) => {
 app.post("/api/sessions", async (req, res) => {
   try {
     const { name } = req.body ?? {};
-    const result = await sessionManager.createSession(name);
+    const result = await sessionManager.createSession();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
