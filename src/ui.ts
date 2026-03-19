@@ -115,11 +115,14 @@ function renderSessions() {
     const id = s.sessionId || s.id;
     const active = id === currentSessionId ? 'active' : '';
     const name = s.summary || s.name || id.slice(0, 8);
-    const ago = s.updatedAt ? timeAgo(s.updatedAt) : (s.lastUsed ? timeAgo(s.lastUsed) : '');
-    const branch = s.branch ? ' · ' + s.branch : '';
+    const ago = s.updatedAt ? timeAgo(s.updatedAt) : (s.modifiedTime ? timeAgo(s.modifiedTime) : '');
+    const branch = s.branch || (s.context && s.context.branch) || '';
+    const branchStr = branch ? ' · ' + branch : '';
+    const size = s.diskSizeBytes ? fmtSize(s.diskSizeBytes) : '';
+    const sizeStr = size ? ' · ' + size : '';
     return '<div class="session-item ' + active + '" onclick="selectSession(\\'' + id + '\\')">'
       + '<div class="name">' + esc(name) + '</div>'
-      + '<div class="meta">' + ago + branch + '</div>'
+      + '<div class="meta">' + ago + branchStr + sizeStr + '</div>'
       + '</div>';
   }).join('');
 }
@@ -223,6 +226,11 @@ function renderMarkdown(text) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmtTime(iso) { return new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 function timeAgo(iso) {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return 'just now';

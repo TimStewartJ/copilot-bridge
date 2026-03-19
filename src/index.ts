@@ -1,6 +1,9 @@
 // Copilot Web Bridge — Express server with chat UI
 
 import express from "express";
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import { chatHtml } from "./ui.js";
@@ -9,6 +12,22 @@ const app = express();
 app.use(express.json());
 
 const sessionManager = new SessionManager();
+
+function getDirSize(dirPath: string): number {
+  let size = 0;
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        size += getDirSize(fullPath);
+      } else {
+        size += statSync(fullPath).size;
+      }
+    }
+  } catch { /* ignore errors */ }
+  return size;
+}
 
 // ── Chat UI ───────────────────────────────────────────────────────
 
@@ -21,7 +40,19 @@ app.get("/", (_req, res) => {
 app.get("/api/sessions", async (_req, res) => {
   try {
     const sessions = await sessionManager.listSessions();
-    res.json({ sessions });
+    const sessionStateDir = join(homedir(), ".copilot", "session-state");
+
+    const enriched = sessions.map((s: any) => {
+      const id = s.sessionId;
+      let diskSizeBytes = 0;
+      try {
+        const sessionDir = join(sessionStateDir, id);
+        diskSizeBytes = getDirSize(sessionDir);
+      } catch { /* session dir may not exist */ }
+      return { ...s, diskSizeBytes };
+    });
+
+    res.json({ sessions: enriched });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
