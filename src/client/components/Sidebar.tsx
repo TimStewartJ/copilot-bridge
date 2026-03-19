@@ -50,7 +50,7 @@ export default function Sidebar({
   onNewSession,
 }: SidebarProps) {
   return (
-    <div className="w-64 bg-[#16213e] border-r border-[#2a2a4a] flex flex-col shrink-0">
+    <div className="w-full h-full bg-[#16213e] border-r border-[#2a2a4a] flex flex-col">
       {/* Header */}
       <div className="p-4 border-b border-[#2a2a4a]">
         <button

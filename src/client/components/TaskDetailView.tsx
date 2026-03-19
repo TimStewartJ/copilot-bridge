@@ -107,9 +107,9 @@ export default function TaskDetailView({
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <div className="p-6 border-b border-[#2a2a4a]">
-        <div className="flex items-start gap-4">
-          <div className="flex-1">
+      <div className="p-4 md:p-6 border-b border-[#2a2a4a]">
+        <div className="flex flex-wrap items-start gap-3 md:gap-4">
+          <div className="flex-1 min-w-0">
             {editingTitle ? (
               <input
                 value={titleDraft}
@@ -117,17 +117,17 @@ export default function TaskDetailView({
                 onBlur={handleTitleSave}
                 onKeyDown={(e) => e.key === "Enter" && handleTitleSave()}
                 autoFocus
-                className="text-2xl font-bold bg-transparent border-b border-indigo-400 outline-none w-full text-gray-100"
+                className="text-xl md:text-2xl font-bold bg-transparent border-b border-indigo-400 outline-none w-full text-gray-100"
               />
             ) : (
               <h1
                 onClick={() => setEditingTitle(true)}
-                className="text-2xl font-bold cursor-pointer hover:text-indigo-400 transition-colors"
+                className="text-xl md:text-2xl font-bold cursor-pointer hover:text-indigo-400 transition-colors"
               >
                 {task.title}
               </h1>
             )}
-            <div className="flex items-center gap-2 mt-2">
+            <div className="flex flex-wrap items-center gap-2 mt-2">
               {STATUS_OPTIONS.map((s) => (
                 <button
                   key={s}
@@ -143,52 +143,54 @@ export default function TaskDetailView({
               ))}
             </div>
           </div>
-          <button
-            onClick={() => setLinkDialogOpen(true)}
-            className="px-4 py-2 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-md text-sm hover:bg-indigo-500/30 transition-colors"
-          >
-            + Link
-          </button>
-          {task.status !== "archived" && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => handleStatusChange("archived")}
-              className="px-4 py-2 text-gray-500 hover:text-yellow-400 text-sm transition-colors"
-              title="Archive task"
+              onClick={() => setLinkDialogOpen(true)}
+              className="px-3 md:px-4 py-2 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-md text-sm hover:bg-indigo-500/30 transition-colors"
             >
-              📦
+              + Link
             </button>
-          )}
-          {!confirmDelete ? (
-            <button
-              onClick={() => setConfirmDelete(true)}
-              className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors"
-              title="Delete task"
-            >
-              🗑️
-            </button>
-          ) : (
-            <div className="flex items-center gap-1">
+            {task.status !== "archived" && (
               <button
-                onClick={async () => {
-                  await deleteTask(task.id);
-                  onTaskDeleted();
-                }}
-                className="px-3 py-2 bg-red-500/20 text-red-400 border border-red-500/30 rounded-md text-xs hover:bg-red-500/30 transition-colors"
+                onClick={() => handleStatusChange("archived")}
+                className="px-3 md:px-4 py-2 text-gray-500 hover:text-yellow-400 text-sm transition-colors"
+                title="Archive task"
               >
-                Confirm Delete
+                📦
               </button>
+            )}
+            {!confirmDelete ? (
               <button
-                onClick={() => setConfirmDelete(false)}
-                className="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+                onClick={() => setConfirmDelete(true)}
+                className="px-3 md:px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors"
+                title="Delete task"
               >
-                Cancel
+                🗑️
               </button>
-            </div>
-          )}
+            ) : (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={async () => {
+                    await deleteTask(task.id);
+                    onTaskDeleted();
+                  }}
+                  className="px-3 py-2 bg-red-500/20 text-red-400 border border-red-500/30 rounded-md text-xs hover:bg-red-500/30 transition-colors"
+                >
+                  Confirm Delete
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  className="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="p-6 space-y-6">
+      <div className="p-4 md:p-6 space-y-6">
         {/* Work Items */}
         <Section title="📋 Work Items" count={task.workItemIds.length}>
           {task.workItemIds.length === 0 ? (

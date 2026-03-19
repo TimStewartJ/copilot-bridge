@@ -21,6 +21,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("none");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const loadSessions = async () => {
     try {
@@ -77,22 +78,27 @@ export default function App() {
     }
   };
 
+  const closeSidebar = () => setSidebarOpen(false);
+
   const handleSelectSession = (id: string) => {
     setActiveSessionId(id);
     setActiveTaskId(null);
     setViewMode("chat");
+    closeSidebar();
   };
 
   const handleSelectTask = (id: string) => {
     setActiveTaskId(id);
     setActiveSessionId(null);
     setViewMode("task");
+    closeSidebar();
   };
 
   const handleGoHome = () => {
     setActiveSessionId(null);
     setActiveTaskId(null);
     setViewMode("none");
+    closeSidebar();
   };
 
   // Open a session from within a task detail view
@@ -110,46 +116,81 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#1a1a2e] text-gray-200">
-      <Sidebar
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onGoHome={handleGoHome}
-        tasks={tasks}
-        activeTaskId={activeTaskId}
-        onSelectTask={handleSelectTask}
-        onNewTask={handleNewTask}
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        onSelectSession={handleSelectSession}
-        onNewSession={handleNewSession}
-      />
-      <main className="flex-1 flex flex-col">
-        {viewMode === "chat" && (
-          <ChatView
-            sessionId={activeSessionId}
-            onMessageSent={loadSessions}
-          />
-        )}
-        {viewMode === "task" && activeTaskId && (
-          <TaskDetailView
-            taskId={activeTaskId}
-            sessions={sessions}
-            onTaskUpdated={loadTasks}
-            onTaskDeleted={handleTaskDeleted}
-            onOpenSession={handleOpenSessionFromTask}
-          />
-        )}
-        {viewMode === "none" && (
-          <Dashboard
-            tasks={tasks}
-            sessions={sessions}
-            onSelectTask={handleSelectTask}
-            onSelectSession={handleSelectSession}
-            onNewTask={handleNewTask}
-            onNewSession={handleNewSession}
-          />
-        )}
-      </main>
+      {/* Mobile overlay backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          onClick={closeSidebar}
+        />
+      )}
+
+      {/* Sidebar — overlay on mobile, static on desktop */}
+      <div
+        className={`fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <Sidebar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          onGoHome={handleGoHome}
+          tasks={tasks}
+          activeTaskId={activeTaskId}
+          onSelectTask={handleSelectTask}
+          onNewTask={handleNewTask}
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Mobile top bar */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2a2a4a] bg-[#16213e] md:hidden">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="text-gray-400 hover:text-gray-200 text-xl"
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
+          <button
+            onClick={handleGoHome}
+            className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+          >
+            🤖 Copilot Bridge
+          </button>
+        </div>
+
+        <main className="flex-1 flex flex-col min-h-0">
+          {viewMode === "chat" && (
+            <ChatView
+              sessionId={activeSessionId}
+              onMessageSent={loadSessions}
+            />
+          )}
+          {viewMode === "task" && activeTaskId && (
+            <TaskDetailView
+              taskId={activeTaskId}
+              sessions={sessions}
+              onTaskUpdated={loadTasks}
+              onTaskDeleted={handleTaskDeleted}
+              onOpenSession={handleOpenSessionFromTask}
+            />
+          )}
+          {viewMode === "none" && (
+            <Dashboard
+              tasks={tasks}
+              sessions={sessions}
+              onSelectTask={handleSelectTask}
+              onSelectSession={handleSelectSession}
+              onNewTask={handleNewTask}
+              onNewSession={handleNewSession}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

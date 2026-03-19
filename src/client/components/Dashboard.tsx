@@ -32,18 +32,18 @@ export default function Dashboard({
   const recentSessions = sessions.slice(0, 5);
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
+    <div className="flex-1 overflow-y-auto p-4 md:p-8">
+      <h1 className="text-xl md:text-2xl font-bold mb-6">Dashboard</h1>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-8">
         <StatCard label="Active Tasks" value={activeTasks.length} color="green" />
         <StatCard label="Paused" value={pausedTasks.length} color="yellow" />
         <StatCard label="Completed" value={doneTasks.length} color="gray" />
         <StatCard label="Sessions" value={sessions.length} color="indigo" />
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Active Tasks */}
         <div>
           <div className="flex items-center justify-between mb-3">

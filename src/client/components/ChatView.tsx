@@ -89,7 +89,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   return (
     <div className="flex-1 flex flex-col">
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div className="flex-1 overflow-y-auto p-3 md:p-5 space-y-4">
         {loading && (
           <div className="text-indigo-400 italic">Loading history...</div>
         )}
@@ -110,8 +110,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
       </div>
 
       {/* Input */}
-      <div className="p-4 border-t border-[#2a2a4a] bg-[#16213e]">
-        <div className="flex gap-3">
+      <div className="p-3 md:p-4 border-t border-[#2a2a4a] bg-[#16213e]">
+        <div className="flex gap-2 md:gap-3">
           <textarea
             ref={textareaRef}
             value={input}
@@ -124,7 +124,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
           <button
             onClick={handleSend}
             disabled={thinking || !input.trim()}
-            className="px-6 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold self-end transition-colors"
+            className="px-4 md:px-6 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold self-end transition-colors"
           >
             Send
           </button>

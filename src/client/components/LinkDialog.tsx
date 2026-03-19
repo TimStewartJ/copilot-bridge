@@ -51,7 +51,7 @@ export default function LinkDialog({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-[#16213e] border border-[#2a2a4a] rounded-lg w-[480px] max-h-[80vh] overflow-y-auto">
+      <div className="bg-[#16213e] border border-[#2a2a4a] rounded-lg w-full max-w-[480px] mx-4 max-h-[80vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-[#2a2a4a]">
           <h3 className="font-semibold text-sm">Link Resource</h3>
