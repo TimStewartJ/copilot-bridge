@@ -45,25 +45,39 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         setMessages(msgs);
         if (busy) {
           setThinking(true);
-          // Poll until no longer busy
-          const poll = setInterval(async () => {
+          const currentSessionId = sessionId;
+          const pollFn = async () => {
+            if (currentSessionId !== prevSessionRef.current) {
+              return false; // stop polling
+            }
             try {
-              const updated = await fetchMessages(sessionId);
-              if (sessionId !== prevSessionRef.current) {
-                clearInterval(poll);
-                return;
-              }
+              const updated = await fetchMessages(currentSessionId);
+              if (currentSessionId !== prevSessionRef.current) return false;
               setMessages(updated.messages);
               if (!updated.busy) {
-                clearInterval(poll);
                 setThinking(false);
                 onMessageSent();
+                return false; // stop polling
               }
             } catch {
-              clearInterval(poll);
-              setThinking(false);
+              if (currentSessionId === prevSessionRef.current) {
+                setThinking(false);
+              }
+              return false;
             }
-          }, 3_000);
+            return true; // continue polling
+          };
+          // Poll immediately, then every 3s
+          const startPoll = async () => {
+            const shouldContinue = await pollFn();
+            if (shouldContinue) {
+              const poll = setInterval(async () => {
+                const cont = await pollFn();
+                if (!cont) clearInterval(poll);
+              }, 3_000);
+            }
+          };
+          startPoll();
         }
       })
       .catch((err) =>
