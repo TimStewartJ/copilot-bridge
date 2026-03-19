@@ -194,9 +194,11 @@ app.post("/api/tasks/:id/session", async (req, res) => {
       (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
     );
     const result = await sessionManager.createTaskSession(
+      task.id,
       task.title,
       task.workItemIds,
       prDescriptions,
+      task.notes,
     );
 
     // Auto-link session to task

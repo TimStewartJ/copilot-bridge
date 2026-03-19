@@ -1,8 +1,9 @@
 // Copilot SDK session manager
 // Thin wrapper around SDK's built-in session management — no in-memory state
 
-import { CopilotClient, approveAll } from "@github/copilot-sdk";
+import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import { config } from "./config.js";
+import * as taskStore from "./task-store.js";
 
 export class SessionManager {
   private client: CopilotClient | null = null;
@@ -41,14 +42,10 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  async createTaskSession(taskTitle: string, workItemIds: number[], prDescriptions: string[]): Promise<{ sessionId: string }> {
+  async createTaskSession(taskId: string, taskTitle: string, workItemIds: number[], prDescriptions: string[], notes: string): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    const contextParts = [
-      `You are helping with the task: "${taskTitle}".`,
-      "Be concise but thorough. Use markdown formatting for readability.",
-      "You have access to ADO, GitHub, and local tools.",
-    ];
+    const contextParts = [`You are helping with the task: "${taskTitle}".`];
 
     if (workItemIds.length > 0) {
       contextParts.push(`Related ADO work items: ${workItemIds.map((id) => `#${id}`).join(", ")}.`);
@@ -56,17 +53,76 @@ export class SessionManager {
     if (prDescriptions.length > 0) {
       contextParts.push(`Related PRs: ${prDescriptions.join(", ")}.`);
     }
+    if (notes.trim()) {
+      contextParts.push(`Task notes:\n${notes}`);
+    }
+
+    contextParts.push(
+      "You have tools to manage this task: link/unlink work items, PRs, and update task notes. Use them proactively when you discover relevant resources.",
+    );
+
+    const taskTools = [
+      defineTool("task_link_work_item", {
+        description: "Link an ADO work item to the current task by its ID",
+        parameters: { type: "object", properties: { workItemId: { type: "number", description: "The ADO work item ID to link" } }, required: ["workItemId"] },
+        handler: async (args: any) => {
+          taskStore.linkWorkItem(taskId, args.workItemId);
+          return { success: true, message: `Work item #${args.workItemId} linked to task` };
+        },
+      }),
+      defineTool("task_unlink_work_item", {
+        description: "Remove an ADO work item from the current task",
+        parameters: { type: "object", properties: { workItemId: { type: "number", description: "The ADO work item ID to unlink" } }, required: ["workItemId"] },
+        handler: async (args: any) => {
+          taskStore.unlinkWorkItem(taskId, args.workItemId);
+          return { success: true, message: `Work item #${args.workItemId} unlinked from task` };
+        },
+      }),
+      defineTool("task_link_pr", {
+        description: "Link a pull request to the current task",
+        parameters: { type: "object", properties: { repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "Pull request number" } }, required: ["repoName", "prId"] },
+        handler: async (args: any) => {
+          taskStore.linkPR(taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId });
+          return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
+        },
+      }),
+      defineTool("task_unlink_pr", {
+        description: "Remove a pull request from the current task",
+        parameters: { type: "object", properties: { repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "Pull request number" } }, required: ["repoName", "prId"] },
+        handler: async (args: any) => {
+          taskStore.unlinkPR(taskId, args.repoName, args.prId);
+          return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
+        },
+      }),
+      defineTool("task_update_notes", {
+        description: "Update the task's notes with new information, decisions, or observations. Overwrites existing notes.",
+        parameters: { type: "object", properties: { notes: { type: "string", description: "The new notes content (markdown)" } }, required: ["notes"] },
+        handler: async (args: any) => {
+          taskStore.updateTask(taskId, { notes: args.notes });
+          return { success: true, message: "Task notes updated" };
+        },
+      }),
+      defineTool("task_get_info", {
+        description: "Get the current task details including title, status, linked work items, PRs, and notes",
+        parameters: { type: "object", properties: {} },
+        handler: async () => {
+          const task = taskStore.getTask(taskId);
+          return task ?? { error: "Task not found" };
+        },
+      }),
+    ];
 
     const session = await this.client.createSession({
       onPermissionRequest: approveAll,
       mcpServers: config.sessionMcpServers as any,
+      tools: taskTools,
       systemMessage: {
         mode: "append",
         content: contextParts.join("\n"),
       },
     });
 
-    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
+    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" with ${taskTools.length} task tools`);
     return { sessionId: session.sessionId };
   }
 
