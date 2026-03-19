@@ -2,7 +2,7 @@
 // This file should NEVER be modified by the agent.
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, unlinkSync, readFileSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +16,16 @@ const MAX_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 30_000;
 
+// Teams notification config
+const TUNNEL_NAME = "copilot-bridge";
+const TEAMS_TEAM_ID = "EXAMPLE-TEAM-GUID";
+const TEAMS_CHANNEL_ID = "EXAMPLE-CHANNEL-ID";
+const TEAMS_MCP_PORT = 5556; // separate port from any other MCP usage
+
 let serverProcess: ChildProcess | null = null;
+let tunnelProcess: ChildProcess | null = null;
+let mcpProcess: ChildProcess | null = null;
+let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
 
@@ -133,6 +142,15 @@ async function restart() {
   if (healthy) {
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
+
+    // Notify Teams about restart
+    if (currentTunnelUrl) {
+      try {
+        await startTeamsMcp();
+        await notifyTeams(`🔄 Copilot Bridge restarted successfully\n🔗 ${currentTunnelUrl}`);
+        killTeamsMcp();
+      } catch { /* best-effort */ }
+    }
   } else {
     log("❌ Health check failed — rolling back");
     killServer();
@@ -146,6 +164,120 @@ async function restart() {
   }
 }
 
+// ── Dev Tunnel ────────────────────────────────────────────────────
+
+function startTunnel(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    log("Starting dev tunnel...");
+    tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME], {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: true,
+    });
+
+    let stdout = "";
+    const timeout = setTimeout(() => {
+      reject(new Error("Tunnel failed to start within 30s"));
+    }, 30_000);
+
+    tunnelProcess.stdout?.on("data", (data: Buffer) => {
+      stdout += data.toString();
+      // Look for the URL: "Connect via browser: https://xxx-3333.usw2.devtunnels.ms"
+      const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/);
+      if (match) {
+        clearTimeout(timeout);
+        currentTunnelUrl = match[1];
+        log(`Tunnel URL: ${currentTunnelUrl}`);
+        resolve(currentTunnelUrl);
+      }
+    });
+
+    tunnelProcess.on("exit", (code) => {
+      log(`Tunnel exited with code ${code}`);
+      tunnelProcess = null;
+    });
+  });
+}
+
+function killTunnel() {
+  if (tunnelProcess) {
+    log("Stopping tunnel...");
+    tunnelProcess.kill();
+    tunnelProcess = null;
+  }
+}
+
+// ── Teams MCP Notification ────────────────────────────────────────
+
+async function startTeamsMcp(): Promise<void> {
+  return new Promise((resolve) => {
+    mcpProcess = spawn("mcp-remote", ["mcp", "teams", "--transport", "http", "--port", String(TEAMS_MCP_PORT)], {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: true,
+    });
+
+    // Poll until ready
+    const check = setInterval(async () => {
+      try {
+        const res = await fetch(`http://localhost:${TEAMS_MCP_PORT}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        });
+        if (res.ok) {
+          clearInterval(check);
+          resolve();
+        }
+      } catch {}
+    }, 1_000);
+
+    // Give up after 30s
+    setTimeout(() => {
+      clearInterval(check);
+      resolve(); // resolve anyway — notification is best-effort
+    }, 30_000);
+  });
+}
+
+function killTeamsMcp() {
+  if (mcpProcess) {
+    mcpProcess.kill();
+    mcpProcess = null;
+  }
+}
+
+async function notifyTeams(message: string): Promise<void> {
+  try {
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "PostChannelMessage",
+        arguments: {
+          teamId: TEAMS_TEAM_ID,
+          channelId: TEAMS_CHANNEL_ID,
+          content: message,
+          contentType: "text",
+        },
+      },
+    });
+
+    const res = await fetch(`http://localhost:${TEAMS_MCP_PORT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+
+    if (res.ok) {
+      log("Teams notification sent");
+    } else {
+      log(`Teams notification failed: ${res.status}`);
+    }
+  } catch (err) {
+    log(`Teams notification error: ${err}`);
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 
 async function main() {
@@ -155,7 +287,22 @@ async function main() {
   console.log();
 
   clearSignal();
+
+  // Start server
   serverProcess = startServer();
+
+  // Start dev tunnel
+  try {
+    const url = await startTunnel();
+
+    // Start Teams MCP and notify channel
+    log("Starting Teams MCP for notifications...");
+    await startTeamsMcp();
+    await notifyTeams(`🤖 Copilot Bridge is online!\n🔗 ${url}`);
+    killTeamsMcp(); // only needed for notifications, don't keep running
+  } catch (err) {
+    log(`Tunnel/notification setup failed (non-fatal): ${err}`);
+  }
 
   // Poll for restart signal
   setInterval(async () => {
@@ -176,11 +323,15 @@ async function main() {
 process.on("SIGINT", () => {
   log("Shutting down...");
   killServer();
+  killTunnel();
+  killTeamsMcp();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
   killServer();
+  killTunnel();
+  killTeamsMcp();
   process.exit(0);
 });
 
