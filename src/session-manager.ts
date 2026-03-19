@@ -96,6 +96,45 @@ export class SessionManager {
     }
   }
 
+  async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string }>> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+
+    console.log(`[sdk] Loading messages for session ${sessionId}...`);
+    const session = await this.client.resumeSession(sessionId, {
+      onPermissionRequest: approveAll,
+    });
+
+    const events = await session.getMessages();
+    const messages: Array<{ role: string; content: string; timestamp?: string }> = [];
+
+    for (const event of events) {
+      if (event.type === "user.message") {
+        const data = event.data as any;
+        const content = data.content ?? data.prompt ?? "";
+        if (content.trim()) {
+          messages.push({
+            role: "user",
+            content,
+            timestamp: data.timestamp ?? (event as any).timestamp,
+          });
+        }
+      } else if (event.type === "assistant.message") {
+        const data = event.data as any;
+        const content = data.content ?? "";
+        if (content.trim()) {
+          messages.push({
+            role: "assistant",
+            content,
+            timestamp: data.timestamp ?? (event as any).timestamp,
+          });
+        }
+      }
+    }
+
+    console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
+    return messages;
+  }
+
   isSessionBusy(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);
   }

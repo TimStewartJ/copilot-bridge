@@ -135,10 +135,30 @@ async function newSession() {
   }
 }
 
-function selectSession(id) {
+async function selectSession(id) {
   currentSessionId = id;
-  if (!chatHistory[id]) chatHistory[id] = [];
   renderSessions();
+
+  // Load history from server if we don't have it cached
+  if (!chatHistory[id]) {
+    chatHistory[id] = [];
+    renderMessages(); // show empty while loading
+    const el = document.getElementById('messages');
+    el.innerHTML = '<div class="thinking" id="loadingHistory">Loading history</div>';
+
+    try {
+      const data = await api('/api/sessions/' + id + '/messages');
+      const msgs = (data.messages || []).map(m => ({
+        role: m.role,
+        html: m.role === 'user' ? esc(m.content) : renderMarkdown(m.content),
+        time: m.timestamp || ''
+      }));
+      chatHistory[id] = msgs;
+    } catch (err) {
+      chatHistory[id] = [{ role: 'assistant', html: '<em>Could not load history: ' + esc(err.message || String(err)) + '</em>', time: new Date().toISOString() }];
+    }
+  }
+
   renderMessages();
   document.getElementById('input').focus();
 }
