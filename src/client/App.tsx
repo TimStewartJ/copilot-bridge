@@ -4,6 +4,8 @@ import {
   createSession,
   fetchTasks,
   createTask,
+  fetchTask,
+  createTaskSession,
   type Session,
   type Task,
 } from "./api";
@@ -22,6 +24,7 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [taskContext, setTaskContext] = useState<Task | null>(null);
 
   const loadSessions = async () => {
     try {
@@ -83,6 +86,7 @@ export default function App() {
   const handleSelectSession = (id: string) => {
     setActiveSessionId(id);
     setActiveTaskId(null);
+    setTaskContext(null);
     setViewMode("chat");
     closeSidebar();
   };
@@ -97,15 +101,54 @@ export default function App() {
   const handleGoHome = () => {
     setActiveSessionId(null);
     setActiveTaskId(null);
+    setTaskContext(null);
     setViewMode("none");
     closeSidebar();
   };
 
-  // Open a session from within a task detail view
-  const handleOpenSessionFromTask = (sessionId: string) => {
+  // Open a session from within a task detail view — keep task context in sidebar
+  const handleOpenSessionFromTask = async (sessionId: string) => {
+    // Capture the current task for sidebar context
+    if (activeTaskId) {
+      try {
+        const task = await fetchTask(activeTaskId);
+        setTaskContext(task);
+      } catch {
+        setTaskContext(null);
+      }
+    }
     setActiveSessionId(sessionId);
     setViewMode("chat");
-    setActiveTab("sessions");
+  };
+
+  // Create a new session linked to the task context and open it
+  const handleNewTaskSession = async (taskId: string) => {
+    try {
+      const sessionId = await createTaskSession(taskId);
+      await loadSessions();
+      const task = await fetchTask(taskId);
+      setTaskContext(task);
+      setActiveSessionId(sessionId);
+      setViewMode("chat");
+    } catch (err) {
+      console.error("Failed to create task session:", err);
+    }
+  };
+
+  // Navigate back to the task detail from chat context
+  const handleBackToTask = (taskId: string) => {
+    setActiveTaskId(taskId);
+    setActiveSessionId(null);
+    setTaskContext(null);
+    setViewMode("task");
+    setActiveTab("tasks");
+  };
+
+  // Select a session within task context (stay in task context)
+  const handleSelectTaskSession = (sessionId: string) => {
+    setActiveSessionId(sessionId);
+    setViewMode("chat");
+    closeSidebar();
   };
 
   const handleTaskDeleted = () => {
@@ -142,6 +185,10 @@ export default function App() {
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
+          taskContext={taskContext}
+          onBackToTask={handleBackToTask}
+          onSelectTaskSession={handleSelectTaskSession}
+          onNewTaskSession={handleNewTaskSession}
         />
       </div>
 
