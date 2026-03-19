@@ -100,7 +100,10 @@ export async function sendChatStreaming(
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      console.log("[stream] Stream ended");
+      break;
+    }
 
     buffer += decoder.decode(value, { stream: true });
 
@@ -112,6 +115,7 @@ export async function sendChatStreaming(
       if (line.startsWith("data: ")) {
         try {
           const event = JSON.parse(line.slice(6)) as StreamEvent;
+          console.log("[stream]", event.type, event.type === "delta" ? `(${event.content?.length ?? 0} chars)` : "");
           onEvent(event);
         } catch { /* skip malformed */ }
       }

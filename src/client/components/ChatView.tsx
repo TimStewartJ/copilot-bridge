@@ -122,12 +122,9 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         ...prev,
         { role: "assistant", content: `⚠️ Error: ${err.message}` },
       ]);
-    } finally {
-      if (targetSessionId === prevSessionRef.current) {
-        setStreamingContent("");
-        setActiveTools([]);
-        setThinking(false);
-      }
+      setStreamingContent("");
+      setActiveTools([]);
+      setThinking(false);
     }
   };
 

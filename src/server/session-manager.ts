@@ -173,7 +173,10 @@ export class SessionManager {
             onEvent?.("thinking");
             break;
           case "assistant.message_delta":
-            onEvent?.("delta", { content: data?.content ?? "" });
+          case "assistant.streaming_delta":
+            if (data?.content) {
+              onEvent?.("delta", { content: data.content });
+            }
             break;
           case "assistant.message":
             console.log(`[sdk] ✅ Response received (${data?.content?.length ?? 0} chars)`);
@@ -194,7 +197,7 @@ export class SessionManager {
             console.log(`[sdk] 💤 Session idle`);
             break;
           default:
-            if (!["assistant.streaming_delta", "assistant.reasoning_delta", "pending_messages.modified"].includes(event.type)) {
+            if (!["assistant.reasoning_delta", "pending_messages.modified"].includes(event.type)) {
               console.log(`[sdk] 📡 Event: ${event.type}`);
             }
         }
