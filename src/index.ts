@@ -49,13 +49,16 @@ app.post("/api/chat", async (req, res) => {
   }
 
   console.log(`[web] [${session.name}] "${prompt.slice(0, 80)}"`);
+  const startTime = Date.now();
 
   try {
     const response = await sessionManager.sendMessage(sessionId, prompt);
-    console.log(`[web] [${session.name}] Response sent (${response.length} chars)`);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[web] [${session.name}] Response sent (${response.length} chars, ${elapsed}s)`);
     res.json({ response, session: sessionManager.getSession(sessionId) });
   } catch (err) {
-    console.error(`[web] Error:`, err);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.error(`[web] Error after ${elapsed}s:`, err);
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });

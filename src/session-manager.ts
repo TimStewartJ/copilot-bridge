@@ -76,14 +76,47 @@ export class SessionManager {
     this.activeSessions.set(sessionId, true);
 
     try {
+      console.log(`[sdk] Resuming session ${info.copilotSessionId}...`);
       const session = await this.client.resumeSession(info.copilotSessionId, {
         onPermissionRequest: approveAll,
+      });
+      console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
+
+      // Log events for visibility
+      const unsub = session.on((event) => {
+        switch (event.type) {
+          case "assistant.turn_start":
+            console.log(`[sdk] ⏳ Turn started`);
+            break;
+          case "assistant.message":
+            console.log(`[sdk] ✅ Response received (${(event as any).data?.content?.length ?? 0} chars)`);
+            break;
+          case "tool.execution_start":
+            console.log(`[sdk] 🔧 Tool: ${(event as any).data?.name ?? "unknown"}`);
+            break;
+          case "tool.execution_complete":
+            console.log(`[sdk] 🔧 Tool complete: ${(event as any).data?.name ?? "unknown"}`);
+            break;
+          case "session.error":
+            console.error(`[sdk] ❌ Error: ${(event as any).data?.message ?? "unknown"}`);
+            break;
+          case "session.idle":
+            console.log(`[sdk] 💤 Session idle`);
+            break;
+          default:
+            // Log other event types at debug level
+            if (!["assistant.message_delta", "assistant.streaming_delta", "assistant.reasoning_delta"].includes(event.type)) {
+              console.log(`[sdk] 📡 Event: ${event.type}`);
+            }
+        }
       });
 
       const response = await session.sendAndWait(
         { prompt },
         600_000, // 10 min timeout
       );
+
+      unsub();
 
       info.lastUsed = new Date().toISOString();
       info.messageCount++;
