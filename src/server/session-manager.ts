@@ -2,8 +2,14 @@
 // Thin wrapper around SDK's built-in session management — no in-memory state
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
 
 export class SessionManager {
   private client: CopilotClient | null = null;
@@ -108,6 +114,16 @@ export class SessionManager {
         handler: async () => {
           const task = taskStore.getTask(taskId);
           return task ?? { error: "Task not found" };
+        },
+      }),
+      defineTool("self_restart", {
+        description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint (git commit), rebuild (vite + tsc), and swap processes. If the build fails or health check fails, it auto-rolls back. Only use after you've finished editing and verified the build passes.",
+        parameters: { type: "object", properties: {} },
+        handler: async () => {
+          const dataDir = join(__dirname, "..", "..", "data");
+          if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+          writeFileSync(SIGNAL_FILE, new Date().toISOString());
+          return { success: true, message: "Restart signal sent. The launcher will rebuild and restart the server in ~15 seconds. This session will remain available after restart." };
         },
       }),
     ];

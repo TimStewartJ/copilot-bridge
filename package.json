@@ -4,7 +4,8 @@
   "description": "Bridge between Teams and Copilot CLI via MCP + SDK",
   "type": "module",
   "scripts": {
-    "dev": "npx tsx src/server/index.ts",
+    "dev": "npx tsx src/launcher.ts",
+    "dev:server": "npx tsx src/server/index.ts",
     "dev:client": "vite",
     "build:client": "vite build",
     "build:server": "tsc",
