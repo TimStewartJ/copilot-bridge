@@ -18,15 +18,20 @@ app.get("/", (_req, res) => {
 
 // ── API routes ────────────────────────────────────────────────────
 
-app.get("/api/sessions", (_req, res) => {
-  res.json({ sessions: sessionManager.listSessions() });
+app.get("/api/sessions", async (_req, res) => {
+  try {
+    const sessions = await sessionManager.listSessions();
+    res.json({ sessions });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.post("/api/sessions", async (req, res) => {
   try {
     const { name } = req.body ?? {};
-    const session = await sessionManager.createSession(name);
-    res.json({ session });
+    const result = await sessionManager.createSession(name);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -39,23 +44,18 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "sessionId and prompt are required" });
   }
 
-  const session = sessionManager.getSession(sessionId);
-  if (!session) {
-    return res.status(404).json({ error: "Session not found" });
-  }
-
   if (sessionManager.isSessionBusy(sessionId)) {
     return res.status(429).json({ error: "Session is busy, please wait" });
   }
 
-  console.log(`[web] [${session.name}] "${prompt.slice(0, 80)}"`);
+  console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
   const startTime = Date.now();
 
   try {
     const response = await sessionManager.sendMessage(sessionId, prompt);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[web] [${session.name}] Response sent (${response.length} chars, ${elapsed}s)`);
-    res.json({ response, session: sessionManager.getSession(sessionId) });
+    console.log(`[web] [${sessionId.slice(0, 8)}] Response sent (${response.length} chars, ${elapsed}s)`);
+    res.json({ response });
   } catch (err) {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.error(`[web] Error after ${elapsed}s:`, err);

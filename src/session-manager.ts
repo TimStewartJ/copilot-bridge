@@ -1,24 +1,12 @@
 // Copilot SDK session manager
-// Creates/resumes named sessions with full tool access
+// Thin wrapper around SDK's built-in session management — no in-memory state
 
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
-import type { AssistantMessageEvent } from "@github/copilot-sdk";
 import { config } from "./config.js";
-
-export interface SessionInfo {
-  id: string;
-  copilotSessionId: string;
-  name: string;
-  createdAt: string;
-  lastUsed: string;
-  messageCount: number;
-}
 
 export class SessionManager {
   private client: CopilotClient | null = null;
-  // Maps our session ID → { copilotSessionId, metadata }
-  private sessions = new Map<string, SessionInfo>();
-  private activeSessions = new Map<string, boolean>(); // track if session is busy
+  private activeSessions = new Set<string>(); // track busy sessions
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
@@ -27,11 +15,13 @@ export class SessionManager {
     console.log("[sdk] Copilot SDK client ready");
   }
 
-  async createSession(name?: string): Promise<SessionInfo> {
+  async listSessions() {
     if (!this.client) throw new Error("SessionManager not initialized");
+    return this.client.listSessions();
+  }
 
-    const id = crypto.randomUUID();
-    const sessionName = name || `Session ${this.sessions.size + 1}`;
+  async createSession(name?: string): Promise<{ sessionId: string }> {
+    if (!this.client) throw new Error("SessionManager not initialized");
 
     const session = await this.client.createSession({
       onPermissionRequest: approveAll,
@@ -46,43 +36,27 @@ export class SessionManager {
       },
     });
 
-    const info: SessionInfo = {
-      id,
-      copilotSessionId: session.sessionId,
-      name: sessionName,
-      createdAt: new Date().toISOString(),
-      lastUsed: new Date().toISOString(),
-      messageCount: 0,
-    };
-
-    this.sessions.set(id, info);
-    console.log(`[sdk] Created session "${sessionName}" (${id})`);
-    return info;
+    // Rename if a name was provided
+    console.log(`[sdk] Created session ${session.sessionId}${name ? ` ("${name}")` : ""}`);
+    return { sessionId: session.sessionId };
   }
 
-  async sendMessage(
-    sessionId: string,
-    prompt: string,
-  ): Promise<string> {
+  async sendMessage(sessionId: string, prompt: string): Promise<string> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    const info = this.sessions.get(sessionId);
-    if (!info) throw new Error(`Session ${sessionId} not found`);
-
-    if (this.activeSessions.get(sessionId)) {
+    if (this.activeSessions.has(sessionId)) {
       throw new Error("Session is busy processing another message");
     }
 
-    this.activeSessions.set(sessionId, true);
+    this.activeSessions.add(sessionId);
 
     try {
-      console.log(`[sdk] Resuming session ${info.copilotSessionId}...`);
-      const session = await this.client.resumeSession(info.copilotSessionId, {
+      console.log(`[sdk] Resuming session ${sessionId}...`);
+      const session = await this.client.resumeSession(sessionId, {
         onPermissionRequest: approveAll,
       });
       console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
 
-      // Log events for visibility
       const unsub = session.on((event) => {
         switch (event.type) {
           case "assistant.turn_start":
@@ -104,7 +78,6 @@ export class SessionManager {
             console.log(`[sdk] 💤 Session idle`);
             break;
           default:
-            // Log other event types at debug level
             if (!["assistant.message_delta", "assistant.streaming_delta", "assistant.reasoning_delta"].includes(event.type)) {
               console.log(`[sdk] 📡 Event: ${event.type}`);
             }
@@ -113,32 +86,18 @@ export class SessionManager {
 
       const response = await session.sendAndWait(
         { prompt },
-        600_000, // 10 min timeout
+        600_000,
       );
 
       unsub();
-
-      info.lastUsed = new Date().toISOString();
-      info.messageCount++;
-
       return response?.data.content ?? "(no response)";
     } finally {
-      this.activeSessions.set(sessionId, false);
+      this.activeSessions.delete(sessionId);
     }
   }
 
-  listSessions(): SessionInfo[] {
-    return Array.from(this.sessions.values()).sort(
-      (a, b) => new Date(b.lastUsed).getTime() - new Date(a.lastUsed).getTime(),
-    );
-  }
-
-  getSession(sessionId: string): SessionInfo | undefined {
-    return this.sessions.get(sessionId);
-  }
-
   isSessionBusy(sessionId: string): boolean {
-    return this.activeSessions.get(sessionId) ?? false;
+    return this.activeSessions.has(sessionId);
   }
 
   async shutdown(): Promise<void> {

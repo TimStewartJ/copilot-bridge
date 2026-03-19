@@ -112,22 +112,23 @@ async function loadSessions() {
 function renderSessions() {
   const el = document.getElementById('sessionList');
   el.innerHTML = sessions.map(s => {
-    const active = s.id === currentSessionId ? 'active' : '';
-    const ago = timeAgo(s.lastUsed);
-    return '<div class="session-item ' + active + '" onclick="selectSession(\\'' + s.id + '\\')">'
-      + '<div class="name">' + esc(s.name) + '</div>'
-      + '<div class="meta">' + s.messageCount + ' msgs · ' + ago + '</div>'
+    const id = s.sessionId || s.id;
+    const active = id === currentSessionId ? 'active' : '';
+    const name = s.summary || s.name || id.slice(0, 8);
+    const ago = s.updatedAt ? timeAgo(s.updatedAt) : (s.lastUsed ? timeAgo(s.lastUsed) : '');
+    const branch = s.branch ? ' · ' + s.branch : '';
+    return '<div class="session-item ' + active + '" onclick="selectSession(\\'' + id + '\\')">'
+      + '<div class="name">' + esc(name) + '</div>'
+      + '<div class="meta">' + ago + branch + '</div>'
       + '</div>';
   }).join('');
 }
 
 async function newSession() {
-  const name = prompt('Session name (optional):') || undefined;
-  const data = await api('/api/sessions', { name });
-  if (data.session) {
-    sessions.unshift(data.session);
-    chatHistory[data.session.id] = [];
-    selectSession(data.session.id);
+  const data = await api('/api/sessions', {});
+  if (data.sessionId) {
+    await loadSessions();
+    selectSession(data.sessionId);
   }
 }
 
@@ -187,11 +188,6 @@ async function send() {
       msgs.push({ role: 'assistant', html: '<strong>Error:</strong> ' + esc(data.error), time: new Date().toISOString() });
     } else {
       msgs.push({ role: 'assistant', html: renderMarkdown(data.response), time: new Date().toISOString() });
-      if (data.session) {
-        const idx = sessions.findIndex(s => s.id === data.session.id);
-        if (idx >= 0) sessions[idx] = data.session;
-        renderSessions();
-      }
     }
   } catch (err) {
     document.getElementById('thinking')?.remove();
