@@ -130,7 +130,8 @@ function renderSessions() {
 async function newSession() {
   const data = await api('/api/sessions', {});
   if (data.sessionId) {
-    await loadSessions();
+    // Add placeholder to list (won't have summary yet)
+    sessions.unshift({ sessionId: data.sessionId, summary: 'New session', modifiedTime: new Date().toISOString(), diskSizeBytes: 0 });
     selectSession(data.sessionId);
   }
 }
@@ -211,6 +212,8 @@ async function send() {
       msgs.push({ role: 'assistant', html: '<strong>Error:</strong> ' + esc(data.error), time: new Date().toISOString() });
     } else {
       msgs.push({ role: 'assistant', html: renderMarkdown(data.response), time: new Date().toISOString() });
+      // Refresh session list to pick up auto-generated summary
+      loadSessions();
     }
   } catch (err) {
     document.getElementById('thinking')?.remove();

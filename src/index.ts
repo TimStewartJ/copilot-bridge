@@ -42,15 +42,17 @@ app.get("/api/sessions", async (_req, res) => {
     const sessions = await sessionManager.listSessions();
     const sessionStateDir = join(homedir(), ".copilot", "session-state");
 
-    const enriched = sessions.map((s: any) => {
-      const id = s.sessionId;
-      let diskSizeBytes = 0;
-      try {
-        const sessionDir = join(sessionStateDir, id);
-        diskSizeBytes = getDirSize(sessionDir);
-      } catch { /* session dir may not exist */ }
-      return { ...s, diskSizeBytes };
-    });
+    const enriched = sessions
+      .filter((s: any) => s.summary) // hide empty/zombie sessions
+      .map((s: any) => {
+        const id = s.sessionId;
+        let diskSizeBytes = 0;
+        try {
+          const sessionDir = join(sessionStateDir, id);
+          diskSizeBytes = getDirSize(sessionDir);
+        } catch { /* session dir may not exist */ }
+        return { ...s, diskSizeBytes };
+      });
 
     res.json({ sessions: enriched });
   } catch (err) {
