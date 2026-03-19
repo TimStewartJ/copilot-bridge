@@ -181,31 +181,55 @@ export class SessionManager {
             onEvent?.("thinking");
             break;
           case "assistant.message_delta":
-          case "assistant.streaming_delta":
-            if (data?.content) {
-              onEvent?.("delta", { content: data.content });
+            if (data?.deltaContent) {
+              onEvent?.("delta", { content: data.deltaContent });
             }
+            break;
+          case "assistant.intent":
+            console.log(`[sdk] 🎯 Intent: ${data?.intent}`);
+            onEvent?.("intent", { intent: data?.intent ?? "" });
             break;
           case "assistant.message":
             console.log(`[sdk] ✅ Response received (${data?.content?.length ?? 0} chars)`);
             break;
           case "tool.execution_start":
-            console.log(`[sdk] 🔧 Tool: ${data?.name ?? "unknown"}`);
-            onEvent?.("tool_start", { name: data?.name ?? "unknown" });
+            console.log(`[sdk] 🔧 Tool: ${data?.toolName ?? data?.name ?? "unknown"}`);
+            onEvent?.("tool_start", { name: data?.toolName ?? data?.name ?? "unknown" });
+            break;
+          case "tool.execution_progress":
+            onEvent?.("tool_progress", { name: data?.toolCallId, message: data?.progressMessage ?? "" });
+            break;
+          case "tool.execution_partial_result":
+            onEvent?.("tool_output", { name: data?.toolCallId, content: data?.partialOutput ?? "" });
             break;
           case "tool.execution_complete":
-            console.log(`[sdk] 🔧 Tool complete: ${data?.name ?? "unknown"}`);
-            onEvent?.("tool_done", { name: data?.name ?? "unknown" });
+            console.log(`[sdk] 🔧 Tool complete: ${data?.toolName ?? data?.name ?? "unknown"}`);
+            onEvent?.("tool_done", { name: data?.toolName ?? data?.name ?? "unknown" });
+            break;
+          case "subagent.started":
+            console.log(`[sdk] 🤖 Sub-agent: ${data?.agentDisplayName ?? data?.agentName}`);
+            onEvent?.("tool_start", { name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
+            break;
+          case "subagent.completed":
+            console.log(`[sdk] 🤖 Sub-agent done: ${data?.agentDisplayName ?? data?.agentName}`);
+            onEvent?.("tool_done", { name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
+            break;
+          case "subagent.failed":
+            console.log(`[sdk] 🤖 Sub-agent failed: ${data?.agentDisplayName ?? data?.agentName}`);
+            onEvent?.("tool_done", { name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
             break;
           case "session.error":
             console.error(`[sdk] ❌ Error: ${data?.message ?? "unknown"}`);
             onEvent?.("error", { message: data?.message ?? "unknown" });
             break;
+          case "session.title_changed":
+            onEvent?.("title_changed", { title: data?.title ?? "" });
+            break;
           case "session.idle":
             console.log(`[sdk] 💤 Session idle`);
             break;
           default:
-            if (!["assistant.reasoning_delta", "pending_messages.modified"].includes(event.type)) {
+            if (!["assistant.reasoning_delta", "assistant.streaming_delta", "pending_messages.modified", "assistant.usage", "permission.requested", "permission.completed"].includes(event.type)) {
               console.log(`[sdk] 📡 Event: ${event.type}`);
             }
         }

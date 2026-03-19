@@ -70,10 +70,12 @@ export async function fetchMessages(sessionId: string): Promise<{ messages: Chat
 }
 
 export interface StreamEvent {
-  type: "thinking" | "delta" | "tool_start" | "tool_done" | "done" | "error";
+  type: "thinking" | "delta" | "intent" | "tool_start" | "tool_progress" | "tool_output" | "tool_done" | "title_changed" | "done" | "error";
   content?: string;
   name?: string;
   message?: string;
+  intent?: string;
+  title?: string;
 }
 
 export async function sendChatStreaming(

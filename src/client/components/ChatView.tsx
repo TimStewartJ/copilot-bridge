@@ -14,6 +14,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [activeTools, setActiveTools] = useState<string[]>([]);
+  const [intentText, setIntentText] = useState("");
+  const [toolProgress, setToolProgress] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevSessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -36,6 +38,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
     setThinking(false);
     setStreamingContent("");
     setActiveTools([]);
+    setIntentText("");
+    setToolProgress("");
     fetchMessages(sessionId)
       .then(({ messages: msgs, busy }) => {
         setMessages(msgs);
@@ -72,7 +76,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, thinking, streamingContent]);
+  }, [messages, thinking, streamingContent, activeTools, toolProgress]);
 
   const handleSend = useCallback(async (prompt: string) => {
     if (!sessionId || thinking) return;
@@ -88,6 +92,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
     setThinking(true);
     setStreamingContent("");
     setActiveTools([]);
+    setIntentText("");
+    setToolProgress("");
 
     try {
       await sendChatStreaming(targetSessionId, prompt, (event: StreamEvent) => {
@@ -96,14 +102,28 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         switch (event.type) {
           case "thinking":
             break; // already showing thinking state
+          case "intent":
+            setIntentText(event.intent ?? "");
+            break;
           case "delta":
             setStreamingContent((prev) => prev + (event.content ?? ""));
             break;
           case "tool_start":
             setActiveTools((prev) => [...prev, event.name ?? "unknown"]);
+            setToolProgress("");
+            break;
+          case "tool_progress":
+            setToolProgress(event.message ?? "");
+            break;
+          case "tool_output":
+            setToolProgress(event.content ?? "");
             break;
           case "tool_done":
             setActiveTools((prev) => prev.filter((t) => t !== (event.name ?? "unknown")));
+            setToolProgress("");
+            break;
+          case "title_changed":
+            onMessageSent(); // refresh sidebar to pick up new title
             break;
           case "done":
             setMessages((prev) => [
@@ -112,6 +132,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
             ]);
             setStreamingContent("");
             setThinking(false);
+            setIntentText("");
+            setToolProgress("");
             onMessageSent();
             break;
           case "error":
@@ -121,6 +143,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
             ]);
             setStreamingContent("");
             setThinking(false);
+            setIntentText("");
+            setToolProgress("");
             break;
         }
       }, abort.signal);
@@ -136,6 +160,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         setStreamingContent("");
         setActiveTools([]);
         setThinking(false);
+        setIntentText("");
+        setToolProgress("");
       }
     }
   }, [sessionId, thinking, onMessageSent]);
@@ -175,18 +201,23 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
           />
         )}
         {activeTools.length > 0 && (
-          <div className="text-xs text-indigo-400/70 px-4 py-1 flex items-center gap-2">
-            <span className="animate-spin">⚙️</span>
-            {activeTools.map((t) => (
-              <span key={t} className="bg-indigo-500/10 px-2 py-0.5 rounded">
-                {t}
-              </span>
-            ))}
+          <div className="text-xs text-indigo-400/70 px-4 py-1 space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="animate-spin">⚙️</span>
+              {activeTools.map((t) => (
+                <span key={t} className="bg-indigo-500/10 px-2 py-0.5 rounded">
+                  {t}
+                </span>
+              ))}
+            </div>
+            {toolProgress && (
+              <div className="text-indigo-400/50 pl-6 truncate">{toolProgress}</div>
+            )}
           </div>
         )}
         {thinking && !streamingContent && activeTools.length === 0 && (
           <div className="text-indigo-400 italic animate-pulse">
-            Thinking...
+            {intentText ? `${intentText}...` : "Thinking..."}
           </div>
         )}
         <div ref={messagesEndRef} />
