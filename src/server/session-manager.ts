@@ -175,6 +175,10 @@ export class SessionManager {
 
       const unsub = session.on((event) => {
         const data = (event as any).data;
+        // Debug: log all event types to diagnose streaming
+        if (event.type.includes("delta") || event.type.includes("stream")) {
+          console.log(`[sdk] 🔍 Delta event: ${event.type}, keys: ${Object.keys(data ?? {}).join(",")}, data: ${JSON.stringify(data).slice(0, 200)}`);
+        }
         switch (event.type) {
           case "assistant.turn_start":
             console.log(`[sdk] ⏳ Turn started`);
