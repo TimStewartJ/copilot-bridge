@@ -145,18 +145,24 @@ export default function App() {
         />
       </div>
 
-      {/* Floating menu button — always visible on mobile */}
-      {!sidebarOpen && (
-        <button
-          onClick={() => setSidebarOpen(true)}
-          className="fixed bottom-20 left-3 z-30 md:hidden w-11 h-11 rounded-full bg-indigo-500 hover:bg-indigo-600 text-white shadow-lg shadow-black/30 flex items-center justify-center text-lg active:scale-95 transition-all"
-          aria-label="Open menu"
-        >
-          ☰
-        </button>
-      )}
-
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Mobile top bar — sticky */}
+        <div className="sticky top-0 z-20 flex items-center gap-3 px-4 py-3 border-b border-[#2a2a4a] bg-[#16213e] md:hidden">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="text-gray-400 hover:text-gray-200 text-xl"
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
+          <button
+            onClick={handleGoHome}
+            className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+          >
+            🤖 Copilot Bridge
+          </button>
+        </div>
+
         <main className="flex-1 flex flex-col min-h-0">
           {viewMode === "chat" && (
             <ChatView
