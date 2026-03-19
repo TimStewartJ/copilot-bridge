@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   fetchSessions,
   createSession,
@@ -157,6 +157,12 @@ export default function App() {
     loadTasks();
   };
 
+  // Sessions not linked to any task — shown in global Sessions tab and Dashboard
+  const globalSessions = useMemo(() => {
+    const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
+    return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
+  }, [sessions, tasks]);
+
   return (
     <div className="flex h-dvh bg-[#1a1a2e] text-gray-200">
       {/* Mobile overlay backdrop */}
@@ -181,11 +187,12 @@ export default function App() {
           activeTaskId={activeTaskId}
           onSelectTask={handleSelectTask}
           onNewTask={handleNewTask}
-          sessions={sessions}
+          sessions={globalSessions}
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
           taskContext={taskContext}
+          taskContextSessions={sessions}
           onBackToTask={handleBackToTask}
           onSelectTaskSession={handleSelectTaskSession}
           onNewTaskSession={handleNewTaskSession}
@@ -229,7 +236,7 @@ export default function App() {
           {viewMode === "none" && (
             <Dashboard
               tasks={tasks}
-              sessions={sessions}
+              sessions={globalSessions}
               onSelectTask={handleSelectTask}
               onSelectSession={handleSelectSession}
               onNewTask={handleNewTask}

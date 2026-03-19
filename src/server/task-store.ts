@@ -144,6 +144,10 @@ export function unlinkWorkItem(taskId: string, workItemId: number): Task {
   return task;
 }
 
+export function findTaskBySessionId(sessionId: string): Task | undefined {
+  return load().find((t) => t.sessionIds.includes(sessionId));
+}
+
 export function linkPR(taskId: string, pr: PRLink): Task {
   const tasks = load();
   const task = tasks.find((t) => t.id === taskId);

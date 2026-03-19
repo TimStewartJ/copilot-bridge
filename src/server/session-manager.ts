@@ -167,10 +167,34 @@ export class SessionManager {
 
     try {
       console.log(`[sdk] Resuming session ${sessionId}...`);
-      const session = await this.client.resumeSession(sessionId, {
+
+      // Build fresh task context if this session belongs to a task
+      const linkedTask = taskStore.findTaskBySessionId(sessionId);
+      const resumeConfig: any = {
         onPermissionRequest: approveAll,
         tools: BRIDGE_TOOLS,
-      });
+      };
+
+      if (linkedTask) {
+        const contextParts = [
+          `You are helping with task "${linkedTask.title}" (taskId: ${linkedTask.id}).`,
+          `Task status: ${linkedTask.status}.`,
+          "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
+        ];
+        if (linkedTask.workItemIds.length > 0) {
+          contextParts.push(`Currently linked work items: ${linkedTask.workItemIds.map((id) => `#${id}`).join(", ")}.`);
+        }
+        if (linkedTask.pullRequests.length > 0) {
+          contextParts.push(`Currently linked PRs: ${linkedTask.pullRequests.map((pr) => `${pr.repoName || pr.repoId} #${pr.prId}`).join(", ")}.`);
+        }
+        if (linkedTask.notes.trim()) {
+          contextParts.push(`Task notes:\n${linkedTask.notes}`);
+        }
+        resumeConfig.systemMessage = { mode: "append", content: contextParts.join("\n") };
+        console.log(`[sdk] Injecting task context for "${linkedTask.title}" into session ${sessionId}`);
+      }
+
+      const session = await this.client.resumeSession(sessionId, resumeConfig);
       console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
 
       const unsub = session.on((event) => {

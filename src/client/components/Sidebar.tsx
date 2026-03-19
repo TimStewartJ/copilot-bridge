@@ -37,6 +37,7 @@ interface SidebarProps {
   onNewSession: () => void;
   // Task context (when navigating from task → session)
   taskContext: Task | null;
+  taskContextSessions: Session[];
   onBackToTask: (taskId: string) => void;
   onSelectTaskSession: (sessionId: string) => void;
   onNewTaskSession: (taskId: string) => void;
@@ -55,6 +56,7 @@ export default function Sidebar({
   onSelectSession,
   onNewSession,
   taskContext,
+  taskContextSessions,
   onBackToTask,
   onSelectTaskSession,
   onNewTaskSession,
@@ -65,7 +67,7 @@ export default function Sidebar({
       <div className="w-full h-full bg-[#16213e] border-r border-[#2a2a4a] flex flex-col">
         <TaskContextPanel
           task={taskContext}
-          sessions={sessions}
+          sessions={taskContextSessions}
           activeSessionId={activeSessionId}
           onBackToTask={onBackToTask}
           onSelectSession={onSelectTaskSession}
