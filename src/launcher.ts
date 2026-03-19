@@ -123,7 +123,7 @@ function killServer() {
 }
 
 async function waitForIdleSessions(): Promise<boolean> {
-  const busyUrl = `http://localhost:${PORT}/api/sessions/busy`;
+  const busyUrl = `http://localhost:${PORT}/api/busy`;
   const start = Date.now();
 
   try {

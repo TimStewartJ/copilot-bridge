@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { fetchMessages, sendChatStreaming, type ChatMessage, type StreamEvent } from "../api";
 import MessageBubble from "./MessageBubble";
+import ChatInput from "./ChatInput";
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -9,14 +10,13 @@ interface ChatViewProps {
 
 export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [activeTools, setActiveTools] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevSessionRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
@@ -27,9 +27,15 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
     if (prevSessionRef.current === sessionId) return;
     prevSessionRef.current = sessionId;
 
+    // Abort any in-flight SSE stream from the previous session
+    abortRef.current?.abort();
+    abortRef.current = null;
+
     setMessages([]);
     setLoading(true);
     setThinking(false);
+    setStreamingContent("");
+    setActiveTools([]);
     fetchMessages(sessionId)
       .then(({ messages: msgs, busy }) => {
         setMessages(msgs);
@@ -68,13 +74,15 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, thinking, streamingContent]);
 
-  const handleSend = async () => {
-    if (!input.trim() || !sessionId || thinking) return;
+  const handleSend = useCallback(async (prompt: string) => {
+    if (!sessionId || thinking) return;
 
-    const prompt = input.trim();
     const targetSessionId = sessionId;
-    setInput("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+
+    // Abort any previous SSE stream before starting a new one
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
 
     setMessages((prev) => [...prev, { role: "user", content: prompt }]);
     setThinking(true);
@@ -115,31 +123,22 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
             setThinking(false);
             break;
         }
-      });
+      }, abort.signal);
     } catch (err: any) {
       if (targetSessionId !== prevSessionRef.current) return;
+      if (err.name === "AbortError") return; // silently ignore aborted streams
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: `⚠️ Error: ${err.message}` },
       ]);
-      setStreamingContent("");
-      setActiveTools([]);
-      setThinking(false);
+    } finally {
+      if (targetSessionId === prevSessionRef.current) {
+        setStreamingContent("");
+        setActiveTools([]);
+        setThinking(false);
+      }
     }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
-    e.target.style.height = "auto";
-    e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
-  };
+  }, [sessionId, thinking, onMessageSent]);
 
   if (!sessionId) {
     return (
@@ -148,6 +147,14 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
       </div>
     );
   }
+
+  const renderedMessages = useMemo(
+    () =>
+      messages.map((msg, i) => (
+        <MessageBubble key={`${msg.role}-${i}`} message={msg} />
+      )),
+    [messages],
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -161,9 +168,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
             Send a message to get started
           </div>
         )}
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
-        ))}
+        {renderedMessages}
         {streamingContent && (
           <MessageBubble
             message={{ role: "assistant", content: streamingContent }}
@@ -188,26 +193,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
       </div>
 
       {/* Input */}
-      <div className="p-3 md:p-4 border-t border-[#2a2a4a] bg-[#16213e]">
-        <div className="flex gap-2 md:gap-3">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInput}
-            onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
-            rows={1}
-            className="flex-1 px-4 py-3 bg-[#1a1a2e] text-gray-200 border border-[#2a2a4a] rounded-lg text-sm font-sans resize-none focus:outline-none focus:border-indigo-500 min-h-[48px] max-h-[200px]"
-          />
-          <button
-            onClick={handleSend}
-            disabled={thinking || !input.trim()}
-            className="px-4 md:px-6 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold self-end transition-colors"
-          >
-            Send
-          </button>
-        </div>
-      </div>
+      <ChatInput onSend={handleSend} disabled={thinking} />
     </div>
   );
 }

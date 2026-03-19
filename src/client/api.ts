@@ -80,11 +80,13 @@ export async function sendChatStreaming(
   sessionId: string,
   prompt: string,
   onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId, prompt }),
+    signal,
   });
 
   if (!res.ok) {
@@ -98,9 +100,23 @@ export async function sendChatStreaming(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  const flushBuffer = () => {
+    if (!buffer.trim()) return;
+    for (const line of buffer.split("\n")) {
+      if (line.startsWith("data: ")) {
+        try {
+          const event = JSON.parse(line.slice(6)) as StreamEvent;
+          console.log("[stream]", event.type, event.type === "delta" ? `(${event.content?.length ?? 0} chars)` : "");
+          onEvent(event);
+        } catch { /* skip malformed */ }
+      }
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
+      flushBuffer();
       console.log("[stream] Stream ended");
       break;
     }

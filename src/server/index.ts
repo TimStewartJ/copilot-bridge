@@ -56,7 +56,7 @@ app.get("/api/sessions", async (_req, res) => {
   }
 });
 
-app.get("/api/sessions/busy", (_req, res) => {
+app.get("/api/busy", (_req, res) => {
   const activeSessions = sessionManager.getActiveSessions();
   res.json({ busy: activeSessions.length > 0, count: activeSessions.length, sessionIds: activeSessions });
 });

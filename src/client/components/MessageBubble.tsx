@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "../api";
@@ -6,7 +7,7 @@ interface MessageBubbleProps {
   message: ChatMessage;
 }
 
-export default function MessageBubble({ message }: MessageBubbleProps) {
+export default memo(function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -37,4 +38,4 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
       </div>
     </div>
   );
-}
+});
