@@ -115,7 +115,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#1a1a2e] text-gray-200">
+    <div className="flex h-dvh bg-[#1a1a2e] text-gray-200">
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
         <div
