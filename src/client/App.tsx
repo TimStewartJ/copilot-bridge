@@ -145,9 +145,9 @@ export default function App() {
         />
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Mobile top bar — sticky */}
-        <div className="sticky top-0 z-20 flex items-center gap-3 px-4 py-3 border-b border-[#2a2a4a] bg-[#16213e] md:hidden">
+        <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-[#2a2a4a] bg-[#16213e] md:hidden">
           <button
             onClick={() => setSidebarOpen(true)}
             className="text-gray-400 hover:text-gray-200 text-xl"
