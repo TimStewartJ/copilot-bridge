@@ -67,6 +67,14 @@ const BRIDGE_TOOLS = [
       return { tasks: taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status })) };
     },
   }),
+  defineTool("task_rename", {
+    description: "Rename a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "The new title" } }, required: ["taskId", "title"] },
+    handler: async (args: any) => {
+      taskStore.updateTask(args.taskId, { title: args.title });
+      return { success: true, message: `Task renamed to "${args.title}"` };
+    },
+  }),
   defineTool("self_restart", {
     description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint, rebuild, and swap processes. Auto-rolls back on failure.",
     parameters: { type: "object", properties: {} },
