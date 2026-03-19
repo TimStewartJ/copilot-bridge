@@ -152,7 +152,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 md:p-5 space-y-4">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-5 space-y-4">
         {loading && (
           <div className="text-indigo-400 italic">Loading history...</div>
         )}
