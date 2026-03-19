@@ -93,12 +93,13 @@ export async function postChannelMessage(
   teamId: string,
   channelId: string,
   content: string,
+  contentType: "text" | "html" = "text",
 ): Promise<string> {
   const result = await callTool("PostChannelMessage", {
     teamId,
     channelId,
     content,
-    contentType: "text",
+    contentType,
   });
   return result.content.map((c) => c.text).join("\n");
 }
@@ -108,13 +109,14 @@ export async function replyToChannelMessage(
   channelId: string,
   messageId: string,
   content: string,
+  contentType: "text" | "html" = "text",
 ): Promise<string> {
   const result = await callTool("ReplyToChannelMessage", {
     teamId,
     channelId,
     messageId,
     content,
-    contentType: "text",
+    contentType,
   });
   return result.content.map((c) => c.text).join("\n");
 }
