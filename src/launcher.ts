@@ -147,7 +147,7 @@ async function restart() {
     if (currentTunnelUrl) {
       try {
         await startTeamsMcp();
-        await notifyTeams(`🔄 Copilot Bridge restarted successfully\n🔗 ${currentTunnelUrl}`);
+        await notifyTeams("🔄 Copilot Bridge restarted successfully", currentTunnelUrl);
         killTeamsMcp();
       } catch { /* best-effort */ }
     }
@@ -245,8 +245,16 @@ function killTeamsMcp() {
   }
 }
 
-async function notifyTeams(message: string): Promise<void> {
+async function notifyTeams(message: string, url?: string): Promise<void> {
   try {
+    let content = message;
+    let contentType = "text";
+
+    if (url) {
+      content = `${message}<br><a href="${url}">${url}</a>`;
+      contentType = "html";
+    }
+
     const body = JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
@@ -256,8 +264,8 @@ async function notifyTeams(message: string): Promise<void> {
         arguments: {
           teamId: TEAMS_TEAM_ID,
           channelId: TEAMS_CHANNEL_ID,
-          content: message,
-          contentType: "text",
+          content,
+          contentType,
         },
       },
     });
@@ -298,7 +306,7 @@ async function main() {
     // Start Teams MCP and notify channel
     log("Starting Teams MCP for notifications...");
     await startTeamsMcp();
-    await notifyTeams(`🤖 Copilot Bridge is online!\n🔗 ${url}`);
+    await notifyTeams("🤖 Copilot Bridge is online!", url);
     killTeamsMcp(); // only needed for notifications, don't keep running
   } catch (err) {
     log(`Tunnel/notification setup failed (non-fatal): ${err}`);
