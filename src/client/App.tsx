@@ -10,6 +10,7 @@ import {
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import TaskDetailView from "./components/TaskDetailView";
+import Dashboard from "./components/Dashboard";
 
 type ViewMode = "none" | "chat" | "task";
 
@@ -125,9 +126,14 @@ export default function App() {
           />
         )}
         {viewMode === "none" && (
-          <div className="flex-1 flex items-center justify-center text-gray-500 text-lg">
-            Select a task or session to get started
-          </div>
+          <Dashboard
+            tasks={tasks}
+            sessions={sessions}
+            onSelectTask={handleSelectTask}
+            onSelectSession={handleSelectSession}
+            onNewTask={handleNewTask}
+            onNewSession={handleNewSession}
+          />
         )}
       </main>
     </div>
