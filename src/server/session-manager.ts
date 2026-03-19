@@ -175,10 +175,6 @@ export class SessionManager {
 
       const unsub = session.on((event) => {
         const data = (event as any).data;
-        // Debug: log all event types to diagnose streaming
-        if (event.type.includes("delta") || event.type.includes("stream")) {
-          console.log(`[sdk] 🔍 Delta event: ${event.type}, keys: ${Object.keys(data ?? {}).join(",")}, data: ${JSON.stringify(data).slice(0, 200)}`);
-        }
         switch (event.type) {
           case "assistant.turn_start":
             console.log(`[sdk] ⏳ Turn started`);
@@ -194,7 +190,15 @@ export class SessionManager {
             onEvent?.("intent", { intent: data?.intent ?? "" });
             break;
           case "assistant.message":
-            console.log(`[sdk] ✅ Response received (${data?.content?.length ?? 0} chars)`);
+            if (data?.content) {
+              console.log(`[sdk] ✅ Response received (${data.content.length} chars)`);
+              if (data.toolRequests?.length) {
+                // Intermediate message — agent commentary between tool calls
+                onEvent?.("assistant_partial", { content: data.content });
+              }
+            } else {
+              console.log(`[sdk] ✅ Response received (0 chars)`);
+            }
             break;
           case "tool.execution_start":
             console.log(`[sdk] 🔧 Tool: ${data?.toolName ?? data?.name ?? "unknown"}`);

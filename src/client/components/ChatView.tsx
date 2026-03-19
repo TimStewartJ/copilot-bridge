@@ -108,6 +108,15 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
           case "delta":
             setStreamingContent((prev) => prev + (event.content ?? ""));
             break;
+          case "assistant_partial":
+            // Intermediate message — agent commentary between tool calls
+            if (event.content) {
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: event.content! },
+              ]);
+            }
+            break;
           case "tool_start":
             setActiveTools((prev) => [...prev, event.name ?? "unknown"]);
             setToolProgress("");
