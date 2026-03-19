@@ -16,10 +16,59 @@ const sessionManager = new SessionManager();
 
 // Track our own messages so we don't reply to ourselves
 const ourMessageIds = new Set<string>();
+// Track content fingerprints of messages we've sent to detect echoes
+const sentContentFingerprints = new Set<string>();
+
+function normalizeContent(content: string): string {
+  return content.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function extractMessageId(responseText: string): string | null {
+  try {
+    const jsonStart = responseText.indexOf("{");
+    if (jsonStart < 0) return null;
+    let depth = 0;
+    let jsonEnd = -1;
+    for (let i = jsonStart; i < responseText.length; i++) {
+      if (responseText[i] === "{") depth++;
+      else if (responseText[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+    }
+    if (jsonEnd <= 0) return null;
+    const data = JSON.parse(responseText.slice(jsonStart, jsonEnd));
+    return data.id ?? data.message?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function trackSentContent(content: string): void {
+  sentContentFingerprints.add(normalizeContent(content));
+  // Prevent memory leak — cap at 200 entries
+  if (sentContentFingerprints.size > 200) {
+    const oldest = sentContentFingerprints.values().next().value;
+    if (oldest) sentContentFingerprints.delete(oldest);
+  }
+}
 
 async function handleNewMessage(message: ParsedMessage): Promise<void> {
-  // Skip our own messages
+  // Skip our own messages (by tracked message ID)
   if (ourMessageIds.has(message.id)) return;
+
+  // Skip echoes of our own messages (by content fingerprint)
+  const fingerprint = normalizeContent(message.content);
+  if (sentContentFingerprints.has(fingerprint)) {
+    console.log(
+      `[bridge] Skipping echo: "${message.content.slice(0, 60)}..."`,
+    );
+    sentContentFingerprints.delete(fingerprint);
+    return;
+  }
 
   // Optional prefix filter
   if (config.messagePrefix) {
@@ -28,24 +77,29 @@ async function handleNewMessage(message: ParsedMessage): Promise<void> {
 
   const { teamId, channelId } = config.teams;
 
-  // Post a "thinking" indicator
   console.log(`[bridge] Processing: "${message.content.slice(0, 80)}"`);
 
   try {
-    // Route to Copilot SDK — this is the only LLM call
+    // Use a single session for the whole channel (flat mode — no threads)
     const response = await sessionManager.processMessage(
-      message.threadId,
+      "copilot-bridge-channel",
       message.content,
     );
 
     if (response) {
-      // Reply in the thread (or as a new message if no thread)
-      const replyResult = await replyToChannelMessage(
+      // Track the content so we recognize it as ours when polled back
+      trackSentContent(response);
+
+      const replyResult = await postChannelMessage(
         teamId,
         channelId,
-        message.id,
         response,
       );
+
+      // Try to extract the posted message ID for ID-based dedup
+      const postedId = extractMessageId(replyResult);
+      if (postedId) ourMessageIds.add(postedId);
+
       console.log(`[bridge] Reply posted`);
     } else {
       console.log(`[bridge] No response from Copilot`);
@@ -53,12 +107,9 @@ async function handleNewMessage(message: ParsedMessage): Promise<void> {
   } catch (err) {
     console.error(`[bridge] Error:`, err);
     try {
-      await replyToChannelMessage(
-        teamId,
-        channelId,
-        message.id,
-        `⚠️ Bridge error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const errMsg = `⚠️ Bridge error: ${err instanceof Error ? err.message : String(err)}`;
+      trackSentContent(errMsg);
+      await postChannelMessage(teamId, channelId, errMsg);
     } catch {
       // Swallow reply errors
     }
