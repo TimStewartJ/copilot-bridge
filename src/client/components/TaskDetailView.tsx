@@ -4,6 +4,7 @@ import {
   patchTask,
   linkResource,
   unlinkResource,
+  createTaskSession,
   type Task,
   type Session,
 } from "../api";
@@ -214,6 +215,18 @@ export default function TaskDetailView({
 
         {/* Sessions */}
         <Section title="💬 Sessions" count={task.sessionIds.length}>
+          <button
+            onClick={async () => {
+              const sessionId = await createTaskSession(task.id);
+              const updated = await fetchTask(task.id);
+              setTask(updated);
+              onTaskUpdated();
+              onOpenSession(sessionId);
+            }}
+            className="w-full mb-2 px-3 py-2 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-md text-sm hover:bg-indigo-500/30 transition-colors"
+          >
+            + New Chat for this Task
+          </button>
           {linkedSessions.length === 0 ? (
             <Empty>No sessions linked</Empty>
           ) : (

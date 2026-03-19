@@ -41,6 +41,35 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
+  async createTaskSession(taskTitle: string, workItemIds: number[], prDescriptions: string[]): Promise<{ sessionId: string }> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+
+    const contextParts = [
+      `You are helping with the task: "${taskTitle}".`,
+      "Be concise but thorough. Use markdown formatting for readability.",
+      "You have access to ADO, GitHub, and local tools.",
+    ];
+
+    if (workItemIds.length > 0) {
+      contextParts.push(`Related ADO work items: ${workItemIds.map((id) => `#${id}`).join(", ")}.`);
+    }
+    if (prDescriptions.length > 0) {
+      contextParts.push(`Related PRs: ${prDescriptions.join(", ")}.`);
+    }
+
+    const session = await this.client.createSession({
+      onPermissionRequest: approveAll,
+      mcpServers: config.sessionMcpServers as any,
+      systemMessage: {
+        mode: "append",
+        content: contextParts.join("\n"),
+      },
+    });
+
+    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
+    return { sessionId: session.sessionId };
+  }
+
   async sendMessage(sessionId: string, prompt: string): Promise<string> {
     if (!this.client) throw new Error("SessionManager not initialized");
 

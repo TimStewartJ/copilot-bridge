@@ -153,3 +153,11 @@ export async function unlinkResource(
   const data = await res.json();
   return data.task;
 }
+
+export async function createTaskSession(taskId: string): Promise<string> {
+  const data = await apiFetch<{ sessionId: string }>(
+    `/api/tasks/${taskId}/session`,
+    {},
+  );
+  return data.sessionId;
+}

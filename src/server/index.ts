@@ -184,6 +184,30 @@ app.delete("/api/tasks/:id/link", (req, res) => {
   }
 });
 
+// Create a session linked to a task with pre-loaded context
+app.post("/api/tasks/:id/session", async (req, res) => {
+  const task = taskStore.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  try {
+    const prDescriptions = task.pullRequests.map(
+      (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
+    );
+    const result = await sessionManager.createTaskSession(
+      task.title,
+      task.workItemIds,
+      prDescriptions,
+    );
+
+    // Auto-link session to task
+    taskStore.linkSession(task.id, result.sessionId);
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ── Static files (Vite build output) ──────────────────────────────
 
 const distPath = join(__dirname, "..", "..", "dist", "client");
