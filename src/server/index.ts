@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
+import * as taskStore from "./task-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -97,6 +98,89 @@ app.post("/api/chat", async (req, res) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.error(`[web] Error after ${elapsed}s:`, err);
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ── Task routes ───────────────────────────────────────────────────
+
+app.get("/api/tasks", (_req, res) => {
+  res.json({ tasks: taskStore.listTasks() });
+});
+
+app.post("/api/tasks", (req, res) => {
+  const { title } = req.body;
+  if (!title) return res.status(400).json({ error: "title is required" });
+  try {
+    const task = taskStore.createTask(title);
+    res.json({ task });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/tasks/:id", (req, res) => {
+  const task = taskStore.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  res.json({ task });
+});
+
+app.patch("/api/tasks/:id", (req, res) => {
+  try {
+    const task = taskStore.updateTask(req.params.id, req.body);
+    res.json({ task });
+  } catch (err) {
+    res.status(404).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/tasks/:id", (req, res) => {
+  taskStore.deleteTask(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post("/api/tasks/:id/link", (req, res) => {
+  const { type, sessionId, workItemId, repoId, repoName, prId } = req.body;
+  try {
+    let task;
+    switch (type) {
+      case "session":
+        task = taskStore.linkSession(req.params.id, sessionId);
+        break;
+      case "workItem":
+        task = taskStore.linkWorkItem(req.params.id, Number(workItemId));
+        break;
+      case "pr":
+        task = taskStore.linkPR(req.params.id, { repoId, repoName, prId: Number(prId) });
+        break;
+      default:
+        return res.status(400).json({ error: `Unknown link type: ${type}` });
+    }
+    res.json({ task });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/tasks/:id/link", (req, res) => {
+  const { type, sessionId, workItemId, repoId, prId } = req.body;
+  try {
+    let task;
+    switch (type) {
+      case "session":
+        task = taskStore.unlinkSession(req.params.id, sessionId);
+        break;
+      case "workItem":
+        task = taskStore.unlinkWorkItem(req.params.id, Number(workItemId));
+        break;
+      case "pr":
+        task = taskStore.unlinkPR(req.params.id, repoId, Number(prId));
+        break;
+      default:
+        return res.status(400).json({ error: `Unknown link type: ${type}` });
+    }
+    res.json({ task });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
   }
 });
 
