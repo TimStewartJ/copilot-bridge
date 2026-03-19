@@ -27,8 +27,33 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
 
     setMessages([]);
     setLoading(true);
+    setThinking(false);
     fetchMessages(sessionId)
-      .then((msgs) => setMessages(msgs))
+      .then(({ messages: msgs, busy }) => {
+        setMessages(msgs);
+        if (busy) {
+          setThinking(true);
+          // Poll until no longer busy
+          const poll = setInterval(async () => {
+            try {
+              const updated = await fetchMessages(sessionId);
+              if (sessionId !== prevSessionRef.current) {
+                clearInterval(poll);
+                return;
+              }
+              setMessages(updated.messages);
+              if (!updated.busy) {
+                clearInterval(poll);
+                setThinking(false);
+                onMessageSent();
+              }
+            } catch {
+              clearInterval(poll);
+              setThinking(false);
+            }
+          }, 3_000);
+        }
+      })
       .catch((err) =>
         setMessages([
           { role: "assistant", content: `Error loading history: ${err.message}` },
@@ -45,6 +70,7 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
     if (!input.trim() || !sessionId || thinking) return;
 
     const prompt = input.trim();
+    const targetSessionId = sessionId; // capture for stale check
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
@@ -52,16 +78,21 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
     setThinking(true);
 
     try {
-      const response = await sendChat(sessionId, prompt);
+      const response = await sendChat(targetSessionId, prompt);
+      // Only update UI if we're still viewing the same session
+      if (targetSessionId !== prevSessionRef.current) return;
       setMessages((prev) => [...prev, { role: "assistant", content: response }]);
       onMessageSent();
     } catch (err: any) {
+      if (targetSessionId !== prevSessionRef.current) return;
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: `⚠️ Error: ${err.message}` },
       ]);
     } finally {
-      setThinking(false);
+      if (targetSessionId === prevSessionRef.current) {
+        setThinking(false);
+      }
     }
   };
 

@@ -62,11 +62,11 @@ export async function createSession(): Promise<string> {
   return data.sessionId;
 }
 
-export async function fetchMessages(sessionId: string): Promise<ChatMessage[]> {
-  const data = await apiFetch<{ messages: ChatMessage[] }>(
+export async function fetchMessages(sessionId: string): Promise<{ messages: ChatMessage[]; busy: boolean }> {
+  const data = await apiFetch<{ messages: ChatMessage[]; busy: boolean }>(
     `/api/sessions/${sessionId}/messages`,
   );
-  return data.messages;
+  return data;
 }
 
 export async function sendChat(

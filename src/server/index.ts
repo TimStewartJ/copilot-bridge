@@ -59,7 +59,8 @@ app.get("/api/sessions", async (_req, res) => {
 app.get("/api/sessions/:id/messages", async (req, res) => {
   try {
     const messages = await sessionManager.getSessionMessages(req.params.id);
-    res.json({ messages });
+    const busy = sessionManager.isSessionBusy(req.params.id);
+    res.json({ messages, busy });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
