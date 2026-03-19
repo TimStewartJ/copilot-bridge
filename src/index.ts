@@ -1,128 +1,89 @@
-// Main entrypoint — wires together MCP client, poller, and Copilot SDK
+// Copilot Web Bridge — Express server with chat UI
 
+import express from "express";
 import { config } from "./config.js";
-import {
-  startTeamsMcp,
-  stopTeamsMcp,
-  listChannelMessages,
-  replyToChannelMessage,
-  postChannelMessage,
-} from "./mcp-client.js";
-import { startPolling, stopPolling, setWatermark } from "./poller.js";
 import { SessionManager } from "./session-manager.js";
-import { marked } from "marked";
-import type { ParsedMessage } from "./poller.js";
+import { chatHtml } from "./ui.js";
+
+const app = express();
+app.use(express.json());
 
 const sessionManager = new SessionManager();
 
-// Marker prefix for all bridge replies — used to detect and skip our own messages
-const BRIDGE_MARKER = "🤖 ";
+// ── Chat UI ───────────────────────────────────────────────────────
 
-async function handleNewMessage(message: ParsedMessage): Promise<void> {
-  // Skip our own messages (by marker prefix)
-  if (message.content.startsWith(BRIDGE_MARKER) || message.content.startsWith("🤖")) return;
+app.get("/", (_req, res) => {
+  res.type("html").send(chatHtml);
+});
 
-  // Optional prefix filter
-  if (config.messagePrefix) {
-    if (!message.content.startsWith(config.messagePrefix)) return;
+// ── API routes ────────────────────────────────────────────────────
+
+app.get("/api/sessions", (_req, res) => {
+  res.json({ sessions: sessionManager.listSessions() });
+});
+
+app.post("/api/sessions", async (req, res) => {
+  try {
+    const { name } = req.body ?? {};
+    const session = await sessionManager.createSession(name);
+    res.json({ session });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/chat", async (req, res) => {
+  const { sessionId, prompt } = req.body;
+
+  if (!sessionId || !prompt) {
+    return res.status(400).json({ error: "sessionId and prompt are required" });
   }
 
-  const { teamId, channelId } = config.teams;
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" });
+  }
 
-  console.log(`[bridge] Processing: "${message.content.slice(0, 80)}"`);
+  if (sessionManager.isSessionBusy(sessionId)) {
+    return res.status(429).json({ error: "Session is busy, please wait" });
+  }
+
+  console.log(`[web] [${session.name}] "${prompt.slice(0, 80)}"`);
 
   try {
-    // Use a single session for the whole channel (flat mode — no threads)
-    const response = await sessionManager.processMessage(
-      "copilot-bridge-channel",
-      message.content,
-    );
-
-    if (response) {
-      const html = await marked.parse(response);
-      await replyToChannelMessage(
-        teamId,
-        channelId,
-        message.id,
-        `🤖 ${html}`,
-        "html",
-      );
-      console.log(`[bridge] Reply posted in thread ${message.id}`);
-    }else {
-      console.log(`[bridge] No response from Copilot`);
-    }
+    const response = await sessionManager.sendMessage(sessionId, prompt);
+    console.log(`[web] [${session.name}] Response sent (${response.length} chars)`);
+    res.json({ response, session: sessionManager.getSession(sessionId) });
   } catch (err) {
-    console.error(`[bridge] Error:`, err);
-    try {
-      const errHtml = `🤖 ⚠️ Bridge error: ${err instanceof Error ? err.message : String(err)}`;
-      await replyToChannelMessage(
-        teamId,
-        channelId,
-        message.id,
-        errHtml,
-        "html",
-      );
-    } catch {
-      // Swallow reply errors
-    }
+    console.error(`[web] Error:`, err);
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
-}
+});
+
+// ── Start ─────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   console.log("╔════════════════════════════════════════╗");
-  console.log("║     Copilot Teams Bridge — PoC        ║");
+  console.log("║      Copilot Web Bridge — PoC         ║");
   console.log("╚════════════════════════════════════════╝");
   console.log();
 
-  // 1. Start Teams MCP server
-  await startTeamsMcp();
-
-  // 2. Initialize Copilot SDK
   await sessionManager.initialize();
 
-  // 3. Set watermark to "now" so we don't process old messages
-  //    Do an initial fetch to catch up, then set watermark to latest
-  const { teamId, channelId } = config.teams;
-  try {
-    const raw = await listChannelMessages(teamId, channelId);
-    // Set watermark to current time so we only process NEW messages
-    setWatermark(new Date().toISOString());
-    console.log("[bridge] Initial catch-up complete — watching for new messages only");
-  } catch (err) {
-    console.log("[bridge] No existing messages or error fetching — starting fresh");
-    setWatermark(new Date().toISOString());
-  }
-
-  // 4. Start polling
-  startPolling(
-    teamId,
-    channelId,
-    config.polling.intervalMs,
-    handleNewMessage,
-  );
-
-  console.log();
-  console.log("[bridge] 🟢 Bridge is running. Post a message in Teams to test.");
-  console.log("[bridge] Press Ctrl+C to stop.");
+  const port = config.web.port;
+  app.listen(port, () => {
+    console.log(`[web] 🟢 Server running at http://localhost:${port}`);
+    console.log(`[web] Open in browser or expose via: devtunnel host -p ${port}`);
+  });
 }
 
-// Graceful shutdown
 process.on("SIGINT", async () => {
-  console.log("\n[bridge] Shutting down...");
-  stopPolling();
+  console.log("\n[web] Shutting down...");
   await sessionManager.shutdown();
-  stopTeamsMcp();
-  process.exit(0);
-});
-
-process.on("SIGTERM", async () => {
-  stopPolling();
-  await sessionManager.shutdown();
-  stopTeamsMcp();
   process.exit(0);
 });
 
 main().catch((err) => {
-  console.error("[bridge] Fatal error:", err);
+  console.error("[web] Fatal error:", err);
   process.exit(1);
 });

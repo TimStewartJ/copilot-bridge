@@ -1,14 +1,24 @@
 // Copilot SDK session manager
-// Creates/resumes sessions per Teams thread so follow-ups maintain context
+// Creates/resumes named sessions with full tool access
 
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
 import type { AssistantMessageEvent } from "@github/copilot-sdk";
 import { config } from "./config.js";
 
+export interface SessionInfo {
+  id: string;
+  copilotSessionId: string;
+  name: string;
+  createdAt: string;
+  lastUsed: string;
+  messageCount: number;
+}
+
 export class SessionManager {
   private client: CopilotClient | null = null;
-  // Maps Teams thread (root message ID) → Copilot session ID
-  private threadSessionMap = new Map<string, string>();
+  // Maps our session ID → { copilotSessionId, metadata }
+  private sessions = new Map<string, SessionInfo>();
+  private activeSessions = new Map<string, boolean>(); // track if session is busy
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
@@ -17,81 +27,85 @@ export class SessionManager {
     console.log("[sdk] Copilot SDK client ready");
   }
 
-  async processMessage(
-    threadId: string,
-    prompt: string,
-  ): Promise<string | undefined> {
+  async createSession(name?: string): Promise<SessionInfo> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    const existingSessionId = this.threadSessionMap.get(threadId);
+    const id = crypto.randomUUID();
+    const sessionName = name || `Session ${this.sessions.size + 1}`;
 
-    try {
-      if (existingSessionId) {
-        return await this.resumeAndSend(existingSessionId, prompt);
-      } else {
-        return await this.createAndSend(threadId, prompt);
-      }
-    } catch (err) {
-      console.error(`[sdk] Error processing message:`, err);
-      return `⚠️ Error: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
-  private async createAndSend(
-    threadId: string,
-    prompt: string,
-  ): Promise<string | undefined> {
-    console.log(`[sdk] Creating new session for thread ${threadId}`);
-
-    const session = await this.client!.createSession({
+    const session = await this.client.createSession({
       onPermissionRequest: approveAll,
       mcpServers: config.sessionMcpServers as any,
       systemMessage: {
         mode: "append",
         content: [
-          "You are a helpful assistant responding to requests from a Microsoft Teams channel.",
-          "Be concise — your responses will be posted back into Teams.",
-          "If a task requires multiple steps, summarize what you did at the end.",
+          "You are a helpful assistant accessible via a web interface.",
+          "Be concise but thorough. Use markdown formatting for readability.",
+          "You have access to ADO, GitHub, and local tools.",
         ].join("\n"),
       },
     });
 
-    this.threadSessionMap.set(threadId, session.sessionId);
-    console.log(
-      `[sdk] Session ${session.sessionId} created, mapped to thread ${threadId}`,
-    );
+    const info: SessionInfo = {
+      id,
+      copilotSessionId: session.sessionId,
+      name: sessionName,
+      createdAt: new Date().toISOString(),
+      lastUsed: new Date().toISOString(),
+      messageCount: 0,
+    };
 
-    const response = await session.sendAndWait(
-      { prompt },
-      300_000, // 5 min timeout
-    );
-
-    return this.extractResponseText(response);
+    this.sessions.set(id, info);
+    console.log(`[sdk] Created session "${sessionName}" (${id})`);
+    return info;
   }
 
-  private async resumeAndSend(
+  async sendMessage(
     sessionId: string,
     prompt: string,
-  ): Promise<string | undefined> {
-    console.log(`[sdk] Resuming session ${sessionId}`);
+  ): Promise<string> {
+    if (!this.client) throw new Error("SessionManager not initialized");
 
-    const session = await this.client!.resumeSession(sessionId, {
-      onPermissionRequest: approveAll,
-    });
+    const info = this.sessions.get(sessionId);
+    if (!info) throw new Error(`Session ${sessionId} not found`);
 
-    const response = await session.sendAndWait(
-      { prompt },
-      300_000,
-    );
+    if (this.activeSessions.get(sessionId)) {
+      throw new Error("Session is busy processing another message");
+    }
 
-    return this.extractResponseText(response);
+    this.activeSessions.set(sessionId, true);
+
+    try {
+      const session = await this.client.resumeSession(info.copilotSessionId, {
+        onPermissionRequest: approveAll,
+      });
+
+      const response = await session.sendAndWait(
+        { prompt },
+        600_000, // 10 min timeout
+      );
+
+      info.lastUsed = new Date().toISOString();
+      info.messageCount++;
+
+      return response?.data.content ?? "(no response)";
+    } finally {
+      this.activeSessions.set(sessionId, false);
+    }
   }
 
-  private extractResponseText(
-    response: AssistantMessageEvent | undefined,
-  ): string | undefined {
-    if (!response) return undefined;
-    return response.data.content;
+  listSessions(): SessionInfo[] {
+    return Array.from(this.sessions.values()).sort(
+      (a, b) => new Date(b.lastUsed).getTime() - new Date(a.lastUsed).getTime(),
+    );
+  }
+
+  getSession(sessionId: string): SessionInfo | undefined {
+    return this.sessions.get(sessionId);
+  }
+
+  isSessionBusy(sessionId: string): boolean {
+    return this.activeSessions.get(sessionId) ?? false;
   }
 
   async shutdown(): Promise<void> {

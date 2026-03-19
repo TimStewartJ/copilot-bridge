@@ -1,22 +1,9 @@
-// Configuration for the Copilot Teams Bridge
+// Configuration for the Copilot Web Bridge
 
 export const config = {
-  // Teams channel to watch
-  teams: {
-    teamId: "EXAMPLE-TEAM-GUID",
-    channelId:
-      "EXAMPLE-CHANNEL-ID",
-  },
-
-  // Polling settings
-  polling: {
-    intervalMs: 5_000,
-  },
-
-  // Teams MCP server settings
-  teamsMcp: {
-    port: 5555,
-    baseUrl: "http://localhost:5555",
+  // Web server
+  web: {
+    port: 3333,
   },
 
   // MCP servers to attach to Copilot sessions (for agent tool access)
@@ -34,7 +21,4 @@ export const config = {
       tools: ["*" as const],
     },
   },
-
-  // Optional: only process messages starting with this prefix (empty = all messages)
-  messagePrefix: "",
 } as const;
