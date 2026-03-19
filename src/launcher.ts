@@ -18,6 +18,7 @@ const HEALTH_TIMEOUT = 30_000;
 
 let serverProcess: ChildProcess | null = null;
 let consecutiveFailures = 0;
+let restarting = false;
 
 function log(msg: string) {
   console.log(`[launcher] ${msg}`);
@@ -122,7 +123,6 @@ async function restart() {
       log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
       process.exit(1);
     }
-    clearSignal();
     return;
   }
 
@@ -144,8 +144,6 @@ async function restart() {
       process.exit(1);
     }
   }
-
-  clearSignal();
 }
 
 // ── Main ──────────────────────────────────────────────────────────
@@ -161,8 +159,14 @@ async function main() {
 
   // Poll for restart signal
   setInterval(async () => {
-    if (existsSync(SIGNAL_FILE)) {
-      await restart();
+    if (!restarting && existsSync(SIGNAL_FILE)) {
+      clearSignal();
+      restarting = true;
+      try {
+        await restart();
+      } finally {
+        restarting = false;
+      }
     }
   }, POLL_INTERVAL);
 
