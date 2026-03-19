@@ -254,6 +254,14 @@ export class SessionManager {
     return this.activeSessions.has(sessionId);
   }
 
+  hasActiveTurns(): boolean {
+    return this.activeSessions.size > 0;
+  }
+
+  getActiveSessions(): string[] {
+    return Array.from(this.activeSessions);
+  }
+
   async shutdown(): Promise<void> {
     if (this.client) {
       console.log("[sdk] Shutting down Copilot SDK client...");

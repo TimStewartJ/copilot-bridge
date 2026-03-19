@@ -22,6 +22,9 @@ const TEAMS_TEAM_ID = "EXAMPLE-TEAM-GUID";
 const TEAMS_CHANNEL_ID = "EXAMPLE-CHANNEL-ID";
 const TEAMS_MCP_PORT = 5556; // separate port from any other MCP usage
 
+const BUSY_CHECK_INTERVAL = 3_000;
+const BUSY_WAIT_TIMEOUT = 300_000; // 5 minutes max wait
+
 let serverProcess: ChildProcess | null = null;
 let tunnelProcess: ChildProcess | null = null;
 let mcpProcess: ChildProcess | null = null;
@@ -119,8 +122,49 @@ function killServer() {
   }
 }
 
+async function waitForIdleSessions(): Promise<boolean> {
+  const busyUrl = `http://localhost:${PORT}/api/sessions/busy`;
+  const start = Date.now();
+
+  try {
+    const initial = await fetch(busyUrl);
+    if (initial.ok) {
+      const data = await initial.json() as any;
+      if (!data.busy) return true;
+      log(`Waiting for ${data.count} active session(s) to finish: ${data.sessionIds.map((id: string) => id.slice(0, 8)).join(", ")}`);
+    }
+  } catch {
+    log("Server not reachable for busy check — proceeding with restart");
+    return true;
+  }
+
+  while (Date.now() - start < BUSY_WAIT_TIMEOUT) {
+    await new Promise((r) => setTimeout(r, BUSY_CHECK_INTERVAL));
+    try {
+      const res = await fetch(busyUrl);
+      if (res.ok) {
+        const data = await res.json() as any;
+        if (!data.busy) {
+          log("All sessions idle — proceeding with restart");
+          return true;
+        }
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+        log(`Still waiting for ${data.count} active session(s)... (${elapsed}s)`);
+      }
+    } catch {
+      log("Server became unreachable during busy wait — proceeding with restart");
+      return true;
+    }
+  }
+
+  log(`⚠️ Timed out after ${BUSY_WAIT_TIMEOUT / 1000}s waiting for sessions — proceeding with restart`);
+  return true;
+}
+
 async function restart() {
   log("═══ Restart requested ═══");
+
+  await waitForIdleSessions();
 
   gitCheckpoint();
 
