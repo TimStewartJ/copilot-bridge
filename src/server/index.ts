@@ -1,13 +1,14 @@
-// Copilot Web Bridge — Express server with chat UI
+// Copilot Web Bridge — Express server
 
 import express from "express";
 import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
-import { chatHtml } from "./ui.js";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
 
@@ -28,12 +29,6 @@ function getDirSize(dirPath: string): number {
   } catch { /* ignore errors */ }
   return size;
 }
-
-// ── Chat UI ───────────────────────────────────────────────────────
-
-app.get("/", (_req, res) => {
-  res.type("html").send(chatHtml);
-});
 
 // ── API routes ────────────────────────────────────────────────────
 
@@ -105,11 +100,19 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// ── Static files (Vite build output) ──────────────────────────────
+
+const distPath = join(__dirname, "..", "..", "dist", "client");
+app.use(express.static(distPath));
+app.get("/{*splat}", (_req, res) => {
+  res.sendFile(join(distPath, "index.html"));
+});
+
 // ── Start ─────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   console.log("╔════════════════════════════════════════╗");
-  console.log("║      Copilot Web Bridge — PoC         ║");
+  console.log("║      Copilot Web Bridge                ║");
   console.log("╚════════════════════════════════════════╝");
   console.log();
 
