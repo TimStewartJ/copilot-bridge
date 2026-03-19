@@ -114,10 +114,20 @@ function startServer(): ChildProcess {
   return child;
 }
 
+function killProcessTree(proc: ChildProcess | null): boolean {
+  if (!proc || !proc.pid) return false;
+  try {
+    execSync(`taskkill /T /F /PID ${proc.pid}`, { stdio: "ignore" });
+  } catch {
+    proc.kill();
+  }
+  return true;
+}
+
 function killServer() {
   if (serverProcess) {
     log("Stopping server...");
-    serverProcess.kill();
+    killProcessTree(serverProcess);
     serverProcess = null;
   }
 }
@@ -245,7 +255,7 @@ function startTunnel(): Promise<string> {
 function killTunnel() {
   if (tunnelProcess) {
     log("Stopping tunnel...");
-    tunnelProcess.kill();
+    killProcessTree(tunnelProcess);
     tunnelProcess = null;
   }
 }
@@ -284,7 +294,7 @@ async function startTeamsMcp(): Promise<void> {
 
 function killTeamsMcp() {
   if (mcpProcess) {
-    mcpProcess.kill();
+    killProcessTree(mcpProcess);
     mcpProcess = null;
   }
 }
