@@ -15,6 +15,18 @@ export function loadTitles(): void {
   try {
     if (existsSync(TITLES_FILE)) {
       titles = JSON.parse(readFileSync(TITLES_FILE, "utf-8"));
+      // Purge any titles that are actually echoed prompt text from a bug
+      let dirty = false;
+      for (const [id, title] of Object.entries(titles)) {
+        if (/generate a concise|3-6 word title/i.test(title)) {
+          delete titles[id];
+          dirty = true;
+        }
+      }
+      if (dirty) {
+        writeFileSync(TITLES_FILE, JSON.stringify(titles, null, 2));
+        console.log("[titles] Purged leaked prompt-text titles from session-titles.json");
+      }
     }
   } catch {
     titles = {};

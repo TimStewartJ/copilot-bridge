@@ -157,6 +157,7 @@ export class SessionManager {
   private activeSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
+  private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
@@ -169,7 +170,9 @@ export class SessionManager {
 
   async listSessions() {
     if (!this.client) throw new Error("SessionManager not initialized");
-    return this.client.listSessions();
+    const sessions = await this.client.listSessions();
+    // Filter out temporary sessions (e.g., title generation) that may not have been deleted yet
+    return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
   }
 
   async createSession(): Promise<{ sessionId: string }> {
@@ -568,8 +571,11 @@ export class SessionManager {
     const sid = sessionId.slice(0, 8);
     console.log(`[titles] [${sid}] Generating session title...`);
 
+    let titleSessionId: string | undefined;
     try {
       const titleSession = await this.client.createSession({ onPermissionRequest: approveAll });
+      titleSessionId = titleSession.sessionId;
+      this.disposableSessionIds.add(titleSessionId);
       const truncatedUser = userMessage.slice(0, 500);
       const truncatedAssistant = assistantResponse.slice(0, 500);
 
@@ -584,7 +590,10 @@ export class SessionManager {
       const result = await titleSession.sendAndWait({ prompt }, 15_000);
       const title = result?.data?.content?.trim().replace(/^["']|["']$/g, "");
 
-      if (title && title.length > 0 && title.length <= 80) {
+      // Reject titles that look like the prompt was echoed back
+      const looksLikePrompt = title && /generate|concise|3-6 word|title for this/i.test(title);
+
+      if (title && title.length > 0 && title.length <= 80 && !looksLikePrompt) {
         sessionTitles.setTitle(sessionId, title);
         const bus = getOrCreateBus(sessionId);
         bus.emit({ type: "title_changed", title });
@@ -593,12 +602,16 @@ export class SessionManager {
       } else {
         console.log(`[titles] [${sid}] Title generation returned invalid result: "${title}"`);
       }
-
-      await this.client.deleteSession(titleSession.sessionId);
     } catch (err) {
       console.error(`[titles] [${sid}] Title generation failed:`, err);
     } finally {
       this.titleGenerationInFlight.delete(sessionId);
+      // Always clean up the disposable title session
+      if (titleSessionId) {
+        this.client!.deleteSession(titleSessionId).catch((err) =>
+          console.error(`[titles] [${sid}] Failed to delete title session:`, err),
+        );
+      }
     }
   }
 

@@ -13,6 +13,7 @@ import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
 import * as sessionTitles from "./session-titles.js";
 import { getBus, hasBus } from "./event-bus.js";
+import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
 import * as adoClient from "./ado-client.js";
 import * as readStateStore from "./read-state-store.js";
 import * as globalBus from "./global-bus.js";
@@ -50,6 +51,7 @@ app.get("/api/sessions", async (req, res) => {
 
     const enriched = sessions
       .filter((s: any) => s.summary) // hide empty/zombie sessions
+      .filter((s: any) => !s.summary?.startsWith("Generate a concise")) // hide leaked title-generation sessions
       .map((s: any) => {
         const id = s.sessionId;
         let diskSizeBytes = 0;
@@ -447,6 +449,7 @@ app.get("/api/dashboard", async (_req, res) => {
     // Enrich sessions (lightweight — skip disk size for dashboard)
     const enrichedSessions = sessions
       .filter((s: any) => s.summary)
+      .filter((s: any) => !s.summary?.startsWith("Generate a concise")) // hide leaked title-generation sessions
       .map((s: any) => {
         const id = s.sessionId;
         const archived = meta[id]?.archived === true;
@@ -640,8 +643,27 @@ async function main(): Promise<void> {
   const port = config.web.port;
   app.listen(port, () => {
     console.log(`[web] 🟢 Server running at http://localhost:${port}`);
-    console.log(`[web] Open in browser or expose via: devtunnel host -p ${port}`);
   });
+
+  // Start restart signal watcher (also discovers tunnel URL)
+  startRestartWatcher();
+
+  // Webhook 1: server is up
+  await notifyWebhook(`🤖 Copilot Bridge is online! (${gitHash()}, PID ${process.pid})`);
+
+  // Webhook 2: tunnel URL (may take a moment to be available)
+  const tunnelUrl = getTunnelUrl();
+  if (tunnelUrl) {
+    await notifyWebhook(`🔗 Tunnel ready`, tunnelUrl);
+  } else {
+    // Retry after a short delay — tunnel PM2 process may still be starting
+    setTimeout(async () => {
+      const url = discoverTunnelUrl();
+      if (url) {
+        await notifyWebhook(`🔗 Tunnel ready`, url);
+      }
+    }, 15_000);
+  }
 }
 
 process.on("SIGINT", async () => {
