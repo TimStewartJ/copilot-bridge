@@ -45,22 +45,30 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
       return;
     }
 
+    const loadAndReconnect = () => {
+      setLoading(true);
+      fetchMessages(sessionId)
+        .then(({ messages: msgs, busy }) => {
+          setMessages(msgs);
+          if (busy) reconnect(sessionId);
+        })
+        .catch((err) =>
+          setMessages([
+            { role: "assistant", content: `Error loading history: ${err.message}` },
+          ]),
+        )
+        .finally(() => setLoading(false));
+    };
+
     setMessages([]);
-    setLoading(true);
-    fetchMessages(sessionId)
-      .then(({ messages: msgs, busy }) => {
-        setMessages(msgs);
-        // If session is busy, reconnect to the stream
-        if (busy) {
-          reconnect(sessionId);
-        }
-      })
-      .catch((err) =>
-        setMessages([
-          { role: "assistant", content: `Error loading history: ${err.message}` },
-        ]),
-      )
-      .finally(() => setLoading(false));
+    loadAndReconnect();
+
+    // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadAndReconnect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [sessionId, reconnect]);
 
   // Auto-scroll
