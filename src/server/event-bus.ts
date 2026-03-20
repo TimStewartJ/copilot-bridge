@@ -45,6 +45,10 @@ class SessionEventBus {
 
   constructor(private sessionId: string) {}
 
+  getIntentText(): string {
+    return this.intentText;
+  }
+
   emit(event: StreamEvent): void {
     // Update snapshot state based on event type
     switch (event.type) {

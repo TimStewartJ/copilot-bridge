@@ -189,6 +189,21 @@ export default function App() {
     setActiveTab("tasks");
   };
 
+  // Resume a task — open last session or create a new one
+  const handleResumeTask = async (taskId: string, sessionId?: string) => {
+    if (sessionId) {
+      // Open existing session with task context
+      try {
+        const task = await fetchTask(taskId);
+        setTaskContext(task);
+      } catch { /* fallback */ }
+      navigate(`/sessions/${sessionId}?taskContext=${taskId}`);
+    } else {
+      // Create new session for this task
+      await handleNewTaskSession(taskId);
+    }
+  };
+
   // Select a session within task context (stay in task context)
   const handleSelectTaskSession = (sessionId: string) => {
     const ctxId = taskContext?.id ?? taskContextId;
@@ -286,14 +301,11 @@ export default function App() {
               index
               element={
                 <Dashboard
-                  tasks={tasks}
-                  sessions={globalSessions}
-                  allSessions={sessions}
                   onSelectTask={handleSelectTask}
                   onSelectSession={handleSelectSession}
                   onNewTask={handleNewTask}
                   onNewSession={handleNewSession}
-                  isUnread={isUnread}
+                  onResumeTask={handleResumeTask}
                 />
               }
             />

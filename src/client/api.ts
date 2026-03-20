@@ -224,6 +224,62 @@ export async function fetchEnrichedTask(id: string): Promise<EnrichedTaskData> {
   return apiFetch<EnrichedTaskData>(`/api/tasks/${id}/enriched`);
 }
 
+// ── Read State API ────────────────────────────────────────────────
+
+export async function fetchReadState(): Promise<Record<string, string>> {
+  return apiFetch<Record<string, string>>("/api/read-state");
+}
+
+export async function markSessionRead(sessionId: string): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/read-state/${sessionId}`, {});
+}
+
+// ── Dashboard API ─────────────────────────────────────────────────
+
+export interface DashboardBusySession {
+  sessionId: string;
+  title: string;
+  taskId: string | null;
+  intentText: string | null;
+}
+
+export interface DashboardUnreadSession {
+  sessionId: string;
+  title: string;
+  taskId: string | null;
+  modifiedTime: string;
+}
+
+export interface DashboardActiveTask {
+  task: Task;
+  workItemSummary: { total: number; byState: Record<string, number> };
+  prSummary: { total: number; active: number; completed: number };
+  hasUnread: boolean;
+  hasBusySession: boolean;
+  lastActivity: string;
+}
+
+export interface DashboardOrphanSession {
+  sessionId: string;
+  title: string;
+  modifiedTime: string;
+  branch: string | null;
+  busy: boolean;
+  unread: boolean;
+}
+
+export interface DashboardData {
+  busySessions: DashboardBusySession[];
+  unreadSessions: DashboardUnreadSession[];
+  lastActiveTask: DashboardActiveTask | null;
+  activeTasks: DashboardActiveTask[];
+  orphanSessions: DashboardOrphanSession[];
+}
+
+export async function fetchDashboard(): Promise<DashboardData> {
+  return apiFetch<DashboardData>("/api/dashboard");
+}
+
 // ── Settings API ──────────────────────────────────────────────────
 
 export interface McpServerConfig {

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { Session } from "./api";
+import { markSessionRead } from "./api";
 
 const STORAGE_KEY = "copilot-bridge:session-read-state";
 
@@ -47,6 +48,8 @@ export function useReadState(sessions: Session[]) {
       save(next);
       return next;
     });
+    // Fire-and-forget sync to server for dashboard endpoint
+    markSessionRead(sessionId).catch(() => {});
   }, []);
 
   const isUnread = useCallback(

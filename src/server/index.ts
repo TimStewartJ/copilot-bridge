@@ -13,6 +13,7 @@ import * as settingsStore from "./settings-store.js";
 import * as sessionTitles from "./session-titles.js";
 import { getBus, hasBus } from "./event-bus.js";
 import * as adoClient from "./ado-client.js";
+import * as readStateStore from "./read-state-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -370,6 +371,183 @@ app.post("/api/tasks/:id/session", async (req, res) => {
 
     res.json(result);
   } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── Read State routes ─────────────────────────────────────────────
+
+app.get("/api/read-state", (_req, res) => {
+  res.json(readStateStore.getReadState());
+});
+
+app.post("/api/read-state/:sessionId", (req, res) => {
+  const ts = readStateStore.markRead(req.params.sessionId);
+  res.json({ ok: true, lastReadAt: ts });
+});
+
+// ── Dashboard endpoint ───────────────────────────────────────────
+
+app.get("/api/dashboard", async (_req, res) => {
+  try {
+    const sessions = await sessionManager.listSessions();
+    const sessionStateDir = join(homedir(), ".copilot", "session-state");
+    const meta = sessionMetaStore.listMeta();
+    const readState = readStateStore.getReadState();
+    const tasks = taskStore.listTasks();
+    const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
+
+    // Enrich sessions (lightweight — skip disk size for dashboard)
+    const enrichedSessions = sessions
+      .filter((s: any) => s.summary)
+      .map((s: any) => {
+        const id = s.sessionId;
+        const archived = meta[id]?.archived === true;
+        const generatedTitle = sessionTitles.getTitle(id);
+        const summary = generatedTitle ?? s.summary;
+        const busy = sessionManager.isSessionBusy(id);
+        const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
+        return { ...s, summary, busy, hasPlan, archived };
+      })
+      .filter((s: any) => !s.archived);
+
+    // Helper: is session unread?
+    const isUnread = (sessionId: string, modifiedTime?: string): boolean => {
+      if (!modifiedTime) return false;
+      const lastRead = readState[sessionId];
+      if (!lastRead) return true;
+      return new Date(modifiedTime).getTime() > new Date(lastRead).getTime();
+    };
+
+    // Busy sessions
+    const busySessions = enrichedSessions
+      .filter((s: any) => s.busy)
+      .map((s: any) => {
+        const taskId = tasks.find((t) => t.sessionIds.includes(s.sessionId))?.id;
+        const bus = getBus(s.sessionId);
+        return {
+          sessionId: s.sessionId,
+          title: s.summary,
+          taskId: taskId ?? null,
+          intentText: bus?.getIntentText() ?? null,
+        };
+      });
+
+    // Unread sessions (not busy — busy is separate)
+    const unreadSessions = enrichedSessions
+      .filter((s: any) => !s.busy && isUnread(s.sessionId, s.modifiedTime))
+      .map((s: any) => {
+        const taskId = tasks.find((t) => t.sessionIds.includes(s.sessionId))?.id;
+        return {
+          sessionId: s.sessionId,
+          title: s.summary,
+          taskId: taskId ?? null,
+          modifiedTime: s.modifiedTime,
+        };
+      });
+
+    // Active + paused tasks with enrichment
+    const inFlightTasks = tasks.filter((t) => t.status === "active" || t.status === "paused");
+
+    // Batch-fetch all work item IDs across all in-flight tasks
+    const allWorkItemIds = [...new Set(inFlightTasks.flatMap((t) => t.workItemIds))];
+    const allPRs = inFlightTasks.flatMap((t) => t.pullRequests);
+    const uniquePRs = allPRs.filter((pr, i, arr) =>
+      arr.findIndex((p) => p.repoId === pr.repoId && p.prId === pr.prId) === i,
+    );
+
+    const [allWorkItems, allEnrichedPRs] = await Promise.all([
+      adoClient.fetchWorkItems(allWorkItemIds),
+      adoClient.fetchPullRequests(uniquePRs),
+    ]);
+
+    const wiMap = new Map(allWorkItems.map((wi) => [wi.id, wi]));
+    const prMap = new Map(allEnrichedPRs.map((pr) => [`${pr.repoId}:${pr.prId}`, pr]));
+
+    const activeTasks = inFlightTasks.map((task) => {
+      // Work item state summary
+      const byState: Record<string, number> = {};
+      for (const wiId of task.workItemIds) {
+        const wi = wiMap.get(wiId);
+        const state = wi?.state ?? "Unknown";
+        byState[state] = (byState[state] ?? 0) + 1;
+      }
+
+      // PR status summary
+      let prActive = 0;
+      let prCompleted = 0;
+      for (const pr of task.pullRequests) {
+        const enriched = prMap.get(`${pr.repoId}:${pr.prId}`);
+        if (enriched?.status === "active") prActive++;
+        else if (enriched?.status === "completed") prCompleted++;
+      }
+
+      // Unread check across all task sessions
+      const hasUnread = task.sessionIds.some((sid) => {
+        const session = enrichedSessions.find((s: any) => s.sessionId === sid);
+        return session && (session.busy || isUnread(sid, session.modifiedTime));
+      });
+
+      // Last activity across task sessions
+      const sessionTimes = task.sessionIds
+        .map((sid) => enrichedSessions.find((s: any) => s.sessionId === sid)?.modifiedTime)
+        .filter(Boolean) as string[];
+      const lastActivity = sessionTimes.length > 0
+        ? sessionTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
+        : task.updatedAt;
+
+      // Has busy session?
+      const hasBusySession = task.sessionIds.some((sid) =>
+        enrichedSessions.find((s: any) => s.sessionId === sid)?.busy,
+      );
+
+      return {
+        task,
+        workItemSummary: { total: task.workItemIds.length, byState },
+        prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted },
+        hasUnread,
+        hasBusySession,
+        lastActivity,
+      };
+    });
+
+    // Sort: unread first, then busy, then most recent
+    activeTasks.sort((a, b) => {
+      if (a.hasUnread !== b.hasUnread) return a.hasUnread ? -1 : 1;
+      if (a.hasBusySession !== b.hasBusySession) return a.hasBusySession ? -1 : 1;
+      return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
+    });
+
+    // Last active task (most recently updated active task)
+    const lastActiveTask = activeTasks.find((t) => t.task.status === "active") ?? null;
+
+    // Orphan sessions: not linked to any task, unread or active in last 24h
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const orphanSessions = enrichedSessions
+      .filter((s: any) => {
+        if (taskSessionIds.has(s.sessionId)) return false;
+        const unread = isUnread(s.sessionId, s.modifiedTime);
+        const recent = s.modifiedTime && new Date(s.modifiedTime).getTime() > oneDayAgo;
+        return s.busy || unread || recent;
+      })
+      .map((s: any) => ({
+        sessionId: s.sessionId,
+        title: s.summary,
+        modifiedTime: s.modifiedTime,
+        branch: s.context?.branch ?? null,
+        busy: s.busy ?? false,
+        unread: isUnread(s.sessionId, s.modifiedTime),
+      }));
+
+    res.json({
+      busySessions,
+      unreadSessions,
+      lastActiveTask,
+      activeTasks,
+      orphanSessions,
+    });
+  } catch (err) {
+    console.error("[dashboard] Error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
