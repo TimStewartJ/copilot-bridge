@@ -393,9 +393,29 @@ export class SessionManager {
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
     let session = this.sessionObjects.get(sessionId);
+    let events: any[];
 
     if (session) {
       console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
+      try {
+        events = await session.getMessages();
+      } catch (err) {
+        // Stale cache — CLI may have restarted. Evict and re-resume.
+        console.log(`[sdk] [${sid}] Cached session stale, re-resuming...`);
+        this.sessionObjects.delete(sessionId);
+        session = await Promise.race([
+          this.client.resumeSession(sessionId, {
+            onPermissionRequest: approveAll,
+            mcpServers: config.sessionMcpServers as any,
+            tools: BRIDGE_TOOLS,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+          ),
+        ]);
+        this.sessionObjects.set(sessionId, session);
+        events = await session.getMessages();
+      }
     } else {
       console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
       session = await Promise.race([
@@ -409,9 +429,9 @@ export class SessionManager {
         ),
       ]);
       this.sessionObjects.set(sessionId, session);
+      events = await session.getMessages();
     }
 
-    const events = await session.getMessages();
     const messages: Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }> = [];
 
     // Index tool events by toolCallId for fast lookup
