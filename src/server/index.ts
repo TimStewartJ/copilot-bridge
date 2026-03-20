@@ -1,12 +1,6 @@
 // Copilot Web Bridge — Express server
 
-// Prepend timestamps to all console output
-const _origLog = console.log.bind(console);
-const _origErr = console.error.bind(console);
-const _ts = () => new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-console.log = (...args: any[]) => _origLog(`[${_ts()}]`, ...args);
-console.error = (...args: any[]) => _origErr(`[${_ts()}]`, ...args);
-
+import "./log-timestamps.js";
 import express from "express";
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -21,6 +15,7 @@ import * as sessionTitles from "./session-titles.js";
 import { getBus, hasBus } from "./event-bus.js";
 import * as adoClient from "./ado-client.js";
 import * as readStateStore from "./read-state-store.js";
+import * as globalBus from "./global-bus.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -81,6 +76,38 @@ app.get("/api/sessions", async (req, res) => {
 app.get("/api/busy", (_req, res) => {
   const activeSessions = sessionManager.getActiveSessions();
   res.json({ busy: activeSessions.length > 0, count: activeSessions.length, sessionIds: activeSessions });
+});
+
+// GET /api/status-stream — global SSE for session lifecycle events
+app.get("/api/status-stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  let closed = false;
+
+  const heartbeat = setInterval(() => {
+    if (closed || res.writableEnded) return;
+    try { res.write(`: heartbeat\n\n`); } catch { close(); }
+  }, 15_000);
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    unsub();
+    if (!res.writableEnded) res.end();
+  };
+
+  const unsub = globalBus.subscribe((event) => {
+    if (closed || res.writableEnded) return;
+    try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { close(); }
+  });
+
+  res.on("error", () => { close(); });
+  req.on("close", () => { close(); });
 });
 
 app.get("/api/sessions/:id/messages", async (req, res) => {

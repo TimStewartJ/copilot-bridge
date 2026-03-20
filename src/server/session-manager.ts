@@ -9,9 +9,13 @@ import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
 import { getOrCreateBus } from "./event-bus.js";
 import * as sessionTitles from "./session-titles.js";
+import * as globalBus from "./global-bus.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
+
+// Module-level ref so universal tools can query session state
+let _instance: SessionManager | null = null;
 
 // Universal tools — same instance for every session
 const BRIDGE_TOOLS = [
@@ -94,13 +98,21 @@ const BRIDGE_TOOLS = [
     },
   }),
   defineTool("self_restart", {
-    description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint, rebuild, and swap processes. Auto-rolls back on failure.",
+    description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint, rebuild, and swap processes. Auto-rolls back on failure. The launcher performs a safe restart: it waits for all active sessions to finish before rebuilding (up to 5 minutes). IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const dataDir = join(__dirname, "..", "..", "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
-      return { success: true, message: "Restart signal sent. Server will restart in ~15 seconds." };
+
+      const otherBusy = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
+      const waitNote = otherBusy > 0
+        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish before rebuilding (up to 5 min).`
+        : "";
+      return {
+        success: true,
+        message: `Restart signal sent.${waitNote} Do NOT make any more tool calls — this session is considered active and will block the restart until it is idle.`,
+      };
     },
   }),
 ];
@@ -113,6 +125,7 @@ export class SessionManager {
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
+    _instance = this;
     this.client = new CopilotClient();
     await this.client.start();
     sessionTitles.loadTitles();
@@ -192,6 +205,7 @@ export class SessionManager {
     const bus = getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
     this.activeSessions.add(sessionId);
+    globalBus.emit({ type: "session:busy", sessionId });
 
     // Run in background — not awaited
     this._doWork(sessionId, prompt, bus).catch((err) => {
@@ -199,6 +213,7 @@ export class SessionManager {
       bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
     }).finally(() => {
       this.activeSessions.delete(sessionId);
+      globalBus.emit({ type: "session:idle", sessionId });
     });
   }
 
@@ -276,6 +291,7 @@ export class SessionManager {
         case "assistant.intent":
           console.log(`[sdk] [${sid}] 🎯 Intent: ${data?.intent}`);
           bus.emit({ type: "intent", intent: data?.intent ?? "" });
+          globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
           if (data?.content) {
@@ -331,6 +347,7 @@ export class SessionManager {
           break;
         case "session.title_changed":
           bus.emit({ type: "title_changed", title: data?.title ?? "" });
+          globalBus.emit({ type: "session:title", sessionId, title: data?.title ?? "" });
           break;
         case "session.idle": {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
@@ -533,6 +550,7 @@ export class SessionManager {
         sessionTitles.setTitle(sessionId, title);
         const bus = getOrCreateBus(sessionId);
         bus.emit({ type: "title_changed", title });
+        globalBus.emit({ type: "session:title", sessionId, title });
         console.log(`[titles] [${sid}] Title: "${title}"`);
       } else {
         console.log(`[titles] [${sid}] Title generation returned invalid result: "${title}"`);

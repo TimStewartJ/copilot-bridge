@@ -12,6 +12,7 @@ import {
   type Task,
 } from "./api";
 import { useReadState } from "./useReadState";
+import { useStatusStream } from "./useStatusStream";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import TaskDetailView from "./components/TaskDetailView";
@@ -68,15 +69,30 @@ export default function App() {
     loadTasks();
   }, []);
 
-  // Auto-refresh sessions while any are busy (fast: 5s)
-  useEffect(() => {
-    const hasBusy = sessions.some((s) => s.busy);
-    if (!hasBusy) return;
-    const timer = setInterval(loadSessions, 5_000);
-    return () => clearInterval(timer);
-  }, [sessions]);
+  // Real-time status updates via SSE — replaces 5s busy-polling
+  useStatusStream(useCallback((event) => {
+    switch (event.type) {
+      case "session:busy":
+        setSessions((prev) =>
+          prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: true } : s),
+        );
+        break;
+      case "session:idle":
+        setSessions((prev) =>
+          prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: false } : s),
+        );
+        break;
+      case "session:title":
+        if (event.title) {
+          setSessions((prev) =>
+            prev.map((s) => s.sessionId === event.sessionId ? { ...s, summary: event.title } : s),
+          );
+        }
+        break;
+    }
+  }, []));
 
-  // Background poll to detect new activity on idle sessions (slow: 30s, visibility-aware)
+  // Background poll for reconciliation (slow: 30s, visibility-aware)
   useEffect(() => {
     const poll = () => {
       if (document.visibilityState === "visible") loadSessions();
