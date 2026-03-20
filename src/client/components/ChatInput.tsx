@@ -54,7 +54,7 @@ export default function ChatInput({ onSend, disabled, sessionId }: ChatInputProp
   );
 
   return (
-    <div className="p-3 md:p-4 border-t border-[#2a2a4a] bg-[#16213e]">
+    <div className="p-3 md:p-4 border-t border-border bg-bg-secondary">
       <div className="flex gap-2 md:gap-3">
         <textarea
           ref={textareaRef}
@@ -63,12 +63,12 @@ export default function ChatInput({ onSend, disabled, sessionId }: ChatInputProp
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           rows={1}
-          className="flex-1 px-4 py-3 bg-[#1a1a2e] text-gray-200 border border-[#2a2a4a] rounded-lg text-base md:text-sm font-sans resize-none focus:outline-none focus:border-indigo-500 min-h-[48px] max-h-[200px]"
+          className="flex-1 px-4 py-3 bg-bg-primary text-text-primary border border-border rounded-md text-base md:text-sm resize-none focus:outline-none focus:border-accent min-h-[48px] max-h-[200px] placeholder:text-text-faint"
         />
         <button
           onClick={handleSend}
           disabled={disabled || !input.trim()}
-          className="px-4 md:px-6 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold self-end transition-colors"
+          className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
         >
           Send
         </button>

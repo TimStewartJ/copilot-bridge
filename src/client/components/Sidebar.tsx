@@ -3,6 +3,7 @@ import type { Session, Task, EnrichedWorkItem, EnrichedPR } from "../api";
 import { fetchEnrichedTask } from "../api";
 import TaskList from "./TaskList";
 import SessionList from "./SessionList";
+import { Sparkles, Settings, ClipboardList, MessageSquare, Bug, CheckSquare, BookOpen, Target, Trophy, GitPullRequest, ChevronDown, ChevronRight } from "lucide-react";
 
 type TabMode = "tasks" | "sessions";
 
@@ -59,7 +60,7 @@ export default function Sidebar({
   // If we have task context (navigated from task → session), show the task panel
   if (taskContext) {
     return (
-      <div className="w-full h-full bg-[#16213e] border-r border-[#2a2a4a] flex flex-col">
+      <div className="w-full h-full bg-bg-secondary border-r border-border flex flex-col">
         <TaskContextPanel
           task={taskContext}
           sessions={taskContextSessions}
@@ -77,47 +78,50 @@ export default function Sidebar({
   const sessionsUnread = unreadCount?.(sessions, activeSessionId) ?? 0;
 
   return (
-    <div className="w-full h-full bg-[#16213e] border-r border-[#2a2a4a] flex flex-col">
+    <div className="w-full h-full bg-bg-secondary border-r border-border flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-[#2a2a4a] flex items-center justify-between">
+      <div className="p-4 border-b border-border flex items-center justify-between">
         <button
           onClick={onGoHome}
-          className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+          className="text-sm font-medium text-text-primary hover:text-accent transition-colors flex items-center gap-1.5"
         >
-          🤖 Copilot Bridge
+          <Sparkles size={14} className="text-accent" />
+          Copilot Bridge
         </button>
         <button
           onClick={onOpenSettings}
-          className="text-gray-500 hover:text-gray-300 transition-colors"
+          className="text-text-muted hover:text-text-secondary transition-colors"
           title="Settings"
         >
-          ⚙️
+          <Settings size={15} />
         </button>
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-[#2a2a4a]">
+      <div className="flex border-b border-border">
         <button
           onClick={() => onTabChange("tasks")}
-          className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${
+          className={`flex-1 py-2.5 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
             activeTab === "tasks"
-              ? "text-indigo-400 border-b-2 border-indigo-400"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-accent border-b-2 border-accent"
+              : "text-text-muted hover:text-text-secondary"
           }`}
         >
-          📋 Tasks
+          <ClipboardList size={13} />
+          Tasks
         </button>
         <button
           onClick={() => onTabChange("sessions")}
-          className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${
+          className={`flex-1 py-2.5 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
             activeTab === "sessions"
-              ? "text-indigo-400 border-b-2 border-indigo-400"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-accent border-b-2 border-accent"
+              : "text-text-muted hover:text-text-secondary"
           }`}
         >
-          💬 Sessions
+          <MessageSquare size={13} />
+          Sessions
           {sessionsUnread > 0 && (
-            <span className="ml-1.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold bg-green-500/30 text-green-400 rounded-full">
+            <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold bg-success/20 text-success rounded-full">
               {sessionsUnread}
             </span>
           )}
@@ -150,10 +154,10 @@ export default function Sidebar({
 // ── Task Context Panel ───────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, string> = {
-  active: "bg-green-500/20 text-green-400",
-  paused: "bg-yellow-500/20 text-yellow-400",
-  done: "bg-gray-500/20 text-gray-400",
-  archived: "bg-gray-700/20 text-gray-600",
+  active: "bg-success/15 text-success",
+  paused: "bg-warning/15 text-warning",
+  done: "bg-text-muted/15 text-text-muted",
+  archived: "bg-text-faint/15 text-text-faint",
 };
 
 interface TaskContextPanelProps {
@@ -199,25 +203,26 @@ function TaskContextPanel({
   return (
     <>
       {/* Header */}
-      <div className="p-4 border-b border-[#2a2a4a]">
+      <div className="p-4 border-b border-border">
         <button
           onClick={onGoHome}
-          className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+          className="text-sm font-medium text-text-primary hover:text-accent transition-colors flex items-center gap-1.5"
         >
-          🤖 Copilot Bridge
+          <Sparkles size={14} className="text-accent" />
+          Copilot Bridge
         </button>
       </div>
 
       {/* Back to task */}
-      <div className="px-4 pt-3 pb-2 border-b border-[#2a2a4a]">
+      <div className="px-4 pt-3 pb-2 border-b border-border">
         <button
           onClick={() => onBackToTask(task.id)}
-          className="text-xs text-gray-400 hover:text-indigo-400 transition-colors flex items-center gap-1"
+          className="text-xs text-text-muted hover:text-accent transition-colors flex items-center gap-1"
         >
           ← Back to Task
         </button>
         <div className="mt-2 flex items-start gap-2">
-          <h2 className="text-sm font-semibold text-gray-200 leading-tight flex-1 min-w-0 line-clamp-2">
+          <h2 className="text-sm font-medium text-text-primary leading-tight flex-1 min-w-0 line-clamp-2">
             {task.title}
           </h2>
           <span
@@ -254,18 +259,18 @@ function TaskContextPanel({
                   href={wi.url}
                   target="_blank"
                   rel="noopener"
-                  className="block px-3 py-1.5 text-xs text-indigo-400 hover:text-indigo-300 hover:bg-[#1a1a3e] rounded-md transition-colors"
+                  className="block px-3 py-1.5 text-xs text-accent hover:text-accent-hover hover:bg-bg-hover rounded-md transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span>{WI_TYPE_ICONS[wi.type ?? ""]?.icon ?? "📋"}</span>
+                    <span>{WI_TYPE_ICONS[wi.type ?? ""]?.icon ?? <ClipboardList size={12} />}</span>
                     <span className="font-medium">#{wi.id}</span>
                     {wi.title && (
-                      <span className="text-gray-400 truncate">{wi.title}</span>
+                      <span className="text-text-muted truncate">{wi.title}</span>
                     )}
                   </div>
                   {wi.state && (
                     <div className="mt-0.5 ml-5">
-                      <span className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-gray-500/20 text-gray-400"}`}>
+                      <span className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
                         {wi.state}
                       </span>
                     </div>
@@ -287,19 +292,19 @@ function TaskContextPanel({
                   href={pr.url}
                   target="_blank"
                   rel="noopener"
-                  className="block px-3 py-1.5 text-xs text-gray-300 hover:bg-[#1a1a3e] rounded-md transition-colors"
+                  className="block px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     {pr.status && (
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PR_STATUS_DOTS[pr.status] ?? "bg-gray-500"}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PR_STATUS_DOTS[pr.status] ?? "bg-text-muted"}`} />
                     )}
-                    {!pr.status && <span>🔀</span>}
-                    <span className="text-indigo-400 font-medium">#{pr.prId}</span>
+                    {!pr.status && <GitPullRequest size={12} className="text-text-muted" />}
+                    <span className="text-accent font-medium">#{pr.prId}</span>
                     {pr.title && (
-                      <span className="text-gray-400 truncate">{pr.title}</span>
+                      <span className="text-text-muted truncate">{pr.title}</span>
                     )}
                   </div>
-                  <div className="mt-0.5 ml-5 text-[10px] text-gray-500">
+                  <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
                     {pr.repoName || pr.repoId}
                     {pr.status && ` · ${pr.status.charAt(0).toUpperCase() + pr.status.slice(1)}`}
                   </div>
@@ -317,12 +322,12 @@ function TaskContextPanel({
               className="w-full flex items-center gap-1 mb-1"
             >
               <SectionLabel label="Notes" />
-              <span className="text-[10px] text-gray-600">
-                {notesExpanded ? "▾" : "▸"}
+              <span className="text-[10px] text-text-faint">
+                {notesExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
               </span>
             </button>
             {notesExpanded && (
-              <div className="px-3 py-2 bg-[#2a2a4a] rounded-md text-xs text-gray-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
+              <div className="px-3 py-2 bg-bg-surface rounded-md text-xs text-text-muted whitespace-pre-wrap max-h-40 overflow-y-auto">
                 {task.notes}
               </div>
             )}
@@ -333,35 +338,35 @@ function TaskContextPanel({
   );
 }
 
-const WI_TYPE_ICONS: Record<string, { icon: string }> = {
-  Bug: { icon: "🐛" },
-  Task: { icon: "✅" },
-  "User Story": { icon: "📖" },
-  Feature: { icon: "🎯" },
-  Epic: { icon: "👑" },
+const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode }> = {
+  Bug: { icon: <Bug size={12} className="text-error" /> },
+  Task: { icon: <CheckSquare size={12} className="text-accent" /> },
+  "User Story": { icon: <BookOpen size={12} className="text-success" /> },
+  Feature: { icon: <Target size={12} className="text-purple-400" /> },
+  Epic: { icon: <Trophy size={12} className="text-warning" /> },
 };
 
 const WI_STATE_STYLES: Record<string, string> = {
-  New: "bg-gray-500/20 text-gray-400",
-  Active: "bg-blue-500/20 text-blue-400",
-  "In Progress": "bg-blue-500/20 text-blue-400",
-  Resolved: "bg-green-500/20 text-green-400",
-  Closed: "bg-gray-600/20 text-gray-500",
-  Done: "bg-green-500/20 text-green-400",
+  New: "bg-text-muted/15 text-text-muted",
+  Active: "bg-accent/15 text-accent",
+  "In Progress": "bg-accent/15 text-accent",
+  Resolved: "bg-success/15 text-success",
+  Closed: "bg-text-faint/15 text-text-faint",
+  Done: "bg-success/15 text-success",
 };
 
 const PR_STATUS_DOTS: Record<string, string> = {
-  active: "bg-green-400",
-  completed: "bg-blue-400",
-  abandoned: "bg-gray-500",
+  active: "bg-success",
+  completed: "bg-accent",
+  abandoned: "bg-text-muted",
 };
 
 function SectionLabel({ label, count }: { label: string; count?: number }) {
   return (
-    <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-3 py-1">
+    <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider px-3 py-1">
       {label}
       {count !== undefined && (
-        <span className="text-gray-600 ml-1">({count})</span>
+        <span className="text-text-faint ml-1">({count})</span>
       )}
     </div>
   );

@@ -17,6 +17,7 @@ import TaskDetailView from "./components/TaskDetailView";
 import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
 import { useSwipeDrawer } from "./useSwipeDrawer";
+import { Menu, Sparkles } from "lucide-react";
 
 type ViewMode = "none" | "chat" | "task" | "settings";
 
@@ -227,11 +228,11 @@ export default function App() {
   }, [sessions, tasks]);
 
   return (
-    <div className="flex h-dvh bg-[#1a1a2e] text-gray-200">
+    <div className="flex h-dvh bg-bg-primary text-text-primary">
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          className="fixed inset-0 bg-black/60 z-30 md:hidden"
           onClick={closeSidebar}
         />
       )}
@@ -268,19 +269,20 @@ export default function App() {
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Mobile top bar — sticky */}
-        <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-[#2a2a4a] bg-[#16213e] md:hidden">
+        <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="text-gray-400 hover:text-gray-200 text-xl"
+            className="text-text-muted hover:text-text-primary transition-colors"
             aria-label="Open menu"
           >
-            ☰
+            <Menu size={18} />
           </button>
           <button
             onClick={handleGoHome}
-            className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+            className="text-sm font-medium text-text-primary hover:text-accent transition-colors flex items-center gap-1.5"
           >
-            🤖 Copilot Bridge
+            <Sparkles size={14} className="text-accent" />
+            Copilot Bridge
           </button>
         </div>
 

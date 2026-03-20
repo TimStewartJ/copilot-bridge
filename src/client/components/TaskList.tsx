@@ -1,12 +1,13 @@
 import { useState } from "react";
 import type { Task } from "../api";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
 const STATUS_COLORS = {
-  active: "bg-green-500/20 text-green-400",
-  paused: "bg-yellow-500/20 text-yellow-400",
-  done: "bg-gray-500/20 text-gray-400",
-  archived: "bg-gray-700/20 text-gray-600",
+  active: "bg-success/15 text-success",
+  paused: "bg-warning/15 text-warning",
+  done: "bg-text-muted/15 text-text-muted",
+  archived: "bg-text-faint/15 text-text-faint",
 } as const;
 
 function timeAgo(iso?: string): string {
@@ -50,7 +51,7 @@ export default function TaskList({
     if (items.length === 0) return null;
     return (
       <div key={label}>
-        <div className="px-3 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+        <div className="px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider">
           {label} ({items.length})
         </div>
         {items.map((task) => {
@@ -65,8 +66,8 @@ export default function TaskList({
               onClick={() => onSelectTask(task.id)}
               className={`w-full text-left px-3 py-2.5 rounded-md text-sm transition-colors ${
                 isActive
-                  ? "bg-[#2a2a5e] border-l-3 border-indigo-400"
-                  : "hover:bg-[#1a1a3e]"
+                  ? "bg-accent/10 border-l-2 border-accent"
+                  : "hover:bg-bg-hover"
               }`}
             >
               <div className="flex items-center gap-2">
@@ -79,7 +80,7 @@ export default function TaskList({
                   {task.status}
                 </span>
               </div>
-              <div className="text-xs text-gray-500 mt-0.5">
+              <div className="text-xs text-text-muted mt-0.5">
                 {timeAgo(task.updatedAt)}
                 {linkCount > 0 && ` · ${linkCount} linked`}
               </div>
@@ -94,7 +95,7 @@ export default function TaskList({
     <div className="flex-1 overflow-y-auto p-2 space-y-2">
       <button
         onClick={onNewTask}
-        className="w-full px-3 py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-sm rounded-md transition-colors"
+        className="w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
       >
         + New Task
       </button>
@@ -105,15 +106,15 @@ export default function TaskList({
         <>
           <button
             onClick={() => setShowArchived(!showArchived)}
-            className="w-full px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="w-full px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
           >
-            {showArchived ? "▾" : "▸"} Archived ({grouped.archived.length})
+            {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Archived ({grouped.archived.length})
           </button>
           {showArchived && renderGroup("Archived", grouped.archived)}
         </>
       )}
       {tasks.length === 0 && (
-        <div className="text-center text-gray-500 text-sm py-8">
+        <div className="text-center text-text-muted text-sm py-8">
           No tasks yet
         </div>
       )}

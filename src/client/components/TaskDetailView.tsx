@@ -15,6 +15,7 @@ import {
 } from "../api";
 import NotesEditor from "./NotesEditor";
 import LinkDialog from "./LinkDialog";
+import { Bug, CheckSquare, BookOpen, Target, Trophy, ClipboardList, GitPullRequest, MessageSquare, FileText, Archive, ArchiveRestore, Trash2, Pencil, X } from "lucide-react";
 
 interface TaskDetailViewProps {
   taskId: string;
@@ -28,10 +29,10 @@ interface TaskDetailViewProps {
 
 const STATUS_OPTIONS = ["active", "paused", "done", "archived"] as const;
 const STATUS_STYLES = {
-  active: "bg-green-500/20 text-green-400 border-green-500/30",
-  paused: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-  done: "bg-gray-500/20 text-gray-400 border-gray-500/30",
-  archived: "bg-gray-700/20 text-gray-600 border-gray-700/30",
+  active: "bg-success/15 text-success border-success/20",
+  paused: "bg-warning/15 text-warning border-warning/20",
+  done: "bg-text-muted/15 text-text-muted border-text-muted/20",
+  archived: "bg-text-faint/15 text-text-faint border-text-faint/20",
 } as const;
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -52,28 +53,28 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const WI_TYPE_ICONS: Record<string, { icon: string; color: string }> = {
-  Bug: { icon: "🐛", color: "text-red-400" },
-  Task: { icon: "✅", color: "text-blue-400" },
-  "User Story": { icon: "📖", color: "text-green-400" },
-  Feature: { icon: "🎯", color: "text-purple-400" },
-  Epic: { icon: "👑", color: "text-orange-400" },
+const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode; color: string }> = {
+  Bug: { icon: <Bug size={14} />, color: "text-error" },
+  Task: { icon: <CheckSquare size={14} />, color: "text-accent" },
+  "User Story": { icon: <BookOpen size={14} />, color: "text-success" },
+  Feature: { icon: <Target size={14} />, color: "text-purple-400" },
+  Epic: { icon: <Trophy size={14} />, color: "text-warning" },
 };
 
 const WI_STATE_STYLES: Record<string, string> = {
-  New: "bg-gray-500/20 text-gray-400",
-  Active: "bg-blue-500/20 text-blue-400",
-  "In Progress": "bg-blue-500/20 text-blue-400",
-  Resolved: "bg-green-500/20 text-green-400",
-  Closed: "bg-gray-600/20 text-gray-500",
-  Done: "bg-green-500/20 text-green-400",
-  Removed: "bg-red-500/20 text-red-400",
+  New: "bg-text-muted/15 text-text-muted",
+  Active: "bg-accent/15 text-accent",
+  "In Progress": "bg-accent/15 text-accent",
+  Resolved: "bg-success/15 text-success",
+  Closed: "bg-text-faint/15 text-text-faint",
+  Done: "bg-success/15 text-success",
+  Removed: "bg-error/15 text-error",
 };
 
 const PR_STATUS_STYLES: Record<string, { dot: string; label: string; text: string }> = {
-  active: { dot: "bg-green-400", label: "Active", text: "text-green-400" },
-  completed: { dot: "bg-blue-400", label: "Completed", text: "text-blue-400" },
-  abandoned: { dot: "bg-gray-500", label: "Abandoned", text: "text-gray-500" },
+  active: { dot: "bg-success", label: "Active", text: "text-success" },
+  completed: { dot: "bg-accent", label: "Completed", text: "text-accent" },
+  abandoned: { dot: "bg-text-muted", label: "Abandoned", text: "text-text-muted" },
 };
 
 // ── Main Component ────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Session } from "../api";
+import { ClipboardList, GitPullRequest, MessageSquare, X } from "lucide-react";
 
 type LinkType = "session" | "workItem" | "pr";
 
@@ -50,37 +51,38 @@ export default function LinkDialog({
   );
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-[#16213e] border border-[#2a2a4a] rounded-lg w-full max-w-[480px] mx-4 max-h-[80vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-bg-secondary border border-border rounded-md w-full max-w-[480px] mx-4 max-h-[80vh] overflow-y-auto">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-[#2a2a4a]">
-          <h3 className="font-semibold text-sm">Link Resource</h3>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h3 className="font-medium text-sm">Link Resource</h3>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-300"
+            className="text-text-muted hover:text-text-secondary"
           >
-            ✕
+            <X size={16} />
           </button>
         </div>
 
         {/* Type Tabs */}
-        <div className="flex border-b border-[#2a2a4a]">
+        <div className="flex border-b border-border">
           {(
             [
-              ["workItem", "📋 Work Item"],
-              ["pr", "🔀 Pull Request"],
-              ["session", "💬 Session"],
+              ["workItem", <ClipboardList size={12} />, "Work Item"],
+              ["pr", <GitPullRequest size={12} />, "Pull Request"],
+              ["session", <MessageSquare size={12} />, "Session"],
             ] as const
-          ).map(([type, label]) => (
+          ).map(([type, icon, label]) => (
             <button
               key={type}
               onClick={() => setLinkType(type)}
-              className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${
+              className={`flex-1 py-2.5 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
                 linkType === type
-                  ? "text-indigo-400 border-b-2 border-indigo-400"
-                  : "text-gray-500 hover:text-gray-300"
+                  ? "text-accent border-b-2 border-accent"
+                  : "text-text-muted hover:text-text-secondary"
               }`}
             >
+              {icon}
               {label}
             </button>
           ))}
@@ -90,7 +92,7 @@ export default function LinkDialog({
         <div className="p-4 space-y-3">
           {linkType === "workItem" && (
             <div>
-              <label className="text-xs text-gray-400 block mb-1">
+              <label className="text-xs text-text-muted block mb-1">
                 Work Item ID
               </label>
               <input
@@ -99,7 +101,7 @@ export default function LinkDialog({
                 onChange={(e) => setWorkItemId(e.target.value)}
                 placeholder="e.g., 12345"
                 autoFocus
-                className="w-full px-3 py-2 bg-[#1a1a2e] border border-[#2a2a4a] rounded-md text-sm focus:outline-none focus:border-indigo-500"
+                className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
               />
             </div>
           )}
@@ -107,7 +109,7 @@ export default function LinkDialog({
           {linkType === "pr" && (
             <>
               <div>
-                <label className="text-xs text-gray-400 block mb-1">
+                <label className="text-xs text-text-muted block mb-1">
                   Repository Name
                 </label>
                 <input
@@ -115,11 +117,11 @@ export default function LinkDialog({
                   onChange={(e) => setRepoName(e.target.value)}
                   placeholder="e.g., my-repo"
                   autoFocus
-                  className="w-full px-3 py-2 bg-[#1a1a2e] border border-[#2a2a4a] rounded-md text-sm focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
                 />
               </div>
               <div>
-                <label className="text-xs text-gray-400 block mb-1">
+                <label className="text-xs text-text-muted block mb-1">
                   PR Number
                 </label>
                 <input
@@ -127,7 +129,7 @@ export default function LinkDialog({
                   value={prId}
                   onChange={(e) => setPrId(e.target.value)}
                   placeholder="e.g., 1234"
-                  className="w-full px-3 py-2 bg-[#1a1a2e] border border-[#2a2a4a] rounded-md text-sm focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
                 />
               </div>
             </>
@@ -135,7 +137,7 @@ export default function LinkDialog({
 
           {linkType === "session" && (
             <div>
-              <label className="text-xs text-gray-400 block mb-1">
+              <label className="text-xs text-text-muted block mb-1">
                 Search Sessions
               </label>
               <input
@@ -143,7 +145,7 @@ export default function LinkDialog({
                 onChange={(e) => setSessionSearch(e.target.value)}
                 placeholder="Filter by summary..."
                 autoFocus
-                className="w-full px-3 py-2 bg-[#1a1a2e] border border-[#2a2a4a] rounded-md text-sm focus:outline-none focus:border-indigo-500 mb-2"
+                className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent mb-2"
               />
               <div className="max-h-[200px] overflow-y-auto space-y-1">
                 {filteredSessions.map((s) => (
@@ -152,8 +154,8 @@ export default function LinkDialog({
                     onClick={() => setSelectedSessionId(s.sessionId)}
                     className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                       selectedSessionId === s.sessionId
-                        ? "bg-indigo-500/20 border border-indigo-500/30"
-                        : "bg-[#1a1a2e] hover:bg-[#2a2a4a]"
+                        ? "bg-accent/15 border border-accent/30"
+                        : "bg-bg-primary hover:bg-bg-hover"
                     }`}
                   >
                     <div className="truncate">
@@ -167,16 +169,16 @@ export default function LinkDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 p-4 border-t border-[#2a2a4a]">
+        <div className="flex justify-end gap-2 p-4 border-t border-border">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+            className="px-4 py-2 text-sm text-text-muted hover:text-text-primary transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleSubmit}
-            className="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-sm rounded-md transition-colors"
+            className="px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
           >
             Link
           </button>

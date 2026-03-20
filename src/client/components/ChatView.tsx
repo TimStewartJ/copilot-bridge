@@ -4,6 +4,7 @@ import { useSessionStream } from "../useSessionStream";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
+import { ClipboardList, Loader2 } from "lucide-react";
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -96,7 +97,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
 
   if (!sessionId) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-500 text-lg">
+      <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
         Create or select a session to start
       </div>
     );
@@ -111,11 +112,14 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
     <div className="flex-1 flex flex-col min-h-0">
       {/* Plan header bar */}
       {hasPlan && (
-        <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-[#2a2a4a] bg-[#16213e]">
-          <span className="text-xs text-gray-400">📋 Plan available</span>
+        <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-bg-secondary">
+          <span className="text-xs text-text-muted flex items-center gap-1.5">
+            <ClipboardList size={12} />
+            Plan available
+          </span>
           <button
             onClick={() => setShowPlan(true)}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium"
+            className="text-xs text-accent hover:text-accent-hover transition-colors font-medium"
           >
             View
           </button>
@@ -123,10 +127,10 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
       )}
       <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-5 space-y-4">
         {loading && (
-          <div className="text-indigo-400 italic">Loading history...</div>
+          <div className="text-accent italic">Loading history...</div>
         )}
         {!loading && messages.length === 0 && !isStreaming && (
-          <div className="flex items-center justify-center h-full text-gray-500 text-lg">
+          <div className="flex items-center justify-center h-full text-text-muted text-lg">
             Send a message to get started
           </div>
         )}
@@ -135,25 +139,25 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
           <MessageBubble message={{ role: "assistant", content: streamingContent }} />
         )}
         {activeTools.length > 0 && (
-          <div className="text-xs text-indigo-400/70 px-4 py-1 space-y-1">
+          <div className="text-xs text-accent/70 px-4 py-1 space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="animate-spin">⚙️</span>
+              <Loader2 size={12} className="animate-spin" />
               {activeTools.map((t) => (
-                <span key={t.toolCallId || t.name} className="bg-indigo-500/10 px-2 py-0.5 rounded">
+                <span key={t.toolCallId || t.name} className="bg-accent/10 px-2 py-0.5 rounded">
                   {t.name}
                   {t.args && Object.keys(t.args).length > 0 && (
-                    <span className="text-indigo-400/40 ml-1">{formatToolArgs(t.args)}</span>
+                    <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>
                   )}
                 </span>
               ))}
             </div>
             {toolProgress && (
-              <div className="text-indigo-400/50 pl-6 truncate">{toolProgress}</div>
+              <div className="text-accent/50 pl-6 truncate">{toolProgress}</div>
             )}
           </div>
         )}
         {isStreaming && !streamingContent && activeTools.length === 0 && (
-          <div className="text-indigo-400 italic animate-pulse">
+          <div className="text-accent italic animate-pulse">
             {intentText ? `${intentText}...` : "Thinking..."}
           </div>
         )}
