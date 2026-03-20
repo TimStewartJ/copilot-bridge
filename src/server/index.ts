@@ -279,6 +279,7 @@ app.post("/api/tasks/:id/session", async (req, res) => {
       task.workItemIds,
       prDescriptions,
       task.notes,
+      task.cwd,
     );
 
     // Auto-link session to task

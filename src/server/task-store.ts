@@ -18,6 +18,7 @@ export interface Task {
   id: string;
   title: string;
   status: "active" | "paused" | "done" | "archived";
+  cwd?: string;
   notes: string;
   priority: number; // lower = higher priority
   createdAt: string;
@@ -27,7 +28,7 @@ export interface Task {
   pullRequests: PRLink[];
 }
 
-type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority">>;
+type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd">>;
 
 // ── Persistence ───────────────────────────────────────────────────
 
@@ -86,6 +87,7 @@ export function updateTask(id: string, updates: TaskUpdate): Task {
   if (updates.status !== undefined) task.status = updates.status;
   if (updates.notes !== undefined) task.notes = updates.notes;
   if (updates.priority !== undefined) task.priority = updates.priority;
+  if (updates.cwd !== undefined) task.cwd = updates.cwd || undefined;
   task.updatedAt = new Date().toISOString();
 
   tasks[idx] = task;

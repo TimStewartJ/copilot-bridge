@@ -117,7 +117,7 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  async createTaskSession(taskId: string, taskTitle: string, workItemIds: number[], prDescriptions: string[], notes: string): Promise<{ sessionId: string }> {
+  async createTaskSession(taskId: string, taskTitle: string, workItemIds: number[], prDescriptions: string[], notes: string, cwd?: string): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const contextParts = [
@@ -125,6 +125,9 @@ export class SessionManager {
       "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
     ];
 
+    if (cwd) {
+      contextParts.push(`Task working directory: ${cwd}`);
+    }
     if (workItemIds.length > 0) {
       contextParts.push(`Currently linked work items: ${workItemIds.map((id) => `#${id}`).join(", ")}.`);
     }
@@ -185,6 +188,9 @@ export class SessionManager {
         `Task status: ${linkedTask.status}.`,
         "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
       ];
+      if (linkedTask.cwd) {
+        contextParts.push(`Task working directory: ${linkedTask.cwd}`);
+      }
       if (linkedTask.workItemIds.length > 0) {
         contextParts.push(`Currently linked work items: ${linkedTask.workItemIds.map((id: number) => `#${id}`).join(", ")}.`);
       }
@@ -210,6 +216,9 @@ export class SessionManager {
     ]);
 
     console.log(`[sdk] [${sid}] Session resumed (${Date.now() - resumeStart}ms)`);
+
+    // Track tool names by toolCallId — completion events don't include the tool name
+    const toolNameMap = new Map<string, string>();
 
     const unsub = session.on((event) => {
       const data = (event as any).data;
@@ -242,6 +251,7 @@ export class SessionManager {
           break;
         case "tool.execution_start": {
           const toolName = data?.toolName ?? data?.name ?? "unknown";
+          if (data?.toolCallId) toolNameMap.set(data.toolCallId, toolName);
           console.log(`[sdk] [${sid}] 🔧 Tool: ${toolName}`);
           bus.emit({
             type: "tool_start",
@@ -258,7 +268,7 @@ export class SessionManager {
           bus.emit({ type: "tool_output", name: data?.toolCallId, content: data?.partialOutput ?? "" });
           break;
         case "tool.execution_complete": {
-          const completedToolName = data?.toolName ?? data?.name ?? "unknown";
+          const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${completedToolName}`);
           bus.emit({
             type: "tool_done",

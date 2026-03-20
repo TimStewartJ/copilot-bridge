@@ -37,6 +37,7 @@ export interface Task {
   id: string;
   title: string;
   status: "active" | "paused" | "done" | "archived";
+  cwd?: string;
   notes: string;
   priority: number;
   createdAt: string;
@@ -98,7 +99,7 @@ export async function fetchTask(id: string): Promise<Task> {
 
 export async function updateTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority">>,
+  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd">>,
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
     ...updates,
@@ -109,7 +110,7 @@ export async function updateTask(
 
 export async function patchTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority">>,
+  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd">>,
 ): Promise<Task> {
   const res = await fetch(`/api/tasks/${id}`, {
     method: "PATCH",

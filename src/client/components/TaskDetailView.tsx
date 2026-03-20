@@ -41,12 +41,15 @@ export default function TaskDetailView({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editingCwd, setEditingCwd] = useState(false);
+  const [cwdDraft, setCwdDraft] = useState("");
 
   const loadTask = useCallback(async () => {
     try {
       const t = await fetchTask(taskId);
       setTask(t);
       setTitleDraft(t.title);
+      setCwdDraft(t.cwd || "");
     } catch (err) {
       console.error("Failed to load task:", err);
     } finally {
@@ -80,6 +83,16 @@ export default function TaskDetailView({
       onTaskUpdated();
     }
     setEditingTitle(false);
+  };
+
+  const handleCwdSave = async () => {
+    const newCwd = cwdDraft.trim();
+    if (newCwd !== (task.cwd || "")) {
+      const updated = await patchTask(task.id, { cwd: newCwd });
+      setTask(updated);
+      onTaskUpdated();
+    }
+    setEditingCwd(false);
   };
 
   const handleNotesSave = async (notes: string) => {
@@ -191,6 +204,32 @@ export default function TaskDetailView({
       </div>
 
       <div className="p-4 md:p-6 space-y-6">
+        {/* Working Directory */}
+        <Section title="📂 Working Directory">
+          {editingCwd ? (
+            <input
+              value={cwdDraft}
+              onChange={(e) => setCwdDraft(e.target.value)}
+              onBlur={handleCwdSave}
+              onKeyDown={(e) => e.key === "Enter" && handleCwdSave()}
+              autoFocus
+              placeholder="e.g. D:\my-project"
+              className="w-full px-3 py-2 bg-[#1a1a2e] border border-indigo-400/50 rounded-md text-sm text-gray-200 outline-none font-mono"
+            />
+          ) : (
+            <button
+              onClick={() => setEditingCwd(true)}
+              className="w-full text-left px-3 py-2 bg-[#2a2a4a] rounded-md text-sm hover:bg-[#32325a] transition-colors font-mono"
+            >
+              {task.cwd ? (
+                <span className="text-gray-200">{task.cwd}</span>
+              ) : (
+                <span className="text-gray-500 italic">No working directory set</span>
+              )}
+            </button>
+          )}
+        </Section>
+
         {/* Work Items */}
         <Section title="📋 Work Items" count={task.workItemIds.length}>
           {task.workItemIds.length === 0 ? (
