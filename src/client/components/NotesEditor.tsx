@@ -72,8 +72,10 @@ export default function NotesEditor({ value, onSave }: NotesEditorProps) {
       onClick={handleEdit}
       className="cursor-pointer px-3 py-2 bg-bg-surface rounded-md hover:bg-bg-hover transition-colors prose prose-invert prose-sm max-w-none
         prose-p:my-1.5 prose-headings:mt-2 prose-headings:mb-1
+        prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5
         prose-pre:bg-bg-primary prose-pre:rounded-md prose-pre:p-2
-        prose-code:text-accent"
+        prose-code:text-accent
+        prose-a:text-accent prose-a:no-underline hover:prose-a:underline"
     >
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{value}</ReactMarkdown>
     </div>
