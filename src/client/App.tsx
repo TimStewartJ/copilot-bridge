@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Routes, Route, useNavigate, useParams, useLocation, useSearchParams } from "react-router-dom";
+import { Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
 import {
   fetchSessions,
   createSession,
@@ -7,31 +7,31 @@ import {
   fetchTasks,
   createTask,
   fetchTask,
+  patchTask,
   createTaskSession,
+  linkResource,
   type Session,
   type Task,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { useStatusStream } from "./useStatusStream";
-import Sidebar from "./components/Sidebar";
+import TaskRail from "./components/TaskRail";
+import TaskPanel from "./components/TaskPanel";
+import TaskList from "./components/TaskList";
 import ChatView from "./components/ChatView";
-import TaskDetailView from "./components/TaskDetailView";
 import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
+import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
-import { useSwipeDrawer } from "./useSwipeDrawer";
-import { Menu, Sparkles } from "lucide-react";
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [activeTab, setActiveTab] = useState<"tasks" | "sessions">("tasks");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [taskContext, setTaskContext] = useState<Task | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [quickChatsMode, setQuickChatsMode] = useState(false);
   const [restartPending, setRestartPending] = useState(false);
   const [restartWaiting, setRestartWaiting] = useState(0);
 
@@ -39,18 +39,33 @@ export default function App() {
   const optimisticIdsRef = useRef(new Set<string>());
 
   // Derive active IDs from URL
-  const activeSessionId = location.pathname.match(/^\/sessions\/(.+)/)?.[1] ?? null;
-  const activeTaskId = location.pathname.match(/^\/tasks\/(.+)/)?.[1] ?? null;
+  const activeSessionId =
+    location.pathname.match(/^\/tasks\/[^/]+\/sessions\/(.+)/)?.[1] ??
+    location.pathname.match(/^\/sessions\/(.+)/)?.[1] ??
+    null;
+  const activeTaskId = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
 
-  // Restore taskContext from search param on navigation
-  const taskContextId = searchParams.get("taskContext");
+  // Sync selectedTask when activeTaskId changes
   useEffect(() => {
-    if (taskContextId && (!taskContext || taskContext.id !== taskContextId)) {
-      fetchTask(taskContextId).then(setTaskContext).catch(() => setTaskContext(null));
-    } else if (!taskContextId && taskContext) {
-      setTaskContext(null);
+    if (activeTaskId) {
+      // Try local cache first
+      const cached = tasks.find((t) => t.id === activeTaskId);
+      if (cached) {
+        setSelectedTask(cached);
+      } else {
+        fetchTask(activeTaskId).then(setSelectedTask).catch(() => setSelectedTask(null));
+      }
+      setQuickChatsMode(false);
     }
-  }, [taskContextId]);
+  }, [activeTaskId]);
+
+  // Keep selectedTask in sync with tasks list updates
+  useEffect(() => {
+    if (selectedTask) {
+      const updated = tasks.find((t) => t.id === selectedTask.id);
+      if (updated) setSelectedTask(updated);
+    }
+  }, [tasks]);
 
   const { isUnread, markRead, unreadCount } = useReadState(sessions);
 
@@ -59,9 +74,7 @@ export default function App() {
       const serverSessions = await fetchSessions(true);
       setSessions((prev) => {
         const serverIds = new Set(serverSessions.map((s) => s.sessionId));
-        // Promote: optimistic sessions now in server data no longer need protection
         for (const id of serverIds) optimisticIdsRef.current.delete(id);
-        // Survivors: optimistic sessions not yet in server data
         const survivors = prev.filter(
           (s) => optimisticIdsRef.current.has(s.sessionId) && !serverIds.has(s.sessionId),
         );
@@ -85,7 +98,7 @@ export default function App() {
     loadTasks();
   }, []);
 
-  // Real-time status updates via SSE — replaces 5s busy-polling
+  // Real-time status updates via SSE
   useStatusStream(useCallback((event) => {
     switch (event.type) {
       case "session:busy":
@@ -111,7 +124,6 @@ export default function App() {
         break;
       case "server:restart-cleared":
       case "status:connected":
-        // SSE reconnected after server restart, or restart timed out / was cleared
         setRestartPending(false);
         setRestartWaiting(0);
         break;
@@ -141,8 +153,7 @@ export default function App() {
     prevSessionRef.current = activeSessionId;
   }, [activeSessionId, markRead]);
 
-  // Optimistic insert — makes new sessions visible in sidebar immediately
-  // (server filters out sessions with no summary, so loadSessions misses brand-new ones)
+  // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
     optimisticIdsRef.current.add(sessionId);
     setSessions((prev) => {
@@ -156,7 +167,54 @@ export default function App() {
     });
   }, []);
 
-  const handleNewSession = async () => {
+  // Sessions not linked to any task
+  const globalSessions = useMemo(() => {
+    const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
+    return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
+  }, [sessions, tasks]);
+
+  // ── Navigation handlers ───────────────────────────────────────
+
+  const handleSelectTask = (id: string) => {
+    setQuickChatsMode(false);
+    navigate(`/tasks/${id}`);
+  };
+
+  const handleSelectQuickChats = () => {
+    setSelectedTask(null);
+    setQuickChatsMode(true);
+    navigate("/");
+  };
+
+  const handleGoHome = () => {
+    setSelectedTask(null);
+    setQuickChatsMode(false);
+    navigate("/");
+  };
+
+  const handleOpenSettings = () => {
+    navigate("/settings");
+  };
+
+  const handleSelectSession = (sessionId: string) => {
+    if (activeTaskId) {
+      navigate(`/tasks/${activeTaskId}/sessions/${sessionId}`);
+    } else {
+      navigate(`/sessions/${sessionId}`);
+    }
+  };
+
+  const handleNewSession = async (taskId: string) => {
+    try {
+      const sessionId = await createTaskSession(taskId);
+      addOptimisticSession(sessionId);
+      navigate(`/tasks/${taskId}/sessions/${sessionId}`);
+    } catch (err) {
+      console.error("Failed to create task session:", err);
+    }
+  };
+
+  const handleNewQuickChat = async () => {
     try {
       const sessionId = await createSession();
       addOptimisticSession(sessionId);
@@ -170,112 +228,26 @@ export default function App() {
     try {
       const task = await createTask("New Task");
       setTasks((prev) => [task, ...prev]);
-      // Auto-create a session and jump straight into chat
       const sessionId = await createTaskSession(task.id);
       addOptimisticSession(sessionId);
-      navigate(`/sessions/${sessionId}?taskContext=${task.id}`);
+      navigate(`/tasks/${task.id}/sessions/${sessionId}`);
     } catch (err) {
       console.error("Failed to create task:", err);
     }
   };
 
-  const openSidebar = useCallback(() => setSidebarOpen(true), []);
-  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
-
-  useSwipeDrawer(sidebarOpen, openSidebar, closeSidebar);
-
-  const handleSelectSession = (id: string) => {
-    navigate(`/sessions/${id}`);
-    closeSidebar();
-  };
-
-  const handleSelectTask = (id: string) => {
-    navigate(`/tasks/${id}`);
-    closeSidebar();
-  };
-
-  const handleGoHome = () => {
-    navigate("/");
-    closeSidebar();
-  };
-
-  const handleOpenSettings = () => {
-    navigate("/settings");
-    closeSidebar();
-  };
-
-  // Open a session from within a task detail view — keep task context in sidebar
-  const handleOpenSessionFromTask = async (sessionId: string) => {
-    const ctxId = activeTaskId;
-    if (ctxId) {
-      // Pre-fetch task so sidebar context is ready immediately
-      try {
-        const task = await fetchTask(ctxId);
-        setTaskContext(task);
-      } catch {
-        // taskContext will be loaded from search param anyway
-      }
-    }
-    navigate(`/sessions/${sessionId}${ctxId ? `?taskContext=${ctxId}` : ""}`);
-  };
-
-  // Create a new session linked to the task context and open it
-  const handleNewTaskSession = async (taskId: string) => {
+  const handleUpdateTask = async (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => {
     try {
-      const sessionId = await createTaskSession(taskId);
-      addOptimisticSession(sessionId);
-      const task = await fetchTask(taskId);
-      setTaskContext(task);
-      navigate(`/sessions/${sessionId}?taskContext=${taskId}`);
+      const updated = await patchTask(taskId, updates);
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+      setSelectedTask((prev) => (prev?.id === taskId ? updated : prev));
     } catch (err) {
-      console.error("Failed to create task session:", err);
+      console.error("Failed to update task:", err);
     }
-  };
-
-  // Navigate back to the task detail from chat context
-  const handleBackToTask = (taskId: string) => {
-    navigate(`/tasks/${taskId}`);
-    setActiveTab("tasks");
-  };
-
-  // Navigate back to task list from chat context (clears task context, stays on current page)
-  const handleBackToTaskList = () => {
-    setSearchParams({});
-    setActiveTab("tasks");
-  };
-
-  // Enter task context from sidebar task list (stays on current session, swaps sidebar)
-  const handleEnterTaskContext = async (taskId: string) => {
-    try {
-      const task = await fetchTask(taskId);
-      setTaskContext(task);
-    } catch { /* will be loaded from search param */ }
-    setSearchParams({ taskContext: taskId });
-  };
-
-  // Resume a task — open last session or create a new one
-  const handleResumeTask = async (taskId: string, sessionId?: string) => {
-    if (sessionId) {
-      // Open existing session with task context
-      try {
-        const task = await fetchTask(taskId);
-        setTaskContext(task);
-      } catch { /* fallback */ }
-      navigate(`/sessions/${sessionId}?taskContext=${taskId}`);
-    } else {
-      // Create new session for this task
-      await handleNewTaskSession(taskId);
-    }
-  };
-
-  // Select a session within task context (stay in task context)
-  const handleSelectTaskSession = (sessionId: string) => {
-    const ctxId = taskContext?.id ?? taskContextId;
-    navigate(`/sessions/${sessionId}${ctxId ? `?taskContext=${ctxId}` : ""}`);
-    closeSidebar();
   };
 
   const handleTaskDeleted = () => {
+    setSelectedTask(null);
     navigate("/");
     loadTasks();
   };
@@ -287,7 +259,11 @@ export default function App() {
     try {
       await patchSession(sessionId, { archived });
       if (archived && activeSessionId === sessionId) {
-        navigate("/");
+        if (activeTaskId) {
+          navigate(`/tasks/${activeTaskId}`);
+        } else {
+          navigate("/");
+        }
       }
       await loadSessions();
     } catch (err) {
@@ -301,75 +277,129 @@ export default function App() {
     }
   };
 
-  // Sessions not linked to any task — shown in global Sessions tab and Dashboard
-  const globalSessions = useMemo(() => {
-    const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
-    return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
-  }, [sessions, tasks]);
+  const handleResumeTask = async (taskId: string, sessionId?: string) => {
+    if (sessionId) {
+      navigate(`/tasks/${taskId}/sessions/${sessionId}`);
+    } else {
+      await handleNewSession(taskId);
+    }
+  };
+
+  const handleLinkToTask = async (sessionId: string, taskId: string) => {
+    await linkResource(taskId, { type: "session", sessionId });
+    await loadTasks();
+  };
+
+  // ── Mobile: detect breakpoint ─────────────────────────────────
+  // On mobile (< md / 768px), we show stacked full-screen views.
+  // The route determines which level of the hierarchy is visible.
+
+  const isMobileRoute = {
+    taskList: location.pathname === "/" && !activeTaskId && !activeSessionId,
+    taskPanel: !!activeTaskId && !activeSessionId,
+    chat: !!activeSessionId,
+    settings: location.pathname === "/settings",
+  };
 
   return (
     <div className="flex h-dvh bg-bg-primary text-text-primary">
-      {/* Mobile overlay backdrop */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 z-30 md:hidden"
-          onClick={closeSidebar}
-        />
-      )}
+      {/* ── Task Rail (desktop only) ──────────────────────── */}
+      <TaskRail
+        tasks={tasks}
+        activeTaskId={activeTaskId}
+        onSelectTask={handleSelectTask}
+        onNewTask={handleNewTask}
+        onSelectQuickChats={handleSelectQuickChats}
+        isQuickChatsActive={quickChatsMode && !activeTaskId}
+        onGoHome={handleGoHome}
+        onOpenSettings={handleOpenSettings}
+        sessions={sessions}
+        isUnread={isUnread}
+      />
 
-      {/* Sidebar — overlay on mobile, static on desktop */}
-      <div
-        className={`fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-200 ease-in-out md:relative md:translate-x-0 ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        <Sidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          onGoHome={handleGoHome}
-          onOpenSettings={handleOpenSettings}
-          tasks={tasks}
-          activeTaskId={activeTaskId}
-          onSelectTask={handleSelectTask}
-          onEnterTaskContext={handleEnterTaskContext}
-          onNewTask={handleNewTask}
-          sessions={globalSessions}
-          allSessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
-          onArchiveSession={handleArchiveSession}
-          archivingIds={archivingIds}
-          taskContext={taskContext}
-          taskContextSessions={sessions}
-          onBackToTask={handleBackToTask}
-          onBackToTaskList={handleBackToTaskList}
-          onSelectTaskSession={handleSelectTaskSession}
-          onNewTaskSession={handleNewTaskSession}
-          isUnread={isUnread}
-          unreadCount={unreadCount}
-          onTasksChanged={loadTasks}
-        />
+      {/* ── Task Panel / Mobile Task List ─────────────────── */}
+      {/* Desktop: always visible as middle column */}
+      {/* Mobile: show task list at /, task panel at /tasks/:id */}
+      <div className={`
+        ${/* Desktop: always show panel */""} 
+        md:flex md:shrink-0
+        ${/* Mobile: only show at task-level routes */""}
+        ${isMobileRoute.taskList ? "flex flex-1" : ""}
+        ${isMobileRoute.taskPanel ? "flex flex-1" : ""}
+        ${isMobileRoute.chat || isMobileRoute.settings ? "hidden" : ""}
+      `.trim()}>
+        {/* Mobile task list — full screen at / */}
+        <div className={`md:hidden ${isMobileRoute.taskList ? "flex flex-col flex-1" : "hidden"}`}>
+          <MobileTaskListView
+            tasks={tasks}
+            activeTaskId={activeTaskId}
+            onSelectTask={handleSelectTask}
+            onNewTask={handleNewTask}
+            onSelectQuickChats={handleSelectQuickChats}
+            onGoHome={handleGoHome}
+            onOpenSettings={handleOpenSettings}
+            sessions={sessions}
+            isUnread={isUnread}
+            quickChatsMode={quickChatsMode}
+            orphanSessions={globalSessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={(id) => navigate(`/sessions/${id}`)}
+            onNewQuickChat={handleNewQuickChat}
+            onArchiveSession={handleArchiveSession}
+            archivingIds={archivingIds}
+            allTasks={tasks}
+            onLinkToTask={handleLinkToTask}
+          />
+        </div>
+
+        {/* Desktop panel + mobile task detail */}
+        <div className={`
+          md:flex md:shrink-0
+          ${isMobileRoute.taskPanel ? "flex flex-1" : "hidden md:flex"}
+        `.trim()}>
+          <TaskPanel
+            task={selectedTask}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onNewSession={handleNewSession}
+            onUpdateTask={handleUpdateTask}
+            onTasksChanged={loadTasks}
+            isUnread={isUnread}
+            onArchiveSession={handleArchiveSession}
+            archivingIds={archivingIds}
+            isQuickChats={quickChatsMode}
+            orphanSessions={globalSessions}
+            onNewQuickChat={handleNewQuickChat}
+            tasks={tasks}
+            onLinkToTask={handleLinkToTask}
+          />
+        </div>
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+      {/* ── Main content area ─────────────────────────────── */}
+      <div className={`
+        flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
+        ${/* Desktop: always visible */""}
+        ${/* Mobile: only when viewing chat or settings */""}
+        ${isMobileRoute.chat || isMobileRoute.settings ? "flex" : "hidden md:flex"}
+      `.trim()}>
         {restartPending && <RestartBanner waitingSessions={restartWaiting} />}
 
-        {/* Mobile top bar — sticky */}
+        {/* Mobile back bar */}
         <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
           <button
-            onClick={() => setSidebarOpen(true)}
-            className="text-text-muted hover:text-text-primary transition-colors"
-            aria-label="Open menu"
+            onClick={() => {
+              if (activeTaskId) {
+                navigate(`/tasks/${activeTaskId}`);
+              } else {
+                navigate("/");
+              }
+            }}
+            className="text-text-muted hover:text-text-primary transition-colors text-sm"
+            aria-label="Back"
           >
-            <Menu size={18} />
-          </button>
-          <button
-            onClick={handleGoHome}
-            className="text-sm font-medium text-text-primary hover:text-accent transition-colors flex items-center gap-1.5"
-          >
-            <Sparkles size={14} className="text-accent" />
-            Copilot Bridge
+            ← Back
           </button>
         </div>
 
@@ -380,9 +410,9 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
-                  onSelectSession={handleSelectSession}
+                  onSelectSession={(id) => navigate(`/sessions/${id}`)}
                   onNewTask={handleNewTask}
-                  onNewSession={handleNewSession}
+                  onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
                 />
               }
@@ -390,30 +420,138 @@ export default function App() {
             <Route
               path="tasks/:taskId"
               element={
-                <TaskDetailView
-                  sessions={sessions}
-                  onTaskUpdated={loadTasks}
-                  onTaskDeleted={handleTaskDeleted}
-                  onOpenSession={handleOpenSessionFromTask}
-                  onSessionCreated={addOptimisticSession}
-                  onArchiveSession={handleArchiveSession}
-                  isUnread={isUnread}
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onSelectSession={(id) => {
+                    if (activeTaskId) navigate(`/tasks/${activeTaskId}/sessions/${id}`);
+                    else navigate(`/sessions/${id}`);
+                  }}
+                  onNewTask={handleNewTask}
+                  onNewSession={handleNewQuickChat}
+                  onResumeTask={handleResumeTask}
                 />
+              }
+            />
+            <Route
+              path="tasks/:taskId/sessions/:sessionId"
+              element={
+                <SessionRoute sessions={sessions} onMessageSent={loadSessions} />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute
-                  sessions={sessions}
-                  onMessageSent={loadSessions}
-                />
+                <SessionRoute sessions={sessions} onMessageSent={loadSessions} />
               }
             />
             <Route path="settings" element={<SettingsView />} />
           </Routes>
         </main>
       </div>
+    </div>
+  );
+}
+
+// ── Mobile Task List View ────────────────────────────────────────
+// Full-screen view on mobile showing either the task list or quick chats
+
+function MobileTaskListView({
+  tasks,
+  activeTaskId,
+  onSelectTask,
+  onNewTask,
+  onSelectQuickChats,
+  onGoHome,
+  onOpenSettings,
+  sessions,
+  isUnread,
+  quickChatsMode,
+  orphanSessions,
+  activeSessionId,
+  onSelectSession,
+  onNewQuickChat,
+  onArchiveSession,
+  archivingIds,
+  allTasks,
+  onLinkToTask,
+}: {
+  tasks: Task[];
+  activeTaskId: string | null;
+  onSelectTask: (id: string) => void;
+  onNewTask: () => void;
+  onSelectQuickChats: () => void;
+  onGoHome: () => void;
+  onOpenSettings: () => void;
+  sessions: Session[];
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  quickChatsMode: boolean;
+  orphanSessions: Session[];
+  activeSessionId: string | null;
+  onSelectSession: (id: string) => void;
+  onNewQuickChat: () => void;
+  onArchiveSession: (id: string, archived: boolean) => void;
+  archivingIds: Set<string>;
+  allTasks: Task[];
+  onLinkToTask: (sessionId: string, taskId: string) => void;
+}) {
+  return (
+    <div className="flex flex-col h-full bg-bg-secondary">
+      {/* Header */}
+      <div className="p-4 border-b border-border flex items-center justify-between">
+        <span className="text-sm font-semibold text-text-primary">
+          {quickChatsMode ? "Quick Chats" : "Tasks"}
+        </span>
+        <button
+          onClick={onOpenSettings}
+          className="text-text-muted hover:text-text-secondary transition-colors text-xs"
+        >
+          Settings
+        </button>
+      </div>
+
+      {/* Tab toggle: Tasks | Quick Chats */}
+      <div className="flex border-b border-border">
+        <button
+          onClick={() => { if (quickChatsMode) onGoHome(); }}
+          className={`flex-1 py-2.5 text-xs font-medium transition-colors ${!quickChatsMode ? "text-accent border-b-2 border-accent" : "text-text-muted"}`}
+        >
+          Tasks
+        </button>
+        <button
+          onClick={onSelectQuickChats}
+          className={`flex-1 py-2.5 text-xs font-medium transition-colors ${quickChatsMode ? "text-accent border-b-2 border-accent" : "text-text-muted"}`}
+        >
+          Quick Chats
+        </button>
+      </div>
+
+      {/* Content */}
+      {quickChatsMode ? (
+        <div className="flex-1 overflow-y-auto p-2">
+          <SessionList
+            variant="global"
+            sessions={orphanSessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={onSelectSession}
+            onNewSession={onNewQuickChat}
+            newButtonLabel="+ Quick Chat"
+            isUnread={isUnread}
+            onArchiveSession={onArchiveSession}
+            archivingIds={archivingIds}
+            tasks={allTasks}
+            onLinkToTask={onLinkToTask}
+          />
+        </div>
+      ) : (
+        <TaskList
+          tasks={tasks}
+          activeTaskId={activeTaskId}
+          onSelectTask={onSelectTask}
+          onNewTask={onNewTask}
+          sessions={sessions}
+          isUnread={isUnread}
+        />
+      )}
     </div>
   );
 }
