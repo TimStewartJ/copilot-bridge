@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   fetchSessions,
   createSession,
@@ -13,6 +13,7 @@ import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import TaskDetailView from "./components/TaskDetailView";
 import Dashboard from "./components/Dashboard";
+import { useSwipeDrawer } from "./useSwipeDrawer";
 
 type ViewMode = "none" | "chat" | "task";
 
@@ -89,7 +90,10 @@ export default function App() {
     }
   };
 
-  const closeSidebar = () => setSidebarOpen(false);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  useSwipeDrawer(sidebarOpen, openSidebar, closeSidebar);
 
   const handleSelectSession = (id: string) => {
     setActiveSessionId(id);
