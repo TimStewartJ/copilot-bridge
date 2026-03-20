@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   fetchSessions,
   createSession,
+  patchSession,
   fetchTasks,
   createTask,
   fetchTask,
@@ -33,7 +34,7 @@ export default function App() {
 
   const loadSessions = async () => {
     try {
-      setSessions(await fetchSessions());
+      setSessions(await fetchSessions(true));
     } catch (err) {
       console.error("Failed to load sessions:", err);
     }
@@ -204,6 +205,21 @@ export default function App() {
     loadTasks();
   };
 
+  const handleArchiveSession = async (sessionId: string, archived: boolean) => {
+    try {
+      await patchSession(sessionId, { archived });
+      // If archiving the active session, deselect it
+      if (archived && activeSessionId === sessionId) {
+        setActiveSessionId(null);
+        setTaskContext(null);
+        setViewMode("none");
+      }
+      await loadSessions();
+    } catch (err) {
+      console.error("Failed to archive session:", err);
+    }
+  };
+
   // Sessions not linked to any task — shown in global Sessions tab and Dashboard
   const globalSessions = useMemo(() => {
     const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
@@ -239,6 +255,7 @@ export default function App() {
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
+          onArchiveSession={handleArchiveSession}
           taskContext={taskContext}
           taskContextSessions={sessions}
           onBackToTask={handleBackToTask}

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Session } from "../api";
 
 function formatSize(bytes?: number): string {
@@ -48,6 +49,7 @@ interface SessionListProps {
   newButtonLabel?: string;
   showEmptyState?: boolean;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  onArchiveSession?: (id: string, archived: boolean) => void;
 }
 
 export default function SessionList({
@@ -59,63 +61,103 @@ export default function SessionList({
   newButtonLabel = variant === "global" ? "+ New Session" : "+ New Chat",
   showEmptyState = variant === "compact",
   isUnread,
+  onArchiveSession,
 }: SessionListProps) {
   const s = styles[variant];
+  const [showArchived, setShowArchived] = useState(false);
+
+  const activeSessions = sessions.filter((sess) => !sess.archived);
+  const archivedSessions = sessions.filter((sess) => sess.archived);
+
+  const renderItem = (session: Session) => {
+    const id = session.sessionId;
+    const isActive = id === activeSessionId;
+    const unread = !isActive && isUnread?.(id, session.modifiedTime);
+    const isArch = session.archived;
+    const dotColor = session.busy
+      ? "bg-blue-400 animate-pulse"
+      : unread
+        ? "bg-green-400"
+        : isArch
+          ? "bg-gray-700"
+          : "bg-gray-600";
+
+    return (
+      <div key={id} className="group relative">
+        <button
+          onClick={() => onSelectSession(id)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            navigator.clipboard.writeText(id);
+          }}
+          title={id}
+          className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-colors ${
+            isActive
+              ? "bg-[#2a2a5e] border-l-3 border-indigo-400"
+              : "hover:bg-[#1a1a3e]"
+          } ${isArch ? "opacity-50" : ""}`}
+        >
+          <div className={`${s.titleClass} flex items-center`}>
+            <span
+              className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
+            />
+            <span className="truncate">
+              {session.summary || id.slice(0, 8)}
+            </span>
+          </div>
+          <div className={s.metaClass}>
+            {timeAgo(session.modifiedTime)}
+            {session.context?.branch && ` · ${session.context.branch}`}
+            {session.diskSizeBytes
+              ? ` · ${formatSize(session.diskSizeBytes)}`
+              : ""}
+            {session.hasPlan && " · 📋"}
+          </div>
+        </button>
+        {onArchiveSession && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onArchiveSession(id, !isArch);
+            }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-gray-500 hover:text-yellow-400 transition-all text-xs px-1.5 py-0.5 rounded"
+            title={isArch ? "Unarchive session" : "Archive session"}
+          >
+            {isArch ? "📤" : "📦"}
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className={s.wrapper}>
       <button onClick={onNewSession} className={s.newButton}>
         {newButtonLabel}
       </button>
-      {showEmptyState && sessions.length === 0 ? (
+      {showEmptyState && activeSessions.length === 0 && archivedSessions.length === 0 ? (
         <div className="text-xs text-gray-600 px-3 py-1">No sessions yet</div>
       ) : (
-        <div className={s.listGap}>
-          {sessions.map((session) => {
-            const id = session.sessionId;
-            const isActive = id === activeSessionId;
-            const unread = !isActive && isUnread?.(id, session.modifiedTime);
-            // Dot: busy (blue pulsing) > unread (green solid) > idle (gray)
-            const dotColor = session.busy
-              ? "bg-blue-400 animate-pulse"
-              : unread
-                ? "bg-green-400"
-                : "bg-gray-600";
-            return (
+        <>
+          <div className={s.listGap}>
+            {activeSessions.map(renderItem)}
+          </div>
+          {archivedSessions.length > 0 && (
+            <>
               <button
-                key={id}
-                onClick={() => onSelectSession(id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  navigator.clipboard.writeText(id);
-                }}
-                title={id}
-                className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-colors ${
-                  isActive
-                    ? "bg-[#2a2a5e] border-l-3 border-indigo-400"
-                    : "hover:bg-[#1a1a3e]"
-                }`}
+                onClick={() => setShowArchived(!showArchived)}
+                className="w-full px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors mt-2"
               >
-                <div className={`${s.titleClass} flex items-center`}>
-                  <span
-                    className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
-                  />
-                  <span className="truncate">
-                    {session.summary || id.slice(0, 8)}
-                  </span>
-                </div>
-                <div className={s.metaClass}>
-                  {timeAgo(session.modifiedTime)}
-                  {session.context?.branch && ` · ${session.context.branch}`}
-                  {session.diskSizeBytes
-                    ? ` · ${formatSize(session.diskSizeBytes)}`
-                    : ""}
-                  {session.hasPlan && " · 📋"}
-                </div>
+                {showArchived ? "▾" : "▸"} Archived ({archivedSessions.length})
               </button>
-            );
-          })}
-        </div>
+              {showArchived && (
+                <div className={s.listGap}>
+                  {archivedSessions.map(renderItem)}
+                </div>
+              )}
+            </>
+          )}
+        </>
       )}
     </div>
   );

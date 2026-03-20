@@ -22,6 +22,7 @@ interface SidebarProps {
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  onArchiveSession?: (id: string, archived: boolean) => void;
   // Task context (when navigating from task → session)
   taskContext: Task | null;
   taskContextSessions: Session[];
@@ -46,6 +47,7 @@ export default function Sidebar({
   activeSessionId,
   onSelectSession,
   onNewSession,
+  onArchiveSession,
   taskContext,
   taskContextSessions,
   onBackToTask,
@@ -137,6 +139,7 @@ export default function Sidebar({
           activeSessionId={activeSessionId}
           onSelectSession={onSelectSession}
           onNewSession={onNewSession}
+          onArchiveSession={onArchiveSession}
           isUnread={isUnread}
         />
       )}

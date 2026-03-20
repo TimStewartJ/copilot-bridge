@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
+import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
 import { getBus, hasBus } from "./event-bus.js";
 import * as adoClient from "./ado-client.js";
@@ -36,10 +37,12 @@ function getDirSize(dirPath: string): number {
 
 // ── API routes ────────────────────────────────────────────────────
 
-app.get("/api/sessions", async (_req, res) => {
+app.get("/api/sessions", async (req, res) => {
   try {
+    const includeArchived = req.query.includeArchived === "true";
     const sessions = await sessionManager.listSessions();
     const sessionStateDir = join(homedir(), ".copilot", "session-state");
+    const meta = sessionMetaStore.listMeta();
 
     const enriched = sessions
       .filter((s: any) => s.summary) // hide empty/zombie sessions
@@ -51,8 +54,11 @@ app.get("/api/sessions", async (_req, res) => {
           diskSizeBytes = getDirSize(sessionDir);
         } catch { /* session dir may not exist */ }
         const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
-        return { ...s, diskSizeBytes, busy: sessionManager.isSessionBusy(id), hasPlan };
-      });
+        const archived = meta[id]?.archived === true;
+        const archivedAt = meta[id]?.archivedAt ?? null;
+        return { ...s, diskSizeBytes, busy: sessionManager.isSessionBusy(id), hasPlan, archived, archivedAt };
+      })
+      .filter((s: any) => includeArchived || !s.archived);
 
     res.json({ sessions: enriched });
   } catch (err) {
@@ -196,6 +202,20 @@ app.get("/api/sessions/:id/plan", (_req, res) => {
     const content = readFileSync(planPath, "utf-8");
     const lastModified = statSync(planPath).mtime.toISOString();
     res.json({ content, lastModified });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// PATCH /api/sessions/:id — update session metadata (archive/unarchive)
+app.patch("/api/sessions/:id", (req, res) => {
+  const { archived } = req.body;
+  if (typeof archived !== "boolean") {
+    return res.status(400).json({ error: "archived (boolean) is required" });
+  }
+  try {
+    sessionMetaStore.setArchived(req.params.id, archived);
+    res.json({ ok: true, archived });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

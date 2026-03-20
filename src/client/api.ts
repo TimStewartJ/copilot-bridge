@@ -6,6 +6,8 @@ export interface Session {
   diskSizeBytes?: number;
   busy?: boolean;
   hasPlan?: boolean;
+  archived?: boolean;
+  archivedAt?: string;
   context?: {
     cwd?: string;
     gitRoot?: string;
@@ -93,14 +95,27 @@ async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
-export async function fetchSessions(): Promise<Session[]> {
-  const data = await apiFetch<{ sessions: Session[] }>("/api/sessions");
+export async function fetchSessions(includeArchived = false): Promise<Session[]> {
+  const qs = includeArchived ? "?includeArchived=true" : "";
+  const data = await apiFetch<{ sessions: Session[] }>(`/api/sessions${qs}`);
   return data.sessions;
 }
 
 export async function createSession(): Promise<string> {
   const data = await apiFetch<{ sessionId: string }>("/api/sessions", {});
   return data.sessionId;
+}
+
+export async function patchSession(id: string, updates: { archived: boolean }): Promise<void> {
+  const res = await fetch(`/api/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
 }
 
 export async function fetchMessages(sessionId: string): Promise<{ messages: ChatMessage[]; busy: boolean }> {
