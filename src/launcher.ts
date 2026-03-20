@@ -1,17 +1,11 @@
 // Launcher — immortal parent process that manages the bridge server
 // This file should NEVER be modified by the agent.
 
+import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-
-// Prepend timestamps to all console output
-const _origLog = console.log.bind(console);
-const _origErr = console.error.bind(console);
-const _ts = () => new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-console.log = (...args: any[]) => _origLog(`[${_ts()}]`, ...args);
-console.error = (...args: any[]) => _origErr(`[${_ts()}]`, ...args);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -141,7 +135,7 @@ function startServer(): ChildProcess {
         const healthy = await healthCheck();
         if (healthy) {
           log(`✅ Auto-restart succeeded after crash`);
-          await notifyWebhook(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code})`, currentTunnelUrl ?? undefined);
+          await notifyWebhook(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code}, attempt ${crashRestarts}/${MAX_CRASH_RESTARTS})`, currentTunnelUrl ?? undefined);
         } else {
           log(`❌ Auto-restart failed health check`);
           killServer();
@@ -219,6 +213,7 @@ async function restart() {
 
   if (!build()) {
     log("Build failed — rolling back");
+    await notifyWebhook("⚠️ Build failed — rolling back to last checkpoint", currentTunnelUrl ?? undefined);
     rollback();
     consecutiveFailures++;
     if (consecutiveFailures >= MAX_FAILURES) {
@@ -238,6 +233,7 @@ async function restart() {
     await notifyWebhook("🔄 Copilot Bridge restarted successfully", currentTunnelUrl ?? undefined);
   } else {
     log("❌ Health check failed — rolling back");
+    await notifyWebhook("⚠️ Health check failed — rolling back to last checkpoint", currentTunnelUrl ?? undefined);
     killServer();
     rollback();
     serverProcess = startServer();
