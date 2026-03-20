@@ -137,6 +137,11 @@ export default function Sidebar({
               <button
                 key={id}
                 onClick={() => onSelectSession(id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  navigator.clipboard.writeText(id);
+                }}
+                title={id}
                 className={`w-full text-left px-3 py-2.5 rounded-md text-sm transition-colors ${
                   isActive
                     ? "bg-[#2a2a5e] border-l-3 border-indigo-400"
@@ -249,6 +254,11 @@ function TaskContextPanel({
                   <button
                     key={s.sessionId}
                     onClick={() => onSelectSession(s.sessionId)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      navigator.clipboard.writeText(s.sessionId);
+                    }}
+                    title={s.sessionId}
                     className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                       isActive
                         ? "bg-[#2a2a5e] border-l-3 border-indigo-400"
