@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
+import * as settingsStore from "./settings-store.js";
 import { getBus, hasBus } from "./event-bus.js";
 import * as adoClient from "./ado-client.js";
 
@@ -346,6 +347,26 @@ app.post("/api/tasks/:id/session", async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── Settings routes ───────────────────────────────────────────────
+
+app.get("/api/settings", (_req, res) => {
+  try {
+    res.json(settingsStore.getSettings());
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.patch("/api/settings", (req, res) => {
+  try {
+    const updated = settingsStore.updateSettings(req.body);
+    console.log("[settings] Settings updated");
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
   }
 });
 

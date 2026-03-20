@@ -208,3 +208,33 @@ export async function fetchPlan(sessionId: string): Promise<PlanData> {
 export async function fetchEnrichedTask(id: string): Promise<EnrichedTaskData> {
   return apiFetch<EnrichedTaskData>(`/api/tasks/${id}/enriched`);
 }
+
+// ── Settings API ──────────────────────────────────────────────────
+
+export interface McpServerConfig {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  tools?: string[];
+}
+
+export interface AppSettings {
+  mcpServers: Record<string, McpServerConfig>;
+}
+
+export async function fetchSettings(): Promise<AppSettings> {
+  return apiFetch<AppSettings>("/api/settings");
+}
+
+export async function patchSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
+  const res = await fetch("/api/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}

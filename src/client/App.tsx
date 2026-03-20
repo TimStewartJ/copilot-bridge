@@ -14,9 +14,10 @@ import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import TaskDetailView from "./components/TaskDetailView";
 import Dashboard from "./components/Dashboard";
+import SettingsView from "./components/SettingsView";
 import { useSwipeDrawer } from "./useSwipeDrawer";
 
-type ViewMode = "none" | "chat" | "task";
+type ViewMode = "none" | "chat" | "task" | "settings";
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -135,6 +136,14 @@ export default function App() {
     closeSidebar();
   };
 
+  const handleOpenSettings = () => {
+    setActiveSessionId(null);
+    setActiveTaskId(null);
+    setTaskContext(null);
+    setViewMode("settings");
+    closeSidebar();
+  };
+
   // Open a session from within a task detail view — keep task context in sidebar
   const handleOpenSessionFromTask = async (sessionId: string) => {
     // Capture the current task for sidebar context
@@ -212,6 +221,7 @@ export default function App() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           onGoHome={handleGoHome}
+          onOpenSettings={handleOpenSettings}
           tasks={tasks}
           activeTaskId={activeTaskId}
           onSelectTask={handleSelectTask}
@@ -276,6 +286,9 @@ export default function App() {
               onNewSession={handleNewSession}
               isUnread={isUnread}
             />
+          )}
+          {viewMode === "settings" && (
+            <SettingsView onGoHome={handleGoHome} />
           )}
         </main>
       </div>

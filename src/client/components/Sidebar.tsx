@@ -11,6 +11,7 @@ interface SidebarProps {
   activeTab: TabMode;
   onTabChange: (tab: TabMode) => void;
   onGoHome: () => void;
+  onOpenSettings: () => void;
   // Tasks
   tasks: Task[];
   activeTaskId: string | null;
@@ -36,6 +37,7 @@ export default function Sidebar({
   activeTab,
   onTabChange,
   onGoHome,
+  onOpenSettings,
   tasks,
   activeTaskId,
   onSelectTask,
@@ -75,12 +77,19 @@ export default function Sidebar({
   return (
     <div className="w-full h-full bg-[#16213e] border-r border-[#2a2a4a] flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-[#2a2a4a]">
+      <div className="p-4 border-b border-[#2a2a4a] flex items-center justify-between">
         <button
           onClick={onGoHome}
           className="text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
         >
           🤖 Copilot Bridge
+        </button>
+        <button
+          onClick={onOpenSettings}
+          className="text-gray-500 hover:text-gray-300 transition-colors"
+          title="Settings"
+        >
+          ⚙️
         </button>
       </div>
 
