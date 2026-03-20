@@ -29,6 +29,7 @@ interface SidebarProps {
   taskContext: Task | null;
   taskContextSessions: Session[];
   onBackToTask: (taskId: string) => void;
+  onBackToTaskList: () => void;
   onSelectTaskSession: (sessionId: string) => void;
   onNewTaskSession: (taskId: string) => void;
   // Unread
@@ -54,6 +55,7 @@ export default function Sidebar({
   taskContext,
   taskContextSessions,
   onBackToTask,
+  onBackToTaskList,
   onSelectTaskSession,
   onNewTaskSession,
   isUnread,
@@ -68,6 +70,7 @@ export default function Sidebar({
           sessions={taskContextSessions}
           activeSessionId={activeSessionId}
           onBackToTask={onBackToTask}
+          onBackToTaskList={onBackToTaskList}
           onSelectSession={onSelectTaskSession}
           onNewSession={onNewTaskSession}
           onGoHome={onGoHome}
@@ -192,6 +195,7 @@ interface TaskContextPanelProps {
   sessions: Session[];
   activeSessionId: string | null;
   onBackToTask: (taskId: string) => void;
+  onBackToTaskList: () => void;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
   onGoHome: () => void;
@@ -204,6 +208,7 @@ function TaskContextPanel({
   sessions,
   activeSessionId,
   onBackToTask,
+  onBackToTaskList,
   onSelectSession,
   onNewSession,
   onGoHome,
@@ -242,18 +247,22 @@ function TaskContextPanel({
         </button>
       </div>
 
-      {/* Back to task */}
+      {/* Back to task list + clickable task title */}
       <div className="px-4 pt-3 pb-2 border-b border-border">
         <button
-          onClick={() => onBackToTask(task.id)}
+          onClick={onBackToTaskList}
           className="text-xs text-text-muted hover:text-accent transition-colors flex items-center gap-1"
         >
-          ← Back to Task
+          ← Tasks
         </button>
         <div className="mt-2 flex items-start gap-2">
-          <h2 className="text-sm font-medium text-text-primary leading-tight flex-1 min-w-0 line-clamp-2">
+          <button
+            onClick={() => onBackToTask(task.id)}
+            className="text-sm font-medium text-text-primary hover:text-accent leading-tight flex-1 min-w-0 line-clamp-2 text-left transition-colors"
+            title="Go to task detail"
+          >
             {task.title}
-          </h2>
+          </button>
           <span
             className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${STATUS_COLORS[task.status] ?? ""}`}
           >

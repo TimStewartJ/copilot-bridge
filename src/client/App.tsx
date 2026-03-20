@@ -211,6 +211,12 @@ export default function App() {
     setActiveTab("tasks");
   };
 
+  // Navigate back to task list from chat context (clears task context)
+  const handleBackToTaskList = () => {
+    navigate("/");
+    setActiveTab("tasks");
+  };
+
   // Resume a task — open last session or create a new one
   const handleResumeTask = async (taskId: string, sessionId?: string) => {
     if (sessionId) {
@@ -291,6 +297,7 @@ export default function App() {
           taskContext={taskContext}
           taskContextSessions={sessions}
           onBackToTask={handleBackToTask}
+          onBackToTaskList={handleBackToTaskList}
           onSelectTaskSession={handleSelectTaskSession}
           onNewTaskSession={handleNewTaskSession}
           isUnread={isUnread}
