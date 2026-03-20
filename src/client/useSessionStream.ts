@@ -31,6 +31,12 @@ export function useSessionStream(
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
 
+  // Store callbacks in refs to avoid dependency chain instability
+  const onMessagesUpdatedRef = useRef(onMessagesUpdated);
+  onMessagesUpdatedRef.current = onMessagesUpdated;
+  const onTitleChangedRef = useRef(onTitleChanged);
+  onTitleChangedRef.current = onTitleChanged;
+
   // Connect to the SSE stream for the current session
   const connectStream = useCallback((sid: string) => {
     abortRef.current?.abort();
@@ -113,7 +119,7 @@ export function useSessionStream(
                 case "assistant_partial":
                   // Intermediate message — emit with any completed tool calls from this turn
                   if (event.content || completedTools.length > 0) {
-                    onMessagesUpdated([{
+                    onMessagesUpdatedRef.current([{
                       role: "assistant",
                       content: event.content ?? "",
                       toolCalls: completedTools.length > 0 ? [...completedTools] : undefined,
@@ -164,10 +170,10 @@ export function useSessionStream(
                   break;
                 }
                 case "title_changed":
-                  onTitleChanged();
+                  onTitleChangedRef.current();
                   break;
                 case "done":
-                  onMessagesUpdated([{
+                  onMessagesUpdatedRef.current([{
                     role: "assistant",
                     content: event.content ?? "",
                     toolCalls: completedTools.length > 0 ? [...completedTools] : undefined,
@@ -180,11 +186,11 @@ export function useSessionStream(
                     toolProgress: "",
                     isStreaming: false,
                   });
-                  onTitleChanged();
+                  onTitleChangedRef.current();
                   accumulatedContent = "";
                   break;
                 case "error":
-                  onMessagesUpdated([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
+                  onMessagesUpdatedRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
                   setStreamState({
                     streamingContent: "",
                     activeTools: [],
@@ -206,7 +212,7 @@ export function useSessionStream(
         console.error("[stream] Error:", err);
         setStreamState((s) => ({ ...s, isStreaming: false }));
       });
-  }, [onMessagesUpdated, onTitleChanged]);
+  }, []); // stable — callbacks accessed via refs
 
   // Clean up on session change
   useEffect(() => {
