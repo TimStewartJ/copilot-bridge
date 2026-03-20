@@ -91,6 +91,7 @@ const BRIDGE_TOOLS = [
 export class SessionManager {
   private client: CopilotClient | null = null;
   private activeSessions = new Set<string>();
+  private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
@@ -113,6 +114,7 @@ export class SessionManager {
       tools: BRIDGE_TOOLS,
     });
 
+    this.sessionObjects.set(session.sessionId, session);
     console.log(`[sdk] Created session ${session.sessionId}`);
     return { sessionId: session.sessionId };
   }
@@ -148,6 +150,7 @@ export class SessionManager {
       },
     });
 
+    this.sessionObjects.set(session.sessionId, session);
     console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
     return { sessionId: session.sessionId };
   }
@@ -205,23 +208,28 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
     }
 
-    // Resume session with timeout — SDK can hang here indefinitely
+    // Get or resume session — reuse cached object if available
     const resumeStart = Date.now();
-    console.log(`[sdk] [${sid}] Resuming session...`);
+    let session = this.sessionObjects.get(sessionId);
 
-    const session = await Promise.race([
-      this.client!.resumeSession(sessionId, resumeConfig),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-      ),
-    ]);
-
-    console.log(`[sdk] [${sid}] Session resumed (${Date.now() - resumeStart}ms)`);
+    if (session) {
+      console.log(`[sdk] [${sid}] Reusing cached session object`);
+    } else {
+      console.log(`[sdk] [${sid}] Resuming session...`);
+      session = await Promise.race([
+        this.client!.resumeSession(sessionId, resumeConfig),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+        ),
+      ]);
+      this.sessionObjects.set(sessionId, session);
+      console.log(`[sdk] [${sid}] Session resumed (${Date.now() - resumeStart}ms)`);
+    }
 
     // Track tool names by toolCallId — completion events don't include the tool name
     const toolNameMap = new Map<string, string>();
 
-    const unsub = session.on((event) => {
+    const unsub = session.on((event: any) => {
       const data = (event as any).data;
       switch (event.type) {
         case "assistant.turn_start":
@@ -357,10 +365,27 @@ export class SessionManager {
   async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    console.log(`[sdk] Loading messages for session ${sessionId}...`);
-    const session = await this.client.resumeSession(sessionId, {
-      onPermissionRequest: approveAll,
-    });
+    const sid = sessionId.slice(0, 8);
+
+    // Reuse cached session object — avoids overwriting the active one in the SDK
+    let session = this.sessionObjects.get(sessionId);
+
+    if (session) {
+      console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
+    } else {
+      console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
+      session = await Promise.race([
+        this.client.resumeSession(sessionId, {
+          onPermissionRequest: approveAll,
+          mcpServers: config.sessionMcpServers as any,
+          tools: BRIDGE_TOOLS,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+        ),
+      ]);
+      this.sessionObjects.set(sessionId, session);
+    }
 
     const events = await session.getMessages();
     const messages: Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }> = [];
