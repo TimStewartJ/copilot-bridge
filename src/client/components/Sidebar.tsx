@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Session, Task, EnrichedWorkItem, EnrichedPR } from "../api";
-import { fetchEnrichedTask } from "../api";
+import { fetchEnrichedTask, linkResource, unlinkResource } from "../api";
 import TaskList from "./TaskList";
 import SessionList from "./SessionList";
 import { Sparkles, Settings, ClipboardList, MessageSquare, Bug, CheckSquare, BookOpen, Target, Trophy, GitPullRequest, ChevronDown, ChevronRight } from "lucide-react";
@@ -26,6 +26,7 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
   onArchiveSession?: (id: string, archived: boolean) => void;
+  archivingIds?: Set<string>;
   // Task context (when navigating from task → session)
   taskContext: Task | null;
   taskContextSessions: Session[];
@@ -36,6 +37,8 @@ interface SidebarProps {
   // Unread
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   unreadCount?: (sessions: Session[], activeSessionId?: string | null) => number;
+  // Task refresh
+  onTasksChanged?: () => void;
 }
 
 export default function Sidebar({
@@ -54,6 +57,7 @@ export default function Sidebar({
   onSelectSession,
   onNewSession,
   onArchiveSession,
+  archivingIds,
   taskContext,
   taskContextSessions,
   onBackToTask,
@@ -62,6 +66,7 @@ export default function Sidebar({
   onNewTaskSession,
   isUnread,
   unreadCount,
+  onTasksChanged,
 }: SidebarProps) {
   // If we have task context (navigated from task → session), show the task panel
   if (taskContext) {
@@ -78,6 +83,8 @@ export default function Sidebar({
           onGoHome={onGoHome}
           isUnread={isUnread}
           onArchiveSession={onArchiveSession}
+          archivingIds={archivingIds}
+          onTasksChanged={onTasksChanged}
         />
       </div>
     );
@@ -176,7 +183,13 @@ export default function Sidebar({
           onSelectSession={onSelectSession}
           onNewSession={onNewSession}
           onArchiveSession={onArchiveSession}
+          archivingIds={archivingIds}
           isUnread={isUnread}
+          tasks={tasks}
+          onLinkToTask={async (sessionId, taskId) => {
+            await linkResource(taskId, { type: "session", sessionId });
+            onTasksChanged?.();
+          }}
         />
       )}
     </div>
@@ -203,6 +216,8 @@ interface TaskContextPanelProps {
   onGoHome: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onArchiveSession?: (id: string, archived: boolean) => void;
+  archivingIds?: Set<string>;
+  onTasksChanged?: () => void;
 }
 
 function TaskContextPanel({
@@ -216,6 +231,8 @@ function TaskContextPanel({
   onGoHome,
   isUnread,
   onArchiveSession,
+  archivingIds,
+  onTasksChanged,
 }: TaskContextPanelProps) {
   const [notesExpanded, setNotesExpanded] = useState(false);
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
@@ -286,6 +303,12 @@ function TaskContextPanel({
             onNewSession={() => onNewSession(task.id)}
             isUnread={isUnread}
             onArchiveSession={onArchiveSession}
+            archivingIds={archivingIds}
+            taskContext={task}
+            onUnlinkFromTask={async (sessionId, taskId) => {
+              await unlinkResource(taskId, { type: "session", sessionId });
+              onTasksChanged?.();
+            }}
           />
         </div>
 

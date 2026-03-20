@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { Session } from "../api";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check } from "lucide-react";
+import type { Session, Task } from "../api";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2 } from "lucide-react";
+import TaskPickerDialog from "./TaskPickerDialog";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -51,6 +52,13 @@ interface SessionListProps {
   showEmptyState?: boolean;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onArchiveSession?: (id: string, archived: boolean) => void;
+  archivingIds?: Set<string>;
+  // Task linking (global variant)
+  tasks?: Task[];
+  onLinkToTask?: (sessionId: string, taskId: string) => void;
+  // Task unlinking (compact/task-context variant)
+  taskContext?: Task;
+  onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
 }
 
 export default function SessionList({
@@ -63,11 +71,17 @@ export default function SessionList({
   showEmptyState = variant === "compact",
   isUnread,
   onArchiveSession,
+  archivingIds,
+  tasks,
+  onLinkToTask,
+  taskContext,
+  onUnlinkFromTask,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Long-press state for mobile
@@ -102,7 +116,12 @@ export default function SessionList({
 
   const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.sessionId) : null;
 
-  const activeSessions = sessions.filter((sess) => !sess.archived);
+  // Find which task (if any) the context-menu'd session is linked to
+  const ctxLinkedTask = ctxMenu && tasks
+    ? tasks.find((t) => t.sessionIds.includes(ctxMenu.sessionId))
+    : null;
+
+  const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
 
   const renderItem = (session: Session) => {
@@ -110,13 +129,16 @@ export default function SessionList({
     const isActive = id === activeSessionId;
     const unread = !isActive && isUnread?.(id, session.modifiedTime);
     const isArch = session.archived;
-    const dotColor = session.busy
-      ? "bg-info animate-pulse"
-      : unread
-        ? "bg-success"
-        : isArch
-          ? "bg-text-faint"
-          : "bg-text-faint";
+    const isArchiving = archivingIds?.has(id);
+    const dotColor = isArchiving
+      ? ""
+      : session.busy
+        ? "bg-info animate-pulse"
+        : unread
+          ? "bg-success"
+          : isArch
+            ? "bg-text-faint"
+            : "bg-text-faint";
 
     return (
       <div key={id} className="group relative">
@@ -152,23 +174,27 @@ export default function SessionList({
           }}
           onTouchEnd={() => cancelLongPress()}
           onTouchCancel={() => cancelLongPress()}
-          title={id}
+          title={session.summary || id}
           className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-colors ${
             isActive
               ? "bg-accent/10 border-l-2 border-accent"
               : "hover:bg-bg-hover"
-          } ${isArch ? "opacity-50" : ""}`}
+          } ${isArch || isArchiving ? "opacity-50" : ""}`}
         >
           <div className={`${s.titleClass} flex items-center`}>
-            <span
-              className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
-            />
+            {isArchiving ? (
+              <Loader2 size={10} className={`${s.dotSize} animate-spin text-text-muted shrink-0`} />
+            ) : (
+              <span
+                className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
+              />
+            )}
             <span className="truncate">
               {session.summary || id.slice(0, 8)}
             </span>
           </div>
           <div className={s.metaClass}>
-            {timeAgo(session.modifiedTime)}
+            {isArchiving ? "Archiving…" : timeAgo(session.modifiedTime)}
             {session.context?.branch && ` · ${session.context.branch}`}
             {session.diskSizeBytes
               ? ` · ${formatSize(session.diskSizeBytes)}`
@@ -244,7 +270,54 @@ export default function SessionList({
               {ctxSession.archived ? "Unarchive" : "Archive"}
             </button>
           )}
+          {/* Global variant: Link to Task */}
+          {variant === "global" && onLinkToTask && tasks && (
+            <>
+              {ctxLinkedTask && (
+                <div className="px-3 py-1.5 text-text-faint flex items-center gap-2 text-xs">
+                  <ClipboardList size={14} />
+                  <span className="truncate">On: {ctxLinkedTask.title}</span>
+                </div>
+              )}
+              <button
+                className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
+                onClick={() => {
+                  const sid = ctxMenu.sessionId;
+                  closeMenu();
+                  setShowTaskPicker(sid);
+                }}
+              >
+                <Link size={14} />
+                {ctxLinkedTask ? "Move to Task…" : "Link to Task…"}
+              </button>
+            </>
+          )}
+          {/* Compact variant (task context): Unlink from Task */}
+          {variant === "compact" && taskContext && onUnlinkFromTask && (
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors text-warning"
+              onClick={() => {
+                onUnlinkFromTask(ctxMenu.sessionId, taskContext.id);
+                closeMenu();
+              }}
+            >
+              <Unlink size={14} />
+              Unlink from Task
+            </button>
+          )}
         </div>
+      )}
+
+      {/* Task picker dialog (global variant) */}
+      {showTaskPicker && tasks && onLinkToTask && (
+        <TaskPickerDialog
+          tasks={tasks}
+          onSelect={(taskId) => {
+            onLinkToTask(showTaskPicker, taskId);
+            setShowTaskPicker(null);
+          }}
+          onClose={() => setShowTaskPicker(null)}
+        />
       )}
     </div>
   );

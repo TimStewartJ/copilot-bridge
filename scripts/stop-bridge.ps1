@@ -1,12 +1,14 @@
-# Stop Copilot Bridge - kills launcher and all server/child processes
-$procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "copilot-teams-bridge[\\/](src|node_modules)" }
-foreach ($p in $procs) {
-  Write-Output "Stopping PID $($p.ProcessId)"
-  Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue
+# Stop Copilot Bridge - kills all related processes
+# Kill PM2 daemon if running
+$nodePath = "node"
+$pm2 = "copilot-bridge\node_modules\pm2\bin\pm2"
+& $nodePath $pm2 kill 2>$null
+
+# Kill server, launcher, tsx, and devtunnel processes
+Get-CimInstance Win32_Process | Where-Object {
+  $_.CommandLine -match "copilot-teams-bridge[\\/](src|node_modules)|launcher\.ts|devtunnel.*copilot-bridge|pm2.*(Daemon|start)"
+} | ForEach-Object {
+  Write-Output "Stopping PID $($_.ProcessId)"
+  Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue
 }
-if ($procs.Count -eq 0) {
-  Write-Output "No bridge processes found"
-} else {
-  $c = $procs.Count
-  Write-Output "Stopped $c processes"
-}
+Write-Output "Bridge stopped"

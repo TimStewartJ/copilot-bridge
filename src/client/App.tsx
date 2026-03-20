@@ -280,16 +280,24 @@ export default function App() {
     loadTasks();
   };
 
+  const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
+
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
+    setArchivingIds((prev) => new Set(prev).add(sessionId));
     try {
       await patchSession(sessionId, { archived });
-      // If archiving the active session, go home
       if (archived && activeSessionId === sessionId) {
         navigate("/");
       }
       await loadSessions();
     } catch (err) {
       console.error("Failed to archive session:", err);
+    } finally {
+      setArchivingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
     }
   };
 
@@ -331,6 +339,7 @@ export default function App() {
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
           onArchiveSession={handleArchiveSession}
+          archivingIds={archivingIds}
           taskContext={taskContext}
           taskContextSessions={sessions}
           onBackToTask={handleBackToTask}
@@ -339,6 +348,7 @@ export default function App() {
           onNewTaskSession={handleNewTaskSession}
           isUnread={isUnread}
           unreadCount={unreadCount}
+          onTasksChanged={loadTasks}
         />
       </div>
 

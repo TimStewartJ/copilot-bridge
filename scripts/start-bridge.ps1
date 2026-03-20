@@ -1,8 +1,8 @@
-# Start Copilot Bridge as a hidden background process
+# Start Copilot Bridge as hidden background processes
 $nodePath = "node"
 $workDir = "copilot-bridge"
 
-# Kill any existing bridge processes first
+# Stop any existing bridge processes first
 & "$workDir\scripts\stop-bridge.ps1"
 Start-Sleep 3
 
@@ -18,9 +18,20 @@ if (Test-Path $envFile) {
   }
 }
 
+# Ensure data directory exists
+$dataDir = Join-Path $workDir "data"
+if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | Out-Null }
+
+# Start server (hidden)
 Start-Process -FilePath $nodePath `
-  -ArgumentList "node_modules\tsx\dist\cli.mjs","src\launcher.ts" `
+  -ArgumentList "node_modules\tsx\dist\cli.mjs","src\server\index.ts" `
   -WorkingDirectory $workDir `
   -WindowStyle Hidden `
-  -RedirectStandardOutput "$workDir\data\bridge.log" `
-  -RedirectStandardError "$workDir\data\bridge-error.log"
+  -RedirectStandardOutput "$dataDir\bridge.log" `
+  -RedirectStandardError "$dataDir\bridge-error.log"
+
+# Start devtunnel (hidden)
+Start-Process -FilePath "devtunnel" `
+  -ArgumentList "host","copilot-bridge" `
+  -WorkingDirectory $workDir `
+  -WindowStyle Hidden
