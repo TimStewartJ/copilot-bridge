@@ -115,18 +115,24 @@ export default function App() {
     prevSessionRef.current = activeSessionId;
   }, [activeSessionId, markRead]);
 
+  // Optimistic insert — makes new sessions visible in sidebar immediately
+  // (server filters out sessions with no summary, so loadSessions misses brand-new ones)
+  const addOptimisticSession = useCallback((sessionId: string) => {
+    setSessions((prev) => {
+      if (prev.some((s) => s.sessionId === sessionId)) return prev;
+      return [{
+        sessionId,
+        summary: "New session",
+        modifiedTime: new Date().toISOString(),
+        diskSizeBytes: 0,
+      }, ...prev];
+    });
+  }, []);
+
   const handleNewSession = async () => {
     try {
       const sessionId = await createSession();
-      setSessions((prev) => [
-        {
-          sessionId,
-          summary: "New session",
-          modifiedTime: new Date().toISOString(),
-          diskSizeBytes: 0,
-        },
-        ...prev,
-      ]);
+      addOptimisticSession(sessionId);
       navigate(`/sessions/${sessionId}`);
     } catch (err) {
       console.error("Failed to create session:", err);
@@ -139,7 +145,7 @@ export default function App() {
       setTasks((prev) => [task, ...prev]);
       // Auto-create a session and jump straight into chat
       const sessionId = await createTaskSession(task.id);
-      await loadSessions();
+      addOptimisticSession(sessionId);
       navigate(`/sessions/${sessionId}?taskContext=${task.id}`);
     } catch (err) {
       console.error("Failed to create task:", err);
@@ -190,7 +196,7 @@ export default function App() {
   const handleNewTaskSession = async (taskId: string) => {
     try {
       const sessionId = await createTaskSession(taskId);
-      await loadSessions();
+      addOptimisticSession(sessionId);
       const task = await fetchTask(taskId);
       setTaskContext(task);
       navigate(`/sessions/${sessionId}?taskContext=${taskId}`);
@@ -333,6 +339,7 @@ export default function App() {
                   onTaskUpdated={loadTasks}
                   onTaskDeleted={handleTaskDeleted}
                   onOpenSession={handleOpenSessionFromTask}
+                  onSessionCreated={addOptimisticSession}
                   onArchiveSession={handleArchiveSession}
                   isUnread={isUnread}
                 />

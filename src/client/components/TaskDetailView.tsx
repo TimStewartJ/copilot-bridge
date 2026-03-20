@@ -23,6 +23,7 @@ interface TaskDetailViewProps {
   onTaskUpdated: () => void;
   onTaskDeleted: () => void;
   onOpenSession: (sessionId: string) => void;
+  onSessionCreated?: (sessionId: string) => void;
   onArchiveSession?: (id: string, archived: boolean) => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
@@ -84,6 +85,7 @@ export default function TaskDetailView({
   onTaskUpdated,
   onTaskDeleted,
   onOpenSession,
+  onSessionCreated,
   onArchiveSession,
   isUnread,
 }: TaskDetailViewProps) {
@@ -409,6 +411,7 @@ export default function TaskDetailView({
           <button
             onClick={async () => {
               const sessionId = await createTaskSession(task.id);
+              onSessionCreated?.(sessionId);
               const updated = await fetchTask(task.id);
               setTask(updated);
               onTaskUpdated();
