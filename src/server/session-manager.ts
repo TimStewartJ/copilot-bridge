@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
 import { getOrCreateBus } from "./event-bus.js";
+import * as sessionTitles from "./session-titles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
@@ -92,11 +93,13 @@ export class SessionManager {
   private client: CopilotClient | null = null;
   private activeSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
+  private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
     this.client = new CopilotClient();
     await this.client.start();
+    sessionTitles.loadTitles();
     console.log("[sdk] Copilot SDK client ready");
   }
 
@@ -310,6 +313,12 @@ export class SessionManager {
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
           bus.emit({ type: "done", content });
+
+          // Fire-and-forget title generation for sessions without a title
+          if (!sessionTitles.hasTitle(sessionId) && lastAssistantContent) {
+            this.generateSessionTitle(sessionId, prompt, lastAssistantContent).catch(() => {});
+          }
+
           resolveWork();
           break;
         }
@@ -447,6 +456,47 @@ export class SessionManager {
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     return messages;
+  }
+
+  // Generate a concise session title via a lightweight LLM call
+  private async generateSessionTitle(sessionId: string, userMessage: string, assistantResponse: string): Promise<void> {
+    if (!this.client || sessionTitles.hasTitle(sessionId) || this.titleGenerationInFlight.has(sessionId)) return;
+    this.titleGenerationInFlight.add(sessionId);
+
+    const sid = sessionId.slice(0, 8);
+    console.log(`[titles] [${sid}] Generating session title...`);
+
+    try {
+      const titleSession = await this.client.createSession({ onPermissionRequest: approveAll });
+      const truncatedUser = userMessage.slice(0, 500);
+      const truncatedAssistant = assistantResponse.slice(0, 500);
+
+      const prompt = [
+        "Generate a concise 3-6 word title for this conversation.",
+        "Reply with ONLY the title text — no quotes, no punctuation unless it's part of a name.",
+        "",
+        `User: ${truncatedUser}`,
+        `Assistant: ${truncatedAssistant}`,
+      ].join("\n");
+
+      const result = await titleSession.sendAndWait({ prompt }, 15_000);
+      const title = result?.data?.content?.trim().replace(/^["']|["']$/g, "");
+
+      if (title && title.length > 0 && title.length <= 80) {
+        sessionTitles.setTitle(sessionId, title);
+        const bus = getOrCreateBus(sessionId);
+        bus.emit({ type: "title_changed", title });
+        console.log(`[titles] [${sid}] Title: "${title}"`);
+      } else {
+        console.log(`[titles] [${sid}] Title generation returned invalid result: "${title}"`);
+      }
+
+      await this.client.deleteSession(titleSession.sessionId);
+    } catch (err) {
+      console.error(`[titles] [${sid}] Title generation failed:`, err);
+    } finally {
+      this.titleGenerationInFlight.delete(sessionId);
+    }
   }
 
   isSessionBusy(sessionId: string): boolean {

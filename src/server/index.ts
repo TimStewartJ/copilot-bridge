@@ -10,6 +10,7 @@ import { SessionManager } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
 import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
+import * as sessionTitles from "./session-titles.js";
 import { getBus, hasBus } from "./event-bus.js";
 import * as adoClient from "./ado-client.js";
 
@@ -56,7 +57,10 @@ app.get("/api/sessions", async (req, res) => {
         const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
         const archived = meta[id]?.archived === true;
         const archivedAt = meta[id]?.archivedAt ?? null;
-        return { ...s, diskSizeBytes, busy: sessionManager.isSessionBusy(id), hasPlan, archived, archivedAt };
+        // Prefer LLM-generated title over raw first-message summary
+        const generatedTitle = sessionTitles.getTitle(id);
+        const summary = generatedTitle ?? s.summary;
+        return { ...s, summary, diskSizeBytes, busy: sessionManager.isSessionBusy(id), hasPlan, archived, archivedAt };
       })
       .filter((s: any) => includeArchived || !s.archived);
 

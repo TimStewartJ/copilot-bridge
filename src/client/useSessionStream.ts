@@ -196,6 +196,9 @@ export function useSessionStream(
                     isStreaming: false,
                   });
                   onTitleChangedRef.current();
+                  // Delayed refreshes to pick up LLM-generated session title
+                  setTimeout(() => onTitleChangedRef.current(), 5_000);
+                  setTimeout(() => onTitleChangedRef.current(), 12_000);
                   accumulatedContent = "";
                   break;
                 case "error":
