@@ -399,9 +399,10 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
       try {
         events = await session.getMessages();
+        console.log(`[sdk] [${sid}] Loaded ${events.length} events from cached session`);
       } catch (err) {
         // Stale cache — CLI may have restarted. Evict and re-resume.
-        console.log(`[sdk] [${sid}] Cached session stale, re-resuming...`);
+        console.log(`[sdk] [${sid}] Cached session stale (${err instanceof Error ? err.message : String(err)}), re-resuming...`);
         this.sessionObjects.delete(sessionId);
         session = await Promise.race([
           this.client.resumeSession(sessionId, {
@@ -415,6 +416,7 @@ export class SessionManager {
         ]);
         this.sessionObjects.set(sessionId, session);
         events = await session.getMessages();
+        console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
       }
     } else {
       console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
@@ -430,6 +432,7 @@ export class SessionManager {
       ]);
       this.sessionObjects.set(sessionId, session);
       events = await session.getMessages();
+      console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
     }
 
     const messages: Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }> = [];
