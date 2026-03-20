@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Session } from "../api";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check } from "lucide-react";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -66,6 +66,24 @@ export default function SessionList({
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const closeMenu = useCallback(() => { setCtxMenu(null); setCopied(false); }, []);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) closeMenu();
+    };
+    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") closeMenu(); };
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onEsc);
+    return () => { document.removeEventListener("mousedown", onClickOutside); document.removeEventListener("keydown", onEsc); };
+  }, [ctxMenu, closeMenu]);
+
+  const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.sessionId) : null;
 
   const activeSessions = sessions.filter((sess) => !sess.archived);
   const archivedSessions = sessions.filter((sess) => sess.archived);
@@ -89,7 +107,8 @@ export default function SessionList({
           onClick={() => onSelectSession(id)}
           onContextMenu={(e) => {
             e.preventDefault();
-            navigator.clipboard.writeText(id);
+            setCtxMenu({ x: e.clientX, y: e.clientY, sessionId: id });
+            setCopied(false);
           }}
           title={id}
           className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-colors ${
@@ -160,6 +179,39 @@ export default function SessionList({
             </>
           )}
         </>
+      )}
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 min-w-[180px] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm"
+          style={{ top: ctxMenu.y, left: ctxMenu.x }}
+        >
+          <button
+            className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
+            onClick={() => {
+              navigator.clipboard.writeText(ctxMenu.sessionId);
+              setCopied(true);
+              setTimeout(closeMenu, 600);
+            }}
+          >
+            {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+            {copied ? "Copied!" : "Copy Session ID"}
+          </button>
+          {onArchiveSession && ctxSession && (
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
+              onClick={() => {
+                onArchiveSession(ctxMenu.sessionId, !ctxSession.archived);
+                closeMenu();
+              }}
+            >
+              {ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+              {ctxSession.archived ? "Unarchive" : "Archive"}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
