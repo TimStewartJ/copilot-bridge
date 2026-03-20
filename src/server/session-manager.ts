@@ -77,6 +77,14 @@ const BRIDGE_TOOLS = [
       return { success: true, message: `Task renamed to "${args.title}"` };
     },
   }),
+  defineTool("session_rename", {
+    description: "Rename a chat session. Use this to give a session a more descriptive title.",
+    parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["sessionId", "title"] },
+    handler: async (args: any) => {
+      sessionTitles.setTitle(args.sessionId, args.title);
+      return { success: true, message: `Session renamed to "${args.title}"` };
+    },
+  }),
   defineTool("self_restart", {
     description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint, rebuild, and swap processes. Auto-rolls back on failure.",
     parameters: { type: "object", properties: {} },
