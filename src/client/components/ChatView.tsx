@@ -38,6 +38,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
     intentText,
     toolProgress,
     isStreaming,
+    streamStatus,
     sendMessage,
     reconnect,
   } = useSessionStream(sessionId, handleNewMessages, onMessageSent);
@@ -158,7 +159,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
         )}
         {isStreaming && !streamingContent && activeTools.length === 0 && (
           <div className="text-accent italic animate-pulse">
-            {intentText ? `${intentText}...` : "Thinking..."}
+            {streamStatus === "sending"
+              ? "Sending..."
+              : intentText
+                ? `${intentText}...`
+                : "Thinking..."}
           </div>
         )}
         <div ref={messagesEndRef} />

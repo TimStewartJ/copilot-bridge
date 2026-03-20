@@ -7,11 +7,15 @@ interface PendingTool {
   args?: Record<string, unknown>;
 }
 
+export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
+
 export interface StreamState {
   streamingContent: string;
   activeTools: PendingTool[];
   intentText: string;
   toolProgress: string;
+  streamStatus: StreamStatus;
+  /** Derived from streamStatus for backward compat */
   isStreaming: boolean;
 }
 
@@ -20,13 +24,17 @@ export function useSessionStream(
   onMessagesUpdated: (msgs: ChatMessage[]) => void,
   onTitleChanged: () => void,
 ) {
-  const [streamState, setStreamState] = useState<StreamState>({
+  const mkState = (status: StreamStatus, partial?: Partial<StreamState>): StreamState => ({
     streamingContent: "",
     activeTools: [],
     intentText: "",
     toolProgress: "",
-    isStreaming: false,
+    ...partial,
+    streamStatus: status,
+    isStreaming: status !== "idle",
   });
+
+  const [streamState, setStreamState] = useState<StreamState>(mkState("idle"));
 
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
@@ -43,18 +51,12 @@ export function useSessionStream(
     const abort = new AbortController();
     abortRef.current = abort;
 
-    setStreamState({
-      streamingContent: "",
-      activeTools: [],
-      intentText: "",
-      toolProgress: "",
-      isStreaming: true,
-    });
+    setStreamState(mkState("sending"));
 
     fetch(`/api/sessions/${sid}/stream`, { signal: abort.signal })
       .then(async (res) => {
         if (!res.ok || !res.body) {
-          setStreamState((s) => ({ ...s, isStreaming: false }));
+          setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
           return;
         }
 
@@ -94,7 +96,7 @@ export function useSessionStream(
                   // Catch-up event from EventBus — hydrate current state in one shot
                   if (event.complete) {
                     // Turn already finished — nothing to stream
-                    setStreamState((s) => ({ ...s, isStreaming: false }));
+                    setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
                     break;
                   }
                   accumulatedContent = event.accumulatedContent ?? "";
@@ -105,16 +107,21 @@ export function useSessionStream(
                       name: t.name ?? "unknown",
                       args: t.args,
                     }));
+                  // Determine status from snapshot content
+                  const snapshotStatus: StreamStatus =
+                    accumulatedContent || tools.length > 0 ? "streaming" : "thinking";
                   setStreamState({
                     streamingContent: accumulatedContent,
                     activeTools: tools,
                     intentText: event.intentText ?? "",
                     toolProgress: "",
+                    streamStatus: snapshotStatus,
                     isStreaming: true,
                   });
                   break;
                 }
                 case "thinking":
+                  setStreamState((s) => ({ ...s, streamStatus: "thinking", isStreaming: true }));
                   break;
                 case "intent":
                   setStreamState((s) => ({ ...s, intentText: event.intent ?? "" }));
@@ -124,6 +131,8 @@ export function useSessionStream(
                   setStreamState((s) => ({
                     ...s,
                     streamingContent: accumulatedContent,
+                    streamStatus: "streaming",
+                    isStreaming: true,
                   }));
                   break;
                 case "assistant_partial":
@@ -150,6 +159,8 @@ export function useSessionStream(
                     ...s,
                     activeTools: [...s.activeTools, tool],
                     toolProgress: "",
+                    streamStatus: "streaming",
+                    isStreaming: true,
                   }));
                   break;
                 }
@@ -188,13 +199,7 @@ export function useSessionStream(
                     content: event.content ?? "",
                     toolCalls: drainTools(),
                   }]);
-                  setStreamState({
-                    streamingContent: "",
-                    activeTools: [],
-                    intentText: "",
-                    toolProgress: "",
-                    isStreaming: false,
-                  });
+                  setStreamState(mkState("idle"));
                   onTitleChangedRef.current();
                   // Delayed refreshes to pick up LLM-generated session title
                   setTimeout(() => onTitleChangedRef.current(), 5_000);
@@ -203,16 +208,10 @@ export function useSessionStream(
                   break;
                 case "error":
                   onMessagesUpdatedRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
-                  setStreamState({
-                    streamingContent: "",
-                    activeTools: [],
-                    intentText: "",
-                    toolProgress: "",
-                    isStreaming: false,
-                  });
+                  setStreamState(mkState("idle"));
                   break;
                 case "idle":
-                  setStreamState((s) => ({ ...s, isStreaming: false }));
+                  setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
                   break;
               }
             } catch { /* skip malformed */ }
@@ -222,20 +221,14 @@ export function useSessionStream(
       .catch((err) => {
         if (err.name === "AbortError") return;
         console.error("[stream] Error:", err);
-        setStreamState((s) => ({ ...s, isStreaming: false }));
+        setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
       });
   }, []); // stable — callbacks accessed via refs
 
   // Clean up on session change
   useEffect(() => {
     sessionRef.current = sessionId;
-    setStreamState({
-      streamingContent: "",
-      activeTools: [],
-      intentText: "",
-      toolProgress: "",
-      isStreaming: false,
-    });
+    setStreamState(mkState("idle"));
     abortRef.current?.abort();
     return () => {
       abortRef.current?.abort();
