@@ -77,6 +77,14 @@ const BRIDGE_TOOLS = [
       return { success: true, message: `Task renamed to "${args.title}"` };
     },
   }),
+  defineTool("task_create", {
+    description: "Create a new task",
+    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" } }, required: ["title"] },
+    handler: async (args: any) => {
+      const task = taskStore.createTask(args.title);
+      return { success: true, message: `Task "${task.title}" created`, taskId: task.id };
+    },
+  }),
   defineTool("session_rename", {
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
     parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["sessionId", "title"] },
