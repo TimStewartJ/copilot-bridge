@@ -4,6 +4,7 @@ export interface Session {
   startTime?: string;
   modifiedTime?: string;
   diskSizeBytes?: number;
+  busy?: boolean;
   context?: {
     cwd?: string;
     gitRoot?: string;

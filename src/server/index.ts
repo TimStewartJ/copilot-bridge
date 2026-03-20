@@ -48,7 +48,7 @@ app.get("/api/sessions", async (_req, res) => {
           const sessionDir = join(sessionStateDir, id);
           diskSizeBytes = getDirSize(sessionDir);
         } catch { /* session dir may not exist */ }
-        return { ...s, diskSizeBytes };
+        return { ...s, diskSizeBytes, busy: sessionManager.isSessionBusy(id) };
       });
 
     res.json({ sessions: enriched });

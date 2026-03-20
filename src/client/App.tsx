@@ -47,6 +47,14 @@ export default function App() {
     loadTasks();
   }, []);
 
+  // Auto-refresh sessions while any are busy
+  useEffect(() => {
+    const hasBusy = sessions.some((s) => s.busy);
+    if (!hasBusy) return;
+    const timer = setInterval(loadSessions, 5_000);
+    return () => clearInterval(timer);
+  }, [sessions]);
+
   const handleNewSession = async () => {
     try {
       const sessionId = await createSession();

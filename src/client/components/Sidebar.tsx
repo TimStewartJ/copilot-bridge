@@ -144,6 +144,7 @@ export default function Sidebar({
                 }`}
               >
                 <div className="font-medium truncate">
+                  {s.busy && <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse mr-1.5 align-middle" />}
                   {s.summary || id.slice(0, 8)}
                 </div>
                 <div className="text-xs text-gray-500 mt-0.5">
@@ -255,11 +256,13 @@ function TaskContextPanel({
                     }`}
                   >
                     <div className="font-medium truncate text-xs">
+                      {s.busy && <span className="inline-block w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse mr-1 align-middle" />}
                       {s.summary || s.sessionId.slice(0, 8)}
                     </div>
                     <div className="text-[10px] text-gray-500 mt-0.5">
                       {timeAgo(s.modifiedTime)}
                       {s.context?.branch && ` · ${s.context.branch}`}
+                      {s.diskSizeBytes ? ` · ${formatSize(s.diskSizeBytes)}` : ""}
                     </div>
                   </button>
                 );

@@ -24,6 +24,7 @@ export interface BusSnapshot {
   complete: boolean;
   finalContent?: string;
   errorMessage?: string;
+  [key: string]: unknown;
 }
 
 type Listener = (event: StreamEvent) => void;
