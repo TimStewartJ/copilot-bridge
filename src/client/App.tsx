@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { Routes, Route, useNavigate, useParams, useLocation, useSearchParams } from "react-router-dom";
 import {
   fetchSessions,
   createSession,
@@ -19,17 +20,30 @@ import SettingsView from "./components/SettingsView";
 import { useSwipeDrawer } from "./useSwipeDrawer";
 import { Menu, Sparkles } from "lucide-react";
 
-type ViewMode = "none" | "chat" | "task" | "settings";
-
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeTab, setActiveTab] = useState<"tasks" | "sessions">("tasks");
-  const [viewMode, setViewMode] = useState<ViewMode>("none");
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [taskContext, setTaskContext] = useState<Task | null>(null);
+
+  // Derive active IDs from URL
+  const activeSessionId = location.pathname.match(/^\/sessions\/(.+)/)?.[1] ?? null;
+  const activeTaskId = location.pathname.match(/^\/tasks\/(.+)/)?.[1] ?? null;
+
+  // Restore taskContext from search param on navigation
+  const taskContextId = searchParams.get("taskContext");
+  useEffect(() => {
+    if (taskContextId && (!taskContext || taskContext.id !== taskContextId)) {
+      fetchTask(taskContextId).then(setTaskContext).catch(() => setTaskContext(null));
+    } else if (!taskContextId && taskContext) {
+      setTaskContext(null);
+    }
+  }, [taskContextId]);
 
   const { isUnread, markRead, unreadCount } = useReadState(sessions);
 
@@ -97,9 +111,7 @@ export default function App() {
         },
         ...prev,
       ]);
-      setActiveSessionId(sessionId);
-      setActiveTaskId(null);
-      setViewMode("chat");
+      navigate(`/sessions/${sessionId}`);
     } catch (err) {
       console.error("Failed to create session:", err);
     }
@@ -112,10 +124,7 @@ export default function App() {
       // Auto-create a session and jump straight into chat
       const sessionId = await createTaskSession(task.id);
       await loadSessions();
-      setTaskContext(task);
-      setActiveTaskId(null);
-      setActiveSessionId(sessionId);
-      setViewMode("chat");
+      navigate(`/sessions/${sessionId}?taskContext=${task.id}`);
     } catch (err) {
       console.error("Failed to create task:", err);
     }
@@ -127,49 +136,38 @@ export default function App() {
   useSwipeDrawer(sidebarOpen, openSidebar, closeSidebar);
 
   const handleSelectSession = (id: string) => {
-    setActiveSessionId(id);
-    setActiveTaskId(null);
-    setTaskContext(null);
-    setViewMode("chat");
+    navigate(`/sessions/${id}`);
     closeSidebar();
   };
 
   const handleSelectTask = (id: string) => {
-    setActiveTaskId(id);
-    setActiveSessionId(null);
-    setViewMode("task");
+    navigate(`/tasks/${id}`);
     closeSidebar();
   };
 
   const handleGoHome = () => {
-    setActiveSessionId(null);
-    setActiveTaskId(null);
-    setTaskContext(null);
-    setViewMode("none");
+    navigate("/");
     closeSidebar();
   };
 
   const handleOpenSettings = () => {
-    setActiveSessionId(null);
-    setActiveTaskId(null);
-    setTaskContext(null);
-    setViewMode("settings");
+    navigate("/settings");
     closeSidebar();
   };
 
   // Open a session from within a task detail view — keep task context in sidebar
   const handleOpenSessionFromTask = async (sessionId: string) => {
-    // Capture the current task for sidebar context
-    if (activeTaskId) {
+    const ctxId = activeTaskId;
+    if (ctxId) {
+      // Pre-fetch task so sidebar context is ready immediately
       try {
-        const task = await fetchTask(activeTaskId);
+        const task = await fetchTask(ctxId);
         setTaskContext(task);
       } catch {
-        setTaskContext(null);
+        // taskContext will be loaded from search param anyway
       }
     }
-    setActiveSessionId(sessionId);
-    setViewMode("chat");
+    navigate(`/sessions/${sessionId}${ctxId ? `?taskContext=${ctxId}` : ""}`);
   };
 
   // Create a new session linked to the task context and open it
@@ -179,8 +177,7 @@ export default function App() {
       await loadSessions();
       const task = await fetchTask(taskId);
       setTaskContext(task);
-      setActiveSessionId(sessionId);
-      setViewMode("chat");
+      navigate(`/sessions/${sessionId}?taskContext=${taskId}`);
     } catch (err) {
       console.error("Failed to create task session:", err);
     }
@@ -188,34 +185,28 @@ export default function App() {
 
   // Navigate back to the task detail from chat context
   const handleBackToTask = (taskId: string) => {
-    setActiveTaskId(taskId);
-    setActiveSessionId(null);
-    setTaskContext(null);
-    setViewMode("task");
+    navigate(`/tasks/${taskId}`);
     setActiveTab("tasks");
   };
 
   // Select a session within task context (stay in task context)
   const handleSelectTaskSession = (sessionId: string) => {
-    setActiveSessionId(sessionId);
-    setViewMode("chat");
+    const ctxId = taskContext?.id ?? taskContextId;
+    navigate(`/sessions/${sessionId}${ctxId ? `?taskContext=${ctxId}` : ""}`);
     closeSidebar();
   };
 
   const handleTaskDeleted = () => {
-    setActiveTaskId(null);
-    setViewMode("none");
+    navigate("/");
     loadTasks();
   };
 
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
     try {
       await patchSession(sessionId, { archived });
-      // If archiving the active session, deselect it
+      // If archiving the active session, go home
       if (archived && activeSessionId === sessionId) {
-        setActiveSessionId(null);
-        setTaskContext(null);
-        setViewMode("none");
+        navigate("/");
       }
       await loadSessions();
     } catch (err) {
@@ -289,40 +280,60 @@ export default function App() {
         </div>
 
         <main className="flex-1 flex flex-col min-h-0">
-          {viewMode === "chat" && (
-            <ChatView
-              sessionId={activeSessionId}
-              hasPlan={sessions.find((s) => s.sessionId === activeSessionId)?.hasPlan}
-              onMessageSent={loadSessions}
+          <Routes>
+            <Route
+              index
+              element={
+                <Dashboard
+                  tasks={tasks}
+                  sessions={globalSessions}
+                  onSelectTask={handleSelectTask}
+                  onSelectSession={handleSelectSession}
+                  onNewTask={handleNewTask}
+                  onNewSession={handleNewSession}
+                  isUnread={isUnread}
+                />
+              }
             />
-          )}
-          {viewMode === "task" && activeTaskId && (
-            <TaskDetailView
-              taskId={activeTaskId}
-              sessions={sessions}
-              onTaskUpdated={loadTasks}
-              onTaskDeleted={handleTaskDeleted}
-              onOpenSession={handleOpenSessionFromTask}
-              onArchiveSession={handleArchiveSession}
-              isUnread={isUnread}
+            <Route
+              path="tasks/:taskId"
+              element={
+                <TaskDetailView
+                  sessions={sessions}
+                  onTaskUpdated={loadTasks}
+                  onTaskDeleted={handleTaskDeleted}
+                  onOpenSession={handleOpenSessionFromTask}
+                  onArchiveSession={handleArchiveSession}
+                  isUnread={isUnread}
+                />
+              }
             />
-          )}
-          {viewMode === "none" && (
-            <Dashboard
-              tasks={tasks}
-              sessions={globalSessions}
-              onSelectTask={handleSelectTask}
-              onSelectSession={handleSelectSession}
-              onNewTask={handleNewTask}
-              onNewSession={handleNewSession}
-              isUnread={isUnread}
+            <Route
+              path="sessions/:sessionId"
+              element={
+                <SessionRoute
+                  sessions={sessions}
+                  onMessageSent={loadSessions}
+                />
+              }
             />
-          )}
-          {viewMode === "settings" && (
-            <SettingsView onGoHome={handleGoHome} />
-          )}
+            <Route path="settings" element={<SettingsView />} />
+          </Routes>
         </main>
       </div>
     </div>
+  );
+}
+
+// Thin wrapper to extract sessionId from URL and pass hasPlan
+function SessionRoute({ sessions, onMessageSent }: { sessions: Session[]; onMessageSent: () => void }) {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
+  return (
+    <ChatView
+      sessionId={sessionId ?? null}
+      hasPlan={hasPlan}
+      onMessageSent={onMessageSent}
+    />
   );
 }

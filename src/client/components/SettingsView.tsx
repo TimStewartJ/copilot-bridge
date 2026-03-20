@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   fetchSettings,
   patchSettings,
@@ -7,11 +8,8 @@ import {
 } from "../api";
 import { Settings, ArrowLeft, Pencil, Trash2 } from "lucide-react";
 
-interface SettingsViewProps {
-  onGoHome: () => void;
-}
-
-export default function SettingsView({ onGoHome }: SettingsViewProps) {
+export default function SettingsView() {
+  const navigate = useNavigate();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -109,7 +107,7 @@ export default function SettingsView({ onGoHome }: SettingsViewProps) {
       <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-secondary">
         <div className="flex items-center gap-3">
           <button
-            onClick={onGoHome}
+            onClick={() => navigate("/")}
             className="text-text-muted hover:text-accent transition-colors text-sm flex items-center gap-1"
           >
             <ArrowLeft size={14} />

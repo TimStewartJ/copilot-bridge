@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useParams } from "react-router-dom";
 import {
   fetchTask,
   fetchEnrichedTask,
@@ -18,7 +19,6 @@ import LinkDialog from "./LinkDialog";
 import { Bug, CheckSquare, BookOpen, Target, Trophy, ClipboardList, GitPullRequest, MessageSquare, FileText, FolderOpen, Archive, ArchiveRestore, Trash2, Pencil, X } from "lucide-react";
 
 interface TaskDetailViewProps {
-  taskId: string;
   sessions: Session[];
   onTaskUpdated: () => void;
   onTaskDeleted: () => void;
@@ -80,7 +80,6 @@ const PR_STATUS_STYLES: Record<string, { dot: string; label: string; text: strin
 // ── Main Component ────────────────────────────────────────────────
 
 export default function TaskDetailView({
-  taskId,
   sessions,
   onTaskUpdated,
   onTaskDeleted,
@@ -88,6 +87,7 @@ export default function TaskDetailView({
   onArchiveSession,
   isUnread,
 }: TaskDetailViewProps) {
+  const { taskId } = useParams<{ taskId: string }>();
   const [task, setTask] = useState<Task | null>(null);
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
   const [enrichedPRs, setEnrichedPRs] = useState<EnrichedPR[]>([]);
@@ -101,6 +101,7 @@ export default function TaskDetailView({
   const [cwdDraft, setCwdDraft] = useState("");
 
   const loadTask = useCallback(async () => {
+    if (!taskId) return;
     try {
       const t = await fetchTask(taskId);
       setTask(t);
@@ -115,6 +116,7 @@ export default function TaskDetailView({
 
   // Load enriched data (async, non-blocking)
   const loadEnriched = useCallback(async () => {
+    if (!taskId) return;
     setEnrichmentLoading(true);
     try {
       const data = await fetchEnrichedTask(taskId);
