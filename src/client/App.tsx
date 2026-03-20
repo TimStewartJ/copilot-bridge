@@ -32,6 +32,7 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [quickChatsMode, setQuickChatsMode] = useState(false);
+  const [railExpanded, setRailExpanded] = useState(true);
   const [restartPending, setRestartPending] = useState(false);
   const [restartWaiting, setRestartWaiting] = useState(0);
 
@@ -313,6 +314,8 @@ export default function App() {
         isQuickChatsActive={quickChatsMode && !activeTaskId}
         onGoHome={handleGoHome}
         onOpenSettings={handleOpenSettings}
+        expanded={railExpanded}
+        onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
         isUnread={isUnread}
       />
