@@ -25,7 +25,7 @@ import { Menu, Sparkles } from "lucide-react";
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -237,9 +237,9 @@ export default function App() {
     setActiveTab("tasks");
   };
 
-  // Navigate back to task list from chat context (clears task context)
+  // Navigate back to task list from chat context (clears task context, stays on current page)
   const handleBackToTaskList = () => {
-    navigate("/");
+    setSearchParams({});
     setActiveTab("tasks");
   };
 
