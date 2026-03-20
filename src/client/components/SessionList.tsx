@@ -70,18 +70,35 @@ export default function SessionList({
   const [copied, setCopied] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // Long-press state for mobile
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggered = useRef(false);
+  const touchOrigin = useRef<{ x: number; y: number } | null>(null);
+
   const closeMenu = useCallback(() => { setCtxMenu(null); setCopied(false); }, []);
 
   useEffect(() => {
     if (!ctxMenu) return;
-    const onClickOutside = (e: MouseEvent) => {
+    const onDismiss = (e: MouseEvent | TouchEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) closeMenu();
     };
     const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") closeMenu(); };
-    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("mousedown", onDismiss);
+    document.addEventListener("touchstart", onDismiss);
     document.addEventListener("keydown", onEsc);
-    return () => { document.removeEventListener("mousedown", onClickOutside); document.removeEventListener("keydown", onEsc); };
+    return () => {
+      document.removeEventListener("mousedown", onDismiss);
+      document.removeEventListener("touchstart", onDismiss);
+      document.removeEventListener("keydown", onEsc);
+    };
   }, [ctxMenu, closeMenu]);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
 
   const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.sessionId) : null;
 
@@ -104,12 +121,37 @@ export default function SessionList({
     return (
       <div key={id} className="group relative">
         <button
-          onClick={() => onSelectSession(id)}
+          onClick={() => {
+            if (longPressTriggered.current) {
+              longPressTriggered.current = false;
+              return;
+            }
+            onSelectSession(id);
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
             setCtxMenu({ x: e.clientX, y: e.clientY, sessionId: id });
             setCopied(false);
           }}
+          onTouchStart={(e) => {
+            const touch = e.touches[0];
+            touchOrigin.current = { x: touch.clientX, y: touch.clientY };
+            longPressTriggered.current = false;
+            longPressTimer.current = setTimeout(() => {
+              longPressTriggered.current = true;
+              setCtxMenu({ x: touch.clientX, y: touch.clientY, sessionId: id });
+              setCopied(false);
+            }, 500);
+          }}
+          onTouchMove={(e) => {
+            if (!touchOrigin.current) return;
+            const touch = e.touches[0];
+            const dx = touch.clientX - touchOrigin.current.x;
+            const dy = touch.clientY - touchOrigin.current.y;
+            if (dx * dx + dy * dy > 100) cancelLongPress();
+          }}
+          onTouchEnd={() => cancelLongPress()}
+          onTouchCancel={() => cancelLongPress()}
           title={id}
           className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-colors ${
             isActive
@@ -185,8 +227,11 @@ export default function SessionList({
       {ctxMenu && (
         <div
           ref={menuRef}
-          className="fixed z-50 min-w-[180px] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
+          className="fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm"
+          style={{
+            top: Math.min(ctxMenu.y, window.innerHeight - 120),
+            left: Math.min(ctxMenu.x, window.innerWidth - 196),
+          }}
         >
           <button
             className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
