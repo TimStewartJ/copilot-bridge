@@ -299,6 +299,7 @@ export default function App() {
               onTaskUpdated={loadTasks}
               onTaskDeleted={handleTaskDeleted}
               onOpenSession={handleOpenSessionFromTask}
+              onArchiveSession={handleArchiveSession}
               isUnread={isUnread}
             />
           )}

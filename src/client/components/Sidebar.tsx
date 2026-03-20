@@ -68,7 +68,6 @@ export default function Sidebar({
           onSelectSession={onSelectTaskSession}
           onNewSession={onNewTaskSession}
           onGoHome={onGoHome}
-          onArchiveSession={onArchiveSession}
           isUnread={isUnread}
         />
       </div>
@@ -165,7 +164,6 @@ interface TaskContextPanelProps {
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
   onGoHome: () => void;
-  onArchiveSession?: (id: string, archived: boolean) => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
@@ -177,7 +175,6 @@ function TaskContextPanel({
   onSelectSession,
   onNewSession,
   onGoHome,
-  onArchiveSession,
   isUnread,
 }: TaskContextPanelProps) {
   const [notesExpanded, setNotesExpanded] = useState(false);
@@ -242,7 +239,6 @@ function TaskContextPanel({
             activeSessionId={activeSessionId}
             onSelectSession={onSelectSession}
             onNewSession={() => onNewSession(task.id)}
-            onArchiveSession={onArchiveSession}
             isUnread={isUnread}
           />
         </div>

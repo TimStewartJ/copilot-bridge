@@ -22,6 +22,7 @@ interface TaskDetailViewProps {
   onTaskUpdated: () => void;
   onTaskDeleted: () => void;
   onOpenSession: (sessionId: string) => void;
+  onArchiveSession?: (id: string, archived: boolean) => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
@@ -83,6 +84,7 @@ export default function TaskDetailView({
   onTaskUpdated,
   onTaskDeleted,
   onOpenSession,
+  onArchiveSession,
   isUnread,
 }: TaskDetailViewProps) {
   const [task, setTask] = useState<Task | null>(null);
@@ -421,6 +423,7 @@ export default function TaskDetailView({
                   unread={!!isUnread?.(s.sessionId, s.modifiedTime)}
                   onOpen={() => onOpenSession(s.sessionId)}
                   onUnlink={() => handleUnlink({ type: "session", sessionId: s.sessionId })}
+                  onArchive={onArchiveSession ? () => onArchiveSession(s.sessionId, !s.archived) : undefined}
                 />
               ))}
             </div>
@@ -581,21 +584,26 @@ function SessionRow({
   unread,
   onOpen,
   onUnlink,
+  onArchive,
 }: {
   session: Session;
   unread?: boolean;
   onOpen: () => void;
   onUnlink: () => void;
+  onArchive?: () => void;
 }) {
-  // Dot: busy (blue pulsing) > unread (green solid) > read (gray)
+  const isArch = session.archived;
+  // Dot: busy (blue pulsing) > unread (green solid) > archived (dark) > read (gray)
   const dotColor = session.busy
     ? "bg-blue-400 animate-pulse"
     : unread
       ? "bg-green-400"
-      : "bg-gray-600";
+      : isArch
+        ? "bg-gray-700"
+        : "bg-gray-600";
 
   return (
-    <div className="group flex items-start gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md hover:bg-[#32325a] transition-colors">
+    <div className={`group flex items-start gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md hover:bg-[#32325a] transition-colors ${isArch ? "opacity-50" : ""}`}>
       <div className="mt-1 shrink-0">
         <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
       </div>
@@ -630,6 +638,15 @@ function SessionRow({
           ) : null}
         </div>
       </button>
+      {onArchive && (
+        <button
+          onClick={onArchive}
+          className="text-xs text-gray-600 hover:text-yellow-400 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+          title={isArch ? "Unarchive" : "Archive"}
+        >
+          {isArch ? "📤" : "📦"}
+        </button>
+      )}
       <button
         onClick={onUnlink}
         className="text-xs text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
