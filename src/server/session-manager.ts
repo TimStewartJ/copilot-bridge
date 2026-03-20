@@ -244,6 +244,7 @@ export class SessionManager {
         case "assistant.message":
           if (data?.content) {
             console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
+            lastAssistantContent = data.content;
             if (data.toolRequests?.length) {
               bus.emit({ type: "assistant_partial", content: data.content });
             }
@@ -289,13 +290,19 @@ export class SessionManager {
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
           bus.emit({ type: "error", message: data?.message ?? "unknown" });
+          resolveWork();
           break;
         case "session.title_changed":
           bus.emit({ type: "title_changed", title: data?.title ?? "" });
           break;
-        case "session.idle":
-          console.log(`[sdk] [${sid}] 💤 Session idle`);
+        case "session.idle": {
+          const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
+          const content = lastAssistantContent ?? "(no response)";
+          console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
+          bus.emit({ type: "done", content });
+          resolveWork();
           break;
+        }
         default:
           break;
       }
@@ -308,14 +315,39 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] ⏳ Still working... (${elapsed}s)`);
     }, 30_000);
 
+    // Watchdog — if no events for 5 minutes, assume hung and clean up
+    const WATCHDOG_TIMEOUT = 300_000;
+    let lastEventTime = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastEventTime > WATCHDOG_TIMEOUT) {
+        const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
+        console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — aborting (${elapsed}s total)`);
+        bus.emit({ type: "error", message: "Session timed out — no activity for 5 minutes" });
+        resolveWork();
+      }
+    }, 30_000);
+
+    // Tap into bus emissions to track last event time for watchdog
+    const originalEmit = bus.emit.bind(bus);
+    bus.emit = (event) => {
+      lastEventTime = Date.now();
+      return originalEmit(event);
+    };
+
+    let resolveWork: () => void;
+    let lastAssistantContent: string | undefined;
+
     try {
       console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars)...`);
-      const response = await session.sendAndWait({ prompt }, 600_000);
-      const content = response?.data.content ?? "(no response)";
-      console.log(`[sdk] [${sid}] Done: ${content.length} chars (${((Date.now() - sendStart) / 1000).toFixed(1)}s)`);
-      bus.emit({ type: "done", content });
+      await session.send({ prompt });
+
+      // Wait for session.idle or session.error (resolved from event handler)
+      await new Promise<void>((resolve) => {
+        resolveWork = resolve;
+      });
     } finally {
       clearInterval(heartbeatLog);
+      clearInterval(watchdog);
       unsub();
     }
   }
