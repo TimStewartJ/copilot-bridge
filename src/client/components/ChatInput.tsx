@@ -55,7 +55,7 @@ export default function ChatInput({ onSend, disabled }: ChatInputProps) {
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           rows={1}
-          className="flex-1 px-4 py-3 bg-[#1a1a2e] text-gray-200 border border-[#2a2a4a] rounded-lg text-sm font-sans resize-none focus:outline-none focus:border-indigo-500 min-h-[48px] max-h-[200px]"
+          className="flex-1 px-4 py-3 bg-[#1a1a2e] text-gray-200 border border-[#2a2a4a] rounded-lg text-base md:text-sm font-sans resize-none focus:outline-none focus:border-indigo-500 min-h-[48px] max-h-[200px]"
         />
         <button
           onClick={handleSend}
