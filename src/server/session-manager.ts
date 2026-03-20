@@ -314,9 +314,6 @@ export class SessionManager {
     }
     console.log(`[sdk] Indexed ${toolStarts.size} tool starts, ${toolCompletes.size} tool completes`);
 
-    let asstMsgCount = 0;
-    let withToolReqs = 0;
-
     for (const event of events) {
       if (event.type === "user.message") {
         const data = event.data as any;
@@ -325,14 +322,12 @@ export class SessionManager {
           messages.push({ role: "user", content, timestamp: data.timestamp ?? (event as any).timestamp });
         }
       } else if (event.type === "assistant.message") {
-        asstMsgCount++;
         const data = (event as any).data;
         const content = data.content ?? "";
 
         // Build tool calls from toolRequests
         let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> | undefined;
         if (data.toolRequests?.length) {
-          withToolReqs++;
           toolCalls = data.toolRequests
             .filter((tr: any) => tr.name !== "report_intent")
             .map((tr: any) => {
@@ -361,7 +356,7 @@ export class SessionManager {
       }
     }
 
-    console.log(`[sdk] Loaded ${messages.length} messages (${asstMsgCount} assistant, ${withToolReqs} with toolRequests) for session ${sessionId}`);
+    console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     return messages;
   }
 
