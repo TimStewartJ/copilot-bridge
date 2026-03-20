@@ -233,6 +233,7 @@ export default function App() {
           {viewMode === "chat" && (
             <ChatView
               sessionId={activeSessionId}
+              hasPlan={sessions.find((s) => s.sessionId === activeSessionId)?.hasPlan}
               onMessageSent={loadSessions}
             />
           )}

@@ -1,7 +1,7 @@
 // Copilot Web Bridge — Express server
 
 import express from "express";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -48,7 +48,8 @@ app.get("/api/sessions", async (_req, res) => {
           const sessionDir = join(sessionStateDir, id);
           diskSizeBytes = getDirSize(sessionDir);
         } catch { /* session dir may not exist */ }
-        return { ...s, diskSizeBytes, busy: sessionManager.isSessionBusy(id) };
+        const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
+        return { ...s, diskSizeBytes, busy: sessionManager.isSessionBusy(id), hasPlan };
       });
 
     res.json({ sessions: enriched });
@@ -179,6 +180,23 @@ app.get("/api/sessions/:id/stream", (req, res) => {
 
   // Subscribe — sends snapshot then streams live events
   unsub = bus.subscribe(sendEvent);
+});
+
+// GET /api/sessions/:id/plan — read plan.md from session state directory
+app.get("/api/sessions/:id/plan", (_req, res) => {
+  const sessionId = _req.params.id;
+  const planPath = join(homedir(), ".copilot", "session-state", sessionId, "plan.md");
+
+  try {
+    if (!existsSync(planPath)) {
+      return res.json({ content: null, lastModified: null });
+    }
+    const content = readFileSync(planPath, "utf-8");
+    const lastModified = statSync(planPath).mtime.toISOString();
+    res.json({ content, lastModified });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ── Task routes ───────────────────────────────────────────────────

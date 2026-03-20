@@ -3,9 +3,11 @@ import { fetchMessages, type ChatMessage } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
+import PlanSheet from "./PlanSheet";
 
 interface ChatViewProps {
   sessionId: string | null;
+  hasPlan?: boolean;
   onMessageSent: () => void;
 }
 
@@ -19,9 +21,10 @@ function formatToolArgs(args: Record<string, unknown>): string {
   return parts.join(" ");
 }
 
-export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
+export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
@@ -62,6 +65,8 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
 
     setMessages([]);
     loadAndReconnect();
+
+    setShowPlan(false);
 
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
@@ -104,6 +109,18 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {/* Plan header bar */}
+      {hasPlan && (
+        <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-[#2a2a4a] bg-[#16213e]">
+          <span className="text-xs text-gray-400">📋 Plan available</span>
+          <button
+            onClick={() => setShowPlan(true)}
+            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium"
+          >
+            View
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-5 space-y-4">
         {loading && (
           <div className="text-indigo-400 italic">Loading history...</div>
@@ -143,6 +160,10 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         <div ref={messagesEndRef} />
       </div>
       <ChatInput onSend={handleSend} disabled={isStreaming} />
+      {/* Plan sheet overlay */}
+      {showPlan && sessionId && (
+        <PlanSheet sessionId={sessionId} onClose={() => setShowPlan(false)} />
+      )}
     </div>
   );
 }

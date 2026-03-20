@@ -5,6 +5,7 @@ export interface Session {
   modifiedTime?: string;
   diskSizeBytes?: number;
   busy?: boolean;
+  hasPlan?: boolean;
   context?: {
     cwd?: string;
     gitRoot?: string;
@@ -160,4 +161,15 @@ export async function createTaskSession(taskId: string): Promise<string> {
     {},
   );
   return data.sessionId;
+}
+
+// ── Plan API ──────────────────────────────────────────────────────
+
+export interface PlanData {
+  content: string | null;
+  lastModified: string | null;
+}
+
+export async function fetchPlan(sessionId: string): Promise<PlanData> {
+  return apiFetch<PlanData>(`/api/sessions/${sessionId}/plan`);
 }
