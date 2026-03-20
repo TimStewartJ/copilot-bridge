@@ -170,7 +170,7 @@ export class SessionManager {
   }
 
   private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>): Promise<void> {
-    console.log(`[sdk] Resuming session ${sessionId}...`);
+    const sid = sessionId.slice(0, 8);
 
     // Build resume config with optional task context
     const linkedTask = taskStore.findTaskBySessionId(sessionId);
@@ -195,17 +195,27 @@ export class SessionManager {
         contextParts.push(`Task notes:\n${linkedTask.notes}`);
       }
       resumeConfig.systemMessage = { mode: "append", content: contextParts.join("\n") };
-      console.log(`[sdk] Injecting task context for "${linkedTask.title}"`);
+      console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
     }
 
-    const session = await this.client!.resumeSession(sessionId, resumeConfig);
-    console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
+    // Resume session with timeout — SDK can hang here indefinitely
+    const resumeStart = Date.now();
+    console.log(`[sdk] [${sid}] Resuming session...`);
+
+    const session = await Promise.race([
+      this.client!.resumeSession(sessionId, resumeConfig),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+      ),
+    ]);
+
+    console.log(`[sdk] [${sid}] Session resumed (${Date.now() - resumeStart}ms)`);
 
     const unsub = session.on((event) => {
       const data = (event as any).data;
       switch (event.type) {
         case "assistant.turn_start":
-          console.log(`[sdk] ⏳ Turn started`);
+          console.log(`[sdk] [${sid}] ⏳ Turn started`);
           bus.emit({ type: "thinking" });
           break;
         case "assistant.message_delta":
@@ -219,12 +229,12 @@ export class SessionManager {
           }
           break;
         case "assistant.intent":
-          console.log(`[sdk] 🎯 Intent: ${data?.intent}`);
+          console.log(`[sdk] [${sid}] 🎯 Intent: ${data?.intent}`);
           bus.emit({ type: "intent", intent: data?.intent ?? "" });
           break;
         case "assistant.message":
           if (data?.content) {
-            console.log(`[sdk] ✅ Response (${data.content.length} chars)`);
+            console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
             if (data.toolRequests?.length) {
               bus.emit({ type: "assistant_partial", content: data.content });
             }
@@ -232,7 +242,7 @@ export class SessionManager {
           break;
         case "tool.execution_start": {
           const toolName = data?.toolName ?? data?.name ?? "unknown";
-          console.log(`[sdk] 🔧 Tool: ${toolName}`);
+          console.log(`[sdk] [${sid}] 🔧 Tool: ${toolName}`);
           bus.emit({
             type: "tool_start",
             toolCallId: data?.toolCallId,
@@ -249,7 +259,7 @@ export class SessionManager {
           break;
         case "tool.execution_complete": {
           const completedToolName = data?.toolName ?? data?.name ?? "unknown";
-          console.log(`[sdk] 🔧 Tool complete: ${completedToolName}`);
+          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${completedToolName}`);
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
@@ -267,26 +277,35 @@ export class SessionManager {
           bus.emit({ type: "tool_done", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
           break;
         case "session.error":
-          console.error(`[sdk] ❌ Error: ${data?.message ?? "unknown"}`);
+          console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
           bus.emit({ type: "error", message: data?.message ?? "unknown" });
           break;
         case "session.title_changed":
           bus.emit({ type: "title_changed", title: data?.title ?? "" });
           break;
         case "session.idle":
-          console.log(`[sdk] 💤 Session idle`);
+          console.log(`[sdk] [${sid}] 💤 Session idle`);
           break;
         default:
           break;
       }
     });
 
+    // Periodic heartbeat log so silence = genuinely hung
+    const sendStart = Date.now();
+    const heartbeatLog = setInterval(() => {
+      const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
+      console.log(`[sdk] [${sid}] ⏳ Still working... (${elapsed}s)`);
+    }, 30_000);
+
     try {
+      console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars)...`);
       const response = await session.sendAndWait({ prompt }, 600_000);
       const content = response?.data.content ?? "(no response)";
-      console.log(`[sdk] Done: ${content.length} chars`);
+      console.log(`[sdk] [${sid}] Done: ${content.length} chars (${((Date.now() - sendStart) / 1000).toFixed(1)}s)`);
       bus.emit({ type: "done", content });
     } finally {
+      clearInterval(heartbeatLog);
       unsub();
     }
   }
