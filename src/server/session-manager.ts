@@ -17,8 +17,21 @@ const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
 // Module-level ref so universal tools can query session state
 let _instance: SessionManager | null = null;
 let _restartPending = false;
+let _restartPendingSince = 0;
+const RESTART_TIMEOUT = 10 * 60 * 1000; // 10 min — if server is still alive, restart failed
 
-export function isRestartPending(): boolean { return _restartPending; }
+export function isRestartPending(): boolean {
+  if (_restartPending && _restartPendingSince && Date.now() - _restartPendingSince > RESTART_TIMEOUT) {
+    clearRestartPending();
+  }
+  return _restartPending;
+}
+export function clearRestartPending(): void {
+  if (!_restartPending) return;
+  _restartPending = false;
+  _restartPendingSince = 0;
+  globalBus.emit({ type: "server:restart-cleared" });
+}
 export function getRestartWaitingCount(): number {
   return _instance ? _instance.getActiveSessions().length : 0;
 }
@@ -109,6 +122,22 @@ const BRIDGE_TOOLS = [
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
       _restartPending = true;
+      _restartPendingSince = Date.now();
+
+      // Watchdog: if the launcher consumes the signal file but this process
+      // survives (restart failed / rolled back), auto-clear the pending state.
+      // The launcher deletes the signal file immediately, then spends time
+      // waiting for sessions + building, so we wait 90s after the file disappears.
+      const watchdog = setInterval(() => {
+        if (!_restartPending) { clearInterval(watchdog); return; }
+        if (!existsSync(SIGNAL_FILE)) {
+          // Signal consumed — give the restart time to kill us, then clear
+          setTimeout(() => {
+            if (_restartPending) clearRestartPending();
+          }, 90_000);
+          clearInterval(watchdog);
+        }
+      }, 5_000);
 
       const otherBusy = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
       globalBus.emit({ type: "server:restart-pending", waitingSessions: otherBusy });

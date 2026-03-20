@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 
 export interface StatusEvent {
   type: "session:busy" | "session:idle" | "session:title" | "session:intent"
-      | "server:restart-pending" | "status:connected";
+      | "server:restart-pending" | "server:restart-cleared" | "status:connected";
   sessionId?: string;
   title?: string;
   intent?: string;

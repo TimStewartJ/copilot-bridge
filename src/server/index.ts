@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { config } from "./config.js";
-import { SessionManager, isRestartPending, getRestartWaitingCount } from "./session-manager.js";
+import { SessionManager, isRestartPending, getRestartWaitingCount, clearRestartPending } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
 import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
@@ -76,6 +76,12 @@ app.get("/api/sessions", async (req, res) => {
 app.get("/api/busy", (_req, res) => {
   const activeSessions = sessionManager.getActiveSessions();
   res.json({ busy: activeSessions.length > 0, count: activeSessions.length, sessionIds: activeSessions });
+});
+
+// POST /api/restart-clear — manual escape hatch to dismiss a stale restart banner
+app.post("/api/restart-clear", (_req, res) => {
+  clearRestartPending();
+  res.json({ ok: true });
 });
 
 // GET /api/status-stream — global SSE for session lifecycle events

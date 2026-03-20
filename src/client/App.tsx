@@ -109,8 +109,9 @@ export default function App() {
         setRestartPending(true);
         setRestartWaiting(event.waitingSessions ?? 0);
         break;
+      case "server:restart-cleared":
       case "status:connected":
-        // SSE reconnected after server restart — clear the banner
+        // SSE reconnected after server restart, or restart timed out / was cleared
         setRestartPending(false);
         setRestartWaiting(0);
         break;
