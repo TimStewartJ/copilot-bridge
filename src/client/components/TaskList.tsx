@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Task } from "../api";
+import { useState, useMemo } from "react";
+import type { Task, Session } from "../api";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
@@ -24,6 +24,8 @@ interface TaskListProps {
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
   onNewTask: () => void;
+  sessions?: Session[];
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
 export default function TaskList({
@@ -31,7 +33,33 @@ export default function TaskList({
   activeTaskId,
   onSelectTask,
   onNewTask,
+  sessions = [],
+  isUnread,
 }: TaskListProps) {
+  // Build a lookup of sessionId → Session for quick access
+  const sessionMap = useMemo(() => {
+    const map = new Map<string, Session>();
+    for (const s of sessions) map.set(s.sessionId, s);
+    return map;
+  }, [sessions]);
+
+  // Derive busy/unread status per task from linked sessions
+  const taskIndicators = useMemo(() => {
+    const indicators = new Map<string, "busy" | "unread" | null>();
+    for (const task of tasks) {
+      let hasBusy = false;
+      let hasUnread = false;
+      for (const sid of task.sessionIds) {
+        const session = sessionMap.get(sid);
+        if (!session) continue;
+        if (session.busy) hasBusy = true;
+        if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
+      }
+      indicators.set(task.id, hasBusy ? "busy" : hasUnread ? "unread" : null);
+    }
+    return indicators;
+  }, [tasks, sessionMap, isUnread]);
+
   const sorted = [...tasks].sort((a, b) => {
     const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (statusDiff !== 0) return statusDiff;
@@ -71,6 +99,15 @@ export default function TaskList({
               }`}
             >
               <div className="flex items-center gap-2">
+                {taskIndicators.get(task.id) && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      taskIndicators.get(task.id) === "busy"
+                        ? "bg-info animate-pulse"
+                        : "bg-success"
+                    }`}
+                  />
+                )}
                 <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
                   {task.title}
                 </span>

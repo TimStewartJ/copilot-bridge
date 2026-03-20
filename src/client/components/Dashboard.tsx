@@ -3,6 +3,7 @@ import type { Task, Session } from "../api";
 interface DashboardProps {
   tasks: Task[];
   sessions: Session[];
+  allSessions?: Session[];
   onSelectTask: (id: string) => void;
   onSelectSession: (id: string) => void;
   onNewTask: () => void;
@@ -22,12 +23,14 @@ function timeAgo(iso?: string): string {
 export default function Dashboard({
   tasks,
   sessions,
+  allSessions,
   onSelectTask,
   onSelectSession,
   onNewTask,
   onNewSession,
   isUnread,
 }: DashboardProps) {
+  const lookupSessions = allSessions ?? sessions;
   const activeTasks = tasks.filter((t) => t.status === "active");
   const pausedTasks = tasks.filter((t) => t.status === "paused");
   const doneTasks = tasks.filter((t) => t.status === "done");
@@ -63,13 +66,32 @@ export default function Dashboard({
                 No active tasks
               </div>
             )}
-            {activeTasks.map((task) => (
+            {activeTasks.map((task) => {
+              let indicator: "busy" | "unread" | null = null;
+              for (const sid of task.sessionIds) {
+                const session = lookupSessions.find((s) => s.sessionId === sid);
+                if (!session) continue;
+                if (session.busy) { indicator = "busy"; break; }
+                if (isUnread?.(sid, session.modifiedTime)) indicator = "unread";
+              }
+              return (
               <button
                 key={task.id}
                 onClick={() => onSelectTask(task.id)}
                 className="w-full text-left px-4 py-3 bg-bg-surface hover:bg-bg-hover rounded-md transition-colors"
               >
-                <div className="font-medium text-sm">{task.title}</div>
+                <div className="font-medium text-sm flex items-center gap-2">
+                  {indicator && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        indicator === "busy"
+                          ? "bg-info animate-pulse"
+                          : "bg-success"
+                      }`}
+                    />
+                  )}
+                  {task.title}
+                </div>
                 <div className="text-xs text-text-muted mt-1">
                   {timeAgo(task.updatedAt)}
                   {task.workItemIds.length > 0 &&
@@ -80,7 +102,8 @@ export default function Dashboard({
                     ` · ${task.sessionIds.length} sessions`}
                 </div>
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 

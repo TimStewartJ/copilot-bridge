@@ -78,6 +78,23 @@ export default function Sidebar({
 
   const sessionsUnread = unreadCount?.(sessions, activeSessionId) ?? 0;
 
+  // Count tasks with any busy or unread linked sessions
+  const tasksAttention = (() => {
+    let count = 0;
+    const sessionMap = new Map(sessions.map((s) => [s.sessionId, s]));
+    for (const task of tasks) {
+      for (const sid of task.sessionIds) {
+        const session = sessionMap.get(sid);
+        if (!session) continue;
+        if (session.busy || isUnread?.(sid, session.modifiedTime)) {
+          count++;
+          break;
+        }
+      }
+    }
+    return count;
+  })();
+
   return (
     <div className="w-full h-full bg-bg-secondary border-r border-border flex flex-col">
       {/* Header */}
@@ -110,6 +127,11 @@ export default function Sidebar({
         >
           <ClipboardList size={13} />
           Tasks
+          {tasksAttention > 0 && (
+            <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold bg-success/20 text-success rounded-full">
+              {tasksAttention}
+            </span>
+          )}
         </button>
         <button
           onClick={() => onTabChange("sessions")}
@@ -136,6 +158,8 @@ export default function Sidebar({
           activeTaskId={activeTaskId}
           onSelectTask={onSelectTask}
           onNewTask={onNewTask}
+          sessions={sessions}
+          isUnread={isUnread}
         />
       ) : (
         <SessionList

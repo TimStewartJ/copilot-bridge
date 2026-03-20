@@ -287,6 +287,7 @@ export default function App() {
                 <Dashboard
                   tasks={tasks}
                   sessions={globalSessions}
+                  allSessions={sessions}
                   onSelectTask={handleSelectTask}
                   onSelectSession={handleSelectSession}
                   onNewTask={handleNewTask}
