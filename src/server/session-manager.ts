@@ -180,6 +180,7 @@ export class SessionManager {
     const resumeConfig: any = {
       onPermissionRequest: approveAll,
       tools: BRIDGE_TOOLS,
+      mcpServers: config.sessionMcpServers,
     };
 
     if (linkedTask) {
@@ -270,7 +271,8 @@ export class SessionManager {
           break;
         case "tool.execution_complete": {
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
-          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${completedToolName}`);
+          const ok = data?.success !== false;
+          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${completedToolName} (${ok ? "ok" : "failed"})`);
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
