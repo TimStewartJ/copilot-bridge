@@ -1,14 +1,22 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
   disabled: boolean;
+  sessionId?: string | null;
 }
 
-export default function ChatInput({ onSend, disabled }: ChatInputProps) {
+export default function ChatInput({ onSend, disabled, sessionId }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastHeightRef = useRef(0);
+
+  // Auto-focus on session change (desktop only — avoids keyboard popup on mobile)
+  useEffect(() => {
+    if (sessionId && window.matchMedia("(pointer: fine)").matches) {
+      textareaRef.current?.focus();
+    }
+  }, [sessionId]);
 
   const handleInput = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
