@@ -245,6 +245,7 @@ function TaskContextPanel({
             onSelectSession={onSelectSession}
             onNewSession={() => onNewSession(task.id)}
             isUnread={isUnread}
+            onArchiveSession={onArchiveSession}
           />
         </div>
 
