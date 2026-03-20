@@ -114,9 +114,32 @@ app.get("/api/sessions/:id/stream", (req, res) => {
     Connection: "keep-alive",
   });
 
-  const sendEvent = (event: any) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  let closed = false;
+  let unsub: (() => void) | null = null;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (unsub) unsub();
+    if (!res.writableEnded) res.end();
   };
+
+  const sendEvent = (event: any) => {
+    if (closed || res.writableEnded) return;
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+      close();
+      return;
+    }
+    if (event.type === "done" || event.type === "error") {
+      close();
+    }
+  };
+
+  // Prevent unhandled 'error' events on the response from crashing the process
+  res.on("error", () => { close(); });
+  req.on("close", () => { close(); });
 
   const bus = getBus(sessionId);
 
@@ -126,33 +149,24 @@ app.get("/api/sessions/:id/stream", (req, res) => {
       sendEvent({ type: "thinking" });
       // The bus should appear soon — poll briefly
       const waitForBus = setInterval(() => {
+        if (closed) { clearInterval(waitForBus); return; }
         const newBus = getBus(sessionId);
         if (newBus) {
           clearInterval(waitForBus);
-          const unsub = newBus.subscribe(sendEvent);
-          req.on("close", unsub);
+          unsub = newBus.subscribe(sendEvent);
         }
       }, 500);
       setTimeout(() => clearInterval(waitForBus), 10_000);
     } else {
       // Session is idle — nothing to stream
       sendEvent({ type: "idle" });
-      res.end();
+      close();
     }
     return;
   }
 
   // Subscribe to bus — replays history + streams live events
-  const unsub = bus.subscribe((event) => {
-    sendEvent(event);
-    if (event.type === "done" || event.type === "error") {
-      res.end();
-    }
-  });
-
-  req.on("close", () => {
-    unsub();
-  });
+  unsub = bus.subscribe(sendEvent);
 });
 
 // ── Task routes ───────────────────────────────────────────────────

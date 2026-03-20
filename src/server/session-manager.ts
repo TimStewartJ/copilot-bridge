@@ -259,7 +259,6 @@ export class SessionManager {
           });
           break;
         }
-          break;
         case "subagent.started":
           bus.emit({ type: "tool_start", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
           break;
@@ -282,12 +281,14 @@ export class SessionManager {
       }
     });
 
-    const response = await session.sendAndWait({ prompt }, 600_000);
-    unsub();
-
-    const content = response?.data.content ?? "(no response)";
-    console.log(`[sdk] Done: ${content.length} chars`);
-    bus.emit({ type: "done", content });
+    try {
+      const response = await session.sendAndWait({ prompt }, 600_000);
+      const content = response?.data.content ?? "(no response)";
+      console.log(`[sdk] Done: ${content.length} chars`);
+      bus.emit({ type: "done", content });
+    } finally {
+      unsub();
+    }
   }
 
   async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>> {
