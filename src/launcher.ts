@@ -47,6 +47,8 @@ function gitHash(): string {
   } catch { return "unknown"; }
 }
 
+const tag = () => `${gitHash()}, PID ${process.pid}`;
+
 function clearSignal() {
   try { if (existsSync(SIGNAL_FILE)) unlinkSync(SIGNAL_FILE); } catch {}
 }
@@ -141,7 +143,7 @@ function startServer(): ChildProcess {
         const healthy = await healthCheck();
         if (healthy) {
           log(`✅ Auto-restart succeeded after crash`);
-          await notifyWebhook(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code}, attempt ${crashRestarts}/${MAX_CRASH_RESTARTS}, ${gitHash()})`, currentTunnelUrl ?? undefined);
+          await notifyWebhook(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code}, attempt ${crashRestarts}/${MAX_CRASH_RESTARTS}, ${tag()})`, currentTunnelUrl ?? undefined);
         } else {
           log(`❌ Auto-restart failed health check`);
           killServer();
@@ -219,7 +221,7 @@ async function restart() {
 
   if (!build()) {
     log("Build failed — rolling back");
-    await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${gitHash()})`, currentTunnelUrl ?? undefined);
+    await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
     rollback();
     consecutiveFailures++;
     if (consecutiveFailures >= MAX_FAILURES) {
@@ -236,10 +238,10 @@ async function restart() {
   if (healthy) {
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
-    await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${gitHash()})`, currentTunnelUrl ?? undefined);
+    await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
   } else {
     log("❌ Health check failed — rolling back");
-    await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${gitHash()})`, currentTunnelUrl ?? undefined);
+    await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
     killServer();
     rollback();
     serverProcess = startServer();
@@ -329,7 +331,7 @@ async function main() {
   // Start dev tunnel
   try {
     const url = await startTunnel();
-    await notifyWebhook(`🤖 Copilot Bridge is online! (${gitHash()})`, url);
+    await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
   } catch (err) {
     log(`Tunnel/notification setup failed (non-fatal): ${err}`);
   }
