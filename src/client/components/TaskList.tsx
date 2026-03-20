@@ -3,12 +3,6 @@ import type { Task, Session } from "../api";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
-const STATUS_COLORS = {
-  active: "bg-success/15 text-success",
-  paused: "bg-warning/15 text-warning",
-  done: "bg-text-muted/15 text-text-muted",
-  archived: "bg-text-faint/15 text-text-faint",
-} as const;
 
 function timeAgo(iso?: string): string {
   if (!iso) return "";
@@ -110,11 +104,6 @@ export default function TaskList({
                 )}
                 <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
                   {task.title}
-                </span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full ${STATUS_COLORS[task.status]}`}
-                >
-                  {task.status}
                 </span>
               </div>
               <div className="text-xs text-text-muted mt-0.5">

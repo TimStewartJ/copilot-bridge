@@ -246,6 +246,7 @@ export default function App() {
           onSelectTask={handleSelectTask}
           onNewTask={handleNewTask}
           sessions={globalSessions}
+          allSessions={sessions}
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}

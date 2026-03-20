@@ -20,6 +20,7 @@ interface SidebarProps {
   onNewTask: () => void;
   // Sessions
   sessions: Session[];
+  allSessions: Session[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
@@ -45,6 +46,7 @@ export default function Sidebar({
   onSelectTask,
   onNewTask,
   sessions,
+  allSessions,
   activeSessionId,
   onSelectSession,
   onNewSession,
@@ -81,7 +83,7 @@ export default function Sidebar({
   // Count tasks with any busy or unread linked sessions
   const tasksAttention = (() => {
     let count = 0;
-    const sessionMap = new Map(sessions.map((s) => [s.sessionId, s]));
+    const sessionMap = new Map(allSessions.map((s) => [s.sessionId, s]));
     for (const task of tasks) {
       for (const sid of task.sessionIds) {
         const session = sessionMap.get(sid);
@@ -158,7 +160,7 @@ export default function Sidebar({
           activeTaskId={activeTaskId}
           onSelectTask={onSelectTask}
           onNewTask={onNewTask}
-          sessions={sessions}
+          sessions={allSessions}
           isUnread={isUnread}
         />
       ) : (
