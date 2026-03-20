@@ -45,6 +45,8 @@ export function useSessionStream(
   const onTitleChangedRef = useRef(onTitleChanged);
   onTitleChangedRef.current = onTitleChanged;
 
+  const retryCountRef = useRef(0);
+
   // Connect to the SSE stream for the current session
   const connectStream = useCallback((sid: string) => {
     abortRef.current?.abort();
@@ -221,13 +223,23 @@ export function useSessionStream(
       .catch((err) => {
         if (err.name === "AbortError") return;
         console.error("[stream] Error:", err);
-        setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
+        // Retry once on stream failure before giving up
+        if (retryCountRef.current < 1 && sid === sessionRef.current) {
+          retryCountRef.current++;
+          console.warn("[stream] Retrying connection in 1s...");
+          setTimeout(() => {
+            if (sid === sessionRef.current) connectStream(sid);
+          }, 1000);
+        } else {
+          setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
+        }
       });
   }, []); // stable — callbacks accessed via refs
 
   // Clean up on session change
   useEffect(() => {
     sessionRef.current = sessionId;
+    retryCountRef.current = 0;
     setStreamState(mkState("idle"));
     abortRef.current?.abort();
     return () => {
@@ -251,6 +263,7 @@ export function useSessionStream(
     }
 
     // Connect to stream to watch the work
+    retryCountRef.current = 0;
     connectStream(sessionId);
   }, [sessionId, connectStream]);
 

@@ -190,6 +190,7 @@ export class SessionManager {
     }
 
     const bus = getOrCreateBus(sessionId);
+    bus.reset(); // Ensure clean state even if bus was reused
     this.activeSessions.add(sessionId);
 
     // Run in background — not awaited

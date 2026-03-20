@@ -131,6 +131,24 @@ class SessionEventBus {
     return this._complete;
   }
 
+  /** Reset snapshot state for a new turn (defense-in-depth) */
+  reset(): void {
+    this._complete = false;
+    this.accumulatedContent = "";
+    this.activeTools = [];
+    this.intentText = "";
+    this.finalContent = undefined;
+    this.errorMessage = undefined;
+    this.cancelCleanup();
+  }
+
+  cancelCleanup(): void {
+    if (this.cleanupTimer) {
+      clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
+
   private scheduleCleanup(): void {
     this.cleanupTimer = setTimeout(() => {
       eventBusMap.delete(this.sessionId);
@@ -143,7 +161,9 @@ const eventBusMap = new Map<string, SessionEventBus>();
 
 export function getOrCreateBus(sessionId: string): SessionEventBus {
   let bus = eventBusMap.get(sessionId);
-  if (!bus) {
+  if (!bus || bus.complete) {
+    // Don't reuse a completed bus — cancel its cleanup and replace with fresh one
+    if (bus) bus.cancelCleanup();
     bus = new SessionEventBus(sessionId);
     eventBusMap.set(sessionId, bus);
   }
