@@ -47,6 +47,7 @@ interface SessionListProps {
   onNewSession: () => void;
   newButtonLabel?: string;
   showEmptyState?: boolean;
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
 export default function SessionList({
@@ -57,6 +58,7 @@ export default function SessionList({
   onNewSession,
   newButtonLabel = variant === "global" ? "+ New Session" : "+ New Chat",
   showEmptyState = variant === "compact",
+  isUnread,
 }: SessionListProps) {
   const s = styles[variant];
 
@@ -72,6 +74,13 @@ export default function SessionList({
           {sessions.map((session) => {
             const id = session.sessionId;
             const isActive = id === activeSessionId;
+            const unread = !isActive && isUnread?.(id, session.modifiedTime);
+            // Dot: busy (blue pulsing) > unread (green solid) > idle (gray)
+            const dotColor = session.busy
+              ? "bg-blue-400 animate-pulse"
+              : unread
+                ? "bg-green-400"
+                : "bg-gray-600";
             return (
               <button
                 key={id}
@@ -87,13 +96,13 @@ export default function SessionList({
                     : "hover:bg-[#1a1a3e]"
                 }`}
               >
-                <div className={s.titleClass}>
-                  {session.busy && (
-                    <span
-                      className={`inline-block ${s.dotSize} bg-green-400 rounded-full animate-pulse align-middle`}
-                    />
-                  )}
-                  {session.summary || id.slice(0, 8)}
+                <div className={`${s.titleClass} flex items-center`}>
+                  <span
+                    className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
+                  />
+                  <span className="truncate">
+                    {session.summary || id.slice(0, 8)}
+                  </span>
                 </div>
                 <div className={s.metaClass}>
                   {timeAgo(session.modifiedTime)}

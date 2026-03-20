@@ -7,6 +7,7 @@ interface DashboardProps {
   onSelectSession: (id: string) => void;
   onNewTask: () => void;
   onNewSession: () => void;
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
 function timeAgo(iso?: string): string {
@@ -25,6 +26,7 @@ export default function Dashboard({
   onSelectSession,
   onNewTask,
   onNewSession,
+  isUnread,
 }: DashboardProps) {
   const activeTasks = tasks.filter((t) => t.status === "active");
   const pausedTasks = tasks.filter((t) => t.status === "paused");
@@ -96,21 +98,30 @@ export default function Dashboard({
             </button>
           </div>
           <div className="space-y-2">
-            {recentSessions.map((s) => (
-              <button
-                key={s.sessionId}
-                onClick={() => onSelectSession(s.sessionId)}
-                className="w-full text-left px-4 py-3 bg-[#2a2a4a] hover:bg-[#333366] rounded-lg transition-colors"
-              >
-                <div className="font-medium text-sm truncate">
-                  {s.summary || s.sessionId.slice(0, 8)}
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {timeAgo(s.modifiedTime)}
-                  {s.context?.branch && ` · ${s.context.branch}`}
-                </div>
-              </button>
-            ))}
+            {recentSessions.map((s) => {
+              const unread = isUnread?.(s.sessionId, s.modifiedTime);
+              const dotColor = s.busy
+                ? "bg-blue-400 animate-pulse"
+                : unread
+                  ? "bg-green-400"
+                  : "bg-gray-600";
+              return (
+                <button
+                  key={s.sessionId}
+                  onClick={() => onSelectSession(s.sessionId)}
+                  className="w-full text-left px-4 py-3 bg-[#2a2a4a] hover:bg-[#333366] rounded-lg transition-colors"
+                >
+                  <div className="font-medium text-sm truncate flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor}`} />
+                    {s.summary || s.sessionId.slice(0, 8)}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1 ml-4">
+                    {timeAgo(s.modifiedTime)}
+                    {s.context?.branch && ` · ${s.context.branch}`}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

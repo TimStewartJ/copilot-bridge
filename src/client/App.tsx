@@ -9,6 +9,7 @@ import {
   type Session,
   type Task,
 } from "./api";
+import { useReadState } from "./useReadState";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import TaskDetailView from "./components/TaskDetailView";
@@ -26,6 +27,8 @@ export default function App() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [taskContext, setTaskContext] = useState<Task | null>(null);
+
+  const { isUnread, markRead, unreadCount } = useReadState(sessions);
 
   const loadSessions = async () => {
     try {
@@ -48,13 +51,27 @@ export default function App() {
     loadTasks();
   }, []);
 
-  // Auto-refresh sessions while any are busy
+  // Auto-refresh sessions while any are busy (fast: 5s)
   useEffect(() => {
     const hasBusy = sessions.some((s) => s.busy);
     if (!hasBusy) return;
     const timer = setInterval(loadSessions, 5_000);
     return () => clearInterval(timer);
   }, [sessions]);
+
+  // Background poll to detect new activity on idle sessions (slow: 30s, visibility-aware)
+  useEffect(() => {
+    const poll = () => {
+      if (document.visibilityState === "visible") loadSessions();
+    };
+    const timer = setInterval(poll, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Mark session as read when opened
+  useEffect(() => {
+    if (activeSessionId) markRead(activeSessionId);
+  }, [activeSessionId, markRead]);
 
   const handleNewSession = async () => {
     try {
@@ -208,6 +225,8 @@ export default function App() {
           onBackToTask={handleBackToTask}
           onSelectTaskSession={handleSelectTaskSession}
           onNewTaskSession={handleNewTaskSession}
+          isUnread={isUnread}
+          unreadCount={unreadCount}
         />
       </div>
 
@@ -244,6 +263,7 @@ export default function App() {
               onTaskUpdated={loadTasks}
               onTaskDeleted={handleTaskDeleted}
               onOpenSession={handleOpenSessionFromTask}
+              isUnread={isUnread}
             />
           )}
           {viewMode === "none" && (
@@ -254,6 +274,7 @@ export default function App() {
               onSelectSession={handleSelectSession}
               onNewTask={handleNewTask}
               onNewSession={handleNewSession}
+              isUnread={isUnread}
             />
           )}
         </main>

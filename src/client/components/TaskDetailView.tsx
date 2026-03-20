@@ -22,6 +22,7 @@ interface TaskDetailViewProps {
   onTaskUpdated: () => void;
   onTaskDeleted: () => void;
   onOpenSession: (sessionId: string) => void;
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
 const STATUS_OPTIONS = ["active", "paused", "done", "archived"] as const;
@@ -82,6 +83,7 @@ export default function TaskDetailView({
   onTaskUpdated,
   onTaskDeleted,
   onOpenSession,
+  isUnread,
 }: TaskDetailViewProps) {
   const [task, setTask] = useState<Task | null>(null);
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
@@ -204,6 +206,9 @@ export default function TaskDetailView({
   }, {});
 
   const busySessionCount = linkedSessions.filter((s) => s.busy).length;
+  const unreadSessionCount = linkedSessions.filter(
+    (s) => !s.busy && isUnread?.(s.sessionId, s.modifiedTime),
+  ).length;
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -388,7 +393,10 @@ export default function TaskDetailView({
         <Section
           title="💬 Sessions"
           count={task.sessionIds.length}
-          summary={busySessionCount > 0 ? `${busySessionCount} busy` : undefined}
+          summary={[
+            busySessionCount > 0 ? `${busySessionCount} busy` : "",
+            unreadSessionCount > 0 ? `${unreadSessionCount} unread` : "",
+          ].filter(Boolean).join(" · ") || undefined}
         >
           <button
             onClick={async () => {
@@ -410,6 +418,7 @@ export default function TaskDetailView({
                 <SessionRow
                   key={s.sessionId}
                   session={s}
+                  unread={!!isUnread?.(s.sessionId, s.modifiedTime)}
                   onOpen={() => onOpenSession(s.sessionId)}
                   onUnlink={() => handleUnlink({ type: "session", sessionId: s.sessionId })}
                 />
@@ -569,21 +578,26 @@ function PRRow({ item, onUnlink }: { item: EnrichedPR; onUnlink: () => void }) {
 
 function SessionRow({
   session,
+  unread,
   onOpen,
   onUnlink,
 }: {
   session: Session;
+  unread?: boolean;
   onOpen: () => void;
   onUnlink: () => void;
 }) {
+  // Dot: busy (blue pulsing) > unread (green solid) > read (gray)
+  const dotColor = session.busy
+    ? "bg-blue-400 animate-pulse"
+    : unread
+      ? "bg-green-400"
+      : "bg-gray-600";
+
   return (
     <div className="group flex items-start gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md hover:bg-[#32325a] transition-colors">
       <div className="mt-1 shrink-0">
-        {session.busy ? (
-          <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-        ) : (
-          <span className="inline-block w-2 h-2 bg-gray-600 rounded-full" />
-        )}
+        <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
       </div>
       <button
         onClick={onOpen}

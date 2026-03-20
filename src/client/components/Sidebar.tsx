@@ -27,6 +27,9 @@ interface SidebarProps {
   onBackToTask: (taskId: string) => void;
   onSelectTaskSession: (sessionId: string) => void;
   onNewTaskSession: (taskId: string) => void;
+  // Unread
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  unreadCount?: (sessions: Session[], activeSessionId?: string | null) => number;
 }
 
 export default function Sidebar({
@@ -46,6 +49,8 @@ export default function Sidebar({
   onBackToTask,
   onSelectTaskSession,
   onNewTaskSession,
+  isUnread,
+  unreadCount,
 }: SidebarProps) {
   // If we have task context (navigated from task → session), show the task panel
   if (taskContext) {
@@ -59,10 +64,13 @@ export default function Sidebar({
           onSelectSession={onSelectTaskSession}
           onNewSession={onNewTaskSession}
           onGoHome={onGoHome}
+          isUnread={isUnread}
         />
       </div>
     );
   }
+
+  const sessionsUnread = unreadCount?.(sessions, activeSessionId) ?? 0;
 
   return (
     <div className="w-full h-full bg-[#16213e] border-r border-[#2a2a4a] flex flex-col">
@@ -97,6 +105,11 @@ export default function Sidebar({
           }`}
         >
           💬 Sessions
+          {sessionsUnread > 0 && (
+            <span className="ml-1.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold bg-green-500/30 text-green-400 rounded-full">
+              {sessionsUnread}
+            </span>
+          )}
         </button>
       </div>
 
@@ -115,6 +128,7 @@ export default function Sidebar({
           activeSessionId={activeSessionId}
           onSelectSession={onSelectSession}
           onNewSession={onNewSession}
+          isUnread={isUnread}
         />
       )}
     </div>
@@ -138,6 +152,7 @@ interface TaskContextPanelProps {
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
   onGoHome: () => void;
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
 }
 
 function TaskContextPanel({
@@ -148,6 +163,7 @@ function TaskContextPanel({
   onSelectSession,
   onNewSession,
   onGoHome,
+  isUnread,
 }: TaskContextPanelProps) {
   const [notesExpanded, setNotesExpanded] = useState(false);
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
@@ -211,6 +227,7 @@ function TaskContextPanel({
             activeSessionId={activeSessionId}
             onSelectSession={onSelectSession}
             onNewSession={() => onNewSession(task.id)}
+            isUnread={isUnread}
           />
         </div>
 
