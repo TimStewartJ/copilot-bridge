@@ -18,6 +18,7 @@ import ChatView from "./components/ChatView";
 import TaskDetailView from "./components/TaskDetailView";
 import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
+import RestartBanner from "./components/RestartBanner";
 import { useSwipeDrawer } from "./useSwipeDrawer";
 import { Menu, Sparkles } from "lucide-react";
 
@@ -31,6 +32,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"tasks" | "sessions">("tasks");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [taskContext, setTaskContext] = useState<Task | null>(null);
+  const [restartPending, setRestartPending] = useState(false);
+  const [restartWaiting, setRestartWaiting] = useState(0);
+
+  // Track optimistic sessions that the server doesn't know about yet
+  const optimisticIdsRef = useRef(new Set<string>());
 
   // Derive active IDs from URL
   const activeSessionId = location.pathname.match(/^\/sessions\/(.+)/)?.[1] ?? null;
@@ -50,7 +56,17 @@ export default function App() {
 
   const loadSessions = async () => {
     try {
-      setSessions(await fetchSessions(true));
+      const serverSessions = await fetchSessions(true);
+      setSessions((prev) => {
+        const serverIds = new Set(serverSessions.map((s) => s.sessionId));
+        // Promote: optimistic sessions now in server data no longer need protection
+        for (const id of serverIds) optimisticIdsRef.current.delete(id);
+        // Survivors: optimistic sessions not yet in server data
+        const survivors = prev.filter(
+          (s) => optimisticIdsRef.current.has(s.sessionId) && !serverIds.has(s.sessionId),
+        );
+        return [...survivors, ...serverSessions];
+      });
     } catch (err) {
       console.error("Failed to load sessions:", err);
     }
@@ -89,6 +105,15 @@ export default function App() {
           );
         }
         break;
+      case "server:restart-pending":
+        setRestartPending(true);
+        setRestartWaiting(event.waitingSessions ?? 0);
+        break;
+      case "status:connected":
+        // SSE reconnected after server restart — clear the banner
+        setRestartPending(false);
+        setRestartWaiting(0);
+        break;
     }
   }, []));
 
@@ -118,6 +143,7 @@ export default function App() {
   // Optimistic insert — makes new sessions visible in sidebar immediately
   // (server filters out sessions with no summary, so loadSessions misses brand-new ones)
   const addOptimisticSession = useCallback((sessionId: string) => {
+    optimisticIdsRef.current.add(sessionId);
     setSessions((prev) => {
       if (prev.some((s) => s.sessionId === sessionId)) return prev;
       return [{
@@ -306,6 +332,8 @@ export default function App() {
       </div>
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        {restartPending && <RestartBanner waitingSessions={restartWaiting} />}
+
         {/* Mobile top bar — sticky */}
         <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
           <button
