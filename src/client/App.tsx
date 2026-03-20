@@ -106,14 +106,16 @@ export default function App() {
   };
 
   const handleNewTask = async () => {
-    const title = prompt("Task title:");
-    if (!title) return;
     try {
-      const task = await createTask(title);
+      const task = await createTask("New Task");
       setTasks((prev) => [task, ...prev]);
-      setActiveTaskId(task.id);
-      setActiveSessionId(null);
-      setViewMode("task");
+      // Auto-create a session and jump straight into chat
+      const sessionId = await createTaskSession(task.id);
+      await loadSessions();
+      setTaskContext(task);
+      setActiveTaskId(null);
+      setActiveSessionId(sessionId);
+      setViewMode("chat");
     } catch (err) {
       console.error("Failed to create task:", err);
     }

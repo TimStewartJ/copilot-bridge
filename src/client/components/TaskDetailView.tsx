@@ -15,7 +15,7 @@ import {
 } from "../api";
 import NotesEditor from "./NotesEditor";
 import LinkDialog from "./LinkDialog";
-import { Bug, CheckSquare, BookOpen, Target, Trophy, ClipboardList, GitPullRequest, MessageSquare, FileText, Archive, ArchiveRestore, Trash2, Pencil, X } from "lucide-react";
+import { Bug, CheckSquare, BookOpen, Target, Trophy, ClipboardList, GitPullRequest, MessageSquare, FileText, FolderOpen, Archive, ArchiveRestore, Trash2, Pencil, X } from "lucide-react";
 
 interface TaskDetailViewProps {
   taskId: string;
@@ -137,7 +137,7 @@ export default function TaskDetailView({
 
   if (loading || !task) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-500">
+      <div className="flex-1 flex items-center justify-center text-text-muted">
         Loading task...
       </div>
     );
@@ -216,7 +216,7 @@ export default function TaskDetailView({
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <div className="p-4 md:p-6 border-b border-[#2a2a4a]">
+      <div className="p-4 md:p-6 border-b border-border">
         <div className="flex flex-wrap items-start gap-3 md:gap-4">
           <div className="flex-1 min-w-0">
             {editingTitle ? (
@@ -226,12 +226,12 @@ export default function TaskDetailView({
                 onBlur={handleTitleSave}
                 onKeyDown={(e) => e.key === "Enter" && handleTitleSave()}
                 autoFocus
-                className="text-xl md:text-2xl font-bold bg-transparent border-b border-indigo-400 outline-none w-full text-gray-100"
+                className="text-xl md:text-2xl font-semibold bg-transparent border-b border-accent outline-none w-full text-text-primary"
               />
             ) : (
               <h1
                 onClick={() => setEditingTitle(true)}
-                className="text-xl md:text-2xl font-bold cursor-pointer hover:text-indigo-400 transition-colors"
+                className="text-xl md:text-2xl font-semibold cursor-pointer hover:text-accent transition-colors"
               >
                 {task.title}
               </h1>
@@ -244,7 +244,7 @@ export default function TaskDetailView({
                   className={`text-xs px-3 py-1 rounded-full border transition-colors ${
                     task.status === s
                       ? STATUS_STYLES[s]
-                      : "border-gray-600 text-gray-500 hover:text-gray-300"
+                      : "border-border text-text-muted hover:text-text-secondary"
                   }`}
                 >
                   {s}
@@ -255,26 +255,26 @@ export default function TaskDetailView({
           <div className="flex items-center gap-2">
             <button
               onClick={() => setLinkDialogOpen(true)}
-              className="px-3 md:px-4 py-2 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-md text-sm hover:bg-indigo-500/30 transition-colors"
+              className="px-3 md:px-4 py-2 bg-accent/10 text-accent border border-accent/20 rounded-md text-sm hover:bg-accent/20 transition-colors"
             >
               + Link
             </button>
             {task.status !== "archived" && (
               <button
                 onClick={() => handleStatusChange("archived")}
-                className="px-3 md:px-4 py-2 text-gray-500 hover:text-yellow-400 text-sm transition-colors"
+                className="px-3 md:px-4 py-2 text-text-muted hover:text-warning text-sm transition-colors"
                 title="Archive task"
               >
-                📦
+                <Archive size={16} />
               </button>
             )}
             {!confirmDelete ? (
               <button
                 onClick={() => setConfirmDelete(true)}
-                className="px-3 md:px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors"
+                className="px-3 md:px-4 py-2 text-text-muted hover:text-error text-sm transition-colors"
                 title="Delete task"
               >
-                🗑️
+                <Trash2 size={16} />
               </button>
             ) : (
               <div className="flex items-center gap-1">
@@ -283,13 +283,13 @@ export default function TaskDetailView({
                     await deleteTask(task.id);
                     onTaskDeleted();
                   }}
-                  className="px-3 py-2 bg-red-500/20 text-red-400 border border-red-500/30 rounded-md text-xs hover:bg-red-500/30 transition-colors"
+                  className="px-3 py-2 bg-error/15 text-error border border-error/20 rounded-md text-xs hover:bg-error/20 transition-colors"
                 >
                   Confirm Delete
                 </button>
                 <button
                   onClick={() => setConfirmDelete(false)}
-                  className="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors"
+                  className="px-3 py-2 text-text-muted hover:text-text-secondary text-xs transition-colors"
                 >
                   Cancel
                 </button>
@@ -301,7 +301,7 @@ export default function TaskDetailView({
 
       <div className="p-4 md:p-6 space-y-6">
         {/* Working Directory */}
-        <Section title="📂 Working Directory">
+        <Section title="Working Directory" icon={<FolderOpen size={14} className="text-text-muted" />}>
           {editingCwd ? (
             <input
               value={cwdDraft}
@@ -310,17 +310,17 @@ export default function TaskDetailView({
               onKeyDown={(e) => e.key === "Enter" && handleCwdSave()}
               autoFocus
               placeholder="e.g. D:\my-project"
-              className="w-full px-3 py-2 bg-[#1a1a2e] border border-indigo-400/50 rounded-md text-sm text-gray-200 outline-none font-mono"
+              className="w-full px-3 py-2 bg-bg-primary border border-accent/30 rounded-md text-sm text-text-primary outline-none font-mono"
             />
           ) : (
             <button
               onClick={() => setEditingCwd(true)}
-              className="w-full text-left px-3 py-2 bg-[#2a2a4a] rounded-md text-sm hover:bg-[#32325a] transition-colors font-mono"
+              className="w-full text-left px-3 py-2 bg-bg-surface rounded-md text-sm hover:bg-bg-hover transition-colors font-mono"
             >
               {task.cwd ? (
-                <span className="text-gray-200">{task.cwd}</span>
+                <span className="text-text-primary">{task.cwd}</span>
               ) : (
-                <span className="text-gray-500 italic">No working directory set</span>
+                <span className="text-text-muted italic">No working directory set</span>
               )}
             </button>
           )}
@@ -328,7 +328,8 @@ export default function TaskDetailView({
 
         {/* Work Items */}
         <Section
-          title="📋 Work Items"
+          title="Work Items"
+          icon={<ClipboardList size={14} className="text-text-muted" />}
           count={task.workItemIds.length}
           summary={
             Object.keys(wiStateCounts).length > 0
@@ -361,7 +362,8 @@ export default function TaskDetailView({
 
         {/* Pull Requests */}
         <Section
-          title="🔀 Pull Requests"
+          title="Pull Requests"
+          icon={<GitPullRequest size={14} className="text-text-muted" />}
           count={task.pullRequests.length}
           summary={
             Object.keys(prStatusCounts).length > 0
@@ -394,7 +396,8 @@ export default function TaskDetailView({
 
         {/* Sessions */}
         <Section
-          title="💬 Sessions"
+          title="Sessions"
+          icon={<MessageSquare size={14} className="text-text-muted" />}
           count={task.sessionIds.length}
           summary={[
             busySessionCount > 0 ? `${busySessionCount} busy` : "",
@@ -409,7 +412,7 @@ export default function TaskDetailView({
               onTaskUpdated();
               onOpenSession(sessionId);
             }}
-            className="w-full mb-2 px-3 py-2 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-md text-sm hover:bg-indigo-500/30 transition-colors"
+            className="w-full mb-2 px-3 py-2 bg-accent/10 text-accent border border-accent/20 rounded-md text-sm hover:bg-accent/20 transition-colors"
           >
             + New Chat for this Task
           </button>
@@ -432,7 +435,7 @@ export default function TaskDetailView({
         </Section>
 
         {/* Notes */}
-        <Section title="📝 Notes">
+        <Section title="Notes" icon={<FileText size={14} className="text-text-muted" />}>
           <NotesEditor value={task.notes} onSave={handleNotesSave} />
         </Section>
       </div>
@@ -479,11 +482,11 @@ function barePR(pr: { repoId: string; repoName?: string; prId: number }): Enrich
 // ── Work Item Row ─────────────────────────────────────────────────
 
 function WorkItemRow({ item, onUnlink }: { item: EnrichedWorkItem; onUnlink: () => void }) {
-  const typeInfo = WI_TYPE_ICONS[item.type ?? ""] ?? { icon: "📋", color: "text-gray-400" };
-  const stateStyle = WI_STATE_STYLES[item.state ?? ""] ?? "bg-gray-500/20 text-gray-400";
+  const typeInfo = WI_TYPE_ICONS[item.type ?? ""] ?? { icon: <ClipboardList size={14} />, color: "text-text-muted" };
+  const stateStyle = WI_STATE_STYLES[item.state ?? ""] ?? "bg-text-muted/15 text-text-muted";
 
   return (
-    <div className="group flex items-start gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md hover:bg-[#32325a] transition-colors">
+    <div className="group flex items-start gap-2.5 px-3 py-2 bg-bg-surface rounded-md hover:bg-bg-hover transition-colors">
       <span className={`text-sm mt-0.5 ${typeInfo.color}`}>{typeInfo.icon}</span>
       <a
         href={item.url}
@@ -492,11 +495,11 @@ function WorkItemRow({ item, onUnlink }: { item: EnrichedWorkItem; onUnlink: () 
         className="flex-1 min-w-0"
       >
         <div className="flex items-center gap-2">
-          <span className="text-sm text-indigo-400 hover:underline font-medium">
+          <span className="text-sm text-accent hover:underline font-medium">
             #{item.id}
           </span>
           {item.title && (
-            <span className="text-sm text-gray-300 truncate">
+            <span className="text-sm text-text-secondary truncate">
               {item.title}
             </span>
           )}
@@ -509,7 +512,7 @@ function WorkItemRow({ item, onUnlink }: { item: EnrichedWorkItem; onUnlink: () 
               </span>
             )}
             {item.assignedTo && (
-              <span className="text-[11px] text-gray-500 truncate">
+              <span className="text-[11px] text-text-muted truncate">
                 {item.assignedTo}
               </span>
             )}
@@ -518,10 +521,10 @@ function WorkItemRow({ item, onUnlink }: { item: EnrichedWorkItem; onUnlink: () 
       </a>
       <button
         onClick={(e) => { e.preventDefault(); onUnlink(); }}
-        className="text-xs text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+        className="text-text-faint hover:text-error opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
         title="Unlink"
       >
-        ✕
+        <X size={14} />
       </button>
     </div>
   );
@@ -533,7 +536,7 @@ function PRRow({ item, onUnlink }: { item: EnrichedPR; onUnlink: () => void }) {
   const statusInfo = PR_STATUS_STYLES[item.status ?? ""] ?? PR_STATUS_STYLES.active;
 
   return (
-    <div className="group flex items-start gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md hover:bg-[#32325a] transition-colors">
+    <div className="group flex items-start gap-2.5 px-3 py-2 bg-bg-surface rounded-md hover:bg-bg-hover transition-colors">
       <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${statusInfo.dot}`} />
       <a
         href={item.url}
@@ -542,17 +545,17 @@ function PRRow({ item, onUnlink }: { item: EnrichedPR; onUnlink: () => void }) {
         className="flex-1 min-w-0"
       >
         <div className="flex items-center gap-2">
-          <span className="text-sm text-indigo-400 hover:underline font-medium">
+          <span className="text-sm text-accent hover:underline font-medium">
             PR #{item.prId}
           </span>
           {item.title && (
-            <span className="text-sm text-gray-300 truncate">
+            <span className="text-sm text-text-secondary truncate">
               {item.title}
             </span>
           )}
         </div>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[11px] text-gray-500">
+          <span className="text-[11px] text-text-muted">
             {item.repoName || item.repoId}
           </span>
           {item.status && (
@@ -561,7 +564,7 @@ function PRRow({ item, onUnlink }: { item: EnrichedPR; onUnlink: () => void }) {
             </span>
           )}
           {item.reviewerCount > 0 && (
-            <span className="text-[10px] text-gray-500">
+            <span className="text-[10px] text-text-muted">
               {item.reviewerCount} reviewer{item.reviewerCount !== 1 ? "s" : ""}
             </span>
           )}
@@ -569,10 +572,10 @@ function PRRow({ item, onUnlink }: { item: EnrichedPR; onUnlink: () => void }) {
       </a>
       <button
         onClick={(e) => { e.preventDefault(); onUnlink(); }}
-        className="text-xs text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+        className="text-text-faint hover:text-error opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
         title="Unlink"
       >
-        ✕
+        <X size={14} />
       </button>
     </div>
   );
@@ -596,15 +599,15 @@ function SessionRow({
   const isArch = session.archived;
   // Dot: busy (blue pulsing) > unread (green solid) > archived (dark) > read (gray)
   const dotColor = session.busy
-    ? "bg-blue-400 animate-pulse"
+    ? "bg-info animate-pulse"
     : unread
-      ? "bg-green-400"
+      ? "bg-success"
       : isArch
-        ? "bg-gray-700"
-        : "bg-gray-600";
+        ? "bg-text-faint"
+        : "bg-text-faint";
 
   return (
-    <div className={`group flex items-start gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md hover:bg-[#32325a] transition-colors ${isArch ? "opacity-50" : ""}`}>
+    <div className={`group flex items-start gap-2.5 px-3 py-2 bg-bg-surface rounded-md hover:bg-bg-hover transition-colors ${isArch ? "opacity-50" : ""}`}>
       <div className="mt-1 shrink-0">
         <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
       </div>
@@ -612,10 +615,10 @@ function SessionRow({
         onClick={onOpen}
         className="flex-1 min-w-0 text-left"
       >
-        <div className="text-sm text-indigo-400 hover:underline font-medium truncate">
+        <div className="text-sm text-accent hover:underline font-medium truncate">
           {session.summary || session.sessionId.slice(0, 8)}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-gray-500">
+        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-muted">
           {timeAgo(session.modifiedTime) && (
             <span>{timeAgo(session.modifiedTime)}</span>
           )}
@@ -628,7 +631,7 @@ function SessionRow({
           {session.hasPlan && (
             <>
               <span>·</span>
-              <span>📋</span>
+              <ClipboardList size={10} className="inline" />
             </>
           )}
           {session.diskSizeBytes ? (
@@ -642,18 +645,18 @@ function SessionRow({
       {onArchive && (
         <button
           onClick={onArchive}
-          className="text-xs text-gray-600 hover:text-yellow-400 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+          className="text-text-faint hover:text-warning opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
           title={isArch ? "Unarchive" : "Archive"}
         >
-          {isArch ? "📤" : "📦"}
+          {isArch ? <ArchiveRestore size={14} /> : <Archive size={14} />}
         </button>
       )}
       <button
         onClick={onUnlink}
-        className="text-xs text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+        className="text-text-faint hover:text-error opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
         title="Unlink"
       >
-        ✕
+        <X size={14} />
       </button>
     </div>
   );
@@ -663,11 +666,11 @@ function SessionRow({
 
 function SkeletonRow({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-2.5 px-3 py-2 bg-[#2a2a4a] rounded-md">
-      <span className="text-sm text-gray-500">{label}</span>
+    <div className="flex items-center gap-2.5 px-3 py-2 bg-bg-surface rounded-md">
+      <span className="text-sm text-text-muted">{label}</span>
       <div className="flex-1 flex items-center gap-2">
-        <div className="h-3 w-32 bg-gray-700 rounded animate-pulse" />
-        <div className="h-3 w-16 bg-gray-700 rounded animate-pulse" />
+        <div className="h-3 w-32 bg-bg-elevated rounded animate-pulse" />
+        <div className="h-3 w-16 bg-bg-elevated rounded animate-pulse" />
       </div>
     </div>
   );
@@ -677,26 +680,29 @@ function SkeletonRow({ label }: { label: string }) {
 
 function Section({
   title,
+  icon,
   count,
   summary,
   children,
 }: {
   title: string;
+  icon?: React.ReactNode;
   count?: number;
   summary?: string;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold text-gray-400 mb-2 flex items-center gap-2">
+      <h3 className="text-sm font-medium text-text-muted mb-2 flex items-center gap-2">
+        {icon}
         <span>
           {title}
           {count !== undefined && (
-            <span className="text-gray-600 ml-1">({count})</span>
+            <span className="text-text-faint ml-1">({count})</span>
           )}
         </span>
         {summary && (
-          <span className="text-[10px] text-gray-500 font-normal">
+          <span className="text-[10px] text-text-muted font-normal">
             {summary}
           </span>
         )}
@@ -707,5 +713,5 @@ function Section({
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="text-xs text-gray-600 px-3 py-2">{children}</div>;
+  return <div className="text-xs text-text-faint px-3 py-2">{children}</div>;
 }

@@ -133,10 +133,17 @@ export class SessionManager {
   async createTaskSession(taskId: string, taskTitle: string, workItemIds: number[], prDescriptions: string[], notes: string, cwd?: string): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
+    const isPlaceholder = taskTitle === "New Task";
     const contextParts = [
       `You are helping with task "${taskTitle}" (taskId: ${taskId}).`,
       "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
     ];
+
+    if (isPlaceholder) {
+      contextParts.push(
+        'This task was just created without a title. After reading the user\'s first message, call `task_rename` to give it a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
+      );
+    }
 
     if (cwd) {
       contextParts.push(`Task working directory: ${cwd}`);

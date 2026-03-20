@@ -16,11 +16,9 @@ const MAX_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 30_000;
 
-// Teams notification config
+// Notification config
 const TUNNEL_NAME = "copilot-bridge";
-const TEAMS_TEAM_ID = "EXAMPLE-TEAM-GUID";
-const TEAMS_CHANNEL_ID = "EXAMPLE-CHANNEL-ID";
-const TEAMS_MCP_PORT = 5556; // separate port from any other MCP usage
+const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 const BUSY_CHECK_INTERVAL = 3_000;
 const BUSY_WAIT_TIMEOUT = 300_000; // 5 minutes max wait
@@ -30,7 +28,6 @@ const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
 
 let serverProcess: ChildProcess | null = null;
 let tunnelProcess: ChildProcess | null = null;
-let mcpProcess: ChildProcess | null = null;
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
@@ -136,13 +133,7 @@ function startServer(): ChildProcess {
         const healthy = await healthCheck();
         if (healthy) {
           log(`✅ Auto-restart succeeded after crash`);
-          if (currentTunnelUrl) {
-            try {
-              await startTeamsMcp();
-              await notifyTeams(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code})`, currentTunnelUrl);
-              killTeamsMcp();
-            } catch { /* best-effort */ }
-          }
+          await notifyWebhook(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code})`, currentTunnelUrl ?? undefined);
         } else {
           log(`❌ Auto-restart failed health check`);
           killServer();
@@ -236,15 +227,7 @@ async function restart() {
   if (healthy) {
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
-
-    // Notify Teams about restart
-    if (currentTunnelUrl) {
-      try {
-        await startTeamsMcp();
-        await notifyTeams("🔄 Copilot Bridge restarted successfully", currentTunnelUrl);
-        killTeamsMcp();
-      } catch { /* best-effort */ }
-    }
+    await notifyWebhook("🔄 Copilot Bridge restarted successfully", currentTunnelUrl ?? undefined);
   } else {
     log("❌ Health check failed — rolling back");
     killServer();
@@ -300,83 +283,23 @@ function killTunnel() {
   }
 }
 
-// ── Teams MCP Notification ────────────────────────────────────────
+// ── Webhook Notification ──────────────────────────────────────────
 
-async function startTeamsMcp(): Promise<void> {
-  return new Promise((resolve) => {
-    mcpProcess = spawn("mcp-remote", ["mcp", "teams", "--transport", "http", "--port", String(TEAMS_MCP_PORT)], {
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
-    });
-
-    // Poll until ready
-    const check = setInterval(async () => {
-      try {
-        const res = await fetch(`http://localhost:${TEAMS_MCP_PORT}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
-        });
-        if (res.ok) {
-          clearInterval(check);
-          resolve();
-        }
-      } catch {}
-    }, 1_000);
-
-    // Give up after 30s
-    setTimeout(() => {
-      clearInterval(check);
-      resolve(); // resolve anyway — notification is best-effort
-    }, 30_000);
-  });
-}
-
-function killTeamsMcp() {
-  if (mcpProcess) {
-    killProcessTree(mcpProcess);
-    mcpProcess = null;
-  }
-}
-
-async function notifyTeams(message: string, url?: string): Promise<void> {
+async function notifyWebhook(message: string, url?: string): Promise<void> {
+  if (!WEBHOOK_URL) return;
   try {
-    let content = message;
-    let contentType = "text";
-
-    if (url) {
-      content = `${message}<br><a href="${url}">${url}</a>`;
-      contentType = "html";
-    }
-
-    const body = JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "PostChannelMessage",
-        arguments: {
-          teamId: TEAMS_TEAM_ID,
-          channelId: TEAMS_CHANNEL_ID,
-          content,
-          contentType,
-        },
-      },
-    });
-
-    const res = await fetch(`http://localhost:${TEAMS_MCP_PORT}`, {
+    const res = await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body,
+      body: JSON.stringify({ text: message, url }),
     });
-
     if (res.ok) {
-      log("Teams notification sent");
+      log("Webhook notification sent");
     } else {
-      log(`Teams notification failed: ${res.status}`);
+      log(`Webhook notification failed: ${res.status}`);
     }
   } catch (err) {
-    log(`Teams notification error: ${err}`);
+    log(`Webhook notification error: ${err}`);
   }
 }
 
@@ -396,12 +319,7 @@ async function main() {
   // Start dev tunnel
   try {
     const url = await startTunnel();
-
-    // Start Teams MCP and notify channel
-    log("Starting Teams MCP for notifications...");
-    await startTeamsMcp();
-    await notifyTeams("🤖 Copilot Bridge is online!", url);
-    killTeamsMcp(); // only needed for notifications, don't keep running
+    await notifyWebhook("🤖 Copilot Bridge is online!", url);
   } catch (err) {
     log(`Tunnel/notification setup failed (non-fatal): ${err}`);
   }
@@ -426,14 +344,12 @@ process.on("SIGINT", () => {
   log("Shutting down...");
   killServer();
   killTunnel();
-  killTeamsMcp();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
   killServer();
   killTunnel();
-  killTeamsMcp();
   process.exit(0);
 });
 
