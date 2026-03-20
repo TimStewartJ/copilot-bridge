@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
+import { getOrCreateBus } from "./event-bus.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
@@ -148,131 +149,129 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  async sendMessage(sessionId: string, prompt: string): Promise<string> {
-    return this.sendMessageStreaming(sessionId, prompt);
-  }
-
-  async sendMessageStreaming(
-    sessionId: string,
-    prompt: string,
-    onEvent?: (type: string, data?: any) => void,
-  ): Promise<string> {
+  // Fire and forget — starts work and emits events to the session's EventBus
+  startWork(sessionId: string, prompt: string): void {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     if (this.activeSessions.has(sessionId)) {
       throw new Error("Session is busy processing another message");
     }
 
+    const bus = getOrCreateBus(sessionId);
     this.activeSessions.add(sessionId);
 
-    try {
-      console.log(`[sdk] Resuming session ${sessionId}...`);
-
-      // Build fresh task context if this session belongs to a task
-      const linkedTask = taskStore.findTaskBySessionId(sessionId);
-      const resumeConfig: any = {
-        onPermissionRequest: approveAll,
-        tools: BRIDGE_TOOLS,
-      };
-
-      if (linkedTask) {
-        const contextParts = [
-          `You are helping with task "${linkedTask.title}" (taskId: ${linkedTask.id}).`,
-          `Task status: ${linkedTask.status}.`,
-          "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
-        ];
-        if (linkedTask.workItemIds.length > 0) {
-          contextParts.push(`Currently linked work items: ${linkedTask.workItemIds.map((id) => `#${id}`).join(", ")}.`);
-        }
-        if (linkedTask.pullRequests.length > 0) {
-          contextParts.push(`Currently linked PRs: ${linkedTask.pullRequests.map((pr) => `${pr.repoName || pr.repoId} #${pr.prId}`).join(", ")}.`);
-        }
-        if (linkedTask.notes.trim()) {
-          contextParts.push(`Task notes:\n${linkedTask.notes}`);
-        }
-        resumeConfig.systemMessage = { mode: "append", content: contextParts.join("\n") };
-        console.log(`[sdk] Injecting task context for "${linkedTask.title}" into session ${sessionId}`);
-      }
-
-      const session = await this.client.resumeSession(sessionId, resumeConfig);
-      console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
-
-      const unsub = session.on((event) => {
-        const data = (event as any).data;
-        switch (event.type) {
-          case "assistant.turn_start":
-            console.log(`[sdk] ⏳ Turn started`);
-            onEvent?.("thinking");
-            break;
-          case "assistant.message_delta":
-            if (data?.deltaContent) {
-              onEvent?.("delta", { content: data.deltaContent });
-            }
-            break;
-          case "assistant.intent":
-            console.log(`[sdk] 🎯 Intent: ${data?.intent}`);
-            onEvent?.("intent", { intent: data?.intent ?? "" });
-            break;
-          case "assistant.message":
-            if (data?.content) {
-              console.log(`[sdk] ✅ Response received (${data.content.length} chars)`);
-              if (data.toolRequests?.length) {
-                // Intermediate message — agent commentary between tool calls
-                onEvent?.("assistant_partial", { content: data.content });
-              }
-            } else {
-              console.log(`[sdk] ✅ Response received (0 chars)`);
-            }
-            break;
-          case "tool.execution_start":
-            console.log(`[sdk] 🔧 Tool: ${data?.toolName ?? data?.name ?? "unknown"}`);
-            onEvent?.("tool_start", { name: data?.toolName ?? data?.name ?? "unknown" });
-            break;
-          case "tool.execution_progress":
-            onEvent?.("tool_progress", { name: data?.toolCallId, message: data?.progressMessage ?? "" });
-            break;
-          case "tool.execution_partial_result":
-            onEvent?.("tool_output", { name: data?.toolCallId, content: data?.partialOutput ?? "" });
-            break;
-          case "tool.execution_complete":
-            console.log(`[sdk] 🔧 Tool complete: ${data?.toolName ?? data?.name ?? "unknown"}`);
-            onEvent?.("tool_done", { name: data?.toolName ?? data?.name ?? "unknown" });
-            break;
-          case "subagent.started":
-            console.log(`[sdk] 🤖 Sub-agent: ${data?.agentDisplayName ?? data?.agentName}`);
-            onEvent?.("tool_start", { name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
-            break;
-          case "subagent.completed":
-            console.log(`[sdk] 🤖 Sub-agent done: ${data?.agentDisplayName ?? data?.agentName}`);
-            onEvent?.("tool_done", { name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
-            break;
-          case "subagent.failed":
-            console.log(`[sdk] 🤖 Sub-agent failed: ${data?.agentDisplayName ?? data?.agentName}`);
-            onEvent?.("tool_done", { name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
-            break;
-          case "session.error":
-            console.error(`[sdk] ❌ Error: ${data?.message ?? "unknown"}`);
-            onEvent?.("error", { message: data?.message ?? "unknown" });
-            break;
-          case "session.title_changed":
-            onEvent?.("title_changed", { title: data?.title ?? "" });
-            break;
-          case "session.idle":
-            console.log(`[sdk] 💤 Session idle`);
-            break;
-          default:
-            if (!["assistant.reasoning_delta", "assistant.streaming_delta", "pending_messages.modified", "assistant.usage", "permission.requested", "permission.completed"].includes(event.type)) {
-              console.log(`[sdk] 📡 Event: ${event.type}`);
-            }
-        }
-      });
-
-      const response = await session.sendAndWait({ prompt }, 600_000);
-      unsub();
-      return response?.data.content ?? "(no response)";
-    } finally {
+    // Run in background — not awaited
+    this._doWork(sessionId, prompt, bus).catch((err) => {
+      console.error(`[sdk] Unhandled error in session ${sessionId}:`, err);
+      bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    }).finally(() => {
       this.activeSessions.delete(sessionId);
+    });
+  }
+
+  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>): Promise<void> {
+    console.log(`[sdk] Resuming session ${sessionId}...`);
+
+    // Build resume config with optional task context
+    const linkedTask = taskStore.findTaskBySessionId(sessionId);
+    const resumeConfig: any = {
+      onPermissionRequest: approveAll,
+      tools: BRIDGE_TOOLS,
+    };
+
+    if (linkedTask) {
+      const contextParts = [
+        `You are helping with task "${linkedTask.title}" (taskId: ${linkedTask.id}).`,
+        `Task status: ${linkedTask.status}.`,
+        "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
+      ];
+      if (linkedTask.workItemIds.length > 0) {
+        contextParts.push(`Currently linked work items: ${linkedTask.workItemIds.map((id: number) => `#${id}`).join(", ")}.`);
+      }
+      if (linkedTask.pullRequests.length > 0) {
+        contextParts.push(`Currently linked PRs: ${linkedTask.pullRequests.map((pr: any) => `${pr.repoName || pr.repoId} #${pr.prId}`).join(", ")}.`);
+      }
+      if (linkedTask.notes.trim()) {
+        contextParts.push(`Task notes:\n${linkedTask.notes}`);
+      }
+      resumeConfig.systemMessage = { mode: "append", content: contextParts.join("\n") };
+      console.log(`[sdk] Injecting task context for "${linkedTask.title}"`);
     }
+
+    const session = await this.client!.resumeSession(sessionId, resumeConfig);
+    console.log(`[sdk] Session resumed, sending prompt (${prompt.length} chars)...`);
+
+    const unsub = session.on((event) => {
+      const data = (event as any).data;
+      switch (event.type) {
+        case "assistant.turn_start":
+          console.log(`[sdk] ⏳ Turn started`);
+          bus.emit({ type: "thinking" });
+          break;
+        case "assistant.message_delta":
+          if (data?.deltaContent) {
+            bus.emit({ type: "delta", content: data.deltaContent });
+          }
+          break;
+        case "assistant.streaming_delta":
+          if (data?.content) {
+            bus.emit({ type: "delta", content: data.content });
+          }
+          break;
+        case "assistant.intent":
+          console.log(`[sdk] 🎯 Intent: ${data?.intent}`);
+          bus.emit({ type: "intent", intent: data?.intent ?? "" });
+          break;
+        case "assistant.message":
+          if (data?.content) {
+            console.log(`[sdk] ✅ Response (${data.content.length} chars)`);
+            if (data.toolRequests?.length) {
+              bus.emit({ type: "assistant_partial", content: data.content });
+            }
+          }
+          break;
+        case "tool.execution_start":
+          console.log(`[sdk] 🔧 Tool: ${data?.toolName ?? data?.name ?? "unknown"}`);
+          bus.emit({ type: "tool_start", name: data?.toolName ?? data?.name ?? "unknown" });
+          break;
+        case "tool.execution_progress":
+          bus.emit({ type: "tool_progress", name: data?.toolCallId, message: data?.progressMessage ?? "" });
+          break;
+        case "tool.execution_partial_result":
+          bus.emit({ type: "tool_output", name: data?.toolCallId, content: data?.partialOutput ?? "" });
+          break;
+        case "tool.execution_complete":
+          console.log(`[sdk] 🔧 Tool complete: ${data?.toolName ?? data?.name ?? "unknown"}`);
+          bus.emit({ type: "tool_done", name: data?.toolName ?? data?.name ?? "unknown" });
+          break;
+        case "subagent.started":
+          bus.emit({ type: "tool_start", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
+          break;
+        case "subagent.completed":
+        case "subagent.failed":
+          bus.emit({ type: "tool_done", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
+          break;
+        case "session.error":
+          console.error(`[sdk] ❌ Error: ${data?.message ?? "unknown"}`);
+          bus.emit({ type: "error", message: data?.message ?? "unknown" });
+          break;
+        case "session.title_changed":
+          bus.emit({ type: "title_changed", title: data?.title ?? "" });
+          break;
+        case "session.idle":
+          console.log(`[sdk] 💤 Session idle`);
+          break;
+        default:
+          break;
+      }
+    });
+
+    const response = await session.sendAndWait({ prompt }, 600_000);
+    unsub();
+
+    const content = response?.data.content ?? "(no response)";
+    console.log(`[sdk] Done: ${content.length} chars`);
+    bus.emit({ type: "done", content });
   }
 
   async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string }>> {

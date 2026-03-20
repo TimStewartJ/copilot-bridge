@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
+import { getBus, hasBus } from "./event-bus.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -81,7 +82,8 @@ app.post("/api/sessions", async (req, res) => {
   }
 });
 
-app.post("/api/chat", async (req, res) => {
+// POST /api/chat — fire and forget, starts work in background
+app.post("/api/chat", (req, res) => {
   const { sessionId, prompt } = req.body;
 
   if (!sessionId || !prompt) {
@@ -93,31 +95,64 @@ app.post("/api/chat", async (req, res) => {
   }
 
   console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
-  const startTime = Date.now();
 
-  // SSE headers
+  try {
+    sessionManager.startWork(sessionId, prompt);
+    res.status(202).json({ status: "accepted" });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/sessions/:id/stream — SSE stream with replay + live events
+app.get("/api/sessions/:id/stream", (req, res) => {
+  const sessionId = req.params.id;
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
 
-  const sendEvent = (type: string, data?: any) => {
-    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  const sendEvent = (event: any) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
 
-  try {
-    const response = await sessionManager.sendMessageStreaming(sessionId, prompt, sendEvent);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[web] [${sessionId.slice(0, 8)}] Done (${response.length} chars, ${elapsed}s)`);
-    sendEvent("done", { content: response });
-  } catch (err) {
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.error(`[web] Error after ${elapsed}s:`, err);
-    sendEvent("error", { message: err instanceof Error ? err.message : String(err) });
-  } finally {
-    res.end();
+  const bus = getBus(sessionId);
+
+  if (!bus) {
+    // No active work — check if session is busy (shouldn't be, but just in case)
+    if (sessionManager.isSessionBusy(sessionId)) {
+      sendEvent({ type: "thinking" });
+      // The bus should appear soon — poll briefly
+      const waitForBus = setInterval(() => {
+        const newBus = getBus(sessionId);
+        if (newBus) {
+          clearInterval(waitForBus);
+          const unsub = newBus.subscribe(sendEvent);
+          req.on("close", unsub);
+        }
+      }, 500);
+      setTimeout(() => clearInterval(waitForBus), 10_000);
+    } else {
+      // Session is idle — nothing to stream
+      sendEvent({ type: "idle" });
+      res.end();
+    }
+    return;
   }
+
+  // Subscribe to bus — replays history + streams live events
+  const unsub = bus.subscribe((event) => {
+    sendEvent(event);
+    if (event.type === "done" || event.type === "error") {
+      res.end();
+    }
+  });
+
+  req.on("close", () => {
+    unsub();
+  });
 });
 
 // ── Task routes ───────────────────────────────────────────────────
