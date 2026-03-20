@@ -48,6 +48,35 @@ export interface Task {
   pullRequests: PRLink[];
 }
 
+// ── Enriched types ────────────────────────────────────────────────
+
+export interface EnrichedWorkItem {
+  id: number;
+  title: string | null;
+  state: string | null;
+  type: string | null;
+  assignedTo: string | null;
+  areaPath: string | null;
+  url: string;
+}
+
+export interface EnrichedPR {
+  repoId: string;
+  repoName: string | null;
+  prId: number;
+  title: string | null;
+  status: "active" | "completed" | "abandoned" | null;
+  createdBy: string | null;
+  reviewerCount: number;
+  url: string;
+}
+
+export interface EnrichedTaskData {
+  task: Task;
+  workItems: EnrichedWorkItem[];
+  pullRequests: EnrichedPR[];
+}
+
 async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = body
     ? {
@@ -172,4 +201,10 @@ export interface PlanData {
 
 export async function fetchPlan(sessionId: string): Promise<PlanData> {
   return apiFetch<PlanData>(`/api/sessions/${sessionId}/plan`);
+}
+
+// ── Enriched Task API ─────────────────────────────────────────────
+
+export async function fetchEnrichedTask(id: string): Promise<EnrichedTaskData> {
+  return apiFetch<EnrichedTaskData>(`/api/tasks/${id}/enriched`);
 }

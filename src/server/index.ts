@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
 import { getBus, hasBus } from "./event-bus.js";
+import * as adoClient from "./ado-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -220,6 +221,45 @@ app.get("/api/tasks/:id", (req, res) => {
   const task = taskStore.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
   res.json({ task });
+});
+
+// Enriched task data — fetches work item + PR metadata from ADO
+app.get("/api/tasks/:id/enriched", async (req, res) => {
+  const task = taskStore.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  try {
+    const [workItems, pullRequests] = await Promise.all([
+      adoClient.fetchWorkItems(task.workItemIds),
+      adoClient.fetchPullRequests(task.pullRequests),
+    ]);
+    res.json({ task, workItems, pullRequests });
+  } catch (err) {
+    console.error("[enriched] Error:", err);
+    // Graceful fallback — return task with empty enrichment
+    res.json({
+      task,
+      workItems: task.workItemIds.map((id) => ({
+        id,
+        title: null,
+        state: null,
+        type: null,
+        assignedTo: null,
+        areaPath: null,
+        url: `https://my-org.visualstudio.com/MyProject/_workitems/edit/${id}`,
+      })),
+      pullRequests: task.pullRequests.map((pr) => ({
+        repoId: pr.repoId,
+        repoName: pr.repoName ?? null,
+        prId: pr.prId,
+        title: null,
+        status: null,
+        createdBy: null,
+        reviewerCount: 0,
+        url: `https://my-org.visualstudio.com/MyProject/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}`,
+      })),
+    });
+  }
 });
 
 app.patch("/api/tasks/:id", (req, res) => {

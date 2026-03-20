@@ -1,5 +1,6 @@
-import { useState } from "react";
-import type { Session, Task } from "../api";
+import { useState, useEffect } from "react";
+import type { Session, Task, EnrichedWorkItem, EnrichedPR } from "../api";
+import { fetchEnrichedTask } from "../api";
 import TaskList from "./TaskList";
 import SessionList from "./SessionList";
 
@@ -149,9 +150,23 @@ function TaskContextPanel({
   onGoHome,
 }: TaskContextPanelProps) {
   const [notesExpanded, setNotesExpanded] = useState(false);
+  const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
+  const [enrichedPRs, setEnrichedPRs] = useState<EnrichedPR[]>([]);
+
   const linkedSessions = sessions.filter((s) =>
     task.sessionIds.includes(s.sessionId),
   );
+
+  useEffect(() => {
+    if (task.workItemIds.length > 0 || task.pullRequests.length > 0) {
+      fetchEnrichedTask(task.id)
+        .then((data) => {
+          setEnrichedWIs(data.workItems);
+          setEnrichedPRs(data.pullRequests);
+        })
+        .catch(() => {});
+    }
+  }, [task.id, task.workItemIds.length, task.pullRequests.length]);
 
   return (
     <>
@@ -204,15 +219,28 @@ function TaskContextPanel({
           <div>
             <SectionLabel label="Work Items" count={task.workItemIds.length} />
             <div className="space-y-0.5">
-              {task.workItemIds.map((id) => (
+              {(enrichedWIs.length > 0 ? enrichedWIs : task.workItemIds.map((id) => ({ id, title: null, state: null, type: null, assignedTo: null, areaPath: null, url: `https://my-org.visualstudio.com/MyProject/_workitems/edit/${id}` }))).map((wi) => (
                 <a
-                  key={id}
-                  href={`https://my-org.visualstudio.com/MyProject/_workitems/edit/${id}`}
+                  key={wi.id}
+                  href={wi.url}
                   target="_blank"
                   rel="noopener"
                   className="block px-3 py-1.5 text-xs text-indigo-400 hover:text-indigo-300 hover:bg-[#1a1a3e] rounded-md transition-colors"
                 >
-                  📋 #{id}
+                  <div className="flex items-center gap-1.5">
+                    <span>{WI_TYPE_ICONS[wi.type ?? ""]?.icon ?? "📋"}</span>
+                    <span className="font-medium">#{wi.id}</span>
+                    {wi.title && (
+                      <span className="text-gray-400 truncate">{wi.title}</span>
+                    )}
+                  </div>
+                  {wi.state && (
+                    <div className="mt-0.5 ml-5">
+                      <span className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-gray-500/20 text-gray-400"}`}>
+                        {wi.state}
+                      </span>
+                    </div>
+                  )}
                 </a>
               ))}
             </div>
@@ -224,13 +252,29 @@ function TaskContextPanel({
           <div>
             <SectionLabel label="Pull Requests" count={task.pullRequests.length} />
             <div className="space-y-0.5">
-              {task.pullRequests.map((pr) => (
-                <div
+              {(enrichedPRs.length > 0 ? enrichedPRs : task.pullRequests.map((pr) => ({ repoId: pr.repoId, repoName: pr.repoName ?? null, prId: pr.prId, title: null, status: null as any, createdBy: null, reviewerCount: 0, url: `https://my-org.visualstudio.com/MyProject/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}` }))).map((pr) => (
+                <a
                   key={`${pr.repoId}-${pr.prId}`}
-                  className="px-3 py-1.5 text-xs text-gray-300 rounded-md"
+                  href={pr.url}
+                  target="_blank"
+                  rel="noopener"
+                  className="block px-3 py-1.5 text-xs text-gray-300 hover:bg-[#1a1a3e] rounded-md transition-colors"
                 >
-                  🔀 {pr.repoName || pr.repoId.slice(0, 8)} #{pr.prId}
-                </div>
+                  <div className="flex items-center gap-1.5">
+                    {pr.status && (
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PR_STATUS_DOTS[pr.status] ?? "bg-gray-500"}`} />
+                    )}
+                    {!pr.status && <span>🔀</span>}
+                    <span className="text-indigo-400 font-medium">#{pr.prId}</span>
+                    {pr.title && (
+                      <span className="text-gray-400 truncate">{pr.title}</span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 ml-5 text-[10px] text-gray-500">
+                    {pr.repoName || pr.repoId}
+                    {pr.status && ` · ${pr.status.charAt(0).toUpperCase() + pr.status.slice(1)}`}
+                  </div>
+                </a>
               ))}
             </div>
           </div>
@@ -259,6 +303,29 @@ function TaskContextPanel({
     </>
   );
 }
+
+const WI_TYPE_ICONS: Record<string, { icon: string }> = {
+  Bug: { icon: "🐛" },
+  Task: { icon: "✅" },
+  "User Story": { icon: "📖" },
+  Feature: { icon: "🎯" },
+  Epic: { icon: "👑" },
+};
+
+const WI_STATE_STYLES: Record<string, string> = {
+  New: "bg-gray-500/20 text-gray-400",
+  Active: "bg-blue-500/20 text-blue-400",
+  "In Progress": "bg-blue-500/20 text-blue-400",
+  Resolved: "bg-green-500/20 text-green-400",
+  Closed: "bg-gray-600/20 text-gray-500",
+  Done: "bg-green-500/20 text-green-400",
+};
+
+const PR_STATUS_DOTS: Record<string, string> = {
+  active: "bg-green-400",
+  completed: "bg-blue-400",
+  abandoned: "bg-gray-500",
+};
 
 function SectionLabel({ label, count }: { label: string; count?: number }) {
   return (
