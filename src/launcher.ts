@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
+const NODE_PATH = process.execPath; // use the same node binary that's running the launcher
+const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
 const PORT = 3333;
@@ -100,10 +102,9 @@ async function healthCheck(): Promise<boolean> {
 
 function startServer(): ChildProcess {
   log("Starting server...");
-  const child = spawn("npx", ["tsx", SERVER_ENTRY], {
+  const child = spawn(NODE_PATH, [TSX_CLI, SERVER_ENTRY], {
     cwd: ROOT,
     stdio: ["ignore", "inherit", "inherit"],
-    shell: true,
   });
 
   child.on("exit", (code) => {
