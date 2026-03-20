@@ -177,18 +177,6 @@ export default function SessionList({
             {session.hasPlan && <ClipboardList size={10} className="inline" />}
           </div>
         </button>
-        {onArchiveSession && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onArchiveSession(id, !isArch);
-            }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-text-muted hover:text-warning transition-all text-xs px-1.5 py-0.5 rounded"
-            title={isArch ? "Unarchive session" : "Archive session"}
-          >
-            {isArch ? <ArchiveRestore size={12} /> : <Archive size={12} />}
-          </button>
-        )}
       </div>
     );
   };
