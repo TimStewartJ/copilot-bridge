@@ -51,12 +51,18 @@ const BRIDGE_TOOLS = [
       return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
     },
   }),
-  defineTool("task_update_notes", {
-    description: "Update a task's notes. Overwrites existing notes.",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, notes: { type: "string", description: "New notes content (markdown)" } }, required: ["taskId", "notes"] },
+  defineTool("task_update", {
+    description: "Update a task's title, notes, and/or working directory. Only provided fields are changed.",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "New title" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, cwd: { type: "string", description: "Working directory path for the task" } }, required: ["taskId"] },
     handler: async (args: any) => {
-      taskStore.updateTask(args.taskId, { notes: args.notes });
-      return { success: true, message: "Task notes updated" };
+      const updates: Record<string, string> = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.notes !== undefined) updates.notes = args.notes;
+      if (args.cwd !== undefined) updates.cwd = args.cwd;
+      if (Object.keys(updates).length === 0) return { error: "No fields to update. Provide at least one of: title, notes, cwd" };
+      taskStore.updateTask(args.taskId, updates);
+      const fields = Object.keys(updates).join(", ");
+      return { success: true, message: `Task updated (${fields})` };
     },
   }),
   defineTool("task_get_info", {
@@ -71,14 +77,6 @@ const BRIDGE_TOOLS = [
     parameters: { type: "object", properties: {} },
     handler: async () => {
       return { tasks: taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status })) };
-    },
-  }),
-  defineTool("task_rename", {
-    description: "Rename a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "The new title" } }, required: ["taskId", "title"] },
-    handler: async (args: any) => {
-      taskStore.updateTask(args.taskId, { title: args.title });
-      return { success: true, message: `Task renamed to "${args.title}"` };
     },
   }),
   defineTool("task_create", {
@@ -162,7 +160,7 @@ export class SessionManager {
 
     if (isPlaceholder) {
       contextParts.push(
-        'This task was just created without a title. After reading the user\'s first message, call `task_rename` to give it a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
+        'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
       );
     }
 

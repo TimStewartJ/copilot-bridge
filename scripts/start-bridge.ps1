@@ -2,6 +2,9 @@
 $nodePath = "node"
 $workDir = "copilot-bridge"
 
+# Kill any existing bridge processes first
+& "$workDir\scripts\stop-bridge.ps1"
+
 # Load .env file into current process environment (inherited by child)
 $envFile = Join-Path $workDir ".env"
 if (Test-Path $envFile) {
