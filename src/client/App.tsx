@@ -243,6 +243,15 @@ export default function App() {
     setActiveTab("tasks");
   };
 
+  // Enter task context from sidebar task list (stays on current session, swaps sidebar)
+  const handleEnterTaskContext = async (taskId: string) => {
+    try {
+      const task = await fetchTask(taskId);
+      setTaskContext(task);
+    } catch { /* will be loaded from search param */ }
+    setSearchParams({ taskContext: taskId });
+  };
+
   // Resume a task — open last session or create a new one
   const handleResumeTask = async (taskId: string, sessionId?: string) => {
     if (sessionId) {
@@ -313,6 +322,7 @@ export default function App() {
           tasks={tasks}
           activeTaskId={activeTaskId}
           onSelectTask={handleSelectTask}
+          onEnterTaskContext={handleEnterTaskContext}
           onNewTask={handleNewTask}
           sessions={globalSessions}
           allSessions={sessions}

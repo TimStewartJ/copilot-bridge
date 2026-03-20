@@ -17,6 +17,7 @@ interface SidebarProps {
   tasks: Task[];
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
+  onEnterTaskContext: (id: string) => void;
   onNewTask: () => void;
   // Sessions
   sessions: Session[];
@@ -45,6 +46,7 @@ export default function Sidebar({
   tasks,
   activeTaskId,
   onSelectTask,
+  onEnterTaskContext,
   onNewTask,
   sessions,
   allSessions,
@@ -161,7 +163,7 @@ export default function Sidebar({
         <TaskList
           tasks={tasks}
           activeTaskId={activeTaskId}
-          onSelectTask={onSelectTask}
+          onSelectTask={activeSessionId ? onEnterTaskContext : onSelectTask}
           onNewTask={onNewTask}
           sessions={allSessions}
           isUnread={isUnread}
