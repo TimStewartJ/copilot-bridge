@@ -62,8 +62,18 @@ export function useSessionStream(
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedContent = "";
-        // Track tool calls for the current turn
-        const completedTools: ToolCall[] = [];
+        // Track tool calls for the current turn, preserving start order
+        const completedTools: (ToolCall & { _seq: number })[] = [];
+        const toolStartSeq = new Map<string, number>();
+        let nextSeq = 0;
+
+        const drainTools = (): ToolCall[] | undefined => {
+          if (completedTools.length === 0) return undefined;
+          completedTools.sort((a, b) => a._seq - b._seq);
+          const result: ToolCall[] = completedTools.map(({ _seq, ...tc }) => tc);
+          completedTools.length = 0;
+          return result;
+        };
 
         while (true) {
           const { done, value } = await reader.read();
@@ -122,9 +132,8 @@ export function useSessionStream(
                     onMessagesUpdatedRef.current([{
                       role: "assistant",
                       content: event.content ?? "",
-                      toolCalls: completedTools.length > 0 ? [...completedTools] : undefined,
+                      toolCalls: drainTools(),
                     }]);
-                    completedTools.length = 0;
                   }
                   accumulatedContent = "";
                   setStreamState((s) => ({ ...s, streamingContent: "" }));
@@ -136,6 +145,7 @@ export function useSessionStream(
                     args: event.args,
                   };
                   if (tool.name === "report_intent") break;
+                  toolStartSeq.set(tool.toolCallId, nextSeq++);
                   setStreamState((s) => ({
                     ...s,
                     activeTools: [...s.activeTools, tool],
@@ -166,7 +176,7 @@ export function useSessionStream(
                       toolProgress: "",
                     };
                   });
-                  completedTools.push(completed);
+                  completedTools.push({ ...completed, _seq: toolStartSeq.get(event.toolCallId) ?? Infinity });
                   break;
                 }
                 case "title_changed":
@@ -176,9 +186,8 @@ export function useSessionStream(
                   onMessagesUpdatedRef.current([{
                     role: "assistant",
                     content: event.content ?? "",
-                    toolCalls: completedTools.length > 0 ? [...completedTools] : undefined,
+                    toolCalls: drainTools(),
                   }]);
-                  completedTools.length = 0;
                   setStreamState({
                     streamingContent: "",
                     activeTools: [],
