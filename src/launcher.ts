@@ -6,6 +6,13 @@ import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Prepend timestamps to all console output
+const _origLog = console.log.bind(console);
+const _origErr = console.error.bind(console);
+const _ts = () => new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+console.log = (...args: any[]) => _origLog(`[${_ts()}]`, ...args);
+console.error = (...args: any[]) => _origErr(`[${_ts()}]`, ...args);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const NODE_PATH = process.execPath; // use the same node binary that's running the launcher

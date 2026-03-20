@@ -1,5 +1,12 @@
 // Copilot Web Bridge — Express server
 
+// Prepend timestamps to all console output
+const _origLog = console.log.bind(console);
+const _origErr = console.error.bind(console);
+const _ts = () => new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+console.log = (...args: any[]) => _origLog(`[${_ts()}]`, ...args);
+console.error = (...args: any[]) => _origErr(`[${_ts()}]`, ...args);
+
 import express from "express";
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
