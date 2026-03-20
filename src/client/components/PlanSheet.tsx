@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { fetchPlan } from "../api";
@@ -13,7 +13,7 @@ export default function PlanSheet({ sessionId, onClose }: PlanSheetProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadPlan = useCallback(() => {
     setLoading(true);
     setError(null);
     fetchPlan(sessionId)
@@ -21,6 +21,8 @@ export default function PlanSheet({ sessionId, onClose }: PlanSheetProps) {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [sessionId]);
+
+  useEffect(() => { loadPlan(); }, [loadPlan]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
@@ -35,13 +37,24 @@ export default function PlanSheet({ sessionId, onClose }: PlanSheetProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-[#2a2a4a] shrink-0">
           <h2 className="text-sm font-semibold text-gray-200">📋 Session Plan</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 text-lg leading-none transition-colors"
-            aria-label="Close"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadPlan}
+              disabled={loading}
+              className="text-gray-500 hover:text-gray-300 text-sm transition-colors disabled:opacity-30"
+              aria-label="Refresh"
+              title="Refresh plan"
+            >
+              <span className={loading ? "inline-block animate-spin" : ""}>↻</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-300 text-lg leading-none transition-colors"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Content */}
