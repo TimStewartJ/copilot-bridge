@@ -9,6 +9,16 @@ interface ChatViewProps {
   onMessageSent: () => void;
 }
 
+function formatToolArgs(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, val] of Object.entries(args)) {
+    if (key === "intent") continue; // skip noise
+    const s = typeof val === "string" ? val : JSON.stringify(val);
+    parts.push(s.length > 60 ? s.slice(0, 57) + "..." : s);
+  }
+  return parts.join(" ");
+}
+
 export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -104,10 +114,15 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
         )}
         {activeTools.length > 0 && (
           <div className="text-xs text-indigo-400/70 px-4 py-1 space-y-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="animate-spin">⚙️</span>
               {activeTools.map((t) => (
-                <span key={t} className="bg-indigo-500/10 px-2 py-0.5 rounded">{t}</span>
+                <span key={t.toolCallId || t.name} className="bg-indigo-500/10 px-2 py-0.5 rounded">
+                  {t.name}
+                  {t.args && Object.keys(t.args).length > 0 && (
+                    <span className="text-indigo-400/40 ml-1">{formatToolArgs(t.args)}</span>
+                  )}
+                </span>
               ))}
             </div>
             {toolProgress && (

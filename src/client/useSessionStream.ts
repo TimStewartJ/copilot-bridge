@@ -1,9 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { ChatMessage } from "./api";
+import type { ChatMessage, ToolCall } from "./api";
+
+interface PendingTool {
+  toolCallId: string;
+  name: string;
+  args?: Record<string, unknown>;
+}
 
 export interface StreamState {
   streamingContent: string;
-  activeTools: string[];
+  activeTools: PendingTool[];
   intentText: string;
   toolProgress: string;
   isStreaming: boolean;
@@ -50,6 +56,8 @@ export function useSessionStream(
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedContent = "";
+        // Track tool calls for the current turn
+        const completedTools: ToolCall[] = [];
 
         while (true) {
           const { done, value } = await reader.read();
@@ -79,35 +87,67 @@ export function useSessionStream(
                   }));
                   break;
                 case "assistant_partial":
-                  if (event.content) {
-                    onMessagesUpdated([{ role: "assistant", content: event.content }]);
+                  // Intermediate message — emit with any completed tool calls from this turn
+                  if (event.content || completedTools.length > 0) {
+                    onMessagesUpdated([{
+                      role: "assistant",
+                      content: event.content ?? "",
+                      toolCalls: completedTools.length > 0 ? [...completedTools] : undefined,
+                    }]);
+                    completedTools.length = 0;
                   }
                   break;
-                case "tool_start":
+                case "tool_start": {
+                  const tool: PendingTool = {
+                    toolCallId: event.toolCallId ?? "",
+                    name: event.name ?? "unknown",
+                    args: event.args,
+                  };
+                  if (tool.name === "report_intent") break;
                   setStreamState((s) => ({
                     ...s,
-                    activeTools: [...s.activeTools, event.name ?? "unknown"],
+                    activeTools: [...s.activeTools, tool],
                     toolProgress: "",
                   }));
                   break;
+                }
                 case "tool_progress":
                   setStreamState((s) => ({ ...s, toolProgress: event.message ?? "" }));
                   break;
                 case "tool_output":
                   setStreamState((s) => ({ ...s, toolProgress: event.content ?? "" }));
                   break;
-                case "tool_done":
-                  setStreamState((s) => ({
-                    ...s,
-                    activeTools: s.activeTools.filter((t) => t !== (event.name ?? "unknown")),
-                    toolProgress: "",
-                  }));
+                case "tool_done": {
+                  if (event.name === "report_intent") break;
+                  completedTools.push({
+                    toolCallId: event.toolCallId ?? "",
+                    name: event.name ?? "unknown",
+                    result: event.result,
+                    success: event.success,
+                  });
+                  // Merge args from the pending tool
+                  const pending = completedTools[completedTools.length - 1];
+                  setStreamState((s) => {
+                    const match = s.activeTools.find((t) => t.toolCallId === event.toolCallId);
+                    if (match) pending.args = match.args;
+                    return {
+                      ...s,
+                      activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
+                      toolProgress: "",
+                    };
+                  });
                   break;
+                }
                 case "title_changed":
                   onTitleChanged();
                   break;
                 case "done":
-                  onMessagesUpdated([{ role: "assistant", content: event.content ?? "" }]);
+                  onMessagesUpdated([{
+                    role: "assistant",
+                    content: event.content ?? "",
+                    toolCalls: completedTools.length > 0 ? [...completedTools] : undefined,
+                  }]);
+                  completedTools.length = 0;
                   setStreamState({
                     streamingContent: "",
                     activeTools: [],

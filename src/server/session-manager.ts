@@ -230,19 +230,35 @@ export class SessionManager {
             }
           }
           break;
-        case "tool.execution_start":
-          console.log(`[sdk] 🔧 Tool: ${data?.toolName ?? data?.name ?? "unknown"}`);
-          bus.emit({ type: "tool_start", name: data?.toolName ?? data?.name ?? "unknown" });
+        case "tool.execution_start": {
+          const toolName = data?.toolName ?? data?.name ?? "unknown";
+          console.log(`[sdk] 🔧 Tool: ${toolName}`);
+          bus.emit({
+            type: "tool_start",
+            toolCallId: data?.toolCallId,
+            name: toolName,
+            args: data?.arguments,
+          });
           break;
+        }
         case "tool.execution_progress":
           bus.emit({ type: "tool_progress", name: data?.toolCallId, message: data?.progressMessage ?? "" });
           break;
         case "tool.execution_partial_result":
           bus.emit({ type: "tool_output", name: data?.toolCallId, content: data?.partialOutput ?? "" });
           break;
-        case "tool.execution_complete":
-          console.log(`[sdk] 🔧 Tool complete: ${data?.toolName ?? data?.name ?? "unknown"}`);
-          bus.emit({ type: "tool_done", name: data?.toolName ?? data?.name ?? "unknown" });
+        case "tool.execution_complete": {
+          const completedToolName = data?.toolName ?? data?.name ?? "unknown";
+          console.log(`[sdk] 🔧 Tool complete: ${completedToolName}`);
+          bus.emit({
+            type: "tool_done",
+            toolCallId: data?.toolCallId,
+            name: completedToolName,
+            result: data?.result?.content,
+            success: data?.success,
+          });
+          break;
+        }
           break;
         case "subagent.started":
           bus.emit({ type: "tool_start", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
@@ -274,7 +290,7 @@ export class SessionManager {
     bus.emit({ type: "done", content });
   }
 
-  async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string }>> {
+  async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     console.log(`[sdk] Loading messages for session ${sessionId}...`);
@@ -283,7 +299,20 @@ export class SessionManager {
     });
 
     const events = await session.getMessages();
-    const messages: Array<{ role: string; content: string; timestamp?: string }> = [];
+    const messages: Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }> = [];
+
+    // Index tool events by toolCallId for fast lookup
+    const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown> }>();
+    const toolCompletes = new Map<string, { success: boolean; content?: string }>();
+    for (const event of events) {
+      const data = (event as any).data;
+      if (event.type === "tool.execution_start" && data?.toolCallId) {
+        toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments });
+      } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
+        toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content });
+      }
+    }
+    console.log(`[sdk] Indexed ${toolStarts.size} tool starts, ${toolCompletes.size} tool completes`);
 
     for (const event of events) {
       if (event.type === "user.message") {
@@ -295,8 +324,34 @@ export class SessionManager {
       } else if (event.type === "assistant.message") {
         const data = event.data as any;
         const content = data.content ?? "";
-        if (content.trim()) {
-          messages.push({ role: "assistant", content, timestamp: data.timestamp ?? (event as any).timestamp });
+
+        // Build tool calls from toolRequests
+        let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> | undefined;
+        if (data.toolRequests?.length) {
+          toolCalls = data.toolRequests
+            .filter((tr: any) => tr.name !== "report_intent")
+            .map((tr: any) => {
+              const start = toolStarts.get(tr.toolCallId);
+              const complete = toolCompletes.get(tr.toolCallId);
+              return {
+                toolCallId: tr.toolCallId,
+                name: tr.name,
+                args: start?.arguments ?? tr.arguments,
+                result: complete?.content,
+                success: complete?.success,
+              };
+            });
+          if (toolCalls!.length === 0) toolCalls = undefined;
+        }
+
+        // Include message if it has content or tool calls
+        if (content.trim() || toolCalls) {
+          messages.push({
+            role: "assistant",
+            content,
+            timestamp: data.timestamp ?? (event as any).timestamp,
+            toolCalls,
+          });
         }
       }
     }

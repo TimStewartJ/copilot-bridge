@@ -11,10 +11,19 @@ export interface Session {
   };
 }
 
+export interface ToolCall {
+  toolCallId: string;
+  name: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  success?: boolean;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
+  toolCalls?: ToolCall[];
 }
 
 export interface PRLink {
