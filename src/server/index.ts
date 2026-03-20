@@ -104,7 +104,7 @@ app.post("/api/chat", (req, res) => {
   }
 });
 
-// GET /api/sessions/:id/stream — SSE stream with replay + live events
+// GET /api/sessions/:id/stream — SSE stream with snapshot + live events
 app.get("/api/sessions/:id/stream", (req, res) => {
   const sessionId = req.params.id;
 
@@ -117,9 +117,20 @@ app.get("/api/sessions/:id/stream", (req, res) => {
   let closed = false;
   let unsub: (() => void) | null = null;
 
+  // SSE heartbeat — keeps connection alive through proxies/tunnels
+  const heartbeat = setInterval(() => {
+    if (closed || res.writableEnded) return;
+    try {
+      res.write(`: heartbeat\n\n`);
+    } catch {
+      close();
+    }
+  }, 15_000);
+
   const close = () => {
     if (closed) return;
     closed = true;
+    clearInterval(heartbeat);
     if (unsub) unsub();
     if (!res.writableEnded) res.end();
   };
@@ -144,28 +155,29 @@ app.get("/api/sessions/:id/stream", (req, res) => {
   const bus = getBus(sessionId);
 
   if (!bus) {
-    // No active work — check if session is busy (shouldn't be, but just in case)
     if (sessionManager.isSessionBusy(sessionId)) {
       sendEvent({ type: "thinking" });
-      // The bus should appear soon — poll briefly
+      // Poll for bus — it should appear shortly after POST /api/chat
+      const pollStart = Date.now();
       const waitForBus = setInterval(() => {
         if (closed) { clearInterval(waitForBus); return; }
         const newBus = getBus(sessionId);
         if (newBus) {
           clearInterval(waitForBus);
           unsub = newBus.subscribe(sendEvent);
+        } else if (Date.now() - pollStart > 10_000) {
+          clearInterval(waitForBus);
+          sendEvent({ type: "error", message: "Timed out waiting for session to start" });
         }
       }, 500);
-      setTimeout(() => clearInterval(waitForBus), 10_000);
     } else {
-      // Session is idle — nothing to stream
       sendEvent({ type: "idle" });
       close();
     }
     return;
   }
 
-  // Subscribe to bus — replays history + streams live events
+  // Subscribe — sends snapshot then streams live events
   unsub = bus.subscribe(sendEvent);
 });
 

@@ -24,6 +24,9 @@ const TEAMS_MCP_PORT = 5556; // separate port from any other MCP usage
 
 const BUSY_CHECK_INTERVAL = 3_000;
 const BUSY_WAIT_TIMEOUT = 300_000; // 5 minutes max wait
+const CRASH_RESTART_DELAY = 5_000;
+const MAX_CRASH_RESTARTS = 5;
+const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
 
 let serverProcess: ChildProcess | null = null;
 let tunnelProcess: ChildProcess | null = null;
@@ -31,6 +34,8 @@ let mcpProcess: ChildProcess | null = null;
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
+let crashRestarts = 0;
+let lastCrashTime = 0;
 
 function log(msg: string) {
   console.log(`[launcher] ${msg}`);
@@ -108,6 +113,41 @@ function startServer(): ChildProcess {
     log(`Server exited with code ${code}`);
     if (serverProcess === child) {
       serverProcess = null;
+    }
+
+    // Auto-restart on unexpected crash (non-zero exit, not during intentional restart)
+    if (code !== 0 && code !== null && !restarting) {
+      const now = Date.now();
+      if (now - lastCrashTime > CRASH_WINDOW) {
+        crashRestarts = 0; // stable long enough, reset counter
+      }
+      lastCrashTime = now;
+      crashRestarts++;
+
+      if (crashRestarts > MAX_CRASH_RESTARTS) {
+        log(`❌ ${crashRestarts} crashes in quick succession — not restarting. Manual intervention needed.`);
+        return;
+      }
+
+      log(`⚡ Crash detected (exit code ${code}). Auto-restarting in ${CRASH_RESTART_DELAY / 1000}s... (attempt ${crashRestarts}/${MAX_CRASH_RESTARTS})`);
+      setTimeout(async () => {
+        if (serverProcess || restarting) return; // something else already started it
+        serverProcess = startServer();
+        const healthy = await healthCheck();
+        if (healthy) {
+          log(`✅ Auto-restart succeeded after crash`);
+          if (currentTunnelUrl) {
+            try {
+              await startTeamsMcp();
+              await notifyTeams(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code})`, currentTunnelUrl);
+              killTeamsMcp();
+            } catch { /* best-effort */ }
+          }
+        } else {
+          log(`❌ Auto-restart failed health check`);
+          killServer();
+        }
+      }, CRASH_RESTART_DELAY);
     }
   });
 

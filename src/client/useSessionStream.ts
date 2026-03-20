@@ -74,6 +74,30 @@ export function useSessionStream(
               if (sid !== sessionRef.current) return; // stale
 
               switch (event.type) {
+                case "snapshot": {
+                  // Catch-up event from EventBus — hydrate current state in one shot
+                  if (event.complete) {
+                    // Turn already finished — nothing to stream
+                    setStreamState((s) => ({ ...s, isStreaming: false }));
+                    break;
+                  }
+                  accumulatedContent = event.accumulatedContent ?? "";
+                  const tools: PendingTool[] = (event.activeTools ?? [])
+                    .filter((t: any) => t.name !== "report_intent")
+                    .map((t: any) => ({
+                      toolCallId: t.toolCallId ?? "",
+                      name: t.name ?? "unknown",
+                      args: t.args,
+                    }));
+                  setStreamState({
+                    streamingContent: accumulatedContent,
+                    activeTools: tools,
+                    intentText: event.intentText ?? "",
+                    toolProgress: "",
+                    isStreaming: true,
+                  });
+                  break;
+                }
                 case "thinking":
                   break;
                 case "intent":
@@ -96,6 +120,8 @@ export function useSessionStream(
                     }]);
                     completedTools.length = 0;
                   }
+                  accumulatedContent = "";
+                  setStreamState((s) => ({ ...s, streamingContent: "" }));
                   break;
                 case "tool_start": {
                   const tool: PendingTool = {
@@ -119,23 +145,22 @@ export function useSessionStream(
                   break;
                 case "tool_done": {
                   if (event.name === "report_intent") break;
-                  completedTools.push({
+                  const completed: ToolCall = {
                     toolCallId: event.toolCallId ?? "",
                     name: event.name ?? "unknown",
                     result: event.result,
                     success: event.success,
-                  });
-                  // Merge args from the pending tool
-                  const pending = completedTools[completedTools.length - 1];
+                  };
                   setStreamState((s) => {
                     const match = s.activeTools.find((t) => t.toolCallId === event.toolCallId);
-                    if (match) pending.args = match.args;
+                    if (match) completed.args = match.args;
                     return {
                       ...s,
                       activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
                       toolProgress: "",
                     };
                   });
+                  completedTools.push(completed);
                   break;
                 }
                 case "title_changed":

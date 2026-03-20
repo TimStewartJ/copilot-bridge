@@ -23,7 +23,6 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const prevSessionRef = useRef<string | null>(null);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
     setMessages((prev) => [...prev, ...newMsgs]);
@@ -45,8 +44,6 @@ export default function ChatView({ sessionId, onMessageSent }: ChatViewProps) {
       setMessages([]);
       return;
     }
-    if (prevSessionRef.current === sessionId) return;
-    prevSessionRef.current = sessionId;
 
     setMessages([]);
     setLoading(true);
