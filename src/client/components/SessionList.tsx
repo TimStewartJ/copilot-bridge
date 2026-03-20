@@ -88,6 +88,7 @@ export default function SessionList({
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggered = useRef(false);
   const touchOrigin = useRef<{ x: number; y: number } | null>(null);
+  const [longPressTarget, setLongPressTarget] = useState<string | null>(null);
 
   const closeMenu = useCallback(() => { setCtxMenu(null); setCopied(false); }, []);
 
@@ -112,6 +113,7 @@ export default function SessionList({
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
+    setLongPressTarget(null);
   }, []);
 
   const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.sessionId) : null;
@@ -159,8 +161,10 @@ export default function SessionList({
             const touch = e.touches[0];
             touchOrigin.current = { x: touch.clientX, y: touch.clientY };
             longPressTriggered.current = false;
+            setLongPressTarget(id);
             longPressTimer.current = setTimeout(() => {
               longPressTriggered.current = true;
+              setLongPressTarget(null);
               setCtxMenu({ x: touch.clientX, y: touch.clientY, sessionId: id });
               setCopied(false);
             }, 500);
@@ -175,11 +179,13 @@ export default function SessionList({
           onTouchEnd={() => cancelLongPress()}
           onTouchCancel={() => cancelLongPress()}
           title={session.summary || id}
-          className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-colors ${
-            isActive
-              ? "bg-accent/10 border-l-2 border-accent"
-              : "hover:bg-bg-hover"
-          } ${isArch || isArchiving ? "opacity-50" : ""}`}
+          className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-all duration-150 ${
+            ctxMenu?.sessionId === id
+              ? "bg-bg-hover ring-1 ring-border"
+              : isActive
+                ? "bg-accent/10 border-l-2 border-accent"
+                : "hover:bg-bg-hover"
+          } ${longPressTarget === id ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
         >
           <div className={`${s.titleClass} flex items-center`}>
             {isArchiving ? (
@@ -241,7 +247,7 @@ export default function SessionList({
       {ctxMenu && (
         <div
           ref={menuRef}
-          className="fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm"
+          className="fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm animate-ctx-menu-in"
           style={{
             top: Math.min(ctxMenu.y, window.innerHeight - 120),
             left: Math.min(ctxMenu.x, window.innerWidth - 196),
