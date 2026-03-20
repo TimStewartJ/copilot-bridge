@@ -16,6 +16,12 @@ const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
 
 // Module-level ref so universal tools can query session state
 let _instance: SessionManager | null = null;
+let _restartPending = false;
+
+export function isRestartPending(): boolean { return _restartPending; }
+export function getRestartWaitingCount(): number {
+  return _instance ? _instance.getActiveSessions().length : 0;
+}
 
 // Universal tools — same instance for every session
 const BRIDGE_TOOLS = [
@@ -102,8 +108,10 @@ const BRIDGE_TOOLS = [
       const dataDir = join(__dirname, "..", "..", "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
+      _restartPending = true;
 
       const otherBusy = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
+      globalBus.emit({ type: "server:restart-pending", waitingSessions: otherBusy });
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish before rebuilding (up to 5 min).`
         : "";
@@ -212,6 +220,9 @@ export class SessionManager {
     }).finally(() => {
       this.activeSessions.delete(sessionId);
       globalBus.emit({ type: "session:idle", sessionId });
+      if (_restartPending) {
+        globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
+      }
     });
   }
 

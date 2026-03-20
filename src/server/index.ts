@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { config } from "./config.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, isRestartPending, getRestartWaitingCount } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
 import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
@@ -105,6 +105,13 @@ app.get("/api/status-stream", (req, res) => {
     if (closed || res.writableEnded) return;
     try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { close(); }
   });
+
+  // Send initial restart state so reconnecting clients catch up
+  if (isRestartPending()) {
+    const count = getRestartWaitingCount();
+    try { res.write(`data: ${JSON.stringify({ type: "server:restart-pending", waitingSessions: count })}\n\n`); }
+    catch { close(); }
+  }
 
   res.on("error", () => { close(); });
   req.on("close", () => { close(); });

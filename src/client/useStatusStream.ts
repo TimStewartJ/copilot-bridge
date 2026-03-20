@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:idle" | "session:title" | "session:intent";
-  sessionId: string;
+  type: "session:busy" | "session:idle" | "session:title" | "session:intent"
+      | "server:restart-pending" | "status:connected";
+  sessionId?: string;
   title?: string;
   intent?: string;
+  waitingSessions?: number;
 }
 
 type StatusHandler = (event: StatusEvent) => void;
@@ -12,6 +14,8 @@ type StatusHandler = (event: StatusEvent) => void;
 /**
  * Persistent SSE connection to /api/status-stream.
  * Uses native EventSource for automatic reconnection.
+ * Fires a synthetic "status:connected" event on each (re)connection
+ * so consumers can clear stale state.
  */
 export function useStatusStream(onEvent: StatusHandler): void {
   const handlerRef = useRef(onEvent);
@@ -19,6 +23,10 @@ export function useStatusStream(onEvent: StatusHandler): void {
 
   useEffect(() => {
     const es = new EventSource("/api/status-stream");
+
+    es.onopen = () => {
+      handlerRef.current({ type: "status:connected" });
+    };
 
     es.onmessage = (e) => {
       try {
