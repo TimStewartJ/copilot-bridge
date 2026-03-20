@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   fetchSessions,
   createSession,
@@ -72,6 +72,15 @@ export default function App() {
   // Mark session as read when opened
   useEffect(() => {
     if (activeSessionId) markRead(activeSessionId);
+  }, [activeSessionId, markRead]);
+
+  // Mark the departing session as read when navigating away
+  const prevSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevSessionRef.current && prevSessionRef.current !== activeSessionId) {
+      markRead(prevSessionRef.current);
+    }
+    prevSessionRef.current = activeSessionId;
   }, [activeSessionId, markRead]);
 
   const handleNewSession = async () => {
