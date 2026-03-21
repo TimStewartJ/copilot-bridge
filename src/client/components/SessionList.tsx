@@ -166,7 +166,7 @@ export default function SessionList({
           onTouchEnd={() => cancelLongPress()}
           onTouchCancel={() => cancelLongPress()}
           title={session.summary || id}
-          className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm transition-all duration-150 ${
+          className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
             ctxMenu?.sessionId === id
               ? "bg-bg-hover ring-1 ring-border"
               : isActive

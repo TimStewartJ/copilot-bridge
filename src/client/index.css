@@ -55,3 +55,8 @@ body {
 .animate-ctx-menu-in {
   animation: ctx-menu-in 0.12s ease-out;
 }
+
+/* Suppress native touch callout on elements with custom long-press */
+.no-callout {
+  -webkit-touch-callout: none;
+}
