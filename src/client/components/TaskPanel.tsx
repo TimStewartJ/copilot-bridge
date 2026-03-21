@@ -16,7 +16,7 @@ import {
   ClipboardList,
 } from "lucide-react";
 
-// ── Helpers (mirrored from Sidebar.tsx) ──────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-success/15 text-success",
