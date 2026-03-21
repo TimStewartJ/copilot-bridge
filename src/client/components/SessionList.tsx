@@ -33,7 +33,7 @@ const styles = {
     listGap: "space-y-1",
   },
   compact: {
-    wrapper: "",
+    wrapper: "min-w-0 overflow-x-hidden",
     newButton:
       "w-full mb-1.5 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors",
     itemPadding: "py-2",
