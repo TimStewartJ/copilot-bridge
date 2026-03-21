@@ -2,4 +2,8 @@ node_modules/
 dist/
 *.log
 .env
-data/restart.signal
+.env.local
+data/
+.DS_Store
+.vscode/
+.idea/
