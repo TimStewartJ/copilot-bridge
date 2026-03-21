@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { Session } from "./api";
-import { markSessionRead } from "./api";
+import { fetchReadState, markSessionRead } from "./api";
 
 const STORAGE_KEY = "copilot-bridge:session-read-state";
 
@@ -21,6 +21,33 @@ function save(state: ReadState): void {
 
 export function useReadState(sessions: Session[]) {
   const [state, setState] = useState<ReadState>(load);
+
+  // Hydrate from server so read state syncs across devices
+  useEffect(() => {
+    let cancelled = false;
+    fetchReadState()
+      .then((server) => {
+        if (cancelled) return;
+        setState((local) => {
+          const merged = { ...local };
+          let changed = false;
+          for (const [id, serverTs] of Object.entries(server)) {
+            const localTs = local[id];
+            if (!localTs || new Date(serverTs) > new Date(localTs)) {
+              merged[id] = serverTs;
+              changed = true;
+            }
+          }
+          if (!changed) return local;
+          save(merged);
+          return merged;
+        });
+      })
+      .catch(() => {}); // offline — fall back to localStorage
+    return () => {
+      cancelled = true;
+    };
+  }, []); // once on mount
 
   // GC: prune entries for sessions that no longer exist
   useEffect(() => {
