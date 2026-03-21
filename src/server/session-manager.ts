@@ -12,6 +12,7 @@ import * as schedulerModule from "./scheduler.js";
 import { getOrCreateBus } from "./event-bus.js";
 import * as sessionTitles from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
+import { STAGING_TOOLS } from "./staging-tools.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
@@ -117,7 +118,7 @@ const BRIDGE_TOOLS = [
     },
   }),
   defineTool("self_restart", {
-    description: "Restart the Copilot Bridge server after making code changes. The launcher will auto-checkpoint, rebuild, and swap processes. Auto-rolls back on failure. The launcher performs a safe restart: it waits for all active sessions to finish before rebuilding (up to 5 minutes). IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart.",
+    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will auto-checkpoint, rebuild, and swap processes. IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const dataDir = join(__dirname, "..", "..", "data");
@@ -283,6 +284,7 @@ const BRIDGE_TOOLS = [
       return result;
     },
   }),
+  ...STAGING_TOOLS,
 ];
 
 export class SessionManager {

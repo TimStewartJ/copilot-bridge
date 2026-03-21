@@ -19,6 +19,7 @@ import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunn
 import * as adoClient from "./ado-client.js";
 import * as readStateStore from "./read-state-store.js";
 import * as globalBus from "./global-bus.js";
+import { pruneOrphanedWorktrees } from "./staging-tools.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -773,6 +774,9 @@ async function main(): Promise<void> {
   console.log();
 
   await sessionManager.initialize();
+
+  // Clean up any orphaned staging worktrees from previous sessions
+  pruneOrphanedWorktrees();
 
   // Initialize scheduler after session manager is ready
   scheduler.initialize(sessionManager);

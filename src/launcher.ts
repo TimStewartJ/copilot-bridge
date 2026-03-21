@@ -3,7 +3,7 @@
 
 import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -92,7 +92,19 @@ function build(): boolean {
 
 function rollback() {
   log("Rolling back to last checkpoint...");
-  run("git reset --hard HEAD");
+  const preDeployFile = join(ROOT, "data", "pre-deploy-sha");
+  let rollbackTarget = "HEAD";
+  try {
+    if (existsSync(preDeployFile)) {
+      const sha = readFileSync(preDeployFile, "utf-8").trim();
+      if (sha) {
+        rollbackTarget = sha;
+        log(`Rolling back to pre-deploy state: ${sha}`);
+      }
+      unlinkSync(preDeployFile);
+    }
+  } catch {}
+  run(`git reset --hard ${rollbackTarget}`);
   run("npx vite build");
   log("Rollback complete");
 }
