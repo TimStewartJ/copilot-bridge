@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import type { Session, Task } from "../api";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 
@@ -181,6 +181,9 @@ export default function SessionList({
               <span
                 className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
               />
+            )}
+            {session.triggeredBy === "schedule" && (
+              <Clock size={10} className="text-accent shrink-0 mr-0.5" title={`Scheduled: ${session.scheduleName ?? ""}`} />
             )}
             <span className="truncate">
               {session.summary || id.slice(0, 8)}

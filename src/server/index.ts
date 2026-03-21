@@ -12,6 +12,8 @@ import * as taskStore from "./task-store.js";
 import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
 import * as sessionTitles from "./session-titles.js";
+import * as scheduleStore from "./schedule-store.js";
+import * as scheduler from "./scheduler.js";
 import { getBus, hasBus } from "./event-bus.js";
 import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
 import * as adoClient from "./ado-client.js";
@@ -65,7 +67,18 @@ app.get("/api/sessions", async (req, res) => {
         // Prefer LLM-generated title over raw first-message summary
         const generatedTitle = sessionTitles.getTitle(id);
         const summary = generatedTitle ?? s.summary;
-        return { ...s, summary, diskSizeBytes, busy: sessionManager.isSessionBusy(id), hasPlan, archived, archivedAt };
+        return {
+          ...s,
+          summary,
+          diskSizeBytes,
+          busy: sessionManager.isSessionBusy(id),
+          hasPlan,
+          archived,
+          archivedAt,
+          triggeredBy: meta[id]?.triggeredBy,
+          scheduleId: meta[id]?.scheduleId,
+          scheduleName: meta[id]?.scheduleName,
+        };
       })
       .filter((s: any) => includeArchived || !s.archived);
 
@@ -622,6 +635,107 @@ app.get("/api/dashboard", async (_req, res) => {
   }
 });
 
+// ── Schedule routes ───────────────────────────────────────────────
+
+app.get("/api/schedules", (_req, res) => {
+  const taskId = typeof _req.query.taskId === "string" ? _req.query.taskId : undefined;
+  res.json(scheduleStore.listSchedules(taskId));
+});
+
+app.post("/api/schedules", (req, res) => {
+  try {
+    const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, reuseSession, maxRuns, expiresAt } = req.body;
+    if (!taskId || !name || !prompt || !type) {
+      return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
+    }
+    if (type === "cron" && !cronExpr) {
+      return res.status(400).json({ error: "cron expression is required for cron schedules" });
+    }
+    if (type === "once" && !runAt) {
+      return res.status(400).json({ error: "runAt is required for one-shot schedules" });
+    }
+    if (!taskStore.getTask(taskId)) {
+      return res.status(404).json({ error: "Task not found" });
+    }
+
+    const schedule = scheduleStore.createSchedule({ taskId, name, prompt, type, cron: cronExpr, runAt, timezone, reuseSession, maxRuns, expiresAt });
+
+    // Register cron job if applicable
+    if (schedule.type === "cron") {
+      scheduler.registerSchedule(schedule.id);
+    } else if (schedule.type === "once" && schedule.runAt) {
+      // For one-shot schedules, set up a setTimeout
+      const delay = new Date(schedule.runAt).getTime() - Date.now();
+      if (delay > 0) {
+        setTimeout(() => {
+          scheduler.triggerSchedule(schedule.id).catch((err) => {
+            console.error(`[scheduler] One-shot trigger failed for "${schedule.name}":`, err);
+          });
+        }, delay);
+      }
+    }
+
+    console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
+    res.status(201).json(schedule);
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.patch("/api/schedules/:id", (req, res) => {
+  try {
+    const schedule = scheduleStore.updateSchedule(req.params.id, req.body);
+
+    // Re-register cron job if timing or enabled state changed
+    if (schedule.type === "cron") {
+      if (schedule.enabled) {
+        scheduler.registerSchedule(schedule.id);
+      } else {
+        scheduler.unregisterSchedule(schedule.id);
+      }
+    }
+
+    console.log(`[schedules] Updated schedule "${schedule.name}"`);
+    res.json(schedule);
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/schedules/:id", (req, res) => {
+  try {
+    scheduler.unregisterSchedule(req.params.id);
+    scheduleStore.deleteSchedule(req.params.id);
+    console.log(`[schedules] Deleted schedule ${req.params.id}`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.post("/api/schedules/:id/trigger", async (req, res) => {
+  try {
+    const result = await scheduler.triggerSchedule(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.get("/api/schedules/status", (_req, res) => {
+  res.json({
+    globalPause: scheduler.isGlobalPaused(),
+    scheduleCount: scheduleStore.listSchedules().length,
+    enabledCount: scheduleStore.getEnabledSchedules().length,
+  });
+});
+
+app.post("/api/schedules/pause", (req, res) => {
+  const { paused } = req.body;
+  scheduler.setGlobalPause(paused !== false);
+  res.json({ globalPause: scheduler.isGlobalPaused() });
+});
+
 // ── Settings routes ───────────────────────────────────────────────
 
 app.get("/api/settings", (_req, res) => {
@@ -660,6 +774,9 @@ async function main(): Promise<void> {
 
   await sessionManager.initialize();
 
+  // Initialize scheduler after session manager is ready
+  scheduler.initialize(sessionManager);
+
   const port = config.web.port;
   app.listen(port, () => {
     console.log(`[web] 🟢 Server running at http://localhost:${port}`);
@@ -688,6 +805,7 @@ async function main(): Promise<void> {
 
 process.on("SIGINT", async () => {
   console.log("\n[web] Shutting down...");
+  scheduler.shutdown();
   await sessionManager.shutdown();
   process.exit(0);
 });

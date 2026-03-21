@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import type { Task, Session, EnrichedWorkItem, EnrichedPR } from "../api";
-import { fetchEnrichedTask, unlinkResource } from "../api";
+import type { Task, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
+import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule } from "../api";
 import SessionList from "./SessionList";
+import ScheduleEditorDialog from "./ScheduleEditorDialog";
 import {
   MessageSquare,
   MoreHorizontal,
@@ -14,9 +15,30 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  Clock,
+  Play,
+  Pause,
+  Plus,
+  Trash2,
 } from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  if (diff < 0) {
+    // Future date
+    const absDiff = -diff;
+    if (absDiff < 60_000) return "in <1m";
+    if (absDiff < 3_600_000) return `in ${Math.round(absDiff / 60_000)}m`;
+    if (absDiff < 86_400_000) return `in ${Math.round(absDiff / 3_600_000)}h`;
+    return `in ${Math.round(absDiff / 86_400_000)}d`;
+  }
+  if (diff < 60_000) return "<1m ago";
+  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
+  return `${Math.round(diff / 86_400_000)}d ago`;
+}
 
 
 const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode }> = {
@@ -118,6 +140,11 @@ export default function TaskPanel({
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
   const [enrichedPRs, setEnrichedPRs] = useState<EnrichedPR[]>([]);
 
+  // ── Schedules state ─────────────────────────────────────────
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [scheduleEditorOpen, setScheduleEditorOpen] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+
   useEffect(() => {
     if (
       task &&
@@ -134,6 +161,15 @@ export default function TaskPanel({
       setEnrichedPRs([]);
     }
   }, [task?.id, task?.workItemIds.length, task?.pullRequests.length]);
+
+  // Fetch schedules for this task
+  useEffect(() => {
+    if (task) {
+      fetchSchedules(task.id).then(setSchedules).catch(() => setSchedules([]));
+    } else {
+      setSchedules([]);
+    }
+  }, [task?.id]);
 
   // Reset editing state when task changes
   useEffect(() => {
@@ -432,6 +468,101 @@ export default function TaskPanel({
               ))}
             </div>
           </div>
+        )}
+
+        {/* Schedules */}
+        <div>
+          <div className="flex items-center justify-between px-3 py-1">
+            <SectionLabel label="Schedules" count={schedules.length} />
+            <button
+              onClick={() => { setEditingSchedule(null); setScheduleEditorOpen(true); }}
+              className="text-[10px] text-accent hover:text-accent-hover transition-colors flex items-center gap-0.5"
+              title="Add schedule"
+            >
+              <Plus size={10} />
+              <span>Add</span>
+            </button>
+          </div>
+          {schedules.length > 0 ? (
+            <div className="space-y-0.5">
+              {schedules.map((schedule) => (
+                <div
+                  key={schedule.id}
+                  className="px-3 py-1.5 text-xs hover:bg-bg-hover rounded-md transition-colors group"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <Clock size={12} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
+                    <span className={`font-medium truncate flex-1 ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}>
+                      {schedule.name}
+                    </span>
+                    <div className="hidden group-hover:flex items-center gap-0.5">
+                      <button
+                        onClick={async () => {
+                          await triggerSchedule(schedule.id);
+                          fetchSchedules(task.id).then(setSchedules).catch(() => {});
+                        }}
+                        className="p-0.5 text-text-muted hover:text-success transition-colors"
+                        title="Run now"
+                      >
+                        <Play size={10} />
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await patchSchedule(schedule.id, { enabled: !schedule.enabled });
+                          fetchSchedules(task.id).then(setSchedules).catch(() => {});
+                        }}
+                        className="p-0.5 text-text-muted hover:text-warning transition-colors"
+                        title={schedule.enabled ? "Pause" : "Resume"}
+                      >
+                        <Pause size={10} />
+                      </button>
+                      <button
+                        onClick={() => { setEditingSchedule(schedule); setScheduleEditorOpen(true); }}
+                        className="p-0.5 text-text-muted hover:text-text-primary transition-colors"
+                        title="Edit"
+                      >
+                        <MoreHorizontal size={10} />
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await deleteSchedule(schedule.id);
+                          fetchSchedules(task.id).then(setSchedules).catch(() => {});
+                        }}
+                        className="p-0.5 text-text-muted hover:text-error transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
+                    {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+                    {schedule.lastRunAt && ` · Last: ${timeAgo(schedule.lastRunAt)}`}
+                    {schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
+                    {schedule.runCount > 0 && ` · ${schedule.runCount} run${schedule.runCount !== 1 ? "s" : ""}`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="px-3 py-2 text-[10px] text-text-faint">
+              No schedules — add one to automate recurring work
+            </div>
+          )}
+        </div>
+
+        {/* Schedule Editor Dialog */}
+        {scheduleEditorOpen && (
+          <ScheduleEditorDialog
+            taskId={task.id}
+            schedule={editingSchedule}
+            onClose={() => { setScheduleEditorOpen(false); setEditingSchedule(null); }}
+            onSaved={() => {
+              setScheduleEditorOpen(false);
+              setEditingSchedule(null);
+              fetchSchedules(task.id).then(setSchedules).catch(() => {});
+            }}
+          />
         )}
 
         {/* Notes */}

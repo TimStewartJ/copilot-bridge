@@ -25,10 +25,12 @@ import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
+import { useIsMobile } from "./useIsMobile";
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const isMobile = useIsMobile();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -199,13 +201,15 @@ export default function App() {
 
   const handleSelectTask = (id: string) => {
     setQuickChatsMode(false);
-    const task = tasks.find((t) => t.id === id);
-    if (task && task.sessionIds.length > 0) {
-      const mostRecentSessionId = task.sessionIds[task.sessionIds.length - 1];
-      navigate(`/tasks/${id}/sessions/${mostRecentSessionId}`);
-    } else {
-      navigate(`/tasks/${id}`);
+    if (!isMobile) {
+      const task = tasks.find((t) => t.id === id);
+      if (task && task.sessionIds.length > 0) {
+        const mostRecentSessionId = task.sessionIds[task.sessionIds.length - 1];
+        navigate(`/tasks/${id}/sessions/${mostRecentSessionId}`);
+        return;
+      }
     }
+    navigate(`/tasks/${id}`);
   };
 
   const handleSelectQuickChats = () => {
@@ -236,6 +240,10 @@ export default function App() {
     try {
       const sessionId = await createTaskSession(taskId);
       addOptimisticSession(sessionId);
+      const addSession = (t: Task) =>
+        t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
+      setTasks((prev) => prev.map(addSession));
+      setSelectedTask((prev) => (prev ? addSession(prev) : prev));
       navigate(`/tasks/${taskId}/sessions/${sessionId}`);
     } catch (err) {
       console.error("Failed to create task session:", err);
@@ -258,6 +266,9 @@ export default function App() {
       setTasks((prev) => [task, ...prev]);
       const sessionId = await createTaskSession(task.id);
       addOptimisticSession(sessionId);
+      const updatedTask = { ...task, sessionIds: [...task.sessionIds, sessionId] };
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updatedTask : t)));
+      setSelectedTask(updatedTask);
       navigate(`/tasks/${task.id}/sessions/${sessionId}`);
     } catch (err) {
       console.error("Failed to create task:", err);
@@ -407,6 +418,7 @@ export default function App() {
             archivingIds={archivingIds}
             allTasks={tasks}
             onLinkToTask={handleLinkToTask}
+            onDeleteSession={handleDeleteSession}
           />
         </div>
 
@@ -450,8 +462,8 @@ export default function App() {
         <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
           <button
             onClick={() => {
-              if (activeTaskId) {
-                navigate(`/tasks/${activeTaskId}`);
+              if (window.history.length > 1) {
+                navigate(-1);
               } else {
                 navigate("/");
               }
@@ -537,6 +549,7 @@ function MobileTaskListView({
   archivingIds,
   allTasks,
   onLinkToTask,
+  onDeleteSession,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -559,7 +572,8 @@ function MobileTaskListView({
   archivingIds: Set<string>;
   allTasks: Task[];
   onLinkToTask: (sessionId: string, taskId: string) => void;
-}) {
+  onDeleteSession?: (sessionId: string) => void;
+}){
   return (
     <div className="flex flex-col h-full bg-bg-secondary">
       {/* Header */}

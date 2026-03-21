@@ -8,6 +8,9 @@ export interface Session {
   hasPlan?: boolean;
   archived?: boolean;
   archivedAt?: string;
+  triggeredBy?: "user" | "schedule";
+  scheduleId?: string;
+  scheduleName?: string;
   context?: {
     cwd?: string;
     gitRoot?: string;
@@ -316,4 +319,64 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
     throw new Error(err.error || res.statusText);
   }
   return res.json();
+}
+
+// ── Schedule API ──────────────────────────────────────────────────
+
+export interface Schedule {
+  id: string;
+  taskId: string;
+  name: string;
+  prompt: string;
+  type: "cron" | "once";
+  cron?: string;
+  runAt?: string;
+  timezone?: string;
+  enabled: boolean;
+  reuseSession: boolean;
+  lastSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  runCount: number;
+  maxRuns?: number;
+  expiresAt?: string;
+}
+
+export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "reuseSession" | "maxRuns" | "expiresAt">>;
+
+export type ScheduleUpdateInput = Partial<Pick<Schedule,
+  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "reuseSession" | "maxRuns" | "expiresAt"
+>>;
+
+export async function fetchSchedules(taskId?: string): Promise<Schedule[]> {
+  const qs = taskId ? `?taskId=${taskId}` : "";
+  return apiFetch<Schedule[]>(`/api/schedules${qs}`);
+}
+
+export async function createSchedule(input: ScheduleCreateInput): Promise<Schedule> {
+  return apiFetch<Schedule>("/api/schedules", input);
+}
+
+export async function patchSchedule(id: string, updates: ScheduleUpdateInput): Promise<Schedule> {
+  const res = await fetch(`/api/schedules/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  await fetch(`/api/schedules/${id}`, { method: "DELETE" });
+}
+
+export async function triggerSchedule(id: string): Promise<{ sessionId?: string; skipped?: string }> {
+  return apiFetch<{ sessionId?: string; skipped?: string }>(`/api/schedules/${id}/trigger`, {});
 }

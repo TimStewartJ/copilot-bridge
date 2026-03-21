@@ -7,6 +7,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
+import * as scheduleStore from "./schedule-store.js";
+import * as schedulerModule from "./scheduler.js";
 import { getOrCreateBus } from "./event-bus.js";
 import * as sessionTitles from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
@@ -148,6 +150,137 @@ const BRIDGE_TOOLS = [
         success: true,
         message: `Restart signal sent.${waitNote} Do NOT make any more tool calls — this session is considered active and will block the restart until it is idle.`,
       };
+    },
+  }),
+  // ── Schedule tools ──────────────────────────────────────────────
+  defineTool("schedule_create", {
+    description: "Create a scheduled session that runs automatically on a cron schedule or at a specific time. The schedule belongs to a task and will create sessions linked to that task when triggered.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The task ID this schedule belongs to" },
+        name: { type: "string", description: "Human-readable name (e.g. 'Daily standup prep')" },
+        prompt: { type: "string", description: "The message to send when the schedule fires" },
+        type: { type: "string", enum: ["cron", "once"], description: "Schedule type: 'cron' for recurring, 'once' for one-shot" },
+        cron: { type: "string", description: "Cron expression (e.g. '0 8 * * 1-5' for weekdays at 8am). Required for type=cron" },
+        runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once" },
+        reuseSession: { type: "boolean", description: "If true, reuse the last session instead of creating a new one each run. Default: false" },
+        maxRuns: { type: "number", description: "Auto-disable after N runs (optional)" },
+      },
+      required: ["taskId", "name", "prompt", "type"],
+    },
+    handler: async (args: any) => {
+      if (args.type === "cron" && !args.cron) return { error: "cron expression is required for cron schedules" };
+      if (args.type === "once" && !args.runAt) return { error: "runAt is required for one-shot schedules" };
+      if (!taskStore.getTask(args.taskId)) return { error: "Task not found" };
+
+      const schedule = scheduleStore.createSchedule({
+        taskId: args.taskId,
+        name: args.name,
+        prompt: args.prompt,
+        type: args.type,
+        cron: args.cron,
+        runAt: args.runAt,
+        reuseSession: args.reuseSession,
+        maxRuns: args.maxRuns,
+      });
+
+      if (schedule.type === "cron") {
+        schedulerModule.registerSchedule(schedule.id);
+      } else if (schedule.type === "once" && schedule.runAt) {
+        const delay = new Date(schedule.runAt).getTime() - Date.now();
+        if (delay > 0) {
+          setTimeout(() => {
+            schedulerModule.triggerSchedule(schedule.id).catch(() => {});
+          }, delay);
+        }
+      }
+
+      return { success: true, message: `Schedule "${schedule.name}" created (${schedule.type})`, scheduleId: schedule.id, nextRunAt: schedule.nextRunAt };
+    },
+  }),
+  defineTool("schedule_update", {
+    description: "Update a scheduled session's settings. Only provided fields are changed.",
+    parameters: {
+      type: "object",
+      properties: {
+        scheduleId: { type: "string", description: "The schedule ID to update" },
+        name: { type: "string", description: "New name" },
+        prompt: { type: "string", description: "New prompt text" },
+        cron: { type: "string", description: "New cron expression" },
+        runAt: { type: "string", description: "New one-shot run time (ISO timestamp)" },
+        enabled: { type: "boolean", description: "Enable or disable the schedule" },
+        reuseSession: { type: "boolean", description: "Change session reuse strategy" },
+      },
+      required: ["scheduleId"],
+    },
+    handler: async (args: any) => {
+      const { scheduleId, ...updates } = args;
+      if (Object.keys(updates).length === 0) return { error: "No fields to update" };
+      const schedule = scheduleStore.updateSchedule(scheduleId, updates);
+
+      if (schedule.type === "cron") {
+        if (schedule.enabled) schedulerModule.registerSchedule(schedule.id);
+        else schedulerModule.unregisterSchedule(schedule.id);
+      }
+
+      return { success: true, message: `Schedule "${schedule.name}" updated`, nextRunAt: schedule.nextRunAt };
+    },
+  }),
+  defineTool("schedule_delete", {
+    description: "Delete a scheduled session permanently.",
+    parameters: {
+      type: "object",
+      properties: {
+        scheduleId: { type: "string", description: "The schedule ID to delete" },
+      },
+      required: ["scheduleId"],
+    },
+    handler: async (args: any) => {
+      schedulerModule.unregisterSchedule(args.scheduleId);
+      scheduleStore.deleteSchedule(args.scheduleId);
+      return { success: true, message: "Schedule deleted" };
+    },
+  }),
+  defineTool("schedule_list", {
+    description: "List all scheduled sessions, optionally filtered by task.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "Filter by task ID (optional)" },
+      },
+    },
+    handler: async (args: any) => {
+      const schedules = scheduleStore.listSchedules(args.taskId);
+      return {
+        schedules: schedules.map((s) => ({
+          id: s.id,
+          taskId: s.taskId,
+          name: s.name,
+          type: s.type,
+          cron: s.cron,
+          runAt: s.runAt,
+          enabled: s.enabled,
+          reuseSession: s.reuseSession,
+          lastRunAt: s.lastRunAt,
+          nextRunAt: s.nextRunAt,
+          runCount: s.runCount,
+        })),
+      };
+    },
+  }),
+  defineTool("schedule_trigger", {
+    description: "Manually trigger a scheduled session right now, regardless of its cron schedule.",
+    parameters: {
+      type: "object",
+      properties: {
+        scheduleId: { type: "string", description: "The schedule ID to trigger" },
+      },
+      required: ["scheduleId"],
+    },
+    handler: async (args: any) => {
+      const result = await schedulerModule.triggerSchedule(args.scheduleId);
+      return result;
     },
   }),
 ];

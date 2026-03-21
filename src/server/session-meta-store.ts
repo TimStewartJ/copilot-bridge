@@ -11,6 +11,10 @@ const META_FILE = join(DATA_DIR, "sessions-meta.json");
 export interface SessionMeta {
   archived: boolean;
   archivedAt: string;
+  // Schedule-triggered session metadata
+  triggeredBy?: "user" | "schedule";
+  scheduleId?: string;
+  scheduleName?: string;
 }
 
 type MetaMap = Record<string, SessionMeta>;
@@ -55,6 +59,13 @@ export function setArchived(sessionId: string, archived: boolean): SessionMeta {
 export function deleteMeta(sessionId: string): void {
   const data = load();
   delete data[sessionId];
+  save(data);
+}
+
+export function setScheduleMeta(sessionId: string, scheduleId: string, scheduleName: string): void {
+  const data = load();
+  const existing = data[sessionId] ?? { archived: false, archivedAt: "" };
+  data[sessionId] = { ...existing, triggeredBy: "schedule", scheduleId, scheduleName };
   save(data);
 }
 

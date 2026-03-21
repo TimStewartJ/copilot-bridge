@@ -2,11 +2,13 @@
 // Pushes busy/idle/title/intent events to all connected SSE clients
 
 export interface StatusEvent {
-  type: "session:busy" | "session:idle" | "session:title" | "session:intent" | "server:restart-pending" | "server:restart-cleared";
+  type: "session:busy" | "session:idle" | "session:title" | "session:intent" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered";
   sessionId?: string;
   title?: string;
   intent?: string;
   waitingSessions?: number;
+  scheduleId?: string;
+  scheduleName?: string;
 }
 
 type Listener = (event: StatusEvent) => void;
