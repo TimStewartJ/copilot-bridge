@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import type { Session, Task } from "../api";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2 } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
+import ContextMenu, { CtxItem } from "./ContextMenu";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -82,7 +83,6 @@ export default function SessionList({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   // Long-press state for mobile
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -91,22 +91,6 @@ export default function SessionList({
   const [longPressTarget, setLongPressTarget] = useState<string | null>(null);
 
   const closeMenu = useCallback(() => { setCtxMenu(null); setCopied(false); }, []);
-
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const onDismiss = (e: MouseEvent | TouchEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) closeMenu();
-    };
-    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") closeMenu(); };
-    document.addEventListener("mousedown", onDismiss);
-    document.addEventListener("touchstart", onDismiss);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDismiss);
-      document.removeEventListener("touchstart", onDismiss);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [ctxMenu, closeMenu]);
 
   const cancelLongPress = useCallback(() => {
     if (longPressTimer.current) {
@@ -245,14 +229,7 @@ export default function SessionList({
 
       {/* Context menu */}
       {ctxMenu && (
-        <div
-          ref={menuRef}
-          className="fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] bg-bg-secondary border border-border rounded-lg shadow-lg py-1 text-sm animate-ctx-menu-in"
-          style={{
-            top: Math.min(ctxMenu.y, window.innerHeight - 120),
-            left: Math.min(ctxMenu.x, window.innerWidth - 196),
-          }}
-        >
+        <ContextMenu position={ctxMenu} onClose={closeMenu}>
           <button
             className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
             onClick={() => {
@@ -265,16 +242,14 @@ export default function SessionList({
             {copied ? "Copied!" : "Copy Session ID"}
           </button>
           {onArchiveSession && ctxSession && (
-            <button
-              className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
+            <CtxItem
+              icon={ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+              label={ctxSession.archived ? "Unarchive" : "Archive"}
               onClick={() => {
                 onArchiveSession(ctxMenu.sessionId, !ctxSession.archived);
                 closeMenu();
               }}
-            >
-              {ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-              {ctxSession.archived ? "Unarchive" : "Archive"}
-            </button>
+            />
           )}
           {/* Global variant: Link to Task */}
           {variant === "global" && onLinkToTask && tasks && (
@@ -285,33 +260,30 @@ export default function SessionList({
                   <span className="truncate">On: {ctxLinkedTask.title}</span>
                 </div>
               )}
-              <button
-                className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
+              <CtxItem
+                icon={<Link size={14} />}
+                label={ctxLinkedTask ? "Move to Task…" : "Link to Task…"}
                 onClick={() => {
                   const sid = ctxMenu.sessionId;
                   closeMenu();
                   setShowTaskPicker(sid);
                 }}
-              >
-                <Link size={14} />
-                {ctxLinkedTask ? "Move to Task…" : "Link to Task…"}
-              </button>
+              />
             </>
           )}
           {/* Compact variant (task context): Unlink from Task */}
           {variant === "compact" && taskContext && onUnlinkFromTask && (
-            <button
-              className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors text-warning"
+            <CtxItem
+              icon={<Unlink size={14} />}
+              label="Unlink from Task"
+              className="text-warning"
               onClick={() => {
                 onUnlinkFromTask(ctxMenu.sessionId, taskContext.id);
                 closeMenu();
               }}
-            >
-              <Unlink size={14} />
-              Unlink from Task
-            </button>
+            />
           )}
-        </div>
+        </ContextMenu>
       )}
 
       {/* Task picker dialog (global variant) */}

@@ -324,6 +324,9 @@ export default function App() {
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
         isUnread={isUnread}
+        markRead={markRead}
+        onUpdateTask={handleUpdateTask}
+        onDeleteTask={handleDeleteTask}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
@@ -346,6 +349,9 @@ export default function App() {
             onOpenSettings={handleOpenSettings}
             sessions={sessions}
             isUnread={isUnread}
+            markRead={markRead}
+            onUpdateTask={handleUpdateTask}
+            onDeleteTask={handleDeleteTask}
             quickChatsMode={quickChatsMode}
             orphanSessions={globalSessions}
             activeSessionId={activeSessionId}
@@ -472,6 +478,9 @@ function MobileTaskListView({
   onOpenSettings,
   sessions,
   isUnread,
+  markRead,
+  onUpdateTask,
+  onDeleteTask,
   quickChatsMode,
   orphanSessions,
   activeSessionId,
@@ -491,6 +500,9 @@ function MobileTaskListView({
   onOpenSettings: () => void;
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  markRead?: (sessionId: string) => void;
+  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
+  onDeleteTask?: (taskId: string) => void;
   quickChatsMode: boolean;
   orphanSessions: Session[];
   activeSessionId: string | null;
@@ -557,6 +569,9 @@ function MobileTaskListView({
           onNewTask={onNewTask}
           sessions={sessions}
           isUnread={isUnread}
+          markRead={markRead}
+          onUpdateTask={onUpdateTask}
+          onDeleteTask={onDeleteTask}
         />
       )}
     </div>
