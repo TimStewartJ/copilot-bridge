@@ -327,15 +327,12 @@ export default function App() {
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
-      {/* Desktop: always visible as middle column */}
+      {/* Desktop: always visible as fixed-width middle column */}
       {/* Mobile: show task list at /, task panel at /tasks/:id */}
       <div className={`
-        ${/* Desktop: always show panel */""} 
         md:flex md:shrink-0
-        ${/* Mobile: only show at task-level routes */""}
-        ${isMobileRoute.taskList ? "flex flex-1" : ""}
-        ${isMobileRoute.taskPanel ? "flex flex-1" : ""}
-        ${isMobileRoute.chat || isMobileRoute.settings ? "hidden" : ""}
+        ${isMobileRoute.taskList || isMobileRoute.taskPanel ? "flex flex-1 md:flex-none" : ""}
+        ${isMobileRoute.chat || isMobileRoute.settings ? "hidden md:flex" : ""}
       `.trim()}>
         {/* Mobile task list — full screen at / */}
         <div className={`md:hidden ${isMobileRoute.taskList ? "flex flex-col flex-1" : "hidden"}`}>
@@ -364,7 +361,7 @@ export default function App() {
         {/* Desktop panel + mobile task detail */}
         <div className={`
           md:flex md:shrink-0
-          ${isMobileRoute.taskPanel ? "flex flex-1" : "hidden md:flex"}
+          ${isMobileRoute.taskPanel ? "flex flex-1 md:flex-none" : "hidden md:flex"}
         `.trim()}>
           <TaskPanel
             task={selectedTask}
