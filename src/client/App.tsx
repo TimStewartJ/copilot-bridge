@@ -390,12 +390,12 @@ export default function App() {
       {/* Desktop: always visible as fixed-width middle column */}
       {/* Mobile: show task list at /, task panel at /tasks/:id */}
       <div className={`
-        md:flex md:shrink-0
+        md:flex md:shrink-0 min-w-0
         ${isMobileRoute.taskList || isMobileRoute.taskPanel ? "flex flex-1 md:flex-none" : ""}
         ${isMobileRoute.chat || isMobileRoute.settings ? "hidden md:flex" : ""}
       `.trim()}>
         {/* Mobile task list — full screen at / */}
-        <div className={`md:hidden ${isMobileRoute.taskList ? "flex flex-col flex-1" : "hidden"}`}>
+        <div className={`md:hidden min-w-0 ${isMobileRoute.taskList ? "flex flex-col flex-1" : "hidden"}`}>
           <MobileTaskListView
             tasks={tasks}
             activeTaskId={activeTaskId}
@@ -424,7 +424,7 @@ export default function App() {
 
         {/* Desktop panel + mobile task detail */}
         <div className={`
-          md:flex md:shrink-0
+          md:flex md:shrink-0 min-w-0
           ${isMobileRoute.taskPanel ? "flex flex-1 md:flex-none" : "hidden md:flex"}
         `.trim()}>
           <TaskPanel
@@ -575,7 +575,7 @@ function MobileTaskListView({
   onDeleteSession?: (sessionId: string) => void;
 }){
   return (
-    <div className="flex flex-col h-full bg-bg-secondary">
+    <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
       {/* Header */}
       <div className="p-4 border-b border-border flex items-center justify-between">
         <span className="text-sm font-semibold text-text-primary">
@@ -607,7 +607,7 @@ function MobileTaskListView({
 
       {/* Content */}
       {quickChatsMode ? (
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-2">
           <SessionList
             variant="global"
             sessions={orphanSessions}

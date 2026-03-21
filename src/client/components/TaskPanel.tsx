@@ -195,7 +195,7 @@ export default function TaskPanel({
   // ── Quick Chats mode ─────────────────────────────────────────
   if (!task && isQuickChats) {
     return (
-      <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border">
+      <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border min-w-0 overflow-hidden">
         {/* Header */}
         <div className="p-3 border-b border-border">
           <div className="flex items-center gap-2">
@@ -207,7 +207,7 @@ export default function TaskPanel({
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-3">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-3">
           <SessionList
             variant="global"
             sessions={orphanSessions ?? []}
@@ -251,7 +251,7 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border">
+    <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border min-w-0 overflow-hidden">
       {/* Header — inline task editing */}
       <div className="p-3 border-b border-border">
         <div className="flex items-start gap-2">
@@ -331,7 +331,7 @@ export default function TaskPanel({
       </div>
 
       {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-3">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-3">
         {/* Sessions */}
         <div>
           <SectionLabel label="Sessions" count={linkedSessions.length} />
