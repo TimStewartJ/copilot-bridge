@@ -615,6 +615,16 @@ export class SessionManager {
     }
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (this.activeSessions.has(sessionId)) {
+      throw new Error("Cannot delete a busy session");
+    }
+    this.sessionObjects.delete(sessionId);
+    await this.client.deleteSession(sessionId);
+    console.log(`[sdk] Deleted session ${sessionId}`);
+  }
+
   isSessionBusy(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);
   }

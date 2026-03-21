@@ -409,6 +409,7 @@ export default function App() {
             tasks={tasks}
             onLinkToTask={handleLinkToTask}
             onDeleteTask={handleDeleteTask}
+            onDeleteSession={handleDeleteSession}
           />
         </div>
       </div>

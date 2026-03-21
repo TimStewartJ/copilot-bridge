@@ -52,6 +52,12 @@ export function setArchived(sessionId: string, archived: boolean): SessionMeta {
   return data[sessionId] ?? { archived: false, archivedAt: "" };
 }
 
+export function deleteMeta(sessionId: string): void {
+  const data = load();
+  delete data[sessionId];
+  save(data);
+}
+
 export function listMeta(): MetaMap {
   return load();
 }

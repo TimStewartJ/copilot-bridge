@@ -87,6 +87,7 @@ interface TaskPanelProps {
   onLinkToTask?: (sessionId: string, taskId: string) => void;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onDeleteTask?: (taskId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -109,6 +110,7 @@ export default function TaskPanel({
   onLinkToTask,
   onUnlinkFromTask,
   onDeleteTask,
+  onDeleteSession,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
@@ -196,6 +198,7 @@ export default function TaskPanel({
             archivingIds={archivingIds}
             tasks={tasks}
             onLinkToTask={onLinkToTask}
+            onDeleteSession={onDeleteSession}
           />
         </div>
       </div>
@@ -363,6 +366,7 @@ export default function TaskPanel({
                     onTasksChanged?.();
                   }
             }
+            onDeleteSession={onDeleteSession}
           />
         </div>
 

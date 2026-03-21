@@ -118,6 +118,14 @@ export async function patchSession(id: string, updates: { archived: boolean }): 
   }
 }
 
+export async function deleteSession(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
 export async function fetchMessages(sessionId: string): Promise<{ messages: ChatMessage[]; busy: boolean }> {
   const data = await apiFetch<{ messages: ChatMessage[]; busy: boolean }>(
     `/api/sessions/${sessionId}/messages`,

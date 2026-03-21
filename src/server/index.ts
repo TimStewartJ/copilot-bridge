@@ -275,6 +275,26 @@ app.patch("/api/sessions/:id", (req, res) => {
   }
 });
 
+// DELETE /api/sessions/:id — permanently delete a session
+app.delete("/api/sessions/:id", async (req, res) => {
+  const sessionId = req.params.id;
+  try {
+    await sessionManager.deleteSession(sessionId);
+    sessionMetaStore.deleteMeta(sessionId);
+    sessionTitles.deleteTitle(sessionId);
+    // Unlink from any tasks that reference this session
+    const tasks = taskStore.listTasks();
+    for (const task of tasks) {
+      if (task.sessionIds.includes(sessionId)) {
+        taskStore.unlinkSession(task.id, sessionId);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ── Task routes ───────────────────────────────────────────────────
 
 app.get("/api/tasks", (_req, res) => {

@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef } from "react";
 import type { Session, Task } from "../api";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2 } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
-import ContextMenu, { CtxItem } from "./ContextMenu";
+import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -60,6 +60,8 @@ interface SessionListProps {
   // Task unlinking (compact/task-context variant)
   taskContext?: Task;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
+  // Session deletion
+  onDeleteSession?: (sessionId: string) => void;
 }
 
 export default function SessionList({
@@ -77,6 +79,7 @@ export default function SessionList({
   onLinkToTask,
   taskContext,
   onUnlinkFromTask,
+  onDeleteSession,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
@@ -282,6 +285,22 @@ export default function SessionList({
                 closeMenu();
               }}
             />
+          )}
+          {/* Delete session */}
+          {onDeleteSession && ctxSession && (
+            <>
+              <CtxDivider />
+              <CtxItem
+                icon={<Trash2 size={14} />}
+                label="Delete"
+                className="text-error"
+                disabled={ctxSession.busy}
+                onClick={() => {
+                  onDeleteSession(ctxMenu.sessionId);
+                  closeMenu();
+                }}
+              />
+            </>
           )}
         </ContextMenu>
       )}
