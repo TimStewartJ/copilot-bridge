@@ -52,7 +52,7 @@ export default function TaskList({
       let hasUnread = false;
       for (const sid of task.sessionIds) {
         const session = sessionMap.get(sid);
-        if (!session) continue;
+        if (!session || session.archived) continue;
         if (session.busy) hasBusy = true;
         if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
       }
