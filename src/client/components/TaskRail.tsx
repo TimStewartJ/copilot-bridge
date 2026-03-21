@@ -321,6 +321,55 @@ export default function TaskRail({
             No tasks yet
           </div>
         )}
+        {archivedTasks.length > 0 && (
+          <>
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+            >
+              {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <Archive size={12} />
+              Archived ({archivedTasks.length})
+            </button>
+            {showArchived && archivedTasks.map((task) => {
+              const isActive = task.id === activeTaskId;
+              const linkCount =
+                task.sessionIds.length +
+                task.workItemIds.length +
+                task.pullRequests.length;
+
+              return (
+                <button
+                  key={task.id}
+                  onClick={() => onSelectTask(task.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtxMenu({ x: e.clientX, y: e.clientY, taskId: task.id });
+                    setCopied(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors opacity-60 ${
+                    ctxMenu?.taskId === task.id
+                      ? "bg-bg-hover ring-1 ring-border"
+                      : isActive
+                        ? "bg-accent/10 border-l-2 border-accent"
+                        : "hover:bg-bg-hover"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium truncate flex-1">
+                      {task.title}
+                    </span>
+                    <span className="text-[10px] text-text-faint">archived</span>
+                  </div>
+                  <div className="text-xs text-text-muted mt-0.5">
+                    {timeAgo(task.updatedAt)}
+                    {linkCount > 0 && ` · ${linkCount} linked`}
+                  </div>
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
 
       {/* Quick Chats */}
