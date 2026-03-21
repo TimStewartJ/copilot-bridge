@@ -176,6 +176,23 @@ export default function App() {
     return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
   }, [sessions, tasks]);
 
+  // Given a list of sessions, return the next active sibling when one is removed
+  const getNextSessionId = useCallback((removedId: string): string | null => {
+    // Determine the right scope: task-linked sessions or orphan sessions
+    const activeTask = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
+    const scopedSessions = activeTask
+      ? sessions.filter((s) => tasks.find((t) => t.id === activeTask)?.sessionIds.includes(s.sessionId))
+      : globalSessions;
+    const visible = scopedSessions.filter((s) => !s.archived && !archivingIds.has(s.sessionId) && s.sessionId !== removedId);
+    if (visible.length === 0) return null;
+    // Find position of removed session in original list, pick the next one (below), else previous (above)
+    const allVisible = scopedSessions.filter((s) => !s.archived && !archivingIds.has(s.sessionId));
+    const idx = allVisible.findIndex((s) => s.sessionId === removedId);
+    if (idx >= 0 && idx < allVisible.length - 1) return allVisible[idx + 1].sessionId;
+    if (idx > 0) return allVisible[idx - 1].sessionId;
+    return visible[0].sessionId;
+  }, [sessions, tasks, globalSessions, archivingIds, location.pathname]);
+
   // ── Navigation handlers ───────────────────────────────────────
 
   const handleSelectTask = (id: string) => {
@@ -270,10 +287,13 @@ export default function App() {
 
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
     setArchivingIds((prev) => new Set(prev).add(sessionId));
+    const nextId = archived && activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     try {
       await patchSession(sessionId, { archived });
       if (archived && activeSessionId === sessionId) {
-        if (activeTaskId) {
+        if (nextId) {
+          navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
+        } else if (activeTaskId) {
           navigate(`/tasks/${activeTaskId}`);
         } else {
           navigate("/");
@@ -292,10 +312,13 @@ export default function App() {
   };
 
   const handleDeleteSession = async (sessionId: string) => {
+    const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     try {
       await deleteSession(sessionId);
       if (activeSessionId === sessionId) {
-        if (activeTaskId) {
+        if (nextId) {
+          navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
+        } else if (activeTaskId) {
           navigate(`/tasks/${activeTaskId}`);
         } else {
           navigate("/");
