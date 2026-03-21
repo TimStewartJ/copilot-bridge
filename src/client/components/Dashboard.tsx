@@ -5,7 +5,7 @@ import {
   type DashboardActiveTask,
   type DashboardOrphanSession,
 } from "../api";
-import { Loader2, MessageSquare, Plus, GitPullRequest, LayoutList } from "lucide-react";
+import { Loader2, MessageSquare, Plus, Zap, GitPullRequest, LayoutList } from "lucide-react";
 
 interface DashboardProps {
   onSelectTask: (id: string) => void;
@@ -312,6 +312,22 @@ function TaskCard({
         )}
       </div>
       <div className="flex items-center gap-3 mt-1.5 ml-3.5 text-xs text-text-muted flex-wrap">
+        {/* Work item state pills */}
+        {workItemSummary.total > 0 && (
+          <span className="flex items-center gap-1">
+            <Zap size={10} />
+            {Object.entries(workItemSummary.byState).map(([state, count]) => (
+              <span
+                key={state}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                  stateColor(state)
+                }`}
+              >
+                {count} {state}
+              </span>
+            ))}
+          </span>
+        )}
         {/* PR summary */}
         {prSummary.total > 0 && (
           <span className="flex items-center gap-1">
@@ -396,4 +412,15 @@ function EmptyState({
   );
 }
 
-
+function stateColor(state: string): string {
+  const s = state.toLowerCase();
+  if (s === "active" || s === "in progress" || s === "committed")
+    return "bg-info/15 text-info";
+  if (s === "new" || s === "to do" || s === "proposed")
+    return "bg-text-muted/15 text-text-muted";
+  if (s === "resolved" || s === "done" || s === "closed" || s === "completed")
+    return "bg-success/15 text-success";
+  if (s === "removed")
+    return "bg-danger/15 text-danger";
+  return "bg-text-muted/10 text-text-muted";
+}
