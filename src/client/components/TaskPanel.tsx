@@ -18,14 +18,6 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-const STATUS_COLORS: Record<string, string> = {
-  active: "bg-success/15 text-success",
-  paused: "bg-warning/15 text-warning",
-  done: "bg-text-muted/15 text-text-muted",
-  archived: "bg-text-faint/15 text-text-faint",
-};
-
-const STATUS_OPTIONS: Task["status"][] = ["active", "paused", "done", "archived"];
 
 const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode }> = {
   Bug: { icon: <Bug size={12} className="text-error" /> },
@@ -115,10 +107,8 @@ export default function TaskPanel({
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const statusRef = useRef<HTMLDivElement>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
 
   // ── Notes collapse state ─────────────────────────────────────
@@ -148,27 +138,23 @@ export default function TaskPanel({
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
-    setStatusMenuOpen(false);
     setOverflowOpen(false);
     setConfirmDelete(false);
     setNotesExpanded(false);
   }, [task?.id]);
 
-  // Close status menu on outside click
+  // Close overflow menu on outside click
   useEffect(() => {
-    if (!statusMenuOpen && !overflowOpen) return;
+    if (!overflowOpen) return;
     const handler = (e: MouseEvent) => {
-      if (statusMenuOpen && statusRef.current && !statusRef.current.contains(e.target as Node)) {
-        setStatusMenuOpen(false);
-      }
-      if (overflowOpen && overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
         setOverflowOpen(false);
         setConfirmDelete(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [statusMenuOpen, overflowOpen]);
+  }, [overflowOpen]);
 
   // ── Quick Chats mode ─────────────────────────────────────────
   if (!task && isQuickChats) {
@@ -258,37 +244,6 @@ export default function TaskPanel({
               >
                 {task.title}
               </button>
-            )}
-          </div>
-
-          {/* Status dropdown */}
-          <div className="relative shrink-0" ref={statusRef}>
-            <button
-              onClick={() => setStatusMenuOpen((v) => !v)}
-              className={`text-[10px] px-2 py-0.5 rounded-full cursor-pointer transition-colors ${STATUS_COLORS[task.status] ?? ""}`}
-              title="Change status"
-            >
-              {task.status} ▾
-            </button>
-            {statusMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-bg-elevated border border-border rounded-lg shadow-lg py-1 min-w-[100px]">
-                {STATUS_OPTIONS.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => {
-                      if (s !== task.status) onUpdateTask(task.id, { status: s });
-                      setStatusMenuOpen(false);
-                    }}
-                    className={`w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-bg-hover flex items-center gap-2 ${
-                      s === task.status ? "font-semibold" : ""
-                    }`}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full ${STATUS_COLORS[s]?.split(" ")[0] ?? ""}`} />
-                    {s.charAt(0).toUpperCase() + s.slice(1)}
-                    {s === task.status && <span className="text-text-faint ml-auto">✓</span>}
-                  </button>
-                ))}
-              </div>
             )}
           </div>
 
