@@ -9,6 +9,7 @@ import {
   fetchTask,
   patchTask,
   deleteTask,
+  deleteSession,
   createTaskSession,
   linkResource,
   type Session,
@@ -179,7 +180,13 @@ export default function App() {
 
   const handleSelectTask = (id: string) => {
     setQuickChatsMode(false);
-    navigate(`/tasks/${id}`);
+    const task = tasks.find((t) => t.id === id);
+    if (task && task.sessionIds.length > 0) {
+      const mostRecentSessionId = task.sessionIds[task.sessionIds.length - 1];
+      navigate(`/tasks/${id}/sessions/${mostRecentSessionId}`);
+    } else {
+      navigate(`/tasks/${id}`);
+    }
   };
 
   const handleSelectQuickChats = () => {
@@ -281,6 +288,22 @@ export default function App() {
         next.delete(sessionId);
         return next;
       });
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      await deleteSession(sessionId);
+      if (activeSessionId === sessionId) {
+        if (activeTaskId) {
+          navigate(`/tasks/${activeTaskId}`);
+        } else {
+          navigate("/");
+        }
+      }
+      await Promise.all([loadSessions(), loadTasks()]);
+    } catch (err) {
+      console.error("Failed to delete session:", err);
     }
   };
 
@@ -559,6 +582,7 @@ function MobileTaskListView({
             archivingIds={archivingIds}
             tasks={allTasks}
             onLinkToTask={onLinkToTask}
+            onDeleteSession={onDeleteSession}
           />
         </div>
       ) : (
