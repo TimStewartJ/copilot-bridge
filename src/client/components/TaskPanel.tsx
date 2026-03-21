@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Task, Session, EnrichedWorkItem, EnrichedPR } from "../api";
 import { fetchEnrichedTask, unlinkResource } from "../api";
 import SessionList from "./SessionList";
@@ -25,11 +25,7 @@ const STATUS_COLORS: Record<string, string> = {
   archived: "bg-text-faint/15 text-text-faint",
 };
 
-const STATUS_CYCLE: Record<string, Task["status"]> = {
-  active: "paused",
-  paused: "done",
-  done: "active",
-};
+const STATUS_OPTIONS: Task["status"][] = ["active", "paused", "done", "archived"];
 
 const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode }> = {
   Bug: { icon: <Bug size={12} className="text-error" /> },
@@ -115,6 +111,8 @@ export default function TaskPanel({
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const statusRef = useRef<HTMLDivElement>(null);
 
   // ── Notes collapse state ─────────────────────────────────────
   const [notesExpanded, setNotesExpanded] = useState(false);
@@ -143,8 +141,21 @@ export default function TaskPanel({
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
+    setStatusMenuOpen(false);
     setNotesExpanded(false);
   }, [task?.id]);
+
+  // Close status menu on outside click
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (statusRef.current && !statusRef.current.contains(e.target as Node)) {
+        setStatusMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [statusMenuOpen]);
 
   // ── Quick Chats mode ─────────────────────────────────────────
   if (!task && isQuickChats) {
@@ -203,11 +214,6 @@ export default function TaskPanel({
     setEditingTitle(false);
   };
 
-  const cycleStatus = () => {
-    const next = STATUS_CYCLE[task.status];
-    if (next) onUpdateTask(task.id, { status: next });
-  };
-
   return (
     <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border">
       {/* Header — inline task editing */}
@@ -241,14 +247,36 @@ export default function TaskPanel({
             )}
           </div>
 
-          {/* Status badge */}
-          <button
-            onClick={cycleStatus}
-            className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 cursor-pointer transition-colors ${STATUS_COLORS[task.status] ?? ""}`}
-            title={`Status: ${task.status} — click to cycle`}
-          >
-            {task.status}
-          </button>
+          {/* Status dropdown */}
+          <div className="relative shrink-0" ref={statusRef}>
+            <button
+              onClick={() => setStatusMenuOpen((v) => !v)}
+              className={`text-[10px] px-2 py-0.5 rounded-full cursor-pointer transition-colors ${STATUS_COLORS[task.status] ?? ""}`}
+              title="Change status"
+            >
+              {task.status} ▾
+            </button>
+            {statusMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 z-50 bg-bg-elevated border border-border rounded-lg shadow-lg py-1 min-w-[100px]">
+                {STATUS_OPTIONS.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => {
+                      if (s !== task.status) onUpdateTask(task.id, { status: s });
+                      setStatusMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-bg-hover flex items-center gap-2 ${
+                      s === task.status ? "font-semibold" : ""
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${STATUS_COLORS[s]?.split(" ")[0] ?? ""}`} />
+                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                    {s === task.status && <span className="text-text-faint ml-auto">✓</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Overflow menu */}
           <button
