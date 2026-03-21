@@ -86,6 +86,7 @@ interface TaskPanelProps {
   tasks?: Task[];
   onLinkToTask?: (sessionId: string, taskId: string) => void;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
+  onDeleteTask?: (taskId: string) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -107,12 +108,16 @@ export default function TaskPanel({
   tasks,
   onLinkToTask,
   onUnlinkFromTask,
+  onDeleteTask,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const statusRef = useRef<HTMLDivElement>(null);
+  const overflowRef = useRef<HTMLDivElement>(null);
 
   // ── Notes collapse state ─────────────────────────────────────
   const [notesExpanded, setNotesExpanded] = useState(false);
@@ -142,20 +147,26 @@ export default function TaskPanel({
   useEffect(() => {
     setEditingTitle(false);
     setStatusMenuOpen(false);
+    setOverflowOpen(false);
+    setConfirmDelete(false);
     setNotesExpanded(false);
   }, [task?.id]);
 
   // Close status menu on outside click
   useEffect(() => {
-    if (!statusMenuOpen) return;
+    if (!statusMenuOpen && !overflowOpen) return;
     const handler = (e: MouseEvent) => {
-      if (statusRef.current && !statusRef.current.contains(e.target as Node)) {
+      if (statusMenuOpen && statusRef.current && !statusRef.current.contains(e.target as Node)) {
         setStatusMenuOpen(false);
+      }
+      if (overflowOpen && overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setOverflowOpen(false);
+        setConfirmDelete(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [statusMenuOpen]);
+  }, [statusMenuOpen, overflowOpen]);
 
   // ── Quick Chats mode ─────────────────────────────────────────
   if (!task && isQuickChats) {
@@ -279,12 +290,49 @@ export default function TaskPanel({
           </div>
 
           {/* Overflow menu */}
-          <button
-            className="p-0.5 text-text-muted hover:text-text-primary rounded transition-colors shrink-0"
-            title="More options"
-          >
-            <MoreHorizontal size={14} />
-          </button>
+          <div className="relative shrink-0" ref={overflowRef}>
+            <button
+              onClick={() => { setOverflowOpen((v) => !v); setConfirmDelete(false); }}
+              className="p-0.5 text-text-muted hover:text-text-primary rounded transition-colors"
+              title="More options"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            {overflowOpen && (
+              <div className="absolute right-0 top-full mt-1 z-50 bg-bg-elevated border border-border rounded-lg shadow-lg py-1 min-w-[120px]">
+                {!confirmDelete ? (
+                  <button
+                    onClick={() => setConfirmDelete(true)}
+                    className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-bg-hover transition-colors"
+                  >
+                    Delete task
+                  </button>
+                ) : (
+                  <div className="px-3 py-2">
+                    <div className="text-xs text-text-muted mb-2">Delete this task?</div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          onDeleteTask?.(task.id);
+                          setOverflowOpen(false);
+                          setConfirmDelete(false);
+                        }}
+                        className="px-2 py-1 text-xs bg-error/15 text-error hover:bg-error/25 rounded transition-colors"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(false)}
+                        className="px-2 py-1 text-xs text-text-muted hover:bg-bg-hover rounded transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

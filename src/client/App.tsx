@@ -8,6 +8,7 @@ import {
   createTask,
   fetchTask,
   patchTask,
+  deleteTask,
   createTaskSession,
   linkResource,
   type Session,
@@ -247,10 +248,15 @@ export default function App() {
     }
   };
 
-  const handleTaskDeleted = () => {
-    setSelectedTask(null);
-    navigate("/");
-    loadTasks();
+  const handleDeleteTask = async (taskId: string) => {
+    try {
+      await deleteTask(taskId);
+      setSelectedTask(null);
+      navigate("/");
+      await loadTasks();
+    } catch (err) {
+      console.error("Failed to delete task:", err);
+    }
   };
 
   const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
@@ -376,6 +382,7 @@ export default function App() {
             onNewQuickChat={handleNewQuickChat}
             tasks={tasks}
             onLinkToTask={handleLinkToTask}
+            onDeleteTask={handleDeleteTask}
           />
         </div>
       </div>
