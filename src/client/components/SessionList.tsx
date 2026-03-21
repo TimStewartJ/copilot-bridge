@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import type { Session, Task } from "../api";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
+import useLongPressMenu from "../hooks/useLongPressMenu";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -83,31 +84,17 @@ export default function SessionList({
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
   const [copied, setCopied] = useState(false);
   const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
 
-  // Long-press state for mobile
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressTriggered = useRef(false);
-  const touchOrigin = useRef<{ x: number; y: number } | null>(null);
-  const [longPressTarget, setLongPressTarget] = useState<string | null>(null);
+  const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
 
-  const closeMenu = useCallback(() => { setCtxMenu(null); setCopied(false); }, []);
-
-  const cancelLongPress = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-    setLongPressTarget(null);
-  }, []);
-
-  const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.sessionId) : null;
+  const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.id) : null;
 
   // Find which task (if any) the context-menu'd session is linked to
   const ctxLinkedTask = ctxMenu && tasks
-    ? tasks.find((t) => t.sessionIds.includes(ctxMenu.sessionId))
+    ? tasks.find((t) => t.sessionIds.includes(ctxMenu.id))
     : null;
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
@@ -132,47 +119,15 @@ export default function SessionList({
     return (
       <div key={id} className="group relative min-w-0">
         <button
-          onClick={() => {
-            if (longPressTriggered.current) {
-              longPressTriggered.current = false;
-              return;
-            }
-            onSelectSession(id);
-          }}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setCtxMenu({ x: e.clientX, y: e.clientY, sessionId: id });
-            setCopied(false);
-          }}
-          onTouchStart={(e) => {
-            const touch = e.touches[0];
-            touchOrigin.current = { x: touch.clientX, y: touch.clientY };
-            longPressTriggered.current = false;
-            setLongPressTarget(id);
-            longPressTimer.current = setTimeout(() => {
-              longPressTriggered.current = true;
-              setLongPressTarget(null);
-              setCtxMenu({ x: touch.clientX, y: touch.clientY, sessionId: id });
-              setCopied(false);
-            }, 500);
-          }}
-          onTouchMove={(e) => {
-            if (!touchOrigin.current) return;
-            const touch = e.touches[0];
-            const dx = touch.clientX - touchOrigin.current.x;
-            const dy = touch.clientY - touchOrigin.current.y;
-            if (dx * dx + dy * dy > 100) cancelLongPress();
-          }}
-          onTouchEnd={() => cancelLongPress()}
-          onTouchCancel={() => cancelLongPress()}
+          {...bindLongPress(id, () => onSelectSession(id))}
           title={session.summary || id}
           className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
-            ctxMenu?.sessionId === id
+            ctxMenu?.id === id
               ? "bg-bg-hover ring-1 ring-border"
               : isActive
                 ? "bg-accent/10 border-l-2 border-accent"
                 : "hover:bg-bg-hover"
-          } ${longPressTarget === id ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
+          } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
         >
           <div className={`${s.titleClass} flex items-center min-w-0`}>
             {isArchiving ? (
@@ -239,7 +194,7 @@ export default function SessionList({
           <button
             className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
             onClick={() => {
-              navigator.clipboard.writeText(ctxMenu.sessionId);
+              navigator.clipboard.writeText(ctxMenu.id);
               setCopied(true);
               setTimeout(closeMenu, 600);
             }}
@@ -252,7 +207,7 @@ export default function SessionList({
               icon={ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
               label={ctxSession.archived ? "Unarchive" : "Archive"}
               onClick={() => {
-                onArchiveSession(ctxMenu.sessionId, !ctxSession.archived);
+                onArchiveSession(ctxMenu.id, !ctxSession.archived);
                 closeMenu();
               }}
             />
@@ -270,7 +225,7 @@ export default function SessionList({
                 icon={<Link size={14} />}
                 label={ctxLinkedTask ? "Move to Task…" : "Link to Task…"}
                 onClick={() => {
-                  const sid = ctxMenu.sessionId;
+                  const sid = ctxMenu.id;
                   closeMenu();
                   setShowTaskPicker(sid);
                 }}
@@ -284,7 +239,7 @@ export default function SessionList({
               label="Unlink from Task"
               className="text-warning"
               onClick={() => {
-                onUnlinkFromTask(ctxMenu.sessionId, taskContext.id);
+                onUnlinkFromTask(ctxMenu.id, taskContext.id);
                 closeMenu();
               }}
             />
@@ -299,7 +254,7 @@ export default function SessionList({
                 className="text-error"
                 disabled={ctxSession.busy}
                 onClick={() => {
-                  onDeleteSession(ctxMenu.sessionId);
+                  onDeleteSession(ctxMenu.id);
                   closeMenu();
                 }}
               />

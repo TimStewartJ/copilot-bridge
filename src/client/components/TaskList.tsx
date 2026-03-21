@@ -1,7 +1,8 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback } from "react";
 import type { Task, Session } from "../api";
 import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
+import useLongPressMenu from "../hooks/useLongPressMenu";
 
 const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
 
@@ -62,25 +63,11 @@ export default function TaskList({
   }, [tasks, sessionMap, isUnread]);
 
   // Context menu state
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; taskId: string } | null>(null);
+  const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
   const [copied, setCopied] = useState(false);
-  const closeMenu = useCallback(() => { setCtxMenu(null); setCopied(false); }, []);
+  const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
 
-  // Long-press support for mobile
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressTriggered = useRef(false);
-  const touchOrigin = useRef<{ x: number; y: number } | null>(null);
-  const [longPressTarget, setLongPressTarget] = useState<string | null>(null);
-
-  const cancelLongPress = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-    setLongPressTarget(null);
-  }, []);
-
-  const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.taskId) : null;
+  const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
   // Count unread sessions for context-menu'd task
   const ctxUnreadCount = useMemo(() => {
@@ -122,46 +109,14 @@ export default function TaskList({
           return (
             <button
               key={task.id}
-              onClick={() => {
-                if (longPressTriggered.current) {
-                  longPressTriggered.current = false;
-                  return;
-                }
-                onSelectTask(task.id);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setCtxMenu({ x: e.clientX, y: e.clientY, taskId: task.id });
-                setCopied(false);
-              }}
-              onTouchStart={(e) => {
-                const touch = e.touches[0];
-                touchOrigin.current = { x: touch.clientX, y: touch.clientY };
-                longPressTriggered.current = false;
-                setLongPressTarget(task.id);
-                longPressTimer.current = setTimeout(() => {
-                  longPressTriggered.current = true;
-                  setLongPressTarget(null);
-                  setCtxMenu({ x: touch.clientX, y: touch.clientY, taskId: task.id });
-                  setCopied(false);
-                }, 500);
-              }}
-              onTouchMove={(e) => {
-                if (!touchOrigin.current) return;
-                const touch = e.touches[0];
-                const dx = touch.clientX - touchOrigin.current.x;
-                const dy = touch.clientY - touchOrigin.current.y;
-                if (dx * dx + dy * dy > 100) cancelLongPress();
-              }}
-              onTouchEnd={() => cancelLongPress()}
-              onTouchCancel={() => cancelLongPress()}
+              {...bindLongPress(task.id, () => onSelectTask(task.id))}
               className={`w-full text-left px-3 py-2.5 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-                ctxMenu?.taskId === task.id
+                ctxMenu?.id === task.id
                   ? "bg-bg-hover ring-1 ring-border"
                   : isActive
                     ? "bg-accent/10 border-l-2 border-accent"
                     : "hover:bg-bg-hover"
-              } ${longPressTarget === task.id ? "scale-[0.97] bg-bg-hover" : ""}`}
+              } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
             >
               <div className="flex items-center gap-2">
                 {taskIndicators.get(task.id) && (
