@@ -22,7 +22,7 @@ function timeAgo(iso?: string): string {
 
 const styles = {
   global: {
-    wrapper: "flex-1 overflow-y-auto p-2 space-y-1",
+    wrapper: "flex-1 overflow-y-auto overflow-x-hidden min-w-0 p-2 space-y-1",
     newButton:
       "w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors",
     itemPadding: "py-2.5",
@@ -130,7 +130,7 @@ export default function SessionList({
             : "bg-text-faint";
 
     return (
-      <div key={id} className="group relative">
+      <div key={id} className="group relative min-w-0">
         <button
           onClick={() => {
             if (longPressTriggered.current) {
@@ -166,7 +166,7 @@ export default function SessionList({
           onTouchEnd={() => cancelLongPress()}
           onTouchCancel={() => cancelLongPress()}
           title={session.summary || id}
-          className={`w-full text-left px-3 ${s.itemPadding} rounded-md text-sm transition-all duration-150 ${
+          className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm transition-all duration-150 ${
             ctxMenu?.sessionId === id
               ? "bg-bg-hover ring-1 ring-border"
               : isActive
@@ -186,7 +186,7 @@ export default function SessionList({
               {session.summary || id.slice(0, 8)}
             </span>
           </div>
-          <div className={s.metaClass}>
+          <div className={`${s.metaClass} truncate`}>
             {isArchiving ? "Archiving…" : timeAgo(session.modifiedTime)}
             {session.context?.branch && ` · ${session.context.branch}`}
             {session.diskSizeBytes
