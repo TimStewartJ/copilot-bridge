@@ -176,6 +176,8 @@ export default function App() {
     return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
   }, [sessions, tasks]);
 
+  const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
+
   // Given a list of sessions, return the next active sibling when one is removed
   const getNextSessionId = useCallback((removedId: string): string | null => {
     // Determine the right scope: task-linked sessions or orphan sessions
@@ -282,8 +284,6 @@ export default function App() {
       console.error("Failed to delete task:", err);
     }
   };
-
-  const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
 
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
     setArchivingIds((prev) => new Set(prev).add(sessionId));
