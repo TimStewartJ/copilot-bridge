@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, Session } from "../api";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 
 interface TaskRailProps {
@@ -81,7 +81,7 @@ export default function TaskRail({
       let hasUnread = false;
       for (const sid of task.sessionIds) {
         const session = sessionMap.get(sid);
-        if (!session) continue;
+        if (!session || session.archived) continue;
         if (session.busy) hasBusy = true;
         if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
       }
@@ -104,6 +104,16 @@ export default function TaskRail({
     [tasks],
   );
 
+  const archivedTasks = useMemo(
+    () =>
+      [...tasks]
+        .filter((t) => t.status === "archived")
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [tasks],
+  );
+
+  const [showArchived, setShowArchived] = useState(false);
+
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; taskId: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -115,7 +125,7 @@ export default function TaskRail({
     if (!ctxTask || !isUnread) return 0;
     return ctxTask.sessionIds.filter((sid) => {
       const session = sessionMap.get(sid);
-      return session && isUnread(sid, session.modifiedTime);
+      return session && !session.archived && isUnread(sid, session.modifiedTime);
     }).length;
   }, [ctxTask, sessionMap, isUnread]);
 
@@ -158,6 +168,31 @@ export default function TaskRail({
               </button>
             );
           })}
+          {archivedTasks.length > 0 && (
+            <>
+              <button
+                onClick={() => setShowArchived((v) => !v)}
+                title={`Archived (${archivedTasks.length})`}
+                className="w-9 h-9 rounded-lg flex items-center justify-center text-text-faint hover:bg-bg-hover hover:text-text-muted transition-colors cursor-pointer"
+              >
+                <Archive size={16} />
+              </button>
+              {showArchived && archivedTasks.map((task) => {
+                const isActive = task.id === activeTaskId;
+                const initials = task.title.slice(0, 2).toUpperCase();
+                return (
+                  <button
+                    key={task.id}
+                    onClick={() => onSelectTask(task.id)}
+                    title={task.title}
+                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110 opacity-60`}
+                  >
+                    {initials}
+                  </button>
+                );
+              })}
+            </>
+          )}
         </div>
 
         {/* Quick Chats + New Task */}
