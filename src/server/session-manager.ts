@@ -2,11 +2,13 @@
 // Universal tools — taskId is a parameter, same tools for every session
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
+import type { SectionOverride } from "@github/copilot-sdk";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
+import type { Task } from "./task-store.js";
 import * as scheduleStore from "./schedule-store.js";
 import * as schedulerModule from "./scheduler.js";
 import { getOrCreateBus } from "./event-bus.js";
@@ -15,7 +17,95 @@ import * as globalBus from "./global-bus.js";
 import { STAGING_TOOLS } from "./staging-tools.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SIGNAL_FILE = join(__dirname, "..", "..", "data", "restart.signal");
+const REPO_ROOT = join(__dirname, "..", "..");
+const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
+
+const STAGING_INSTRUCTIONS = `
+<staging_workflow>
+When modifying code in this repository (the Copilot Bridge):
+1. Call staging_init to create a fresh, isolated worktree
+2. Make ALL code edits in the returned staging directory — never in the production directory
+3. Run quality checks in the staging directory:
+   - npx tsc --noEmit (type checking)
+   - npx vite build (client build)
+4. When all checks pass, call staging_deploy with a descriptive commit message
+5. Do NOT make further tool calls after staging_deploy — the server will restart
+
+IMPORTANT: Never edit source files directly in the production directory.
+Always use the staging workflow for any code changes to this codebase.
+For non-code restarts (config, env), use self_restart instead.
+</staging_workflow>
+`.trim();
+
+// ── Session config builder ───────────────────────────────────────
+
+interface SessionConfigOptions {
+  task?: Task | null;
+  isNewTask?: boolean;
+  prDescriptions?: string[];
+}
+
+function buildSessionConfig(opts: SessionConfigOptions = {}) {
+  const { task, isNewTask, prDescriptions } = opts;
+
+  const cfg: any = {
+    onPermissionRequest: approveAll,
+    tools: BRIDGE_TOOLS,
+    mcpServers: config.sessionMcpServers,
+  };
+
+  if (task?.cwd) {
+    cfg.workingDirectory = task.cwd;
+  }
+
+  const contextParts: string[] = [];
+
+  if (task) {
+    contextParts.push(
+      `You are helping with task "${task.title}" (taskId: ${task.id}).`,
+      `Task status: ${task.status}.`,
+      "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
+    );
+    if (isNewTask) {
+      contextParts.push(
+        'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
+      );
+    }
+    if (task.workItemIds.length > 0) {
+      contextParts.push(`Currently linked work items: ${task.workItemIds.map((id) => `#${id}`).join(", ")}.`);
+    }
+    const prStrings = prDescriptions
+      ?? (task.pullRequests.length > 0
+        ? task.pullRequests.map((pr: any) => `${pr.repoName || pr.repoId} #${pr.prId}`)
+        : []);
+    if (prStrings.length > 0) {
+      contextParts.push(`Currently linked PRs: ${prStrings.join(", ")}.`);
+    }
+    if (task.notes.trim()) {
+      contextParts.push(`Task notes:\n${task.notes}`);
+    }
+  }
+
+  // Staging rules — only when working on the bridge repo itself
+  const isSelfRepo = !task?.cwd || resolve(task.cwd) === resolve(REPO_ROOT);
+  const sections: Partial<Record<string, SectionOverride>> = {};
+  if (isSelfRepo) {
+    sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
+  }
+
+  const hasContent = contextParts.length > 0;
+  const hasSections = Object.keys(sections).length > 0;
+
+  if (hasContent || hasSections) {
+    cfg.systemMessage = {
+      mode: "customize" as const,
+      sections: hasSections ? sections : undefined,
+      content: hasContent ? contextParts.join("\n") : undefined,
+    };
+  }
+
+  return cfg;
+}
 
 // Module-level ref so universal tools can query session state
 let _instance: SessionManager | null = null;
@@ -121,7 +211,7 @@ const BRIDGE_TOOLS = [
     description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will auto-checkpoint, rebuild, and swap processes. IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      const dataDir = join(__dirname, "..", "..", "data");
+      const dataDir = join(REPO_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
       _restartPending = true;
@@ -313,11 +403,7 @@ export class SessionManager {
   async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    const session = await this.client.createSession({
-      onPermissionRequest: approveAll,
-      mcpServers: config.sessionMcpServers as any,
-      tools: BRIDGE_TOOLS,
-    });
+    const session = await this.client.createSession(buildSessionConfig());
 
     this.sessionObjects.set(session.sessionId, session);
     console.log(`[sdk] Created session ${session.sessionId}`);
@@ -328,39 +414,24 @@ export class SessionManager {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const isPlaceholder = taskTitle === "New Task";
-    const contextParts = [
-      `You are helping with task "${taskTitle}" (taskId: ${taskId}).`,
-      "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
-    ];
 
-    if (isPlaceholder) {
-      contextParts.push(
-        'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
-      );
-    }
+    const task = {
+      id: taskId,
+      title: taskTitle,
+      status: "active" as const,
+      cwd,
+      notes: notes || "",
+      priority: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      sessionIds: [] as string[],
+      workItemIds,
+      pullRequests: [] as any[],
+    };
 
-    if (cwd) {
-      contextParts.push(`Task working directory: ${cwd}`);
-    }
-    if (workItemIds.length > 0) {
-      contextParts.push(`Currently linked work items: ${workItemIds.map((id) => `#${id}`).join(", ")}.`);
-    }
-    if (prDescriptions.length > 0) {
-      contextParts.push(`Currently linked PRs: ${prDescriptions.join(", ")}.`);
-    }
-    if (notes.trim()) {
-      contextParts.push(`Task notes:\n${notes}`);
-    }
-
-    const session = await this.client.createSession({
-      onPermissionRequest: approveAll,
-      mcpServers: config.sessionMcpServers as any,
-      tools: BRIDGE_TOOLS,
-      systemMessage: {
-        mode: "append",
-        content: contextParts.join("\n"),
-      },
-    });
+    const session = await this.client.createSession(
+      buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions }),
+    );
 
     this.sessionObjects.set(session.sessionId, session);
     console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
@@ -398,31 +469,9 @@ export class SessionManager {
 
     // Build resume config with optional task context
     const linkedTask = taskStore.findTaskBySessionId(sessionId);
-    const resumeConfig: any = {
-      onPermissionRequest: approveAll,
-      tools: BRIDGE_TOOLS,
-      mcpServers: config.sessionMcpServers,
-    };
+    const resumeConfig = buildSessionConfig({ task: linkedTask });
 
     if (linkedTask) {
-      const contextParts = [
-        `You are helping with task "${linkedTask.title}" (taskId: ${linkedTask.id}).`,
-        `Task status: ${linkedTask.status}.`,
-        "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
-      ];
-      if (linkedTask.cwd) {
-        contextParts.push(`Task working directory: ${linkedTask.cwd}`);
-      }
-      if (linkedTask.workItemIds.length > 0) {
-        contextParts.push(`Currently linked work items: ${linkedTask.workItemIds.map((id: number) => `#${id}`).join(", ")}.`);
-      }
-      if (linkedTask.pullRequests.length > 0) {
-        contextParts.push(`Currently linked PRs: ${linkedTask.pullRequests.map((pr: any) => `${pr.repoName || pr.repoId} #${pr.prId}`).join(", ")}.`);
-      }
-      if (linkedTask.notes.trim()) {
-        contextParts.push(`Task notes:\n${linkedTask.notes}`);
-      }
-      resumeConfig.systemMessage = { mode: "append", content: contextParts.join("\n") };
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
     }
 
@@ -592,6 +641,8 @@ export class SessionManager {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const sid = sessionId.slice(0, 8);
+    const linkedTask = taskStore.findTaskBySessionId(sessionId);
+    const msgResumeConfig = buildSessionConfig({ task: linkedTask });
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
     let session = this.sessionObjects.get(sessionId);
@@ -607,11 +658,7 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Cached session stale (${err instanceof Error ? err.message : String(err)}), re-resuming...`);
         this.sessionObjects.delete(sessionId);
         session = await Promise.race([
-          this.client.resumeSession(sessionId, {
-            onPermissionRequest: approveAll,
-            mcpServers: config.sessionMcpServers as any,
-            tools: BRIDGE_TOOLS,
-          }),
+          this.client.resumeSession(sessionId, msgResumeConfig),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
           ),
@@ -623,11 +670,7 @@ export class SessionManager {
     } else {
       console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
       session = await Promise.race([
-        this.client.resumeSession(sessionId, {
-          onPermissionRequest: approveAll,
-          mcpServers: config.sessionMcpServers as any,
-          tools: BRIDGE_TOOLS,
-        }),
+        this.client.resumeSession(sessionId, msgResumeConfig),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
         ),
