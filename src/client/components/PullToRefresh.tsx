@@ -18,6 +18,7 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
 
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (refreshing) return;
@@ -27,31 +28,39 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
     pullingRef.current = true;
   }, [refreshing]);
 
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!pullingRef.current || refreshing) return;
+  // Native touchmove handler registered with { passive: false } so we can
+  // preventDefault to suppress iOS Safari's rubber-band bounce.
+  useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    // If the container scrolled down mid-gesture, cancel
-    if (el.scrollTop > 0) {
-      pullingRef.current = false;
-      setPullDistance(0);
-      return;
-    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (!pullingRef.current || refreshingRef.current) return;
+      if (el.scrollTop > 0) {
+        pullingRef.current = false;
+        setPullDistance(0);
+        return;
+      }
 
-    const deltaY = e.touches[0].clientY - startYRef.current;
-    if (deltaY <= 0) {
-      setPullDistance(0);
-      return;
-    }
+      const deltaY = e.touches[0].clientY - startYRef.current;
+      if (deltaY <= 0) {
+        setPullDistance(0);
+        return;
+      }
 
-    // Apply resistance so it feels rubber-bandy
-    const distance = deltaY > THRESHOLD
-      ? THRESHOLD + (deltaY - THRESHOLD) * RESISTANCE
-      : deltaY;
+      // Block the browser's native overscroll/rubber-band
+      e.preventDefault();
 
-    setPullDistance(Math.min(distance, MAX_PULL));
-  }, [refreshing]);
+      const distance = deltaY > THRESHOLD
+        ? THRESHOLD + (deltaY - THRESHOLD) * RESISTANCE
+        : deltaY;
+
+      setPullDistance(Math.min(distance, MAX_PULL));
+    };
+
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => el.removeEventListener("touchmove", onTouchMove);
+  }, []);
 
   const handleTouchEnd = useCallback(async () => {
     if (!pullingRef.current) return;
@@ -59,11 +68,13 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
 
     if (pullDistance >= THRESHOLD && !refreshing) {
       setRefreshing(true);
+      refreshingRef.current = true;
       setPullDistance(THRESHOLD); // hold at threshold during refresh
       try {
         await onRefresh();
       } finally {
         setRefreshing(false);
+        refreshingRef.current = false;
         setPullDistance(0);
       }
     } else {
@@ -86,7 +97,6 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
       ref={containerRef}
       className={`overflow-y-auto ${className}`}
       onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       style={{ overscrollBehavior: "none" }}
     >
