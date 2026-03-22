@@ -63,6 +63,7 @@ interface SessionListProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   // Session deletion
   onDeleteSession?: (sessionId: string) => void;
+  className?: string;
 }
 
 export default function SessionList({
@@ -81,6 +82,7 @@ export default function SessionList({
   taskContext,
   onUnlinkFromTask,
   onDeleteSession,
+  className,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
@@ -159,7 +161,7 @@ export default function SessionList({
   };
 
   return (
-    <div className={s.wrapper}>
+    <div className={className ?? s.wrapper}>
       <button onClick={onNewSession} className={s.newButton}>
         {newButtonLabel}
       </button>

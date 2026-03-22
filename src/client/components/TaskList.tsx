@@ -25,6 +25,7 @@ interface TaskListProps {
   markRead?: (sessionId: string) => void;
   onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onDeleteTask?: (taskId: string) => void;
+  className?: string;
 }
 
 export default function TaskList({
@@ -37,6 +38,7 @@ export default function TaskList({
   markRead,
   onUpdateTask,
   onDeleteTask,
+  className,
 }: TaskListProps) {
   // Build a lookup of sessionId → Session for quick access
   const sessionMap = useMemo(() => {
@@ -144,7 +146,7 @@ export default function TaskList({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-2 space-y-2">
+    <div className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
       <button
         onClick={onNewTask}
         className="w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"

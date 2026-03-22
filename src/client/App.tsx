@@ -25,6 +25,7 @@ import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
+import PullToRefresh from "./components/PullToRefresh";
 import { useIsMobile } from "./useIsMobile";
 
 export default function App() {
@@ -419,6 +420,7 @@ export default function App() {
             allTasks={tasks}
             onLinkToTask={handleLinkToTask}
             onDeleteSession={handleDeleteSession}
+            onRefresh={async () => { await Promise.all([loadTasks(), loadSessions()]); }}
           />
         </div>
 
@@ -550,6 +552,7 @@ function MobileTaskListView({
   allTasks,
   onLinkToTask,
   onDeleteSession,
+  onRefresh,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -573,6 +576,7 @@ function MobileTaskListView({
   allTasks: Task[];
   onLinkToTask: (sessionId: string, taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onRefresh: () => Promise<void>;
 }){
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
@@ -605,9 +609,9 @@ function MobileTaskListView({
         </button>
       </div>
 
-      {/* Content */}
-      {quickChatsMode ? (
-        <div className="flex-1 overflow-y-auto overflow-x-hidden p-2">
+      {/* Content — pull-to-refresh wraps both tabs */}
+      <PullToRefresh onRefresh={onRefresh} className="flex-1 overflow-x-hidden min-w-0">
+        {quickChatsMode ? (
           <SessionList
             variant="global"
             sessions={orphanSessions}
@@ -621,21 +625,23 @@ function MobileTaskListView({
             tasks={allTasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
+            className="min-w-0 overflow-x-hidden p-2 space-y-1"
           />
-        </div>
-      ) : (
-        <TaskList
-          tasks={tasks}
-          activeTaskId={activeTaskId}
-          onSelectTask={onSelectTask}
-          onNewTask={onNewTask}
-          sessions={sessions}
-          isUnread={isUnread}
-          markRead={markRead}
-          onUpdateTask={onUpdateTask}
-          onDeleteTask={onDeleteTask}
-        />
-      )}
+        ) : (
+          <TaskList
+            tasks={tasks}
+            activeTaskId={activeTaskId}
+            onSelectTask={onSelectTask}
+            onNewTask={onNewTask}
+            sessions={sessions}
+            isUnread={isUnread}
+            markRead={markRead}
+            onUpdateTask={onUpdateTask}
+            onDeleteTask={onDeleteTask}
+            className="p-2 space-y-2"
+          />
+        )}
+      </PullToRefresh>
     </div>
   );
 }
