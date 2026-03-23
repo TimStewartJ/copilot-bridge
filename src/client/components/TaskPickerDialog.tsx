@@ -99,8 +99,8 @@ export default function TaskPickerDialog({
                 </div>
                 <div className="text-[10px] text-text-faint mt-0.5">
                   {task.sessionIds.length} session{task.sessionIds.length !== 1 ? "s" : ""}
-                  {task.workItemIds.length > 0 &&
-                    ` · ${task.workItemIds.length} work item${task.workItemIds.length !== 1 ? "s" : ""}`}
+                  {task.workItems.length > 0 &&
+                    ` · ${task.workItems.length} work item${task.workItems.length !== 1 ? "s" : ""}`}
                 </div>
               </button>
             ))

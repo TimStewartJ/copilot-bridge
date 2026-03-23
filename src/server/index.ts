@@ -17,7 +17,8 @@ import * as scheduleStore from "./schedule-store.js";
 import * as scheduler from "./scheduler.js";
 import { getBus, hasBus } from "./event-bus.js";
 import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
-import * as adoClient from "./ado-client.js";
+import { enrichWorkItems, enrichPullRequests } from "./providers/index.js";
+import { clearProviderCache } from "./providers/index.js";
 import * as readStateStore from "./read-state-store.js";
 import * as globalBus from "./global-bus.js";
 import { pruneOrphanedWorktrees } from "./staging-tools.js";
@@ -389,42 +390,20 @@ app.get("/api/tasks/:id", (req, res) => {
   res.json({ task });
 });
 
-// Enriched task data — fetches work item + PR metadata from ADO
+// Enriched task data — fetches work item + PR metadata from configured providers
 app.get("/api/tasks/:id/enriched", async (req, res) => {
   const task = taskStore.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "Task not found" });
 
   try {
     const [workItems, pullRequests] = await Promise.all([
-      adoClient.fetchWorkItems(task.workItemIds),
-      adoClient.fetchPullRequests(task.pullRequests),
+      enrichWorkItems(task.workItems),
+      enrichPullRequests(task.pullRequests),
     ]);
     res.json({ task, workItems, pullRequests });
   } catch (err) {
     console.error("[enriched] Error:", err);
-    // Graceful fallback — return task with empty enrichment
-    res.json({
-      task,
-      workItems: task.workItemIds.map((id) => ({
-        id,
-        title: null,
-        state: null,
-        type: null,
-        assignedTo: null,
-        areaPath: null,
-        url: `https://my-org.visualstudio.com/MyProject/_workitems/edit/${id}`,
-      })),
-      pullRequests: task.pullRequests.map((pr) => ({
-        repoId: pr.repoId,
-        repoName: pr.repoName ?? null,
-        prId: pr.prId,
-        title: null,
-        status: null,
-        createdBy: null,
-        reviewerCount: 0,
-        url: `https://my-org.visualstudio.com/MyProject/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}`,
-      })),
-    });
+    res.json({ task, workItems: [], pullRequests: [] });
   }
 });
 
@@ -443,7 +422,7 @@ app.delete("/api/tasks/:id", (req, res) => {
 });
 
 app.post("/api/tasks/:id/link", (req, res) => {
-  const { type, sessionId, workItemId, repoId, repoName, prId } = req.body;
+  const { type, sessionId, workItemId, provider, repoId, repoName, prId } = req.body;
   try {
     let task;
     switch (type) {
@@ -451,10 +430,10 @@ app.post("/api/tasks/:id/link", (req, res) => {
         task = taskStore.linkSession(req.params.id, sessionId);
         break;
       case "workItem":
-        task = taskStore.linkWorkItem(req.params.id, Number(workItemId));
+        task = taskStore.linkWorkItem(req.params.id, Number(workItemId), provider ?? "ado");
         break;
       case "pr":
-        task = taskStore.linkPR(req.params.id, { repoId, repoName, prId: Number(prId) });
+        task = taskStore.linkPR(req.params.id, { repoId, repoName, prId: Number(prId), provider: provider ?? "ado" });
         break;
       default:
         return res.status(400).json({ error: `Unknown link type: ${type}` });
@@ -466,7 +445,7 @@ app.post("/api/tasks/:id/link", (req, res) => {
 });
 
 app.delete("/api/tasks/:id/link", (req, res) => {
-  const { type, sessionId, workItemId, repoId, prId } = req.body;
+  const { type, sessionId, workItemId, provider, repoId, prId } = req.body;
   try {
     let task;
     switch (type) {
@@ -474,10 +453,10 @@ app.delete("/api/tasks/:id/link", (req, res) => {
         task = taskStore.unlinkSession(req.params.id, sessionId);
         break;
       case "workItem":
-        task = taskStore.unlinkWorkItem(req.params.id, Number(workItemId));
+        task = taskStore.unlinkWorkItem(req.params.id, Number(workItemId), provider);
         break;
       case "pr":
-        task = taskStore.unlinkPR(req.params.id, repoId, Number(prId));
+        task = taskStore.unlinkPR(req.params.id, repoId, Number(prId), provider);
         break;
       default:
         return res.status(400).json({ error: `Unknown link type: ${type}` });
@@ -500,7 +479,7 @@ app.post("/api/tasks/:id/session", async (req, res) => {
     const result = await sessionManager.createTaskSession(
       task.id,
       task.title,
-      task.workItemIds,
+      task.workItems,
       prDescriptions,
       task.notes,
       task.cwd,
@@ -590,26 +569,29 @@ app.get("/api/dashboard", async (_req, res) => {
     // Active + paused tasks with enrichment
     const inFlightTasks = tasks.filter((t) => t.status === "active" || t.status === "paused");
 
-    // Batch-fetch all work item IDs across all in-flight tasks
-    const allWorkItemIds = [...new Set(inFlightTasks.flatMap((t) => t.workItemIds))];
+    // Batch-fetch all work items across all in-flight tasks
+    const allWorkItemRefs = inFlightTasks.flatMap((t) => t.workItems);
+    const uniqueWIRefs = allWorkItemRefs.filter((ref, i, arr) =>
+      arr.findIndex((r) => r.id === ref.id && r.provider === ref.provider) === i,
+    );
     const allPRs = inFlightTasks.flatMap((t) => t.pullRequests);
     const uniquePRs = allPRs.filter((pr, i, arr) =>
-      arr.findIndex((p) => p.repoId === pr.repoId && p.prId === pr.prId) === i,
+      arr.findIndex((p) => p.repoId === pr.repoId && p.prId === pr.prId && p.provider === pr.provider) === i,
     );
 
     const [allWorkItems, allEnrichedPRs] = await Promise.all([
-      adoClient.fetchWorkItems(allWorkItemIds),
-      adoClient.fetchPullRequests(uniquePRs),
+      enrichWorkItems(uniqueWIRefs),
+      enrichPullRequests(uniquePRs),
     ]);
 
-    const wiMap = new Map(allWorkItems.map((wi) => [wi.id, wi]));
-    const prMap = new Map(allEnrichedPRs.map((pr) => [`${pr.repoId}:${pr.prId}`, pr]));
+    const wiMap = new Map(allWorkItems.map((wi) => [`${wi.provider}:${wi.id}`, wi]));
+    const prMap = new Map(allEnrichedPRs.map((pr) => [`${pr.provider}:${pr.repoId}:${pr.prId}`, pr]));
 
     const activeTasks = inFlightTasks.map((task) => {
       // Work item state summary
       const byState: Record<string, number> = {};
-      for (const wiId of task.workItemIds) {
-        const wi = wiMap.get(wiId);
+      for (const wiRef of task.workItems) {
+        const wi = wiMap.get(`${wiRef.provider}:${wiRef.id}`);
         const state = wi?.state ?? "Unknown";
         byState[state] = (byState[state] ?? 0) + 1;
       }
@@ -618,7 +600,7 @@ app.get("/api/dashboard", async (_req, res) => {
       let prActive = 0;
       let prCompleted = 0;
       for (const pr of task.pullRequests) {
-        const enriched = prMap.get(`${pr.repoId}:${pr.prId}`);
+        const enriched = prMap.get(`${pr.provider}:${pr.repoId}:${pr.prId}`);
         if (enriched?.status === "active") prActive++;
         else if (enriched?.status === "completed") prCompleted++;
       }
@@ -644,7 +626,7 @@ app.get("/api/dashboard", async (_req, res) => {
 
       return {
         task,
-        workItemSummary: { total: task.workItemIds.length, byState },
+        workItemSummary: { total: task.workItems.length, byState },
         prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted },
         hasUnread,
         hasBusySession,
@@ -807,6 +789,7 @@ app.get("/api/settings", (_req, res) => {
 app.patch("/api/settings", (req, res) => {
   try {
     const updated = settingsStore.updateSettings(req.body);
+    clearProviderCache();
     console.log("[settings] Settings updated");
     res.json(updated);
   } catch (err) {

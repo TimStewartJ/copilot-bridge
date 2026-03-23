@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Session } from "../api";
+import type { Session, ProviderName } from "../api";
 import { ClipboardList, GitPullRequest, MessageSquare, X } from "lucide-react";
 
 type LinkType = "session" | "workItem" | "pr";
@@ -19,14 +19,22 @@ export default function LinkDialog({
   const [workItemId, setWorkItemId] = useState("");
   const [repoName, setRepoName] = useState("");
   const [prId, setPrId] = useState("");
+  const [provider, setProvider] = useState<ProviderName>(
+    () => (localStorage.getItem("bridge-last-provider") as ProviderName) || "ado",
+  );
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
+
+  const handleProviderChange = (p: ProviderName) => {
+    setProvider(p);
+    localStorage.setItem("bridge-last-provider", p);
+  };
 
   const handleSubmit = () => {
     switch (linkType) {
       case "workItem":
         if (!workItemId) return;
-        onLink({ type: "workItem", workItemId: Number(workItemId) });
+        onLink({ type: "workItem", workItemId: Number(workItemId), provider });
         break;
       case "pr":
         if (!repoName || !prId) return;
@@ -35,6 +43,7 @@ export default function LinkDialog({
           repoId: repoName,
           repoName,
           prId: Number(prId),
+          provider,
         });
         break;
       case "session":
@@ -90,16 +99,39 @@ export default function LinkDialog({
 
         {/* Body */}
         <div className="p-4 space-y-3">
+          {(linkType === "workItem" || linkType === "pr") && (
+            <div>
+              <label className="text-xs text-text-muted block mb-1">
+                Provider
+              </label>
+              <div className="flex gap-1">
+                {(["ado", "github"] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => handleProviderChange(p)}
+                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      provider === p
+                        ? "bg-accent/15 text-accent border border-accent/30"
+                        : "bg-bg-primary text-text-muted border border-border hover:text-text-secondary"
+                    }`}
+                  >
+                    {p === "ado" ? "Azure DevOps" : "GitHub"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {linkType === "workItem" && (
             <div>
               <label className="text-xs text-text-muted block mb-1">
-                Work Item ID
+                {provider === "github" ? "Issue Number" : "Work Item ID"}
               </label>
               <input
                 type="number"
                 value={workItemId}
                 onChange={(e) => setWorkItemId(e.target.value)}
-                placeholder="e.g., 12345"
+                placeholder={provider === "github" ? "e.g., 42" : "e.g., 12345"}
                 autoFocus
                 className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
               />
@@ -115,7 +147,7 @@ export default function LinkDialog({
                 <input
                   value={repoName}
                   onChange={(e) => setRepoName(e.target.value)}
-                  placeholder="e.g., my-repo"
+                  placeholder={provider === "github" ? "e.g., owner/repo" : "e.g., my-repo"}
                   autoFocus
                   className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
                 />

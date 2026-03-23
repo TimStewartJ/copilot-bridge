@@ -33,10 +33,18 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
 }
 
-export interface PRLink {
+export type ProviderName = "ado" | "github";
+
+export interface WorkItemRef {
+  id: number;
+  provider: ProviderName;
+}
+
+export interface PRRef {
   repoId: string;
   repoName?: string;
   prId: number;
+  provider: ProviderName;
 }
 
 export interface Task {
@@ -51,8 +59,8 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   sessionIds: string[];
-  workItemIds: number[];
-  pullRequests: PRLink[];
+  workItems: WorkItemRef[];
+  pullRequests: PRRef[];
 }
 
 export interface TaskGroup {
@@ -69,6 +77,7 @@ export interface TaskGroup {
 
 export interface EnrichedWorkItem {
   id: number;
+  provider: ProviderName;
   title: string | null;
   state: string | null;
   type: string | null;
@@ -81,6 +90,7 @@ export interface EnrichedPR {
   repoId: string;
   repoName: string | null;
   prId: number;
+  provider: ProviderName;
   title: string | null;
   status: "active" | "completed" | "abandoned" | null;
   createdBy: string | null;
@@ -213,7 +223,7 @@ export async function reorderTasks(taskIds: string[]): Promise<Task[]> {
 
 export async function linkResource(
   taskId: string,
-  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number } | { type: "pr"; repoId: string; repoName?: string; prId: number },
+  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number; provider?: ProviderName } | { type: "pr"; repoId: string; repoName?: string; prId: number; provider?: ProviderName },
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${taskId}/link`, resource);
   return data.task;
@@ -221,7 +231,7 @@ export async function linkResource(
 
 export async function unlinkResource(
   taskId: string,
-  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number } | { type: "pr"; repoId: string; prId: number },
+  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number; provider?: ProviderName } | { type: "pr"; repoId: string; prId: number; provider?: ProviderName },
 ): Promise<Task> {
   const res = await fetch(`/api/tasks/${taskId}/link`, {
     method: "DELETE",

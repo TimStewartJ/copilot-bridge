@@ -8,10 +8,18 @@ const TASKS_FILE = join(DATA_DIR, "tasks.json");
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export interface PRLink {
+import type { ProviderName } from "./providers/types.js";
+
+export interface WorkItemRef {
+  id: number;
+  provider: ProviderName;
+}
+
+export interface PRRef {
   repoId: string;
   repoName?: string;
   prId: number;
+  provider: ProviderName;
 }
 
 export interface Task {
@@ -26,8 +34,8 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   sessionIds: string[];
-  workItemIds: number[];
-  pullRequests: PRLink[];
+  workItems: WorkItemRef[];
+  pullRequests: PRRef[];
 }
 
 type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId">>;
@@ -44,10 +52,34 @@ const STATUS_ORDER: Record<Task["status"], number> = {
 function load(): Task[] {
   if (!existsSync(TASKS_FILE)) return [];
   try {
-    const tasks: Task[] = JSON.parse(readFileSync(TASKS_FILE, "utf-8"));
+    const tasks: any[] = JSON.parse(readFileSync(TASKS_FILE, "utf-8"));
+
+    // Migrate: workItemIds (number[]) → workItems (WorkItemRef[])
+    let migrated = false;
+    for (const t of tasks) {
+      if (Array.isArray(t.workItemIds)) {
+        t.workItems = t.workItemIds.map((id: number) => ({ id, provider: "ado" }));
+        delete t.workItemIds;
+        migrated = true;
+      }
+      if (!t.workItems) {
+        t.workItems = [];
+        migrated = true;
+      }
+      // Migrate PRs: add provider field if missing
+      if (Array.isArray(t.pullRequests)) {
+        for (const pr of t.pullRequests) {
+          if (!pr.provider) {
+            pr.provider = "ado";
+            migrated = true;
+          }
+        }
+      }
+    }
+
     // Migrate: assign order if missing (based on updatedAt rank within status group)
-    const needsMigration = tasks.some((t) => t.order === undefined || t.order === null);
-    if (needsMigration) {
+    const needsOrderMigration = tasks.some((t) => t.order === undefined || t.order === null);
+    if (needsOrderMigration) {
       const groups = new Map<string, Task[]>();
       for (const t of tasks) {
         if (t.order === undefined || t.order === null) (t as Task).order = 0;
@@ -59,9 +91,11 @@ function load(): Task[] {
         group.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
         group.forEach((t, i) => { t.order = i; });
       }
-      save(tasks);
+      migrated = true;
     }
-    return tasks;
+
+    if (migrated) save(tasks as Task[]);
+    return tasks as Task[];
   } catch {
     return [];
   }
@@ -102,7 +136,7 @@ export function createTask(title: string): Task {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     sessionIds: [],
-    workItemIds: [],
+    workItems: [],
     pullRequests: [],
   };
   tasks.push(task);
@@ -177,23 +211,25 @@ export function unlinkSession(taskId: string, sessionId: string): Task {
   return task;
 }
 
-export function linkWorkItem(taskId: string, workItemId: number): Task {
+export function linkWorkItem(taskId: string, workItemId: number, provider: ProviderName = "ado"): Task {
   const tasks = load();
   const task = tasks.find((t) => t.id === taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
-  if (!task.workItemIds.includes(workItemId)) {
-    task.workItemIds.push(workItemId);
+  if (!task.workItems.some((w) => w.id === workItemId && w.provider === provider)) {
+    task.workItems.push({ id: workItemId, provider });
     task.updatedAt = new Date().toISOString();
     save(tasks);
   }
   return task;
 }
 
-export function unlinkWorkItem(taskId: string, workItemId: number): Task {
+export function unlinkWorkItem(taskId: string, workItemId: number, provider?: ProviderName): Task {
   const tasks = load();
   const task = tasks.find((t) => t.id === taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
-  task.workItemIds = task.workItemIds.filter((w) => w !== workItemId);
+  task.workItems = task.workItems.filter(
+    (w) => !(w.id === workItemId && (!provider || w.provider === provider)),
+  );
   task.updatedAt = new Date().toISOString();
   save(tasks);
   return task;
@@ -203,11 +239,11 @@ export function findTaskBySessionId(sessionId: string): Task | undefined {
   return load().find((t) => t.sessionIds.includes(sessionId));
 }
 
-export function linkPR(taskId: string, pr: PRLink): Task {
+export function linkPR(taskId: string, pr: PRRef): Task {
   const tasks = load();
   const task = tasks.find((t) => t.id === taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
-  if (!task.pullRequests.some((p) => p.repoId === pr.repoId && p.prId === pr.prId)) {
+  if (!task.pullRequests.some((p) => p.repoId === pr.repoId && p.prId === pr.prId && p.provider === pr.provider)) {
     task.pullRequests.push(pr);
     task.updatedAt = new Date().toISOString();
     save(tasks);
@@ -215,12 +251,12 @@ export function linkPR(taskId: string, pr: PRLink): Task {
   return task;
 }
 
-export function unlinkPR(taskId: string, repoId: string, prId: number): Task {
+export function unlinkPR(taskId: string, repoId: string, prId: number, provider?: ProviderName): Task {
   const tasks = load();
   const task = tasks.find((t) => t.id === taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
   task.pullRequests = task.pullRequests.filter(
-    (p) => !(p.repoId === repoId && p.prId === prId),
+    (p) => !(p.repoId === repoId && p.prId === prId && (!provider || p.provider === provider)),
   );
   task.updatedAt = new Date().toISOString();
   save(tasks);

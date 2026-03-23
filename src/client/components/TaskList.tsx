@@ -434,7 +434,7 @@ function SortableListItem({
 
   const linkCount =
     task.sessionIds.length +
-    task.workItemIds.length +
+    task.workItems.length +
     task.pullRequests.length;
 
   return (

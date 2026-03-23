@@ -10,6 +10,8 @@ const SETTINGS_FILE = join(DATA_DIR, "settings.json");
 
 // ── Types ─────────────────────────────────────────────────────────
 
+import type { ProvidersConfig } from "./providers/types.js";
+
 export interface McpServerConfig {
   command: string;
   args: string[];
@@ -18,26 +20,14 @@ export interface McpServerConfig {
 }
 
 export interface AppSettings {
+  providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
 }
 
-// ── Defaults (bootstrapped from original hardcoded config) ────────
+// ── Defaults (no hardcoded org — users configure their own) ───────
 
 const DEFAULT_SETTINGS: AppSettings = {
-  mcpServers: {
-    ado: {
-      command: "mcp-remote",
-      args: [
-        "mcp",
-        "remote",
-        "--url",
-        "https://mcp.dev.azure.com/my-org",
-        "--header",
-        "X-MCP-Auth: true",
-      ],
-      tools: ["*"],
-    },
-  },
+  mcpServers: {},
 };
 
 // ── Persistence ───────────────────────────────────────────────────
@@ -65,6 +55,10 @@ export function getSettings(): AppSettings {
 
 export function updateSettings(updates: Partial<AppSettings>): AppSettings {
   const current = load();
+
+  if (updates.providers !== undefined) {
+    current.providers = updates.providers;
+  }
 
   if (updates.mcpServers !== undefined) {
     current.mcpServers = updates.mcpServers;

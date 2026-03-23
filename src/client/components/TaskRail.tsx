@@ -517,7 +517,7 @@ export default function TaskRail({
               const isActive = task.id === activeTaskId;
               const linkCount =
                 task.sessionIds.length +
-                task.workItemIds.length +
+                task.workItems.length +
                 task.pullRequests.length;
 
               return (
@@ -762,7 +762,7 @@ function SortableRailItem({
 
   const linkCount =
     task.sessionIds.length +
-    task.workItemIds.length +
+    task.workItems.length +
     task.pullRequests.length;
 
   return (

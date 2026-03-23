@@ -157,7 +157,7 @@ export default function TaskPanel({
   useEffect(() => {
     if (
       task &&
-      (task.workItemIds.length > 0 || task.pullRequests.length > 0)
+      (task.workItems.length > 0 || task.pullRequests.length > 0)
     ) {
       fetchEnrichedTask(task.id)
         .then((data) => {
@@ -169,7 +169,7 @@ export default function TaskPanel({
       setEnrichedWIs([]);
       setEnrichedPRs([]);
     }
-  }, [task?.id, task?.workItemIds.length, task?.pullRequests.length]);
+  }, [task?.id, task?.workItems.length, task?.pullRequests.length]);
 
   // Fetch schedules for this task
   useEffect(() => {
@@ -384,24 +384,25 @@ export default function TaskPanel({
         </div>
 
         {/* Work Items */}
-        {task.workItemIds.length > 0 && (
+        {task.workItems.length > 0 && (
           <div>
-            <SectionLabel label="Work Items" count={task.workItemIds.length} />
+            <SectionLabel label="Work Items" count={task.workItems.length} />
             <div className="space-y-0.5">
               {(enrichedWIs.length > 0
                 ? enrichedWIs
-                : task.workItemIds.map((id) => ({
-                    id,
+                : task.workItems.map((w) => ({
+                    id: w.id,
+                    provider: w.provider,
                     title: null,
                     state: null,
                     type: null,
                     assignedTo: null,
                     areaPath: null,
-                    url: `https://my-org.visualstudio.com/MyProject/_workitems/edit/${id}`,
+                    url: "#",
                   }))
               ).map((wi) => (
                 <a
-                  key={wi.id}
+                  key={`${wi.provider}-${wi.id}`}
                   href={wi.url}
                   target="_blank"
                   rel="noopener"
@@ -449,11 +450,12 @@ export default function TaskPanel({
                     repoId: pr.repoId,
                     repoName: pr.repoName ?? null,
                     prId: pr.prId,
+                    provider: pr.provider,
                     title: null,
                     status: null as any,
                     createdBy: null,
                     reviewerCount: 0,
-                    url: `https://my-org.visualstudio.com/MyProject/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}`,
+                    url: "#",
                   }))
               ).map((pr) => (
                 <a

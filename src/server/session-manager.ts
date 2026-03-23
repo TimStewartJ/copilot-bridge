@@ -8,6 +8,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
+import type { WorkItemRef } from "./task-store.js";
 import type { Task } from "./task-store.js";
 import * as taskGroupStore from "./task-group-store.js";
 import * as scheduleStore from "./schedule-store.js";
@@ -72,8 +73,8 @@ function buildSessionConfig(opts: SessionConfigOptions = {}) {
         'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
       );
     }
-    if (task.workItemIds.length > 0) {
-      contextParts.push(`Currently linked work items: ${task.workItemIds.map((id) => `#${id}`).join(", ")}.`);
+    if (task.workItems.length > 0) {
+      contextParts.push(`Currently linked work items: ${task.workItems.map((w) => `#${w.id} (${w.provider})`).join(", ")}.`);
     }
     const prStrings = prDescriptions
       ?? (task.pullRequests.length > 0
@@ -133,34 +134,34 @@ export function getRestartWaitingCount(): number {
 // Universal tools — same instance for every session
 const BRIDGE_TOOLS = [
   defineTool("task_link_work_item", {
-    description: "Link an ADO work item to a task by its ID",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The ADO work item ID" } }, required: ["taskId", "workItemId"] },
+    description: "Link a work item to a task by its ID",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
-      taskStore.linkWorkItem(args.taskId, args.workItemId);
-      return { success: true, message: `Work item #${args.workItemId} linked to task` };
+      taskStore.linkWorkItem(args.taskId, args.workItemId, args.provider ?? "ado");
+      return { success: true, message: `Work item #${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
     },
   }),
   defineTool("task_unlink_work_item", {
-    description: "Remove an ADO work item from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The ADO work item ID" } }, required: ["taskId", "workItemId"] },
+    description: "Remove a work item from a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github)" } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
-      taskStore.unlinkWorkItem(args.taskId, args.workItemId);
+      taskStore.unlinkWorkItem(args.taskId, args.workItemId, args.provider);
       return { success: true, message: `Work item #${args.workItemId} unlinked from task` };
     },
   }),
   defineTool("task_link_pr", {
     description: "Link a pull request to a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
-      taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId });
+      taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId, provider: args.provider ?? "ado" });
       return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
     },
   }),
   defineTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github)" } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
-      taskStore.unlinkPR(args.taskId, args.repoName, args.prId);
+      taskStore.unlinkPR(args.taskId, args.repoName, args.prId, args.provider);
       return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
     },
   }),
@@ -437,7 +438,7 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  async createTaskSession(taskId: string, taskTitle: string, workItemIds: number[], prDescriptions: string[], notes: string, cwd?: string): Promise<{ sessionId: string }> {
+  async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const isPlaceholder = taskTitle === "New Task";
@@ -453,7 +454,7 @@ export class SessionManager {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       sessionIds: [] as string[],
-      workItemIds,
+      workItems,
       pullRequests: [] as any[],
     };
 

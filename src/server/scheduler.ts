@@ -181,7 +181,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
       const result = await sessionMgr.createTaskSession(
         task.id,
         task.title,
-        task.workItemIds,
+        task.workItems,
         prDescriptions,
         task.notes,
         task.cwd,
