@@ -205,6 +205,18 @@ export const STAGING_TOOLS = [
       const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
       log(`Merged to production: ${commitSha}`);
 
+      // Install deps if package.json changed (staging had its own node_modules)
+      const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- package.json`, PRODUCTION_ROOT);
+      if (pkgChanged.ok && pkgChanged.output.trim().includes("package.json")) {
+        log("package.json changed — running npm install in production...");
+        const npmResult = run("npm install --no-audit --no-fund", PRODUCTION_ROOT);
+        if (!npmResult.ok) {
+          log(`npm install failed (non-fatal): ${npmResult.output.slice(-300)}`);
+        } else {
+          log("npm install succeeded");
+        }
+      }
+
       // Signal launcher to restart
       const dataDir = join(PRODUCTION_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
