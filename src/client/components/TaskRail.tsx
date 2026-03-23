@@ -501,7 +501,7 @@ function SortableRailItem({
     task.pullRequests.length;
 
   return (
-    <div ref={setNodeRef} style={style}>
+    <div ref={setNodeRef} style={style} className="group">
       <button
         {...bindLongPress(task.id, () => onSelectTask(task.id))}
         className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
@@ -516,7 +516,7 @@ function SortableRailItem({
           <span
             {...attributes}
             {...listeners}
-            className="text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing shrink-0 touch-none"
+            className="text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing shrink-0 touch-none opacity-0 group-hover:opacity-100 transition-opacity"
             onClick={(e) => e.stopPropagation()}
           >
             <GripVertical size={12} />
