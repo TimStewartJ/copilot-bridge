@@ -183,7 +183,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
         )}
         <div ref={messagesEndRef} />
       </div>
-      <ChatInput onSend={handleSend} disabled={isStreaming} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} />
+      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
         <PlanSheet sessionId={sessionId} onClose={() => setShowPlan(false)} />

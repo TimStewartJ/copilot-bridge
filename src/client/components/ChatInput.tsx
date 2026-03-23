@@ -3,12 +3,11 @@ import { Square } from "lucide-react";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
-  disabled: boolean;
   onAbort?: () => void;
   sessionId?: string | null;
 }
 
-export default function ChatInput({ onSend, disabled, onAbort, sessionId }: ChatInputProps) {
+export default function ChatInput({ onSend, onAbort, sessionId }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastHeightRef = useRef(0);
@@ -67,20 +66,22 @@ export default function ChatInput({ onSend, disabled, onAbort, sessionId }: Chat
           rows={1}
           className="flex-1 px-4 py-3 bg-bg-primary text-text-primary border border-border rounded-md text-base md:text-sm resize-none focus:outline-none focus:border-accent min-h-[48px] max-h-[200px] placeholder:text-text-faint"
         />
-        <button
-          onClick={handleSend}
-          disabled={disabled || !input.trim()}
-          className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
-        >
-          Send
-        </button>
-        {onAbort && (
+        {onAbort ? (
           <button
             onClick={onAbort}
-            className="px-3 py-3 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium self-end transition-colors"
+            className="px-4 md:px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium self-end transition-colors flex items-center gap-1.5"
             title="Stop generating"
           >
             <Square size={14} fill="currentColor" />
+            <span className="hidden md:inline">Stop</span>
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!input.trim()}
+            className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
+          >
+            Send
           </button>
         )}
       </div>
