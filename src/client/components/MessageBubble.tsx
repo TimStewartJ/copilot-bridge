@@ -2,11 +2,67 @@ import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import type { ChatMessage } from "../api";
+import type { ChatMessage, ToolCall } from "../api";
 import ToolCallBlock from "./ToolCallBlock";
+import SubAgentGroup from "./SubAgentGroup";
 
 interface MessageBubbleProps {
   message: ChatMessage;
+}
+
+/** Group tool calls: sub-agent parents absorb their children, top-level stays flat */
+function groupToolCalls(toolCalls: ToolCall[]): ToolCall[] {
+  // Collect sub-agent parent IDs
+  const agentIds = new Set(
+    toolCalls.filter((tc) => tc.isSubAgent).map((tc) => tc.toolCallId),
+  );
+
+  // Collect children that belong to a sub-agent (by parentToolCallId)
+  const childrenByParent = new Map<string, ToolCall[]>();
+  for (const tc of toolCalls) {
+    if (tc.parentToolCallId && agentIds.has(tc.parentToolCallId)) {
+      const arr = childrenByParent.get(tc.parentToolCallId) ?? [];
+      arr.push(tc);
+      childrenByParent.set(tc.parentToolCallId, arr);
+    }
+  }
+
+  // Also gather pre-grouped children from history reconstruction
+  for (const tc of toolCalls) {
+    if (tc.isSubAgent && tc.childToolCalls?.length) {
+      const existing = childrenByParent.get(tc.toolCallId) ?? [];
+      childrenByParent.set(tc.toolCallId, [...existing, ...tc.childToolCalls]);
+    }
+  }
+
+  // Build result: top-level tools + sub-agent groups (with children attached)
+  const grouped: ToolCall[] = [];
+  const childToolCallIds = new Set<string>();
+  for (const children of childrenByParent.values()) {
+    for (const c of children) childToolCallIds.add(c.toolCallId);
+  }
+
+  for (const tc of toolCalls) {
+    if (childToolCallIds.has(tc.toolCallId)) continue; // skip — nested under parent
+    if (tc.isSubAgent) {
+      grouped.push({ ...tc, childToolCalls: childrenByParent.get(tc.toolCallId) });
+    } else {
+      grouped.push(tc);
+    }
+  }
+
+  return grouped;
+}
+
+function renderToolCalls(toolCalls: ToolCall[]) {
+  const grouped = groupToolCalls(toolCalls);
+  return grouped.map((tc) =>
+    tc.isSubAgent ? (
+      <SubAgentGroup key={tc.toolCallId} agentTool={tc} childTools={tc.childToolCalls ?? []} />
+    ) : (
+      <ToolCallBlock key={tc.toolCallId} toolCall={tc} />
+    ),
+  );
 }
 
 export default memo(function MessageBubble({ message }: MessageBubbleProps) {
@@ -30,9 +86,7 @@ export default memo(function MessageBubble({ message }: MessageBubbleProps) {
     return (
       <div className="flex justify-start min-w-0">
         <div className="max-w-[85%] min-w-0 space-y-1">
-          {message.toolCalls!.map((tc) => (
-            <ToolCallBlock key={tc.toolCallId} toolCall={tc} />
-          ))}
+          {renderToolCalls(message.toolCalls!)}
         </div>
       </div>
     );
@@ -59,9 +113,7 @@ export default memo(function MessageBubble({ message }: MessageBubbleProps) {
         )}
         {hasTools && (
           <div className="space-y-1">
-            {message.toolCalls!.map((tc) => (
-              <ToolCallBlock key={tc.toolCallId} toolCall={tc} />
-            ))}
+            {renderToolCalls(message.toolCalls!)}
           </div>
         )}
       </div>

@@ -559,12 +559,13 @@ export class SessionManager {
         case "tool.execution_start": {
           const toolName = data?.toolName ?? data?.name ?? "unknown";
           if (data?.toolCallId) toolNameMap.set(data.toolCallId, toolName);
-          console.log(`[sdk] [${sid}] 🔧 Tool: ${toolName}`);
+          console.log(`[sdk] [${sid}] 🔧 Tool: ${toolName}${data?.parentToolCallId ? ` (sub-agent)` : ""}`);
           bus.emit({
             type: "tool_start",
             toolCallId: data?.toolCallId,
             name: toolName,
             args: data?.arguments,
+            parentToolCallId: data?.parentToolCallId,
           });
           break;
         }
@@ -588,11 +589,23 @@ export class SessionManager {
           break;
         }
         case "subagent.started":
-          bus.emit({ type: "tool_start", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
+          console.log(`[sdk] [${sid}] 🤖 Sub-agent: ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`);
+          bus.emit({
+            type: "tool_start",
+            toolCallId: data?.toolCallId,
+            name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`,
+            isSubAgent: true,
+          });
           break;
         case "subagent.completed":
         case "subagent.failed":
-          bus.emit({ type: "tool_done", name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}` });
+          bus.emit({
+            type: "tool_done",
+            toolCallId: data?.toolCallId,
+            name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`,
+            success: event.type === "subagent.completed",
+            isSubAgent: true,
+          });
           break;
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
@@ -712,17 +725,24 @@ export class SessionManager {
     const messages: Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }> = [];
 
     // Index tool events by toolCallId for fast lookup
-    const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown> }>();
+    const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string }>();
     const toolCompletes = new Map<string, { success: boolean; content?: string }>();
+    // Track sub-agent lifecycle: toolCallId → agent info
+    const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
+    const subAgentEnds = new Map<string, { success: boolean }>();
     for (const event of events) {
       const data = (event as any).data;
       if (event.type === "tool.execution_start" && data?.toolCallId) {
-        toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments });
+        toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments, parentToolCallId: data.parentToolCallId });
       } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
         toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content });
+      } else if (event.type === "subagent.started" && data?.toolCallId) {
+        subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
+      } else if ((event.type === "subagent.completed" || event.type === "subagent.failed") && data?.toolCallId) {
+        subAgentEnds.set(data.toolCallId, { success: event.type === "subagent.completed" });
       }
     }
-    console.log(`[sdk] Indexed ${toolStarts.size} tool starts, ${toolCompletes.size} tool completes`);
+    console.log(`[sdk] Indexed ${toolStarts.size} tool starts, ${toolCompletes.size} tool completes, ${subAgentStarts.size} sub-agents`);
 
     for (const event of events) {
       if (event.type === "user.message") {
@@ -736,21 +756,50 @@ export class SessionManager {
         const content = data.content ?? "";
 
         // Build tool calls from toolRequests
-        let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> | undefined;
+        let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; childToolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string }> }> | undefined;
         if (data.toolRequests?.length) {
           toolCalls = data.toolRequests
             .filter((tr: any) => tr.name !== "report_intent")
             .map((tr: any) => {
               const start = toolStarts.get(tr.toolCallId);
               const complete = toolCompletes.get(tr.toolCallId);
+              const subAgent = subAgentStarts.get(tr.toolCallId);
+              const subEnd = subAgentEnds.get(tr.toolCallId);
+              if (subAgent) {
+                // This is a sub-agent parent tool call — collect its children
+                const children = [...toolStarts.entries()]
+                  .filter(([, s]) => s.parentToolCallId === tr.toolCallId)
+                  .map(([childId, s]) => {
+                    const childComplete = toolCompletes.get(childId);
+                    return {
+                      toolCallId: childId,
+                      name: s.toolName,
+                      args: s.arguments,
+                      result: childComplete?.content,
+                      success: childComplete?.success,
+                      parentToolCallId: tr.toolCallId,
+                    };
+                  })
+                  .filter((c) => c.name !== "report_intent");
+                return {
+                  toolCallId: tr.toolCallId,
+                  name: `🤖 ${subAgent.agentDisplayName ?? subAgent.agentName ?? "agent"}`,
+                  isSubAgent: true,
+                  success: subEnd?.success,
+                  childToolCalls: children.length > 0 ? children : undefined,
+                };
+              }
               return {
                 toolCallId: tr.toolCallId,
                 name: tr.name,
                 args: start?.arguments ?? tr.arguments,
                 result: complete?.content,
                 success: complete?.success,
+                parentToolCallId: start?.parentToolCallId,
               };
-            });
+            })
+            // Filter out child tool calls that already appear nested under their sub-agent parent
+            .filter((tc: any) => !tc.parentToolCallId || !subAgentStarts.has(tc.parentToolCallId));
           if (toolCalls!.length === 0) toolCalls = undefined;
         }
 

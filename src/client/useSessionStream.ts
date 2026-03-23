@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { ChatMessage, ToolCall } from "./api";
 
-interface PendingTool {
+export interface PendingTool {
   toolCallId: string;
   name: string;
   args?: Record<string, unknown>;
+  parentToolCallId?: string;
+  isSubAgent?: boolean;
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
@@ -108,6 +110,8 @@ export function useSessionStream(
                       toolCallId: t.toolCallId ?? "",
                       name: t.name ?? "unknown",
                       args: t.args,
+                      parentToolCallId: t.parentToolCallId,
+                      isSubAgent: t.isSubAgent,
                     }));
                   // Determine status from snapshot content
                   const snapshotStatus: StreamStatus =
@@ -154,6 +158,8 @@ export function useSessionStream(
                     toolCallId: event.toolCallId ?? "",
                     name: event.name ?? "unknown",
                     args: event.args,
+                    parentToolCallId: event.parentToolCallId,
+                    isSubAgent: event.isSubAgent,
                   };
                   if (tool.name === "report_intent") break;
                   toolStartSeq.set(tool.toolCallId, nextSeq++);
@@ -179,10 +185,16 @@ export function useSessionStream(
                     name: event.name ?? "unknown",
                     result: event.result,
                     success: event.success,
+                    parentToolCallId: event.parentToolCallId,
+                    isSubAgent: event.isSubAgent,
                   };
                   setStreamState((s) => {
                     const match = s.activeTools.find((t) => t.toolCallId === event.toolCallId);
-                    if (match) completed.args = match.args;
+                    if (match) {
+                      completed.args = match.args;
+                      if (match.parentToolCallId) completed.parentToolCallId = match.parentToolCallId;
+                      if (match.isSubAgent) completed.isSubAgent = match.isSubAgent;
+                    }
                     return {
                       ...s,
                       activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),

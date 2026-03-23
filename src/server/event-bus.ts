@@ -14,6 +14,7 @@ export interface ActiveTool {
   toolCallId: string;
   name: string;
   args?: Record<string, unknown>;
+  parentToolCallId?: string;
 }
 
 export interface BusSnapshot {
@@ -63,6 +64,7 @@ class SessionEventBus {
           toolCallId: (event.toolCallId as string) ?? "",
           name: event.name ?? "unknown",
           args: event.args as Record<string, unknown> | undefined,
+          parentToolCallId: event.parentToolCallId as string | undefined,
         });
         break;
       case "tool_done":

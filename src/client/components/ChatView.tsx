@@ -143,14 +143,28 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
           <div className="text-xs text-accent/70 px-4 py-1 space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
               <Loader2 size={12} className="animate-spin" />
-              {activeTools.map((t) => (
-                <span key={t.toolCallId || t.name} className="bg-accent/10 px-2 py-0.5 rounded">
-                  {t.name}
-                  {t.args && Object.keys(t.args).length > 0 && (
-                    <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>
-                  )}
-                </span>
-              ))}
+              {activeTools
+                .filter((t) => !t.parentToolCallId)
+                .map((t) => {
+                  const isAgent = t.isSubAgent || t.name.startsWith("🤖");
+                  const childCount = t.isSubAgent
+                    ? activeTools.filter((c) => c.parentToolCallId === t.toolCallId).length
+                    : 0;
+                  return (
+                    <span
+                      key={t.toolCallId || t.name}
+                      className={`px-2 py-0.5 rounded ${isAgent ? "bg-purple-500/10 text-purple-400" : "bg-accent/10"}`}
+                    >
+                      {t.name}
+                      {childCount > 0 && (
+                        <span className="text-purple-400/50 ml-1">({childCount})</span>
+                      )}
+                      {!isAgent && t.args && Object.keys(t.args).length > 0 && (
+                        <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>
+                      )}
+                    </span>
+                  );
+                })}
             </div>
             {toolProgress && (
               <div className="text-accent/50 pl-6 truncate">{toolProgress}</div>

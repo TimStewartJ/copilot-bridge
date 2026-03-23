@@ -24,6 +24,10 @@ export interface ToolCall {
   args?: Record<string, unknown>;
   result?: string;
   success?: boolean;
+  parentToolCallId?: string;
+  /** Set on sub-agent pseudo-tool entries (the group header) */
+  isSubAgent?: boolean;
+  childToolCalls?: ToolCall[];
 }
 
 export interface ChatMessage {
