@@ -18,6 +18,7 @@ export interface Task {
   id: string;
   title: string;
   status: "active" | "paused" | "done" | "archived";
+  groupId?: string;
   cwd?: string;
   notes: string;
   priority: number; // lower = higher priority
@@ -29,7 +30,7 @@ export interface Task {
   pullRequests: PRLink[];
 }
 
-type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd">>;
+type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId">>;
 
 // ── Persistence ───────────────────────────────────────────────────
 
@@ -121,6 +122,7 @@ export function updateTask(id: string, updates: TaskUpdate): Task {
   if (updates.notes !== undefined) task.notes = updates.notes;
   if (updates.priority !== undefined) task.priority = updates.priority;
   if (updates.cwd !== undefined) task.cwd = updates.cwd || undefined;
+  if (updates.groupId !== undefined) task.groupId = updates.groupId || undefined;
   task.updatedAt = new Date().toISOString();
 
   // When status changes, place task at top of new group

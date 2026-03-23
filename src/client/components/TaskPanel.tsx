@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { Task, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
+import type { Task, TaskGroup, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
 import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule } from "../api";
 import SessionList from "./SessionList";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
@@ -64,6 +64,11 @@ const PR_STATUS_DOTS: Record<string, string> = {
   abandoned: "bg-text-muted",
 };
 
+const GROUP_COLOR_DOT: Record<string, string> = {
+  blue: "bg-blue-500", purple: "bg-purple-500", green: "bg-green-500", amber: "bg-amber-500",
+  rose: "bg-rose-500", cyan: "bg-cyan-500", orange: "bg-orange-500", slate: "bg-slate-500",
+};
+
 function SectionLabel({ label, count }: { label: string; count?: number }) {
   return (
     <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider px-3 py-1">
@@ -80,6 +85,7 @@ function SectionLabel({ label, count }: { label: string; count?: number }) {
 interface TaskPanelProps {
   // Task mode
   task: Task | null;
+  taskGroups?: TaskGroup[];
   sessions: Session[];
   activeSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
@@ -102,12 +108,14 @@ interface TaskPanelProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onDeleteTask?: (taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
 
 export default function TaskPanel({
   task,
+  taskGroups = [],
   sessions,
   activeSessionId,
   onSelectSession,
@@ -125,6 +133,7 @@ export default function TaskPanel({
   onUnlinkFromTask,
   onDeleteTask,
   onDeleteSession,
+  onMoveTaskToGroup,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
@@ -282,6 +291,19 @@ export default function TaskPanel({
               </button>
             )}
           </div>
+
+          {/* Group badge */}
+          {(() => {
+            const group = taskGroups.find((g) => g.id === task.groupId);
+            if (!group) return null;
+            const colorDot = GROUP_COLOR_DOT[group.color] ?? "bg-slate-500";
+            return (
+              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-bg-hover shrink-0" title={`Group: ${group.name}`}>
+                <span className={`w-2 h-2 rounded-full ${colorDot}`} />
+                <span className="truncate max-w-[80px]">{group.name}</span>
+              </div>
+            );
+          })()}
 
           {/* Overflow menu */}
           <div className="relative shrink-0" ref={overflowRef}>

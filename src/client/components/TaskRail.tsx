@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
-import type { Task, Session } from "../api";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import type { Task, TaskGroup, Session } from "../api";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
@@ -21,6 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 
 interface TaskRailProps {
   tasks: Task[];
+  taskGroups?: TaskGroup[];
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
   onNewTask: () => void;
@@ -36,6 +37,10 @@ interface TaskRailProps {
   onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
+  onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
+  onDeleteGroup?: (groupId: string) => void;
+  onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -59,6 +64,19 @@ const STATUS_TEXT: Record<Task["status"], string> = {
   archived: "text-text-faint",
 };
 
+const GROUP_COLOR_DOT: Record<string, string> = {
+  blue: "bg-blue-500",
+  purple: "bg-purple-500",
+  green: "bg-green-500",
+  amber: "bg-amber-500",
+  rose: "bg-rose-500",
+  cyan: "bg-cyan-500",
+  orange: "bg-orange-500",
+  slate: "bg-slate-500",
+};
+
+const GROUP_COLORS_LIST = ["blue", "purple", "green", "amber", "rose", "cyan", "orange", "slate"];
+
 function timeAgo(iso?: string): string {
   if (!iso) return "";
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -70,6 +88,7 @@ function timeAgo(iso?: string): string {
 
 export default function TaskRail({
   tasks,
+  taskGroups = [],
   activeTaskId,
   onSelectTask,
   onNewTask,
@@ -85,6 +104,10 @@ export default function TaskRail({
   onUpdateTask,
   onDeleteTask,
   onReorderTasks,
+  onCreateGroup,
+  onUpdateGroup,
+  onDeleteGroup,
+  onMoveTaskToGroup,
 }: TaskRailProps) {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -128,6 +151,31 @@ export default function TaskRail({
     [tasks],
   );
 
+  // Grouped tasks — only when groups exist
+  const hasGroups = taskGroups.length > 0;
+
+  const groupedSections = useMemo(() => {
+    if (!hasGroups) return null;
+    const nonArchived = sortedTasks;
+    const sections: { group: TaskGroup | null; tasks: Task[] }[] = [];
+
+    // One section per group (in group order)
+    for (const group of taskGroups) {
+      sections.push({
+        group,
+        tasks: nonArchived.filter((t) => t.groupId === group.id),
+      });
+    }
+
+    // Ungrouped section
+    const ungrouped = nonArchived.filter((t) => !t.groupId || !taskGroups.some((g) => g.id === t.groupId));
+    if (ungrouped.length > 0) {
+      sections.push({ group: null, tasks: ungrouped });
+    }
+
+    return sections;
+  }, [hasGroups, sortedTasks, taskGroups]);
+
   const [showArchived, setShowArchived] = useState(false);
 
   // Context menu state
@@ -136,6 +184,9 @@ export default function TaskRail({
   const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
 
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
+
+  // Group context menu state
+  const [groupCtx, setGroupCtx] = useState<{ groupId: string; x: number; y: number } | null>(null);
 
   // DnD setup
   const sensors = useSensors(
@@ -149,10 +200,29 @@ export default function TaskRail({
 
     const activeTask = sortedTasks.find((t) => t.id === active.id);
     const overTask = sortedTasks.find((t) => t.id === over.id);
-    if (!activeTask || !overTask || activeTask.status !== overTask.status) return;
+    if (!activeTask || !overTask) return;
 
-    // Reorder within the same status group
-    const group = sortedTasks.filter((t) => t.status === activeTask.status);
+    // Cross-group drag: reassign groupId
+    const activeGroup = activeTask.groupId;
+    const overGroup = overTask.groupId;
+    if (hasGroups && activeGroup !== overGroup && onMoveTaskToGroup) {
+      onMoveTaskToGroup(activeTask.id, overGroup);
+      // Reorder within the target group
+      const targetGroupTasks = sortedTasks.filter(
+        (t) => t.groupId === overGroup && t.id !== activeTask.id,
+      );
+      const overIndex = targetGroupTasks.findIndex((t) => t.id === over.id);
+      targetGroupTasks.splice(overIndex, 0, activeTask);
+      onReorderTasks(targetGroupTasks.map((t) => t.id));
+      return;
+    }
+
+    // Same-group reorder (constrain to same status within group)
+    if (activeTask.status !== overTask.status) return;
+
+    const group = sortedTasks.filter(
+      (t) => t.status === activeTask.status && t.groupId === activeTask.groupId,
+    );
     const oldIndex = group.findIndex((t) => t.id === active.id);
     const newIndex = group.findIndex((t) => t.id === over.id);
     if (oldIndex === -1 || newIndex === -1) return;
@@ -161,7 +231,7 @@ export default function TaskRail({
     const [moved] = reordered.splice(oldIndex, 1);
     reordered.splice(newIndex, 0, moved);
     onReorderTasks(reordered.map((t) => t.id));
-  }, [sortedTasks, onReorderTasks]);
+  }, [sortedTasks, onReorderTasks, hasGroups, onMoveTaskToGroup]);
 
   const ctxUnreadCount = useMemo(() => {
     if (!ctxTask || !isUnread) return 0;
@@ -188,28 +258,73 @@ export default function TaskRail({
 
         {/* Task items */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center gap-2 py-2 scrollbar-thin">
-          {sortedTasks.map((task) => {
-            const isActive = task.id === activeTaskId;
-            const indicator = taskIndicators.get(task.id);
-            const initials = task.title.slice(0, 2).toUpperCase();
+          {hasGroups && groupedSections ? (
+            // Grouped mode — color dividers between groups
+            groupedSections.map((section, si) => {
+              const group = section.group;
+              const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
+              const isCollapsed = group?.collapsed ?? false;
 
-            return (
-              <button
-                key={task.id}
-                onClick={() => onSelectTask(task.id)}
-                title={task.title}
-                className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
-              >
-                {initials}
-                {indicator === "busy" && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
-                )}
-                {indicator === "unread" && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
-                )}
-              </button>
-            );
-          })}
+              return (
+                <div key={group?.id ?? "__ungrouped__"} className="flex flex-col items-center gap-2 w-full">
+                  {/* Group divider */}
+                  {si > 0 && <div className="w-6 border-t border-border" />}
+                  {colorDot && (
+                    <span
+                      className={`w-2 h-2 rounded-full ${colorDot} shrink-0`}
+                      title={group?.name}
+                    />
+                  )}
+                  {!isCollapsed && section.tasks.map((task) => {
+                    const isActive = task.id === activeTaskId;
+                    const indicator = taskIndicators.get(task.id);
+                    const initials = task.title.slice(0, 2).toUpperCase();
+
+                    return (
+                      <button
+                        key={task.id}
+                        onClick={() => onSelectTask(task.id)}
+                        title={task.title}
+                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
+                      >
+                        {initials}
+                        {indicator === "busy" && (
+                          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
+                        )}
+                        {indicator === "unread" && (
+                          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })
+          ) : (
+            // Flat mode
+            sortedTasks.map((task) => {
+              const isActive = task.id === activeTaskId;
+              const indicator = taskIndicators.get(task.id);
+              const initials = task.title.slice(0, 2).toUpperCase();
+
+              return (
+                <button
+                  key={task.id}
+                  onClick={() => onSelectTask(task.id)}
+                  title={task.title}
+                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
+                >
+                  {initials}
+                  {indicator === "busy" && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
+                  )}
+                  {indicator === "unread" && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
+                  )}
+                </button>
+              );
+            })
+          )}
           {archivedTasks.length > 0 && (
             <>
               <button
@@ -310,20 +425,78 @@ export default function TaskRail({
       {/* Task list */}
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-            {sortedTasks.map((task) => (
-              <SortableRailItem
-                key={task.id}
-                task={task}
-                isActive={task.id === activeTaskId}
-                indicator={taskIndicators.get(task.id)}
-                isCtxTarget={ctxMenu?.id === task.id}
-                isLongPressTarget={isTarget(task.id)}
-                bindLongPress={bindLongPress}
-                onSelectTask={onSelectTask}
-              />
-            ))}
-          </SortableContext>
+          {hasGroups && groupedSections ? (
+            // ── Grouped mode ──────────────────────────────────
+            <>
+              {groupedSections.map((section) => {
+                const group = section.group;
+                const isCollapsed = group?.collapsed ?? false;
+                const groupId = group?.id ?? "__ungrouped__";
+                const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
+
+                return (
+                  <div key={groupId} className="mb-1">
+                    {/* Group header */}
+                    <button
+                      onClick={() => {
+                        if (group && onUpdateGroup) {
+                          onUpdateGroup(group.id, { collapsed: !isCollapsed });
+                        }
+                      }}
+                      onContextMenu={(e) => {
+                        if (group) {
+                          e.preventDefault();
+                          setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
+                        }
+                      }}
+                      className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer group/header"
+                    >
+                      {group ? (
+                        isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
+                      ) : null}
+                      {colorDot && <span className={`w-2 h-2 rounded-full ${colorDot} shrink-0`} />}
+                      <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
+                      <span className="text-text-faint ml-auto text-[10px]">{section.tasks.length}</span>
+                    </button>
+
+                    {/* Group tasks */}
+                    {!isCollapsed && (
+                      <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                        {section.tasks.map((task) => (
+                          <SortableRailItem
+                            key={task.id}
+                            task={task}
+                            isActive={task.id === activeTaskId}
+                            indicator={taskIndicators.get(task.id)}
+                            isCtxTarget={ctxMenu?.id === task.id}
+                            isLongPressTarget={isTarget(task.id)}
+                            bindLongPress={bindLongPress}
+                            onSelectTask={onSelectTask}
+                          />
+                        ))}
+                      </SortableContext>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            // ── Flat mode (no groups) ──────────────────────────
+            <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+              {sortedTasks.map((task) => (
+                <SortableRailItem
+                  key={task.id}
+                  task={task}
+                  isActive={task.id === activeTaskId}
+                  indicator={taskIndicators.get(task.id)}
+                  isCtxTarget={ctxMenu?.id === task.id}
+                  isLongPressTarget={isTarget(task.id)}
+                  bindLongPress={bindLongPress}
+                  onSelectTask={onSelectTask}
+                />
+              ))}
+            </SortableContext>
+          )}
         </DndContext>
         {sortedTasks.length === 0 && (
           <div className="text-center text-text-muted text-xs py-6">
@@ -455,6 +628,49 @@ export default function TaskRail({
               }}
             />
           )}
+          {/* Move to Group */}
+          {onMoveTaskToGroup && taskGroups.length > 0 && (
+            <>
+              <CtxDivider />
+              <div className="px-3 py-1 text-[10px] font-semibold text-text-faint uppercase tracking-wider">Move to Group</div>
+              {taskGroups.map((g) => (
+                <CtxItem
+                  key={g.id}
+                  icon={<span className={`w-2.5 h-2.5 rounded-full ${GROUP_COLOR_DOT[g.color] ?? "bg-slate-500"}`} />}
+                  label={g.name}
+                  className={ctxTask.groupId === g.id ? "text-accent font-medium" : ""}
+                  onClick={() => {
+                    if (ctxTask.groupId !== g.id) onMoveTaskToGroup(ctxTask.id, g.id);
+                    closeMenu();
+                  }}
+                />
+              ))}
+              {ctxTask.groupId && (
+                <CtxItem
+                  icon={<FolderMinus size={14} />}
+                  label="Remove from group"
+                  onClick={() => { onMoveTaskToGroup(ctxTask.id, undefined); closeMenu(); }}
+                />
+              )}
+            </>
+          )}
+          {onMoveTaskToGroup && onCreateGroup && (
+            <>
+              {taskGroups.length === 0 && <CtxDivider />}
+              <CtxItem
+                icon={<FolderOpen size={14} />}
+                label="New Group..."
+                onClick={async () => {
+                  closeMenu();
+                  const name = window.prompt("Group name:");
+                  if (name?.trim()) {
+                    const group = await onCreateGroup(name.trim());
+                    if (group) onMoveTaskToGroup(ctxTask.id, group.id);
+                  }
+                }}
+              />
+            </>
+          )}
           {onDeleteTask && (
             <>
               <CtxDivider />
@@ -464,6 +680,55 @@ export default function TaskRail({
           )}
         </ContextMenu>
       )}
+
+      {/* Group context menu */}
+      {groupCtx && (() => {
+        const group = taskGroups.find((g) => g.id === groupCtx.groupId);
+        if (!group) return null;
+        return (
+          <ContextMenu position={{ x: groupCtx.x, y: groupCtx.y }} onClose={() => setGroupCtx(null)}>
+            <CtxItem
+              icon={<Pencil size={14} />}
+              label="Rename"
+              onClick={() => {
+                setGroupCtx(null);
+                const name = window.prompt("Group name:", group.name);
+                if (name?.trim() && name.trim() !== group.name && onUpdateGroup) {
+                  onUpdateGroup(group.id, { name: name.trim() });
+                }
+              }}
+            />
+            {/* Color picker */}
+            <div className="px-3 py-1.5">
+              <div className="text-[10px] text-text-faint mb-1 flex items-center gap-1">
+                <Palette size={10} /> Color
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {GROUP_COLORS_LIST.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => {
+                      if (onUpdateGroup && c !== group.color) onUpdateGroup(group.id, { color: c });
+                      setGroupCtx(null);
+                    }}
+                    className={`w-4 h-4 rounded-full ${GROUP_COLOR_DOT[c]} transition-all ${c === group.color ? "ring-2 ring-white ring-offset-1 ring-offset-bg-elevated scale-110" : "hover:scale-110"}`}
+                  />
+                ))}
+              </div>
+            </div>
+            <CtxDivider />
+            <CtxItem
+              icon={<Trash2 size={14} />}
+              label="Delete Group"
+              className="text-error"
+              onClick={() => {
+                if (onDeleteGroup) onDeleteGroup(group.id);
+                setGroupCtx(null);
+              }}
+            />
+          </ContextMenu>
+        );
+      })()}
     </div>
   );
 }

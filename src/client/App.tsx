@@ -13,8 +13,13 @@ import {
   createTaskSession,
   linkResource,
   reorderTasks,
+  fetchTaskGroups,
+  createTaskGroup,
+  patchTaskGroup,
+  deleteTaskGroup,
   type Session,
   type Task,
+  type TaskGroup,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { useStatusStream } from "./useStatusStream";
@@ -36,6 +41,7 @@ export default function App() {
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [quickChatsMode, setQuickChatsMode] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
@@ -100,9 +106,18 @@ export default function App() {
     }
   };
 
+  const loadTaskGroups = async () => {
+    try {
+      setTaskGroups(await fetchTaskGroups());
+    } catch (err) {
+      console.error("Failed to load task groups:", err);
+    }
+  };
+
   useEffect(() => {
     loadSessions();
     loadTasks();
+    loadTaskGroups();
   }, []);
 
   // Real-time status updates via SSE
@@ -325,6 +340,50 @@ export default function App() {
     }
   };
 
+  // ── Task Group handlers ─────────────────────────────────────────
+
+  const handleCreateGroup = async (name: string, color?: string) => {
+    try {
+      const group = await createTaskGroup(name, color);
+      setTaskGroups((prev) => [...prev, group]);
+      return group;
+    } catch (err) {
+      console.error("Failed to create group:", err);
+      return null;
+    }
+  };
+
+  const handleUpdateGroup = async (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => {
+    try {
+      const updated = await patchTaskGroup(groupId, updates);
+      setTaskGroups((prev) => prev.map((g) => (g.id === groupId ? updated : g)));
+    } catch (err) {
+      console.error("Failed to update group:", err);
+    }
+  };
+
+  const handleDeleteGroup = async (groupId: string) => {
+    try {
+      await deleteTaskGroup(groupId);
+      setTaskGroups((prev) => prev.filter((g) => g.id !== groupId));
+      // Tasks in this group become ungrouped — refetch
+      setTasks(await fetchTasks());
+    } catch (err) {
+      console.error("Failed to delete group:", err);
+    }
+  };
+
+  const handleMoveTaskToGroup = async (taskId: string, groupId: string | undefined) => {
+    // Optimistic update
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, groupId } : t)));
+    try {
+      await patchTask(taskId, { groupId: groupId ?? ("" as any) });
+    } catch (err) {
+      console.error("Failed to move task to group:", err);
+      setTasks(await fetchTasks());
+    }
+  };
+
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
     setArchivingIds((prev) => new Set(prev).add(sessionId));
     const nextId = archived && activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
@@ -399,6 +458,7 @@ export default function App() {
       {/* ── Task Rail (desktop only) ──────────────────────── */}
       <TaskRail
         tasks={tasks}
+        taskGroups={taskGroups}
         activeTaskId={activeTaskId}
         onSelectTask={handleSelectTask}
         onNewTask={handleNewTask}
@@ -414,6 +474,10 @@ export default function App() {
         onUpdateTask={handleUpdateTask}
         onDeleteTask={handleDeleteTask}
         onReorderTasks={handleReorderTasks}
+        onCreateGroup={handleCreateGroup}
+        onUpdateGroup={handleUpdateGroup}
+        onDeleteGroup={handleDeleteGroup}
+        onMoveTaskToGroup={handleMoveTaskToGroup}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
@@ -441,6 +505,11 @@ export default function App() {
             onDeleteTask={handleDeleteTask}
             onReorderTasks={handleReorderTasks}
             quickChatsMode={quickChatsMode}
+            taskGroups={taskGroups}
+            onMoveTaskToGroup={handleMoveTaskToGroup}
+            onCreateGroup={handleCreateGroup}
+            onUpdateGroup={handleUpdateGroup}
+            onDeleteGroup={handleDeleteGroup}
             orphanSessions={globalSessions}
             activeSessionId={activeSessionId}
             onSelectSession={(id) => navigate(`/sessions/${id}`)}
@@ -450,7 +519,7 @@ export default function App() {
             allTasks={tasks}
             onLinkToTask={handleLinkToTask}
             onDeleteSession={handleDeleteSession}
-            onRefresh={async () => { await Promise.all([loadTasks(), loadSessions()]); }}
+            onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
           />
         </div>
 
@@ -461,6 +530,7 @@ export default function App() {
         `.trim()}>
           <TaskPanel
             task={selectedTask}
+            taskGroups={taskGroups}
             sessions={sessions}
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
@@ -477,6 +547,7 @@ export default function App() {
             onLinkToTask={handleLinkToTask}
             onDeleteTask={handleDeleteTask}
             onDeleteSession={handleDeleteSession}
+            onMoveTaskToGroup={handleMoveTaskToGroup}
           />
         </div>
       </div>
@@ -574,6 +645,11 @@ function MobileTaskListView({
   onDeleteTask,
   onReorderTasks,
   quickChatsMode,
+  taskGroups,
+  onMoveTaskToGroup,
+  onCreateGroup,
+  onUpdateGroup,
+  onDeleteGroup,
   orphanSessions,
   activeSessionId,
   onSelectSession,
@@ -599,6 +675,11 @@ function MobileTaskListView({
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
   quickChatsMode: boolean;
+  taskGroups?: TaskGroup[];
+  onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
+  onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
+  onDeleteGroup?: (groupId: string) => void;
   orphanSessions: Session[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
@@ -662,6 +743,7 @@ function MobileTaskListView({
         ) : (
           <TaskList
             tasks={tasks}
+            taskGroups={taskGroups}
             activeTaskId={activeTaskId}
             onSelectTask={onSelectTask}
             onNewTask={onNewTask}
@@ -671,6 +753,10 @@ function MobileTaskListView({
             onUpdateTask={onUpdateTask}
             onDeleteTask={onDeleteTask}
             onReorderTasks={onReorderTasks}
+            onMoveTaskToGroup={onMoveTaskToGroup}
+            onCreateGroup={onCreateGroup}
+            onUpdateGroup={onUpdateGroup}
+            onDeleteGroup={onDeleteGroup}
             className="p-2 space-y-2"
           />
         )}

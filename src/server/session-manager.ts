@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import * as taskStore from "./task-store.js";
 import type { Task } from "./task-store.js";
+import * as taskGroupStore from "./task-group-store.js";
 import * as scheduleStore from "./schedule-store.js";
 import * as schedulerModule from "./scheduler.js";
 import { getOrCreateBus } from "./event-bus.js";
@@ -164,14 +165,15 @@ const BRIDGE_TOOLS = [
     },
   }),
   defineTool("task_update", {
-    description: "Update a task's title, notes, and/or working directory. Only provided fields are changed.",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "New title" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, cwd: { type: "string", description: "Working directory path for the task" } }, required: ["taskId"] },
+    description: "Update a task's title, notes, working directory, and/or group. Only provided fields are changed.",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "New title" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, cwd: { type: "string", description: "Working directory path for the task" }, groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" } }, required: ["taskId"] },
     handler: async (args: any) => {
       const updates: Record<string, string> = {};
       if (args.title !== undefined) updates.title = args.title;
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
-      if (Object.keys(updates).length === 0) return { error: "No fields to update. Provide at least one of: title, notes, cwd" };
+      if (args.groupId !== undefined) updates.groupId = args.groupId || "";
+      if (Object.keys(updates).length === 0) return { error: "No fields to update. Provide at least one of: title, notes, cwd, groupId" };
       taskStore.updateTask(args.taskId, updates);
       const fields = Object.keys(updates).join(", ");
       return { success: true, message: `Task updated (${fields})` };
@@ -185,10 +187,10 @@ const BRIDGE_TOOLS = [
     },
   }),
   defineTool("task_list", {
-    description: "List all tasks with their IDs, titles, and statuses",
+    description: "List all tasks with their IDs, titles, statuses, and group IDs",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { tasks: taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status })) };
+      return { tasks: taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status, groupId: t.groupId })) };
     },
   }),
   defineTool("task_create", {
@@ -197,6 +199,31 @@ const BRIDGE_TOOLS = [
     handler: async (args: any) => {
       const task = taskStore.createTask(args.title);
       return { success: true, message: `Task "${task.title}" created`, taskId: task.id };
+    },
+  }),
+  defineTool("task_group_create", {
+    description: "Create a new task group for organizing related tasks",
+    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Bootstrap')" }, color: { type: "string", description: "Optional color: blue, purple, green, amber, rose, cyan, orange, slate" } }, required: ["name"] },
+    handler: async (args: any) => {
+      const group = taskGroupStore.createGroup(args.name, args.color);
+      return { success: true, message: `Group "${group.name}" created`, groupId: group.id };
+    },
+  }),
+  defineTool("task_group_list", {
+    description: "List all task groups with their IDs and names",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      return { groups: taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color })) };
+    },
+  }),
+  defineTool("task_group_delete", {
+    description: "Delete a task group. Tasks in the group become ungrouped.",
+    parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to delete" } }, required: ["groupId"] },
+    handler: async (args: any) => {
+      const tasks = taskStore.listTasks().filter((t) => t.groupId === args.groupId);
+      for (const t of tasks) taskStore.updateTask(t.id, { groupId: undefined });
+      taskGroupStore.deleteGroup(args.groupId);
+      return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
     },
   }),
   defineTool("session_rename", {

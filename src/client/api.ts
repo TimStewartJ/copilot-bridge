@@ -43,6 +43,7 @@ export interface Task {
   id: string;
   title: string;
   status: "active" | "paused" | "done" | "archived";
+  groupId?: string;
   cwd?: string;
   notes: string;
   priority: number;
@@ -52,6 +53,16 @@ export interface Task {
   sessionIds: string[];
   workItemIds: number[];
   pullRequests: PRLink[];
+}
+
+export interface TaskGroup {
+  id: string;
+  name: string;
+  color: string;
+  order: number;
+  collapsed: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ── Enriched types ────────────────────────────────────────────────
@@ -167,7 +178,7 @@ export async function updateTask(
 
 export async function patchTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd">>,
+  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId">>,
 ): Promise<Task> {
   const res = await fetch(`/api/tasks/${id}`, {
     method: "PATCH",
@@ -231,6 +242,53 @@ export async function createTaskSession(taskId: string): Promise<string> {
     {},
   );
   return data.sessionId;
+}
+
+// ── Task Group API ────────────────────────────────────────────────
+
+export async function fetchTaskGroups(): Promise<TaskGroup[]> {
+  const data = await apiFetch<{ groups: TaskGroup[] }>("/api/task-groups");
+  return data.groups;
+}
+
+export async function createTaskGroup(name: string, color?: string): Promise<TaskGroup> {
+  const data = await apiFetch<{ group: TaskGroup }>("/api/task-groups", { name, color });
+  return data.group;
+}
+
+export async function patchTaskGroup(
+  id: string,
+  updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>,
+): Promise<TaskGroup> {
+  const res = await fetch(`/api/task-groups/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.group;
+}
+
+export async function deleteTaskGroup(id: string): Promise<void> {
+  await fetch(`/api/task-groups/${id}`, { method: "DELETE" });
+}
+
+export async function reorderTaskGroups(groupIds: string[]): Promise<TaskGroup[]> {
+  const res = await fetch("/api/task-groups/reorder", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groupIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.groups;
 }
 
 // ── Plan API ──────────────────────────────────────────────────────

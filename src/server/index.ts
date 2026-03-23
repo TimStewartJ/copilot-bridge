@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { config } from "./config.js";
 import { SessionManager, isRestartPending, getRestartWaitingCount, clearRestartPending } from "./session-manager.js";
 import * as taskStore from "./task-store.js";
+import * as taskGroupStore from "./task-group-store.js";
 import * as sessionMetaStore from "./session-meta-store.js";
 import * as settingsStore from "./settings-store.js";
 import * as sessionTitles from "./session-titles.js";
@@ -306,6 +307,51 @@ app.delete("/api/sessions/:id", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── Task Group routes ─────────────────────────────────────────────
+
+app.get("/api/task-groups", (_req, res) => {
+  res.json({ groups: taskGroupStore.listGroups() });
+});
+
+app.post("/api/task-groups", (req, res) => {
+  const { name, color } = req.body;
+  if (!name) return res.status(400).json({ error: "name is required" });
+  try {
+    const group = taskGroupStore.createGroup(name, color);
+    res.json({ group });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.patch("/api/task-groups/:id", (req, res) => {
+  try {
+    const group = taskGroupStore.updateGroup(req.params.id, req.body);
+    res.json({ group });
+  } catch (err) {
+    res.status(404).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/task-groups/:id", (req, res) => {
+  // Ungroup any tasks that belong to this group
+  const tasks = taskStore.listTasks().filter((t) => t.groupId === req.params.id);
+  for (const t of tasks) taskStore.updateTask(t.id, { groupId: undefined });
+  taskGroupStore.deleteGroup(req.params.id);
+  res.json({ success: true });
+});
+
+app.put("/api/task-groups/reorder", (req, res) => {
+  const { groupIds } = req.body;
+  if (!Array.isArray(groupIds)) return res.status(400).json({ error: "groupIds array is required" });
+  try {
+    const groups = taskGroupStore.reorderGroups(groupIds);
+    res.json({ groups });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
   }
 });
 

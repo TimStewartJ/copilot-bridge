@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
-import type { Task, Session } from "../api";
-import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical } from "lucide-react";
+import type { Task, TaskGroup, Session } from "../api";
+import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
@@ -30,8 +30,14 @@ function timeAgo(iso?: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+const GROUP_COLOR_DOT: Record<string, string> = {
+  blue: "bg-blue-500", purple: "bg-purple-500", green: "bg-green-500", amber: "bg-amber-500",
+  rose: "bg-rose-500", cyan: "bg-cyan-500", orange: "bg-orange-500", slate: "bg-slate-500",
+};
+
 interface TaskListProps {
   tasks: Task[];
+  taskGroups?: TaskGroup[];
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
   onNewTask: () => void;
@@ -41,11 +47,16 @@ interface TaskListProps {
   onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
+  onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
+  onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
+  onDeleteGroup?: (groupId: string) => void;
   className?: string;
 }
 
 export default function TaskList({
   tasks,
+  taskGroups = [],
   activeTaskId,
   onSelectTask,
   onNewTask,
@@ -55,6 +66,10 @@ export default function TaskList({
   onUpdateTask,
   onDeleteTask,
   onReorderTasks,
+  onMoveTaskToGroup,
+  onCreateGroup,
+  onUpdateGroup,
+  onDeleteGroup,
   className,
 }: TaskListProps) {
   // Build a lookup of sessionId → Session for quick access
@@ -112,6 +127,23 @@ export default function TaskList({
 
   const [showArchived, setShowArchived] = useState(false);
 
+  const hasGroups = taskGroups.length > 0;
+
+  const groupedSections = useMemo(() => {
+    if (!hasGroups) return null;
+    const nonArchived = sorted.filter((t) => t.status !== "archived");
+    const sections: { group: TaskGroup | null; tasks: Task[] }[] = [];
+    for (const group of taskGroups) {
+      const groupTasks = nonArchived.filter((t) => t.groupId === group.id);
+      sections.push({ group, tasks: groupTasks });
+    }
+    const ungrouped = nonArchived.filter((t) => !t.groupId || !taskGroups.some((g) => g.id === t.groupId));
+    if (ungrouped.length > 0) {
+      sections.push({ group: null, tasks: ungrouped });
+    }
+    return sections;
+  }, [hasGroups, sorted, taskGroups]);
+
   // DnD setup
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -122,11 +154,18 @@ export default function TaskList({
     const { active, over } = event;
     if (!over || active.id === over.id || !onReorderTasks) return;
 
-    // Find which group these belong to
     const allNonArchived = [...grouped.active, ...grouped.paused, ...grouped.done];
     const activeTask = allNonArchived.find((t) => t.id === active.id);
     const overTask = allNonArchived.find((t) => t.id === over.id);
-    if (!activeTask || !overTask || activeTask.status !== overTask.status) return;
+    if (!activeTask || !overTask) return;
+
+    // Cross-group drag
+    if (hasGroups && activeTask.groupId !== overTask.groupId && onMoveTaskToGroup) {
+      onMoveTaskToGroup(activeTask.id, overTask.groupId);
+      return;
+    }
+
+    if (activeTask.status !== overTask.status) return;
 
     const group = grouped[activeTask.status] as Task[];
     const oldIndex = group.findIndex((t) => t.id === active.id);
@@ -137,7 +176,7 @@ export default function TaskList({
     const [moved] = reordered.splice(oldIndex, 1);
     reordered.splice(newIndex, 0, moved);
     onReorderTasks(reordered.map((t) => t.id));
-  }, [grouped, onReorderTasks]);
+  }, [grouped, onReorderTasks, hasGroups, onMoveTaskToGroup]);
 
   const renderGroup = (label: string, items: Task[]) => {
     if (items.length === 0) return null;
@@ -173,9 +212,50 @@ export default function TaskList({
         + New Task
       </button>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        {renderGroup("Active", grouped.active)}
-        {renderGroup("Paused", grouped.paused)}
-        {renderGroup("Done", grouped.done)}
+        {hasGroups && groupedSections ? (
+          groupedSections.map((section) => {
+            const group = section.group;
+            const isCollapsed = group?.collapsed ?? false;
+            const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
+
+            return (
+              <div key={group?.id ?? "__ungrouped__"}>
+                <button
+                  onClick={() => {
+                    if (group && onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
+                  }}
+                  className="w-full px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-1.5"
+                >
+                  {group ? (isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />) : null}
+                  {colorDot && <span className={`w-2 h-2 rounded-full ${colorDot}`} />}
+                  {group?.name ?? "Ungrouped"} ({section.tasks.length})
+                </button>
+                {!isCollapsed && (
+                  <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                    {section.tasks.map((task) => (
+                      <SortableListItem
+                        key={task.id}
+                        task={task}
+                        isActive={task.id === activeTaskId}
+                        indicator={taskIndicators.get(task.id)}
+                        isCtxTarget={ctxMenu?.id === task.id}
+                        isLongPressTarget={isTarget(task.id)}
+                        bindLongPress={bindLongPress}
+                        onSelectTask={onSelectTask}
+                      />
+                    ))}
+                  </SortableContext>
+                )}
+              </div>
+            );
+          })
+        ) : (
+          <>
+            {renderGroup("Active", grouped.active)}
+            {renderGroup("Paused", grouped.paused)}
+            {renderGroup("Done", grouped.done)}
+          </>
+        )}
       </DndContext>
       {grouped.archived.length > 0 && (
         <>
@@ -261,6 +341,50 @@ export default function TaskList({
                 closeMenu();
               }}
             />
+          )}
+
+          {/* Move to Group */}
+          {onMoveTaskToGroup && taskGroups.length > 0 && (
+            <>
+              <CtxDivider />
+              <div className="px-3 py-1 text-[10px] font-semibold text-text-faint uppercase tracking-wider">Move to Group</div>
+              {taskGroups.map((g) => (
+                <CtxItem
+                  key={g.id}
+                  icon={<span className={`w-2.5 h-2.5 rounded-full ${GROUP_COLOR_DOT[g.color] ?? "bg-slate-500"}`} />}
+                  label={g.name}
+                  className={ctxTask.groupId === g.id ? "text-accent font-medium" : ""}
+                  onClick={() => {
+                    if (ctxTask.groupId !== g.id) onMoveTaskToGroup(ctxTask.id, g.id);
+                    closeMenu();
+                  }}
+                />
+              ))}
+              {ctxTask.groupId && (
+                <CtxItem
+                  icon={<FolderMinus size={14} />}
+                  label="Remove from group"
+                  onClick={() => { onMoveTaskToGroup(ctxTask.id, undefined); closeMenu(); }}
+                />
+              )}
+            </>
+          )}
+          {onMoveTaskToGroup && onCreateGroup && (
+            <>
+              {taskGroups.length === 0 && <CtxDivider />}
+              <CtxItem
+                icon={<FolderOpen size={14} />}
+                label="New Group..."
+                onClick={async () => {
+                  closeMenu();
+                  const name = window.prompt("Group name:");
+                  if (name?.trim()) {
+                    const group = await onCreateGroup(name.trim());
+                    if (group) onMoveTaskToGroup(ctxTask.id, group.id);
+                  }
+                }}
+              />
+            </>
           )}
 
           {/* Delete */}
