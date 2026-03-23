@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { fetchMessages, type ChatMessage } from "../api";
+import { fetchMessages, type BlobAttachment, type ChatMessage } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
@@ -84,11 +84,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isStreaming, streamingContent, activeTools]);
 
-  const handleSend = useCallback(async (prompt: string) => {
+  const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (!sessionId || isStreaming) return;
-    setMessages((prev) => [...prev, { role: "user", content: prompt }]);
+    setMessages((prev) => [...prev, { role: "user", content: prompt, ...(attachments?.length ? { attachments } : {}) }]);
     try {
-      await sendMessage(prompt);
+      await sendMessage(prompt, attachments);
     } catch (err: any) {
       setMessages((prev) => [
         ...prev,

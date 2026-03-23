@@ -53,10 +53,30 @@ export default memo(function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
+    const hasAttachments = message.attachments && message.attachments.length > 0;
     return (
       <div className="flex justify-end">
         <div className="max-w-[85%] px-4 py-3 bg-accent text-white rounded-2xl rounded-br-sm text-sm leading-relaxed whitespace-pre-wrap break-words">
-          {message.content}
+          {hasAttachments && (
+            <div className="flex gap-2 flex-wrap mb-2">
+              {message.attachments!.map((att, i) => (
+                <a
+                  key={i}
+                  href={`data:${att.mimeType};base64,${att.data}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={att.displayName ?? "Click to view full size"}
+                >
+                  <img
+                    src={`data:${att.mimeType};base64,${att.data}`}
+                    alt={att.displayName ?? "attachment"}
+                    className="max-w-[200px] max-h-[200px] rounded-md border border-white/20 cursor-pointer hover:opacity-90 transition-opacity"
+                  />
+                </a>
+              ))}
+            </div>
+          )}
+          {message.content !== "(image)" && message.content}
         </div>
       </div>
     );

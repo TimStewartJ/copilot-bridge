@@ -30,11 +30,20 @@ export interface ToolCall {
   childToolCalls?: ToolCall[];
 }
 
+export interface BlobAttachment {
+  type: "blob";
+  /** Base64-encoded content (no data-URI prefix) */
+  data: string;
+  mimeType: string;
+  displayName?: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
   toolCalls?: ToolCall[];
+  attachments?: BlobAttachment[];
 }
 
 export type ProviderName = "ado" | "github";

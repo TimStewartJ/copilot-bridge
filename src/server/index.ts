@@ -25,7 +25,7 @@ import { pruneOrphanedWorktrees } from "./staging-tools.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 
 const sessionManager = new SessionManager();
 
@@ -163,7 +163,7 @@ app.post("/api/sessions", async (req, res) => {
 
 // POST /api/chat — fire and forget, starts work in background
 app.post("/api/chat", (req, res) => {
-  const { sessionId, prompt } = req.body;
+  const { sessionId, prompt, attachments } = req.body;
 
   if (!sessionId || !prompt) {
     return res.status(400).json({ error: "sessionId and prompt are required" });
@@ -173,10 +173,11 @@ app.post("/api/chat", (req, res) => {
     return res.status(429).json({ error: "Session is busy, please wait" });
   }
 
-  console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
+  const attachCount = Array.isArray(attachments) ? attachments.length : 0;
+  console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"${attachCount ? ` (+${attachCount} attachment${attachCount > 1 ? "s" : ""})` : ""}`);
 
   try {
-    sessionManager.startWork(sessionId, prompt);
+    sessionManager.startWork(sessionId, prompt, attachments);
     res.status(202).json({ status: "accepted" });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

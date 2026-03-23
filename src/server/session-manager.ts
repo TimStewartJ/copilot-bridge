@@ -489,7 +489,7 @@ export class SessionManager {
   }
 
   // Fire and forget — starts work and emits events to the session's EventBus
-  startWork(sessionId: string, prompt: string): void {
+  startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): void {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     if (this.activeSessions.has(sessionId)) {
@@ -502,7 +502,7 @@ export class SessionManager {
     globalBus.emit({ type: "session:busy", sessionId });
 
     // Run in background — not awaited
-    this._doWork(sessionId, prompt, bus).catch((err) => {
+    this._doWork(sessionId, prompt, bus, attachments).catch((err) => {
       console.error(`[sdk] Unhandled error in session ${sessionId}:`, err);
       bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
     }).finally(() => {
@@ -514,7 +514,7 @@ export class SessionManager {
     });
   }
 
-  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>): Promise<void> {
+  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): Promise<void> {
     const sid = sessionId.slice(0, 8);
 
     // Build resume config with optional task context
@@ -707,8 +707,9 @@ export class SessionManager {
     let lastAssistantContent: string | undefined;
 
     try {
-      console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars)...`);
-      await session.send({ prompt });
+      const attachCount = attachments?.length ?? 0;
+      console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
+      await session.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
 
       // Wait for session.idle or session.error (resolved from event handler)
       await new Promise<void>((resolve) => {
@@ -764,7 +765,7 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
     }
 
-    const messages: Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean }> }> = [];
+    const messages: Array<{ role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean }> }> = [];
 
     // Index tool events by toolCallId for fast lookup
     const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string }>();
@@ -787,8 +788,17 @@ export class SessionManager {
       if (event.type === "user.message") {
         const data = event.data as any;
         const content = data.content ?? data.prompt ?? "";
-        if (content.trim()) {
-          messages.push({ role: "user", content, timestamp: data.timestamp ?? (event as any).timestamp });
+        if (content.trim() || data.attachments?.length) {
+          // Extract blob attachments for display
+          const blobAttachments = data.attachments
+            ?.filter((a: any) => a.type === "blob" && a.mimeType?.startsWith("image/"))
+            ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
+          messages.push({
+            role: "user",
+            content,
+            timestamp: data.timestamp ?? (event as any).timestamp,
+            ...(blobAttachments?.length ? { attachments: blobAttachments } : {}),
+          });
         }
       } else if (event.type === "assistant.message") {
         const data = (event as any).data;

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { ChatMessage, ToolCall } from "./api";
+import type { BlobAttachment, ChatMessage, ToolCall } from "./api";
 
 export interface PendingTool {
   toolCallId: string;
@@ -284,13 +284,13 @@ export function useSessionStream(
   }, [sessionId]);
 
   // Send a message — POST then connect to stream
-  const sendMessage = useCallback(async (prompt: string) => {
+  const sendMessage = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (!sessionId) return;
 
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, prompt }),
+      body: JSON.stringify({ sessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
     });
 
     if (!res.ok) {
