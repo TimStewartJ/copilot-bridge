@@ -21,6 +21,7 @@ export interface Task {
   cwd?: string;
   notes: string;
   priority: number; // lower = higher priority
+  order: number; // position within status group (lower = higher in list)
   createdAt: string;
   updatedAt: string;
   sessionIds: string[];
@@ -32,10 +33,34 @@ type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" |
 
 // ── Persistence ───────────────────────────────────────────────────
 
+const STATUS_ORDER: Record<Task["status"], number> = {
+  active: 0,
+  paused: 1,
+  done: 2,
+  archived: 3,
+};
+
 function load(): Task[] {
   if (!existsSync(TASKS_FILE)) return [];
   try {
-    return JSON.parse(readFileSync(TASKS_FILE, "utf-8"));
+    const tasks: Task[] = JSON.parse(readFileSync(TASKS_FILE, "utf-8"));
+    // Migrate: assign order if missing (based on updatedAt rank within status group)
+    const needsMigration = tasks.some((t) => t.order === undefined || t.order === null);
+    if (needsMigration) {
+      const groups = new Map<string, Task[]>();
+      for (const t of tasks) {
+        if (t.order === undefined || t.order === null) (t as Task).order = 0;
+        const g = groups.get(t.status) ?? [];
+        g.push(t);
+        groups.set(t.status, g);
+      }
+      for (const group of groups.values()) {
+        group.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+        group.forEach((t, i) => { t.order = i; });
+      }
+      save(tasks);
+    }
+    return tasks;
   } catch {
     return [];
   }
@@ -49,9 +74,11 @@ function save(tasks: Task[]): void {
 // ── CRUD ──────────────────────────────────────────────────────────
 
 export function listTasks(): Task[] {
-  return load().sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-  );
+  return load().sort((a, b) => {
+    const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+    if (statusDiff !== 0) return statusDiff;
+    return a.order - b.order;
+  });
 }
 
 export function getTask(id: string): Task | undefined {
@@ -60,12 +87,17 @@ export function getTask(id: string): Task | undefined {
 
 export function createTask(title: string): Task {
   const tasks = load();
+  // Bump order of all existing active tasks to make room at top
+  for (const t of tasks) {
+    if (t.status === "active") t.order++;
+  }
   const task: Task = {
     id: crypto.randomUUID(),
     title,
     status: "active",
     notes: "",
     priority: 0,
+    order: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     sessionIds: [],
@@ -83,12 +115,21 @@ export function updateTask(id: string, updates: TaskUpdate): Task {
   if (idx === -1) throw new Error(`Task ${id} not found`);
 
   const task = tasks[idx];
+  const oldStatus = task.status;
   if (updates.title !== undefined) task.title = updates.title;
   if (updates.status !== undefined) task.status = updates.status;
   if (updates.notes !== undefined) task.notes = updates.notes;
   if (updates.priority !== undefined) task.priority = updates.priority;
   if (updates.cwd !== undefined) task.cwd = updates.cwd || undefined;
   task.updatedAt = new Date().toISOString();
+
+  // When status changes, place task at top of new group
+  if (updates.status !== undefined && updates.status !== oldStatus) {
+    for (const t of tasks) {
+      if (t.status === updates.status && t.id !== id) t.order++;
+    }
+    task.order = 0;
+  }
 
   tasks[idx] = task;
   save(tasks);
@@ -98,6 +139,16 @@ export function updateTask(id: string, updates: TaskUpdate): Task {
 export function deleteTask(id: string): void {
   const tasks = load().filter((t) => t.id !== id);
   save(tasks);
+}
+
+export function reorderTasks(taskIds: string[]): Task[] {
+  const tasks = load();
+  for (let i = 0; i < taskIds.length; i++) {
+    const t = tasks.find((t) => t.id === taskIds[i]);
+    if (t) t.order = i;
+  }
+  save(tasks);
+  return listTasks();
 }
 
 // ── Link/Unlink ───────────────────────────────────────────────────

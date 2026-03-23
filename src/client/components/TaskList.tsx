@@ -1,8 +1,23 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, Session } from "../api";
-import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
 
@@ -25,6 +40,7 @@ interface TaskListProps {
   markRead?: (sessionId: string) => void;
   onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onDeleteTask?: (taskId: string) => void;
+  onReorderTasks?: (taskIds: string[]) => void;
   className?: string;
 }
 
@@ -38,6 +54,7 @@ export default function TaskList({
   markRead,
   onUpdateTask,
   onDeleteTask,
+  onReorderTasks,
   className,
 }: TaskListProps) {
   // Build a lookup of sessionId → Session for quick access
@@ -83,7 +100,7 @@ export default function TaskList({
   const sorted = [...tasks].sort((a, b) => {
     const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (statusDiff !== 0) return statusDiff;
-    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    return a.order - b.order;
   });
 
   const grouped = {
@@ -95,6 +112,33 @@ export default function TaskList({
 
   const [showArchived, setShowArchived] = useState(false);
 
+  // DnD setup
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id || !onReorderTasks) return;
+
+    // Find which group these belong to
+    const allNonArchived = [...grouped.active, ...grouped.paused, ...grouped.done];
+    const activeTask = allNonArchived.find((t) => t.id === active.id);
+    const overTask = allNonArchived.find((t) => t.id === over.id);
+    if (!activeTask || !overTask || activeTask.status !== overTask.status) return;
+
+    const group = grouped[activeTask.status] as Task[];
+    const oldIndex = group.findIndex((t) => t.id === active.id);
+    const newIndex = group.findIndex((t) => t.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const reordered = [...group];
+    const [moved] = reordered.splice(oldIndex, 1);
+    reordered.splice(newIndex, 0, moved);
+    onReorderTasks(reordered.map((t) => t.id));
+  }, [grouped, onReorderTasks]);
+
   const renderGroup = (label: string, items: Task[]) => {
     if (items.length === 0) return null;
     return (
@@ -102,45 +146,20 @@ export default function TaskList({
         <div className="px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider">
           {label} ({items.length})
         </div>
-        {items.map((task) => {
-          const isActive = task.id === activeTaskId;
-          const linkCount =
-            task.sessionIds.length +
-            task.workItemIds.length +
-            task.pullRequests.length;
-          return (
-            <button
+        <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+          {items.map((task) => (
+            <SortableListItem
               key={task.id}
-              {...bindLongPress(task.id, () => onSelectTask(task.id))}
-              className={`w-full text-left px-3 py-2.5 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-                ctxMenu?.id === task.id
-                  ? "bg-bg-hover ring-1 ring-border"
-                  : isActive
-                    ? "bg-accent/10 border-l-2 border-accent"
-                    : "hover:bg-bg-hover"
-              } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
-            >
-              <div className="flex items-center gap-2">
-                {taskIndicators.get(task.id) && (
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      taskIndicators.get(task.id) === "busy"
-                        ? "bg-info animate-pulse"
-                        : "bg-success"
-                    }`}
-                  />
-                )}
-                <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
-                  {task.title}
-                </span>
-              </div>
-              <div className="text-xs text-text-muted mt-0.5">
-                {timeAgo(task.updatedAt)}
-                {linkCount > 0 && ` · ${linkCount} linked`}
-              </div>
-            </button>
-          );
-        })}
+              task={task}
+              isActive={task.id === activeTaskId}
+              indicator={taskIndicators.get(task.id)}
+              isCtxTarget={ctxMenu?.id === task.id}
+              isLongPressTarget={isTarget(task.id)}
+              bindLongPress={bindLongPress}
+              onSelectTask={onSelectTask}
+            />
+          ))}
+        </SortableContext>
       </div>
     );
   };
@@ -153,9 +172,11 @@ export default function TaskList({
       >
         + New Task
       </button>
-      {renderGroup("Active", grouped.active)}
-      {renderGroup("Paused", grouped.paused)}
-      {renderGroup("Done", grouped.done)}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        {renderGroup("Active", grouped.active)}
+        {renderGroup("Paused", grouped.paused)}
+        {renderGroup("Done", grouped.done)}
+      </DndContext>
       {grouped.archived.length > 0 && (
         <>
           <button
@@ -256,6 +277,81 @@ export default function TaskList({
           )}
         </ContextMenu>
       )}
+    </div>
+  );
+}
+
+// ── Sortable task item for task list ──────────────────────────────
+
+function SortableListItem({
+  task,
+  isActive,
+  indicator,
+  isCtxTarget,
+  isLongPressTarget,
+  bindLongPress,
+  onSelectTask,
+}: {
+  task: Task;
+  isActive: boolean;
+  indicator: "busy" | "unread" | null | undefined;
+  isCtxTarget: boolean;
+  isLongPressTarget: boolean;
+  bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
+  onSelectTask: (id: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 10 : undefined,
+  };
+
+  const linkCount =
+    task.sessionIds.length +
+    task.workItemIds.length +
+    task.pullRequests.length;
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <button
+        {...bindLongPress(task.id, () => onSelectTask(task.id))}
+        className={`w-full text-left px-3 py-2.5 rounded-md text-sm select-none no-callout transition-all duration-150 ${
+          isCtxTarget
+            ? "bg-bg-hover ring-1 ring-border"
+            : isActive
+              ? "bg-accent/10 border-l-2 border-accent"
+              : "hover:bg-bg-hover"
+        } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            {...attributes}
+            {...listeners}
+            className="text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing shrink-0 touch-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical size={12} />
+          </span>
+          {indicator && (
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                indicator === "busy"
+                  ? "bg-info animate-pulse"
+                  : "bg-success"
+              }`}
+            />
+          )}
+          <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
+            {task.title}
+          </span>
+        </div>
+        <div className="text-xs text-text-muted mt-0.5 pl-5">
+          {timeAgo(task.updatedAt)}
+          {linkCount > 0 && ` · ${linkCount} linked`}
+        </div>
+      </button>
     </div>
   );
 }

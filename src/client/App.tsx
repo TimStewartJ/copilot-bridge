@@ -12,6 +12,7 @@ import {
   deleteSession,
   createTaskSession,
   linkResource,
+  reorderTasks,
   type Session,
   type Task,
 } from "./api";
@@ -279,10 +280,37 @@ export default function App() {
   const handleUpdateTask = async (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => {
     try {
       const updated = await patchTask(taskId, updates);
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+      // When status changes, refetch all tasks since order values shift
+      if (updates.status) {
+        setTasks(await fetchTasks());
+      } else {
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+      }
       setSelectedTask((prev) => (prev?.id === taskId ? updated : prev));
     } catch (err) {
       console.error("Failed to update task:", err);
+    }
+  };
+
+  const handleReorderTasks = async (taskIds: string[]) => {
+    // Optimistic: reorder in local state immediately
+    setTasks((prev) => {
+      const map = new Map(prev.map((t) => [t.id, t]));
+      const reordered = taskIds.map((id, i) => {
+        const t = map.get(id);
+        return t ? { ...t, order: i } : null;
+      }).filter(Boolean) as Task[];
+      // Keep tasks not in the reorder set
+      const reorderedIds = new Set(taskIds);
+      const rest = prev.filter((t) => !reorderedIds.has(t.id));
+      return [...reordered, ...rest];
+    });
+    try {
+      const updated = await reorderTasks(taskIds);
+      setTasks(updated);
+    } catch (err) {
+      console.error("Failed to reorder tasks:", err);
+      setTasks(await fetchTasks());
     }
   };
 
@@ -385,6 +413,7 @@ export default function App() {
         markRead={markRead}
         onUpdateTask={handleUpdateTask}
         onDeleteTask={handleDeleteTask}
+        onReorderTasks={handleReorderTasks}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
@@ -410,6 +439,7 @@ export default function App() {
             markRead={markRead}
             onUpdateTask={handleUpdateTask}
             onDeleteTask={handleDeleteTask}
+            onReorderTasks={handleReorderTasks}
             quickChatsMode={quickChatsMode}
             orphanSessions={globalSessions}
             activeSessionId={activeSessionId}
@@ -542,6 +572,7 @@ function MobileTaskListView({
   markRead,
   onUpdateTask,
   onDeleteTask,
+  onReorderTasks,
   quickChatsMode,
   orphanSessions,
   activeSessionId,
@@ -566,6 +597,7 @@ function MobileTaskListView({
   markRead?: (sessionId: string) => void;
   onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onDeleteTask?: (taskId: string) => void;
+  onReorderTasks?: (taskIds: string[]) => void;
   quickChatsMode: boolean;
   orphanSessions: Session[];
   activeSessionId: string | null;
@@ -638,6 +670,7 @@ function MobileTaskListView({
             markRead={markRead}
             onUpdateTask={onUpdateTask}
             onDeleteTask={onDeleteTask}
+            onReorderTasks={onReorderTasks}
             className="p-2 space-y-2"
           />
         )}

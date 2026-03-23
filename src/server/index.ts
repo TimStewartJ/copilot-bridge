@@ -315,6 +315,17 @@ app.get("/api/tasks", (_req, res) => {
   res.json({ tasks: taskStore.listTasks() });
 });
 
+app.put("/api/tasks/reorder", (req, res) => {
+  const { taskIds } = req.body;
+  if (!Array.isArray(taskIds)) return res.status(400).json({ error: "taskIds array is required" });
+  try {
+    const tasks = taskStore.reorderTasks(taskIds);
+    res.json({ tasks });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
 app.post("/api/tasks", (req, res) => {
   const { title } = req.body;
   if (!title) return res.status(400).json({ error: "title is required" });

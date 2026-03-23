@@ -1,8 +1,23 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, Session } from "../api";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 interface TaskRailProps {
   tasks: Task[];
@@ -20,6 +35,7 @@ interface TaskRailProps {
   markRead?: (sessionId: string) => void;
   onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onDeleteTask?: (taskId: string) => void;
+  onReorderTasks?: (taskIds: string[]) => void;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -68,6 +84,7 @@ export default function TaskRail({
   markRead,
   onUpdateTask,
   onDeleteTask,
+  onReorderTasks,
 }: TaskRailProps) {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -98,9 +115,7 @@ export default function TaskRail({
         .sort((a, b) => {
           const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
           if (statusDiff !== 0) return statusDiff;
-          return (
-            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-          );
+          return a.order - b.order;
         }),
     [tasks],
   );
@@ -109,7 +124,7 @@ export default function TaskRail({
     () =>
       [...tasks]
         .filter((t) => t.status === "archived")
-        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+        .sort((a, b) => a.order - b.order),
     [tasks],
   );
 
@@ -121,6 +136,32 @@ export default function TaskRail({
   const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
 
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
+
+  // DnD setup
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id || !onReorderTasks) return;
+
+    const activeTask = sortedTasks.find((t) => t.id === active.id);
+    const overTask = sortedTasks.find((t) => t.id === over.id);
+    if (!activeTask || !overTask || activeTask.status !== overTask.status) return;
+
+    // Reorder within the same status group
+    const group = sortedTasks.filter((t) => t.status === activeTask.status);
+    const oldIndex = group.findIndex((t) => t.id === active.id);
+    const newIndex = group.findIndex((t) => t.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const reordered = [...group];
+    const [moved] = reordered.splice(oldIndex, 1);
+    reordered.splice(newIndex, 0, moved);
+    onReorderTasks(reordered.map((t) => t.id));
+  }, [sortedTasks, onReorderTasks]);
 
   const ctxUnreadCount = useMemo(() => {
     if (!ctxTask || !isUnread) return 0;
@@ -268,50 +309,22 @@ export default function TaskRail({
 
       {/* Task list */}
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
-        {sortedTasks.map((task) => {
-          const isActive = task.id === activeTaskId;
-          const indicator = taskIndicators.get(task.id);
-          const linkCount =
-            task.sessionIds.length +
-            task.workItemIds.length +
-            task.pullRequests.length;
-
-          return (
-            <button
-              key={task.id}
-              {...bindLongPress(task.id, () => onSelectTask(task.id))}
-              className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-                ctxMenu?.id === task.id
-                  ? "bg-bg-hover ring-1 ring-border"
-                  : isActive
-                    ? "bg-accent/10 border-l-2 border-accent"
-                    : "hover:bg-bg-hover"
-              } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
-            >
-              <div className="flex items-center gap-2">
-                {indicator && (
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      indicator === "busy"
-                        ? "bg-info animate-pulse"
-                        : "bg-success"
-                    }`}
-                  />
-                )}
-                <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
-                  {task.title}
-                </span>
-                <span className={`text-[10px] ${STATUS_TEXT[task.status]}`}>
-                  {task.status !== "active" ? task.status : ""}
-                </span>
-              </div>
-              <div className="text-xs text-text-muted mt-0.5 pl-3.5">
-                {timeAgo(task.updatedAt)}
-                {linkCount > 0 && ` · ${linkCount} linked`}
-              </div>
-            </button>
-          );
-        })}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+            {sortedTasks.map((task) => (
+              <SortableRailItem
+                key={task.id}
+                task={task}
+                isActive={task.id === activeTaskId}
+                indicator={taskIndicators.get(task.id)}
+                isCtxTarget={ctxMenu?.id === task.id}
+                isLongPressTarget={isTarget(task.id)}
+                bindLongPress={bindLongPress}
+                onSelectTask={onSelectTask}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
         {sortedTasks.length === 0 && (
           <div className="text-center text-text-muted text-xs py-6">
             No tasks yet
@@ -451,6 +464,84 @@ export default function TaskRail({
           )}
         </ContextMenu>
       )}
+    </div>
+  );
+}
+
+// ── Sortable task item for expanded rail ──────────────────────────
+
+function SortableRailItem({
+  task,
+  isActive,
+  indicator,
+  isCtxTarget,
+  isLongPressTarget,
+  bindLongPress,
+  onSelectTask,
+}: {
+  task: Task;
+  isActive: boolean;
+  indicator: "busy" | "unread" | null | undefined;
+  isCtxTarget: boolean;
+  isLongPressTarget: boolean;
+  bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
+  onSelectTask: (id: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 10 : undefined,
+  };
+
+  const linkCount =
+    task.sessionIds.length +
+    task.workItemIds.length +
+    task.pullRequests.length;
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <button
+        {...bindLongPress(task.id, () => onSelectTask(task.id))}
+        className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
+          isCtxTarget
+            ? "bg-bg-hover ring-1 ring-border"
+            : isActive
+              ? "bg-accent/10 border-l-2 border-accent"
+              : "hover:bg-bg-hover"
+        } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            {...attributes}
+            {...listeners}
+            className="text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing shrink-0 touch-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical size={12} />
+          </span>
+          {indicator && (
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                indicator === "busy"
+                  ? "bg-info animate-pulse"
+                  : "bg-success"
+              }`}
+            />
+          )}
+          <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
+            {task.title}
+          </span>
+          <span className={`text-[10px] ${STATUS_TEXT[task.status]}`}>
+            {task.status !== "active" ? task.status : ""}
+          </span>
+        </div>
+        <div className="text-xs text-text-muted mt-0.5 pl-6">
+          {timeAgo(task.updatedAt)}
+          {linkCount > 0 && ` · ${linkCount} linked`}
+        </div>
+      </button>
     </div>
   );
 }

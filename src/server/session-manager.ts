@@ -422,6 +422,7 @@ export class SessionManager {
       cwd,
       notes: notes || "",
       priority: 0,
+      order: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       sessionIds: [] as string[],

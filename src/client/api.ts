@@ -46,6 +46,7 @@ export interface Task {
   cwd?: string;
   notes: string;
   priority: number;
+  order: number;
   createdAt: string;
   updatedAt: string;
   sessionIds: string[];
@@ -183,6 +184,20 @@ export async function patchTask(
 
 export async function deleteTask(id: string): Promise<void> {
   await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+}
+
+export async function reorderTasks(taskIds: string[]): Promise<Task[]> {
+  const res = await fetch("/api/tasks/reorder", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ taskIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.tasks;
 }
 
 export async function linkResource(
