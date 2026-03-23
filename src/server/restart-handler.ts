@@ -177,6 +177,7 @@ export function startRestartWatcher(): void {
     log(`Tunnel URL: ${tunnelUrl}`);
   }
 
+  // Poll for restart signal
   setInterval(async () => {
     if (!restarting && existsSync(SIGNAL_FILE)) {
       clearSignal();
@@ -188,6 +189,57 @@ export function startRestartWatcher(): void {
       }
     }
   }, POLL_INTERVAL);
+
+  // Tunnel health check — auto-restart if dead
+  let tunnelFailures = 0;
+  const TUNNEL_CHECK_INTERVAL = 60_000;
+  const TUNNEL_MAX_FAILURES = 3;
+
+  if (tunnelUrl) {
+    setInterval(async () => {
+      try {
+        const res = await fetch(tunnelUrl + "/api/busy", { signal: AbortSignal.timeout(10_000) });
+        if (res.ok) {
+          if (tunnelFailures > 0) log(`Tunnel recovered after ${tunnelFailures} failure(s)`);
+          tunnelFailures = 0;
+        } else {
+          tunnelFailures++;
+        }
+      } catch {
+        tunnelFailures++;
+      }
+
+      if (tunnelFailures >= TUNNEL_MAX_FAILURES) {
+        log(`⚠️ Tunnel dead (${tunnelFailures} consecutive failures) — restarting`);
+        tunnelFailures = 0;
+
+        // Kill existing devtunnel
+        try {
+          execSync('wmic process where "name=\'devtunnel.exe\' and commandline like \'%copilot-bridge%\'" call terminate', { timeout: 10_000, stdio: "ignore" });
+        } catch { /* may not exist */ }
+
+        // Spawn new devtunnel (detached)
+        const dt = spawn("devtunnel", ["host", TUNNEL_NAME], {
+          stdio: "ignore",
+          detached: true,
+          shell: true,
+        });
+        dt.unref();
+        log("Tunnel respawned");
+
+        // Re-discover URL after a brief delay
+        setTimeout(async () => {
+          const newUrl = discoverTunnelUrl();
+          if (newUrl) {
+            tunnelUrl = newUrl;
+            log(`Tunnel URL: ${tunnelUrl}`);
+            await notifyWebhook(`🔗 Tunnel auto-restarted`, tunnelUrl);
+          }
+        }, 10_000);
+      }
+    }, TUNNEL_CHECK_INTERVAL);
+    log("Tunnel health check enabled (60s interval)");
+  }
 
   log("Watching for restart signals...");
 }
