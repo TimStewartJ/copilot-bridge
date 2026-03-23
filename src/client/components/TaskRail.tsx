@@ -512,32 +512,32 @@ function SortableRailItem({
               : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center">
           <span
             {...attributes}
             {...listeners}
-            className="text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing shrink-0 touch-none opacity-0 group-hover:opacity-100 transition-opacity"
+            className="w-0 overflow-hidden group-hover:w-4 text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing touch-none transition-all duration-150"
             onClick={(e) => e.stopPropagation()}
           >
             <GripVertical size={12} />
           </span>
           {indicator && (
             <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ml-1 ${
                 indicator === "busy"
                   ? "bg-info animate-pulse"
                   : "bg-success"
               }`}
             />
           )}
-          <span className={`font-medium truncate flex-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
+          <span className={`font-medium truncate flex-1 ml-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>
-          <span className={`text-[10px] ${STATUS_TEXT[task.status]}`}>
+          <span className={`text-[10px] ml-1 ${STATUS_TEXT[task.status]}`}>
             {task.status !== "active" ? task.status : ""}
           </span>
         </div>
-        <div className="text-xs text-text-muted mt-0.5 pl-6">
+        <div className="text-xs text-text-muted mt-0.5 transition-all duration-150 pl-0 group-hover:pl-4">
           {timeAgo(task.updatedAt)}
           {linkCount > 0 && ` · ${linkCount} linked`}
         </div>
