@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import type { Task, TaskGroup, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
 import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule } from "../api";
 import SessionList from "./SessionList";
+import PullToRefresh from "./PullToRefresh";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
 import {
   MessageSquare,
@@ -110,6 +111,7 @@ interface TaskPanelProps {
   onDeleteTask?: (taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
+  onRefresh?: () => Promise<void>;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -136,6 +138,7 @@ export default function TaskPanel({
   onDeleteTask,
   onDeleteSession,
   onMoveTaskToGroup,
+  onRefresh,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
@@ -218,7 +221,7 @@ export default function TaskPanel({
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-3">
+        <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="flex-1 overflow-x-hidden p-2 space-y-3">
           <SessionList
             variant="global"
             sessions={orphanSessions ?? []}
@@ -234,7 +237,7 @@ export default function TaskPanel({
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
           />
-        </div>
+        </PullToRefresh>
       </div>
     );
   }
@@ -356,7 +359,7 @@ export default function TaskPanel({
       </div>
 
       {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-3">
+      <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="flex-1 overflow-x-hidden p-2 space-y-3">
         {/* Sessions */}
         <div>
           <SectionLabel label="Sessions" count={linkedSessions.length} />
@@ -616,7 +619,7 @@ export default function TaskPanel({
             )}
           </div>
         )}
-      </div>
+      </PullToRefresh>
     </div>
   );
 }

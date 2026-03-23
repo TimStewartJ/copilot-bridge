@@ -569,6 +569,7 @@ export default function App() {
             onDeleteTask={handleDeleteTask}
             onDeleteSession={handleDeleteSession}
             onMoveTaskToGroup={handleMoveTaskToGroup}
+            onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
           />
         </div>
       </div>
