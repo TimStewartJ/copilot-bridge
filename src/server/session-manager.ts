@@ -13,7 +13,7 @@ import type { Task } from "./task-store.js";
 import * as taskGroupStore from "./task-group-store.js";
 import * as scheduleStore from "./schedule-store.js";
 import * as schedulerModule from "./scheduler.js";
-import { getOrCreateBus } from "./event-bus.js";
+import { getOrCreateBus, getBus } from "./event-bus.js";
 import * as sessionTitles from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
 import { STAGING_TOOLS } from "./staging-tools.js";
@@ -467,6 +467,27 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
+  // Abort an in-progress session turn
+  async abortSession(sessionId: string): Promise<boolean> {
+    if (!this.activeSessions.has(sessionId)) return false;
+
+    const session = this.sessionObjects.get(sessionId);
+    if (!session) return false;
+
+    const sid = sessionId.slice(0, 8);
+    console.log(`[sdk] [${sid}] 🛑 Aborting session...`);
+    try {
+      await session.abort();
+      console.log(`[sdk] [${sid}] 🛑 Abort sent`);
+    } catch (err) {
+      console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);
+      // Even if abort throws, emit aborted to unblock the UI
+      const bus = getBus(sessionId);
+      if (bus) bus.emit({ type: "aborted", content: "" });
+    }
+    return true;
+  }
+
   // Fire and forget — starts work and emits events to the session's EventBus
   startWork(sessionId: string, prompt: string): void {
     if (!this.client) throw new Error("SessionManager not initialized");
@@ -599,6 +620,14 @@ export class SessionManager {
           bus.emit({ type: "error", message: data?.message ?? "unknown" });
           resolveWork();
           break;
+        case "abort": {
+          const reason = data?.reason ?? "user initiated";
+          console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);
+          const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
+          bus.emit({ type: "aborted", content: partialContent });
+          resolveWork();
+          break;
+        }
         case "session.title_changed":
           bus.emit({ type: "title_changed", title: data?.title ?? "" });
           globalBus.emit({ type: "session:title", sessionId, title: data?.title ?? "" });

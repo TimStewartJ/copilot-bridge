@@ -208,6 +208,19 @@ export function useSessionStream(
                   setTimeout(() => onTitleChangedRef.current(), 12_000);
                   accumulatedContent = "";
                   break;
+                case "aborted": {
+                  const partialContent = event.content || accumulatedContent;
+                  if (partialContent) {
+                    onMessagesUpdatedRef.current([{
+                      role: "assistant",
+                      content: partialContent + "\n\n*(stopped)*",
+                      toolCalls: drainTools(),
+                    }]);
+                  }
+                  setStreamState(mkState("idle"));
+                  accumulatedContent = "";
+                  break;
+                }
                 case "error":
                   onMessagesUpdatedRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
                   setStreamState(mkState("idle"));
@@ -267,6 +280,16 @@ export function useSessionStream(
     connectStream(sessionId);
   }, [sessionId, connectStream]);
 
+  // Abort an in-progress session turn
+  const abortSession = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await fetch(`/api/sessions/${sessionId}/abort`, { method: "POST" });
+    } catch (err) {
+      console.error("[stream] Abort failed:", err);
+    }
+  }, [sessionId]);
+
   // Reconnect to an in-progress stream (e.g., navigating back)
   const reconnect = useCallback((sid: string) => {
     connectStream(sid);
@@ -275,6 +298,7 @@ export function useSessionStream(
   return {
     ...streamState,
     sendMessage,
+    abortSession,
     reconnect,
   };
 }

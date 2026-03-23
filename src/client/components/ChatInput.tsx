@@ -1,12 +1,14 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { Square } from "lucide-react";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
   disabled: boolean;
+  onAbort?: () => void;
   sessionId?: string | null;
 }
 
-export default function ChatInput({ onSend, disabled, sessionId }: ChatInputProps) {
+export default function ChatInput({ onSend, disabled, onAbort, sessionId }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastHeightRef = useRef(0);
@@ -72,6 +74,15 @@ export default function ChatInput({ onSend, disabled, sessionId }: ChatInputProp
         >
           Send
         </button>
+        {onAbort && (
+          <button
+            onClick={onAbort}
+            className="px-3 py-3 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium self-end transition-colors"
+            title="Stop generating"
+          >
+            <Square size={14} fill="currentColor" />
+          </button>
+        )}
       </div>
     </div>
   );

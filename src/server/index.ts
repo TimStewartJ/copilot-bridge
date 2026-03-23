@@ -183,6 +183,21 @@ app.post("/api/chat", (req, res) => {
   }
 });
 
+// POST /api/sessions/:id/abort — abort an in-progress session turn
+app.post("/api/sessions/:id/abort", async (req, res) => {
+  const sessionId = req.params.id;
+  try {
+    const aborted = await sessionManager.abortSession(sessionId);
+    if (aborted) {
+      res.json({ status: "aborted" });
+    } else {
+      res.status(409).json({ error: "Session is not busy" });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // GET /api/sessions/:id/stream — SSE stream with snapshot + live events
 app.get("/api/sessions/:id/stream", (req, res) => {
   const sessionId = req.params.id;
@@ -222,7 +237,7 @@ app.get("/api/sessions/:id/stream", (req, res) => {
       close();
       return;
     }
-    if (event.type === "done" || event.type === "error") {
+    if (event.type === "done" || event.type === "error" || event.type === "aborted") {
       close();
     }
   };
