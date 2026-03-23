@@ -5,12 +5,16 @@ import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
   DndContext,
+  DragOverlay,
   closestCenter,
   KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   type DragEndEvent,
+  type DragStartEvent,
+  type DragOverEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -194,22 +198,96 @@ export default function TaskRail({
     useSensor(KeyboardSensor),
   );
 
+  type Section = { group: TaskGroup | null; tasks: Task[] };
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [localSections, setLocalSections] = useState<Section[] | null>(null);
+  const activeDragTask = activeId ? sortedTasks.find((t) => t.id === activeId) : null;
+  const displaySections = localSections ?? groupedSections;
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+    if (groupedSections) {
+      setLocalSections(groupedSections.map((s) => ({ ...s, tasks: [...s.tasks] })));
+    }
+  }, [groupedSections]);
+
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const { active, over } = event;
+    if (!over || !localSections || !hasGroups) return;
+
+    const dragId = active.id as string;
+    const fromSection = localSections.find((s) => s.tasks.some((t) => t.id === dragId));
+    if (!fromSection) return;
+
+    // Determine target section
+    let toSection: Section | undefined;
+    let overIndex: number;
+
+    const overIsTask = localSections.some((s) => s.tasks.some((t) => t.id === over.id));
+    if (overIsTask) {
+      toSection = localSections.find((s) => s.tasks.some((t) => t.id === over.id));
+      overIndex = toSection ? toSection.tasks.findIndex((t) => t.id === over.id) : 0;
+    } else {
+      // Dropped over a droppable group container
+      toSection = localSections.find((s) => (s.group?.id ?? "__ungrouped__") === over.id);
+      overIndex = toSection ? toSection.tasks.length : 0;
+    }
+
+    if (!toSection || fromSection === toSection) return;
+
+    const draggedTask = fromSection.tasks.find((t) => t.id === dragId);
+    if (!draggedTask) return;
+
+    setLocalSections((prev) => {
+      if (!prev) return prev;
+      return prev.map((s) => {
+        if (s.group?.id === fromSection.group?.id && s.group?.id !== toSection!.group?.id) {
+          return { ...s, tasks: s.tasks.filter((t) => t.id !== dragId) };
+        }
+        if (s.group?.id === toSection!.group?.id && s.group?.id !== fromSection.group?.id) {
+          const newTasks = [...s.tasks.filter((t) => t.id !== dragId)];
+          newTasks.splice(overIndex, 0, draggedTask);
+          return { ...s, tasks: newTasks };
+        }
+        // Handle null groups (ungrouped)
+        if (!s.group && !fromSection.group && toSection!.group) {
+          return { ...s, tasks: s.tasks.filter((t) => t.id !== dragId) };
+        }
+        if (!s.group && !toSection!.group && fromSection.group) {
+          const newTasks = [...s.tasks.filter((t) => t.id !== dragId)];
+          newTasks.splice(overIndex, 0, draggedTask);
+          return { ...s, tasks: newTasks };
+        }
+        return s;
+      });
+    });
+  }, [localSections, hasGroups]);
+
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;
+    setActiveId(null);
+    setLocalSections(null);
+
     if (!over || active.id === over.id || !onReorderTasks) return;
 
     const activeTask = sortedTasks.find((t) => t.id === active.id);
-    const overTask = sortedTasks.find((t) => t.id === over.id);
-    if (!activeTask || !overTask) return;
+    if (!activeTask) return;
 
-    // Cross-group drag: reassign groupId
-    const activeGroup = activeTask.groupId;
-    const overGroup = overTask.groupId;
-    if (hasGroups && activeGroup !== overGroup && onMoveTaskToGroup) {
-      onMoveTaskToGroup(activeTask.id, overGroup);
-      // Reorder within the target group
+    // Check if dropped on a group container (not a task)
+    const overTask = sortedTasks.find((t) => t.id === over.id);
+    if (!overTask && hasGroups && onMoveTaskToGroup) {
+      const targetGroupId = over.id === "__ungrouped__" ? undefined : over.id as string;
+      onMoveTaskToGroup(activeTask.id, targetGroupId);
+      return;
+    }
+
+    if (!overTask) return;
+
+    // Cross-group: reassign groupId
+    if (hasGroups && activeTask.groupId !== overTask.groupId && onMoveTaskToGroup) {
+      onMoveTaskToGroup(activeTask.id, overTask.groupId);
       const targetGroupTasks = sortedTasks.filter(
-        (t) => t.groupId === overGroup && t.id !== activeTask.id,
+        (t) => t.groupId === overTask.groupId && t.id !== activeTask.id,
       );
       const overIndex = targetGroupTasks.findIndex((t) => t.id === over.id);
       targetGroupTasks.splice(overIndex, 0, activeTask);
@@ -217,16 +295,14 @@ export default function TaskRail({
       return;
     }
 
-    // Same-group reorder (constrain to same status within group)
+    // Same-group reorder
     if (activeTask.status !== overTask.status) return;
-
     const group = sortedTasks.filter(
       (t) => t.status === activeTask.status && t.groupId === activeTask.groupId,
     );
     const oldIndex = group.findIndex((t) => t.id === active.id);
     const newIndex = group.findIndex((t) => t.id === over.id);
     if (oldIndex === -1 || newIndex === -1) return;
-
     const reordered = [...group];
     const [moved] = reordered.splice(oldIndex, 1);
     reordered.splice(newIndex, 0, moved);
@@ -424,59 +500,61 @@ export default function TaskRail({
 
       {/* Task list */}
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          {hasGroups && groupedSections ? (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+          {hasGroups && displaySections ? (
             // ── Grouped mode ──────────────────────────────────
             <>
-              {groupedSections.map((section) => {
+              {displaySections.map((section) => {
                 const group = section.group;
                 const isCollapsed = group?.collapsed ?? false;
                 const groupId = group?.id ?? "__ungrouped__";
                 const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
 
                 return (
-                  <div key={groupId} className="mb-1">
-                    {/* Group header */}
-                    <button
-                      onClick={() => {
-                        if (group && onUpdateGroup) {
-                          onUpdateGroup(group.id, { collapsed: !isCollapsed });
-                        }
-                      }}
-                      onContextMenu={(e) => {
-                        if (group) {
-                          e.preventDefault();
-                          setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
-                        }
-                      }}
-                      className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer group/header"
-                    >
-                      {group ? (
-                        isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
-                      ) : null}
-                      {colorDot && <span className={`w-2 h-2 rounded-full ${colorDot} shrink-0`} />}
-                      <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
-                      <span className="text-text-faint ml-auto text-[10px]">{section.tasks.length}</span>
-                    </button>
+                  <DroppableGroup key={groupId} id={groupId}>
+                    <div className="mb-1">
+                      {/* Group header */}
+                      <button
+                        onClick={() => {
+                          if (group && onUpdateGroup) {
+                            onUpdateGroup(group.id, { collapsed: !isCollapsed });
+                          }
+                        }}
+                        onContextMenu={(e) => {
+                          if (group) {
+                            e.preventDefault();
+                            setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
+                          }
+                        }}
+                        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer group/header"
+                      >
+                        {group ? (
+                          isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
+                        ) : null}
+                        {colorDot && <span className={`w-2 h-2 rounded-full ${colorDot} shrink-0`} />}
+                        <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
+                        <span className="text-text-faint ml-auto text-[10px]">{section.tasks.length}</span>
+                      </button>
 
-                    {/* Group tasks */}
-                    {!isCollapsed && (
-                      <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                        {section.tasks.map((task) => (
-                          <SortableRailItem
-                            key={task.id}
-                            task={task}
-                            isActive={task.id === activeTaskId}
-                            indicator={taskIndicators.get(task.id)}
-                            isCtxTarget={ctxMenu?.id === task.id}
-                            isLongPressTarget={isTarget(task.id)}
-                            bindLongPress={bindLongPress}
-                            onSelectTask={onSelectTask}
-                          />
-                        ))}
-                      </SortableContext>
-                    )}
-                  </div>
+                      {/* Group tasks */}
+                      {!isCollapsed && (
+                        <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                          {section.tasks.map((task) => (
+                            <SortableRailItem
+                              key={task.id}
+                              task={task}
+                              isActive={task.id === activeTaskId}
+                              indicator={taskIndicators.get(task.id)}
+                              isCtxTarget={ctxMenu?.id === task.id}
+                              isLongPressTarget={isTarget(task.id)}
+                              bindLongPress={bindLongPress}
+                              onSelectTask={onSelectTask}
+                            />
+                          ))}
+                        </SortableContext>
+                      )}
+                    </div>
+                  </DroppableGroup>
                 );
               })}
             </>
@@ -497,6 +575,14 @@ export default function TaskRail({
               ))}
             </SortableContext>
           )}
+          <DragOverlay dropAnimation={null}>
+            {activeDragTask ? (
+              <div className="bg-bg-secondary rounded-md shadow-lg border border-border px-3 py-2 text-sm w-48 opacity-90">
+                <div className="font-medium truncate">{activeDragTask.title}</div>
+                <div className="text-xs text-text-muted mt-0.5">{timeAgo(activeDragTask.updatedAt)}</div>
+              </div>
+            ) : null}
+          </DragOverlay>
         </DndContext>
         {sortedTasks.length === 0 && (
           <div className="text-center text-text-muted text-xs py-6">
@@ -756,7 +842,7 @@ function SortableRailItem({
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isDragging ? 0 : 1,
     zIndex: isDragging ? 10 : undefined,
   };
 
@@ -809,4 +895,11 @@ function SortableRailItem({
       </button>
     </div>
   );
+}
+
+// ── Droppable group container ────────────────────────────────────
+
+function DroppableGroup({ id, children }: { id: string; children: React.ReactNode }) {
+  const { setNodeRef } = useDroppable({ id });
+  return <div ref={setNodeRef}>{children}</div>;
 }

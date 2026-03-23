@@ -5,12 +5,16 @@ import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
   DndContext,
+  DragOverlay,
   closestCenter,
   KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   type DragEndEvent,
+  type DragStartEvent,
+  type DragOverEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -150,18 +154,98 @@ export default function TaskList({
     useSensor(KeyboardSensor),
   );
 
+  type Section = { group: TaskGroup | null; tasks: Task[] };
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [localSections, setLocalSections] = useState<Section[] | null>(null);
+  const allNonArchived = [...grouped.active, ...grouped.paused, ...grouped.done];
+  const activeDragTask = activeId ? allNonArchived.find((t) => t.id === activeId) : null;
+  const displaySections = localSections ?? groupedSections;
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+    if (groupedSections) {
+      setLocalSections(groupedSections.map((s) => ({ ...s, tasks: [...s.tasks] })));
+    }
+  }, [groupedSections]);
+
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const { active, over } = event;
+    if (!over || !localSections || !hasGroups) return;
+
+    const dragId = active.id as string;
+    const fromSection = localSections.find((s) => s.tasks.some((t) => t.id === dragId));
+    if (!fromSection) return;
+
+    let toSection: Section | undefined;
+    let overIndex: number;
+
+    const overIsTask = localSections.some((s) => s.tasks.some((t) => t.id === over.id));
+    if (overIsTask) {
+      toSection = localSections.find((s) => s.tasks.some((t) => t.id === over.id));
+      overIndex = toSection ? toSection.tasks.findIndex((t) => t.id === over.id) : 0;
+    } else {
+      toSection = localSections.find((s) => (s.group?.id ?? "__ungrouped__") === over.id);
+      overIndex = toSection ? toSection.tasks.length : 0;
+    }
+
+    if (!toSection || fromSection === toSection) return;
+
+    const draggedTask = fromSection.tasks.find((t) => t.id === dragId);
+    if (!draggedTask) return;
+
+    setLocalSections((prev) => {
+      if (!prev) return prev;
+      return prev.map((s) => {
+        if (s.group?.id === fromSection.group?.id && s.group?.id !== toSection!.group?.id) {
+          return { ...s, tasks: s.tasks.filter((t) => t.id !== dragId) };
+        }
+        if (s.group?.id === toSection!.group?.id && s.group?.id !== fromSection.group?.id) {
+          const newTasks = [...s.tasks.filter((t) => t.id !== dragId)];
+          newTasks.splice(overIndex, 0, draggedTask);
+          return { ...s, tasks: newTasks };
+        }
+        if (!s.group && !fromSection.group && toSection!.group) {
+          return { ...s, tasks: s.tasks.filter((t) => t.id !== dragId) };
+        }
+        if (!s.group && !toSection!.group && fromSection.group) {
+          const newTasks = [...s.tasks.filter((t) => t.id !== dragId)];
+          newTasks.splice(overIndex, 0, draggedTask);
+          return { ...s, tasks: newTasks };
+        }
+        return s;
+      });
+    });
+  }, [localSections, hasGroups]);
+
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;
+    setActiveId(null);
+    setLocalSections(null);
+
     if (!over || active.id === over.id || !onReorderTasks) return;
 
-    const allNonArchived = [...grouped.active, ...grouped.paused, ...grouped.done];
     const activeTask = allNonArchived.find((t) => t.id === active.id);
-    const overTask = allNonArchived.find((t) => t.id === over.id);
-    if (!activeTask || !overTask) return;
+    if (!activeTask) return;
 
-    // Cross-group drag
+    // Check if dropped on a group container
+    const overTask = allNonArchived.find((t) => t.id === over.id);
+    if (!overTask && hasGroups && onMoveTaskToGroup) {
+      const targetGroupId = over.id === "__ungrouped__" ? undefined : over.id as string;
+      onMoveTaskToGroup(activeTask.id, targetGroupId);
+      return;
+    }
+
+    if (!overTask) return;
+
+    // Cross-group
     if (hasGroups && activeTask.groupId !== overTask.groupId && onMoveTaskToGroup) {
       onMoveTaskToGroup(activeTask.id, overTask.groupId);
+      const targetGroupTasks = allNonArchived.filter(
+        (t) => t.groupId === overTask.groupId && t.id !== activeTask.id,
+      );
+      const overIndex = targetGroupTasks.findIndex((t) => t.id === over.id);
+      targetGroupTasks.splice(overIndex, 0, activeTask);
+      onReorderTasks(targetGroupTasks.map((t) => t.id));
       return;
     }
 
@@ -176,7 +260,7 @@ export default function TaskList({
     const [moved] = reordered.splice(oldIndex, 1);
     reordered.splice(newIndex, 0, moved);
     onReorderTasks(reordered.map((t) => t.id));
-  }, [grouped, onReorderTasks, hasGroups, onMoveTaskToGroup]);
+  }, [allNonArchived, grouped, onReorderTasks, hasGroups, onMoveTaskToGroup]);
 
   const renderGroup = (label: string, items: Task[]) => {
     if (items.length === 0) return null;
@@ -211,15 +295,16 @@ export default function TaskList({
       >
         + New Task
       </button>
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        {hasGroups && groupedSections ? (
-          groupedSections.map((section) => {
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+        {hasGroups && displaySections ? (
+          displaySections.map((section) => {
             const group = section.group;
             const isCollapsed = group?.collapsed ?? false;
+            const groupId = group?.id ?? "__ungrouped__";
             const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
 
             return (
-              <div key={group?.id ?? "__ungrouped__"}>
+              <DroppableGroup key={groupId} id={groupId}>
                 <button
                   onClick={() => {
                     if (group && onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
@@ -246,7 +331,7 @@ export default function TaskList({
                     ))}
                   </SortableContext>
                 )}
-              </div>
+              </DroppableGroup>
             );
           })
         ) : (
@@ -256,6 +341,14 @@ export default function TaskList({
             {renderGroup("Done", grouped.done)}
           </>
         )}
+        <DragOverlay dropAnimation={null}>
+          {activeDragTask ? (
+            <div className="bg-bg-secondary rounded-md shadow-lg border border-border px-3 py-2 text-sm w-48 opacity-90">
+              <div className="font-medium truncate">{activeDragTask.title}</div>
+              <div className="text-xs text-text-muted mt-0.5">{timeAgo(activeDragTask.updatedAt)}</div>
+            </div>
+          ) : null}
+        </DragOverlay>
       </DndContext>
       {grouped.archived.length > 0 && (
         <>
@@ -428,7 +521,7 @@ function SortableListItem({
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isDragging ? 0 : 1,
     zIndex: isDragging ? 10 : undefined,
   };
 
@@ -478,4 +571,11 @@ function SortableListItem({
       </button>
     </div>
   );
+}
+
+// ── Droppable group container ────────────────────────────────────
+
+function DroppableGroup({ id, children }: { id: string; children: React.ReactNode }) {
+  const { setNodeRef } = useDroppable({ id });
+  return <div ref={setNodeRef}>{children}</div>;
 }
