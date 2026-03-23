@@ -194,7 +194,7 @@ export default function ChatInput({ onSend, onAbort, sessionId }: ChatInputProps
         {onAbort ? (
           <button
             onClick={onAbort}
-            className="px-4 md:px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium self-end transition-colors flex items-center gap-1.5"
+            className="px-4 md:px-6 py-3 bg-error hover:bg-error-hover text-white rounded-md text-sm font-medium self-end transition-colors flex items-center gap-1.5"
             title="Stop generating"
           >
             <Square size={14} fill="currentColor" />
