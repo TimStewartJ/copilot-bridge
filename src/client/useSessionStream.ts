@@ -178,6 +178,17 @@ export function useSessionStream(
                 case "tool_output":
                   setStreamState((s) => ({ ...s, toolProgress: event.content ?? "" }));
                   break;
+                case "tool_update":
+                  // Update an active tool's metadata (e.g., "task" → "🤖 explore")
+                  setStreamState((s) => ({
+                    ...s,
+                    activeTools: s.activeTools.map((t) =>
+                      t.toolCallId === event.toolCallId
+                        ? { ...t, name: event.name ?? t.name, isSubAgent: event.isSubAgent ?? t.isSubAgent }
+                        : t,
+                    ),
+                  }));
+                  break;
                 case "tool_done": {
                   if (event.name === "report_intent") break;
                   const completed: ToolCall = {

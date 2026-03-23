@@ -15,6 +15,7 @@ export interface ActiveTool {
   name: string;
   args?: Record<string, unknown>;
   parentToolCallId?: string;
+  isSubAgent?: boolean;
 }
 
 export interface BusSnapshot {
@@ -65,7 +66,16 @@ class SessionEventBus {
           name: event.name ?? "unknown",
           args: event.args as Record<string, unknown> | undefined,
           parentToolCallId: event.parentToolCallId as string | undefined,
+          isSubAgent: event.isSubAgent as boolean | undefined,
         });
+        break;
+      case "tool_update":
+        // Update an existing active tool's metadata (e.g., when subagent.started upgrades a "task" tool)
+        this.activeTools = this.activeTools.map((t) =>
+          t.toolCallId === event.toolCallId
+            ? { ...t, name: event.name ?? t.name, isSubAgent: (event.isSubAgent as boolean) ?? t.isSubAgent }
+            : t,
+        );
         break;
       case "tool_done":
         this.activeTools = this.activeTools.filter(

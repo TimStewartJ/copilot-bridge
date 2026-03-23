@@ -545,6 +545,8 @@ export class SessionManager {
 
     // Track tool names by toolCallId — completion events don't include the tool name
     const toolNameMap = new Map<string, string>();
+    // Track sub-agent parent tool call IDs → display name
+    const subAgentMap = new Map<string, string>();
 
     const unsub = session.on((event: any) => {
       const data = (event as any).data;
@@ -554,11 +556,15 @@ export class SessionManager {
           bus.emit({ type: "thinking" });
           break;
         case "assistant.message_delta":
+          // Skip sub-agent deltas — they're internal to the agent
+          if (data?.parentToolCallId) break;
           if (data?.deltaContent) {
             bus.emit({ type: "delta", content: data.deltaContent });
           }
           break;
         case "assistant.streaming_delta":
+          // Skip sub-agent deltas
+          if (data?.parentToolCallId) break;
           if (data?.content) {
             bus.emit({ type: "delta", content: data.content });
           }
@@ -569,6 +575,8 @@ export class SessionManager {
           globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
+          // Skip sub-agent messages — their content becomes the tool result
+          if (data?.parentToolCallId) break;
           if (data?.content) {
             console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
             lastAssistantContent = data.content;
@@ -599,34 +607,35 @@ export class SessionManager {
         case "tool.execution_complete": {
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const ok = data?.success !== false;
-          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${completedToolName} (${ok ? "ok" : "failed"})`);
+          const isAgent = subAgentMap.has(data?.toolCallId);
+          const agentDisplayName = subAgentMap.get(data?.toolCallId);
+          console.log(`[sdk] [${sid}] 🔧 Tool complete: ${isAgent ? agentDisplayName : completedToolName} (${ok ? "ok" : "failed"})`);
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
-            name: completedToolName,
+            name: isAgent ? agentDisplayName : completedToolName,
             result: data?.result?.content,
             success: data?.success,
+            isSubAgent: isAgent || undefined,
           });
           break;
         }
-        case "subagent.started":
-          console.log(`[sdk] [${sid}] 🤖 Sub-agent: ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`);
+        case "subagent.started": {
+          const displayName = `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`;
+          console.log(`[sdk] [${sid}] ${displayName}`);
+          if (data?.toolCallId) subAgentMap.set(data.toolCallId, displayName);
+          // Upgrade the existing "task" tool entry to show the agent name
           bus.emit({
-            type: "tool_start",
+            type: "tool_update",
             toolCallId: data?.toolCallId,
-            name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`,
+            name: displayName,
             isSubAgent: true,
           });
           break;
+        }
         case "subagent.completed":
         case "subagent.failed":
-          bus.emit({
-            type: "tool_done",
-            toolCallId: data?.toolCallId,
-            name: `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`,
-            success: event.type === "subagent.completed",
-            isSubAgent: true,
-          });
+          // No-op — tool.execution_complete handles the actual completion with result
           break;
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
