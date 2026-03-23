@@ -98,6 +98,7 @@ interface TaskPanelProps {
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onArchiveSession?: (id: string, archived: boolean) => void;
   archivingIds?: Set<string>;
+  exitingIds?: Set<string>;
   // Quick Chats mode
   isQuickChats?: boolean;
   orphanSessions?: Session[];
@@ -125,6 +126,7 @@ export default function TaskPanel({
   isUnread,
   onArchiveSession,
   archivingIds,
+  exitingIds,
   isQuickChats,
   orphanSessions,
   onNewQuickChat,
@@ -227,6 +229,7 @@ export default function TaskPanel({
             isUnread={isUnread}
             onArchiveSession={onArchiveSession}
             archivingIds={archivingIds}
+            exitingIds={exitingIds}
             tasks={tasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
@@ -367,6 +370,7 @@ export default function TaskPanel({
             isUnread={isUnread}
             onArchiveSession={onArchiveSession}
             archivingIds={archivingIds}
+            exitingIds={exitingIds}
             taskContext={task}
             onUnlinkFromTask={
               onUnlinkFromTask

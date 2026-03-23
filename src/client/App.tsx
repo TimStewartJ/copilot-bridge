@@ -196,6 +196,8 @@ export default function App() {
   }, [sessions, tasks]);
 
   const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
+  const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
+  const EXIT_ANIM_MS = 300;
 
   // Given a list of sessions, return the next active sibling when one is removed
   const getNextSessionId = useCallback((removedId: string): string | null => {
@@ -385,19 +387,22 @@ export default function App() {
   };
 
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
-    setArchivingIds((prev) => new Set(prev).add(sessionId));
     const nextId = archived && activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
+    // Animate out before removing
+    setExitingIds((prev) => new Set(prev).add(sessionId));
+    if (archived && activeSessionId === sessionId) {
+      if (nextId) {
+        navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
+      } else if (activeTaskId) {
+        navigate(`/tasks/${activeTaskId}`);
+      } else {
+        navigate("/");
+      }
+    }
+    await new Promise((r) => setTimeout(r, EXIT_ANIM_MS));
+    setArchivingIds((prev) => new Set(prev).add(sessionId));
     try {
       await patchSession(sessionId, { archived });
-      if (archived && activeSessionId === sessionId) {
-        if (nextId) {
-          navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
-        } else if (activeTaskId) {
-          navigate(`/tasks/${activeTaskId}`);
-        } else {
-          navigate("/");
-        }
-      }
       await loadSessions();
     } catch (err) {
       console.error("Failed to archive session:", err);
@@ -407,25 +412,39 @@ export default function App() {
         next.delete(sessionId);
         return next;
       });
+      setExitingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
     }
   };
 
   const handleDeleteSession = async (sessionId: string) => {
     const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
+    // Animate out before removing
+    setExitingIds((prev) => new Set(prev).add(sessionId));
+    if (activeSessionId === sessionId) {
+      if (nextId) {
+        navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
+      } else if (activeTaskId) {
+        navigate(`/tasks/${activeTaskId}`);
+      } else {
+        navigate("/");
+      }
+    }
+    await new Promise((r) => setTimeout(r, EXIT_ANIM_MS));
     try {
       await deleteSession(sessionId);
-      if (activeSessionId === sessionId) {
-        if (nextId) {
-          navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
-        } else if (activeTaskId) {
-          navigate(`/tasks/${activeTaskId}`);
-        } else {
-          navigate("/");
-        }
-      }
       await Promise.all([loadSessions(), loadTasks()]);
     } catch (err) {
       console.error("Failed to delete session:", err);
+    } finally {
+      setExitingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
     }
   };
 
@@ -516,6 +535,7 @@ export default function App() {
             onNewQuickChat={handleNewQuickChat}
             onArchiveSession={handleArchiveSession}
             archivingIds={archivingIds}
+            exitingIds={exitingIds}
             allTasks={tasks}
             onLinkToTask={handleLinkToTask}
             onDeleteSession={handleDeleteSession}
@@ -540,6 +560,7 @@ export default function App() {
             isUnread={isUnread}
             onArchiveSession={handleArchiveSession}
             archivingIds={archivingIds}
+            exitingIds={exitingIds}
             isQuickChats={quickChatsMode}
             orphanSessions={globalSessions}
             onNewQuickChat={handleNewQuickChat}
@@ -656,6 +677,7 @@ function MobileTaskListView({
   onNewQuickChat,
   onArchiveSession,
   archivingIds,
+  exitingIds,
   allTasks,
   onLinkToTask,
   onDeleteSession,
@@ -686,6 +708,7 @@ function MobileTaskListView({
   onNewQuickChat: () => void;
   onArchiveSession: (id: string, archived: boolean) => void;
   archivingIds: Set<string>;
+  exitingIds: Set<string>;
   allTasks: Task[];
   onLinkToTask: (sessionId: string, taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
@@ -735,6 +758,7 @@ function MobileTaskListView({
             isUnread={isUnread}
             onArchiveSession={onArchiveSession}
             archivingIds={archivingIds}
+            exitingIds={exitingIds}
             tasks={allTasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}

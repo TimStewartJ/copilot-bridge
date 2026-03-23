@@ -61,6 +61,34 @@ html {
   animation: ctx-menu-in 0.12s ease-out;
 }
 
+@keyframes session-exit {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    max-height: 80px;
+  }
+  50% {
+    opacity: 0;
+    transform: translateX(-16px) scale(0.96);
+    max-height: 80px;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-16px) scale(0.96);
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+}
+
+.animate-session-exit {
+  animation: session-exit 0.3s ease-in forwards;
+  pointer-events: none;
+  overflow: hidden;
+}
+
 /* Suppress native touch callout on elements with custom long-press */
 .no-callout {
   -webkit-touch-callout: none;

@@ -63,6 +63,7 @@ interface SessionListProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   // Session deletion
   onDeleteSession?: (sessionId: string) => void;
+  exitingIds?: Set<string>;
   className?: string;
 }
 
@@ -82,6 +83,7 @@ export default function SessionList({
   taskContext,
   onUnlinkFromTask,
   onDeleteSession,
+  exitingIds,
   className,
 }: SessionListProps) {
   const s = styles[variant];
@@ -108,6 +110,7 @@ export default function SessionList({
     const unread = !isActive && isUnread?.(id, session.modifiedTime);
     const isArch = session.archived;
     const isArchiving = archivingIds?.has(id);
+    const isExiting = exitingIds?.has(id);
     const dotColor = isArchiving
       ? ""
       : session.busy
@@ -119,7 +122,7 @@ export default function SessionList({
             : "bg-text-faint";
 
     return (
-      <div key={id} className="group relative min-w-0">
+      <div key={id} className={`group relative min-w-0${isExiting ? " animate-session-exit" : ""}`}>
         <button
           {...bindLongPress(id, () => onSelectSession(id))}
           title={session.summary || id}
