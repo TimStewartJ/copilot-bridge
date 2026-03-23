@@ -83,6 +83,13 @@ class SessionEventBus {
         this.activeTools = [];
         this.scheduleCleanup();
         break;
+      case "aborted":
+        this.finalContent = event.content;
+        this._complete = true;
+        this.accumulatedContent = "";
+        this.activeTools = [];
+        this.scheduleCleanup();
+        break;
       case "error":
         this.errorMessage = event.message;
         this._complete = true;
