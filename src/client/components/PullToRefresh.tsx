@@ -1,42 +1,58 @@
-import { useRef, useState, useCallback, useEffect, type ReactNode } from "react";
+import { useRef, useState, useEffect, type ReactNode } from "react";
 import { Loader2, ArrowDown } from "lucide-react";
 
 interface PullToRefreshProps {
   onRefresh: () => Promise<void>;
   children: ReactNode;
   className?: string;
+  /** When this or children structure changes, scroll resets to top */
+  scrollKey?: string;
 }
 
 const THRESHOLD = 64;    // px to pull before triggering refresh
 const MAX_PULL = 100;    // max visual displacement
 const RESISTANCE = 0.45; // damping factor past threshold
+// Tolerate sub-pixel scroll positions left over from momentum / rounding
+const SCROLL_TOP_EPSILON = 1;
 
-export default function PullToRefresh({ onRefresh, children, className = "" }: PullToRefreshProps) {
+export default function PullToRefresh({ onRefresh, children, className = "", scrollKey }: PullToRefreshProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const startYRef = useRef(0);
   const pullingRef = useRef(false);
+  const pullDistRef = useRef(0);          // always-current pull distance (no stale closure)
+  const onRefreshRef = useRef(onRefresh); // avoid re-attaching listeners when callback changes
+  onRefreshRef.current = onRefresh;
 
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const refreshingRef = useRef(false);
 
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    if (refreshing) return;
-    const el = containerRef.current;
-    if (!el || el.scrollTop > 0) return;
-    startYRef.current = e.touches[0].clientY;
-    pullingRef.current = true;
-  }, [refreshing]);
+  // Keep pullDistRef in sync with state
+  useEffect(() => { pullDistRef.current = pullDistance; }, [pullDistance]);
 
-  // Native touchmove handler registered with { passive: false } so we can
-  // preventDefault to suppress iOS Safari's rubber-band bounce.
+  // Reset scroll position when scrollKey changes (e.g. tab switch)
+  useEffect(() => {
+    containerRef.current?.scrollTo(0, 0);
+  }, [scrollKey]);
+
+  // Register ALL touch handlers as native listeners with { passive: false }
+  // so the browser waits for our preventDefault before committing to native
+  // scrolling. React synthetic handlers are delegated to the root element
+  // which some mobile browsers don't consider when choosing touch-action.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
+    const onTouchStart = (e: TouchEvent) => {
+      if (refreshingRef.current) return;
+      if (el.scrollTop > SCROLL_TOP_EPSILON) return;
+      startYRef.current = e.touches[0].clientY;
+      pullingRef.current = true;
+    };
+
     const onTouchMove = (e: TouchEvent) => {
       if (!pullingRef.current || refreshingRef.current) return;
-      if (el.scrollTop > 0) {
+      if (el.scrollTop > SCROLL_TOP_EPSILON) {
         pullingRef.current = false;
         setPullDistance(0);
         return;
@@ -48,7 +64,7 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
         return;
       }
 
-      // Block the browser's native overscroll/rubber-band
+      // Block the browser's native overscroll / rubber-band
       e.preventDefault();
 
       const distance = deltaY > THRESHOLD
@@ -58,29 +74,37 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
       setPullDistance(Math.min(distance, MAX_PULL));
     };
 
-    el.addEventListener("touchmove", onTouchMove, { passive: false });
-    return () => el.removeEventListener("touchmove", onTouchMove);
-  }, []);
+    const onTouchEnd = async () => {
+      if (!pullingRef.current) return;
+      pullingRef.current = false;
 
-  const handleTouchEnd = useCallback(async () => {
-    if (!pullingRef.current) return;
-    pullingRef.current = false;
-
-    if (pullDistance >= THRESHOLD && !refreshing) {
-      setRefreshing(true);
-      refreshingRef.current = true;
-      setPullDistance(THRESHOLD); // hold at threshold during refresh
-      try {
-        await onRefresh();
-      } finally {
-        setRefreshing(false);
-        refreshingRef.current = false;
+      // Read from ref so we always get the latest value,
+      // even if React hasn't committed the last setPullDistance yet.
+      if (pullDistRef.current >= THRESHOLD && !refreshingRef.current) {
+        setRefreshing(true);
+        refreshingRef.current = true;
+        setPullDistance(THRESHOLD); // hold at threshold during refresh
+        try {
+          await onRefreshRef.current();
+        } finally {
+          setRefreshing(false);
+          refreshingRef.current = false;
+          setPullDistance(0);
+        }
+      } else {
         setPullDistance(0);
       }
-    } else {
-      setPullDistance(0);
-    }
-  }, [pullDistance, refreshing, onRefresh]);
+    };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: false });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd);
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  }, []);
 
   // Reset on unmount
   useEffect(() => {
@@ -96,8 +120,6 @@ export default function PullToRefresh({ onRefresh, children, className = "" }: P
     <div
       ref={containerRef}
       className={`overflow-y-auto ${className}`}
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
       style={{ overscrollBehavior: "none" }}
     >
       {/* Pull indicator */}

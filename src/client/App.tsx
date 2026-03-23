@@ -746,7 +746,7 @@ function MobileTaskListView({
       </div>
 
       {/* Content — pull-to-refresh wraps both tabs */}
-      <PullToRefresh onRefresh={onRefresh} className="flex-1 overflow-x-hidden min-w-0">
+      <PullToRefresh onRefresh={onRefresh} className="flex-1 overflow-x-hidden min-w-0" scrollKey={quickChatsMode ? "chats" : "tasks"}>
         {quickChatsMode ? (
           <SessionList
             variant="global"
