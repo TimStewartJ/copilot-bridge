@@ -5,8 +5,11 @@ import {
   patchSettings,
   type AppSettings,
   type McpServerConfig,
+  type AdoProviderConfig,
+  type GitHubProviderConfig,
+  type ProvidersConfig,
 } from "../api";
-import { Settings, ArrowLeft, Pencil, Trash2 } from "lucide-react";
+import { Settings, ArrowLeft, Pencil, Trash2, Check, X } from "lucide-react";
 
 export default function SettingsView() {
   const navigate = useNavigate();
@@ -150,6 +153,9 @@ export default function SettingsView() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Providers Section */}
+        <ProvidersSection draft={draft} setDraft={setDraft} />
+
         {/* MCP Servers Section */}
         <section>
           <div className="flex items-center justify-between mb-3">
@@ -213,6 +219,335 @@ export default function SettingsView() {
             )}
           </div>
         </section>
+      </div>
+    </div>
+  );
+}
+
+// ── Providers Section ─────────────────────────────────────────────
+
+function ProvidersSection({
+  draft,
+  setDraft,
+}: {
+  draft: AppSettings;
+  setDraft: (d: AppSettings) => void;
+}) {
+  const [editingProvider, setEditingProvider] = useState<
+    "ado" | "github" | null
+  >(null);
+
+  const providers = draft.providers ?? {};
+
+  const updateProvider = (updated: ProvidersConfig) => {
+    const next = structuredClone(draft);
+    // Clean out empty provider objects
+    const cleaned: ProvidersConfig = {};
+    if (updated.ado?.org || updated.ado?.project) cleaned.ado = updated.ado;
+    if (updated.github?.owner || updated.github?.defaultRepo)
+      cleaned.github = updated.github;
+    next.providers = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+    setDraft(next);
+    setEditingProvider(null);
+  };
+
+  return (
+    <section>
+      <div className="mb-3">
+        <h2 className="text-sm font-medium text-text-primary">Providers</h2>
+        <p className="text-xs text-text-muted mt-0.5">
+          Work tracking providers for enriching linked work items and pull
+          requests.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        {/* ADO Provider */}
+        {editingProvider === "ado" ? (
+          <AdoProviderEditor
+            config={providers.ado}
+            onSave={(cfg) => updateProvider({ ...providers, ado: cfg })}
+            onClear={() => updateProvider({ ...providers, ado: undefined })}
+            onCancel={() => setEditingProvider(null)}
+          />
+        ) : (
+          <ProviderCard
+            label="Azure DevOps"
+            configured={!!providers.ado}
+            fields={
+              providers.ado
+                ? [
+                    { label: "org", value: providers.ado.org },
+                    { label: "project", value: providers.ado.project },
+                  ]
+                : []
+            }
+            onEdit={() => setEditingProvider("ado")}
+            onClear={() => updateProvider({ ...providers, ado: undefined })}
+          />
+        )}
+
+        {/* GitHub Provider */}
+        {editingProvider === "github" ? (
+          <GitHubProviderEditor
+            config={providers.github}
+            onSave={(cfg) => updateProvider({ ...providers, github: cfg })}
+            onClear={() => updateProvider({ ...providers, github: undefined })}
+            onCancel={() => setEditingProvider(null)}
+          />
+        ) : (
+          <ProviderCard
+            label="GitHub"
+            configured={!!providers.github}
+            fields={
+              providers.github
+                ? [
+                    { label: "owner", value: providers.github.owner },
+                    ...(providers.github.defaultRepo
+                      ? [
+                          {
+                            label: "default repo",
+                            value: providers.github.defaultRepo,
+                          },
+                        ]
+                      : []),
+                  ]
+                : []
+            }
+            onEdit={() => setEditingProvider("github")}
+            onClear={() => updateProvider({ ...providers, github: undefined })}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ── Provider Card (read-only display) ────────────────────────────
+
+function ProviderCard({
+  label,
+  configured,
+  fields,
+  onEdit,
+  onClear,
+}: {
+  label: string;
+  configured: boolean;
+  fields: { label: string; value: string }[];
+  onEdit: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="bg-bg-elevated border border-border rounded-md p-4 group">
+      <div className="flex items-start justify-between">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-accent">{label}</span>
+            {configured ? (
+              <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
+                <Check size={10} />
+                configured
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 bg-bg-surface text-text-faint rounded-full">
+                not configured
+              </span>
+            )}
+          </div>
+          {configured && fields.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {fields.map((f) => (
+                <div key={f.label} className="text-xs text-text-muted">
+                  <span className="text-text-faint">{f.label}:</span>{" "}
+                  <code className="text-text-secondary">{f.value}</code>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={onEdit}
+            className="p-1.5 text-text-muted hover:text-accent transition-colors"
+            title="Edit"
+          >
+            <Pencil size={14} />
+          </button>
+          {configured && (
+            <button
+              onClick={onClear}
+              className="p-1.5 text-text-muted hover:text-error transition-colors"
+              title="Remove"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ADO Provider Editor ──────────────────────────────────────────
+
+function AdoProviderEditor({
+  config,
+  onSave,
+  onClear,
+  onCancel,
+}: {
+  config?: AdoProviderConfig;
+  onSave: (config: AdoProviderConfig) => void;
+  onClear: () => void;
+  onCancel: () => void;
+}) {
+  const [org, setOrg] = useState(config?.org ?? "");
+  const [project, setProject] = useState(config?.project ?? "");
+
+  const orgError = org.trim() === "" ? "Organization is required" : null;
+  const projectError = project.trim() === "" ? "Project is required" : null;
+  const canSave = !orgError && !projectError;
+
+  return (
+    <div className="bg-bg-elevated border border-accent/20 rounded-md p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium text-accent">
+          {config ? "Edit: Azure DevOps" : "Configure Azure DevOps"}
+        </div>
+        {config && (
+          <button
+            onClick={onClear}
+            className="text-[10px] text-text-muted hover:text-error transition-colors flex items-center gap-1"
+          >
+            <X size={10} />
+            Clear
+          </button>
+        )}
+      </div>
+
+      <Field label="Organization" error={orgError}>
+        <input
+          value={org}
+          onChange={(e) => setOrg(e.target.value)}
+          placeholder="e.g. my-org"
+          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+          autoFocus
+        />
+      </Field>
+
+      <Field label="Project" error={projectError}>
+        <input
+          value={project}
+          onChange={(e) => setProject(e.target.value)}
+          placeholder="e.g. One"
+          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+        />
+      </Field>
+
+      <div className="flex justify-end gap-2 pt-1">
+        <button
+          onClick={onCancel}
+          className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() =>
+            canSave && onSave({ org: org.trim(), project: project.trim() })
+          }
+          disabled={!canSave}
+          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            canSave
+              ? "bg-accent text-white hover:bg-accent-hover"
+              : "bg-bg-elevated text-text-faint cursor-not-allowed"
+          }`}
+        >
+          {config ? "Update" : "Configure"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── GitHub Provider Editor ───────────────────────────────────────
+
+function GitHubProviderEditor({
+  config,
+  onSave,
+  onClear,
+  onCancel,
+}: {
+  config?: GitHubProviderConfig;
+  onSave: (config: GitHubProviderConfig) => void;
+  onClear: () => void;
+  onCancel: () => void;
+}) {
+  const [owner, setOwner] = useState(config?.owner ?? "");
+  const [defaultRepo, setDefaultRepo] = useState(config?.defaultRepo ?? "");
+
+  const ownerError = owner.trim() === "" ? "Owner is required" : null;
+  const canSave = !ownerError;
+
+  return (
+    <div className="bg-bg-elevated border border-accent/20 rounded-md p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium text-accent">
+          {config ? "Edit: GitHub" : "Configure GitHub"}
+        </div>
+        {config && (
+          <button
+            onClick={onClear}
+            className="text-[10px] text-text-muted hover:text-error transition-colors flex items-center gap-1"
+          >
+            <X size={10} />
+            Clear
+          </button>
+        )}
+      </div>
+
+      <Field label="Owner (org or user)" error={ownerError}>
+        <input
+          value={owner}
+          onChange={(e) => setOwner(e.target.value)}
+          placeholder="e.g. microsoft"
+          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+          autoFocus
+        />
+      </Field>
+
+      <Field label="Default repository (optional)">
+        <input
+          value={defaultRepo}
+          onChange={(e) => setDefaultRepo(e.target.value)}
+          placeholder="e.g. vscode"
+          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+        />
+      </Field>
+
+      <div className="flex justify-end gap-2 pt-1">
+        <button
+          onClick={onCancel}
+          className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => {
+            if (!canSave) return;
+            const cfg: GitHubProviderConfig = { owner: owner.trim() };
+            if (defaultRepo.trim()) cfg.defaultRepo = defaultRepo.trim();
+            onSave(cfg);
+          }}
+          disabled={!canSave}
+          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            canSave
+              ? "bg-accent text-white hover:bg-accent-hover"
+              : "bg-bg-elevated text-text-faint cursor-not-allowed"
+          }`}
+        >
+          {config ? "Update" : "Configure"}
+        </button>
       </div>
     </div>
   );

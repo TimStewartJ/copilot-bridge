@@ -383,7 +383,23 @@ export interface McpServerConfig {
   tools?: string[];
 }
 
+export interface AdoProviderConfig {
+  org: string;
+  project: string;
+}
+
+export interface GitHubProviderConfig {
+  owner: string;
+  defaultRepo?: string;
+}
+
+export interface ProvidersConfig {
+  ado?: AdoProviderConfig;
+  github?: GitHubProviderConfig;
+}
+
 export interface AppSettings {
+  providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
 }
 
