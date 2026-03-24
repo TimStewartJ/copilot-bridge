@@ -165,11 +165,19 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Mark session as read after dwelling for 2s (navigating away cancels)
+  // Mark session as read after 2s dwell, and again on departure to capture
+  // any messages that arrived after the initial mark.
   useEffect(() => {
     if (!activeSessionId) return;
-    const timer = setTimeout(() => markRead(activeSessionId), 2000);
-    return () => clearTimeout(timer);
+    let dwelled = false;
+    const timer = setTimeout(() => {
+      dwelled = true;
+      markRead(activeSessionId);
+    }, 2000);
+    return () => {
+      clearTimeout(timer);
+      if (dwelled) markRead(activeSessionId);
+    };
   }, [activeSessionId, markRead]);
 
   // Optimistic insert
