@@ -1,4 +1,7 @@
 import { useState, memo } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import type { ToolCall } from "../api";
 import ToolCallBlock from "./ToolCallBlock";
 import { Bot, ChevronDown, ChevronRight, XCircle } from "lucide-react";
@@ -51,10 +54,12 @@ export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGr
           )}
           {hasResult && (
             <div className="px-2.5 py-2 border-t border-border">
-              <div className="text-text-muted mb-1">Response</div>
-              <pre className="text-text-muted whitespace-pre-wrap break-all text-[11px] max-h-64 overflow-auto">
-                {agentTool.result!.length > 3000 ? agentTool.result!.slice(0, 3000) + "\n... (truncated)" : agentTool.result}
-              </pre>
+              <div className="text-text-muted mb-1 text-[11px]">Response</div>
+              <div className="text-text-secondary text-xs leading-relaxed prose prose-invert prose-xs prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-headings:mt-2 prose-headings:mb-1 prose-pre:bg-bg-primary prose-pre:rounded prose-pre:p-2 prose-pre:text-[11px] prose-code:text-accent prose-code:text-[11px] max-h-64 overflow-auto">
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                  {agentTool.result!.length > 5000 ? agentTool.result!.slice(0, 5000) + "\n\n... (truncated)" : agentTool.result!}
+                </ReactMarkdown>
+              </div>
             </div>
           )}
         </div>
