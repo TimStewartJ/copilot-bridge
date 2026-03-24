@@ -96,6 +96,11 @@ export function useDrafts(sessions: Session[]) {
   );
 
   const clearDraft = useCallback((sessionId: string) => {
+    // Cancel any pending debounced save to prevent it from re-persisting the draft
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
     setState((prev) => {
       if (!(sessionId in prev)) return prev;
       const next = { ...prev };
