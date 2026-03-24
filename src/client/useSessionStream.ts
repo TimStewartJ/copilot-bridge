@@ -7,6 +7,7 @@ export interface PendingTool {
   args?: Record<string, unknown>;
   parentToolCallId?: string;
   isSubAgent?: boolean;
+  startedAt?: string;
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
@@ -160,6 +161,7 @@ export function useSessionStream(
                     args: event.args,
                     parentToolCallId: event.parentToolCallId,
                     isSubAgent: event.isSubAgent,
+                    startedAt: event.timestamp,
                   };
                   if (tool.name === "report_intent") break;
                   toolStartSeq.set(tool.toolCallId, nextSeq++);
@@ -198,11 +200,13 @@ export function useSessionStream(
                     success: event.success,
                     parentToolCallId: event.parentToolCallId,
                     isSubAgent: event.isSubAgent,
+                    completedAt: event.timestamp,
                   };
                   setStreamState((s) => {
                     const match = s.activeTools.find((t) => t.toolCallId === event.toolCallId);
                     if (match) {
                       completed.args = match.args;
+                      completed.startedAt = match.startedAt;
                       if (match.parentToolCallId) completed.parentToolCallId = match.parentToolCallId;
                       if (match.isSubAgent) completed.isSubAgent = match.isSubAgent;
                     }

@@ -1,6 +1,18 @@
-import { useState, memo } from "react";
+import { useState, memo, useMemo } from "react";
 import type { ToolCall } from "../api";
 import { Settings, XCircle, ChevronDown, ChevronRight } from "lucide-react";
+
+function formatToolTime(tc: ToolCall): string | null {
+  if (!tc.startedAt) return null;
+  const start = new Date(tc.startedAt);
+  const time = start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  if (tc.completedAt) {
+    const ms = new Date(tc.completedAt).getTime() - start.getTime();
+    if (ms < 1000) return `${time} · ${ms}ms`;
+    return `${time} · ${(ms / 1000).toFixed(1)}s`;
+  }
+  return time;
+}
 
 interface ToolCallBlockProps {
   toolCall: ToolCall;
@@ -34,6 +46,7 @@ export default memo(function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
   const summary = argSummary(toolCall);
   const hasResult = toolCall.result && toolCall.result.trim().length > 0;
   const hasDetails = hasResult || (toolCall.args && Object.keys(toolCall.args).length > 0);
+  const timeLabel = useMemo(() => formatToolTime(toolCall), [toolCall.startedAt, toolCall.completedAt]);
 
   return (
     <div className="border border-border rounded-md text-xs font-mono overflow-hidden">
@@ -54,6 +67,9 @@ export default memo(function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
       </button>
       {expanded && (
         <div className="border-t border-border px-2.5 py-2 space-y-2">
+          {timeLabel && (
+            <div className="text-text-faint text-[11px]">{timeLabel}</div>
+          )}
           {toolCall.args && Object.keys(toolCall.args).length > 0 && (
             <div>
               <div className="text-text-muted mb-1">Arguments</div>
