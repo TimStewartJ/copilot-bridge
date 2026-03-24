@@ -5,6 +5,7 @@ import remarkBreaks from "remark-breaks";
 import type { ChatMessage, ToolCall } from "../api";
 import ToolCallBlock from "./ToolCallBlock";
 import SubAgentGroup from "./SubAgentGroup";
+import CodeBlock from "./CodeBlock";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -110,7 +111,7 @@ export default memo(function MessageBubble({ message }: MessageBubbleProps) {
             prose-headings:mt-3 prose-headings:mb-1
             prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5
             prose-li:my-0.5">
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
               {message.content}
             </ReactMarkdown>
           </div>

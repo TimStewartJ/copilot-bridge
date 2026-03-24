@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { FileText, Pencil, X } from "lucide-react";
+import CodeBlock from "./CodeBlock";
 
 interface NotesSheetProps {
   notes: string;
@@ -109,7 +110,7 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
                 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5
                 prose-li:my-0.5"
             >
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{notes}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>{notes}</ReactMarkdown>
             </div>
           ) : (
             <div className="text-center py-8">

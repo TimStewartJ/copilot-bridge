@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { fetchPlan } from "../api";
 import { ClipboardList, RefreshCw, X } from "lucide-react";
+import CodeBlock from "./CodeBlock";
 
 interface PlanSheetProps {
   sessionId: string;
@@ -84,7 +85,7 @@ export default function PlanSheet({ sessionId, onClose }: PlanSheetProps) {
               prose-headings:mt-3 prose-headings:mb-1
               prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5
               prose-li:my-0.5">
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>{content}</ReactMarkdown>
             </div>
           )}
         </div>
