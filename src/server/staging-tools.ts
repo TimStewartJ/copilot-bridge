@@ -27,7 +27,10 @@ const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 const activePreviews = new Map<string, string>();
 
 /** Active staging backend contexts: prefix → cleanup function */
-const activeStagingBackends = new Map<string, { ctx: AppContext; cleanup: () => Promise<void> }>();
+const activeStagingBackends = new Map<string, { ctx: AppContext; router: express.Router; cleanup: () => Promise<void> }>();
+
+/** Active staged API routers: prefix → router (for delegating middleware in index.ts) */
+const activeStagingRouters = new Map<string, express.Router>();
 
 /** Registered Express app — set by registerExpressApp() from index.ts */
 let _expressApp: express.Application | null = null;
@@ -35,6 +38,11 @@ let _expressApp: express.Application | null = null;
 /** Register the Express app so staging tools can mount/unmount routers */
 export function registerExpressApp(app: express.Application): void {
   _expressApp = app;
+}
+
+/** Get the staged API router for a prefix (used by delegating middleware in index.ts) */
+export function getStagingRouter(prefix: string): express.Router | undefined {
+  return activeStagingRouters.get(prefix);
 }
 
 /** Returns the map of active staging previews for the Express middleware to use. */
@@ -163,6 +171,7 @@ async function teardownStagingBackend(prefix: string): Promise<void> {
   if (!staging) return;
 
   log(`Tearing down staging backend: ${prefix}`);
+  activeStagingRouters.delete(prefix);
   try {
     await staging.cleanup();
   } catch (err) {
@@ -382,13 +391,13 @@ export const STAGING_TOOLS = [
           // Mount staged API router
           const createRouter = (ctx as any)._createApiRouter;
           const stagedRouter = createRouter(ctx);
-          const apiPath = `/staging/${prefix}/api`;
-          _expressApp.use(apiPath, stagedRouter);
-          log(`Staged API mounted at ${apiPath}`);
+          activeStagingRouters.set(prefix, stagedRouter);
+          log(`Staged API registered for prefix ${prefix}`);
 
           // Store for cleanup
           activeStagingBackends.set(prefix, {
             ctx,
+            router: stagedRouter,
             cleanup: async () => {
               try {
                 await ctx.sessionManager.gracefulShutdown();

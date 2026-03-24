@@ -18,7 +18,7 @@ import { defaultEventBusRegistry } from "./event-bus.js";
 import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
 import * as readStateStore from "./read-state-store.js";
 import { defaultGlobalBus } from "./global-bus.js";
-import { pruneOrphanedWorktrees, getActivePreviews, registerExpressApp } from "./staging-tools.js";
+import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerExpressApp } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
 import type { AppContext } from "./app-context.js";
 import { createApiRouter } from "./api-router.js";
@@ -54,7 +54,17 @@ app.use("/api", createApiRouter(defaultContext));
 
 // ── Static files (Vite build output) ──────────────────────────────
 
-// Staging previews — dynamically serves builds registered by staging_preview tool
+// Staging API — delegating middleware registered at startup, resolves routers dynamically
+app.use("/staging/:prefix/api", (req, res, next) => {
+  const router = getStagingRouter(req.params.prefix);
+  if (router) {
+    router(req, res, next);
+  } else {
+    next();
+  }
+});
+
+// Staging previews — dynamically serves frontend builds registered by staging_preview tool
 app.use("/staging/:prefix", (req, res, next) => {
   const prefix = req.params.prefix;
   const previews = getActivePreviews();
