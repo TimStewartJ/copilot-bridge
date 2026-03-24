@@ -9,3 +9,5 @@ data/
 .idea/
 
 .git-backup/
+
+data-staging/
