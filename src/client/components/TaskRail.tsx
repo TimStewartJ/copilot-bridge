@@ -4,18 +4,12 @@ import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
+import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import {
   DndContext,
   DragOverlay,
   closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
   useDroppable,
-  type DragEndEvent,
-  type DragStartEvent,
-  type DragOverEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -46,6 +40,7 @@ interface TaskRailProps {
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
   onDeleteGroup?: (groupId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
+  onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -103,6 +98,7 @@ export default function TaskRail({
   onUpdateGroup,
   onDeleteGroup,
   onMoveTaskToGroup,
+  onMoveAndReorder,
 }: TaskRailProps) {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -184,121 +180,21 @@ export default function TaskRail({
   const [groupCtx, setGroupCtx] = useState<{ groupId: string; x: number; y: number } | null>(null);
 
   // DnD setup
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor),
-  );
-
-  type Section = { group: TaskGroup | null; tasks: Task[] };
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [localSections, setLocalSections] = useState<Section[] | null>(null);
-  const activeDragTask = activeId ? sortedTasks.find((t) => t.id === activeId) : null;
-  const displaySections = localSections ?? groupedSections;
-
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveId(event.active.id as string);
-    if (groupedSections) {
-      setLocalSections(groupedSections.map((s) => ({ ...s, tasks: [...s.tasks] })));
-    }
-  }, [groupedSections]);
-
-  const handleDragOver = useCallback((event: DragOverEvent) => {
-    const { active, over } = event;
-    if (!over || !localSections || !hasGroups) return;
-
-    const dragId = active.id as string;
-    const fromSection = localSections.find((s) => s.tasks.some((t) => t.id === dragId));
-    if (!fromSection) return;
-
-    // Determine target section
-    let toSection: Section | undefined;
-    let overIndex: number;
-
-    const overIsTask = localSections.some((s) => s.tasks.some((t) => t.id === over.id));
-    if (overIsTask) {
-      toSection = localSections.find((s) => s.tasks.some((t) => t.id === over.id));
-      overIndex = toSection ? toSection.tasks.findIndex((t) => t.id === over.id) : 0;
-    } else {
-      // Dropped over a droppable group container
-      toSection = localSections.find((s) => (s.group?.id ?? "__ungrouped__") === over.id);
-      overIndex = toSection ? toSection.tasks.length : 0;
-    }
-
-    if (!toSection || fromSection === toSection) return;
-
-    const draggedTask = fromSection.tasks.find((t) => t.id === dragId);
-    if (!draggedTask) return;
-
-    setLocalSections((prev) => {
-      if (!prev) return prev;
-      return prev.map((s) => {
-        if (s.group?.id === fromSection.group?.id && s.group?.id !== toSection!.group?.id) {
-          return { ...s, tasks: s.tasks.filter((t) => t.id !== dragId) };
-        }
-        if (s.group?.id === toSection!.group?.id && s.group?.id !== fromSection.group?.id) {
-          const newTasks = [...s.tasks.filter((t) => t.id !== dragId)];
-          newTasks.splice(overIndex, 0, draggedTask);
-          return { ...s, tasks: newTasks };
-        }
-        // Handle null groups (ungrouped)
-        if (!s.group && !fromSection.group && toSection!.group) {
-          return { ...s, tasks: s.tasks.filter((t) => t.id !== dragId) };
-        }
-        if (!s.group && !toSection!.group && fromSection.group) {
-          const newTasks = [...s.tasks.filter((t) => t.id !== dragId)];
-          newTasks.splice(overIndex, 0, draggedTask);
-          return { ...s, tasks: newTasks };
-        }
-        return s;
-      });
-    });
-  }, [localSections, hasGroups]);
-
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event;
-    setActiveId(null);
-    setLocalSections(null);
-
-    if (!over || active.id === over.id || !onReorderTasks) return;
-
-    const activeTask = sortedTasks.find((t) => t.id === active.id);
-    if (!activeTask) return;
-
-    // Check if dropped on a group container (not a task)
-    const overTask = sortedTasks.find((t) => t.id === over.id);
-    if (!overTask && hasGroups && onMoveTaskToGroup) {
-      const targetGroupId = over.id === "__ungrouped__" ? undefined : over.id as string;
-      onMoveTaskToGroup(activeTask.id, targetGroupId);
-      return;
-    }
-
-    if (!overTask) return;
-
-    // Cross-group: reassign groupId
-    if (hasGroups && activeTask.groupId !== overTask.groupId && onMoveTaskToGroup) {
-      onMoveTaskToGroup(activeTask.id, overTask.groupId);
-      const targetGroupTasks = sortedTasks.filter(
-        (t) => t.groupId === overTask.groupId && t.id !== activeTask.id,
-      );
-      const overIndex = targetGroupTasks.findIndex((t) => t.id === over.id);
-      targetGroupTasks.splice(overIndex, 0, activeTask);
-      onReorderTasks(targetGroupTasks.map((t) => t.id));
-      return;
-    }
-
-    // Same-group reorder
-    if (activeTask.status !== overTask.status) return;
-    const group = sortedTasks.filter(
-      (t) => t.status === activeTask.status && t.groupId === activeTask.groupId,
-    );
-    const oldIndex = group.findIndex((t) => t.id === active.id);
-    const newIndex = group.findIndex((t) => t.id === over.id);
-    if (oldIndex === -1 || newIndex === -1) return;
-    const reordered = [...group];
-    const [moved] = reordered.splice(oldIndex, 1);
-    reordered.splice(newIndex, 0, moved);
-    onReorderTasks(reordered.map((t) => t.id));
-  }, [sortedTasks, onReorderTasks, hasGroups, onMoveTaskToGroup]);
+  const {
+    sensors,
+    activeDragTask,
+    displaySections,
+    handleDragStart,
+    handleDragOver,
+    handleDragEnd,
+  } = useCrossGroupDnd({
+    tasks: sortedTasks,
+    groupedSections,
+    hasGroups,
+    onReorderTasks,
+    onMoveTaskToGroup,
+    onMoveAndReorder,
+  });
 
   const ctxUnreadCount = useMemo(() => {
     if (!ctxTask || !isUnread) return 0;

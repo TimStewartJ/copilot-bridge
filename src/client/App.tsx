@@ -62,6 +62,9 @@ export default function App() {
   // Track optimistic sessions that the server doesn't know about yet
   const optimisticIdsRef = useRef(new Set<string>());
 
+  // Guard: skip SSE-driven loadTasks() while a task mutation is in-flight
+  const taskMutationInFlight = useRef(0);
+
   // Derive active IDs from URL
   const activeSessionId =
     location.pathname.match(/^\/tasks\/[^/]+\/sessions\/(.+)/)?.[1] ??
@@ -164,7 +167,7 @@ export default function App() {
         setScheduleVersion((v) => v + 1);
         break;
       case "task:changed":
-        loadTasks();
+        if (taskMutationInFlight.current === 0) loadTasks();
         break;
       case "status:connected":
         // Don't touch restart state — server sends authoritative state on connect
@@ -343,12 +346,14 @@ export default function App() {
       const rest = prev.filter((t) => !reorderedIds.has(t.id));
       return [...reordered, ...rest];
     });
+    taskMutationInFlight.current++;
     try {
-      const updated = await reorderTasks(taskIds);
-      setTasks(updated);
+      await reorderTasks(taskIds);
     } catch (err) {
       console.error("Failed to reorder tasks:", err);
       setTasks(await fetchTasks());
+    } finally {
+      taskMutationInFlight.current--;
     }
   };
 
@@ -399,11 +404,40 @@ export default function App() {
   const handleMoveTaskToGroup = async (taskId: string, groupId: string | undefined) => {
     // Optimistic update
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, groupId } : t)));
+    taskMutationInFlight.current++;
     try {
       await patchTask(taskId, { groupId: groupId ?? ("" as any) });
     } catch (err) {
       console.error("Failed to move task to group:", err);
       setTasks(await fetchTasks());
+    } finally {
+      taskMutationInFlight.current--;
+    }
+  };
+
+  const handleMoveAndReorder = async (taskId: string, groupId: string | undefined, taskIds: string[]) => {
+    // Single optimistic update: group move + reorder combined
+    setTasks((prev) => {
+      const withGroup = prev.map((t) => (t.id === taskId ? { ...t, groupId } : t));
+      const map = new Map(withGroup.map((t) => [t.id, t]));
+      const reordered = taskIds.map((id, i) => {
+        const t = map.get(id);
+        return t ? { ...t, order: i } : null;
+      }).filter(Boolean) as Task[];
+      const reorderedIds = new Set(taskIds);
+      const rest = withGroup.filter((t) => !reorderedIds.has(t.id));
+      return [...reordered, ...rest];
+    });
+    // Serialize server calls to avoid load/save race
+    taskMutationInFlight.current++;
+    try {
+      await patchTask(taskId, { groupId: groupId ?? ("" as any) });
+      await reorderTasks(taskIds);
+    } catch (err) {
+      console.error("Failed to move and reorder:", err);
+      setTasks(await fetchTasks());
+    } finally {
+      taskMutationInFlight.current--;
     }
   };
 
@@ -519,6 +553,7 @@ export default function App() {
         onUpdateGroup={handleUpdateGroup}
         onDeleteGroup={handleDeleteGroup}
         onMoveTaskToGroup={handleMoveTaskToGroup}
+        onMoveAndReorder={handleMoveAndReorder}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
@@ -548,6 +583,7 @@ export default function App() {
             quickChatsMode={quickChatsMode}
             taskGroups={taskGroups}
             onMoveTaskToGroup={handleMoveTaskToGroup}
+            onMoveAndReorder={handleMoveAndReorder}
             onCreateGroup={handleCreateGroup}
             onUpdateGroup={handleUpdateGroup}
             onDeleteGroup={handleDeleteGroup}
@@ -696,6 +732,7 @@ function MobileTaskListView({
   quickChatsMode,
   taskGroups,
   onMoveTaskToGroup,
+  onMoveAndReorder,
   onCreateGroup,
   onUpdateGroup,
   onDeleteGroup,
@@ -729,6 +766,7 @@ function MobileTaskListView({
   quickChatsMode: boolean;
   taskGroups?: TaskGroup[];
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
+  onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
   onDeleteGroup?: (groupId: string) => void;
@@ -812,6 +850,7 @@ function MobileTaskListView({
             onDeleteTask={onDeleteTask}
             onReorderTasks={onReorderTasks}
             onMoveTaskToGroup={onMoveTaskToGroup}
+            onMoveAndReorder={onMoveAndReorder}
             onCreateGroup={onCreateGroup}
             onUpdateGroup={onUpdateGroup}
             onDeleteGroup={onDeleteGroup}
