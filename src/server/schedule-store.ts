@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "..", "data");
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
 const SCHEDULES_FILE = join(DATA_DIR, "schedules.json");
 
 // ── Types ─────────────────────────────────────────────────────────
