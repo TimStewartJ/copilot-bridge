@@ -547,6 +547,8 @@ export class SessionManager {
     const toolNameMap = new Map<string, string>();
     // Track sub-agent parent tool call IDs → display name
     const subAgentMap = new Map<string, string>();
+    // Capture sub-agent response text: parentToolCallId → last response content
+    const subAgentResponseMap = new Map<string, string>();
 
     const unsub = session.on((event: any) => {
       const data = (event as any).data;
@@ -575,8 +577,11 @@ export class SessionManager {
           globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
-          // Skip sub-agent messages — their content becomes the tool result
-          if (data?.parentToolCallId) break;
+          // Capture sub-agent response text for display in SubAgentGroup
+          if (data?.parentToolCallId && data?.content) {
+            subAgentResponseMap.set(data.parentToolCallId, data.content);
+            break;
+          }
           if (data?.content) {
             console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
             lastAssistantContent = data.content;
@@ -613,12 +618,16 @@ export class SessionManager {
           const ok = data?.success !== false;
           const isAgent = subAgentMap.has(data?.toolCallId);
           const agentDisplayName = subAgentMap.get(data?.toolCallId);
+          // Use captured sub-agent response text if available, fall back to raw tool result
+          const result = isAgent
+            ? (subAgentResponseMap.get(data?.toolCallId) ?? data?.result?.content)
+            : data?.result?.content;
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${isAgent ? agentDisplayName : completedToolName} (${ok ? "ok" : "failed"})`);
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
             name: isAgent ? agentDisplayName : completedToolName,
-            result: data?.result?.content,
+            result,
             success: data?.success,
             isSubAgent: isAgent || undefined,
           });
@@ -772,6 +781,8 @@ export class SessionManager {
     const toolCompletes = new Map<string, { success: boolean; content?: string }>();
     // Track sub-agent lifecycle: toolCallId → agent info
     const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
+    // Capture sub-agent response text: parentToolCallId → last response content
+    const subAgentResponses = new Map<string, string>();
     for (const event of events) {
       const data = (event as any).data;
       if (event.type === "tool.execution_start" && data?.toolCallId) {
@@ -780,6 +791,9 @@ export class SessionManager {
         toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content });
       } else if (event.type === "subagent.started" && data?.toolCallId) {
         subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
+      } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
+        // Capture sub-agent response text (last one wins — that's the final response)
+        subAgentResponses.set(data.parentToolCallId, data.content);
       }
     }
     console.log(`[sdk] Indexed ${toolStarts.size} tool starts, ${toolCompletes.size} tool completes, ${subAgentStarts.size} sub-agents`);
@@ -802,6 +816,8 @@ export class SessionManager {
         }
       } else if (event.type === "assistant.message") {
         const data = (event as any).data;
+        // Skip sub-agent messages — their content is captured during indexing
+        if (data?.parentToolCallId) continue;
         const content = data.content ?? "";
 
         // Build tool calls from toolRequests — flat format, grouping done by frontend
@@ -814,12 +830,12 @@ export class SessionManager {
               const complete = toolCompletes.get(tr.toolCallId);
               const subAgent = subAgentStarts.get(tr.toolCallId);
               if (subAgent) {
-                // Sub-agent parent tool — use agent display name, carry result
+                // Sub-agent parent tool — use response text if available, fall back to tool result
                 return {
                   toolCallId: tr.toolCallId,
                   name: `🤖 ${subAgent.agentDisplayName ?? subAgent.agentName ?? "agent"}`,
                   isSubAgent: true,
-                  result: complete?.content,
+                  result: subAgentResponses.get(tr.toolCallId) ?? complete?.content,
                   success: complete?.success,
                 };
               }
@@ -832,7 +848,31 @@ export class SessionManager {
                 parentToolCallId: start?.parentToolCallId,
               };
             });
-          if (toolCalls!.length === 0) toolCalls = undefined;
+
+          // Inject child tool calls for sub-agent parents
+          const injected: typeof toolCalls = [];
+          for (const tc of toolCalls!) {
+            injected.push(tc);
+            if (tc.isSubAgent) {
+              // Find child tools that belong to this sub-agent
+              for (const [childId, s] of toolStarts.entries()) {
+                if (s.parentToolCallId === tc.toolCallId && s.toolName !== "report_intent") {
+                  const childComplete = toolCompletes.get(childId);
+                  injected.push({
+                    toolCallId: childId,
+                    name: s.toolName,
+                    args: s.arguments,
+                    result: childComplete?.content,
+                    success: childComplete?.success,
+                    parentToolCallId: tc.toolCallId,
+                  });
+                }
+              }
+            }
+          }
+          toolCalls = injected;
+
+          if (toolCalls.length === 0) toolCalls = undefined;
         }
 
         // Include message if it has content or tool calls
