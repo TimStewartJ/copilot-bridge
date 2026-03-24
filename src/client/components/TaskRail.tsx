@@ -111,7 +111,7 @@ export default function TaskRail({
   }, [sessions]);
 
   const taskIndicators = useMemo(() => {
-    const indicators = new Map<string, "busy" | "unread" | null>();
+    const indicators = new Map<string, { busy: boolean; unread: boolean }>();
     for (const task of tasks) {
       let hasBusy = false;
       let hasUnread = false;
@@ -121,7 +121,7 @@ export default function TaskRail({
         if (session.busy) hasBusy = true;
         if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
       }
-      indicators.set(task.id, hasBusy ? "busy" : hasUnread ? "unread" : null);
+      indicators.set(task.id, { busy: hasBusy, unread: hasUnread });
     }
     return indicators;
   }, [tasks, sessionMap, isUnread]);
@@ -347,10 +347,10 @@ export default function TaskRail({
                         className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
                       >
                         {initials}
-                        {indicator === "busy" && (
+                        {indicator?.busy && (
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
                         )}
-                        {indicator === "unread" && (
+                        {indicator?.unread && !indicator?.busy && (
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
                         )}
                       </button>
@@ -374,10 +374,10 @@ export default function TaskRail({
                   className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
                 >
                   {initials}
-                  {indicator === "busy" && (
+                  {indicator?.busy && (
                     <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
                   )}
-                  {indicator === "unread" && (
+                  {indicator?.unread && !indicator?.busy && (
                     <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
                   )}
                 </button>
@@ -814,7 +814,7 @@ function SortableRailItem({
 }: {
   task: Task;
   isActive: boolean;
-  indicator: "busy" | "unread" | null | undefined;
+  indicator: { busy: boolean; unread: boolean } | undefined;
   isCtxTarget: boolean;
   isLongPressTarget: boolean;
   bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
@@ -854,16 +854,10 @@ function SortableRailItem({
           >
             <GripVertical size={12} />
           </span>
-          {indicator && (
-            <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ml-1 ${
-                indicator === "busy"
-                  ? "bg-info animate-pulse"
-                  : "bg-success"
-              }`}
-            />
+          {indicator?.busy && (
+            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-info animate-pulse" />
           )}
-          <span className={`font-medium truncate flex-1 ml-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
+          <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>
           <span className={`text-[10px] ml-1 ${STATUS_TEXT[task.status]}`}>
