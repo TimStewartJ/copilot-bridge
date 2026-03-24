@@ -112,60 +112,6 @@ data/                               # Runtime data (git-ignored)
 └── tasks.json                  # Task persistence
 ```
 
-## API
-
-### Sessions
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/sessions` | List all sessions (filtered, with disk size) |
-| `POST` | `/api/sessions` | Create new session |
-| `GET` | `/api/sessions/:id/messages` | Load message history + busy flag |
-| `GET` | `/api/sessions/:id/stream` | SSE stream (replay + live events) |
-
-### Chat
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/chat` | Send message (202, fire-and-forget) |
-
-### Tasks
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/tasks` | List all tasks |
-| `POST` | `/api/tasks` | Create task |
-| `GET` | `/api/tasks/:id` | Get task details |
-| `PATCH` | `/api/tasks/:id` | Update task fields |
-| `DELETE` | `/api/tasks/:id` | Delete task |
-| `POST` | `/api/tasks/:id/link` | Link resource (session/workItem/pr) |
-| `DELETE` | `/api/tasks/:id/link` | Unlink resource |
-| `POST` | `/api/tasks/:id/session` | Create task-contextual session |
-
-## Agent Tools
-
-Every Copilot session has these custom tools:
-
-| Tool | Description |
-|------|-------------|
-| `task_list` | List all tasks |
-| `task_get_info` | Get task details |
-| `task_rename` | Rename a task |
-| `task_update_notes` | Update task notes (markdown) |
-| `task_link_work_item` | Link ADO work item to task |
-| `task_unlink_work_item` | Remove work item from task |
-| `task_link_pr` | Link PR to task |
-| `task_unlink_pr` | Remove PR from task |
-| `self_restart` | Rebuild and restart server (with auto-rollback) |
-
-## Streaming Architecture
-
-```
-POST /api/chat → 202 (fire and forget, work runs in background)
-GET /api/sessions/:id/stream → SSE (replay buffered + live events)
-
-Events: thinking, intent, delta, tool_start, tool_done, done, error
-EventBus buffers per session, supports multiple subscribers + replay
-60s TTL after completion for reconnection grace period
-```
-
 ## Self-Iteration
 
 The agent can modify its own source code and restart:
