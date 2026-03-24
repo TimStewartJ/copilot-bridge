@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
+import { GROUP_COLOR_DOT, GROUP_COLOR_BG, GROUP_COLOR_BORDER } from "../group-colors";
 import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -34,20 +35,7 @@ function timeAgo(iso?: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-const GROUP_COLOR_DOT: Record<string, string> = {
-  blue: "bg-blue-500", purple: "bg-purple-500", green: "bg-green-500", amber: "bg-amber-500",
-  rose: "bg-rose-500", cyan: "bg-cyan-500", orange: "bg-orange-500", slate: "bg-slate-500",
-};
 
-const GROUP_COLOR_BG: Record<string, string> = {
-  blue: "bg-blue-500/8", purple: "bg-purple-500/8", green: "bg-green-500/8", amber: "bg-amber-500/8",
-  rose: "bg-rose-500/8", cyan: "bg-cyan-500/8", orange: "bg-orange-500/8", slate: "bg-slate-500/8",
-};
-
-const GROUP_COLOR_BORDER: Record<string, string> = {
-  blue: "border-blue-500/30", purple: "border-purple-500/30", green: "border-green-500/30", amber: "border-amber-500/30",
-  rose: "border-rose-500/30", cyan: "border-cyan-500/30", orange: "border-orange-500/30", slate: "border-slate-500/30",
-};
 
 interface TaskListProps {
   tasks: Task[];

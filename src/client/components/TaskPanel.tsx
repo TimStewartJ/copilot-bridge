@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Task, TaskGroup, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
+import { GROUP_COLOR_DOT } from "../group-colors";
 import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule, patchTask } from "../api";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
@@ -71,10 +72,7 @@ const PR_STATUS_DOTS: Record<string, string> = {
   abandoned: "bg-text-muted",
 };
 
-const GROUP_COLOR_DOT: Record<string, string> = {
-  blue: "bg-blue-500", purple: "bg-purple-500", green: "bg-green-500", amber: "bg-amber-500",
-  rose: "bg-rose-500", cyan: "bg-cyan-500", orange: "bg-orange-500", slate: "bg-slate-500",
-};
+
 
 function SectionLabel({ label, count }: { label: string; count?: number }) {
   return (

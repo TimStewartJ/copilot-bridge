@@ -9,7 +9,7 @@ const GROUPS_FILE = join(DATA_DIR, "task-groups.json");
 // ── Types ─────────────────────────────────────────────────────────
 
 export const GROUP_COLORS = [
-  "blue", "purple", "green", "amber", "rose", "cyan", "orange", "slate",
+  "blue", "purple", "amber", "rose", "cyan", "orange", "slate",
 ] as const;
 
 export type GroupColor = (typeof GROUP_COLORS)[number];
