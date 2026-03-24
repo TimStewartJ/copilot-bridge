@@ -4,6 +4,10 @@ import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, delet
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
+import NotesSheet from "./NotesSheet";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import {
   MessageSquare,
   MoreHorizontal,
@@ -13,8 +17,6 @@ import {
   Target,
   Trophy,
   GitPullRequest,
-  ChevronDown,
-  ChevronRight,
   ClipboardList,
   Clock,
   Play,
@@ -155,8 +157,9 @@ export default function TaskPanel({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const overflowRef = useRef<HTMLDivElement>(null);
 
-  // ── Notes collapse state ─────────────────────────────────────
-  const [notesExpanded, setNotesExpanded] = useState(false);
+  // ── Notes sheet state ────────────────────────────────────────
+  const [notesSheetOpen, setNotesSheetOpen] = useState(false);
+  const [notesStartEdit, setNotesStartEdit] = useState(false);
 
   // ── CWD editing state ──────────────────────────────────────
   const [editingCwd, setEditingCwd] = useState(false);
@@ -203,7 +206,8 @@ export default function TaskPanel({
     setEditingTitle(false);
     setOverflowOpen(false);
     setConfirmDelete(false);
-    setNotesExpanded(false);
+    setNotesSheetOpen(false);
+    setNotesStartEdit(false);
     setEditingCwd(false);
   }, [task?.id]);
 
@@ -680,27 +684,49 @@ export default function TaskPanel({
         </div>
 
         {/* Notes */}
-        {task.notes && (
-          <div>
-            <button
-              onClick={() => setNotesExpanded((prev) => !prev)}
-              className="w-full flex items-center gap-1 mb-1"
+        <div>
+          <SectionLabel label="Notes" />
+          {task.notes ? (
+            <div
+              onClick={() => { setNotesStartEdit(false); setNotesSheetOpen(true); }}
+              className="px-3 py-1.5 cursor-pointer hover:bg-bg-hover rounded-md transition-colors relative"
+              title="Click to view notes"
             >
-              <SectionLabel label="Notes" />
-              <span className="text-[10px] text-text-faint">
-                {notesExpanded ? (
-                  <ChevronDown size={10} />
-                ) : (
-                  <ChevronRight size={10} />
-                )}
-              </span>
-            </button>
-            {notesExpanded && (
-              <div className="px-3 py-2 bg-bg-surface rounded-md text-xs text-text-muted whitespace-pre-wrap max-h-40 overflow-y-auto">
-                {task.notes}
+              <div className="max-h-16 overflow-hidden">
+                <div className="prose prose-invert prose-xs max-w-none text-text-muted
+                  prose-p:my-0.5 prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs
+                  prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0
+                  prose-pre:hidden prose-table:hidden
+                  prose-code:text-accent prose-code:text-[10px]
+                  prose-a:text-accent prose-a:no-underline">
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{task.notes}</ReactMarkdown>
+                </div>
               </div>
-            )}
-          </div>
+              <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-bg-secondary to-transparent pointer-events-none rounded-b-md" />
+            </div>
+          ) : (
+            <div className="px-3 py-1">
+              <button
+                onClick={() => { setNotesStartEdit(true); setNotesSheetOpen(true); }}
+                className="text-[10px] text-text-faint hover:text-accent transition-colors"
+              >
+                Add notes…
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Notes Sheet */}
+        {notesSheetOpen && (
+          <NotesSheet
+            notes={task.notes}
+            startInEditMode={notesStartEdit}
+            onSave={async (newNotes) => {
+              await patchTask(task.id, { notes: newNotes });
+              onTasksChanged?.();
+            }}
+            onClose={() => { setNotesSheetOpen(false); setNotesStartEdit(false); }}
+          />
         )}
       </PullToRefresh>
     </div>
