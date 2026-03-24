@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { Task, TaskGroup, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
-import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule } from "../api";
+import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule, patchTask } from "../api";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
@@ -21,6 +21,10 @@ import {
   Pause,
   Plus,
   Trash2,
+  FolderOpen,
+  Copy,
+  Check,
+  Pencil,
 } from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -154,6 +158,11 @@ export default function TaskPanel({
   // ── Notes collapse state ─────────────────────────────────────
   const [notesExpanded, setNotesExpanded] = useState(false);
 
+  // ── CWD editing state ──────────────────────────────────────
+  const [editingCwd, setEditingCwd] = useState(false);
+  const [cwdDraft, setCwdDraft] = useState("");
+  const [cwdCopied, setCwdCopied] = useState(false);
+
   // ── Enrichment state ─────────────────────────────────────────
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
   const [enrichedPRs, setEnrichedPRs] = useState<EnrichedPR[]>([]);
@@ -195,6 +204,7 @@ export default function TaskPanel({
     setOverflowOpen(false);
     setConfirmDelete(false);
     setNotesExpanded(false);
+    setEditingCwd(false);
   }, [task?.id]);
 
   // Close overflow menu on outside click
@@ -603,6 +613,71 @@ export default function TaskPanel({
             }}
           />
         )}
+
+        {/* Working Directory */}
+        <div>
+          <SectionLabel label="Working Directory" />
+          <div className="px-3 py-1 group">
+            {editingCwd ? (
+              <input
+                autoFocus
+                className="w-full text-xs font-mono bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
+                value={cwdDraft}
+                onChange={(e) => setCwdDraft(e.target.value)}
+                onBlur={() => {
+                  const trimmed = cwdDraft.trim();
+                  if (trimmed !== (task.cwd ?? "")) {
+                    patchTask(task.id, { cwd: trimmed || undefined as any }).then(() => onTasksChanged?.());
+                  }
+                  setEditingCwd(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") setEditingCwd(false);
+                }}
+                placeholder="e.g. D:\my-project"
+              />
+            ) : task.cwd ? (
+              <div className="flex items-center gap-1.5">
+                <FolderOpen size={12} className="text-text-faint shrink-0" />
+                <span
+                  className="text-xs font-mono text-text-muted truncate flex-1 cursor-pointer hover:text-text-primary transition-colors"
+                  title={task.cwd}
+                  onClick={() => { setCwdDraft(task.cwd ?? ""); setEditingCwd(true); }}
+                >
+                  {task.cwd}
+                </span>
+                <div className="hidden group-hover:flex items-center gap-0.5">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(task.cwd!);
+                      setCwdCopied(true);
+                      setTimeout(() => setCwdCopied(false), 1500);
+                    }}
+                    className="p-0.5 text-text-faint hover:text-text-primary transition-colors"
+                    title="Copy path"
+                  >
+                    {cwdCopied ? <Check size={10} /> : <Copy size={10} />}
+                  </button>
+                  <button
+                    onClick={() => { setCwdDraft(task.cwd ?? ""); setEditingCwd(true); }}
+                    className="p-0.5 text-text-faint hover:text-text-primary transition-colors"
+                    title="Edit"
+                  >
+                    <Pencil size={10} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setCwdDraft(""); setEditingCwd(true); }}
+                className="text-[10px] text-text-faint hover:text-accent transition-colors"
+              >
+                Set working directory…
+              </button>
+            )}
+          </div>
+        </div>
 
         {/* Notes */}
         {task.notes && (
