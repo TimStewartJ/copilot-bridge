@@ -81,9 +81,9 @@ export default function TaskList({
     return map;
   }, [sessions]);
 
-  // Derive busy/unread status per task from linked sessions
+  // Derive busy/unread status per task from linked sessions (independent flags)
   const taskIndicators = useMemo(() => {
-    const indicators = new Map<string, "busy" | "unread" | null>();
+    const indicators = new Map<string, { busy: boolean; unread: boolean }>();
     for (const task of tasks) {
       let hasBusy = false;
       let hasUnread = false;
@@ -93,7 +93,7 @@ export default function TaskList({
         if (session.busy) hasBusy = true;
         if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
       }
-      indicators.set(task.id, hasBusy ? "busy" : hasUnread ? "unread" : null);
+      indicators.set(task.id, { busy: hasBusy, unread: hasUnread });
     }
     return indicators;
   }, [tasks, sessionMap, isUnread]);
@@ -510,7 +510,7 @@ function SortableListItem({
 }: {
   task: Task;
   isActive: boolean;
-  indicator: "busy" | "unread" | null | undefined;
+  indicator: { busy: boolean; unread: boolean } | undefined;
   isCtxTarget: boolean;
   isLongPressTarget: boolean;
   bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
@@ -550,16 +550,10 @@ function SortableListItem({
           >
             <GripVertical size={12} />
           </span>
-          {indicator && (
-            <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ml-1 ${
-                indicator === "busy"
-                  ? "bg-info animate-pulse"
-                  : "bg-success"
-              }`}
-            />
+          {indicator?.busy && (
+            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-info animate-pulse" />
           )}
-          <span className={`font-medium truncate flex-1 ml-1 ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
+          <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>
         </div>
