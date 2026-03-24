@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
+import { getTunnelUrl } from "./restart-handler.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
@@ -199,13 +200,17 @@ export const STAGING_TOOLS = [
       // Register the preview for Express to serve
       activePreviews.set(prefix, outDir);
 
-      log(`Staging preview ready at ${basePath}`);
+      const tunnelUrl = getTunnelUrl();
+      const fullUrl = tunnelUrl ? `${tunnelUrl.replace(/\/+$/, "")}${basePath}` : null;
+
+      log(`Staging preview ready at ${fullUrl || basePath}`);
       return {
         success: true,
         previewPath: basePath,
-        message:
-          `Staging preview is live at ${basePath}. ` +
-          `Share this URL with the user (append to tunnel URL) and wait for confirmation before deploying.`,
+        previewUrl: fullUrl,
+        message: fullUrl
+          ? `Staging preview is live at ${fullUrl} — share this link with the user and wait for confirmation before deploying.`
+          : `Staging preview is live at ${basePath} (no tunnel URL available — share the relative path with the user).`,
       };
     },
   }),
