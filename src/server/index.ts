@@ -93,8 +93,26 @@ app.get("/api/sessions", async (req, res) => {
 });
 
 app.get("/api/busy", (_req, res) => {
-  const activeSessions = sessionManager.getActiveSessions();
-  res.json({ busy: activeSessions.length > 0, count: activeSessions.length, sessionIds: activeSessions });
+  const sessions = sessionManager.getSessionActivity();
+  res.json({
+    busy: sessions.length > 0,
+    count: sessions.length,
+    sessionIds: sessions.map((s) => s.id),
+    sessions,
+  });
+});
+
+// POST /api/shutdown — graceful shutdown: abort active sessions, stop SDK, exit
+app.post("/api/shutdown", async (_req, res) => {
+  console.log("[web] Graceful shutdown requested via API");
+  res.json({ ok: true, message: "Shutting down..." });
+  try {
+    scheduler.shutdown();
+    await sessionManager.gracefulShutdown();
+  } catch (err) {
+    console.error("[web] Error during graceful shutdown:", err);
+  }
+  process.exit(0);
 });
 
 // POST /api/restart-clear — manual escape hatch to dismiss a stale restart banner
@@ -894,12 +912,19 @@ async function main(): Promise<void> {
   }
 }
 
-process.on("SIGINT", async () => {
-  console.log("\n[web] Shutting down...");
-  scheduler.shutdown();
-  await sessionManager.shutdown();
+async function gracefulExit(signal: string) {
+  console.log(`\n[web] ${signal} received — graceful shutdown...`);
+  try {
+    scheduler.shutdown();
+    await sessionManager.gracefulShutdown();
+  } catch (err) {
+    console.error("[web] Error during graceful shutdown:", err);
+  }
   process.exit(0);
-});
+}
+
+process.on("SIGINT", () => gracefulExit("SIGINT"));
+process.on("SIGTERM", () => gracefulExit("SIGTERM"));
 
 main().catch((err) => {
   console.error("[web] Fatal error:", err);

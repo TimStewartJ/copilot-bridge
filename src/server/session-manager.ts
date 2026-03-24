@@ -435,12 +435,21 @@ const BRIDGE_TOOLS = [
   ...STAGING_TOOLS,
 ];
 
+export interface SessionActivity {
+  id: string;
+  startedAt: number;
+  lastEventAt: number;
+  elapsedMs: number;
+  staleMs: number;
+}
+
 export class SessionManager {
   private client: CopilotClient | null = null;
   private activeSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
   private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
+  private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
@@ -529,6 +538,8 @@ export class SessionManager {
     const bus = getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
     this.activeSessions.add(sessionId);
+    const now = Date.now();
+    this.sessionActivity.set(sessionId, { startedAt: now, lastEventAt: now });
     globalBus.emit({ type: "session:busy", sessionId });
     if (_restartPending) {
       globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
@@ -540,6 +551,7 @@ export class SessionManager {
       bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
     }).finally(() => {
       this.activeSessions.delete(sessionId);
+      this.sessionActivity.delete(sessionId);
       globalBus.emit({ type: "session:idle", sessionId });
       if (_restartPending) {
         globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
@@ -738,10 +750,12 @@ export class SessionManager {
       }
     }, 30_000);
 
-    // Tap into bus emissions to track last event time for watchdog
+    // Tap into bus emissions to track last event time for watchdog + activity
     const originalEmit = bus.emit.bind(bus);
     bus.emit = (event) => {
       lastEventTime = Date.now();
+      const activity = this.sessionActivity.get(sessionId);
+      if (activity) activity.lastEventAt = lastEventTime;
       return originalEmit(event);
     };
 
@@ -996,6 +1010,58 @@ export class SessionManager {
 
   getActiveSessions(): string[] {
     return Array.from(this.activeSessions);
+  }
+
+  getSessionActivity(): SessionActivity[] {
+    const now = Date.now();
+    return Array.from(this.sessionActivity.entries()).map(([id, a]) => ({
+      id,
+      startedAt: a.startedAt,
+      lastEventAt: a.lastEventAt,
+      elapsedMs: now - a.startedAt,
+      staleMs: now - a.lastEventAt,
+    }));
+  }
+
+  async gracefulShutdown(): Promise<void> {
+    const active = this.getActiveSessions();
+    if (active.length > 0) {
+      console.log(`[sdk] Graceful shutdown: aborting ${active.length} active session(s)...`);
+      // Abort all active sessions in parallel
+      await Promise.allSettled(
+        active.map(async (sessionId) => {
+          const sid = sessionId.slice(0, 8);
+          try {
+            const session = this.sessionObjects.get(sessionId);
+            if (session) {
+              await session.abort();
+              console.log(`[sdk] [${sid}] Aborted for shutdown`);
+            }
+          } catch (err) {
+            console.error(`[sdk] [${sid}] Abort failed during shutdown:`, err);
+          }
+        }),
+      );
+
+      // Wait up to 10s for sessions to drain (they clean up in their .finally())
+      const deadline = Date.now() + 10_000;
+      while (this.activeSessions.size > 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (this.activeSessions.size > 0) {
+        console.log(`[sdk] ${this.activeSessions.size} session(s) did not drain in time`);
+      } else {
+        console.log("[sdk] All sessions drained cleanly");
+      }
+    }
+
+    // Stop the SDK client
+    if (this.client) {
+      console.log("[sdk] Stopping Copilot SDK client...");
+      await this.client.stop();
+      this.client = null;
+    }
+    console.log("[sdk] Graceful shutdown complete");
   }
 
   async shutdown(): Promise<void> {

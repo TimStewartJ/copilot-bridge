@@ -25,7 +25,9 @@ const TUNNEL_NAME = "copilot-bridge";
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 const BUSY_CHECK_INTERVAL = 3_000;
-const BUSY_WAIT_TIMEOUT = 900_000; // 15 minutes max wait
+const BUSY_WAIT_TIMEOUT = 3_600_000; // 60 minutes max wait
+const STALE_THRESHOLD = 300_000; // 5 minutes — session with no events is "stuck"
+const GRACEFUL_EXIT_WAIT = 15_000; // wait for clean exit after POST /api/shutdown
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
@@ -191,7 +193,7 @@ async function waitForIdleSessions(): Promise<boolean> {
     if (initial.ok) {
       const data = await initial.json() as any;
       if (!data.busy) return true;
-      log(`Waiting for ${data.count} active session(s) to finish: ${data.sessionIds.map((id: string) => id.slice(0, 8)).join(", ")}`);
+      log(`Waiting for ${data.count} active session(s) to finish: ${(data.sessions ?? []).map((s: any) => s.id?.slice(0, 8)).join(", ")}`);
     }
   } catch {
     log("Server not reachable for busy check — proceeding with restart");
@@ -208,8 +210,21 @@ async function waitForIdleSessions(): Promise<boolean> {
           log("All sessions idle — proceeding with restart");
           return true;
         }
+
+        const sessions: Array<{ id: string; staleMs: number; elapsedMs: number }> = data.sessions ?? [];
+        const allStuck = sessions.length > 0 && sessions.every((s) => s.staleMs >= STALE_THRESHOLD);
+
+        if (allStuck) {
+          log(`All ${sessions.length} session(s) are stuck (no events for ${STALE_THRESHOLD / 1000}s+) — proceeding with restart`);
+          return true;
+        }
+
         const elapsed = Math.floor((Date.now() - start) / 1000);
-        log(`Still waiting for ${data.count} active session(s)... (${elapsed}s)`);
+        const stuckCount = sessions.filter((s) => s.staleMs >= STALE_THRESHOLD).length;
+        const detail = stuckCount > 0
+          ? ` (${stuckCount} stuck, ${sessions.length - stuckCount} active)`
+          : "";
+        log(`Still waiting for ${data.count} session(s)${detail}... (${elapsed}s)`);
       }
     } catch {
       log("Server became unreachable during busy wait — proceeding with restart");
@@ -218,6 +233,32 @@ async function waitForIdleSessions(): Promise<boolean> {
   }
 
   log(`⚠️ Timed out after ${BUSY_WAIT_TIMEOUT / 1000}s waiting for sessions — proceeding with restart`);
+  return true;
+}
+
+async function gracefulStopServer(): Promise<boolean> {
+  const shutdownUrl = `http://localhost:${PORT}/api/shutdown`;
+  try {
+    log("Requesting graceful shutdown...");
+    await fetch(shutdownUrl, { method: "POST" });
+  } catch {
+    log("Server not reachable for graceful shutdown — falling back to force kill");
+    killServer();
+    return true;
+  }
+
+  // Wait for process to exit on its own
+  const start = Date.now();
+  while (serverProcess && Date.now() - start < GRACEFUL_EXIT_WAIT) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  if (serverProcess) {
+    log("Server did not exit in time — force killing");
+    killServer();
+  } else {
+    log("Server exited cleanly");
+  }
   return true;
 }
 
@@ -240,7 +281,7 @@ async function restart() {
     return;
   }
 
-  killServer();
+  await gracefulStopServer();
   serverProcess = startServer();
 
   const healthy = await healthCheck();
