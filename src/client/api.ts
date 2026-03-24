@@ -418,6 +418,7 @@ export interface ProvidersConfig {
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
+  favicon?: string;
 }
 
 export async function fetchSettings(): Promise<AppSettings> {

@@ -10,6 +10,7 @@ import {
   type ProvidersConfig,
 } from "../api";
 import { Settings, ArrowLeft, Pencil, Trash2, Check, X } from "lucide-react";
+import { FAVICON_OPTIONS, DEFAULT_FAVICON, getFaviconPath, type FaviconOption } from "../faviconOptions";
 
 export default function SettingsView() {
   const navigate = useNavigate();
@@ -41,6 +42,9 @@ export default function SettingsView() {
       const updated = await patchSettings(draft);
       setSettings(updated);
       setDraft(structuredClone(updated));
+      // Apply favicon change immediately
+      const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (link) link.href = getFaviconPath(updated.favicon);
       showToast("Settings saved — changes apply on next session interaction");
     } catch (err) {
       showToast(`Save failed: ${err instanceof Error ? err.message : err}`);
@@ -153,6 +157,9 @@ export default function SettingsView() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Appearance Section */}
+        <FaviconPicker draft={draft} setDraft={setDraft} />
+
         {/* Providers Section */}
         <ProvidersSection draft={draft} setDraft={setDraft} />
 
@@ -221,6 +228,90 @@ export default function SettingsView() {
         </section>
       </div>
     </div>
+  );
+}
+
+// ── Favicon Picker ────────────────────────────────────────────────
+
+function FaviconPicker({
+  draft,
+  setDraft,
+}: {
+  draft: AppSettings;
+  setDraft: (d: AppSettings) => void;
+}) {
+  const current = draft.favicon ?? DEFAULT_FAVICON;
+  const bridgeOptions = FAVICON_OPTIONS.filter((o) => o.group === "bridge");
+  const altOptions = FAVICON_OPTIONS.filter((o) => o.group === "alt");
+
+  const select = (key: string) => {
+    const next = structuredClone(draft);
+    next.favicon = key;
+    setDraft(next);
+  };
+
+  return (
+    <section>
+      <div className="mb-3">
+        <h2 className="text-sm font-medium text-text-primary">Appearance</h2>
+        <p className="text-xs text-text-muted mt-0.5">
+          Choose an icon for the browser tab and app.
+        </p>
+      </div>
+
+      <div className="bg-bg-elevated border border-border rounded-md p-4 space-y-4">
+        {/* Bridge variants */}
+        <div>
+          <p className="text-xs text-text-faint mb-2">Bridge</p>
+          <div className="flex flex-wrap gap-3">
+            {bridgeOptions.map((opt) => (
+              <FaviconTile key={opt.key} option={opt} selected={current === opt.key} onSelect={select} />
+            ))}
+          </div>
+        </div>
+
+        {/* Alt variants */}
+        <div>
+          <p className="text-xs text-text-faint mb-2">Alternative</p>
+          <div className="flex flex-wrap gap-3">
+            {altOptions.map((opt) => (
+              <FaviconTile key={opt.key} option={opt} selected={current === opt.key} onSelect={select} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FaviconTile({
+  option,
+  selected,
+  onSelect,
+}: {
+  option: FaviconOption;
+  selected: boolean;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(option.key)}
+      className={`flex flex-col items-center gap-1.5 p-2 rounded-lg transition-all cursor-pointer
+        ${selected
+          ? "ring-2 ring-accent bg-accent/10"
+          : "hover:bg-bg-hover border border-transparent hover:border-border"
+        }`}
+      title={option.label}
+    >
+      <img
+        src={option.path}
+        alt={option.label}
+        className="w-10 h-10 rounded-md"
+      />
+      <span className={`text-[10px] ${selected ? "text-accent font-medium" : "text-text-muted"}`}>
+        {option.label}
+      </span>
+    </button>
   );
 }
 

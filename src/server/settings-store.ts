@@ -22,6 +22,7 @@ export interface McpServerConfig {
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
+  favicon?: string;
 }
 
 // ── Defaults (no hardcoded org — users configure their own) ───────
@@ -62,6 +63,10 @@ export function updateSettings(updates: Partial<AppSettings>): AppSettings {
 
   if (updates.mcpServers !== undefined) {
     current.mcpServers = updates.mcpServers;
+  }
+
+  if (updates.favicon !== undefined) {
+    current.favicon = updates.favicon;
   }
 
   save(current);

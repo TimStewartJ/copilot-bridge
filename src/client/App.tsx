@@ -34,6 +34,8 @@ import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import PullToRefresh from "./components/PullToRefresh";
 import { useIsMobile } from "./useIsMobile";
+import { useFavicon } from "./useFavicon";
+import { fetchSettings } from "./api";
 
 export default function App() {
   const navigate = useNavigate();
@@ -48,6 +50,13 @@ export default function App() {
   const [railExpanded, setRailExpanded] = useState(true);
   const [restartPending, setRestartPending] = useState(false);
   const [restartWaiting, setRestartWaiting] = useState(0);
+  const [faviconKey, setFaviconKey] = useState<string | undefined>();
+
+  // Apply favicon from settings on load
+  useFavicon(faviconKey);
+  useEffect(() => {
+    fetchSettings().then((s) => setFaviconKey(s.favicon)).catch(() => {});
+  }, []);
 
   // Track optimistic sessions that the server doesn't know about yet
   const optimisticIdsRef = useRef(new Set<string>());
