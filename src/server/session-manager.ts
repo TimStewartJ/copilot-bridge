@@ -649,6 +649,7 @@ export class SessionManager {
             args: data?.arguments,
             parentToolCallId: data?.parentToolCallId,
             isSubAgent: pendingAgent ? true : undefined,
+            timestamp: event.timestamp,
           });
           break;
         }
@@ -675,6 +676,7 @@ export class SessionManager {
             result,
             success: data?.success,
             isSubAgent: isAgent || undefined,
+            timestamp: event.timestamp,
           });
           break;
         }
@@ -821,11 +823,11 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
     }
 
-    const messages: Array<{ role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean }> }> = [];
+    const messages: Array<{ role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> }> = [];
 
     // Index tool events by toolCallId for fast lookup
-    const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string }>();
-    const toolCompletes = new Map<string, { success: boolean; content?: string }>();
+    const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string; timestamp?: string }>();
+    const toolCompletes = new Map<string, { success: boolean; content?: string; timestamp?: string }>();
     // Track sub-agent lifecycle: toolCallId → agent info
     const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
     // Capture sub-agent response text: parentToolCallId → last response content
@@ -833,9 +835,9 @@ export class SessionManager {
     for (const event of events) {
       const data = (event as any).data;
       if (event.type === "tool.execution_start" && data?.toolCallId) {
-        toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments, parentToolCallId: data.parentToolCallId });
+        toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments, parentToolCallId: data.parentToolCallId, timestamp: (event as any).timestamp });
       } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
-        toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content });
+        toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content, timestamp: (event as any).timestamp });
       } else if (event.type === "subagent.started" && data?.toolCallId) {
         subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
       } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
@@ -868,7 +870,7 @@ export class SessionManager {
         const content = data.content ?? "";
 
         // Build tool calls from toolRequests — flat format, grouping done by frontend
-        let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean }> | undefined;
+        let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> | undefined;
         if (data.toolRequests?.length) {
           toolCalls = data.toolRequests
             .filter((tr: any) => tr.name !== "report_intent")
@@ -884,6 +886,8 @@ export class SessionManager {
                   isSubAgent: true,
                   result: subAgentResponses.get(tr.toolCallId) ?? complete?.content,
                   success: complete?.success,
+                  startedAt: start?.timestamp,
+                  completedAt: complete?.timestamp,
                 };
               }
               return {
@@ -893,6 +897,8 @@ export class SessionManager {
                 result: complete?.content,
                 success: complete?.success,
                 parentToolCallId: start?.parentToolCallId,
+                startedAt: start?.timestamp,
+                completedAt: complete?.timestamp,
               };
             });
 
@@ -912,6 +918,8 @@ export class SessionManager {
                     result: childComplete?.content,
                     success: childComplete?.success,
                     parentToolCallId: tc.toolCallId,
+                    startedAt: s.timestamp,
+                    completedAt: childComplete?.timestamp,
                   });
                 }
               }

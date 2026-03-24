@@ -28,6 +28,10 @@ export interface ToolCall {
   /** Set on sub-agent pseudo-tool entries (the group header) */
   isSubAgent?: boolean;
   childToolCalls?: ToolCall[];
+  /** ISO timestamp when the tool call started */
+  startedAt?: string;
+  /** ISO timestamp when the tool call completed */
+  completedAt?: string;
 }
 
 export interface BlobAttachment {
