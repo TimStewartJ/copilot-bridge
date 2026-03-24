@@ -43,14 +43,22 @@ For non-code restarts (config, env), use self_restart instead.
 
 // ── Session config builder ───────────────────────────────────────
 
+interface ScheduleContext {
+  name: string;
+  type: "cron" | "once";
+  runCount: number;
+  lastRunAt?: string;
+}
+
 interface SessionConfigOptions {
   task?: Task | null;
   isNewTask?: boolean;
   prDescriptions?: string[];
+  scheduleContext?: ScheduleContext;
 }
 
 function buildSessionConfig(opts: SessionConfigOptions = {}) {
-  const { task, isNewTask, prDescriptions } = opts;
+  const { task, isNewTask, prDescriptions, scheduleContext } = opts;
 
   const cfg: any = {
     onPermissionRequest: approveAll,
@@ -88,6 +96,16 @@ function buildSessionConfig(opts: SessionConfigOptions = {}) {
     if (task.notes.trim()) {
       contextParts.push(`Task notes:\n${task.notes}`);
     }
+  }
+
+  if (scheduleContext) {
+    const kind = scheduleContext.type === "cron" ? "recurring" : "one-time";
+    const runLabel = scheduleContext.runCount > 0
+      ? `, run #${scheduleContext.runCount + 1}`
+      : "";
+    contextParts.push(
+      `\nThis session was triggered by schedule "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
+    );
   }
 
   // Staging rules — only when working on the bridge repo itself
@@ -450,7 +468,7 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string): Promise<{ sessionId: string }> {
+  async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const isPlaceholder = taskTitle === "New Task";
@@ -471,7 +489,7 @@ export class SessionManager {
     };
 
     const session = await this.client.createSession(
-      buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions }),
+      buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext }),
     );
 
     this.sessionObjects.set(session.sessionId, session);

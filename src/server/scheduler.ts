@@ -185,6 +185,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
         prDescriptions,
         task.notes,
         task.cwd,
+        { name: schedule.name, type: schedule.type, runCount: schedule.runCount, lastRunAt: schedule.lastRunAt },
       );
       sessionId = result.sessionId;
 
