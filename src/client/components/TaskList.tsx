@@ -537,7 +537,7 @@ function SortableListItem({
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
             : isActive
-              ? "bg-white/10 border-l-2 border-white/50"
+              ? "bg-bg-hover border-l-2 border-text-muted"
               : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
