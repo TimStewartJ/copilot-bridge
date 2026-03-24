@@ -1,6 +1,6 @@
 # Copilot Bridge
 
-A personal work dashboard powered by the GitHub Copilot SDK and Azure DevOps MCP. Accessible from any device via dev tunnel.
+Today, with agentic AI, code is easy to produce. I think the future is people building their own AI agents. These agents are personal tools shaped to how people work, not generalized products. This is my take on that, and this project will therefore be pretty opinionated as a result.
 
 ## What It Does
 
