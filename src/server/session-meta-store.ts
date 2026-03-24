@@ -3,8 +3,6 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const META_FILE = join(DATA_DIR, "sessions-meta.json");
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -19,56 +17,73 @@ export interface SessionMeta {
 
 type MetaMap = Record<string, SessionMeta>;
 
-// ── Persistence ───────────────────────────────────────────────────
+// ── Factory ───────────────────────────────────────────────────────
 
-function load(): MetaMap {
-  if (!existsSync(META_FILE)) return {};
-  try {
-    return JSON.parse(readFileSync(META_FILE, "utf-8"));
-  } catch {
-    return {};
+export function createSessionMetaStore(dataDir: string) {
+  const META_FILE = join(dataDir, "sessions-meta.json");
+
+  function load(): MetaMap {
+    if (!existsSync(META_FILE)) return {};
+    try {
+      return JSON.parse(readFileSync(META_FILE, "utf-8"));
+    } catch {
+      return {};
+    }
   }
-}
 
-function save(data: MetaMap): void {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(META_FILE, JSON.stringify(data, null, 2));
-}
+  function save(data: MetaMap): void {
+    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+    writeFileSync(META_FILE, JSON.stringify(data, null, 2));
+  }
 
-// ── API ───────────────────────────────────────────────────────────
+  function getMeta(sessionId: string): SessionMeta | undefined {
+    return load()[sessionId];
+  }
 
-export function getMeta(sessionId: string): SessionMeta | undefined {
-  return load()[sessionId];
-}
+  function isArchived(sessionId: string): boolean {
+    return load()[sessionId]?.archived === true;
+  }
 
-export function isArchived(sessionId: string): boolean {
-  return load()[sessionId]?.archived === true;
-}
+  function setArchived(sessionId: string, archived: boolean): SessionMeta {
+    const data = load();
+    if (archived) {
+      data[sessionId] = { archived: true, archivedAt: new Date().toISOString() };
+    } else {
+      delete data[sessionId];
+    }
+    save(data);
+    return data[sessionId] ?? { archived: false, archivedAt: "" };
+  }
 
-export function setArchived(sessionId: string, archived: boolean): SessionMeta {
-  const data = load();
-  if (archived) {
-    data[sessionId] = { archived: true, archivedAt: new Date().toISOString() };
-  } else {
+  function deleteMeta(sessionId: string): void {
+    const data = load();
     delete data[sessionId];
+    save(data);
   }
-  save(data);
-  return data[sessionId] ?? { archived: false, archivedAt: "" };
+
+  function setScheduleMeta(sessionId: string, scheduleId: string, scheduleName: string): void {
+    const data = load();
+    const existing = data[sessionId] ?? { archived: false, archivedAt: "" };
+    data[sessionId] = { ...existing, triggeredBy: "schedule", scheduleId, scheduleName };
+    save(data);
+  }
+
+  function listMeta(): MetaMap {
+    return load();
+  }
+
+  return { getMeta, isArchived, setArchived, deleteMeta, setScheduleMeta, listMeta };
 }
 
-export function deleteMeta(sessionId: string): void {
-  const data = load();
-  delete data[sessionId];
-  save(data);
-}
+export type SessionMetaStore = ReturnType<typeof createSessionMetaStore>;
 
-export function setScheduleMeta(sessionId: string, scheduleId: string, scheduleName: string): void {
-  const data = load();
-  const existing = data[sessionId] ?? { archived: false, archivedAt: "" };
-  data[sessionId] = { ...existing, triggeredBy: "schedule", scheduleId, scheduleName };
-  save(data);
-}
+// ── Default instance (backward compat) ────────────────────────────
 
-export function listMeta(): MetaMap {
-  return load();
-}
+const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
+const _default = createSessionMetaStore(_defaultDataDir);
+export const getMeta = _default.getMeta;
+export const isArchived = _default.isArchived;
+export const setArchived = _default.setArchived;
+export const deleteMeta = _default.deleteMeta;
+export const setScheduleMeta = _default.setScheduleMeta;
+export const listMeta = _default.listMeta;

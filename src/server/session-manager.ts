@@ -17,6 +17,11 @@ import { getOrCreateBus, getBus } from "./event-bus.js";
 import * as sessionTitles from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
 import { STAGING_TOOLS } from "./staging-tools.js";
+import type { AppContext } from "./app-context.js";
+import type { GlobalBus } from "./global-bus.js";
+import type { EventBusRegistry } from "./event-bus.js";
+import type { SessionTitlesStore } from "./session-titles.js";
+import type { TaskStore } from "./task-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -55,78 +60,6 @@ interface SessionConfigOptions {
   isNewTask?: boolean;
   prDescriptions?: string[];
   scheduleContext?: ScheduleContext;
-}
-
-function buildSessionConfig(opts: SessionConfigOptions = {}) {
-  const { task, isNewTask, prDescriptions, scheduleContext } = opts;
-
-  const cfg: any = {
-    onPermissionRequest: approveAll,
-    tools: BRIDGE_TOOLS,
-    mcpServers: config.sessionMcpServers,
-  };
-
-  if (task?.cwd) {
-    cfg.workingDirectory = task.cwd;
-  }
-
-  const contextParts: string[] = [];
-
-  if (task) {
-    contextParts.push(
-      `You are helping with task "${task.title}" (taskId: ${task.id}).`,
-      `Task status: ${task.status}.`,
-      "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
-    );
-    if (isNewTask) {
-      contextParts.push(
-        'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
-      );
-    }
-    if (task.workItems.length > 0) {
-      contextParts.push(`Currently linked work items: ${task.workItems.map((w) => `#${w.id} (${w.provider})`).join(", ")}.`);
-    }
-    const prStrings = prDescriptions
-      ?? (task.pullRequests.length > 0
-        ? task.pullRequests.map((pr: any) => `${pr.repoName || pr.repoId} #${pr.prId}`)
-        : []);
-    if (prStrings.length > 0) {
-      contextParts.push(`Currently linked PRs: ${prStrings.join(", ")}.`);
-    }
-    if (task.notes.trim()) {
-      contextParts.push(`Task notes:\n${task.notes}`);
-    }
-  }
-
-  if (scheduleContext) {
-    const kind = scheduleContext.type === "cron" ? "recurring" : "one-time";
-    const runLabel = scheduleContext.runCount > 0
-      ? `, run #${scheduleContext.runCount + 1}`
-      : "";
-    contextParts.push(
-      `\nThis session was triggered by schedule "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
-    );
-  }
-
-  // Staging rules — only when working on the bridge repo itself
-  const isSelfRepo = !task?.cwd || resolve(task.cwd) === resolve(REPO_ROOT);
-  const sections: Partial<Record<string, SectionOverride>> = {};
-  if (isSelfRepo) {
-    sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
-  }
-
-  const hasContent = contextParts.length > 0;
-  const hasSections = Object.keys(sections).length > 0;
-
-  if (hasContent || hasSections) {
-    cfg.systemMessage = {
-      mode: "customize" as const,
-      sections: hasSections ? sections : undefined,
-      content: hasContent ? contextParts.join("\n") : undefined,
-    };
-  }
-
-  return cfg;
 }
 
 // Module-level ref so universal tools can query session state
@@ -180,12 +113,13 @@ export function triggerRestartPending(): number {
 }
 
 // Universal tools — same instance for every session
-const BRIDGE_TOOLS = [
+export function createBridgeTools(ctx: AppContext) {
+  return [
   defineTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
-      taskStore.linkWorkItem(args.taskId, args.workItemId, args.provider ?? "ado");
+      ctx.taskStore.linkWorkItem(args.taskId, args.workItemId, args.provider ?? "ado");
       return { success: true, message: `Work item #${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
     },
   }),
@@ -193,7 +127,7 @@ const BRIDGE_TOOLS = [
     description: "Remove a work item from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github)" } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
-      taskStore.unlinkWorkItem(args.taskId, args.workItemId, args.provider);
+      ctx.taskStore.unlinkWorkItem(args.taskId, args.workItemId, args.provider);
       return { success: true, message: `Work item #${args.workItemId} unlinked from task` };
     },
   }),
@@ -201,7 +135,7 @@ const BRIDGE_TOOLS = [
     description: "Link a pull request to a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
-      taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId, provider: args.provider ?? "ado" });
+      ctx.taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId, provider: args.provider ?? "ado" });
       return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
     },
   }),
@@ -209,7 +143,7 @@ const BRIDGE_TOOLS = [
     description: "Remove a pull request from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github)" } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
-      taskStore.unlinkPR(args.taskId, args.repoName, args.prId, args.provider);
+      ctx.taskStore.unlinkPR(args.taskId, args.repoName, args.prId, args.provider);
       return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
     },
   }),
@@ -223,7 +157,7 @@ const BRIDGE_TOOLS = [
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
       if (Object.keys(updates).length === 0) return { error: "No fields to update. Provide at least one of: title, notes, cwd, groupId" };
-      taskStore.updateTask(args.taskId, updates);
+      ctx.taskStore.updateTask(args.taskId, updates);
       const fields = Object.keys(updates).join(", ");
       return { success: true, message: `Task updated (${fields})` };
     },
@@ -232,21 +166,21 @@ const BRIDGE_TOOLS = [
     description: "Get task details including title, status, linked work items, PRs, and notes",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
-      return taskStore.getTask(args.taskId) ?? { error: "Task not found" };
+      return ctx.taskStore.getTask(args.taskId) ?? { error: "Task not found" };
     },
   }),
   defineTool("task_list", {
     description: "List all tasks with their IDs, titles, statuses, and group IDs",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { tasks: taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status, groupId: t.groupId })) };
+      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status, groupId: t.groupId })) };
     },
   }),
   defineTool("task_create", {
     description: "Create a new task",
     parameters: { type: "object", properties: { title: { type: "string", description: "The task title" } }, required: ["title"] },
     handler: async (args: any) => {
-      const task = taskStore.createTask(args.title);
+      const task = ctx.taskStore.createTask(args.title);
       return { success: true, message: `Task "${task.title}" created`, taskId: task.id };
     },
   }),
@@ -254,7 +188,7 @@ const BRIDGE_TOOLS = [
     description: "Create a new task group for organizing related tasks",
     parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate" } }, required: ["name"] },
     handler: async (args: any) => {
-      const group = taskGroupStore.createGroup(args.name, args.color);
+      const group = ctx.taskGroupStore.createGroup(args.name, args.color);
       return { success: true, message: `Group "${group.name}" created`, groupId: group.id };
     },
   }),
@@ -262,16 +196,16 @@ const BRIDGE_TOOLS = [
     description: "List all task groups with their IDs and names",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { groups: taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color })) };
+      return { groups: ctx.taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color })) };
     },
   }),
   defineTool("task_group_delete", {
     description: "Delete a task group. Tasks in the group become ungrouped.",
     parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to delete" } }, required: ["groupId"] },
     handler: async (args: any) => {
-      const tasks = taskStore.listTasks().filter((t) => t.groupId === args.groupId);
-      for (const t of tasks) taskStore.updateTask(t.id, { groupId: undefined });
-      taskGroupStore.deleteGroup(args.groupId);
+      const tasks = ctx.taskStore.listTasks().filter((t) => t.groupId === args.groupId);
+      for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: undefined });
+      ctx.taskGroupStore.deleteGroup(args.groupId);
       return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
     },
   }),
@@ -279,7 +213,7 @@ const BRIDGE_TOOLS = [
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
     parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["sessionId", "title"] },
     handler: async (args: any) => {
-      sessionTitles.setTitle(args.sessionId, args.title);
+      ctx.sessionTitles.setTitle(args.sessionId, args.title);
       return { success: true, message: `Session renamed to "${args.title}"` };
     },
   }),
@@ -321,9 +255,9 @@ const BRIDGE_TOOLS = [
     handler: async (args: any) => {
       if (args.type === "cron" && !args.cron) return { error: "cron expression is required for cron schedules" };
       if (args.type === "once" && !args.runAt) return { error: "runAt is required for one-shot schedules" };
-      if (!taskStore.getTask(args.taskId)) return { error: "Task not found" };
+      if (!ctx.taskStore.getTask(args.taskId)) return { error: "Task not found" };
 
-      const schedule = scheduleStore.createSchedule({
+      const schedule = ctx.scheduleStore.createSchedule({
         taskId: args.taskId,
         name: args.name,
         prompt: args.prompt,
@@ -366,7 +300,7 @@ const BRIDGE_TOOLS = [
     handler: async (args: any) => {
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return { error: "No fields to update" };
-      const schedule = scheduleStore.updateSchedule(scheduleId, updates);
+      const schedule = ctx.scheduleStore.updateSchedule(scheduleId, updates);
 
       if (schedule.type === "cron") {
         if (schedule.enabled) schedulerModule.registerSchedule(schedule.id);
@@ -387,7 +321,7 @@ const BRIDGE_TOOLS = [
     },
     handler: async (args: any) => {
       schedulerModule.unregisterSchedule(args.scheduleId);
-      scheduleStore.deleteSchedule(args.scheduleId);
+      ctx.scheduleStore.deleteSchedule(args.scheduleId);
       return { success: true, message: "Schedule deleted" };
     },
   }),
@@ -400,7 +334,7 @@ const BRIDGE_TOOLS = [
       },
     },
     handler: async (args: any) => {
-      const schedules = scheduleStore.listSchedules(args.taskId);
+      const schedules = ctx.scheduleStore.listSchedules(args.taskId);
       return {
         schedules: schedules.map((s) => ({
           id: s.id,
@@ -432,8 +366,9 @@ const BRIDGE_TOOLS = [
       return result;
     },
   }),
-  ...STAGING_TOOLS,
-];
+    ...STAGING_TOOLS,
+  ];
+}
 
 export interface SessionActivity {
   id: string;
@@ -443,20 +378,106 @@ export interface SessionActivity {
   staleMs: number;
 }
 
+export interface SessionManagerDeps {
+  tools: ReturnType<typeof defineTool>[];
+  globalBus: GlobalBus;
+  eventBusRegistry: EventBusRegistry;
+  sessionTitles: SessionTitlesStore;
+  taskStore: TaskStore;
+  config: { sessionMcpServers: Record<string, any> };
+}
+
 export class SessionManager {
   private client: CopilotClient | null = null;
+  private deps: SessionManagerDeps;
   private activeSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
   private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
   private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
 
+  constructor(deps: SessionManagerDeps) {
+    this.deps = deps;
+  }
+
+  private buildSessionConfig(opts: SessionConfigOptions = {}) {
+    const { task, isNewTask, prDescriptions, scheduleContext } = opts;
+
+    const cfg: any = {
+      onPermissionRequest: approveAll,
+      tools: this.deps.tools,
+      mcpServers: this.deps.config.sessionMcpServers,
+    };
+
+    if (task?.cwd) {
+      cfg.workingDirectory = task.cwd;
+    }
+
+    const contextParts: string[] = [];
+
+    if (task) {
+      contextParts.push(
+        `You are helping with task "${task.title}" (taskId: ${task.id}).`,
+        `Task status: ${task.status}.`,
+        "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
+      );
+      if (isNewTask) {
+        contextParts.push(
+          'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
+        );
+      }
+      if (task.workItems.length > 0) {
+        contextParts.push(`Currently linked work items: ${task.workItems.map((w) => `#${w.id} (${w.provider})`).join(", ")}.`);
+      }
+      const prStrings = prDescriptions
+        ?? (task.pullRequests.length > 0
+          ? task.pullRequests.map((pr: any) => `${pr.repoName || pr.repoId} #${pr.prId}`)
+          : []);
+      if (prStrings.length > 0) {
+        contextParts.push(`Currently linked PRs: ${prStrings.join(", ")}.`);
+      }
+      if (task.notes.trim()) {
+        contextParts.push(`Task notes:\n${task.notes}`);
+      }
+    }
+
+    if (scheduleContext) {
+      const kind = scheduleContext.type === "cron" ? "recurring" : "one-time";
+      const runLabel = scheduleContext.runCount > 0
+        ? `, run #${scheduleContext.runCount + 1}`
+        : "";
+      contextParts.push(
+        `\nThis session was triggered by schedule "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
+      );
+    }
+
+    // Staging rules — only when working on the bridge repo itself
+    const isSelfRepo = !task?.cwd || resolve(task.cwd) === resolve(REPO_ROOT);
+    const sections: Partial<Record<string, SectionOverride>> = {};
+    if (isSelfRepo) {
+      sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
+    }
+
+    const hasContent = contextParts.length > 0;
+    const hasSections = Object.keys(sections).length > 0;
+
+    if (hasContent || hasSections) {
+      cfg.systemMessage = {
+        mode: "customize" as const,
+        sections: hasSections ? sections : undefined,
+        content: hasContent ? contextParts.join("\n") : undefined,
+      };
+    }
+
+    return cfg;
+  }
+
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
     _instance = this;
     this.client = new CopilotClient();
     await this.client.start();
-    sessionTitles.loadTitles();
+    this.deps.sessionTitles.loadTitles();
     console.log("[sdk] Copilot SDK client ready");
   }
 
@@ -470,7 +491,7 @@ export class SessionManager {
   async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
-    const session = await this.client.createSession(buildSessionConfig());
+    const session = await this.client.createSession(this.buildSessionConfig());
 
     this.sessionObjects.set(session.sessionId, session);
     console.log(`[sdk] Created session ${session.sessionId}`);
@@ -498,7 +519,7 @@ export class SessionManager {
     };
 
     const session = await this.client.createSession(
-      buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext }),
+      this.buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext }),
     );
 
     this.sessionObjects.set(session.sessionId, session);
@@ -521,7 +542,7 @@ export class SessionManager {
     } catch (err) {
       console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);
       // Even if abort throws, emit aborted to unblock the UI
-      const bus = getBus(sessionId);
+      const bus = this.deps.eventBusRegistry.getBus(sessionId);
       if (bus) bus.emit({ type: "aborted", content: "" });
     }
     return true;
@@ -535,14 +556,14 @@ export class SessionManager {
       throw new Error("Session is busy processing another message");
     }
 
-    const bus = getOrCreateBus(sessionId);
+    const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
     this.activeSessions.add(sessionId);
     const now = Date.now();
     this.sessionActivity.set(sessionId, { startedAt: now, lastEventAt: now });
-    globalBus.emit({ type: "session:busy", sessionId });
+    this.deps.globalBus.emit({ type: "session:busy", sessionId });
     if (_restartPending) {
-      globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
+      this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
     }
 
     // Run in background — not awaited
@@ -552,9 +573,9 @@ export class SessionManager {
     }).finally(() => {
       this.activeSessions.delete(sessionId);
       this.sessionActivity.delete(sessionId);
-      globalBus.emit({ type: "session:idle", sessionId });
+      this.deps.globalBus.emit({ type: "session:idle", sessionId });
       if (_restartPending) {
-        globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
+        this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
       }
     });
   }
@@ -563,8 +584,8 @@ export class SessionManager {
     const sid = sessionId.slice(0, 8);
 
     // Build resume config with optional task context
-    const linkedTask = taskStore.findTaskBySessionId(sessionId);
-    const resumeConfig = buildSessionConfig({ task: linkedTask });
+    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const resumeConfig = this.buildSessionConfig({ task: linkedTask });
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -619,7 +640,7 @@ export class SessionManager {
         case "assistant.intent":
           console.log(`[sdk] [${sid}] 🎯 Intent: ${data?.intent}`);
           bus.emit({ type: "intent", intent: data?.intent ?? "" });
-          globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
+          this.deps.globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
           // Capture sub-agent response text for display in SubAgentGroup
@@ -712,7 +733,7 @@ export class SessionManager {
         }
         case "session.title_changed":
           bus.emit({ type: "title_changed", title: data?.title ?? "" });
-          globalBus.emit({ type: "session:title", sessionId, title: data?.title ?? "" });
+          this.deps.globalBus.emit({ type: "session:title", sessionId, title: data?.title ?? "" });
           break;
         case "session.idle": {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
@@ -721,7 +742,7 @@ export class SessionManager {
           bus.emit({ type: "done", content });
 
           // Fire-and-forget title generation for sessions without a title
-          if (!sessionTitles.hasTitle(sessionId) && lastAssistantContent) {
+          if (!this.deps.sessionTitles.hasTitle(sessionId) && lastAssistantContent) {
             this.generateSessionTitle(sessionId, prompt, lastAssistantContent).catch(() => {});
           }
 
@@ -784,8 +805,8 @@ export class SessionManager {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const sid = sessionId.slice(0, 8);
-    const linkedTask = taskStore.findTaskBySessionId(sessionId);
-    const msgResumeConfig = buildSessionConfig({ task: linkedTask });
+    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const msgResumeConfig = this.buildSessionConfig({ task: linkedTask });
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
     let session = this.sessionObjects.get(sessionId);
@@ -948,7 +969,7 @@ export class SessionManager {
 
   // Generate a concise session title via a lightweight LLM call
   private async generateSessionTitle(sessionId: string, userMessage: string, assistantResponse: string): Promise<void> {
-    if (!this.client || sessionTitles.hasTitle(sessionId) || this.titleGenerationInFlight.has(sessionId)) return;
+    if (!this.client || this.deps.sessionTitles.hasTitle(sessionId) || this.titleGenerationInFlight.has(sessionId)) return;
     this.titleGenerationInFlight.add(sessionId);
 
     const sid = sessionId.slice(0, 8);
@@ -977,10 +998,10 @@ export class SessionManager {
       const looksLikePrompt = title && /generate|concise|3-6 word|title for this/i.test(title);
 
       if (title && title.length > 0 && title.length <= 80 && !looksLikePrompt) {
-        sessionTitles.setTitle(sessionId, title);
-        const bus = getOrCreateBus(sessionId);
+        this.deps.sessionTitles.setTitle(sessionId, title);
+        const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
         bus.emit({ type: "title_changed", title });
-        globalBus.emit({ type: "session:title", sessionId, title });
+        this.deps.globalBus.emit({ type: "session:title", sessionId, title });
         console.log(`[titles] [${sid}] Title: "${title}"`);
       } else {
         console.log(`[titles] [${sid}] Title generation returned invalid result: "${title}"`);

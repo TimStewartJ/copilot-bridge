@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { API_BASE } from "./api";
 
 export interface StatusEvent {
   type: "session:busy" | "session:idle" | "session:title" | "session:intent"
@@ -25,7 +26,7 @@ export function useStatusStream(onEvent: StatusHandler): void {
   handlerRef.current = onEvent;
 
   useEffect(() => {
-    const es = new EventSource("/api/status-stream");
+    const es = new EventSource(`${API_BASE}/api/status-stream`);
 
     es.onopen = () => {
       handlerRef.current({ type: "status:connected" });

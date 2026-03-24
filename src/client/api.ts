@@ -121,6 +121,10 @@ export interface EnrichedTaskData {
   pullRequests: EnrichedPR[];
 }
 
+// Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/
+const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+export { API_BASE };
+
 async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = body
     ? {
@@ -129,7 +133,7 @@ async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
         body: JSON.stringify(body),
       }
     : {};
-  const res = await fetch(path, opts);
+  const res = await fetch(`${API_BASE}${path}`, opts);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
@@ -149,7 +153,7 @@ export async function createSession(): Promise<string> {
 }
 
 export async function patchSession(id: string, updates: { archived: boolean }): Promise<void> {
-  const res = await fetch(`/api/sessions/${id}`, {
+  const res = await fetch(`${API_BASE}/api/sessions/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -161,7 +165,7 @@ export async function patchSession(id: string, updates: { archived: boolean }): 
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+  const res = await fetch(`${API_BASE}/api/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
@@ -207,7 +211,7 @@ export async function patchTask(
   id: string,
   updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId">>,
 ): Promise<Task> {
-  const res = await fetch(`/api/tasks/${id}`, {
+  const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -221,11 +225,11 @@ export async function patchTask(
 }
 
 export async function deleteTask(id: string): Promise<void> {
-  await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/tasks/${id}`, { method: "DELETE" });
 }
 
 export async function reorderTasks(taskIds: string[]): Promise<Task[]> {
-  const res = await fetch("/api/tasks/reorder", {
+  const res = await fetch(`${API_BASE}/api/tasks/reorder`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ taskIds }),
@@ -250,7 +254,7 @@ export async function unlinkResource(
   taskId: string,
   resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number; provider?: ProviderName } | { type: "pr"; repoId: string; prId: number; provider?: ProviderName },
 ): Promise<Task> {
-  const res = await fetch(`/api/tasks/${taskId}/link`, {
+  const res = await fetch(`${API_BASE}/api/tasks/${taskId}/link`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(resource),
@@ -287,7 +291,7 @@ export async function patchTaskGroup(
   id: string,
   updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>,
 ): Promise<TaskGroup> {
-  const res = await fetch(`/api/task-groups/${id}`, {
+  const res = await fetch(`${API_BASE}/api/task-groups/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -301,11 +305,11 @@ export async function patchTaskGroup(
 }
 
 export async function deleteTaskGroup(id: string): Promise<void> {
-  await fetch(`/api/task-groups/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/task-groups/${id}`, { method: "DELETE" });
 }
 
 export async function reorderTaskGroups(groupIds: string[]): Promise<TaskGroup[]> {
-  const res = await fetch("/api/task-groups/reorder", {
+  const res = await fetch(`${API_BASE}/api/task-groups/reorder`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ groupIds }),
@@ -346,7 +350,7 @@ export async function markSessionRead(sessionId: string): Promise<void> {
 }
 
 export async function markSessionUnread(sessionId: string): Promise<void> {
-  await fetch(`/api/read-state/${sessionId}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/read-state/${sessionId}`, { method: "DELETE" });
 }
 
 // ── Dashboard API ─────────────────────────────────────────────────
@@ -433,7 +437,7 @@ export async function fetchSettings(): Promise<AppSettings> {
 }
 
 export async function patchSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
-  const res = await fetch("/api/settings", {
+  const res = await fetch(`${API_BASE}/api/settings`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -485,7 +489,7 @@ export async function createSchedule(input: ScheduleCreateInput): Promise<Schedu
 }
 
 export async function patchSchedule(id: string, updates: ScheduleUpdateInput): Promise<Schedule> {
-  const res = await fetch(`/api/schedules/${id}`, {
+  const res = await fetch(`${API_BASE}/api/schedules/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -498,7 +502,7 @@ export async function patchSchedule(id: string, updates: ScheduleUpdateInput): P
 }
 
 export async function deleteSchedule(id: string): Promise<void> {
-  await fetch(`/api/schedules/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/schedules/${id}`, { method: "DELETE" });
 }
 
 export async function triggerSchedule(id: string): Promise<{ sessionId?: string; skipped?: string }> {

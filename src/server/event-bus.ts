@@ -33,7 +33,7 @@ type Listener = (event: StreamEvent) => void;
 
 const CLEANUP_DELAY = 60_000; // 60s after done before clearing
 
-class SessionEventBus {
+export class SessionEventBus {
   private listeners = new Set<Listener>();
   private _complete = false;
   private cleanupTimer: ReturnType<typeof setTimeout> | null = null;
@@ -45,7 +45,10 @@ class SessionEventBus {
   private finalContent?: string;
   private errorMessage?: string;
 
-  constructor(private sessionId: string) {}
+  constructor(
+    private sessionId: string,
+    private onCleanup?: (sessionId: string) => void,
+  ) {}
 
   getIntentText(): string {
     return this.intentText;
@@ -174,29 +177,45 @@ class SessionEventBus {
 
   private scheduleCleanup(): void {
     this.cleanupTimer = setTimeout(() => {
-      eventBusMap.delete(this.sessionId);
+      this.onCleanup?.(this.sessionId);
     }, CLEANUP_DELAY);
   }
 }
 
-// Global registry of active event buses
-const eventBusMap = new Map<string, SessionEventBus>();
+// ── Factory ───────────────────────────────────────────────────────
 
-export function getOrCreateBus(sessionId: string): SessionEventBus {
-  let bus = eventBusMap.get(sessionId);
-  if (!bus || bus.complete) {
-    // Don't reuse a completed bus — cancel its cleanup and replace with fresh one
-    if (bus) bus.cancelCleanup();
-    bus = new SessionEventBus(sessionId);
-    eventBusMap.set(sessionId, bus);
+export function createEventBusRegistry() {
+  const eventBusMap = new Map<string, SessionEventBus>();
+
+  function getOrCreateBus(sessionId: string): SessionEventBus {
+    let bus = eventBusMap.get(sessionId);
+    if (!bus || bus.complete) {
+      if (bus) bus.cancelCleanup();
+      bus = new SessionEventBus(sessionId, (id) => eventBusMap.delete(id));
+      eventBusMap.set(sessionId, bus);
+    }
+    return bus;
   }
-  return bus;
+
+  function getBus(sessionId: string): SessionEventBus | undefined {
+    return eventBusMap.get(sessionId);
+  }
+
+  function hasBus(sessionId: string): boolean {
+    return eventBusMap.has(sessionId);
+  }
+
+  return { getOrCreateBus, getBus, hasBus };
 }
 
-export function getBus(sessionId: string): SessionEventBus | undefined {
-  return eventBusMap.get(sessionId);
-}
+export type EventBusRegistry = ReturnType<typeof createEventBusRegistry>;
 
-export function hasBus(sessionId: string): boolean {
-  return eventBusMap.has(sessionId);
-}
+// ── Default instance (backward compat) ────────────────────────────
+
+const _default = createEventBusRegistry();
+export const getOrCreateBus = _default.getOrCreateBus;
+export const getBus = _default.getBus;
+export const hasBus = _default.hasBus;
+
+/** Access the default instance for passing to factories during migration */
+export const defaultEventBusRegistry = _default;

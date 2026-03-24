@@ -14,17 +14,34 @@ export interface StatusEvent {
 
 type Listener = (event: StatusEvent) => void;
 
-const listeners = new Set<Listener>();
+// ── Factory ───────────────────────────────────────────────────────
 
-export function emit(event: StatusEvent): void {
-  for (const listener of listeners) {
-    try {
-      listener(event);
-    } catch { /* don't let one listener break others */ }
+export function createGlobalBus() {
+  const listeners = new Set<Listener>();
+
+  function emit(event: StatusEvent): void {
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch { /* don't let one listener break others */ }
+    }
   }
+
+  function subscribe(listener: Listener): () => void {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  }
+
+  return { emit, subscribe };
 }
 
-export function subscribe(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
+export type GlobalBus = ReturnType<typeof createGlobalBus>;
+
+// ── Default instance (backward compat) ────────────────────────────
+
+const _default = createGlobalBus();
+export const emit = _default.emit;
+export const subscribe = _default.subscribe;
+
+/** Access the default instance for passing to factories during migration */
+export const defaultGlobalBus = _default;

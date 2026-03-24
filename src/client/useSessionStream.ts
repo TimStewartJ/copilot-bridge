@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { BlobAttachment, ChatMessage, ToolCall } from "./api";
+import { API_BASE } from "./api";
 
 export interface PendingTool {
   toolCallId: string;
@@ -58,7 +59,7 @@ export function useSessionStream(
 
     setStreamState(mkState("sending"));
 
-    fetch(`/api/sessions/${sid}/stream`, { signal: abort.signal })
+    fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
       .then(async (res) => {
         if (!res.ok || !res.body) {
           setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
@@ -291,7 +292,7 @@ export function useSessionStream(
   const sendMessage = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (!sessionId) return;
 
-    const res = await fetch("/api/chat", {
+    const res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
@@ -311,7 +312,7 @@ export function useSessionStream(
   const abortSession = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch(`/api/sessions/${sessionId}/abort`, { method: "POST" });
+      await fetch(`${API_BASE}/api/sessions/${sessionId}/abort`, { method: "POST" });
     } catch (err) {
       console.error("[stream] Abort failed:", err);
     }

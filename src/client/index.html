@@ -12,7 +12,10 @@
   <!-- Prevent flash: apply cached theme before React hydrates -->
   <script>
     try {
-      fetch('/api/settings').then(r=>r.json()).then(s=>{
+      // Derive API base from path — matches staging preview paths like /staging/<prefix>/
+      const pathParts = location.pathname.split('/').filter(Boolean);
+      const base = (pathParts.length >= 2 && pathParts[0] === 'staging') ? '/' + pathParts.slice(0, 2).join('/') : '';
+      fetch(base+'/api/settings').then(r=>r.json()).then(s=>{
         const p=s.theme||'dark';
         const t=p==='system'
           ? (matchMedia('(prefers-color-scheme:light)').matches?'light':'dark')
