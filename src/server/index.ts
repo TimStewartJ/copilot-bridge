@@ -22,6 +22,7 @@ import { clearProviderCache } from "./providers/index.js";
 import * as readStateStore from "./read-state-store.js";
 import * as globalBus from "./global-bus.js";
 import { pruneOrphanedWorktrees } from "./staging-tools.js";
+import { initKeepAlive } from "./keep-alive.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -841,6 +842,9 @@ async function main(): Promise<void> {
 
   // Initialize scheduler after session manager is ready
   scheduler.initialize(sessionManager);
+
+  // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
+  initKeepAlive();
 
   const port = config.web.port;
   app.listen(port, () => {
