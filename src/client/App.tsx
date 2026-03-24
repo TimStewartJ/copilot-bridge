@@ -163,18 +163,11 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Mark session as read when opened
+  // Mark session as read after dwelling for 2s (navigating away cancels)
   useEffect(() => {
-    if (activeSessionId) markRead(activeSessionId);
-  }, [activeSessionId, markRead]);
-
-  // Mark the departing session as read when navigating away
-  const prevSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (prevSessionRef.current && prevSessionRef.current !== activeSessionId) {
-      markRead(prevSessionRef.current);
-    }
-    prevSessionRef.current = activeSessionId;
+    if (!activeSessionId) return;
+    const timer = setTimeout(() => markRead(activeSessionId), 2000);
+    return () => clearTimeout(timer);
   }, [activeSessionId, markRead]);
 
   // Optimistic insert
