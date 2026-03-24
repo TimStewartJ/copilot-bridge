@@ -335,7 +335,9 @@ async function main() {
   clearSignal();
 
   // Pull latest from origin on startup
-  const pullResult = run("git pull --ff-only origin main");
+  const currentBranch = run("git rev-parse --abbrev-ref HEAD");
+  const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
+  const pullResult = run(`git pull --ff-only origin ${branchName}`);
   if (pullResult.ok) {
     log("Pulled latest from origin");
   } else {

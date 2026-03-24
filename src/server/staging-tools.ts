@@ -131,7 +131,9 @@ export const STAGING_TOOLS = [
       log(`Creating staging worktree: ${stagingDir} (branch: ${branch})`);
 
       // Pull latest from origin so the worktree starts from the newest remote state
-      const pullResult = run("git pull --ff-only origin main", PRODUCTION_ROOT);
+      const currentBranch = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+      const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
+      const pullResult = run(`git pull --ff-only origin ${branchName}`, PRODUCTION_ROOT);
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {
@@ -325,7 +327,9 @@ export const STAGING_TOOLS = [
       }
 
       // Push to origin so other deployments can pick up the change
-      const pushResult = run("git push origin main", PRODUCTION_ROOT);
+      const prodBranch = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+      const pushBranch = prodBranch.ok ? prodBranch.output.trim() : "main";
+      const pushResult = run(`git push origin ${pushBranch}`, PRODUCTION_ROOT);
       if (pushResult.ok) {
         log("Pushed to origin");
       } else {
