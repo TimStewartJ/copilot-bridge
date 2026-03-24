@@ -7,7 +7,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TITLES_FILE = join(__dirname, "..", "..", "data", "session-titles.json");
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
+const TITLES_FILE = join(DATA_DIR, "session-titles.json");
 
 let titles: Record<string, string> = {};
 
