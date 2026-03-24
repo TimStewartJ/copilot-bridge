@@ -21,7 +21,7 @@ import { enrichWorkItems, enrichPullRequests } from "./providers/index.js";
 import { clearProviderCache } from "./providers/index.js";
 import * as readStateStore from "./read-state-store.js";
 import * as globalBus from "./global-bus.js";
-import { pruneOrphanedWorktrees } from "./staging-tools.js";
+import { pruneOrphanedWorktrees, getActivePreviews } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -820,6 +820,20 @@ app.patch("/api/settings", (req, res) => {
 });
 
 // ── Static files (Vite build output) ──────────────────────────────
+
+// Staging previews — dynamically serves builds registered by staging_preview tool
+app.use("/staging/:prefix", (req, res, next) => {
+  const prefix = req.params.prefix;
+  const previews = getActivePreviews();
+  const distDir = previews.get(prefix);
+  if (!distDir || !existsSync(distDir)) {
+    return res.status(404).send("Staging preview not found. It may have been cleaned up or deployed.");
+  }
+  express.static(distDir)(req, res, () => {
+    // SPA fallback — serve index.html for unmatched routes within this staging preview
+    res.sendFile(join(distDir, "index.html"));
+  });
+});
 
 const distPath = join(__dirname, "..", "..", "dist", "client");
 app.use(express.static(distPath));

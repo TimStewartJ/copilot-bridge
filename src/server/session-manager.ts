@@ -30,8 +30,10 @@ When modifying code in this repository (the Copilot Bridge):
 3. Run quality checks in the staging directory:
    - npx tsc --noEmit (type checking)
    - npx vite build (client build)
-4. When all checks pass, call staging_deploy with a descriptive commit message
-5. Do NOT make further tool calls after staging_deploy — the server will restart
+4. Call staging_preview to build and serve a preview of the staged frontend
+5. Share the preview URL with the user and WAIT for their confirmation before proceeding
+6. Only after the user approves, call staging_deploy with a descriptive commit message
+7. Do NOT make further tool calls after staging_deploy — the server will restart
 
 IMPORTANT: Never edit source files directly in the production directory.
 Always use the staging workflow for any code changes to this codebase.

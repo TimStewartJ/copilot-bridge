@@ -4,7 +4,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -14,8 +14,25 @@ import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
 const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
+const STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
 const SIGNAL_FILE = join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
+
+/** Active staging previews: prefix → dist path */
+const activePreviews = new Map<string, string>();
+
+/** Returns the map of active staging previews for the Express middleware to use. */
+export function getActivePreviews(): ReadonlyMap<string, string> {
+  return activePreviews;
+}
+
+function removeStagingDist(prefix: string): void {
+  const distDir = join(STAGING_DIST_PARENT, prefix);
+  if (existsSync(distDir)) {
+    rmSync(distDir, { recursive: true, force: true });
+  }
+  activePreviews.delete(prefix);
+}
 
 function log(msg: string) {
   console.log(`[staging] ${msg}`);
@@ -48,6 +65,20 @@ function removeWorktree(stagingDir: string, branch: string): void {
  * no longer exist or whose directories are stale.
  */
 export function pruneOrphanedWorktrees(): void {
+  // Clean up orphaned staging preview dist directories
+  if (existsSync(STAGING_DIST_PARENT)) {
+    try {
+      const distEntries = readdirSync(STAGING_DIST_PARENT, { withFileTypes: true });
+      for (const entry of distEntries) {
+        if (!entry.isDirectory()) continue;
+        log(`Pruning orphaned staging dist: ${entry.name}`);
+        rmSync(join(STAGING_DIST_PARENT, entry.name), { recursive: true, force: true });
+      }
+    } catch (err) {
+      log(`Warning: staging dist pruning failed: ${err}`);
+    }
+  }
+
   if (!existsSync(STAGING_PARENT)) return;
 
   try {
@@ -123,6 +154,58 @@ export const STAGING_TOOLS = [
         message:
           `Staging worktree created at ${stagingDir}. ` +
           `Make your changes there, run quality checks, then call staging_deploy when ready.`,
+      };
+    },
+  }),
+
+  defineTool("staging_preview", {
+    description:
+      "Build and serve a preview of the staged frontend changes. " +
+      "Runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
+      "Share the preview URL with the user and wait for confirmation before calling staging_deploy.",
+    parameters: {
+      type: "object",
+      properties: {
+        stagingDir: { type: "string", description: "Path to the staging worktree (returned by staging_init)" },
+      },
+      required: ["stagingDir"],
+    },
+    handler: async (args: any) => {
+      const { stagingDir } = args;
+
+      if (!existsSync(stagingDir)) {
+        return { success: false, error: `Staging directory not found: ${stagingDir}. Call staging_init first.` };
+      }
+
+      const prefix = basename(stagingDir);
+      const basePath = `/staging/${prefix}/`;
+      const outDir = join(STAGING_DIST_PARENT, prefix);
+
+      log(`Building staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
+
+      if (!existsSync(STAGING_DIST_PARENT)) {
+        mkdirSync(STAGING_DIST_PARENT, { recursive: true });
+      }
+
+      // Build the client with the staging base path
+      const buildResult = run(
+        `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
+        stagingDir,
+      );
+      if (!buildResult.ok) {
+        return { success: false, error: `Vite build failed:\n${buildResult.output.slice(-500)}` };
+      }
+
+      // Register the preview for Express to serve
+      activePreviews.set(prefix, outDir);
+
+      log(`Staging preview ready at ${basePath}`);
+      return {
+        success: true,
+        previewPath: basePath,
+        message:
+          `Staging preview is live at ${basePath}. ` +
+          `Share this URL with the user (append to tunnel URL) and wait for confirmation before deploying.`,
       };
     },
   }),
@@ -227,6 +310,7 @@ export const STAGING_TOOLS = [
 
       // Cleanup staging worktree and branch
       removeWorktree(stagingDir, branch);
+      removeStagingDist(prefix);
       log("Staging worktree cleaned up");
 
       return {
@@ -259,6 +343,7 @@ export const STAGING_TOOLS = [
       log(`Cleaning up staging worktree: ${stagingDir}`);
 
       removeWorktree(stagingDir, branch);
+      removeStagingDist(prefix);
 
       log("Staging worktree cleaned up");
       return { success: true, message: `Staging worktree removed: ${stagingDir}` };
