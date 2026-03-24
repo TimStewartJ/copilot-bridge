@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="60" fill="#09090b"/>
+  <circle cx="64" cy="64" r="58" fill="none" stroke="url(#g)" stroke-width="3" opacity="0.4"/>
+  <!-- Four-point sparkle -->
+  <path d="M64 24 L68 56 L100 64 L68 72 L64 104 L60 72 L28 64 L60 56 Z" fill="url(#g)" opacity="0.9"/>
+  <!-- Inner glow -->
+  <circle cx="64" cy="64" r="8" fill="#ddd6fe" opacity="0.7"/>
+  <!-- Small accent sparkles -->
+  <circle cx="40" cy="40" r="2.5" fill="#c4b5fd" opacity="0.6"/>
+  <circle cx="90" cy="44" r="2" fill="#c4b5fd" opacity="0.5"/>
+  <circle cx="86" cy="88" r="2" fill="#c4b5fd" opacity="0.4"/>
+</svg>

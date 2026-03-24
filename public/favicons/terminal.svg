@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#4ade80"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="60" fill="#09090b"/>
+  <circle cx="64" cy="64" r="58" fill="none" stroke="url(#g)" stroke-width="3" opacity="0.4"/>
+  <!-- Terminal prompt chevron > -->
+  <path d="M36 42 L60 64 L36 86" fill="none" stroke="url(#g)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Cursor line -->
+  <line x1="68" y1="78" x2="96" y2="78" stroke="url(#g)" stroke-width="5" stroke-linecap="round" opacity="0.7"/>
+  <!-- Blinking cursor dot -->
+  <circle cx="96" cy="78" r="3" fill="#bbf7d0" opacity="0.9"/>
+</svg>
