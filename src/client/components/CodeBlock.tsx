@@ -57,7 +57,7 @@ export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockP
           text-text-muted hover:text-text-primary opacity-0 group-hover:opacity-100 transition-all z-10"
         aria-label={copied ? "Copied" : "Copy code"}
       >
-        {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+        {copied ? <Check size={14} className="text-copy-success" /> : <Copy size={14} />}
       </button>
       <pre
         {...rest}

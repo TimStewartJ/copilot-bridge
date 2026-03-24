@@ -415,10 +415,13 @@ export interface ProvidersConfig {
   github?: GitHubProviderConfig;
 }
 
+export type ThemePreference = "light" | "dark" | "system";
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
   favicon?: string;
+  theme?: ThemePreference;
 }
 
 export async function fetchSettings(): Promise<AppSettings> {

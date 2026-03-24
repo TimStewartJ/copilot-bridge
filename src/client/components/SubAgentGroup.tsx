@@ -28,10 +28,10 @@ export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGr
         <span className="shrink-0">
           {failed
             ? <XCircle size={12} className="text-error" />
-            : <Bot size={12} className="text-purple-400" />
+            : <Bot size={12} className="text-agent" />
           }
         </span>
-        <span className="text-purple-400 shrink-0">{agentLabel}</span>
+        <span className="text-agent shrink-0">{agentLabel}</span>
         {childCount > 0 && (
           <span className="text-text-faint">
             {childCount} tool{childCount !== 1 ? "s" : ""}
@@ -46,7 +46,7 @@ export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGr
       {expanded && (
         <div className="border-t border-border">
           {childTools.length > 0 && (
-            <div className="pl-3 pr-1 py-1.5 space-y-1 border-l-2 border-l-purple-400/30 ml-2 mr-1 mb-1">
+            <div className="pl-3 pr-1 py-1.5 space-y-1 border-l-2 ml-2 mr-1 mb-1" style={{ borderLeftColor: "var(--color-agent-border)" }}>
               {childTools.map((tc) => (
                 <ToolCallBlock key={tc.toolCallId} toolCall={tc} />
               ))}

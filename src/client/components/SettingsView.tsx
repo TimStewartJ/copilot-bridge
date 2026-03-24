@@ -8,9 +8,12 @@ import {
   type AdoProviderConfig,
   type GitHubProviderConfig,
   type ProvidersConfig,
+  type ThemePreference,
 } from "../api";
 import { Settings, ArrowLeft, Pencil, Trash2, Check, X } from "lucide-react";
-import { FAVICON_OPTIONS, DEFAULT_FAVICON, getFaviconPath, type FaviconOption } from "../faviconOptions";
+import { FAVICON_OPTIONS, DEFAULT_FAVICON, type FaviconOption } from "../faviconOptions";
+import { useTheme } from "../useTheme";
+import ThemePicker from "./ThemePicker";
 
 export default function SettingsView() {
   const navigate = useNavigate();
@@ -42,9 +45,7 @@ export default function SettingsView() {
       const updated = await patchSettings(draft);
       setSettings(updated);
       setDraft(structuredClone(updated));
-      // Apply favicon change immediately
-      const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-      if (link) link.href = getFaviconPath(updated.favicon);
+      // Favicon auto-updates via useFavicon hook reacting to theme
       showToast("Settings saved — changes apply on next session interaction");
     } catch (err) {
       showToast(`Save failed: ${err instanceof Error ? err.message : err}`);
@@ -158,7 +159,7 @@ export default function SettingsView() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {/* Appearance Section */}
-        <FaviconPicker draft={draft} setDraft={setDraft} />
+        <AppearanceSection draft={draft} setDraft={setDraft} />
 
         {/* Providers Section */}
         <ProvidersSection draft={draft} setDraft={setDraft} />
@@ -231,22 +232,32 @@ export default function SettingsView() {
   );
 }
 
-// ── Favicon Picker ────────────────────────────────────────────────
+// ── Appearance Section (Theme + Favicon) ──────────────────────────
 
-function FaviconPicker({
+function AppearanceSection({
   draft,
   setDraft,
 }: {
   draft: AppSettings;
   setDraft: (d: AppSettings) => void;
 }) {
-  const current = draft.favicon ?? DEFAULT_FAVICON;
+  const { theme, setTheme, effectiveTheme } = useTheme();
+  const currentFavicon = draft.favicon ?? DEFAULT_FAVICON;
   const bridgeOptions = FAVICON_OPTIONS.filter((o) => o.group === "bridge");
   const altOptions = FAVICON_OPTIONS.filter((o) => o.group === "alt");
 
-  const select = (key: string) => {
+  const selectFavicon = (key: string) => {
     const next = structuredClone(draft);
     next.favicon = key;
+    setDraft(next);
+  };
+
+  const handleThemeChange = (t: ThemePreference) => {
+    // Apply immediately via context (persists to server)
+    setTheme(t);
+    // Also update draft so Save button doesn't show stale diff
+    const next = structuredClone(draft);
+    next.theme = t;
     setDraft(next);
   };
 
@@ -255,27 +266,33 @@ function FaviconPicker({
       <div className="mb-3">
         <h2 className="text-sm font-medium text-text-primary">Appearance</h2>
         <p className="text-xs text-text-muted mt-0.5">
-          Choose an icon for the browser tab and app.
+          Customize the look and feel of the app.
         </p>
       </div>
 
-      <div className="bg-bg-elevated border border-border rounded-md p-4 space-y-4">
-        {/* Bridge variants */}
+      <div className="bg-bg-elevated border border-border rounded-md p-4 space-y-5">
+        {/* Theme */}
         <div>
-          <p className="text-xs text-text-faint mb-2">Bridge</p>
+          <p className="text-xs text-text-faint mb-2">Theme</p>
+          <ThemePicker value={theme} onChange={handleThemeChange} />
+        </div>
+
+        {/* Favicon — Bridge variants */}
+        <div>
+          <p className="text-xs text-text-faint mb-2">Icon — Bridge</p>
           <div className="flex flex-wrap gap-3">
             {bridgeOptions.map((opt) => (
-              <FaviconTile key={opt.key} option={opt} selected={current === opt.key} onSelect={select} />
+              <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
             ))}
           </div>
         </div>
 
-        {/* Alt variants */}
+        {/* Favicon — Alt variants */}
         <div>
-          <p className="text-xs text-text-faint mb-2">Alternative</p>
+          <p className="text-xs text-text-faint mb-2">Icon — Alternative</p>
           <div className="flex flex-wrap gap-3">
             {altOptions.map((opt) => (
-              <FaviconTile key={opt.key} option={opt} selected={current === opt.key} onSelect={select} />
+              <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
             ))}
           </div>
         </div>
@@ -288,11 +305,14 @@ function FaviconTile({
   option,
   selected,
   onSelect,
+  effectiveTheme,
 }: {
   option: FaviconOption;
   selected: boolean;
   onSelect: (key: string) => void;
+  effectiveTheme: "light" | "dark";
 }) {
+  const src = effectiveTheme === "light" ? option.lightPath : option.path;
   return (
     <button
       onClick={() => onSelect(option.key)}
@@ -304,7 +324,7 @@ function FaviconTile({
       title={option.label}
     >
       <img
-        src={option.path}
+        src={src}
         alt={option.label}
         className="w-10 h-10 rounded-md"
       />

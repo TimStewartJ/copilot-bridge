@@ -19,10 +19,13 @@ export interface McpServerConfig {
   tools?: string[];
 }
 
+export type ThemePreference = "light" | "dark" | "system";
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
   favicon?: string;
+  theme?: ThemePreference;
 }
 
 // ── Defaults (no hardcoded org — users configure their own) ───────
@@ -67,6 +70,10 @@ export function updateSettings(updates: Partial<AppSettings>): AppSettings {
 
   if (updates.favicon !== undefined) {
     current.favicon = updates.favicon;
+  }
+
+  if (updates.theme !== undefined) {
+    current.theme = updates.theme;
   }
 
   save(current);
