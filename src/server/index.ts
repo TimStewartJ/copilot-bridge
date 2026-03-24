@@ -18,7 +18,7 @@ import { defaultEventBusRegistry } from "./event-bus.js";
 import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
 import * as readStateStore from "./read-state-store.js";
 import { defaultGlobalBus } from "./global-bus.js";
-import { pruneOrphanedWorktrees, getActivePreviews } from "./staging-tools.js";
+import { pruneOrphanedWorktrees, getActivePreviews, registerExpressApp } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
 import type { AppContext } from "./app-context.js";
 import { createApiRouter } from "./api-router.js";
@@ -26,6 +26,9 @@ import { createApiRouter } from "./api-router.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json({ limit: "20mb" }));
+
+// Register Express app with staging tools so they can mount/unmount staged routers
+registerExpressApp(app);
 
 // Build default AppContext for production
 const defaultContext: AppContext = {

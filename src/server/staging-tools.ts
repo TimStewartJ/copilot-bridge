@@ -4,23 +4,38 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, copyFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { getTunnelUrl } from "./restart-handler.js";
+import type { AppContext } from "./app-context.js";
+import type express from "express";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
 const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
 const STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
+const STAGING_DATA_PARENT = join(PRODUCTION_ROOT, "data-staging");
 const SIGNAL_FILE = join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
+const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 
 /** Active staging previews: prefix → dist path */
 const activePreviews = new Map<string, string>();
+
+/** Active staging backend contexts: prefix → cleanup function */
+const activeStagingBackends = new Map<string, { ctx: AppContext; cleanup: () => Promise<void> }>();
+
+/** Registered Express app — set by registerExpressApp() from index.ts */
+let _expressApp: express.Application | null = null;
+
+/** Register the Express app so staging tools can mount/unmount routers */
+export function registerExpressApp(app: express.Application): void {
+  _expressApp = app;
+}
 
 /** Returns the map of active staging previews for the Express middleware to use. */
 export function getActivePreviews(): ReadonlyMap<string, string> {
@@ -33,6 +48,129 @@ function removeStagingDist(prefix: string): void {
     rmSync(distDir, { recursive: true, force: true });
   }
   activePreviews.delete(prefix);
+}
+
+function removeStagingData(prefix: string): void {
+  const dataDir = join(STAGING_DATA_PARENT, prefix);
+  if (existsSync(dataDir)) {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+/** Seed a staging data directory from production data, with schedules disabled */
+function seedStagingData(prefix: string): string {
+  const dataDir = join(STAGING_DATA_PARENT, prefix);
+  if (!existsSync(STAGING_DATA_PARENT)) mkdirSync(STAGING_DATA_PARENT, { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
+
+  // Copy production data files
+  const filesToCopy = [
+    "tasks.json", "task-groups.json", "settings.json",
+    "sessions-meta.json", "session-titles.json", "read-state.json",
+  ];
+  for (const file of filesToCopy) {
+    const src = join(PRODUCTION_DATA_DIR, file);
+    if (existsSync(src)) {
+      copyFileSync(src, join(dataDir, file));
+    }
+  }
+
+  // Copy schedules but disable all of them
+  const schedSrc = join(PRODUCTION_DATA_DIR, "schedules.json");
+  if (existsSync(schedSrc)) {
+    try {
+      const schedules = JSON.parse(readFileSync(schedSrc, "utf-8"));
+      if (Array.isArray(schedules)) {
+        for (const s of schedules) s.enabled = false;
+      }
+      writeFileSync(join(dataDir, "schedules.json"), JSON.stringify(schedules, null, 2));
+    } catch {
+      writeFileSync(join(dataDir, "schedules.json"), "[]");
+    }
+  }
+
+  log(`Seeded staging data at ${dataDir}`);
+  return dataDir;
+}
+
+/** Dynamically import staged backend modules and create an isolated AppContext */
+async function createStagingContext(stagingDir: string, dataDir: string): Promise<AppContext> {
+  const base = pathToFileURL(join(stagingDir, "src", "server")).href;
+  const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
+
+  // Dynamic imports from the staging worktree
+  const [globalBusMod, eventBusMod, taskStoreMod, taskGroupStoreMod,
+    scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod,
+    sessionTitlesMod, readStateStoreMod, sessionManagerMod, apiRouterMod,
+  ] = await Promise.all([
+    import(ts("global-bus.ts")),
+    import(ts("event-bus.ts")),
+    import(ts("task-store.ts")),
+    import(ts("task-group-store.ts")),
+    import(ts("schedule-store.ts")),
+    import(ts("settings-store.ts")),
+    import(ts("session-meta-store.ts")),
+    import(ts("session-titles.ts")),
+    import(ts("read-state-store.ts")),
+    import(ts("session-manager.ts")),
+    import(ts("api-router.ts")),
+  ]);
+
+  // Create isolated instances
+  const globalBus = globalBusMod.createGlobalBus();
+  const eventBusRegistry = eventBusMod.createEventBusRegistry();
+  const taskStore = taskStoreMod.createTaskStore(dataDir, globalBus);
+  const taskGroupStore = taskGroupStoreMod.createTaskGroupStore(dataDir);
+  const scheduleStore = scheduleStoreMod.createScheduleStore(dataDir);
+  const settingsStore = settingsStoreMod.createSettingsStore(dataDir);
+  const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(dataDir);
+  const sessionTitles = sessionTitlesMod.createSessionTitlesStore(dataDir);
+  const readStateStore = readStateStoreMod.createReadStateStore(dataDir);
+
+  const ctx: AppContext = {
+    taskStore, taskGroupStore, scheduleStore, settingsStore,
+    sessionMetaStore, sessionTitles, readStateStore,
+    globalBus, eventBusRegistry,
+    sessionManager: null as any,
+    isStaging: true,
+  };
+
+  // Create bridge tools for staging (exclude dangerous tools)
+  const allTools = sessionManagerMod.createBridgeTools(ctx);
+  const excludeTools = new Set(["self_restart", "staging_init", "staging_preview", "staging_deploy", "staging_cleanup"]);
+  const stagingTools = allTools.filter((t: any) => !excludeTools.has(t.name));
+
+  // Create a real SessionManager with its own CopilotClient (stdio mode = independent CLI process)
+  const sm = new sessionManagerMod.SessionManager({
+    tools: stagingTools,
+    globalBus,
+    eventBusRegistry,
+    sessionTitles,
+    taskStore,
+    config: { sessionMcpServers: settingsStore.getMcpServers() },
+  });
+  ctx.sessionManager = sm;
+
+  // Store the apiRouter factory for mounting
+  (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;
+
+  return ctx;
+}
+
+/** Tear down a staging backend: shutdown SDK, remove data */
+async function teardownStagingBackend(prefix: string): Promise<void> {
+  const staging = activeStagingBackends.get(prefix);
+  if (!staging) return;
+
+  log(`Tearing down staging backend: ${prefix}`);
+  try {
+    await staging.cleanup();
+  } catch (err) {
+    log(`Warning: staging cleanup error: ${err}`);
+  }
+  activeStagingBackends.delete(prefix);
+  removeStagingData(prefix);
+  log(`Staging backend torn down: ${prefix}`);
 }
 
 function log(msg: string) {
@@ -183,6 +321,7 @@ export const STAGING_TOOLS = [
     description:
       "Build and serve a preview of the staged frontend changes. " +
       "Runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
+      "Also spins up a staged backend with isolated data and a real Copilot SDK instance. " +
       "Share the preview URL with the user and wait for confirmation before calling staging_deploy.",
     parameters: {
       type: "object",
@@ -220,17 +359,74 @@ export const STAGING_TOOLS = [
       // Register the preview for Express to serve
       activePreviews.set(prefix, outDir);
 
+      // ── Staged backend ──────────────────────────────────────────
+      let backendReady = false;
+      let backendError: string | undefined;
+
+      if (_expressApp) {
+        try {
+          // Tear down any existing staging backend for this prefix
+          await teardownStagingBackend(prefix);
+
+          // Seed isolated data directory
+          const dataDir = seedStagingData(prefix);
+
+          // Create staging AppContext from worktree code
+          log(`Creating staging backend context from ${stagingDir}...`);
+          const ctx = await createStagingContext(stagingDir, dataDir);
+
+          // Initialize the staging SessionManager (spawns its own CLI process)
+          log("Initializing staging Copilot SDK...");
+          await ctx.sessionManager.initialize();
+
+          // Mount staged API router
+          const createRouter = (ctx as any)._createApiRouter;
+          const stagedRouter = createRouter(ctx);
+          const apiPath = `/staging/${prefix}/api`;
+          _expressApp.use(apiPath, stagedRouter);
+          log(`Staged API mounted at ${apiPath}`);
+
+          // Store for cleanup
+          activeStagingBackends.set(prefix, {
+            ctx,
+            cleanup: async () => {
+              try {
+                await ctx.sessionManager.gracefulShutdown();
+              } catch (err) {
+                log(`Warning: staging SDK shutdown error: ${err}`);
+              }
+            },
+          });
+
+          backendReady = true;
+          log("Staging backend ready");
+        } catch (err) {
+          backendError = err instanceof Error ? err.message : String(err);
+          log(`Staging backend failed (frontend-only preview): ${backendError}`);
+        }
+      } else {
+        log("Express app not registered — frontend-only preview");
+      }
+
       const tunnelUrl = getTunnelUrl();
       const fullUrl = tunnelUrl ? `${tunnelUrl.replace(/\/+$/, "")}${basePath}` : null;
+
+      const backendNote = backendReady
+        ? " Backend API is live at the same path (/api routes)."
+        : backendError
+          ? ` Backend failed to start: ${backendError}. Frontend-only preview.`
+          : " Frontend-only preview (no Express app registered).";
 
       log(`Staging preview ready at ${fullUrl || basePath}`);
       return {
         success: true,
         previewPath: basePath,
         previewUrl: fullUrl,
-        message: fullUrl
+        backendReady,
+        backendError,
+        message: (fullUrl
           ? `Staging preview is live at ${fullUrl} — share this link with the user and wait for confirmation before deploying.`
-          : `Staging preview is live at ${basePath} (no tunnel URL available — share the relative path with the user).`,
+          : `Staging preview is live at ${basePath} (no tunnel URL available — share the relative path with the user).`) + backendNote,
       };
     },
   }),
@@ -354,6 +550,7 @@ export const STAGING_TOOLS = [
       // Cleanup staging worktree and branch
       removeWorktree(stagingDir, branch);
       removeStagingDist(prefix);
+      await teardownStagingBackend(prefix);
       log("Staging worktree cleaned up");
 
       return {
@@ -387,6 +584,7 @@ export const STAGING_TOOLS = [
 
       removeWorktree(stagingDir, branch);
       removeStagingDist(prefix);
+      await teardownStagingBackend(prefix);
 
       log("Staging worktree cleaned up");
       return { success: true, message: `Staging worktree removed: ${stagingDir}` };
