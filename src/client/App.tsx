@@ -163,6 +163,9 @@ export default function App() {
       case "schedule:changed":
         setScheduleVersion((v) => v + 1);
         break;
+      case "task:changed":
+        loadTasks();
+        break;
       case "status:connected":
         // Don't touch restart state — server sends authoritative state on connect
         break;

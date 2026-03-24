@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as globalBus from "./global-bus.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
@@ -106,6 +107,10 @@ function save(tasks: Task[]): void {
   writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
 }
 
+function emitChange(taskId: string): void {
+  globalBus.emit({ type: "task:changed", taskId });
+}
+
 // ── CRUD ──────────────────────────────────────────────────────────
 
 export function listTasks(): Task[] {
@@ -141,6 +146,7 @@ export function createTask(title: string): Task {
   };
   tasks.push(task);
   save(tasks);
+  emitChange(task.id);
   return task;
 }
 
@@ -169,12 +175,14 @@ export function updateTask(id: string, updates: TaskUpdate): Task {
 
   tasks[idx] = task;
   save(tasks);
+  emitChange(task.id);
   return task;
 }
 
 export function deleteTask(id: string): void {
   const tasks = load().filter((t) => t.id !== id);
   save(tasks);
+  emitChange(id);
 }
 
 export function reorderTasks(taskIds: string[]): Task[] {
@@ -184,6 +192,7 @@ export function reorderTasks(taskIds: string[]): Task[] {
     if (t) t.order = i;
   }
   save(tasks);
+  for (const id of taskIds) emitChange(id);
   return listTasks();
 }
 
@@ -197,6 +206,7 @@ export function linkSession(taskId: string, sessionId: string): Task {
     task.sessionIds.push(sessionId);
     task.updatedAt = new Date().toISOString();
     save(tasks);
+    emitChange(taskId);
   }
   return task;
 }
@@ -208,6 +218,7 @@ export function unlinkSession(taskId: string, sessionId: string): Task {
   task.sessionIds = task.sessionIds.filter((s) => s !== sessionId);
   task.updatedAt = new Date().toISOString();
   save(tasks);
+  emitChange(taskId);
   return task;
 }
 
@@ -219,6 +230,7 @@ export function linkWorkItem(taskId: string, workItemId: number, provider: Provi
     task.workItems.push({ id: workItemId, provider });
     task.updatedAt = new Date().toISOString();
     save(tasks);
+    emitChange(taskId);
   }
   return task;
 }
@@ -232,6 +244,7 @@ export function unlinkWorkItem(taskId: string, workItemId: number, provider?: Pr
   );
   task.updatedAt = new Date().toISOString();
   save(tasks);
+  emitChange(taskId);
   return task;
 }
 
@@ -247,6 +260,7 @@ export function linkPR(taskId: string, pr: PRRef): Task {
     task.pullRequests.push(pr);
     task.updatedAt = new Date().toISOString();
     save(tasks);
+    emitChange(taskId);
   }
   return task;
 }
@@ -260,5 +274,6 @@ export function unlinkPR(taskId: string, repoId: string, prId: number, provider?
   );
   task.updatedAt = new Date().toISOString();
   save(tasks);
+  emitChange(taskId);
   return task;
 }

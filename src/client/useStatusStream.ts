@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 export interface StatusEvent {
   type: "session:busy" | "session:idle" | "session:title" | "session:intent"
       | "server:restart-pending" | "server:restart-cleared" | "status:connected"
-      | "schedule:changed";
+      | "schedule:changed" | "task:changed";
   sessionId?: string;
   title?: string;
   intent?: string;
