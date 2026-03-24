@@ -1,7 +1,14 @@
 {
-  "name": "copilot-teams-bridge",
+  "name": "copilot-bridge",
   "version": "0.1.0",
-  "description": "Bridge between Teams and Copilot CLI via MCP + SDK",
+  "description": "Personal work dashboard powered by Copilot SDK + MCP",
+  "author": "Tim Stewart <timstewartj@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/timstewartj/copilot-bridge.git"
+  },
+  "homepage": "https://github.com/timstewartj/copilot-bridge#readme",
   "type": "module",
   "scripts": {
     "dev": "npx tsx src/launcher.ts",

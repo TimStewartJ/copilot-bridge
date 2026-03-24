@@ -440,7 +440,7 @@ function AdoProviderEditor({
         <input
           value={project}
           onChange={(e) => setProject(e.target.value)}
-          placeholder="e.g. One"
+          placeholder="e.g. MyProject"
           className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
         />
       </Field>

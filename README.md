@@ -47,7 +47,7 @@ A personal work dashboard powered by the GitHub Copilot SDK and Azure DevOps MCP
 ### Install
 
 ```bash
-git clone https://github.com/your-username/copilot-bridge.git
+git clone https://github.com/timstewartj/copilot-bridge.git
 cd copilot-bridge
 npm install
 cp .env.example .env   # Edit .env with your settings (optional)

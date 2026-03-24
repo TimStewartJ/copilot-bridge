@@ -14,6 +14,8 @@ function getAccessToken(): string {
 
   try {
     const result = execSync(
+      // 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps public resource ID
+      // (used by all az CLI / MSAL integrations — not a secret)
       'az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv',
       { encoding: "utf-8", timeout: 15_000 },
     ).trim();
