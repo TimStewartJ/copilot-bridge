@@ -334,6 +334,14 @@ async function main() {
 
   clearSignal();
 
+  // Pull latest from origin on startup
+  const pullResult = run("git pull --ff-only origin main");
+  if (pullResult.ok) {
+    log("Pulled latest from origin");
+  } else {
+    log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+  }
+
   // Start server
   serverProcess = startServer();
 

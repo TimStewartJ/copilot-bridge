@@ -120,6 +120,14 @@ export const STAGING_TOOLS = [
 
       log(`Creating staging worktree: ${stagingDir} (branch: ${branch})`);
 
+      // Pull latest from origin so the worktree starts from the newest remote state
+      const pullResult = run("git pull --ff-only origin main", PRODUCTION_ROOT);
+      if (pullResult.ok) {
+        log("Pulled latest from origin");
+      } else {
+        log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+      }
+
       if (!existsSync(STAGING_PARENT)) {
         mkdirSync(STAGING_PARENT, { recursive: true });
       }
@@ -304,6 +312,14 @@ export const STAGING_TOOLS = [
         } else {
           log("npm install succeeded");
         }
+      }
+
+      // Push to origin so other deployments can pick up the change
+      const pushResult = run("git push origin main", PRODUCTION_ROOT);
+      if (pushResult.ok) {
+        log("Pushed to origin");
+      } else {
+        log(`Git push failed (non-fatal): ${pushResult.output.slice(-200)}`);
       }
 
       // Signal launcher to restart
