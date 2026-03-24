@@ -512,6 +512,9 @@ export class SessionManager {
     bus.reset(); // Ensure clean state even if bus was reused
     this.activeSessions.add(sessionId);
     globalBus.emit({ type: "session:busy", sessionId });
+    if (_restartPending) {
+      globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
+    }
 
     // Run in background — not awaited
     this._doWork(sessionId, prompt, bus, attachments).catch((err) => {

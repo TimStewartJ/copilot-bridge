@@ -147,9 +147,11 @@ export default function App() {
         setRestartWaiting(event.waitingSessions ?? 0);
         break;
       case "server:restart-cleared":
-      case "status:connected":
         setRestartPending(false);
         setRestartWaiting(0);
+        break;
+      case "status:connected":
+        // Don't touch restart state — server sends authoritative state on connect
         break;
     }
   }, []));

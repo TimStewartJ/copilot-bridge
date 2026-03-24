@@ -131,10 +131,13 @@ app.get("/api/status-stream", (req, res) => {
     try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { close(); }
   });
 
-  // Send initial restart state so reconnecting clients catch up
+  // Send authoritative restart state so clients don't have to guess
   if (isRestartPending()) {
     const count = getRestartWaitingCount();
     try { res.write(`data: ${JSON.stringify({ type: "server:restart-pending", waitingSessions: count })}\n\n`); }
+    catch { close(); }
+  } else {
+    try { res.write(`data: ${JSON.stringify({ type: "server:restart-cleared" })}\n\n`); }
     catch { close(); }
   }
 
