@@ -741,6 +741,7 @@ app.post("/api/schedules", (req, res) => {
     }
 
     console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
+    globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
     res.status(201).json(schedule);
   } catch (err) {
     res.status(400).json({ error: String(err) });
@@ -761,6 +762,7 @@ app.patch("/api/schedules/:id", (req, res) => {
     }
 
     console.log(`[schedules] Updated schedule "${schedule.name}"`);
+    globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
     res.json(schedule);
   } catch (err) {
     res.status(400).json({ error: String(err) });
@@ -769,9 +771,12 @@ app.patch("/api/schedules/:id", (req, res) => {
 
 app.delete("/api/schedules/:id", (req, res) => {
   try {
+    const schedule = scheduleStore.getSchedule(req.params.id);
+    const taskId = schedule?.taskId;
     scheduler.unregisterSchedule(req.params.id);
     scheduleStore.deleteSchedule(req.params.id);
     console.log(`[schedules] Deleted schedule ${req.params.id}`);
+    globalBus.emit({ type: "schedule:changed", taskId, scheduleId: req.params.id });
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: String(err) });

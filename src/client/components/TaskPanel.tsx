@@ -100,6 +100,7 @@ interface TaskPanelProps {
     updates: Partial<Pick<Task, "title" | "status">>,
   ) => void;
   onTasksChanged?: () => void;
+  scheduleVersion?: number;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onArchiveSession?: (id: string, archived: boolean) => void;
   archivingIds?: Set<string>;
@@ -131,6 +132,7 @@ export default function TaskPanel({
   onNewSession,
   onUpdateTask,
   onTasksChanged,
+  scheduleVersion,
   isUnread,
   onArchiveSession,
   archivingIds,
@@ -194,7 +196,7 @@ export default function TaskPanel({
     } else {
       setSchedules([]);
     }
-  }, [task?.id]);
+  }, [task?.id, scheduleVersion]);
 
   // Reset editing state when task changes
   useEffect(() => {

@@ -2,11 +2,14 @@ import { useEffect, useRef } from "react";
 
 export interface StatusEvent {
   type: "session:busy" | "session:idle" | "session:title" | "session:intent"
-      | "server:restart-pending" | "server:restart-cleared" | "status:connected";
+      | "server:restart-pending" | "server:restart-cleared" | "status:connected"
+      | "schedule:changed";
   sessionId?: string;
   title?: string;
   intent?: string;
   waitingSessions?: number;
+  taskId?: string;
+  scheduleId?: string;
 }
 
 type StatusHandler = (event: StatusEvent) => void;

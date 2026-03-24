@@ -51,6 +51,7 @@ export default function App() {
   const [restartPending, setRestartPending] = useState(false);
   const [restartWaiting, setRestartWaiting] = useState(0);
   const [faviconKey, setFaviconKey] = useState<string | undefined>();
+  const [scheduleVersion, setScheduleVersion] = useState(0);
 
   // Apply favicon from settings on load
   useFavicon(faviconKey);
@@ -158,6 +159,9 @@ export default function App() {
       case "server:restart-cleared":
         setRestartPending(false);
         setRestartWaiting(0);
+        break;
+      case "schedule:changed":
+        setScheduleVersion((v) => v + 1);
         break;
       case "status:connected":
         // Don't touch restart state — server sends authoritative state on connect
@@ -574,6 +578,7 @@ export default function App() {
             onNewSession={handleNewSession}
             onUpdateTask={handleUpdateTask}
             onTasksChanged={loadTasks}
+            scheduleVersion={scheduleVersion}
             isUnread={isUnread}
             onArchiveSession={handleArchiveSession}
             archivingIds={archivingIds}
