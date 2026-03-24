@@ -233,11 +233,10 @@ export default function ChatInput({ onSend, onAbort, sessionId, draft, onDraftCh
         {onAbort ? (
           <button
             onClick={onAbort}
-            className="px-4 md:px-6 py-3 bg-error hover:bg-error-hover text-white rounded-md text-sm font-medium self-end transition-colors flex items-center gap-1.5"
+            className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-end transition-colors flex items-center justify-center"
             title="Stop generating"
           >
             <Square size={14} fill="currentColor" />
-            <span className="hidden md:inline">Stop</span>
           </button>
         ) : (
           <button
