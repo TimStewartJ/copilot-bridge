@@ -79,6 +79,28 @@ const GROUP_COLOR_DOT: Record<string, string> = {
   slate: "bg-slate-500",
 };
 
+const GROUP_COLOR_BG: Record<string, string> = {
+  blue: "bg-blue-500/8",
+  purple: "bg-purple-500/8",
+  green: "bg-green-500/8",
+  amber: "bg-amber-500/8",
+  rose: "bg-rose-500/8",
+  cyan: "bg-cyan-500/8",
+  orange: "bg-orange-500/8",
+  slate: "bg-slate-500/8",
+};
+
+const GROUP_COLOR_BORDER: Record<string, string> = {
+  blue: "border-blue-500/30",
+  purple: "border-purple-500/30",
+  green: "border-green-500/30",
+  amber: "border-amber-500/30",
+  rose: "border-rose-500/30",
+  cyan: "border-cyan-500/30",
+  orange: "border-orange-500/30",
+  slate: "border-slate-500/30",
+};
+
 const GROUP_COLORS_LIST = ["blue", "purple", "green", "amber", "rose", "cyan", "orange", "slate"];
 
 function timeAgo(iso?: string): string {
@@ -338,19 +360,11 @@ export default function TaskRail({
             // Grouped mode — color dividers between groups
             groupedSections.map((section, si) => {
               const group = section.group;
-              const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
               const isCollapsed = group?.collapsed ?? false;
+              const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
 
               return (
-                <div key={group?.id ?? "__ungrouped__"} className="flex flex-col items-center gap-2 w-full">
-                  {/* Group divider */}
-                  {si > 0 && <div className="w-6 border-t border-border" />}
-                  {colorDot && (
-                    <span
-                      className={`w-2 h-2 rounded-full ${colorDot} shrink-0`}
-                      title={group?.name}
-                    />
-                  )}
+                <div key={group?.id ?? "__ungrouped__"} className={`flex flex-col items-center gap-2 w-full ${colorBg ? `${colorBg} rounded-xl py-1.5` : ""}`} title={group?.name}>
                   {!isCollapsed && section.tasks.map((task) => {
                     const isActive = task.id === activeTaskId;
                     const indicator = taskIndicators.get(task.id);
@@ -508,11 +522,12 @@ export default function TaskRail({
                 const group = section.group;
                 const isCollapsed = group?.collapsed ?? false;
                 const groupId = group?.id ?? "__ungrouped__";
-                const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
+                const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
+                const colorBorder = group ? GROUP_COLOR_BORDER[group.color] ?? "border-slate-500/30" : undefined;
 
                 return (
                   <DroppableGroup key={groupId} id={groupId}>
-                    <div className="mb-1">
+                    <div className={`mb-1 ${colorBg ? `${colorBg} ${colorBorder} border-l-2 rounded-lg` : ""}`}>
                       {/* Group header */}
                       <button
                         onClick={() => {
@@ -531,7 +546,6 @@ export default function TaskRail({
                         {group ? (
                           isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
                         ) : null}
-                        {colorDot && <span className={`w-2 h-2 rounded-full ${colorDot} shrink-0`} />}
                         <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
                         <span className="text-text-faint ml-auto text-[10px]">{section.tasks.length}</span>
                       </button>

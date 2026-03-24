@@ -39,6 +39,16 @@ const GROUP_COLOR_DOT: Record<string, string> = {
   rose: "bg-rose-500", cyan: "bg-cyan-500", orange: "bg-orange-500", slate: "bg-slate-500",
 };
 
+const GROUP_COLOR_BG: Record<string, string> = {
+  blue: "bg-blue-500/8", purple: "bg-purple-500/8", green: "bg-green-500/8", amber: "bg-amber-500/8",
+  rose: "bg-rose-500/8", cyan: "bg-cyan-500/8", orange: "bg-orange-500/8", slate: "bg-slate-500/8",
+};
+
+const GROUP_COLOR_BORDER: Record<string, string> = {
+  blue: "border-blue-500/30", purple: "border-purple-500/30", green: "border-green-500/30", amber: "border-amber-500/30",
+  rose: "border-rose-500/30", cyan: "border-cyan-500/30", orange: "border-orange-500/30", slate: "border-slate-500/30",
+};
+
 interface TaskListProps {
   tasks: Task[];
   taskGroups?: TaskGroup[];
@@ -301,10 +311,12 @@ export default function TaskList({
             const group = section.group;
             const isCollapsed = group?.collapsed ?? false;
             const groupId = group?.id ?? "__ungrouped__";
-            const colorDot = group ? GROUP_COLOR_DOT[group.color] ?? "bg-slate-500" : undefined;
+            const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
+            const colorBorder = group ? GROUP_COLOR_BORDER[group.color] ?? "border-slate-500/30" : undefined;
 
             return (
               <DroppableGroup key={groupId} id={groupId}>
+                <div className={colorBg ? `${colorBg} ${colorBorder} border-l-2 rounded-lg` : ""}>
                 <button
                   onClick={() => {
                     if (group && onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
@@ -312,7 +324,6 @@ export default function TaskList({
                   className="w-full px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-1.5"
                 >
                   {group ? (isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />) : null}
-                  {colorDot && <span className={`w-2 h-2 rounded-full ${colorDot}`} />}
                   {group?.name ?? "Ungrouped"} ({section.tasks.length})
                 </button>
                 {!isCollapsed && (
@@ -331,6 +342,7 @@ export default function TaskList({
                     ))}
                   </SortableContext>
                 )}
+                </div>
               </DroppableGroup>
             );
           })
