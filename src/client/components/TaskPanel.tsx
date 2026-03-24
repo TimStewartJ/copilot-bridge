@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import type { Task, TaskGroup, Session, EnrichedWorkItem, EnrichedPR, Schedule } from "../api";
 import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule, patchTask } from "../api";
 import SessionList from "./SessionList";
@@ -153,9 +153,6 @@ export default function TaskPanel({
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [overflowOpen, setOverflowOpen] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const overflowRef = useRef<HTMLDivElement>(null);
 
   // ── Notes sheet state ────────────────────────────────────────
   const [notesSheetOpen, setNotesSheetOpen] = useState(false);
@@ -204,25 +201,10 @@ export default function TaskPanel({
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
-    setOverflowOpen(false);
-    setConfirmDelete(false);
     setNotesSheetOpen(false);
     setNotesStartEdit(false);
     setEditingCwd(false);
   }, [task?.id]);
-
-  // Close overflow menu on outside click
-  useEffect(() => {
-    if (!overflowOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
-        setOverflowOpen(false);
-        setConfirmDelete(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [overflowOpen]);
 
   // ── Quick Chats mode ─────────────────────────────────────────
   if (!task && isQuickChats) {
@@ -330,51 +312,6 @@ export default function TaskPanel({
               </div>
             );
           })()}
-
-          {/* Overflow menu */}
-          <div className="relative shrink-0" ref={overflowRef}>
-            <button
-              onClick={() => { setOverflowOpen((v) => !v); setConfirmDelete(false); }}
-              className="p-0.5 text-text-muted hover:text-text-primary rounded transition-colors"
-              title="More options"
-            >
-              <MoreHorizontal size={14} />
-            </button>
-            {overflowOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-bg-elevated border border-border rounded-lg shadow-lg py-1 min-w-[120px]">
-                {!confirmDelete ? (
-                  <button
-                    onClick={() => setConfirmDelete(true)}
-                    className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-bg-hover transition-colors"
-                  >
-                    Delete task
-                  </button>
-                ) : (
-                  <div className="px-3 py-2">
-                    <div className="text-xs text-text-muted mb-2">Delete this task?</div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          onDeleteTask?.(task.id);
-                          setOverflowOpen(false);
-                          setConfirmDelete(false);
-                        }}
-                        className="px-2 py-1 text-xs bg-error/15 text-error hover:bg-error/25 rounded transition-colors"
-                      >
-                        Delete
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(false)}
-                        className="px-2 py-1 text-xs text-text-muted hover:bg-bg-hover rounded transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
