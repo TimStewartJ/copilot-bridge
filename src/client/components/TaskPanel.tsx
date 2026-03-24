@@ -53,7 +53,7 @@ const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode }> = {
   Bug: { icon: <Bug size={12} className="text-error" /> },
   Task: { icon: <CheckSquare size={12} className="text-accent" /> },
   "User Story": { icon: <BookOpen size={12} className="text-success" /> },
-  Feature: { icon: <Target size={12} className="text-purple-400" /> },
+  Feature: { icon: <Target size={12} className="text-agent" /> },
   Epic: { icon: <Trophy size={12} className="text-warning" /> },
 };
 

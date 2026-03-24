@@ -159,11 +159,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
                   return (
                     <span
                       key={t.toolCallId || t.name}
-                      className={`px-2 py-0.5 rounded ${isAgent ? "bg-purple-500/10 text-purple-400" : "bg-accent/10"}`}
+                      className={`px-2 py-0.5 rounded ${isAgent ? "bg-agent-muted text-agent" : "bg-accent/10"}`}
                     >
                       {t.name}
                       {childCount > 0 && (
-                        <span className="text-purple-400/50 ml-1">({childCount})</span>
+                        <span className="text-agent/50 ml-1">({childCount})</span>
                       )}
                       {!isAgent && t.args && Object.keys(t.args).length > 0 && (
                         <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>

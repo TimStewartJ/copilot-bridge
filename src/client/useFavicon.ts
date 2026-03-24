@@ -1,10 +1,13 @@
 import { useEffect } from "react";
 import { getFaviconPath } from "./faviconOptions";
+import { useTheme } from "./useTheme";
 
-/** Swap the document favicon at runtime when the setting changes. */
+/** Swap the document favicon at runtime when the setting or theme changes. */
 export function useFavicon(faviconKey?: string) {
+  const { effectiveTheme } = useTheme();
+
   useEffect(() => {
-    const path = getFaviconPath(faviconKey);
+    const path = getFaviconPath(faviconKey, effectiveTheme);
     const link =
       document.querySelector<HTMLLinkElement>('link[rel="icon"]') ??
       (() => {
@@ -15,5 +18,5 @@ export function useFavicon(faviconKey?: string) {
         return el;
       })();
     link.href = path;
-  }, [faviconKey]);
+  }, [faviconKey, effectiveTheme]);
 }
