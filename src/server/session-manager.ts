@@ -204,7 +204,7 @@ const BRIDGE_TOOLS = [
   }),
   defineTool("task_group_create", {
     description: "Create a new task group for organizing related tasks",
-    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Bootstrap')" }, color: { type: "string", description: "Optional color: blue, purple, green, amber, rose, cyan, orange, slate" } }, required: ["name"] },
+    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, green, amber, rose, cyan, orange, slate" } }, required: ["name"] },
     handler: async (args: any) => {
       const group = taskGroupStore.createGroup(args.name, args.color);
       return { success: true, message: `Group "${group.name}" created`, groupId: group.id };
