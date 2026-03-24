@@ -550,9 +550,11 @@ function SortableListItem({
           >
             <GripVertical size={12} />
           </span>
-          {indicator?.busy && (
+          {indicator?.busy ? (
             <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-info animate-pulse" />
-          )}
+          ) : indicator?.unread ? (
+            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-success" />
+          ) : null}
           <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>

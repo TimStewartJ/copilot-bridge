@@ -344,7 +344,7 @@ export default function TaskRail({
                         key={task.id}
                         onClick={() => onSelectTask(task.id)}
                         title={task.title}
-                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
+                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
                       >
                         {initials}
                         {indicator?.busy && (
@@ -371,7 +371,7 @@ export default function TaskRail({
                   key={task.id}
                   onClick={() => onSelectTask(task.id)}
                   title={task.title}
-                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110`}
+                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
                 >
                   {initials}
                   {indicator?.busy && (
@@ -854,9 +854,11 @@ function SortableRailItem({
           >
             <GripVertical size={12} />
           </span>
-          {indicator?.busy && (
+          {indicator?.busy ? (
             <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-info animate-pulse" />
-          )}
+          ) : indicator?.unread ? (
+            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-success" />
+          ) : null}
           <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>
