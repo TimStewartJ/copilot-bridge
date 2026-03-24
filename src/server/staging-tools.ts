@@ -133,7 +133,7 @@ export const STAGING_TOOLS = [
       // Pull latest from origin so the worktree starts from the newest remote state
       const currentBranch = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
       const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
-      const pullResult = run(`git pull --ff-only origin ${branchName}`, PRODUCTION_ROOT);
+      const pullResult = run(`git pull --rebase origin ${branchName}`, PRODUCTION_ROOT);
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {
@@ -329,7 +329,15 @@ export const STAGING_TOOLS = [
       // Push to origin so other deployments can pick up the change
       const prodBranch = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
       const pushBranch = prodBranch.ok ? prodBranch.output.trim() : "main";
-      const pushResult = run(`git push origin ${pushBranch}`, PRODUCTION_ROOT);
+      let pushResult = run(`git push origin ${pushBranch}`, PRODUCTION_ROOT);
+      if (!pushResult.ok) {
+        // Push may fail if remote has new commits — pull --rebase and retry once
+        log("Push failed, attempting pull --rebase before retry...");
+        const rebase = run(`git pull --rebase origin ${pushBranch}`, PRODUCTION_ROOT);
+        if (rebase.ok) {
+          pushResult = run(`git push origin ${pushBranch}`, PRODUCTION_ROOT);
+        }
+      }
       if (pushResult.ok) {
         log("Pushed to origin");
       } else {
