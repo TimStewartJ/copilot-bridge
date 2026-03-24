@@ -66,43 +66,53 @@ function removeWorktree(stagingDir: string, branch: string): void {
  * no longer exist or whose directories are stale.
  */
 export function pruneOrphanedWorktrees(): void {
-  // Clean up orphaned staging preview dist directories
+  // Collect active staging prefixes (worktrees with valid branches)
+  const activeWorktrees = new Set<string>();
+
+  if (existsSync(STAGING_PARENT)) {
+    try {
+      const entries = readdirSync(STAGING_PARENT, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const stagingDir = join(STAGING_PARENT, entry.name);
+        const branch = `staging/${entry.name}`;
+
+        const branchCheck = run(`git rev-parse --verify "${branch}"`, PRODUCTION_ROOT);
+        if (!branchCheck.ok) {
+          log(`Pruning orphaned staging directory (no branch): ${stagingDir}`);
+          removeWorktree(stagingDir, branch);
+          continue;
+        }
+
+        activeWorktrees.add(entry.name);
+        log(`Found active staging worktree: ${stagingDir} (branch: ${branch})`);
+      }
+
+      run("git worktree prune", PRODUCTION_ROOT);
+    } catch (err) {
+      log(`Warning: orphan pruning failed: ${err}`);
+    }
+  }
+
+  // Clean up orphaned staging dist directories, but keep ones with active worktrees
   if (existsSync(STAGING_DIST_PARENT)) {
     try {
       const distEntries = readdirSync(STAGING_DIST_PARENT, { withFileTypes: true });
       for (const entry of distEntries) {
         if (!entry.isDirectory()) continue;
-        log(`Pruning orphaned staging dist: ${entry.name}`);
-        rmSync(join(STAGING_DIST_PARENT, entry.name), { recursive: true, force: true });
+        if (activeWorktrees.has(entry.name)) {
+          // Re-register the preview so Express can serve it after restart
+          const distDir = join(STAGING_DIST_PARENT, entry.name);
+          activePreviews.set(entry.name, distDir);
+          log(`Restored staging preview: ${entry.name}`);
+        } else {
+          log(`Pruning orphaned staging dist: ${entry.name}`);
+          rmSync(join(STAGING_DIST_PARENT, entry.name), { recursive: true, force: true });
+        }
       }
     } catch (err) {
       log(`Warning: staging dist pruning failed: ${err}`);
     }
-  }
-
-  if (!existsSync(STAGING_PARENT)) return;
-
-  try {
-    const entries = readdirSync(STAGING_PARENT, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const stagingDir = join(STAGING_PARENT, entry.name);
-      const branch = `staging/${entry.name}`;
-
-      // Check if the branch still exists
-      const branchCheck = run(`git rev-parse --verify "${branch}"`, PRODUCTION_ROOT);
-      if (!branchCheck.ok) {
-        log(`Pruning orphaned staging directory (no branch): ${stagingDir}`);
-        removeWorktree(stagingDir, branch);
-        continue;
-      }
-
-      log(`Found active staging worktree: ${stagingDir} (branch: ${branch})`);
-    }
-
-    run("git worktree prune", PRODUCTION_ROOT);
-  } catch (err) {
-    log(`Warning: orphan pruning failed: ${err}`);
   }
 }
 
