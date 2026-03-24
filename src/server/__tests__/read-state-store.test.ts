@@ -1,17 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { setupDataDir, cleanupDataDir } from "./helpers.js";
+import { describe, it, expect, beforeEach } from "vitest";
+import { setupTestDb } from "./helpers.js";
+import { createReadStateStore } from "../read-state-store.js";
+import type { ReadStateStore } from "../read-state-store.js";
+import type { DatabaseSync } from "../db.js";
 
-let store: typeof import("../read-state-store.js");
-let dataDir: string;
+let db: DatabaseSync;
+let store: ReadStateStore;
 
-beforeEach(async () => {
-  vi.resetModules();
-  dataDir = setupDataDir();
-  store = await import("../read-state-store.js");
-});
-
-afterEach(() => {
-  cleanupDataDir(dataDir);
+beforeEach(() => {
+  db = setupTestDb();
+  store = createReadStateStore(db);
 });
 
 describe("read-state-store", () => {

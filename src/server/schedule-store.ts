@@ -1,8 +1,9 @@
-// Schedule store — JSON persistence in data/schedules.json
+// Schedule store — SQLite persistence
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DatabaseSync } from "./db.js";
+import { getSharedDatabase } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -16,9 +17,9 @@ export interface Schedule {
 
   // Timing
   type: "cron" | "once";
-  cron?: string;        // cron expression (e.g. "0 8 * * 1-5")
-  runAt?: string;       // ISO timestamp for one-shot schedules
-  timezone?: string;    // IANA timezone (default: system local)
+  cron?: string;
+  runAt?: string;
+  timezone?: string;
 
   // Behavior
   enabled: boolean;
@@ -33,8 +34,8 @@ export interface Schedule {
   runCount: number;
 
   // Limits
-  maxRuns?: number;     // auto-disable after N runs (null = unlimited)
-  expiresAt?: string;   // auto-disable after this date
+  maxRuns?: number;
+  expiresAt?: string;
 }
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
@@ -46,128 +47,118 @@ export type ScheduleUpdate = Partial<Pick<Schedule,
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createScheduleStore(dataDir: string) {
-  const SCHEDULES_FILE = join(dataDir, "schedules.json");
-
-  function load(): Schedule[] {
-    if (!existsSync(SCHEDULES_FILE)) return [];
-    try {
-      return JSON.parse(readFileSync(SCHEDULES_FILE, "utf-8"));
-    } catch {
-      return [];
-    }
-  }
-
-  function save(schedules: Schedule[]): void {
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2));
+export function createScheduleStore(db: DatabaseSync) {
+  function hydrate(row: any): Schedule {
+    return {
+      id: row.id,
+      taskId: row.taskId,
+      name: row.name,
+      prompt: row.prompt,
+      type: row.type as "cron" | "once",
+      cron: row.cron ?? undefined,
+      runAt: row.runAt ?? undefined,
+      timezone: row.timezone ?? undefined,
+      enabled: row.enabled === 1,
+      reuseSession: row.reuseSession === 1,
+      lastSessionId: row.lastSessionId ?? undefined,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      lastRunAt: row.lastRunAt ?? undefined,
+      nextRunAt: row.nextRunAt ?? undefined,
+      runCount: row.runCount,
+      maxRuns: row.maxRuns ?? undefined,
+      expiresAt: row.expiresAt ?? undefined,
+    };
   }
 
   function listSchedules(taskId?: string): Schedule[] {
-    const all = load();
-    const filtered = taskId ? all.filter((s) => s.taskId === taskId) : all;
-    return filtered.sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-    );
+    const rows = taskId
+      ? db.prepare("SELECT * FROM schedules WHERE taskId = ? ORDER BY updatedAt DESC").all(taskId) as any[]
+      : db.prepare("SELECT * FROM schedules ORDER BY updatedAt DESC").all() as any[];
+    return rows.map(hydrate);
   }
 
   function getSchedule(id: string): Schedule | undefined {
-    return load().find((s) => s.id === id);
+    const row = db.prepare("SELECT * FROM schedules WHERE id = ?").get(id) as any;
+    return row ? hydrate(row) : undefined;
   }
 
   function createSchedule(input: ScheduleCreate): Schedule {
-    const schedules = load();
+    const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    const schedule: Schedule = {
-      id: crypto.randomUUID(),
-      taskId: input.taskId,
-      name: input.name,
-      prompt: input.prompt,
-      type: input.type,
-      cron: input.cron,
-      runAt: input.runAt,
-      timezone: input.timezone,
-      enabled: true,
-      reuseSession: input.reuseSession ?? false,
-      createdAt: now,
-      updatedAt: now,
-      runCount: 0,
-      maxRuns: input.maxRuns,
-      expiresAt: input.expiresAt,
-    };
+    db.prepare(`
+      INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
+        enabled, reuseSession, createdAt, updatedAt, runCount, maxRuns, expiresAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?)
+    `).run(
+      id, input.taskId, input.name, input.prompt, input.type,
+      input.cron ?? null, input.runAt ?? null, input.timezone ?? null,
+      input.reuseSession ? 1 : 0, now, now,
+      input.maxRuns ?? null, input.expiresAt ?? null,
+    );
 
-    schedules.push(schedule);
-    save(schedules);
-    return schedule;
+    return getSchedule(id)!;
   }
 
   function updateSchedule(id: string, updates: ScheduleUpdate): Schedule {
-    const schedules = load();
-    const idx = schedules.findIndex((s) => s.id === id);
-    if (idx === -1) throw new Error(`Schedule ${id} not found`);
+    const row = db.prepare("SELECT * FROM schedules WHERE id = ?").get(id) as any;
+    if (!row) throw new Error(`Schedule ${id} not found`);
 
-    const schedule = schedules[idx];
-    for (const [key, value] of Object.entries(updates)) {
-      if (value !== undefined) {
-        (schedule as any)[key] = value;
-      }
-    }
-    schedule.updatedAt = new Date().toISOString();
+    const fields: string[] = ["updatedAt = ?"];
+    const values: any[] = [new Date().toISOString()];
 
-    schedules[idx] = schedule;
-    save(schedules);
-    return schedule;
+    if (updates.name !== undefined) { fields.push("name = ?"); values.push(updates.name); }
+    if (updates.prompt !== undefined) { fields.push("prompt = ?"); values.push(updates.prompt); }
+    if (updates.cron !== undefined) { fields.push("cron = ?"); values.push(updates.cron); }
+    if (updates.runAt !== undefined) { fields.push("runAt = ?"); values.push(updates.runAt); }
+    if (updates.timezone !== undefined) { fields.push("timezone = ?"); values.push(updates.timezone); }
+    if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
+    if (updates.reuseSession !== undefined) { fields.push("reuseSession = ?"); values.push(updates.reuseSession ? 1 : 0); }
+    if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
+    if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }
+
+    values.push(id);
+    db.prepare(`UPDATE schedules SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    return getSchedule(id)!;
   }
 
   function deleteSchedule(id: string): void {
-    const schedules = load().filter((s) => s.id !== id);
-    save(schedules);
+    db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
   }
 
   function recordRun(id: string, sessionId: string, nextRunAt?: string): void {
-    const schedules = load();
-    const schedule = schedules.find((s) => s.id === id);
+    const schedule = getSchedule(id);
     if (!schedule) return;
 
-    schedule.lastRunAt = new Date().toISOString();
-    schedule.lastSessionId = sessionId;
-    schedule.runCount += 1;
-    if (nextRunAt) schedule.nextRunAt = nextRunAt;
-    schedule.updatedAt = new Date().toISOString();
+    const now = new Date().toISOString();
+    const newRunCount = schedule.runCount + 1;
 
+    let enabled = schedule.enabled;
     // Auto-disable one-shot schedules
-    if (schedule.type === "once") {
-      schedule.enabled = false;
-    }
-
+    if (schedule.type === "once") enabled = false;
     // Auto-disable if maxRuns reached
-    if (schedule.maxRuns && schedule.runCount >= schedule.maxRuns) {
-      schedule.enabled = false;
-    }
-
+    if (schedule.maxRuns && newRunCount >= schedule.maxRuns) enabled = false;
     // Auto-disable if expired
-    if (schedule.expiresAt && new Date() >= new Date(schedule.expiresAt)) {
-      schedule.enabled = false;
-    }
+    if (schedule.expiresAt && new Date() >= new Date(schedule.expiresAt)) enabled = false;
 
-    save(schedules);
+    db.prepare(`
+      UPDATE schedules SET lastRunAt = ?, lastSessionId = ?, runCount = ?,
+        nextRunAt = ?, updatedAt = ?, enabled = ?
+      WHERE id = ?
+    `).run(now, sessionId, newRunCount, nextRunAt ?? null, now, enabled ? 1 : 0, id);
   }
 
   function updateNextRunAt(id: string, nextRunAt: string): void {
-    const schedules = load();
-    const schedule = schedules.find((s) => s.id === id);
-    if (!schedule) return;
-    schedule.nextRunAt = nextRunAt;
-    save(schedules);
+    db.prepare("UPDATE schedules SET nextRunAt = ? WHERE id = ?").run(nextRunAt, id);
   }
 
   function getSchedulesForTask(taskId: string): Schedule[] {
-    return load().filter((s) => s.taskId === taskId);
+    return (db.prepare("SELECT * FROM schedules WHERE taskId = ?").all(taskId) as any[]).map(hydrate);
   }
 
   function getEnabledSchedules(): Schedule[] {
-    return load().filter((s) => s.enabled);
+    return (db.prepare("SELECT * FROM schedules WHERE enabled = 1").all() as any[]).map(hydrate);
   }
 
   return {
@@ -181,7 +172,8 @@ export type ScheduleStore = ReturnType<typeof createScheduleStore>;
 // ── Default instance (backward compat) ────────────────────────────
 
 const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _default = createScheduleStore(_defaultDataDir);
+const _defaultDb = getSharedDatabase();
+const _default = createScheduleStore(_defaultDb);
 export const listSchedules = _default.listSchedules;
 export const getSchedule = _default.getSchedule;
 export const createSchedule = _default.createSchedule;

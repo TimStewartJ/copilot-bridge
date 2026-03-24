@@ -516,6 +516,48 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // ── Todo routes ──────────────────────────────────────────────────
+
+  router.get("/tasks/:taskId/todos", (req, res) => {
+    res.json({ todos: ctx.todoStore.listTodos(req.params.taskId) });
+  });
+
+  router.post("/tasks/:taskId/todos", (req, res) => {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: "text is required" });
+    try {
+      const todo = ctx.todoStore.createTodo(req.params.taskId, text);
+      res.json({ todo });
+    } catch (err) {
+      res.status(404).json({ error: String(err) });
+    }
+  });
+
+  router.patch("/todos/:id", (req, res) => {
+    try {
+      const todo = ctx.todoStore.updateTodo(req.params.id, req.body);
+      res.json({ todo });
+    } catch (err) {
+      res.status(404).json({ error: String(err) });
+    }
+  });
+
+  router.delete("/todos/:id", (req, res) => {
+    ctx.todoStore.deleteTodo(req.params.id);
+    res.json({ ok: true });
+  });
+
+  router.put("/tasks/:taskId/todos/reorder", (req, res) => {
+    const { todoIds } = req.body;
+    if (!Array.isArray(todoIds)) return res.status(400).json({ error: "todoIds array is required" });
+    const todos = ctx.todoStore.reorderTodos(req.params.taskId, todoIds);
+    res.json({ todos });
+  });
+
+  router.get("/todos/open", (_req, res) => {
+    res.json({ todos: ctx.todoStore.listAllOpen() });
+  });
+
   // ── Read State routes ─────────────────────────────────────────────
 
   router.get("/read-state", (_req, res) => {

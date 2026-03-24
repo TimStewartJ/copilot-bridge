@@ -1,0 +1,171 @@
+// Database module — single SQLite database for all app data
+// Uses Node.js built-in node:sqlite (DatabaseSync)
+
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DB_FILENAME = "bridge.db";
+
+/** Open (or create) the bridge database and initialize schema */
+export function openDatabase(dataDir: string): DatabaseSync {
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+
+  const dbPath = join(dataDir, DB_FILENAME);
+  const db = new DatabaseSync(dbPath);
+
+  // Enable WAL mode for better concurrency and performance
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = ON");
+
+  initSchema(db);
+  return db;
+}
+
+/** Open an in-memory database (for tests) */
+export function openMemoryDatabase(): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+  initSchema(db);
+  return db;
+}
+
+function initSchema(db: DatabaseSync): void {
+  db.exec(`
+    -- Tasks
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      groupId TEXT,
+      cwd TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      priority INTEGER NOT NULL DEFAULT 0,
+      "order" INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    -- Task ↔ Session links
+    CREATE TABLE IF NOT EXISTS task_sessions (
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      sessionId TEXT NOT NULL,
+      PRIMARY KEY (taskId, sessionId)
+    );
+
+    -- Task ↔ Work Item links
+    CREATE TABLE IF NOT EXISTS task_work_items (
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      itemId INTEGER NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'ado',
+      PRIMARY KEY (taskId, itemId, provider)
+    );
+
+    -- Task ↔ Pull Request links
+    CREATE TABLE IF NOT EXISTS task_pull_requests (
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      repoId TEXT NOT NULL,
+      repoName TEXT,
+      prId INTEGER NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'ado',
+      PRIMARY KEY (taskId, repoId, prId, provider)
+    );
+
+    -- Task groups
+    CREATE TABLE IF NOT EXISTS task_groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT 'blue',
+      "order" INTEGER NOT NULL DEFAULT 0,
+      collapsed INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    -- Session metadata
+    CREATE TABLE IF NOT EXISTS session_meta (
+      sessionId TEXT PRIMARY KEY,
+      archived INTEGER NOT NULL DEFAULT 0,
+      archivedAt TEXT,
+      triggeredBy TEXT,
+      scheduleId TEXT,
+      scheduleName TEXT
+    );
+
+    -- Settings (key-value, main entry is key='app')
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    -- Session titles
+    CREATE TABLE IF NOT EXISTS session_titles (
+      sessionId TEXT PRIMARY KEY,
+      title TEXT NOT NULL
+    );
+
+    -- Schedules
+    CREATE TABLE IF NOT EXISTS schedules (
+      id TEXT PRIMARY KEY,
+      taskId TEXT NOT NULL,
+      name TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      type TEXT NOT NULL,
+      cron TEXT,
+      runAt TEXT,
+      timezone TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      reuseSession INTEGER NOT NULL DEFAULT 0,
+      lastSessionId TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastRunAt TEXT,
+      nextRunAt TEXT,
+      runCount INTEGER NOT NULL DEFAULT 0,
+      maxRuns INTEGER,
+      expiresAt TEXT
+    );
+
+    -- Read state
+    CREATE TABLE IF NOT EXISTS read_state (
+      sessionId TEXT PRIMARY KEY,
+      lastReadAt TEXT NOT NULL
+    );
+
+    -- Todos (per-task checklists)
+    CREATE TABLE IF NOT EXISTS todos (
+      id TEXT PRIMARY KEY,
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      done INTEGER NOT NULL DEFAULT 0,
+      "order" INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      completedAt TEXT
+    );
+
+    -- Indexes for common queries
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(sessionId);
+    CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
+    CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+    CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
+  `);
+}
+
+export type { DatabaseSync };
+
+// ── Shared default instance ───────────────────────────────────────
+// Lazy singleton so all default store exports share one DB connection.
+// This avoids lock conflicts from multiple openDatabase() calls.
+
+let _sharedDb: DatabaseSync | null = null;
+
+export function getSharedDatabase(): DatabaseSync {
+  if (!_sharedDb) {
+    const dataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
+    _sharedDb = openDatabase(dataDir);
+  }
+  return _sharedDb;
+}

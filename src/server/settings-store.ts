@@ -1,8 +1,9 @@
-// Settings store — JSON persistence in data/settings.json
+// Settings store — SQLite persistence
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DatabaseSync } from "./db.js";
+import { getSharedDatabase } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,54 +35,36 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createSettingsStore(dataDir: string) {
-  const SETTINGS_FILE = join(dataDir, "settings.json");
-
-  function load(): AppSettings {
-    if (!existsSync(SETTINGS_FILE)) return structuredClone(DEFAULT_SETTINGS);
+export function createSettingsStore(db: DatabaseSync) {
+  function getSettings(): AppSettings {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as any;
+    if (!row) return structuredClone(DEFAULT_SETTINGS);
     try {
-      const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+      const raw = JSON.parse(row.value);
       return { ...structuredClone(DEFAULT_SETTINGS), ...raw };
     } catch {
       return structuredClone(DEFAULT_SETTINGS);
     }
   }
 
-  function save(settings: AppSettings): void {
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-  }
-
-  function getSettings(): AppSettings {
-    return load();
-  }
-
   function updateSettings(updates: Partial<AppSettings>): AppSettings {
-    const current = load();
+    const current = getSettings();
 
-    if (updates.providers !== undefined) {
-      current.providers = updates.providers;
-    }
+    if (updates.providers !== undefined) current.providers = updates.providers;
+    if (updates.mcpServers !== undefined) current.mcpServers = updates.mcpServers;
+    if (updates.favicon !== undefined) current.favicon = updates.favicon;
+    if (updates.theme !== undefined) current.theme = updates.theme;
 
-    if (updates.mcpServers !== undefined) {
-      current.mcpServers = updates.mcpServers;
-    }
+    db.prepare(
+      "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+    ).run(JSON.stringify(current), JSON.stringify(current));
 
-    if (updates.favicon !== undefined) {
-      current.favicon = updates.favicon;
-    }
-
-    if (updates.theme !== undefined) {
-      current.theme = updates.theme;
-    }
-
-    save(current);
     return current;
   }
 
   /** Get MCP servers config for session creation/resume */
   function getMcpServers(): Record<string, McpServerConfig> {
-    return load().mcpServers;
+    return getSettings().mcpServers;
   }
 
   return { getSettings, updateSettings, getMcpServers };
@@ -92,7 +75,8 @@ export type SettingsStore = ReturnType<typeof createSettingsStore>;
 // ── Default instance (backward compat) ────────────────────────────
 
 const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _default = createSettingsStore(_defaultDataDir);
+const _defaultDb = getSharedDatabase();
+const _default = createSettingsStore(_defaultDb);
 export const getSettings = _default.getSettings;
 export const updateSettings = _default.updateSettings;
 export const getMcpServers = _default.getMcpServers;

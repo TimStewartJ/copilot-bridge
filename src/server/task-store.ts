@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DatabaseSync } from "./db.js";
+import { getSharedDatabase } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
 import { defaultGlobalBus } from "./global-bus.js";
 
@@ -29,8 +30,8 @@ export interface Task {
   groupId?: string;
   cwd?: string;
   notes: string;
-  priority: number; // lower = higher priority
-  order: number; // position within status group (lower = higher in list)
+  priority: number;
+  order: number;
   createdAt: string;
   updatedAt: string;
   sessionIds: string[];
@@ -49,64 +50,33 @@ const STATUS_ORDER: Record<Task["status"], number> = {
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createTaskStore(dataDir: string, bus: GlobalBus) {
-  const TASKS_FILE = join(dataDir, "tasks.json");
+export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
+  function hydrate(row: any): Task {
+    const id = row.id;
+    const sessions = db.prepare("SELECT sessionId FROM task_sessions WHERE taskId = ?").all(id) as any[];
+    const workItems = db.prepare("SELECT itemId as id, provider FROM task_work_items WHERE taskId = ?").all(id) as any[];
+    const prs = db.prepare("SELECT repoId, repoName, prId, provider FROM task_pull_requests WHERE taskId = ?").all(id) as any[];
 
-  function load(): Task[] {
-    if (!existsSync(TASKS_FILE)) return [];
-    try {
-      const tasks: any[] = JSON.parse(readFileSync(TASKS_FILE, "utf-8"));
-
-      // Migrate: workItemIds (number[]) → workItems (WorkItemRef[])
-      let migrated = false;
-      for (const t of tasks) {
-        if (Array.isArray(t.workItemIds)) {
-          t.workItems = t.workItemIds.map((id: number) => ({ id, provider: "ado" }));
-          delete t.workItemIds;
-          migrated = true;
-        }
-        if (!t.workItems) {
-          t.workItems = [];
-          migrated = true;
-        }
-        // Migrate PRs: add provider field if missing
-        if (Array.isArray(t.pullRequests)) {
-          for (const pr of t.pullRequests) {
-            if (!pr.provider) {
-              pr.provider = "ado";
-              migrated = true;
-            }
-          }
-        }
-      }
-
-      // Migrate: assign order if missing (based on updatedAt rank within status group)
-      const needsOrderMigration = tasks.some((t) => t.order === undefined || t.order === null);
-      if (needsOrderMigration) {
-        const groups = new Map<string, Task[]>();
-        for (const t of tasks) {
-          if (t.order === undefined || t.order === null) (t as Task).order = 0;
-          const g = groups.get(t.status) ?? [];
-          g.push(t);
-          groups.set(t.status, g);
-        }
-        for (const group of groups.values()) {
-          group.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-          group.forEach((t, i) => { t.order = i; });
-        }
-        migrated = true;
-      }
-
-      if (migrated) save(tasks as Task[]);
-      return tasks as Task[];
-    } catch {
-      return [];
-    }
-  }
-
-  function save(tasks: Task[]): void {
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
+    return {
+      id,
+      title: row.title,
+      status: row.status,
+      groupId: row.groupId ?? undefined,
+      cwd: row.cwd ?? undefined,
+      notes: row.notes,
+      priority: row.priority,
+      order: row.order,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      sessionIds: sessions.map((s) => s.sessionId),
+      workItems: workItems.map((w) => ({ id: w.id, provider: w.provider as ProviderName })),
+      pullRequests: prs.map((p) => ({
+        repoId: p.repoId,
+        repoName: p.repoName ?? undefined,
+        prId: p.prId,
+        provider: p.provider as ProviderName,
+      })),
+    };
   }
 
   function emitChange(taskId: string): void {
@@ -116,7 +86,9 @@ export function createTaskStore(dataDir: string, bus: GlobalBus) {
   // ── CRUD ──────────────────────────────────────────────────────────
 
   function listTasks(): Task[] {
-    return load().sort((a, b) => {
+    const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as any[];
+    const tasks = rows.map(hydrate);
+    return tasks.sort((a, b) => {
       const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
       if (statusDiff !== 0) return statusDiff;
       return a.order - b.order;
@@ -124,76 +96,69 @@ export function createTaskStore(dataDir: string, bus: GlobalBus) {
   }
 
   function getTask(id: string): Task | undefined {
-    return load().find((t) => t.id === id);
+    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
+    return row ? hydrate(row) : undefined;
   }
 
   function createTask(title: string): Task {
-    const tasks = load();
     // Bump order of all existing active tasks to make room at top
-    for (const t of tasks) {
-      if (t.status === "active") t.order++;
-    }
-    const task: Task = {
-      id: crypto.randomUUID(),
-      title,
-      status: "active",
-      notes: "",
-      priority: 0,
-      order: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sessionIds: [],
-      workItems: [],
-      pullRequests: [],
-    };
-    tasks.push(task);
-    save(tasks);
-    emitChange(task.id);
+    db.prepare('UPDATE tasks SET "order" = "order" + 1 WHERE status = \'active\'').run();
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, notes, priority, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'active', '', 0, 0, ?, ?)
+    `).run(id, title, now, now);
+
+    const task = getTask(id)!;
+    emitChange(id);
     return task;
   }
 
   function updateTask(id: string, updates: TaskUpdate): Task {
-    const tasks = load();
-    const idx = tasks.findIndex((t) => t.id === id);
-    if (idx === -1) throw new Error(`Task ${id} not found`);
+    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
+    if (!row) throw new Error(`Task ${id} not found`);
 
-    const task = tasks[idx];
-    const oldStatus = task.status;
-    if (updates.title !== undefined) task.title = updates.title;
-    if (updates.status !== undefined) task.status = updates.status;
-    if (updates.notes !== undefined) task.notes = updates.notes;
-    if (updates.priority !== undefined) task.priority = updates.priority;
-    if (updates.cwd !== undefined) task.cwd = updates.cwd || undefined;
-    if (updates.groupId !== undefined) task.groupId = updates.groupId || undefined;
-    task.updatedAt = new Date().toISOString();
+    const oldStatus = row.status;
+    const now = new Date().toISOString();
+
+    const fields: string[] = ["updatedAt = ?"];
+    const values: any[] = [now];
+
+    if (updates.title !== undefined) { fields.push("title = ?"); values.push(updates.title); }
+    if (updates.status !== undefined) { fields.push("status = ?"); values.push(updates.status); }
+    if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
+    if (updates.priority !== undefined) { fields.push("priority = ?"); values.push(updates.priority); }
+    if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
+    if (updates.groupId !== undefined) { fields.push("groupId = ?"); values.push(updates.groupId || null); }
 
     // When status changes, place task at top of new group
     if (updates.status !== undefined && updates.status !== oldStatus) {
-      for (const t of tasks) {
-        if (t.status === updates.status && t.id !== id) t.order++;
-      }
-      task.order = 0;
+      db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(updates.status, id);
+      fields.push('"order" = ?');
+      values.push(0);
     }
 
-    tasks[idx] = task;
-    save(tasks);
-    emitChange(task.id);
+    values.push(id);
+    db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+
+    const task = getTask(id)!;
+    emitChange(id);
     return task;
   }
 
   function deleteTask(id: string): void {
-    const tasks = load().filter((t) => t.id !== id);
-    save(tasks);
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
     emitChange(id);
   }
 
   function reorderTasks(taskIds: string[]): Task[] {
-    const tasks = load();
+    const stmt = db.prepare('UPDATE tasks SET "order" = ? WHERE id = ?');
     for (let i = 0; i < taskIds.length; i++) {
-      const t = tasks.find((t) => t.id === taskIds[i]);
-      if (t) t.order = i;
+      stmt.run(i, taskIds[i]);
     }
-    save(tasks);
     for (const id of taskIds) emitChange(id);
     return listTasks();
   }
@@ -201,83 +166,79 @@ export function createTaskStore(dataDir: string, bus: GlobalBus) {
   // ── Link/Unlink ───────────────────────────────────────────────────
 
   function linkSession(taskId: string, sessionId: string): Task {
-    const tasks = load();
-    const task = tasks.find((t) => t.id === taskId);
+    const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    if (!task.sessionIds.includes(sessionId)) {
-      task.sessionIds.push(sessionId);
-      task.updatedAt = new Date().toISOString();
-      save(tasks);
+    const existing = db.prepare("SELECT 1 FROM task_sessions WHERE taskId = ? AND sessionId = ?").get(taskId, sessionId);
+    if (!existing) {
+      db.prepare("INSERT INTO task_sessions (taskId, sessionId) VALUES (?, ?)").run(taskId, sessionId);
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
       emitChange(taskId);
     }
-    return task;
+    return getTask(taskId)!;
   }
 
   function unlinkSession(taskId: string, sessionId: string): Task {
-    const tasks = load();
-    const task = tasks.find((t) => t.id === taskId);
+    const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    task.sessionIds = task.sessionIds.filter((s) => s !== sessionId);
-    task.updatedAt = new Date().toISOString();
-    save(tasks);
+    db.prepare("DELETE FROM task_sessions WHERE taskId = ? AND sessionId = ?").run(taskId, sessionId);
+    db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);
-    return task;
+    return getTask(taskId)!;
   }
 
   function linkWorkItem(taskId: string, workItemId: number, provider: ProviderName = "ado"): Task {
-    const tasks = load();
-    const task = tasks.find((t) => t.id === taskId);
+    const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    if (!task.workItems.some((w) => w.id === workItemId && w.provider === provider)) {
-      task.workItems.push({ id: workItemId, provider });
-      task.updatedAt = new Date().toISOString();
-      save(tasks);
+    const existing = db.prepare("SELECT 1 FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").get(taskId, workItemId, provider);
+    if (!existing) {
+      db.prepare("INSERT INTO task_work_items (taskId, itemId, provider) VALUES (?, ?, ?)").run(taskId, workItemId, provider);
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
       emitChange(taskId);
     }
-    return task;
+    return getTask(taskId)!;
   }
 
   function unlinkWorkItem(taskId: string, workItemId: number, provider?: ProviderName): Task {
-    const tasks = load();
-    const task = tasks.find((t) => t.id === taskId);
+    const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    task.workItems = task.workItems.filter(
-      (w) => !(w.id === workItemId && (!provider || w.provider === provider)),
-    );
-    task.updatedAt = new Date().toISOString();
-    save(tasks);
+    if (provider) {
+      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").run(taskId, workItemId, provider);
+    } else {
+      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ?").run(taskId, workItemId);
+    }
+    db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);
-    return task;
+    return getTask(taskId)!;
   }
 
   function findTaskBySessionId(sessionId: string): Task | undefined {
-    return load().find((t) => t.sessionIds.includes(sessionId));
+    const row = db.prepare("SELECT taskId FROM task_sessions WHERE sessionId = ?").get(sessionId) as any;
+    return row ? getTask(row.taskId) : undefined;
   }
 
   function linkPR(taskId: string, pr: PRRef): Task {
-    const tasks = load();
-    const task = tasks.find((t) => t.id === taskId);
+    const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    if (!task.pullRequests.some((p) => p.repoId === pr.repoId && p.prId === pr.prId && p.provider === pr.provider)) {
-      task.pullRequests.push(pr);
-      task.updatedAt = new Date().toISOString();
-      save(tasks);
+    const existing = db.prepare("SELECT 1 FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ? AND provider = ?").get(taskId, pr.repoId, pr.prId, pr.provider);
+    if (!existing) {
+      db.prepare("INSERT INTO task_pull_requests (taskId, repoId, repoName, prId, provider) VALUES (?, ?, ?, ?, ?)").run(taskId, pr.repoId, pr.repoName ?? null, pr.prId, pr.provider);
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
       emitChange(taskId);
     }
-    return task;
+    return getTask(taskId)!;
   }
 
   function unlinkPR(taskId: string, repoId: string, prId: number, provider?: ProviderName): Task {
-    const tasks = load();
-    const task = tasks.find((t) => t.id === taskId);
+    const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    task.pullRequests = task.pullRequests.filter(
-      (p) => !(p.repoId === repoId && p.prId === prId && (!provider || p.provider === provider)),
-    );
-    task.updatedAt = new Date().toISOString();
-    save(tasks);
+    if (provider) {
+      db.prepare("DELETE FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ? AND provider = ?").run(taskId, repoId, prId, provider);
+    } else {
+      db.prepare("DELETE FROM task_pull_requests WHERE taskId = ? AND repoId = ? AND prId = ?").run(taskId, repoId, prId);
+    }
+    db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);
-    return task;
+    return getTask(taskId)!;
   }
 
   return {
@@ -292,7 +253,8 @@ export type TaskStore = ReturnType<typeof createTaskStore>;
 // ── Default instance (backward compat) ────────────────────────────
 
 const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _default = createTaskStore(_defaultDataDir, defaultGlobalBus);
+const _defaultDb = getSharedDatabase();
+const _default = createTaskStore(_defaultDb, defaultGlobalBus);
 export const listTasks = _default.listTasks;
 export const getTask = _default.getTask;
 export const createTask = _default.createTask;

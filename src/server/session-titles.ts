@@ -2,66 +2,55 @@
 // The SDK CLI uses the full first user message as the session summary.
 // We generate better titles and store them here.
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DatabaseSync } from "./db.js";
+import { getSharedDatabase } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createSessionTitlesStore(dataDir: string) {
-  const TITLES_FILE = join(dataDir, "session-titles.json");
-  let titles: Record<string, string> = {};
-
+export function createSessionTitlesStore(db: DatabaseSync) {
   function loadTitles(): void {
-    try {
-      if (existsSync(TITLES_FILE)) {
-        titles = JSON.parse(readFileSync(TITLES_FILE, "utf-8"));
-        // Purge any titles that are actually echoed prompt text from a bug
-        let dirty = false;
-        for (const [id, title] of Object.entries(titles)) {
-          if (/generate a concise|3-6 word title/i.test(title)) {
-            delete titles[id];
-            dirty = true;
-          }
-        }
-        if (dirty) {
-          writeFileSync(TITLES_FILE, JSON.stringify(titles, null, 2));
-          console.log("[titles] Purged leaked prompt-text titles from session-titles.json");
-        }
-      }
-    } catch {
-      titles = {};
+    // Purge any titles that are actually echoed prompt text from a bug
+    const leaked = db.prepare(
+      "SELECT sessionId FROM session_titles WHERE title LIKE '%generate a concise%' OR title LIKE '%3-6 word title%'",
+    ).all() as any[];
+    if (leaked.length > 0) {
+      db.prepare(
+        "DELETE FROM session_titles WHERE title LIKE '%generate a concise%' OR title LIKE '%3-6 word title%'",
+      ).run();
+      console.log(`[titles] Purged ${leaked.length} leaked prompt-text titles`);
     }
   }
 
   function getTitle(sessionId: string): string | undefined {
-    return titles[sessionId];
+    const row = db.prepare("SELECT title FROM session_titles WHERE sessionId = ?").get(sessionId) as any;
+    return row?.title;
   }
 
   function setTitle(sessionId: string, title: string): void {
-    titles[sessionId] = title;
-    try {
-      writeFileSync(TITLES_FILE, JSON.stringify(titles, null, 2));
-    } catch (err) {
-      console.error("[titles] Failed to persist title:", err);
-    }
+    db.prepare(
+      "INSERT INTO session_titles (sessionId, title) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET title = ?",
+    ).run(sessionId, title, title);
   }
 
   function hasTitle(sessionId: string): boolean {
-    return sessionId in titles;
+    return !!db.prepare("SELECT 1 FROM session_titles WHERE sessionId = ?").get(sessionId);
   }
 
   function deleteTitle(sessionId: string): void {
-    delete titles[sessionId];
-    try {
-      writeFileSync(TITLES_FILE, JSON.stringify(titles, null, 2));
-    } catch { /* best effort */ }
+    db.prepare("DELETE FROM session_titles WHERE sessionId = ?").run(sessionId);
   }
 
   function getAllTitles(): Record<string, string> {
-    return { ...titles };
+    const rows = db.prepare("SELECT sessionId, title FROM session_titles").all() as any[];
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      result[row.sessionId] = row.title;
+    }
+    return result;
   }
 
   return { loadTitles, getTitle, setTitle, hasTitle, deleteTitle, getAllTitles };
@@ -72,7 +61,8 @@ export type SessionTitlesStore = ReturnType<typeof createSessionTitlesStore>;
 // ── Default instance (backward compat) ────────────────────────────
 
 const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _default = createSessionTitlesStore(_defaultDataDir);
+const _defaultDb = getSharedDatabase();
+const _default = createSessionTitlesStore(_defaultDb);
 export const loadTitles = _default.loadTitles;
 export const getTitle = _default.getTitle;
 export const setTitle = _default.setTitle;

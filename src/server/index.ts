@@ -7,16 +7,19 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { SessionManager, createBridgeTools } from "./session-manager.js";
-import * as taskStore from "./task-store.js";
-import * as taskGroupStore from "./task-group-store.js";
-import * as sessionMetaStore from "./session-meta-store.js";
-import * as settingsStore from "./settings-store.js";
-import * as sessionTitles from "./session-titles.js";
-import * as scheduleStore from "./schedule-store.js";
+import { openDatabase } from "./db.js";
+import { migrateJsonToSqlite } from "./migrate-json-to-sqlite.js";
+import { createTaskStore } from "./task-store.js";
+import { createTaskGroupStore } from "./task-group-store.js";
+import { createSessionMetaStore } from "./session-meta-store.js";
+import { createSettingsStore } from "./settings-store.js";
+import { createSessionTitlesStore } from "./session-titles.js";
+import { createScheduleStore } from "./schedule-store.js";
+import { createReadStateStore } from "./read-state-store.js";
+import { createTodoStore } from "./todo-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
 import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
-import * as readStateStore from "./read-state-store.js";
 import { defaultGlobalBus } from "./global-bus.js";
 import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerExpressApp } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
@@ -30,10 +33,25 @@ app.use(express.json({ limit: "20mb" }));
 // Register Express app with staging tools so they can mount/unmount staged routers
 registerExpressApp(app);
 
+// ── Database ──────────────────────────────────────────────────────
+const dataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
+const db = openDatabase(dataDir);
+migrateJsonToSqlite(db, dataDir);
+
+// ── Stores (all backed by shared SQLite db) ───────────────────────
+const taskStore = createTaskStore(db, defaultGlobalBus);
+const taskGroupStore = createTaskGroupStore(db);
+const scheduleStore = createScheduleStore(db);
+const settingsStore = createSettingsStore(db);
+const sessionMetaStore = createSessionMetaStore(db);
+const sessionTitles = createSessionTitlesStore(db);
+const readStateStore = createReadStateStore(db);
+const todoStore = createTodoStore(db, defaultGlobalBus);
+
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionTitles, readStateStore,
+  sessionMetaStore, sessionTitles, readStateStore, todoStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction

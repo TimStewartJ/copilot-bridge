@@ -71,29 +71,51 @@ function seedStagingData(prefix: string): string {
   if (!existsSync(STAGING_DATA_PARENT)) mkdirSync(STAGING_DATA_PARENT, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
 
-  // Copy production data files
-  const filesToCopy = [
-    "tasks.json", "task-groups.json", "settings.json",
-    "sessions-meta.json", "session-titles.json", "read-state.json",
-  ];
-  for (const file of filesToCopy) {
-    const src = join(PRODUCTION_DATA_DIR, file);
-    if (existsSync(src)) {
-      copyFileSync(src, join(dataDir, file));
-    }
-  }
+  // Copy production SQLite database if it exists
+  const dbSrc = join(PRODUCTION_DATA_DIR, "bridge.db");
+  if (existsSync(dbSrc)) {
+    copyFileSync(dbSrc, join(dataDir, "bridge.db"));
+    // Also copy WAL/SHM files if they exist (for consistency)
+    const walSrc = join(PRODUCTION_DATA_DIR, "bridge.db-wal");
+    const shmSrc = join(PRODUCTION_DATA_DIR, "bridge.db-shm");
+    if (existsSync(walSrc)) copyFileSync(walSrc, join(dataDir, "bridge.db-wal"));
+    if (existsSync(shmSrc)) copyFileSync(shmSrc, join(dataDir, "bridge.db-shm"));
 
-  // Copy schedules but disable all of them
-  const schedSrc = join(PRODUCTION_DATA_DIR, "schedules.json");
-  if (existsSync(schedSrc)) {
+    // Disable all schedules in the staging copy
     try {
-      const schedules = JSON.parse(readFileSync(schedSrc, "utf-8"));
-      if (Array.isArray(schedules)) {
-        for (const s of schedules) s.enabled = false;
+      const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+      const stagingDb = new DatabaseSync(join(dataDir, "bridge.db"));
+      stagingDb.exec("PRAGMA journal_mode = WAL");
+      stagingDb.exec("UPDATE schedules SET enabled = 0");
+      stagingDb.close();
+    } catch (err) {
+      log(`Warning: could not disable schedules in staging DB: ${err}`);
+    }
+  } else {
+    // Fallback: copy JSON files for migration (pre-migration scenario)
+    const filesToCopy = [
+      "tasks.json", "task-groups.json", "settings.json",
+      "sessions-meta.json", "session-titles.json", "read-state.json",
+    ];
+    for (const file of filesToCopy) {
+      const src = join(PRODUCTION_DATA_DIR, file);
+      if (existsSync(src)) {
+        copyFileSync(src, join(dataDir, file));
       }
-      writeFileSync(join(dataDir, "schedules.json"), JSON.stringify(schedules, null, 2));
-    } catch {
-      writeFileSync(join(dataDir, "schedules.json"), "[]");
+    }
+
+    // Copy schedules but disable all of them
+    const schedSrc = join(PRODUCTION_DATA_DIR, "schedules.json");
+    if (existsSync(schedSrc)) {
+      try {
+        const schedules = JSON.parse(readFileSync(schedSrc, "utf-8"));
+        if (Array.isArray(schedules)) {
+          for (const s of schedules) s.enabled = false;
+        }
+        writeFileSync(join(dataDir, "schedules.json"), JSON.stringify(schedules, null, 2));
+      } catch {
+        writeFileSync(join(dataDir, "schedules.json"), "[]");
+      }
     }
   }
 
@@ -107,12 +129,16 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
 
   // Dynamic imports from the staging worktree
-  const [globalBusMod, eventBusMod, taskStoreMod, taskGroupStoreMod,
+  const [globalBusMod, eventBusMod, dbMod, migrateMod,
+    taskStoreMod, taskGroupStoreMod,
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod,
-    sessionTitlesMod, readStateStoreMod, sessionManagerMod, apiRouterMod,
+    sessionTitlesMod, readStateStoreMod, todoStoreMod,
+    sessionManagerMod, apiRouterMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
+    import(ts("db.ts")),
+    import(ts("migrate-json-to-sqlite.ts")),
     import(ts("task-store.ts")),
     import(ts("task-group-store.ts")),
     import(ts("schedule-store.ts")),
@@ -120,24 +146,30 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     import(ts("session-meta-store.ts")),
     import(ts("session-titles.ts")),
     import(ts("read-state-store.ts")),
+    import(ts("todo-store.ts")),
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
   ]);
 
+  // Open isolated staging database
+  const db = dbMod.openDatabase(dataDir);
+  migrateMod.migrateJsonToSqlite(db, dataDir);
+
   // Create isolated instances
   const globalBus = globalBusMod.createGlobalBus();
   const eventBusRegistry = eventBusMod.createEventBusRegistry();
-  const taskStore = taskStoreMod.createTaskStore(dataDir, globalBus);
-  const taskGroupStore = taskGroupStoreMod.createTaskGroupStore(dataDir);
-  const scheduleStore = scheduleStoreMod.createScheduleStore(dataDir);
-  const settingsStore = settingsStoreMod.createSettingsStore(dataDir);
-  const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(dataDir);
-  const sessionTitles = sessionTitlesMod.createSessionTitlesStore(dataDir);
-  const readStateStore = readStateStoreMod.createReadStateStore(dataDir);
+  const taskStore = taskStoreMod.createTaskStore(db, globalBus);
+  const taskGroupStore = taskGroupStoreMod.createTaskGroupStore(db);
+  const scheduleStore = scheduleStoreMod.createScheduleStore(db);
+  const settingsStore = settingsStoreMod.createSettingsStore(db);
+  const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(db);
+  const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
+  const readStateStore = readStateStoreMod.createReadStateStore(db);
+  const todoStore = todoStoreMod.createTodoStore(db, globalBus);
 
   const ctx: AppContext = {
     taskStore, taskGroupStore, scheduleStore, settingsStore,
-    sessionMetaStore, sessionTitles, readStateStore,
+    sessionMetaStore, sessionTitles, readStateStore, todoStore,
     globalBus, eventBusRegistry,
     sessionManager: null as any,
     isStaging: true,

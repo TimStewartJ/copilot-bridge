@@ -1,24 +1,18 @@
-// Shared test helpers — temp data dir setup/teardown
+// Shared test helpers — SQLite in-memory database setup
 
-import { mkdirSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { openMemoryDatabase } from "../db.js";
+import type { DatabaseSync } from "../db.js";
+import { createGlobalBus } from "../global-bus.js";
 
 /**
- * Create an isolated temp data directory and set BRIDGE_DATA_DIR.
- * Returns the path. Call `cleanupDataDir` in afterEach/afterAll.
+ * Create an in-memory SQLite database with schema initialized.
+ * Returns the database instance. No cleanup needed — GC handles it.
  */
-export function setupDataDir(): string {
-  const dir = join(tmpdir(), `bridge-test-${randomBytes(6).toString("hex")}`);
-  mkdirSync(dir, { recursive: true });
-  process.env.BRIDGE_DATA_DIR = dir;
-  return dir;
+export function setupTestDb(): DatabaseSync {
+  return openMemoryDatabase();
 }
 
-export function cleanupDataDir(dir: string): void {
-  delete process.env.BRIDGE_DATA_DIR;
-  if (existsSync(dir)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
+/** Create a test global bus (no-op emitter) */
+export function createTestBus() {
+  return createGlobalBus();
 }

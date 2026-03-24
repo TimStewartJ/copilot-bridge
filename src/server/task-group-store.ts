@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DatabaseSync } from "./db.js";
+import { getSharedDatabase } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,82 +25,83 @@ export interface TaskGroup {
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createTaskGroupStore(dataDir: string) {
-  const GROUPS_FILE = join(dataDir, "task-groups.json");
-
-  function load(): TaskGroup[] {
-    if (!existsSync(GROUPS_FILE)) return [];
-    try {
-      return JSON.parse(readFileSync(GROUPS_FILE, "utf-8"));
-    } catch {
-      return [];
-    }
+export function createTaskGroupStore(db: DatabaseSync) {
+  function hydrate(row: any): TaskGroup {
+    return {
+      id: row.id,
+      name: row.name,
+      color: row.color as GroupColor,
+      order: row.order,
+      collapsed: row.collapsed === 1,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
   }
 
-  function save(groups: TaskGroup[]): void {
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2));
-  }
-
-  function nextColor(groups: TaskGroup[]): GroupColor {
-    const used = new Set(groups.map((g) => g.color));
+  function nextColor(): GroupColor {
+    const used = new Set(
+      (db.prepare("SELECT color FROM task_groups").all() as any[]).map((r) => r.color),
+    );
     return GROUP_COLORS.find((c) => !used.has(c)) ?? GROUP_COLORS[0];
   }
 
   function listGroups(): TaskGroup[] {
-    return load().sort((a, b) => a.order - b.order);
+    return (db.prepare('SELECT * FROM task_groups ORDER BY "order"').all() as any[]).map(hydrate);
   }
 
   function getGroup(id: string): TaskGroup | undefined {
-    return load().find((g) => g.id === id);
+    const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as any;
+    return row ? hydrate(row) : undefined;
   }
 
   function createGroup(name: string, color?: GroupColor): TaskGroup {
-    const groups = load();
-    const group: TaskGroup = {
-      id: crypto.randomUUID(),
-      name,
-      color: color && GROUP_COLORS.includes(color) ? color : nextColor(groups),
-      order: groups.length,
-      collapsed: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    groups.push(group);
-    save(groups);
-    return group;
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const count = (db.prepare("SELECT COUNT(*) as cnt FROM task_groups").get() as any).cnt;
+    const resolvedColor = color && GROUP_COLORS.includes(color) ? color : nextColor();
+
+    db.prepare(`
+      INSERT INTO task_groups (id, name, color, "order", collapsed, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, 0, ?, ?)
+    `).run(id, name, resolvedColor, count, now, now);
+
+    return getGroup(id)!;
   }
 
   function updateGroup(
     id: string,
     updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>,
   ): TaskGroup {
-    const groups = load();
-    const group = groups.find((g) => g.id === id);
-    if (!group) throw new Error(`Group ${id} not found`);
-    if (updates.name !== undefined) group.name = updates.name;
-    if (updates.color !== undefined && GROUP_COLORS.includes(updates.color))
-      group.color = updates.color;
-    if (updates.collapsed !== undefined) group.collapsed = updates.collapsed;
-    group.updatedAt = new Date().toISOString();
-    save(groups);
-    return group;
+    const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as any;
+    if (!row) throw new Error(`Group ${id} not found`);
+
+    const fields: string[] = ["updatedAt = ?"];
+    const values: any[] = [new Date().toISOString()];
+
+    if (updates.name !== undefined) { fields.push("name = ?"); values.push(updates.name); }
+    if (updates.color !== undefined && GROUP_COLORS.includes(updates.color)) {
+      fields.push("color = ?"); values.push(updates.color);
+    }
+    if (updates.collapsed !== undefined) { fields.push("collapsed = ?"); values.push(updates.collapsed ? 1 : 0); }
+
+    values.push(id);
+    db.prepare(`UPDATE task_groups SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    return getGroup(id)!;
   }
 
   function deleteGroup(id: string): void {
-    const groups = load().filter((g) => g.id !== id);
-    groups.sort((a, b) => a.order - b.order);
-    groups.forEach((g, i) => { g.order = i; });
-    save(groups);
+    db.prepare("DELETE FROM task_groups WHERE id = ?").run(id);
+    // Re-order remaining groups
+    const remaining = db.prepare('SELECT id FROM task_groups ORDER BY "order"').all() as any[];
+    const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
+    remaining.forEach((r, i) => stmt.run(i, r.id));
   }
 
   function reorderGroups(groupIds: string[]): TaskGroup[] {
-    const groups = load();
+    const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
     for (let i = 0; i < groupIds.length; i++) {
-      const g = groups.find((g) => g.id === groupIds[i]);
-      if (g) g.order = i;
+      stmt.run(i, groupIds[i]);
     }
-    save(groups);
     return listGroups();
   }
 
@@ -111,7 +113,8 @@ export type TaskGroupStore = ReturnType<typeof createTaskGroupStore>;
 // ── Default instance (backward compat) ────────────────────────────
 
 const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _default = createTaskGroupStore(_defaultDataDir);
+const _defaultDb = getSharedDatabase();
+const _default = createTaskGroupStore(_defaultDb);
 export const listGroups = _default.listGroups;
 export const getGroup = _default.getGroup;
 export const createGroup = _default.createGroup;

@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DatabaseSync } from "./db.js";
+import { getSharedDatabase } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -10,59 +11,42 @@ type ReadStateMap = Record<string, string>; // sessionId → ISO lastReadAt
 
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createReadStateStore(dataDir: string) {
-  const READ_STATE_FILE = join(dataDir, "read-state.json");
-
-  function load(): ReadStateMap {
-    if (!existsSync(READ_STATE_FILE)) return {};
-    try {
-      return JSON.parse(readFileSync(READ_STATE_FILE, "utf-8"));
-    } catch {
-      return {};
-    }
-  }
-
-  function save(data: ReadStateMap): void {
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    writeFileSync(READ_STATE_FILE, JSON.stringify(data, null, 2));
-  }
-
+export function createReadStateStore(db: DatabaseSync) {
   function getReadState(): ReadStateMap {
-    return load();
+    const rows = db.prepare("SELECT sessionId, lastReadAt FROM read_state").all() as any[];
+    const result: ReadStateMap = {};
+    for (const row of rows) {
+      result[row.sessionId] = row.lastReadAt;
+    }
+    return result;
   }
 
   function markRead(sessionId: string): string {
-    const data = load();
     const now = new Date().toISOString();
-    data[sessionId] = now;
-    save(data);
+    db.prepare(
+      "INSERT INTO read_state (sessionId, lastReadAt) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET lastReadAt = ?",
+    ).run(sessionId, now, now);
     return now;
   }
 
   function isUnread(sessionId: string, modifiedTime?: string): boolean {
     if (!modifiedTime) return false;
-    const data = load();
-    const lastRead = data[sessionId];
-    if (!lastRead) return true; // never opened = unread
-    return new Date(modifiedTime).getTime() > new Date(lastRead).getTime();
+    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
+    if (!row) return true; // never opened = unread
+    return new Date(modifiedTime).getTime() > new Date(row.lastReadAt).getTime();
   }
 
   function markUnread(sessionId: string): void {
-    const data = load();
-    delete data[sessionId];
-    save(data);
+    db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
   }
 
   function pruneReadState(validSessionIds: Set<string>): void {
-    const data = load();
-    let changed = false;
-    for (const id of Object.keys(data)) {
-      if (!validSessionIds.has(id)) {
-        delete data[id];
-        changed = true;
+    const rows = db.prepare("SELECT sessionId FROM read_state").all() as any[];
+    for (const row of rows) {
+      if (!validSessionIds.has(row.sessionId)) {
+        db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(row.sessionId);
       }
     }
-    if (changed) save(data);
   }
 
   return { getReadState, markRead, isUnread, markUnread, pruneReadState };
@@ -73,7 +57,8 @@ export type ReadStateStore = ReturnType<typeof createReadStateStore>;
 // ── Default instance (backward compat) ────────────────────────────
 
 const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _default = createReadStateStore(_defaultDataDir);
+const _defaultDb = getSharedDatabase();
+const _default = createReadStateStore(_defaultDb);
 export const getReadState = _default.getReadState;
 export const markRead = _default.markRead;
 export const isUnread = _default.isUnread;

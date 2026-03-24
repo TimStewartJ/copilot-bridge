@@ -8,6 +8,7 @@ import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { ReadStateStore } from "./read-state-store.js";
+import type { TodoStore } from "./todo-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionManager } from "./session-manager.js";
@@ -20,6 +21,7 @@ export interface AppContext {
   sessionMetaStore: SessionMetaStore;
   sessionTitles: SessionTitlesStore;
   readStateStore: ReadStateStore;
+  todoStore: TodoStore;
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   sessionManager: SessionManager;
