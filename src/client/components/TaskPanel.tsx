@@ -111,6 +111,7 @@ interface TaskPanelProps {
   onDeleteTask?: (taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
+  hasDraft?: (sessionId: string) => boolean;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onRefresh?: () => Promise<void>;
 }
@@ -139,6 +140,7 @@ export default function TaskPanel({
   onDeleteTask,
   onDeleteSession,
   onMarkUnread,
+  hasDraft,
   onMoveTaskToGroup,
   onRefresh,
 }: TaskPanelProps) {
@@ -224,7 +226,7 @@ export default function TaskPanel({
 
         {/* Content */}
         <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="flex-1 overflow-x-hidden p-2 space-y-3">
-          <SessionList
+           <SessionList
             variant="global"
             sessions={orphanSessions ?? []}
             activeSessionId={activeSessionId}
@@ -239,6 +241,7 @@ export default function TaskPanel({
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
             onMarkUnread={onMarkUnread}
+            hasDraft={hasDraft}
           />
         </PullToRefresh>
       </div>
@@ -391,6 +394,7 @@ export default function TaskPanel({
             }
             onDeleteSession={onDeleteSession}
             onMarkUnread={onMarkUnread}
+            hasDraft={hasDraft}
           />
         </div>
 

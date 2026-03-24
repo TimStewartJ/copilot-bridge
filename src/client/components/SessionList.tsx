@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import type { Session, Task } from "../api";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -65,6 +65,8 @@ interface SessionListProps {
   onDeleteSession?: (sessionId: string) => void;
   // Mark unread
   onMarkUnread?: (sessionId: string) => void;
+  // Draft indicator
+  hasDraft?: (sessionId: string) => boolean;
   exitingIds?: Set<string>;
   className?: string;
 }
@@ -86,6 +88,7 @@ export default function SessionList({
   onUnlinkFromTask,
   onDeleteSession,
   onMarkUnread,
+  hasDraft,
   exitingIds,
   className,
 }: SessionListProps) {
@@ -160,6 +163,8 @@ export default function SessionList({
               : ""}
             {session.hasPlan && " · "}
             {session.hasPlan && <ClipboardList size={10} className="inline" />}
+            {hasDraft?.(id) && " · "}
+            {hasDraft?.(id) && <Pencil size={10} className="inline text-warning" title="Has draft" />}
           </div>
         </button>
       </div>

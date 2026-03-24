@@ -22,6 +22,7 @@ import {
   type TaskGroup,
 } from "./api";
 import { useReadState } from "./useReadState";
+import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
@@ -81,6 +82,7 @@ export default function App() {
   }, [tasks]);
 
   const { isUnread, markRead, markUnread, unreadCount } = useReadState(sessions);
+  const { getDraft, setDraft, clearDraft, hasDraft } = useDrafts(sessions);
 
   const loadSessions = async () => {
     try {
@@ -421,6 +423,7 @@ export default function App() {
   };
 
   const handleDeleteSession = async (sessionId: string) => {
+    clearDraft(sessionId);
     const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     // Animate out before removing
     setExitingIds((prev) => new Set(prev).add(sessionId));
@@ -541,6 +544,7 @@ export default function App() {
             onDeleteSession={handleDeleteSession}
             markUnread={markUnread}
             onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+            hasDraft={hasDraft}
           />
         </div>
 
@@ -570,6 +574,7 @@ export default function App() {
             onDeleteTask={handleDeleteTask}
             onDeleteSession={handleDeleteSession}
             onMarkUnread={markUnread}
+            hasDraft={hasDraft}
             onMoveTaskToGroup={handleMoveTaskToGroup}
             onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
           />
@@ -634,13 +639,13 @@ export default function App() {
             <Route
               path="tasks/:taskId/sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={loadSessions} />
+                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={loadSessions} />
+                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} />
               }
             />
             <Route path="settings" element={<SettingsView />} />
@@ -686,6 +691,7 @@ function MobileTaskListView({
   onDeleteSession,
   markUnread,
   onRefresh,
+  hasDraft,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -718,6 +724,7 @@ function MobileTaskListView({
   onDeleteSession?: (sessionId: string) => void;
   markUnread?: (sessionId: string) => void;
   onRefresh: () => Promise<void>;
+  hasDraft?: (sessionId: string) => boolean;
 }){
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
@@ -768,6 +775,7 @@ function MobileTaskListView({
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
             onMarkUnread={markUnread}
+            hasDraft={hasDraft}
             className="min-w-0 overflow-x-hidden p-2 space-y-1"
           />
         ) : (
@@ -795,15 +803,34 @@ function MobileTaskListView({
   );
 }
 
-// Thin wrapper to extract sessionId from URL and pass hasPlan
-function SessionRoute({ sessions, onMessageSent }: { sessions: Session[]; onMessageSent: () => void }) {
+// Thin wrapper to extract sessionId from URL and pass hasPlan + draft props
+function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft }: {
+  sessions: Session[];
+  onMessageSent: () => void;
+  getDraft: (id: string) => import("./useDrafts").Draft | null;
+  setDraft: (id: string, text: string, attachments?: import("./api").BlobAttachment[]) => void;
+  clearDraft: (id: string) => void;
+}) {
   const { sessionId } = useParams<{ sessionId: string }>();
   const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
+  const draft = sessionId ? getDraft(sessionId) : null;
+  const handleDraftChange = useCallback(
+    (text: string, attachments?: import("./api").BlobAttachment[]) => {
+      if (sessionId) setDraft(sessionId, text, attachments);
+    },
+    [sessionId, setDraft],
+  );
+  const handleDraftClear = useCallback(() => {
+    if (sessionId) clearDraft(sessionId);
+  }, [sessionId, clearDraft]);
   return (
     <ChatView
       sessionId={sessionId ?? null}
       hasPlan={hasPlan}
       onMessageSent={onMessageSent}
+      draft={draft}
+      onDraftChange={handleDraftChange}
+      onDraftClear={handleDraftClear}
     />
   );
 }

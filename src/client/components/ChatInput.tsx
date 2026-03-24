@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Square, Paperclip, X } from "lucide-react";
 import type { BlobAttachment } from "../api";
+import type { Draft } from "../useDrafts";
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -8,6 +9,8 @@ interface ChatInputProps {
   onSend: (text: string, attachments?: BlobAttachment[]) => void;
   onAbort?: () => void;
   sessionId?: string | null;
+  draft?: Draft | null;
+  onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
 }
 
 /** Read a File as base64 (no data-URI prefix) */
@@ -24,12 +27,38 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
-export default function ChatInput({ onSend, onAbort, sessionId }: ChatInputProps) {
+export default function ChatInput({ onSend, onAbort, sessionId, draft, onDraftChange }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<BlobAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
+  // Track which session's draft we've already restored to avoid re-applying on every render
+  const restoredForRef = useRef<string | null>(null);
+
+  // Restore draft when session changes
+  useEffect(() => {
+    if (!sessionId) return;
+    if (restoredForRef.current === sessionId) return;
+    restoredForRef.current = sessionId;
+    if (draft) {
+      setInput(draft.text);
+      setAttachments(draft.attachments ?? []);
+      // Adjust textarea height for restored content
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) {
+          el.style.height = "auto";
+          el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+        }
+      });
+    } else {
+      setInput("");
+      setAttachments([]);
+      lastHeightRef.current = 0;
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+    }
+  }, [sessionId]); // intentionally only depends on sessionId — draft at switch time
 
   // Auto-focus on session change (desktop only — avoids keyboard popup on mobile)
   useEffect(() => {
@@ -57,13 +86,21 @@ export default function ChatInput({ onSend, onAbort, sessionId }: ChatInputProps
       });
     }
     if (newAttachments.length > 0) {
-      setAttachments((prev) => [...prev, ...newAttachments]);
+      setAttachments((prev) => {
+        const next = [...prev, ...newAttachments];
+        onDraftChange?.(input, next);
+        return next;
+      });
     }
-  }, []);
+  }, [input, onDraftChange]);
 
   const removeAttachment = useCallback((index: number) => {
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+    setAttachments((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      onDraftChange?.(input, next);
+      return next;
+    });
+  }, [input, onDraftChange]);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -97,7 +134,9 @@ export default function ChatInput({ onSend, onAbort, sessionId }: ChatInputProps
 
   const handleInput = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setInput(e.target.value);
+      const value = e.target.value;
+      setInput(value);
+      onDraftChange?.(value, attachments);
       const el = e.target;
       el.style.height = "auto";
       const next = Math.min(el.scrollHeight, 200);
@@ -108,7 +147,7 @@ export default function ChatInput({ onSend, onAbort, sessionId }: ChatInputProps
         el.style.height = `${next}px`;
       }
     },
-    [],
+    [attachments, onDraftChange],
   );
 
   const handleSend = useCallback(() => {

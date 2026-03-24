@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { fetchMessages, type BlobAttachment, type ChatMessage } from "../api";
 import { useSessionStream } from "../useSessionStream";
+import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
@@ -10,6 +11,9 @@ interface ChatViewProps {
   sessionId: string | null;
   hasPlan?: boolean;
   onMessageSent: () => void;
+  draft?: Draft | null;
+  onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
+  onDraftClear?: () => void;
 }
 
 function formatToolArgs(args: Record<string, unknown>): string {
@@ -22,7 +26,7 @@ function formatToolArgs(args: Record<string, unknown>): string {
   return parts.join(" ");
 }
 
-export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatViewProps) {
+export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
@@ -86,6 +90,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
 
   const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (!sessionId || isStreaming) return;
+    onDraftClear?.();
     setMessages((prev) => [...prev, { role: "user", content: prompt, ...(attachments?.length ? { attachments } : {}) }]);
     try {
       await sendMessage(prompt, attachments);
@@ -95,7 +100,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
         { role: "assistant", content: `⚠️ Error: ${err.message}` },
       ]);
     }
-  }, [sessionId, isStreaming, sendMessage]);
+  }, [sessionId, isStreaming, sendMessage, onDraftClear]);
 
   if (!sessionId) {
     return (
@@ -183,7 +188,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent }: ChatView
         )}
         <div ref={messagesEndRef} />
       </div>
-      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} />
+      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} draft={draft} onDraftChange={onDraftChange} />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
         <PlanSheet sessionId={sessionId} onClose={() => setShowPlan(false)} />
