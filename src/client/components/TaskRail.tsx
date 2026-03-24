@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
-import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG, GROUP_COLOR_BORDER } from "../group-colors";
+import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -492,11 +492,10 @@ export default function TaskRail({
                 const isCollapsed = group?.collapsed ?? false;
                 const groupId = group?.id ?? "__ungrouped__";
                 const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
-                const colorBorder = group ? GROUP_COLOR_BORDER[group.color] ?? "border-slate-500/30" : undefined;
 
                 return (
                   <DroppableGroup key={groupId} id={groupId}>
-                    <div className={`mb-1 ${colorBg ? `${colorBg} ${colorBorder} border-l-2 rounded-lg` : ""}`}>
+                    <div className={`mb-1 ${colorBg ? `${colorBg} rounded-lg` : ""}`}>
                       {/* Group header */}
                       <button
                         onClick={() => {
@@ -597,7 +596,7 @@ export default function TaskRail({
                     ctxMenu?.id === task.id
                       ? "bg-bg-hover ring-1 ring-border"
                       : isActive
-                        ? "bg-accent/10 border-l-2 border-accent"
+                        ? "bg-white/10 border-l-2 border-white/50"
                         : "hover:bg-bg-hover"
                   } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
                 >
@@ -842,7 +841,7 @@ function SortableRailItem({
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
             : isActive
-              ? "bg-accent/10 border-l-2 border-accent"
+              ? "bg-white/10 border-l-2 border-white/50"
               : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >

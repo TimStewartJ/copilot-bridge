@@ -136,7 +136,7 @@ export default function SessionList({
             ctxMenu?.id === id
               ? "bg-bg-hover ring-1 ring-border"
               : isActive
-                ? "bg-accent/10 border-l-2 border-accent"
+                ? "bg-white/10 border-l-2 border-white/50"
                 : "hover:bg-bg-hover"
           } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
         >
