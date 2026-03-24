@@ -140,7 +140,7 @@ export default function SessionList({
                 : "hover:bg-bg-hover"
           } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
         >
-          <div className={`${s.titleClass} flex items-center min-w-0`}>
+          <div className={`${unread ? s.titleClass.replace("font-medium", "font-semibold") : s.titleClass} flex items-center min-w-0`}>
             {isArchiving ? (
               <Loader2 size={10} className={`${s.dotSize} animate-spin text-text-muted shrink-0`} />
             ) : (

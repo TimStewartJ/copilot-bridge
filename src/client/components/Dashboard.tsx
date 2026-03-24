@@ -304,7 +304,7 @@ function TaskCard({
             }`}
           />
         )}
-        <span className="font-medium text-sm truncate">{task.title}</span>
+        <span className={`${hasUnread ? "font-semibold" : "font-medium"} text-sm truncate`}>{task.title}</span>
         {task.status === "paused" && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/15 text-warning shrink-0">
             paused
@@ -370,7 +370,7 @@ function OrphanSessionRow({
             }`}
           />
         )}
-        <span className="text-sm truncate">
+        <span className={`text-sm truncate ${session.unread ? "font-semibold" : ""}`}>
           {session.title || "Untitled"}
         </span>
       </div>
