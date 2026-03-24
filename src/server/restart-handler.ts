@@ -5,6 +5,7 @@ import { execSync, spawn } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { killProcessByPattern } from "./platform.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
@@ -214,9 +215,7 @@ export function startRestartWatcher(): void {
         tunnelFailures = 0;
 
         // Kill existing devtunnel
-        try {
-          execSync('wmic process where "name=\'devtunnel.exe\' and commandline like \'%copilot-bridge%\'" call terminate', { timeout: 10_000, stdio: "ignore" });
-        } catch { /* may not exist */ }
+        killProcessByPattern("devtunnel.*copilot-bridge");
 
         // Spawn new devtunnel (detached)
         const dt = spawn("devtunnel", ["host", TUNNEL_NAME], {

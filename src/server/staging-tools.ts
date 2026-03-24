@@ -9,6 +9,7 @@ import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { triggerRestartPending } from "./session-manager.js";
+import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
@@ -31,10 +32,10 @@ function run(cmd: string, cwd: string): { ok: boolean; output: string } {
 
 /** Remove a staging worktree and its branch. Handles node_modules junction cleanup. */
 function removeWorktree(stagingDir: string, branch: string): void {
-  // Remove node_modules junction first — git worktree remove can't handle it
+  // Remove node_modules junction/symlink first — git worktree remove can't handle it
   const junctionPath = join(stagingDir, "node_modules");
   if (existsSync(junctionPath)) {
-    run(`cmd /c rmdir "${junctionPath}"`, PRODUCTION_ROOT);
+    removeDirectoryLink(junctionPath, PRODUCTION_ROOT);
   }
   run(`git worktree remove "${stagingDir}" --force`, PRODUCTION_ROOT);
   run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
@@ -104,13 +105,13 @@ export const STAGING_TOOLS = [
         return { success: false, error: `Failed to create worktree: ${wtResult.output}` };
       }
 
-      // Create node_modules junction (Windows) to avoid duplicating deps
+      // Share node_modules via junction (Windows) or symlink (Linux)
       const prodModules = join(PRODUCTION_ROOT, "node_modules");
       const stagingModules = join(stagingDir, "node_modules");
       if (existsSync(prodModules) && !existsSync(stagingModules)) {
-        const jResult = run(`cmd /c mklink /J "${stagingModules}" "${prodModules}"`, PRODUCTION_ROOT);
+        const jResult = createDirectoryLink(stagingModules, prodModules, PRODUCTION_ROOT);
         if (!jResult.ok) {
-          log(`Warning: node_modules junction failed: ${jResult.output}`);
+          log(`Warning: node_modules link failed: ${jResult.output}`);
         }
       }
 

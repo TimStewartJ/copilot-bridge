@@ -6,6 +6,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { killProcessTree as platformKillTree } from "./server/platform.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -169,11 +170,7 @@ function startServer(): ChildProcess {
 
 function killProcessTree(proc: ChildProcess | null): boolean {
   if (!proc || !proc.pid) return false;
-  try {
-    execSync(`taskkill /T /F /PID ${proc.pid}`, { stdio: "ignore" });
-  } catch {
-    proc.kill();
-  }
+  platformKillTree(proc.pid);
   return true;
 }
 
