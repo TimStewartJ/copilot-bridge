@@ -12,7 +12,7 @@ const ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
 const POLL_INTERVAL = 2_000;
 const BUSY_CHECK_INTERVAL = 3_000;
-const BUSY_WAIT_TIMEOUT = 600_000; // 10 minutes
+const BUSY_WAIT_TIMEOUT = 900_000; // 15 minutes
 const PORT = 3333;
 
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";

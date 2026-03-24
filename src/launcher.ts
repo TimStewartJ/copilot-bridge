@@ -25,7 +25,7 @@ const TUNNEL_NAME = "copilot-bridge";
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 const BUSY_CHECK_INTERVAL = 3_000;
-const BUSY_WAIT_TIMEOUT = 600_000; // 10 minutes max wait
+const BUSY_WAIT_TIMEOUT = 900_000; // 15 minutes max wait
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability

@@ -133,7 +133,7 @@ function buildSessionConfig(opts: SessionConfigOptions = {}) {
 let _instance: SessionManager | null = null;
 let _restartPending = false;
 let _restartPendingSince = 0;
-const RESTART_TIMEOUT = 10 * 60 * 1000; // 10 min — if server is still alive, restart failed
+const RESTART_TIMEOUT = 15 * 60 * 1000; // 15 min — if server is still alive, restart failed
 
 export function isRestartPending(): boolean {
   if (_restartPending && _restartPendingSince && Date.now() - _restartPendingSince > RESTART_TIMEOUT) {
