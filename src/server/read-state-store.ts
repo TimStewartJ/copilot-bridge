@@ -48,6 +48,12 @@ export function isUnread(sessionId: string, modifiedTime?: string): boolean {
   return new Date(modifiedTime).getTime() > new Date(lastRead).getTime();
 }
 
+export function markUnread(sessionId: string): void {
+  const data = load();
+  delete data[sessionId];
+  save(data);
+}
+
 export function pruneReadState(validSessionIds: Set<string>): void {
   const data = load();
   let changed = false;

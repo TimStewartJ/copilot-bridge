@@ -110,6 +110,7 @@ interface TaskPanelProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onDeleteTask?: (taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onMarkUnread?: (sessionId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onRefresh?: () => Promise<void>;
 }
@@ -137,6 +138,7 @@ export default function TaskPanel({
   onUnlinkFromTask,
   onDeleteTask,
   onDeleteSession,
+  onMarkUnread,
   onMoveTaskToGroup,
   onRefresh,
 }: TaskPanelProps) {
@@ -236,6 +238,7 @@ export default function TaskPanel({
             tasks={tasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
+            onMarkUnread={onMarkUnread}
           />
         </PullToRefresh>
       </div>
@@ -387,6 +390,7 @@ export default function TaskPanel({
                   }
             }
             onDeleteSession={onDeleteSession}
+            onMarkUnread={onMarkUnread}
           />
         </div>
 

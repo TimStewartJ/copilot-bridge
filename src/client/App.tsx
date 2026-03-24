@@ -80,7 +80,7 @@ export default function App() {
     }
   }, [tasks]);
 
-  const { isUnread, markRead, unreadCount } = useReadState(sessions);
+  const { isUnread, markRead, markUnread, unreadCount } = useReadState(sessions);
 
   const loadSessions = async () => {
     try {
@@ -539,6 +539,7 @@ export default function App() {
             allTasks={tasks}
             onLinkToTask={handleLinkToTask}
             onDeleteSession={handleDeleteSession}
+            markUnread={markUnread}
             onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
           />
         </div>
@@ -568,6 +569,7 @@ export default function App() {
             onLinkToTask={handleLinkToTask}
             onDeleteTask={handleDeleteTask}
             onDeleteSession={handleDeleteSession}
+            onMarkUnread={markUnread}
             onMoveTaskToGroup={handleMoveTaskToGroup}
             onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
           />
@@ -682,6 +684,7 @@ function MobileTaskListView({
   allTasks,
   onLinkToTask,
   onDeleteSession,
+  markUnread,
   onRefresh,
 }: {
   tasks: Task[];
@@ -713,6 +716,7 @@ function MobileTaskListView({
   allTasks: Task[];
   onLinkToTask: (sessionId: string, taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  markUnread?: (sessionId: string) => void;
   onRefresh: () => Promise<void>;
 }){
   return (
@@ -763,6 +767,7 @@ function MobileTaskListView({
             tasks={allTasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
+            onMarkUnread={markUnread}
             className="min-w-0 overflow-x-hidden p-2 space-y-1"
           />
         ) : (

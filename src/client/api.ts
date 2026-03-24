@@ -341,6 +341,10 @@ export async function markSessionRead(sessionId: string): Promise<void> {
   await apiFetch<{ ok: boolean }>(`/api/read-state/${sessionId}`, {});
 }
 
+export async function markSessionUnread(sessionId: string): Promise<void> {
+  await fetch(`/api/read-state/${sessionId}`, { method: "DELETE" });
+}
+
 // ── Dashboard API ─────────────────────────────────────────────────
 
 export interface DashboardBusySession {

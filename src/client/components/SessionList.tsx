@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import type { Session, Task } from "../api";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -63,6 +63,8 @@ interface SessionListProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   // Session deletion
   onDeleteSession?: (sessionId: string) => void;
+  // Mark unread
+  onMarkUnread?: (sessionId: string) => void;
   exitingIds?: Set<string>;
   className?: string;
 }
@@ -83,6 +85,7 @@ export default function SessionList({
   taskContext,
   onUnlinkFromTask,
   onDeleteSession,
+  onMarkUnread,
   exitingIds,
   className,
 }: SessionListProps) {
@@ -213,6 +216,16 @@ export default function SessionList({
               label={ctxSession.archived ? "Unarchive" : "Archive"}
               onClick={() => {
                 onArchiveSession(ctxMenu.id, !ctxSession.archived);
+                closeMenu();
+              }}
+            />
+          )}
+          {onMarkUnread && ctxSession && !isUnread?.(ctxMenu.id, ctxSession.modifiedTime) && (
+            <CtxItem
+              icon={<EyeOff size={14} />}
+              label="Mark Unread"
+              onClick={() => {
+                onMarkUnread(ctxMenu.id);
                 closeMenu();
               }}
             />

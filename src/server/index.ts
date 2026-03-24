@@ -521,6 +521,11 @@ app.post("/api/read-state/:sessionId", (req, res) => {
   res.json({ ok: true, lastReadAt: ts });
 });
 
+app.delete("/api/read-state/:sessionId", (req, res) => {
+  readStateStore.markUnread(req.params.sessionId);
+  res.json({ ok: true });
+});
+
 // ── Dashboard endpoint ───────────────────────────────────────────
 
 app.get("/api/dashboard", async (_req, res) => {

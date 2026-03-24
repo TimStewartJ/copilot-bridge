@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { Session } from "./api";
-import { fetchReadState, markSessionRead } from "./api";
+import { fetchReadState, markSessionRead, markSessionUnread } from "./api";
 
 const STORAGE_KEY = "copilot-bridge:session-read-state";
 
@@ -79,6 +79,16 @@ export function useReadState(sessions: Session[]) {
     markSessionRead(sessionId).catch(() => {});
   }, []);
 
+  const markUnread = useCallback((sessionId: string) => {
+    setState((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      save(next);
+      return next;
+    });
+    markSessionUnread(sessionId).catch(() => {});
+  }, []);
+
   const isUnread = useCallback(
     (sessionId: string, modifiedTime?: string): boolean => {
       if (!modifiedTime) return false;
@@ -100,5 +110,5 @@ export function useReadState(sessions: Session[]) {
     [isUnread],
   );
 
-  return { isUnread, markRead, unreadCount };
+  return { isUnread, markRead, markUnread, unreadCount };
 }
