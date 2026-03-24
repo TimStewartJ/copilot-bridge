@@ -4,6 +4,9 @@
   "description": "Personal work dashboard powered by Copilot SDK + MCP",
   "author": "Tim Stewart <timstewartj@gmail.com>",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/timstewartj/copilot-bridge.git"
