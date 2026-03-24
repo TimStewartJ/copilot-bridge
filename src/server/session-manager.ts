@@ -131,6 +131,34 @@ export function getRestartWaitingCount(): number {
   return _instance ? _instance.getActiveSessions().length : 0;
 }
 
+/**
+ * Shared logic for both self_restart and staging_deploy.
+ * Sets restart-pending state, emits the SSE event, and starts the watchdog.
+ * Returns the waiting-session count (excludes the calling session).
+ */
+export function triggerRestartPending(): number {
+  _restartPending = true;
+  _restartPendingSince = Date.now();
+
+  // Watchdog: if the launcher consumes the signal file but this process
+  // survives (restart failed / rolled back), auto-clear the pending state.
+  const watchdog = setInterval(() => {
+    if (!_restartPending) { clearInterval(watchdog); return; }
+    if (!existsSync(SIGNAL_FILE)) {
+      setTimeout(() => {
+        if (_restartPending) clearRestartPending();
+      }, 90_000);
+      clearInterval(watchdog);
+    }
+  }, 5_000);
+
+  // The calling session is still in activeSessions; subtract 1 since it will
+  // finish momentarily and should not count as "blocking" the restart.
+  const waitingCount = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
+  globalBus.emit({ type: "server:restart-pending", waitingSessions: waitingCount });
+  return waitingCount;
+}
+
 // Universal tools — same instance for every session
 const BRIDGE_TOOLS = [
   defineTool("task_link_work_item", {
@@ -242,26 +270,8 @@ const BRIDGE_TOOLS = [
       const dataDir = join(REPO_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
-      _restartPending = true;
-      _restartPendingSince = Date.now();
 
-      // Watchdog: if the launcher consumes the signal file but this process
-      // survives (restart failed / rolled back), auto-clear the pending state.
-      // The launcher deletes the signal file immediately, then spends time
-      // waiting for sessions + building, so we wait 90s after the file disappears.
-      const watchdog = setInterval(() => {
-        if (!_restartPending) { clearInterval(watchdog); return; }
-        if (!existsSync(SIGNAL_FILE)) {
-          // Signal consumed — give the restart time to kill us, then clear
-          setTimeout(() => {
-            if (_restartPending) clearRestartPending();
-          }, 90_000);
-          clearInterval(watchdog);
-        }
-      }, 5_000);
-
-      const otherBusy = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
-      globalBus.emit({ type: "server:restart-pending", waitingSessions: otherBusy });
+      const otherBusy = triggerRestartPending();
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish before rebuilding (up to 5 min).`
         : "";

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdir
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
-import * as globalBus from "./global-bus.js";
+import { triggerRestartPending } from "./session-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
@@ -221,7 +221,7 @@ export const STAGING_TOOLS = [
       const dataDir = join(PRODUCTION_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
-      globalBus.emit({ type: "server:restart-pending", waitingSessions: 0 });
+      triggerRestartPending();
       log("Restart signal sent");
 
       // Cleanup staging worktree and branch
