@@ -76,7 +76,7 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [quickChatsMode, setQuickChatsMode] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
-  const [restartPending, setRestartPending] = useState(false);
+  const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
   const [restartWaiting, setRestartWaiting] = useState(0);
   const [faviconKey, setFaviconKey] = useState<string | undefined>();
   const [scheduleVersion, setScheduleVersion] = useState(0);
@@ -184,11 +184,14 @@ export default function App() {
         }
         break;
       case "server:restart-pending":
-        setRestartPending(true);
+        setRestartPhase("pending");
         setRestartWaiting(event.waitingSessions ?? 0);
         break;
       case "server:restart-cleared":
-        setRestartPending(false);
+        setRestartPhase((prev) => {
+          if (prev !== "pending") return prev;
+          return "reconnected";
+        });
         setRestartWaiting(0);
         break;
       case "schedule:changed":
@@ -202,6 +205,13 @@ export default function App() {
         break;
     }
   }, []));
+
+  // Auto-dismiss "reconnected" banner after 2 seconds
+  useEffect(() => {
+    if (restartPhase !== "reconnected") return;
+    const timer = setTimeout(() => setRestartPhase(null), 2000);
+    return () => clearTimeout(timer);
+  }, [restartPhase]);
 
   // Background poll for reconciliation (slow: 30s, visibility-aware)
   useEffect(() => {
@@ -679,7 +689,7 @@ export default function App() {
         ${/* Mobile: only when viewing chat or settings */""}
         ${isMobileRoute.chat || isMobileRoute.settings ? "flex" : "hidden md:flex"}
       `.trim()}>
-        {restartPending && <RestartBanner waitingSessions={restartWaiting} />}
+        {restartPhase && <RestartBanner phase={restartPhase} waitingSessions={restartWaiting} />}
 
         {/* Mobile back bar */}
         <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
