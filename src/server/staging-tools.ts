@@ -254,11 +254,11 @@ function removeWorktree(stagingDir: string, branch: string): void {
 }
 
 /**
- * Prune orphaned staging worktrees on server startup.
+ * Prune orphaned staging worktrees on server startup and restore surviving previews.
  * Called from server initialization — removes worktrees whose branches
- * no longer exist or whose directories are stale.
+ * no longer exist, and fully restores (frontend + backend) previews that survived a restart.
  */
-export function pruneOrphanedWorktrees(): void {
+export async function pruneOrphanedWorktrees(): Promise<void> {
   // Collect active staging prefixes (worktrees with valid branches)
   const activeWorktrees = new Set<string>();
 
@@ -305,6 +305,45 @@ export function pruneOrphanedWorktrees(): void {
       }
     } catch (err) {
       log(`Warning: staging dist pruning failed: ${err}`);
+    }
+  }
+
+  // Restore staged backends for surviving previews
+  if (_expressApp) {
+    for (const prefix of activeWorktrees) {
+      if (!activePreviews.has(prefix)) continue; // no dist to serve — skip
+      const stagingDir = join(STAGING_PARENT, prefix);
+      try {
+        log(`Restoring staged backend for preview: ${prefix}`);
+        const dataDir = seedStagingData(stagingDir);
+        const { ctx, db: stagingDb } = await createStagingContext(stagingDir, dataDir);
+
+        await ctx.sessionManager.initialize();
+
+        const createRouter = (ctx as any)._createApiRouter;
+        const stagedRouter = createRouter(ctx);
+        activeStagingRouters.set(prefix, stagedRouter);
+
+        activeStagingBackends.set(prefix, {
+          ctx,
+          router: stagedRouter,
+          db: stagingDb,
+          cleanup: async () => {
+            try {
+              await ctx.sessionManager.gracefulShutdown();
+            } catch (err) {
+              log(`Warning: staging SDK shutdown error: ${err}`);
+            }
+          },
+        });
+
+        log(`Restored staged backend for preview: ${prefix}`);
+      } catch (err) {
+        log(`Failed to restore staged backend for ${prefix}, cleaning up preview: ${err}`);
+        // Clean up the broken preview entirely rather than leaving a half-working shell
+        removeStagingDist(prefix);
+        removeWorktree(stagingDir, `staging/${prefix}`);
+      }
     }
   }
 }

@@ -115,8 +115,8 @@ async function main(): Promise<void> {
 
   await sessionManager.initialize();
 
-  // Clean up any orphaned staging worktrees from previous sessions
-  pruneOrphanedWorktrees();
+  // Clean up orphaned staging worktrees and restore surviving previews (incl. backends)
+  await pruneOrphanedWorktrees();
 
   // Initialize scheduler after session manager is ready
   scheduler.initialize(sessionManager, {
