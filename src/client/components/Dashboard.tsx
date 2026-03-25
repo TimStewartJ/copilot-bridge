@@ -10,12 +10,11 @@ import {
 import { getLastViewedSession } from "../last-viewed";
 import { deadlineUrgency, deadlineLabel, CHECKBOX_URGENCY } from "../todo-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
-import { Loader2, MessageSquare, Plus, Zap, GitPullRequest, LayoutList, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays } from "lucide-react";
+import { Loader2, MessageSquare, Plus, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays } from "lucide-react";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { todoId?: string }) => void;
   onSelectSession: (id: string) => void;
-  onNewTask: () => void;
   onNewSession: () => void;
   onResumeTask: (taskId: string, sessionId?: string) => void;
 }
@@ -32,7 +31,6 @@ function timeAgo(iso?: string): string {
 export default function Dashboard({
   onSelectTask,
   onSelectSession,
-  onNewTask,
   onNewSession,
   onResumeTask,
 }: DashboardProps) {
@@ -81,7 +79,7 @@ export default function Dashboard({
     );
   }
 
-  const { busySessions, unreadSessions, lastActiveTask, activeTasks, orphanSessions } = data;
+  const { busySessions, unreadSessions, lastActiveTask, orphanSessions } = data;
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
 
   return (
@@ -153,42 +151,95 @@ export default function Dashboard({
           />
         )}
 
-        {/* ── Active Work (2-col) ────────────────────────── */}
+        {/* ── Dashboard Content (2-col) ──────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left: Tasks in Flight (wider) */}
+          {/* Left: To-Dos (wider) */}
           <div className="lg:col-span-2 space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
-                <LayoutList size={14} />
-                Tasks in Flight
-              </h2>
-              <button
-                onClick={onNewTask}
-                className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-              >
-                <Plus size={12} />
-                New Task
-              </button>
-            </div>
+            <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+              <CheckSquare size={14} />
+              Open To-Dos
+              {localOpenTodos.length > 0 && (
+                <span className="text-text-faint font-normal">({localOpenTodos.filter((t) => !exitingIds.has(t.id)).length})</span>
+              )}
+            </h2>
 
-            {activeTasks.length === 0 ? (
+            {localOpenTodos.length === 0 && localCompletedTodos.length === 0 ? (
               <EmptyState
-                message="Nothing in flight"
-                sub="Create a task to get started"
-                action={onNewTask}
-                actionLabel="New Task"
+                message="No to-dos yet"
+                sub="To-dos added to tasks will show up here"
               />
             ) : (
-              <div className="space-y-2">
-                {activeTasks.map((at) => (
-                  <TaskCard
-                    key={at.task.id}
-                    data={at}
-                    isResume={at.task.id === lastActiveTask?.task.id}
-                    onSelect={() => onSelectTask(at.task.id)}
-                  />
-                ))}
-              </div>
+              <>
+                {localOpenTodos.length > 0 && (
+                  <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
+                    {localOpenTodos.map((todo) => (
+                      <div
+                        key={todo.id}
+                        className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
+                        onAnimationEnd={() => {
+                          if (exitingIds.has(todo.id)) {
+                            setExitingIds((prev) => { const n = new Set(prev); n.delete(todo.id); return n; });
+                            setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                            setLocalCompletedTodos((prev) => [{ ...todo, done: true }, ...prev]);
+                          }
+                        }}
+                      >
+                        <DashboardTodoRow
+                          todo={todo}
+                          done={false}
+                          onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
+                          onToggle={async () => {
+                            setExitingIds((prev) => new Set(prev).add(todo.id));
+                            await patchTodo(todo.id, { done: true });
+                          }}
+                          onDeadlineChange={(deadline) => {
+                            setLocalOpenTodos((prev) => prev.map((t) =>
+                              t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
+                            ));
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {localOpenTodos.length === 0 && localCompletedTodos.length > 0 && (
+                  <div className="text-center py-6 px-4 rounded-md bg-bg-surface border border-border">
+                    <div className="text-sm text-success">✓ All done!</div>
+                  </div>
+                )}
+
+                {localCompletedTodos.length > 0 && (
+                  <>
+                    <button
+                      onClick={() => setShowCompleted((v) => !v)}
+                      className="text-sm font-medium text-text-muted flex items-center gap-1.5 hover:text-text-secondary transition-colors"
+                    >
+                      {showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      <Check size={14} />
+                      Completed
+                      <span className="text-text-faint font-normal">({localCompletedTodos.length})</span>
+                    </button>
+                    {showCompleted && (
+                      <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
+                        {localCompletedTodos.map((todo) => (
+                          <DashboardTodoRow
+                            key={todo.id}
+                            todo={todo}
+                            done={true}
+                            onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
+                            onToggle={async () => {
+                              setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                              setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
+                              await patchTodo(todo.id, { done: false });
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
             )}
           </div>
 
@@ -226,82 +277,6 @@ export default function Dashboard({
             )}
           </div>
         </div>
-
-        {/* ── Open Todos ──────────────────────────────────── */}
-        {(localOpenTodos.length > 0 || localCompletedTodos.length > 0) && (
-          <div className="space-y-3">
-            {localOpenTodos.length > 0 && (
-              <>
-                <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
-                  <CheckSquare size={14} />
-                  Open To-Dos
-                  <span className="text-text-faint font-normal">({localOpenTodos.filter((t) => !exitingIds.has(t.id)).length})</span>
-                </h2>
-                <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
-                  {localOpenTodos.map((todo) => (
-                    <div
-                      key={todo.id}
-                      className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
-                      onAnimationEnd={() => {
-                        if (exitingIds.has(todo.id)) {
-                          setExitingIds((prev) => { const n = new Set(prev); n.delete(todo.id); return n; });
-                          setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                          setLocalCompletedTodos((prev) => [{ ...todo, done: true }, ...prev]);
-                        }
-                      }}
-                    >
-                      <DashboardTodoRow
-                        todo={todo}
-                        done={false}
-                        onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
-                        onToggle={async () => {
-                          setExitingIds((prev) => new Set(prev).add(todo.id));
-                          await patchTodo(todo.id, { done: true });
-                        }}
-                        onDeadlineChange={(deadline) => {
-                          setLocalOpenTodos((prev) => prev.map((t) =>
-                            t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
-                          ));
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {localCompletedTodos.length > 0 && (
-              <>
-                <button
-                  onClick={() => setShowCompleted((v) => !v)}
-                  className="text-sm font-medium text-text-muted flex items-center gap-1.5 hover:text-text-secondary transition-colors"
-                >
-                  {showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Check size={14} />
-                  Completed
-                  <span className="text-text-faint font-normal">({localCompletedTodos.length})</span>
-                </button>
-                {showCompleted && (
-                  <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
-                    {localCompletedTodos.map((todo) => (
-                      <DashboardTodoRow
-                        key={todo.id}
-                        todo={todo}
-                        done={true}
-                        onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
-                        onToggle={async () => {
-                          setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                          setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
-                          await patchTodo(todo.id, { done: false });
-                        }}
-                      />
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -369,95 +344,6 @@ function ResumeStrip({
   );
 }
 
-function TaskCard({
-  data,
-  isResume,
-  onSelect,
-}: {
-  data: DashboardActiveTask;
-  isResume: boolean;
-  onSelect: () => void;
-}) {
-  const { task, workItemSummary, prSummary, todoSummary, hasUnread, hasBusySession } = data;
-
-  return (
-    <button
-      onClick={onSelect}
-      className={`w-full text-left px-4 py-3 rounded-md transition-colors border ${
-        isResume
-          ? "bg-accent/5 border-accent/20 hover:bg-accent/10"
-          : "bg-bg-surface border-transparent hover:bg-bg-hover"
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        {(hasUnread || hasBusySession) && (
-          <span
-            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              hasBusySession ? "bg-info animate-pulse" : "bg-success"
-            }`}
-          />
-        )}
-        <span className={`${hasUnread ? "font-semibold" : "font-medium"} text-sm truncate`}>{task.title}</span>
-        {task.status === "paused" && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/15 text-warning shrink-0">
-            paused
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-3 mt-1.5 ml-3.5 text-xs text-text-muted flex-wrap">
-        {/* Work item state pills */}
-        {workItemSummary.total > 0 && (
-          <span className="flex items-center gap-1">
-            <Zap size={10} />
-            {Object.entries(workItemSummary.byState).map(([state, count]) => (
-              <span
-                key={state}
-                className={`px-1.5 py-0.5 rounded text-[10px] ${
-                  stateColor(state)
-                }`}
-              >
-                {count} {state}
-              </span>
-            ))}
-          </span>
-        )}
-        {/* PR summary */}
-        {prSummary.total > 0 && (
-          <span className="flex items-center gap-1">
-            <GitPullRequest size={10} />
-            {prSummary.active > 0 && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-accent/15 text-accent">
-                {prSummary.active} active
-              </span>
-            )}
-            {prSummary.completed > 0 && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-success/15 text-success">
-                {prSummary.completed} merged
-              </span>
-            )}
-          </span>
-        )}
-        {/* Todo summary */}
-        {todoSummary.total > 0 && (
-          <span className="flex items-center gap-1">
-            <CheckSquare size={10} />
-            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-              todoSummary.overdue > 0
-                ? "bg-danger/15 text-danger"
-                : todoSummary.open === 0
-                  ? "bg-success/15 text-success"
-                  : "bg-text-muted/15 text-text-muted"
-            }`}>
-              {todoSummary.done}/{todoSummary.total}{todoSummary.overdue > 0 ? ` · ${todoSummary.overdue} overdue` : ""}
-            </span>
-          </span>
-        )}
-        <span>{timeAgo(data.lastActivity)}</span>
-      </div>
-    </button>
-  );
-}
-
 function OrphanSessionRow({
   session,
   onSelect,
@@ -518,19 +404,6 @@ function EmptyState({
       )}
     </div>
   );
-}
-
-function stateColor(state: string): string {
-  const s = state.toLowerCase();
-  if (s === "active" || s === "in progress" || s === "committed")
-    return "bg-info/15 text-info";
-  if (s === "new" || s === "to do" || s === "proposed")
-    return "bg-text-muted/15 text-text-muted";
-  if (s === "resolved" || s === "done" || s === "closed" || s === "completed")
-    return "bg-success/15 text-success";
-  if (s === "removed")
-    return "bg-danger/15 text-danger";
-  return "bg-text-muted/10 text-text-muted";
 }
 
 // ── Dashboard Todo Row (unified open + completed) ─────────────────

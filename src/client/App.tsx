@@ -690,7 +690,6 @@ export default function App() {
                 <Dashboard
                   onSelectTask={handleSelectTask}
                   onSelectSession={(id) => navigate(`/sessions/${id}`)}
-                  onNewTask={handleNewTask}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
                 />
@@ -705,7 +704,6 @@ export default function App() {
                     if (activeTaskId) navigate(`/tasks/${activeTaskId}/sessions/${id}`);
                     else navigate(`/sessions/${id}`);
                   }}
-                  onNewTask={handleNewTask}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
                 />

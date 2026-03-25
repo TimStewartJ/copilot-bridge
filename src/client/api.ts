@@ -417,7 +417,6 @@ export interface DashboardData {
   busySessions: DashboardBusySession[];
   unreadSessions: DashboardUnreadSession[];
   lastActiveTask: DashboardActiveTask | null;
-  activeTasks: DashboardActiveTask[];
   orphanSessions: DashboardOrphanSession[];
   openTodos: DashboardTodo[];
   completedTodos: DashboardTodo[];

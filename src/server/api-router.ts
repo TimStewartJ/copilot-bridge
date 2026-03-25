@@ -770,7 +770,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
         busySessions,
         unreadSessions,
         lastActiveTask,
-        activeTasks,
         orphanSessions,
         openTodos,
         completedTodos,
