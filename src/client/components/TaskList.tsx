@@ -441,7 +441,7 @@ function SortableListItem({
             : isActive && indicator?.unread
               ? "bg-bg-hover border-l-2 border-text-primary"
               : isActive
-                ? "bg-bg-hover border-l-2 border-text-muted"
+                ? "bg-bg-hover"
                 : indicator?.unread
                   ? "border-l-2 border-text-primary hover:bg-bg-hover"
                   : "hover:bg-bg-hover"
