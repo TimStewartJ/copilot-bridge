@@ -280,6 +280,7 @@ export function createBridgeTools(ctx: AppContext) {
         }
       }
 
+      ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
       return { success: true, message: `Schedule "${schedule.name}" created (${schedule.type})`, scheduleId: schedule.id, nextRunAt: schedule.nextRunAt };
     },
   }),
@@ -308,6 +309,7 @@ export function createBridgeTools(ctx: AppContext) {
         else schedulerModule.unregisterSchedule(schedule.id);
       }
 
+      ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
       return { success: true, message: `Schedule "${schedule.name}" updated`, nextRunAt: schedule.nextRunAt };
     },
   }),
@@ -321,8 +323,11 @@ export function createBridgeTools(ctx: AppContext) {
       required: ["scheduleId"],
     },
     handler: async (args: any) => {
+      const schedule = ctx.scheduleStore.getSchedule(args.scheduleId);
+      const taskId = schedule?.taskId;
       schedulerModule.unregisterSchedule(args.scheduleId);
       ctx.scheduleStore.deleteSchedule(args.scheduleId);
+      if (taskId) ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId: args.scheduleId });
       return { success: true, message: "Schedule deleted" };
     },
   }),

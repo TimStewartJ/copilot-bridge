@@ -232,6 +232,9 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
       sessionId,
     } as any);
 
+    // Notify UI that schedule metadata changed (runCount, lastRunAt, nextRunAt)
+    bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
+
     console.log(`[scheduler] ✅ "${schedule.name}" triggered — session ${sessionId.slice(0, 8)}`);
     return { sessionId };
   } catch (err) {
