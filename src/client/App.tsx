@@ -37,6 +37,34 @@ import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { fetchSettings } from "./api";
 
+// ── Last-viewed session per task (localStorage) ─────────────
+const LAST_VIEWED_KEY = "bridge-last-session";
+
+function getLastViewedSession(taskId: string): string | null {
+  try {
+    const map = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "{}");
+    return map[taskId] ?? null;
+  } catch { return null; }
+}
+
+function setLastViewedSession(taskId: string, sessionId: string) {
+  try {
+    const map = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "{}");
+    map[taskId] = sessionId;
+    localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+function clearLastViewedSession(sessionId: string) {
+  try {
+    const map = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "{}");
+    for (const key of Object.keys(map)) {
+      if (map[key] === sessionId) delete map[key];
+    }
+    localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map));
+  } catch {}
+}
+
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -188,6 +216,8 @@ export default function App() {
   // any messages that arrived after the initial mark.
   useEffect(() => {
     if (!activeSessionId) return;
+    // Track last-viewed session for this task immediately
+    if (activeTaskId) setLastViewedSession(activeTaskId, activeSessionId);
     let dwelled = false;
     const timer = setTimeout(() => {
       dwelled = true;
@@ -197,7 +227,7 @@ export default function App() {
       clearTimeout(timer);
       if (dwelled) markRead(activeSessionId);
     };
-  }, [activeSessionId, markRead]);
+  }, [activeSessionId, activeTaskId, markRead]);
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
@@ -247,8 +277,12 @@ export default function App() {
     if (!isMobile) {
       const task = tasks.find((t) => t.id === id);
       if (task && task.sessionIds.length > 0) {
-        const mostRecentSessionId = task.sessionIds[task.sessionIds.length - 1];
-        navigate(`/tasks/${id}/sessions/${mostRecentSessionId}`);
+        const lastViewed = getLastViewedSession(id);
+        const targetSessionId =
+          lastViewed && task.sessionIds.includes(lastViewed)
+            ? lastViewed
+            : task.sessionIds[task.sessionIds.length - 1];
+        navigate(`/tasks/${id}/sessions/${targetSessionId}`);
         return;
       }
     }
@@ -477,6 +511,7 @@ export default function App() {
 
   const handleDeleteSession = async (sessionId: string) => {
     clearDraft(sessionId);
+    clearLastViewedSession(sessionId);
     const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     // Animate out before removing
     setExitingIds((prev) => new Set(prev).add(sessionId));
