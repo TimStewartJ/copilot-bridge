@@ -261,6 +261,9 @@ async function restart() {
     log("Build failed — rolling back");
     await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
     rollback();
+    // Old server is still running with restart banner — dismiss it immediately
+    try { await fetch(`http://localhost:${PORT}/api/restart-clear`, { method: "POST" }); }
+    catch { /* server may be unreachable */ }
     consecutiveFailures++;
     if (consecutiveFailures >= MAX_FAILURES) {
       log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
@@ -387,11 +390,11 @@ async function main() {
   // Poll for restart signal
   setInterval(async () => {
     if (!restarting && existsSync(SIGNAL_FILE)) {
-      clearSignal();
       restarting = true;
       try {
         await restart();
       } finally {
+        clearSignal();
         restarting = false;
       }
     }
