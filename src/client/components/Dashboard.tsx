@@ -333,12 +333,12 @@ function TaskCard({
           <span className="flex items-center gap-1">
             <GitPullRequest size={10} />
             {prSummary.active > 0 && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-success/15 text-success">
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-accent/15 text-accent">
                 {prSummary.active} active
               </span>
             )}
             {prSummary.completed > 0 && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-info/15 text-info">
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-success/15 text-success">
                 {prSummary.completed} merged
               </span>
             )}

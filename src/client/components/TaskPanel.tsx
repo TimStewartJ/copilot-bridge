@@ -67,9 +67,9 @@ const WI_STATE_STYLES: Record<string, string> = {
 };
 
 const PR_STATUS_DOTS: Record<string, string> = {
-  active: "bg-success",
-  completed: "bg-accent",
-  abandoned: "bg-text-muted",
+  active: "bg-accent",
+  completed: "bg-success",
+  abandoned: "bg-warning",
 };
 
 
