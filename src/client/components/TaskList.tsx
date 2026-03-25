@@ -77,7 +77,9 @@ export default function TaskList({
     return map;
   }, [sessions]);
 
-  // Derive busy/unread status per task from linked sessions (independent flags)
+  // Derive busy/unread status per task from linked sessions.
+  // Busy sessions are excluded from the unread check — unread only applies
+  // once a session goes idle with new content the user hasn't seen.
   const taskIndicators = useMemo(() => {
     const indicators = new Map<string, { busy: boolean; unread: boolean }>();
     for (const task of tasks) {
@@ -86,7 +88,7 @@ export default function TaskList({
       for (const sid of task.sessionIds) {
         const session = sessionMap.get(sid);
         if (!session || session.archived) continue;
-        if (session.busy) hasBusy = true;
+        if (session.busy) { hasBusy = true; continue; }
         if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
       }
       indicators.set(task.id, { busy: hasBusy, unread: hasUnread });
