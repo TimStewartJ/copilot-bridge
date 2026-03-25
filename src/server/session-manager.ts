@@ -42,6 +42,12 @@ When modifying code in this repository (the Copilot Bridge):
 6. Only after the user approves, call staging_deploy with a descriptive commit message
 7. Do NOT make further tool calls after staging_deploy — the server will restart
 
+If staging_deploy fails due to rebase conflicts:
+- Your staging worktree is still intact — do NOT call staging_cleanup
+- Follow the resolution steps returned by staging_deploy (rebase, resolve conflicts, continue)
+- Call staging_deploy again after resolving — it will skip the commit and proceed to merge
+- Only use staging_cleanup if you want to completely abandon your changes
+
 IMPORTANT: Never edit source files directly in the production directory.
 Always use the staging workflow for any code changes to this codebase.
 For non-code restarts (config, env), use self_restart instead.

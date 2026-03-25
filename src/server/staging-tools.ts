@@ -532,8 +532,12 @@ export const STAGING_TOOLS = [
   defineTool("staging_deploy", {
     description:
       "Deploy validated changes from a staging worktree to production. " +
-      "Commits changes in staging, merges to main, signals the launcher to restart, and auto-cleans the worktree. " +
-      "IMPORTANT: Do not make further tool calls after this — the server will restart. " +
+      "Commits changes in staging (if uncommitted changes exist), rebases the staging branch onto the latest production HEAD, " +
+      "merges to main, signals the launcher to restart, and auto-cleans the worktree. " +
+      "Supports retries: if a previous deploy failed due to rebase conflicts, resolve them in the staging worktree " +
+      "(git rebase <prodBranch>, fix conflicts, git add + git rebase --continue) then call staging_deploy again — " +
+      "it will skip the commit step and proceed to merge. " +
+      "IMPORTANT: Do not make further tool calls after a successful deploy — the server will restart. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
@@ -559,27 +563,66 @@ export const STAGING_TOOLS = [
 
       log(`Deploying from ${stagingDir} (branch: ${branch})`);
 
-      // Stage and check for changes
+      // Stage and commit if there are uncommitted changes (skip on retry after conflict resolution)
       run("git add -A", stagingDir);
       const status = run("git --no-pager status --porcelain", stagingDir);
-      if (!status.ok || !status.output.trim()) {
-        return { success: false, error: "Nothing to deploy — no changes detected in staging." };
+      const hasUncommittedChanges = status.ok && !!status.output.trim();
+
+      if (hasUncommittedChanges) {
+        const msgFile = join(stagingDir, ".commit-msg");
+        try {
+          writeFileSync(
+            msgFile,
+            `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
+          );
+          const commitResult = run(`git commit -F "${msgFile}"`, stagingDir);
+          if (!commitResult.ok) {
+            return { success: false, error: `Commit failed: ${commitResult.output}` };
+          }
+        } finally {
+          try { unlinkSync(msgFile); } catch {}
+        }
       }
 
-      // Commit using a temp file to avoid shell injection from message content
-      const msgFile = join(stagingDir, ".commit-msg");
-      try {
-        writeFileSync(
-          msgFile,
-          `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
-        );
-        const commitResult = run(`git commit -F "${msgFile}"`, stagingDir);
-        if (!commitResult.ok) {
-          return { success: false, error: `Commit failed: ${commitResult.output}` };
-        }
-      } finally {
-        try { unlinkSync(msgFile); } catch {}
+      // Determine production branch
+      const prodBranchResult = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+      const prodBranch = prodBranchResult.ok ? prodBranchResult.output.trim() : "main";
+
+      // Verify there are commits to merge
+      const aheadCheck = run(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
+      if (!aheadCheck.ok || !aheadCheck.output.trim()) {
+        return { success: false, error: "Nothing to deploy — staging branch has no commits ahead of production." };
       }
+
+      // Pull latest production so the rebase target is current
+      const pullResult = run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+      if (pullResult.ok) {
+        log("Pulled latest production from origin");
+      } else {
+        log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+      }
+
+      // Rebase staging branch onto updated production HEAD for a clean merge
+      const rebaseResult = run(`git rebase ${prodBranch}`, stagingDir);
+      if (!rebaseResult.ok) {
+        run("git rebase --abort", stagingDir);
+        log(`Staging rebase failed — manual conflict resolution needed`);
+        return {
+          success: false,
+          error:
+            `Staging branch has conflicts with the latest production code. ` +
+            `The rebase has been aborted and your staging worktree is intact.\n\n` +
+            `To resolve (all commands run in the staging directory ${stagingDir}):\n` +
+            `1. git rebase ${prodBranch}\n` +
+            `2. Resolve conflicting files shown by git\n` +
+            `3. git add <resolved-files>\n` +
+            `4. git rebase --continue\n` +
+            `5. Repeat steps 2-4 if there are more conflicts\n` +
+            `6. Call staging_deploy again — it will skip the commit and proceed to merge\n\n` +
+            rebaseResult.output.slice(-500),
+        };
+      }
+      log("Staging branch rebased onto production");
 
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
       const headResult = run("git rev-parse HEAD", PRODUCTION_ROOT);
@@ -591,7 +634,7 @@ export const STAGING_TOOLS = [
         log(`Pre-deploy SHA saved: ${preDeploySha}`);
       }
 
-      // Merge into production
+      // Merge into production (should be fast-forward after rebase)
       const mergeResult = run(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
       if (!mergeResult.ok) {
         run("git merge --abort", PRODUCTION_ROOT);
@@ -599,8 +642,9 @@ export const STAGING_TOOLS = [
         return {
           success: false,
           error:
-            `Merge conflict — the merge has been aborted. ` +
-            `Call staging_cleanup then staging_init to start fresh from current main.\n\n` +
+            `Merge failed after rebase (unexpected). The merge has been aborted.\n` +
+            `Your staging worktree is still intact. Try running 'git rebase ${prodBranch}' ` +
+            `in the staging directory to resolve conflicts, then call staging_deploy again.\n\n` +
             mergeResult.output.slice(-500),
         };
       }
@@ -622,15 +666,13 @@ export const STAGING_TOOLS = [
       }
 
       // Push to origin so other deployments can pick up the change
-      const prodBranch = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
-      const pushBranch = prodBranch.ok ? prodBranch.output.trim() : "main";
-      let pushResult = run(`git push origin ${pushBranch}`, PRODUCTION_ROOT);
+      let pushResult = run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
       if (!pushResult.ok) {
         // Push may fail if remote has new commits — pull --rebase and retry once
         log("Push failed, attempting pull --rebase before retry...");
-        const rebase = run(`git pull --rebase origin ${pushBranch}`, PRODUCTION_ROOT);
-        if (rebase.ok) {
-          pushResult = run(`git push origin ${pushBranch}`, PRODUCTION_ROOT);
+        const retryRebase = run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+        if (retryRebase.ok) {
+          pushResult = run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
         }
       }
       if (pushResult.ok) {
@@ -665,7 +707,7 @@ export const STAGING_TOOLS = [
   }),
 
   defineTool("staging_cleanup", {
-    description: "Abandon a staging worktree and discard all changes. Use when you don't want to deploy, or to start fresh after a failed merge. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
+    description: "Abandon a staging worktree and discard all changes. Use ONLY when you want to completely discard your work and start over — NOT for merge/rebase conflicts (resolve those in-place and retry staging_deploy instead). RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
       properties: {
