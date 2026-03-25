@@ -18,8 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
 const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
 const STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
-const STAGING_DATA_PARENT = join(PRODUCTION_ROOT, "data-staging");
-const SIGNAL_FILE = join(PRODUCTION_ROOT, "data", "restart.signal");
+const SIGNAL_FILE= join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 
@@ -65,17 +64,17 @@ function removeStagingDist(prefix: string): void {
   activePreviews.delete(prefix);
 }
 
-function removeStagingData(prefix: string): void {
-  const dataDir = join(STAGING_DATA_PARENT, prefix);
+function removeStagingData(stagingDir: string): void {
+  const dataDir = join(stagingDir, "data");
   if (existsSync(dataDir)) {
     rmSync(dataDir, { recursive: true, force: true });
   }
 }
 
-/** Seed a staging data directory from production data, with schedules disabled */
-function seedStagingData(prefix: string): string {
-  const dataDir = join(STAGING_DATA_PARENT, prefix);
-  if (!existsSync(STAGING_DATA_PARENT)) mkdirSync(STAGING_DATA_PARENT, { recursive: true });
+/** Seed a staging data directory from production data, with schedules disabled.
+ *  Uses the worktree's own data/ directory (already gitignored). */
+function seedStagingData(stagingDir: string): string {
+  const dataDir = join(stagingDir, "data");
   mkdirSync(dataDir, { recursive: true });
 
   // Copy production SQLite database if it exists
@@ -217,7 +216,8 @@ async function teardownStagingBackend(prefix: string): Promise<void> {
     log(`Warning: staging cleanup error: ${err}`);
   }
   activeStagingBackends.delete(prefix);
-  removeStagingData(prefix);
+  const stagingDir = join(STAGING_PARENT, prefix);
+  removeStagingData(stagingDir);
   log(`Staging backend torn down: ${prefix}`);
 }
 
@@ -417,7 +417,7 @@ export const STAGING_TOOLS = [
           await teardownStagingBackend(prefix);
 
           // Seed isolated data directory
-          const dataDir = seedStagingData(prefix);
+          const dataDir = seedStagingData(stagingDir);
 
           // Create staging AppContext from worktree code
           log(`Creating staging backend context from ${stagingDir}...`);
