@@ -155,17 +155,3 @@ function initSchema(db: DatabaseSync): void {
 }
 
 export type { DatabaseSync };
-
-// ── Shared default instance ───────────────────────────────────────
-// Lazy singleton so all default store exports share one DB connection.
-// This avoids lock conflicts from multiple openDatabase() calls.
-
-let _sharedDb: DatabaseSync | null = null;
-
-export function getSharedDatabase(): DatabaseSync {
-  if (!_sharedDb) {
-    const dataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-    _sharedDb = openDatabase(dataDir);
-  }
-  return _sharedDb;
-}

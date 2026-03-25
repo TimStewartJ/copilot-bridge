@@ -1,11 +1,6 @@
 // Schedule store — SQLite persistence
 
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "./db.js";
-import { getSharedDatabase } from "./db.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -168,18 +163,3 @@ export function createScheduleStore(db: DatabaseSync) {
 }
 
 export type ScheduleStore = ReturnType<typeof createScheduleStore>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _defaultDb = getSharedDatabase();
-const _default = createScheduleStore(_defaultDb);
-export const listSchedules = _default.listSchedules;
-export const getSchedule = _default.getSchedule;
-export const createSchedule = _default.createSchedule;
-export const updateSchedule = _default.updateSchedule;
-export const deleteSchedule = _default.deleteSchedule;
-export const recordRun = _default.recordRun;
-export const updateNextRunAt = _default.updateNextRunAt;
-export const getSchedulesForTask = _default.getSchedulesForTask;
-export const getEnabledSchedules = _default.getEnabledSchedules;

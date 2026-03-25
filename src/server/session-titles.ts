@@ -2,12 +2,7 @@
 // The SDK CLI uses the full first user message as the session summary.
 // We generate better titles and store them here.
 
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "./db.js";
-import { getSharedDatabase } from "./db.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -57,15 +52,3 @@ export function createSessionTitlesStore(db: DatabaseSync) {
 }
 
 export type SessionTitlesStore = ReturnType<typeof createSessionTitlesStore>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _defaultDb = getSharedDatabase();
-const _default = createSessionTitlesStore(_defaultDb);
-export const loadTitles = _default.loadTitles;
-export const getTitle = _default.getTitle;
-export const setTitle = _default.setTitle;
-export const hasTitle = _default.hasTitle;
-export const deleteTitle = _default.deleteTitle;
-export const getAllTitles = _default.getAllTitles;

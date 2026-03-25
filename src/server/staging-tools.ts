@@ -73,12 +73,17 @@ function seedStagingData(stagingDir: string): string {
   // Copy production SQLite database if it exists
   const dbSrc = join(PRODUCTION_DATA_DIR, "bridge.db");
   if (existsSync(dbSrc)) {
-    copyFileSync(dbSrc, join(dataDir, "bridge.db"));
-    // Also copy WAL/SHM files if they exist (for consistency)
-    const walSrc = join(PRODUCTION_DATA_DIR, "bridge.db-wal");
-    const shmSrc = join(PRODUCTION_DATA_DIR, "bridge.db-shm");
-    if (existsSync(walSrc)) copyFileSync(walSrc, join(dataDir, "bridge.db-wal"));
-    if (existsSync(shmSrc)) copyFileSync(shmSrc, join(dataDir, "bridge.db-shm"));
+    // Use SQLite backup API to get a clean, complete copy (includes WAL data).
+    // This is read-only on the production DB — no checkpoints or writes needed.
+    try {
+      const { DatabaseSync, backup } = require("node:sqlite") as typeof import("node:sqlite");
+      const prodDb = new DatabaseSync(dbSrc);
+      (backup as any)(prodDb, join(dataDir, "bridge.db"));
+      prodDb.close();
+    } catch (err) {
+      log(`Warning: SQLite backup failed, falling back to file copy: ${err}`);
+      copyFileSync(dbSrc, join(dataDir, "bridge.db"));
+    }
 
     // Disable all schedules in the staging copy
     try {

@@ -1,11 +1,5 @@
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "./db.js";
-import { getSharedDatabase } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
-import { defaultGlobalBus } from "./global-bus.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -249,22 +243,3 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
 }
 
 export type TaskStore = ReturnType<typeof createTaskStore>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _defaultDb = getSharedDatabase();
-const _default = createTaskStore(_defaultDb, defaultGlobalBus);
-export const listTasks = _default.listTasks;
-export const getTask = _default.getTask;
-export const createTask = _default.createTask;
-export const updateTask = _default.updateTask;
-export const deleteTask = _default.deleteTask;
-export const reorderTasks = _default.reorderTasks;
-export const linkSession = _default.linkSession;
-export const unlinkSession = _default.unlinkSession;
-export const linkWorkItem = _default.linkWorkItem;
-export const unlinkWorkItem = _default.unlinkWorkItem;
-export const findTaskBySessionId = _default.findTaskBySessionId;
-export const linkPR = _default.linkPR;
-export const unlinkPR = _default.unlinkPR;

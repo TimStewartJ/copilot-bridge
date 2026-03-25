@@ -1,6 +1,13 @@
 // Configuration for the Copilot Web Bridge
 
-import { getMcpServers } from "./settings-store.js";
+import type { McpServerConfig } from "./settings-store.js";
+
+/** Settings getter — set by index.ts after DB init */
+let _getMcpServers: (() => Record<string, McpServerConfig>) | null = null;
+
+export function setMcpServersGetter(fn: () => Record<string, McpServerConfig>): void {
+  _getMcpServers = fn;
+}
 
 export const config = {
   // Web server
@@ -10,6 +17,7 @@ export const config = {
 
   /** MCP servers — reads from settings store (live-reloaded per session) */
   get sessionMcpServers() {
-    return getMcpServers();
+    if (!_getMcpServers) return {};
+    return _getMcpServers();
   },
 };

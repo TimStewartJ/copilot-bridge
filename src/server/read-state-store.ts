@@ -1,9 +1,4 @@
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "./db.js";
-import { getSharedDatabase } from "./db.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -53,14 +48,3 @@ export function createReadStateStore(db: DatabaseSync) {
 }
 
 export type ReadStateStore = ReturnType<typeof createReadStateStore>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _defaultDb = getSharedDatabase();
-const _default = createReadStateStore(_defaultDb);
-export const getReadState = _default.getReadState;
-export const markRead = _default.markRead;
-export const isUnread = _default.isUnread;
-export const markUnread = _default.markUnread;
-export const pruneReadState = _default.pruneReadState;

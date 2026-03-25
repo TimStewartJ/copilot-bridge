@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { isRestartPending, getRestartWaitingCount, clearRestartPending } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
-import { enrichWorkItems, enrichPullRequests, clearProviderCache } from "./providers/index.js";
+import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -27,6 +27,9 @@ function getDirSize(dirPath: string): number {
 
 export function createApiRouter(ctx: AppContext): express.Router {
   const router = express.Router();
+
+  // Wire settings getter for providers (so they can resolve without module-level imports)
+  setSettingsGetter(() => ctx.settingsStore.getSettings());
 
   // ── Session routes ──────────────────────────────────────────────
 

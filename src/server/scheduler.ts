@@ -2,16 +2,22 @@
 // Registers node-cron jobs, handles triggering, missed-run catch-up
 
 import cron, { type ScheduledTask } from "node-cron";
-import * as scheduleStore from "./schedule-store.js";
-import * as taskStore from "./task-store.js";
-import * as sessionMetaStore from "./session-meta-store.js";
-import * as globalBus from "./global-bus.js";
+import type { ScheduleStore } from "./schedule-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { SessionMetaStore } from "./session-meta-store.js";
+import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
 const cronJobs = new Map<string, ScheduledTask>();
 let sessionMgr: SessionManager | null = null;
+
+// Injected stores (set via initialize)
+let scheduleStore: ScheduleStore;
+let taskStore: TaskStore;
+let sessionMetaStore: SessionMetaStore;
+let bus: GlobalBus;
 
 // Safety: track in-flight schedule runs to prevent overlap
 const activeRuns = new Set<string>();
@@ -26,8 +32,19 @@ const MISSED_RUN_GRACE_WINDOW_MS = 60 * 60 * 1000; // 1 hour grace for catch-up
 
 // ── Public API ────────────────────────────────────────────────────
 
-export function initialize(manager: SessionManager): void {
+export interface SchedulerDeps {
+  scheduleStore: ScheduleStore;
+  taskStore: TaskStore;
+  sessionMetaStore: SessionMetaStore;
+  globalBus: GlobalBus;
+}
+
+export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   sessionMgr = manager;
+  scheduleStore = deps.scheduleStore;
+  taskStore = deps.taskStore;
+  sessionMetaStore = deps.sessionMetaStore;
+  bus = deps.globalBus;
   registerAllSchedules();
   checkMissedRuns();
   console.log("[scheduler] Initialized");
@@ -208,7 +225,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
     scheduleStore.recordRun(scheduleId, sessionId, nextRunAt);
 
     // Emit global event
-    globalBus.emit({
+    bus.emit({
       type: "schedule:triggered",
       scheduleId,
       scheduleName: schedule.name,

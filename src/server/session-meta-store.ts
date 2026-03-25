@@ -1,9 +1,4 @@
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "./db.js";
-import { getSharedDatabase } from "./db.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -86,15 +81,3 @@ export function createSessionMetaStore(db: DatabaseSync) {
 }
 
 export type SessionMetaStore = ReturnType<typeof createSessionMetaStore>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _defaultDb = getSharedDatabase();
-const _default = createSessionMetaStore(_defaultDb);
-export const getMeta = _default.getMeta;
-export const isArchived = _default.isArchived;
-export const setArchived = _default.setArchived;
-export const deleteMeta = _default.deleteMeta;
-export const setScheduleMeta = _default.setScheduleMeta;
-export const listMeta = _default.listMeta;

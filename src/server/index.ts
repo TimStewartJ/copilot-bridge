@@ -5,7 +5,7 @@ import express from "express";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "./config.js";
+import { config, setMcpServersGetter } from "./config.js";
 import { SessionManager, createBridgeTools } from "./session-manager.js";
 import { openDatabase } from "./db.js";
 import { migrateJsonToSqlite } from "./migrate-json-to-sqlite.js";
@@ -47,6 +47,9 @@ const sessionMetaStore = createSessionMetaStore(db);
 const sessionTitles = createSessionTitlesStore(db);
 const readStateStore = createReadStateStore(db);
 const todoStore = createTodoStore(db, defaultGlobalBus);
+
+// Wire config getter now that settings store is ready
+setMcpServersGetter(() => settingsStore.getMcpServers());
 
 // Build default AppContext for production
 const defaultContext: AppContext = {
@@ -116,7 +119,9 @@ async function main(): Promise<void> {
   pruneOrphanedWorktrees();
 
   // Initialize scheduler after session manager is ready
-  scheduler.initialize(sessionManager);
+  scheduler.initialize(sessionManager, {
+    scheduleStore, taskStore, sessionMetaStore, globalBus: defaultGlobalBus,
+  });
 
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();

@@ -1,9 +1,4 @@
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "./db.js";
-import { getSharedDatabase } from "./db.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -109,15 +104,3 @@ export function createTaskGroupStore(db: DatabaseSync) {
 }
 
 export type TaskGroupStore = ReturnType<typeof createTaskGroupStore>;
-
-// ── Default instance (backward compat) ────────────────────────────
-
-const _defaultDataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
-const _defaultDb = getSharedDatabase();
-const _default = createTaskGroupStore(_defaultDb);
-export const listGroups = _default.listGroups;
-export const getGroup = _default.getGroup;
-export const createGroup = _default.createGroup;
-export const updateGroup = _default.updateGroup;
-export const deleteGroup = _default.deleteGroup;
-export const reorderGroups = _default.reorderGroups;

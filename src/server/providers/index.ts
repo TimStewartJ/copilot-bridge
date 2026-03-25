@@ -1,6 +1,6 @@
 // Provider registry — resolves providers by name, enriches items grouped by provider
 
-import { getSettings } from "../settings-store.js";
+import type { AppSettings } from "../settings-store.js";
 import { AdoProvider } from "./ado.js";
 import { GitHubProvider } from "./github.js";
 import { NullProvider } from "./null.js";
@@ -9,6 +9,14 @@ import type { WorkItemRef, PRRef } from "../task-store.js";
 
 export type { WorkTrackingProvider, EnrichedWorkItem, EnrichedPR, ProviderName } from "./types.js";
 export type { WorkItemRef, PRRef } from "../task-store.js";
+
+// ── Settings getter (set by api-router after context is ready) ────
+
+let _getSettings: (() => AppSettings) | null = null;
+
+export function setSettingsGetter(fn: () => AppSettings): void {
+  _getSettings = fn;
+}
 
 // ── Provider cache ────────────────────────────────────────────────
 
@@ -20,7 +28,7 @@ export function getProvider(name: ProviderName): WorkTrackingProvider {
   const cached = providerCache.get(cacheKey);
   if (cached) return cached;
 
-  const settings = getSettings();
+  const settings = _getSettings?.() ?? { mcpServers: {} };
   let provider: WorkTrackingProvider;
 
   switch (name) {
