@@ -436,9 +436,13 @@ function SortableListItem({
         className={`w-full text-left px-3 py-2.5 rounded-md text-sm select-none no-callout transition-all duration-150 ${
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
-            : isActive
-              ? "bg-bg-hover border-l-2 border-text-muted"
-              : "hover:bg-bg-hover"
+            : isActive && indicator?.unread
+              ? "bg-bg-hover border-l-2 border-text-primary"
+              : isActive
+                ? "bg-bg-hover border-l-2 border-text-muted"
+                : indicator?.unread
+                  ? "border-l-2 border-text-primary hover:bg-bg-hover"
+                  : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
         <div className="flex items-center">
