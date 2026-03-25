@@ -757,13 +757,34 @@ function TodoRow({
 }) {
   const dateRef = useRef<HTMLInputElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
+  const editRef = useRef<HTMLInputElement>(null);
   const urgency = deadlineUrgency(todo.deadline, todo.done);
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(todo.text);
 
   useEffect(() => {
     if (highlight && rowRef.current) {
       rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [highlight]);
+
+  useEffect(() => {
+    if (editing && editRef.current) {
+      editRef.current.focus();
+      editRef.current.select();
+    }
+  }, [editing]);
+
+  const commitEdit = async () => {
+    const trimmed = editText.trim();
+    setEditing(false);
+    if (!trimmed || trimmed === todo.text) {
+      setEditText(todo.text);
+      return;
+    }
+    const updated = await patchTodo(todo.id, { text: trimmed });
+    onUpdate(updated);
+  };
 
   return (
     <div
@@ -790,14 +811,30 @@ function TodoRow({
 
       {/* Text + deadline badge */}
       <div className="flex-1 min-w-0">
-        <span
-          className={`text-xs break-words ${
-            todo.done ? "text-text-faint line-through" : "text-text-secondary"
-          }`}
-        >
-          {todo.text}
-        </span>
-        {todo.deadline && !todo.done && (
+        {editing ? (
+          <input
+            ref={editRef}
+            type="text"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitEdit();
+              if (e.key === "Escape") { setEditText(todo.text); setEditing(false); }
+            }}
+            className="w-full text-xs bg-transparent border-b border-accent outline-none text-text-secondary py-0"
+          />
+        ) : (
+          <span
+            onClick={() => { if (!todo.done) { setEditText(todo.text); setEditing(true); } }}
+            className={`text-xs break-words ${
+              todo.done ? "text-text-faint line-through" : "text-text-secondary cursor-text"
+            }`}
+          >
+            {todo.text}
+          </span>
+        )}
+        {todo.deadline && !todo.done && !editing && (
           <button
             onClick={async () => {
               const updated = await patchTodo(todo.id, { deadline: null });
