@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
-import { getTunnelUrl } from "./restart-handler.js";
+import { getTunnelUrl } from "./tunnel.js";
 import type { AppContext } from "./app-context.js";
 import type express from "express";
 

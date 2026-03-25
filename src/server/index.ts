@@ -19,7 +19,7 @@ import { createReadStateStore } from "./read-state-store.js";
 import { createTodoStore } from "./todo-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
-import { startRestartWatcher, notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./restart-handler.js";
+import { notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./tunnel.js";
 import { defaultGlobalBus } from "./global-bus.js";
 import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerExpressApp } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
@@ -130,9 +130,6 @@ async function main(): Promise<void> {
   app.listen(port, () => {
     console.log(`[web] 🟢 Server running at http://localhost:${port}`);
   });
-
-  // Start restart signal watcher (also discovers tunnel URL)
-  startRestartWatcher();
 
   // Webhook 1: server is up
   await notifyWebhook(`🤖 Copilot Bridge is online! (${gitHash()}, PID ${process.pid})`);

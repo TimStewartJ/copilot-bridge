@@ -1,5 +1,4 @@
 // Launcher — immortal parent process that manages the bridge server
-// This file should NEVER be modified by the agent.
 
 import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
@@ -65,18 +64,6 @@ function run(cmd: string): { ok: boolean; output: string } {
   }
 }
 
-function gitCheckpoint(): boolean {
-  run("git add -A");
-  const status = run("git --no-pager status --porcelain");
-  if (status.output.trim()) {
-    const result = run('git commit -m "auto-checkpoint before restart"');
-    log(result.ok ? "Git checkpoint created" : "Git checkpoint failed (continuing anyway)");
-  } else {
-    log("No changes to checkpoint");
-  }
-  return true;
-}
-
 function build(): boolean {
   log("Building...");
   const client = run("npx vite build");
@@ -126,9 +113,12 @@ async function healthCheck(): Promise<boolean> {
 
 function startServer(): ChildProcess {
   log("Starting server...");
+  const env = { ...process.env };
+  if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const child = spawn(NODE_PATH, [TSX_CLI, SERVER_ENTRY], {
     cwd: ROOT,
     stdio: ["ignore", "inherit", "inherit"],
+    env,
   });
 
   child.on("exit", (code) => {
@@ -266,8 +256,6 @@ async function restart() {
   log("═══ Restart requested ═══");
 
   await waitForIdleSessions();
-
-  gitCheckpoint();
 
   if (!build()) {
     log("Build failed — rolling back");

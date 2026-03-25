@@ -1,4 +1,4 @@
-# Start Copilot Bridge as hidden background processes
+# Start Copilot Bridge as hidden background process (via launcher supervisor)
 $workDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 # Find Node.js — override with BRIDGE_NODE_PATH env var if needed
@@ -31,19 +31,13 @@ if (Test-Path $envFile) {
 $dataDir = Join-Path $workDir "data"
 if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | Out-Null }
 
-# Start server (hidden)
+# Start launcher (manages server, devtunnel, health checks, crash recovery)
 Start-Process -FilePath $nodePath `
-  -ArgumentList "node_modules\tsx\dist\cli.mjs","src\server\index.ts" `
+  -ArgumentList "node_modules\tsx\dist\cli.mjs","src\launcher.ts" `
   -WorkingDirectory $workDir `
   -WindowStyle Hidden `
   -RedirectStandardOutput "$dataDir\bridge.log" `
   -RedirectStandardError "$dataDir\bridge-error.log"
-
-# Start devtunnel (hidden)
-Start-Process -FilePath "devtunnel" `
-  -ArgumentList "host","copilot-bridge" `
-  -WorkingDirectory $workDir `
-  -WindowStyle Hidden
 
 # Start keep-alive to prevent idle timeout (hidden)
 Start-Process -FilePath "pwsh.exe" `

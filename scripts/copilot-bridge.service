@@ -1,0 +1,33 @@
+# Copilot Bridge — systemd user service
+#
+# Install (no root required):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/copilot-bridge.service ~/.config/systemd/user/
+#   # Edit WorkingDirectory and EnvironmentFile paths below
+#   systemctl --user daemon-reload
+#   systemctl --user enable copilot-bridge
+#   systemctl --user start copilot-bridge
+#
+# Usage:
+#   systemctl --user status copilot-bridge
+#   systemctl --user stop copilot-bridge
+#   systemctl --user restart copilot-bridge
+#   journalctl --user -u copilot-bridge -f
+
+[Unit]
+Description=Copilot Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/copilot-teams-bridge
+EnvironmentFile=%h/copilot-teams-bridge/.env
+ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs src/launcher.ts
+Restart=on-failure
+RestartSec=5
+# Keep user session alive for lingering services
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
