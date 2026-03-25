@@ -486,7 +486,8 @@ export const STAGING_TOOLS = [
     description:
       "Deploy validated changes from a staging worktree to production. " +
       "Commits changes in staging, merges to main, signals the launcher to restart, and auto-cleans the worktree. " +
-      "IMPORTANT: Do not make further tool calls after this — the server will restart.",
+      "IMPORTANT: Do not make further tool calls after this — the server will restart. " +
+      "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
       properties: {
@@ -613,7 +614,7 @@ export const STAGING_TOOLS = [
   }),
 
   defineTool("staging_cleanup", {
-    description: "Abandon a staging worktree and discard all changes. Use when you don't want to deploy, or to start fresh after a failed merge.",
+    description: "Abandon a staging worktree and discard all changes. Use when you don't want to deploy, or to start fresh after a failed merge. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
       properties: {
