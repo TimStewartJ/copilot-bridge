@@ -441,6 +441,8 @@ export interface SessionManagerDeps {
   config: { sessionMcpServers: Record<string, any> };
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
+  /** Root of .copilot directory — defaults to homedir()/.copilot */
+  copilotHome?: string;
 }
 
 export class SessionManager {
@@ -463,7 +465,7 @@ export class SessionManager {
       onPermissionRequest: approveAll,
       tools: this.deps.tools,
       mcpServers: this.deps.config.sessionMcpServers,
-      skillDirectories: [join(homedir(), ".copilot", "skills")],
+      skillDirectories: [join(this.deps.copilotHome ?? join(homedir(), ".copilot"), "skills")],
     };
 
     if (task?.cwd) {
