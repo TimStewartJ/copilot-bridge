@@ -5,6 +5,7 @@ import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride } from "@github/copilot-sdk";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
@@ -409,6 +410,7 @@ export class SessionManager {
       onPermissionRequest: approveAll,
       tools: this.deps.tools,
       mcpServers: this.deps.config.sessionMcpServers,
+      skillDirectories: [join(homedir(), ".copilot", "skills")],
     };
 
     if (task?.cwd) {
