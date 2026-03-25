@@ -5,6 +5,7 @@ import {
   type DashboardActiveTask,
   type DashboardOrphanSession,
 } from "../api";
+import { getLastViewedSession } from "../last-viewed";
 import { Loader2, MessageSquare, Plus, Zap, GitPullRequest, LayoutList } from "lucide-react";
 
 interface DashboardProps {
@@ -232,7 +233,10 @@ function ResumeStrip({
   onSelect: (taskId: string) => void;
 }) {
   const t = activeTask.task;
-  const lastSessionId = t.sessionIds.length > 0 ? t.sessionIds[t.sessionIds.length - 1] : undefined;
+  const lastViewed = getLastViewedSession(t.id);
+  const lastSessionId = t.sessionIds.length > 0
+    ? (lastViewed && t.sessionIds.includes(lastViewed) ? lastViewed : t.sessionIds[t.sessionIds.length - 1])
+    : undefined;
 
   return (
     <div className="bg-bg-surface border border-border rounded-lg p-4 flex items-center gap-4">

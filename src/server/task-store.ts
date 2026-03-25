@@ -47,7 +47,7 @@ const STATUS_ORDER: Record<Task["status"], number> = {
 export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
   function hydrate(row: any): Task {
     const id = row.id;
-    const sessions = db.prepare("SELECT sessionId FROM task_sessions WHERE taskId = ?").all(id) as any[];
+    const sessions = db.prepare("SELECT sessionId FROM task_sessions WHERE taskId = ? ORDER BY linkedAt ASC").all(id) as any[];
     const workItems = db.prepare("SELECT itemId as id, provider FROM task_work_items WHERE taskId = ?").all(id) as any[];
     const prs = db.prepare("SELECT repoId, repoName, prId, provider FROM task_pull_requests WHERE taskId = ?").all(id) as any[];
 
@@ -164,7 +164,7 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
     if (!task) throw new Error(`Task ${taskId} not found`);
     const existing = db.prepare("SELECT 1 FROM task_sessions WHERE taskId = ? AND sessionId = ?").get(taskId, sessionId);
     if (!existing) {
-      db.prepare("INSERT INTO task_sessions (taskId, sessionId) VALUES (?, ?)").run(taskId, sessionId);
+      db.prepare("INSERT INTO task_sessions (taskId, sessionId, linkedAt) VALUES (?, ?, ?)").run(taskId, sessionId, new Date().toISOString());
       db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
       emitChange(taskId);
     }
