@@ -157,7 +157,10 @@ export default function ChatInput({ onSend, onAbort, sessionId, draft, onDraftCh
     setInput("");
     setAttachments([]);
     lastHeightRef.current = 0;
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.blur(); // dismiss mobile keyboard after send
+    }
   }, [input, attachments, onSend]);
 
   const handleKeyDown = useCallback(
