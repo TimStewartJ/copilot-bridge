@@ -159,7 +159,10 @@ export default function ChatInput({ onSend, onAbort, sessionId, draft, onDraftCh
     lastHeightRef.current = 0;
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
-      textareaRef.current.blur(); // dismiss mobile keyboard after send
+      // Dismiss keyboard on touch devices; keep focus on desktop for rapid typing
+      if (!window.matchMedia("(pointer: fine)").matches) {
+        textareaRef.current.blur();
+      }
     }
   }, [input, attachments, onSend]);
 
