@@ -682,10 +682,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
           else if (enriched?.status === "completed") prCompleted++;
         }
 
-        // Unread check across all task sessions
+        // Unread check — busy sessions excluded (busy is a separate signal)
         const hasUnread = task.sessionIds.some((sid) => {
           const session = enrichedSessions.find((s: any) => s.sessionId === sid);
-          return session && (session.busy || isUnread(sid, session.modifiedTime));
+          return session && !session.busy && isUnread(sid, session.modifiedTime);
         });
 
         // Last activity across task sessions

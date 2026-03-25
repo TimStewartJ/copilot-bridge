@@ -106,6 +106,7 @@ export default function TaskRail({
     return map;
   }, [sessions]);
 
+  // Busy sessions excluded from unread — unread only fires after idle
   const taskIndicators = useMemo(() => {
     const indicators = new Map<string, { busy: boolean; unread: boolean }>();
     for (const task of tasks) {
@@ -114,7 +115,7 @@ export default function TaskRail({
       for (const sid of task.sessionIds) {
         const session = sessionMap.get(sid);
         if (!session || session.archived) continue;
-        if (session.busy) hasBusy = true;
+        if (session.busy) { hasBusy = true; continue; }
         if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
       }
       indicators.set(task.id, { busy: hasBusy, unread: hasUnread });
