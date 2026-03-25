@@ -25,5 +25,7 @@ export interface AppContext {
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   sessionManager: SessionManager;
+  /** Root of .copilot directory — defaults to homedir()/.copilot for production */
+  copilotHome?: string;
   isStaging?: boolean;
 }

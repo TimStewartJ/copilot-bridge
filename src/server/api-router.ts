@@ -25,6 +25,11 @@ function getDirSize(dirPath: string): number {
   return size;
 }
 
+/** Resolve the .copilot home directory — uses ctx.copilotHome if set, otherwise homedir()/.copilot */
+function getCopilotHome(ctx: AppContext): string {
+  return ctx.copilotHome ?? join(homedir(), ".copilot");
+}
+
 export function createApiRouter(ctx: AppContext): express.Router {
   const router = express.Router();
 
@@ -37,7 +42,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const includeArchived = req.query.includeArchived === "true";
       const sessions = await ctx.sessionManager.listSessions();
-      const sessionStateDir = join(homedir(), ".copilot", "session-state");
+      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
 
       const enriched = sessions
@@ -288,7 +293,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // GET /sessions/:id/plan — read plan.md from session state directory
   router.get("/sessions/:id/plan", (_req, res) => {
     const sessionId = _req.params.id;
-    const planPath = join(homedir(), ".copilot", "session-state", sessionId, "plan.md");
+    const planPath = join(getCopilotHome(ctx), "session-state", sessionId, "plan.md");
 
     try {
       if (!existsSync(planPath)) {
@@ -582,7 +587,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/dashboard", async (_req, res) => {
     try {
       const sessions = await ctx.sessionManager.listSessions();
-      const sessionStateDir = join(homedir(), ".copilot", "session-state");
+      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
       const tasks = ctx.taskStore.listTasks();

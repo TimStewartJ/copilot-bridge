@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdir
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { getTunnelUrl } from "./tunnel.js";
@@ -26,7 +27,7 @@ const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 const activePreviews = new Map<string, string>();
 
 /** Active staging backend contexts: prefix → cleanup function */
-const activeStagingBackends = new Map<string, { ctx: AppContext; router: express.Router; db?: import("node:sqlite").DatabaseSync; cleanup: () => Promise<void> }>();
+const activeStagingBackends = new Map<string, { ctx: AppContext; router: express.Router; db?: DatabaseSync; cleanup: () => Promise<void> }>();
 
 /** Active staged API routers: prefix → router (for delegating middleware in index.ts) */
 const activeStagingRouters = new Map<string, express.Router>();
@@ -73,21 +74,19 @@ function seedStagingData(stagingDir: string): string {
   // Copy production SQLite database if it exists
   const dbSrc = join(PRODUCTION_DATA_DIR, "bridge.db");
   if (existsSync(dbSrc)) {
-    // Use SQLite backup API to get a clean, complete copy (includes WAL data).
-    // This is read-only on the production DB — no checkpoints or writes needed.
+    // Copy production DB via VACUUM INTO for a clean, WAL-inclusive snapshot
     try {
-      const { DatabaseSync, backup } = require("node:sqlite") as typeof import("node:sqlite");
-      const prodDb = new DatabaseSync(dbSrc);
-      (backup as any)(prodDb, join(dataDir, "bridge.db"));
+      const prodDb = new DatabaseSync(dbSrc, { readOnly: true });
+      const destPath = join(dataDir, "bridge.db").replaceAll("\\", "/");
+      prodDb.exec(`VACUUM INTO '${destPath}'`);
       prodDb.close();
     } catch (err) {
-      log(`Warning: SQLite backup failed, falling back to file copy: ${err}`);
+      log(`Warning: SQLite VACUUM INTO failed, falling back to file copy: ${err}`);
       copyFileSync(dbSrc, join(dataDir, "bridge.db"));
     }
 
     // Disable all schedules in the staging copy
     try {
-      const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
       const stagingDb = new DatabaseSync(join(dataDir, "bridge.db"));
       stagingDb.exec("PRAGMA journal_mode = WAL");
       stagingDb.exec("UPDATE schedules SET enabled = 0");
@@ -128,7 +127,7 @@ function seedStagingData(stagingDir: string): string {
 }
 
 /** Dynamically import staged backend modules and create an isolated AppContext */
-async function createStagingContext(stagingDir: string, dataDir: string): Promise<{ ctx: AppContext; db: import("node:sqlite").DatabaseSync }> {
+async function createStagingContext(stagingDir: string, dataDir: string): Promise<{ ctx: AppContext; db: DatabaseSync }> {
   const base = pathToFileURL(join(stagingDir, "src", "server")).href;
   const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
 
@@ -171,11 +170,16 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const readStateStore = readStateStoreMod.createReadStateStore(db);
   const todoStore = todoStoreMod.createTodoStore(db, globalBus);
 
+  // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
+  const copilotHome = join(dataDir, ".copilot");
+  mkdirSync(copilotHome, { recursive: true });
+
   const ctx: AppContext = {
     taskStore, taskGroupStore, scheduleStore, settingsStore,
     sessionMetaStore, sessionTitles, readStateStore, todoStore,
     globalBus, eventBusRegistry,
     sessionManager: null as any,
+    copilotHome,
     isStaging: true,
   };
 
@@ -186,9 +190,6 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
 
   // Create a real SessionManager with its own CopilotClient (stdio mode = independent CLI process)
   // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
-  const copilotHome = join(dataDir, ".copilot");
-  mkdirSync(copilotHome, { recursive: true });
-
   const sm = new sessionManagerMod.SessionManager({
     tools: stagingTools,
     globalBus,
@@ -197,6 +198,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     taskStore,
     config: { sessionMcpServers: settingsStore.getMcpServers() },
     clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
+    copilotHome,
   });
   ctx.sessionManager = sm;
 
