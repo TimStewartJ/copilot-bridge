@@ -689,10 +689,13 @@ export class SessionManager {
           const ok = data?.success !== false;
           const isAgent = subAgentMap.has(data?.toolCallId);
           const agentDisplayName = subAgentMap.get(data?.toolCallId);
-          // Use captured sub-agent response text if available, fall back to raw tool result
-          const result = isAgent
-            ? (subAgentResponseMap.get(data?.toolCallId) ?? data?.result?.content)
-            : data?.result?.content;
+          // Use captured sub-agent response text if available, fall back to raw tool result.
+          // On failure, surface the error message so the UI can display it.
+          const result = !ok && data?.error?.message
+            ? data.error.message
+            : isAgent
+              ? (subAgentResponseMap.get(data?.toolCallId) ?? data?.result?.content)
+              : data?.result?.content;
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${isAgent ? agentDisplayName : completedToolName} (${ok ? "ok" : "failed"})`);
           bus.emit({
             type: "tool_done",

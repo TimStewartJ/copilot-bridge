@@ -26,7 +26,7 @@ const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 const activePreviews = new Map<string, string>();
 
 /** Active staging backend contexts: prefix → cleanup function */
-const activeStagingBackends = new Map<string, { ctx: AppContext; router: express.Router; cleanup: () => Promise<void> }>();
+const activeStagingBackends = new Map<string, { ctx: AppContext; router: express.Router; db?: import("node:sqlite").DatabaseSync; cleanup: () => Promise<void> }>();
 
 /** Active staged API routers: prefix → router (for delegating middleware in index.ts) */
 const activeStagingRouters = new Map<string, express.Router>();
@@ -128,7 +128,7 @@ function seedStagingData(stagingDir: string): string {
 }
 
 /** Dynamically import staged backend modules and create an isolated AppContext */
-async function createStagingContext(stagingDir: string, dataDir: string): Promise<AppContext> {
+async function createStagingContext(stagingDir: string, dataDir: string): Promise<{ ctx: AppContext; db: import("node:sqlite").DatabaseSync }> {
   const base = pathToFileURL(join(stagingDir, "src", "server")).href;
   const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
 
@@ -203,10 +203,10 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   // Store the apiRouter factory for mounting
   (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;
 
-  return ctx;
+  return { ctx, db };
 }
 
-/** Tear down a staging backend: shutdown SDK, remove data */
+/** Tear down a staging backend: shutdown SDK, close DB, remove data */
 async function teardownStagingBackend(prefix: string): Promise<void> {
   const staging = activeStagingBackends.get(prefix);
   if (!staging) return;
@@ -217,6 +217,10 @@ async function teardownStagingBackend(prefix: string): Promise<void> {
     await staging.cleanup();
   } catch (err) {
     log(`Warning: staging cleanup error: ${err}`);
+  }
+  // Close the SQLite handle before deleting data files (prevents EPERM on Windows)
+  if (staging.db) {
+    try { staging.db.close(); } catch (err) { log(`Warning: staging DB close error: ${err}`); }
   }
   activeStagingBackends.delete(prefix);
   const stagingDir = join(STAGING_PARENT, prefix);
@@ -424,7 +428,7 @@ export const STAGING_TOOLS = [
 
           // Create staging AppContext from worktree code
           log(`Creating staging backend context from ${stagingDir}...`);
-          const ctx = await createStagingContext(stagingDir, dataDir);
+          const { ctx, db: stagingDb } = await createStagingContext(stagingDir, dataDir);
 
           // Initialize the staging SessionManager (spawns its own CLI process)
           log("Initializing staging Copilot SDK...");
@@ -440,6 +444,7 @@ export const STAGING_TOOLS = [
           activeStagingBackends.set(prefix, {
             ctx,
             router: stagedRouter,
+            db: stagingDb,
             cleanup: async () => {
               try {
                 await ctx.sessionManager.gracefulShutdown();
@@ -599,11 +604,15 @@ export const STAGING_TOOLS = [
       triggerRestartPending();
       log("Restart signal sent");
 
-      // Cleanup staging worktree and branch
-      removeWorktree(stagingDir, branch);
-      removeStagingDist(prefix);
-      await teardownStagingBackend(prefix);
-      log("Staging worktree cleaned up");
+      // Cleanup staging worktree and branch (best-effort — deploy already succeeded)
+      try {
+        removeWorktree(stagingDir, branch);
+        removeStagingDist(prefix);
+        await teardownStagingBackend(prefix);
+        log("Staging worktree cleaned up");
+      } catch (err) {
+        log(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
+      }
 
       return {
         success: true,
