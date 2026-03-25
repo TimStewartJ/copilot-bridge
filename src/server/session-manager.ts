@@ -385,6 +385,8 @@ export interface SessionManagerDeps {
   sessionTitles: SessionTitlesStore;
   taskStore: TaskStore;
   config: { sessionMcpServers: Record<string, any> };
+  /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
+  clientEnv?: Record<string, string | undefined>;
 }
 
 export class SessionManager {
@@ -475,7 +477,9 @@ export class SessionManager {
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
     _instance = this;
-    this.client = new CopilotClient();
+    this.client = new CopilotClient(
+      this.deps.clientEnv ? { env: this.deps.clientEnv } : undefined,
+    );
     await this.client.start();
     this.deps.sessionTitles.loadTitles();
     console.log("[sdk] Copilot SDK client ready");

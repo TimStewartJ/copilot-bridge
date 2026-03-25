@@ -31,24 +31,17 @@ const activeStagingBackends = new Map<string, { ctx: AppContext; router: express
 /** Active staged API routers: prefix → router (for delegating middleware in index.ts) */
 const activeStagingRouters = new Map<string, express.Router>();
 
-// Debug: module identity check
-const _moduleId = Math.random().toString(36).slice(2, 8);
-console.log(`[staging] Module loaded, id=${_moduleId}, activeStagingRouters is Map@${activeStagingRouters}`);
-
 /** Registered Express app — set by registerExpressApp() from index.ts */
 let _expressApp: express.Application | null = null;
 
 /** Register the Express app so staging tools can mount/unmount routers */
 export function registerExpressApp(app: express.Application): void {
   _expressApp = app;
-  console.log(`[staging] registerExpressApp called, moduleId=${_moduleId}`);
 }
 
 /** Get the staged API router for a prefix (used by delegating middleware in index.ts) */
 export function getStagingRouter(prefix: string): express.Router | undefined {
-  const result = activeStagingRouters.get(prefix);
-  console.log(`[staging] getStagingRouter(${prefix}): ${result ? 'FOUND' : 'NOT FOUND'}, map size=${activeStagingRouters.size}, moduleId=${_moduleId}`);
-  return result;
+  return activeStagingRouters.get(prefix);
 }
 
 /** Returns the map of active staging previews for the Express middleware to use. */
@@ -187,6 +180,10 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const stagingTools = allTools.filter((t: any) => !excludeTools.has(t.name));
 
   // Create a real SessionManager with its own CopilotClient (stdio mode = independent CLI process)
+  // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
+  const copilotHome = join(dataDir, ".copilot");
+  mkdirSync(copilotHome, { recursive: true });
+
   const sm = new sessionManagerMod.SessionManager({
     tools: stagingTools,
     globalBus,
@@ -194,6 +191,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     sessionTitles,
     taskStore,
     config: { sessionMcpServers: settingsStore.getMcpServers() },
+    clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
   });
   ctx.sessionManager = sm;
 
@@ -431,7 +429,7 @@ export const STAGING_TOOLS = [
           const createRouter = (ctx as any)._createApiRouter;
           const stagedRouter = createRouter(ctx);
           activeStagingRouters.set(prefix, stagedRouter);
-          log(`Staged API registered for prefix ${prefix}, map size=${activeStagingRouters.size}, moduleId=${_moduleId}`);
+          log(`Staged API registered for prefix ${prefix}`);
 
           // Store for cleanup
           activeStagingBackends.set(prefix, {
