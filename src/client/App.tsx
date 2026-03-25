@@ -36,34 +36,7 @@ import PullToRefresh from "./components/PullToRefresh";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { fetchSettings } from "./api";
-
-// ── Last-viewed session per task (localStorage) ─────────────
-const LAST_VIEWED_KEY = "bridge-last-session";
-
-function getLastViewedSession(taskId: string): string | null {
-  try {
-    const map = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "{}");
-    return map[taskId] ?? null;
-  } catch { return null; }
-}
-
-function setLastViewedSession(taskId: string, sessionId: string) {
-  try {
-    const map = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "{}");
-    map[taskId] = sessionId;
-    localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map));
-  } catch {}
-}
-
-function clearLastViewedSession(sessionId: string) {
-  try {
-    const map = JSON.parse(localStorage.getItem(LAST_VIEWED_KEY) || "{}");
-    for (const key of Object.keys(map)) {
-      if (map[key] === sessionId) delete map[key];
-    }
-    localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map));
-  } catch {}
-}
+import { getLastViewedSession, setLastViewedSession, clearLastViewedSession } from "./last-viewed";
 
 export default function App() {
   const navigate = useNavigate();

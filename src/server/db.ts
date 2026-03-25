@@ -52,6 +52,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS task_sessions (
       taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       sessionId TEXT NOT NULL,
+      linkedAt TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (taskId, sessionId)
     );
 
@@ -152,6 +153,13 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
     CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
   `);
+
+  // ── Migrations ──────────────────────────────────────────────────
+  // Add linkedAt column to task_sessions if missing (existing rows get a fixed fallback)
+  const cols = db.prepare("PRAGMA table_info(task_sessions)").all() as any[];
+  if (!cols.some((c: any) => c.name === "linkedAt")) {
+    db.exec("ALTER TABLE task_sessions ADD COLUMN linkedAt TEXT NOT NULL DEFAULT '2000-01-01T00:00:00Z'");
+  }
 }
 
 export type { DatabaseSync };
