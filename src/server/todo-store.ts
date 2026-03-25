@@ -13,9 +13,10 @@ export interface Todo {
   order: number;
   createdAt: string;
   completedAt?: string;
+  deadline?: string; // YYYY-MM-DD date string
 }
 
-type TodoUpdate = Partial<Pick<Todo, "text" | "done">>;
+type TodoUpdate = Partial<Pick<Todo, "text" | "done" | "deadline">>;
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
       order: row.order,
       createdAt: row.createdAt,
       completedAt: row.completedAt ?? undefined,
+      deadline: row.deadline ?? undefined,
     };
   }
 
@@ -45,7 +47,7 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
     return row ? hydrate(row) : undefined;
   }
 
-  function createTodo(taskId: string, text: string): Todo {
+  function createTodo(taskId: string, text: string, deadline?: string): Todo {
     // Verify task exists
     const task = db.prepare("SELECT id FROM tasks WHERE id = ?").get(taskId) as any;
     if (!task) throw new Error(`Task ${taskId} not found`);
@@ -55,9 +57,9 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
     const maxOrder = (db.prepare('SELECT MAX("order") as mx FROM todos WHERE taskId = ?').get(taskId) as any).mx ?? -1;
 
     db.prepare(`
-      INSERT INTO todos (id, taskId, text, done, "order", createdAt)
-      VALUES (?, ?, ?, 0, ?, ?)
-    `).run(id, taskId, text, maxOrder + 1, now);
+      INSERT INTO todos (id, taskId, text, done, "order", createdAt, deadline)
+      VALUES (?, ?, ?, 0, ?, ?, ?)
+    `).run(id, taskId, text, maxOrder + 1, now, deadline ?? null);
 
     emitChange(taskId);
     return getTodo(id)!;
@@ -81,6 +83,10 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
         fields.push("completedAt = ?");
         values.push(null);
       }
+    }
+    if ("deadline" in updates) {
+      fields.push("deadline = ?");
+      values.push(updates.deadline ?? null);
     }
 
     if (fields.length > 0) {
@@ -118,7 +124,18 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
     `).all() as any[]).map(hydrate);
   }
 
-  return { listTodos, getTodo, createTodo, updateTodo, deleteTodo, reorderTodos, listAllOpen };
+  /** Get recently completed todos (last 7 days) across active tasks */
+  function listRecentlyCompleted(): Todo[] {
+    const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    return (db.prepare(`
+      SELECT todos.* FROM todos
+      JOIN tasks ON todos.taskId = tasks.id
+      WHERE todos.done = 1 AND tasks.status = 'active' AND todos.completedAt >= ?
+      ORDER BY todos.completedAt DESC
+    `).all(weekAgo) as any[]).map(hydrate);
+  }
+
+  return { listTodos, getTodo, createTodo, updateTodo, deleteTodo, reorderTodos, listAllOpen, listRecentlyCompleted };
 }
 
 export type TodoStore = ReturnType<typeof createTodoStore>;

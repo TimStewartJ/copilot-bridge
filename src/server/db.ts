@@ -160,6 +160,12 @@ function initSchema(db: DatabaseSync): void {
   if (!cols.some((c: any) => c.name === "linkedAt")) {
     db.exec("ALTER TABLE task_sessions ADD COLUMN linkedAt TEXT NOT NULL DEFAULT '2000-01-01T00:00:00Z'");
   }
+
+  // Add deadline column to todos
+  const todoCols = db.prepare("PRAGMA table_info(todos)").all() as any[];
+  if (!todoCols.some((c: any) => c.name === "deadline")) {
+    db.exec('ALTER TABLE todos ADD COLUMN deadline TEXT');
+  }
 }
 
 export type { DatabaseSync };

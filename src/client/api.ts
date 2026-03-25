@@ -90,6 +90,19 @@ export interface TaskGroup {
   updatedAt: string;
 }
 
+// ── Todo types ────────────────────────────────────────────────────
+
+export interface Todo {
+  id: string;
+  taskId: string;
+  text: string;
+  done: boolean;
+  order: number;
+  createdAt: string;
+  completedAt?: string;
+  deadline?: string; // YYYY-MM-DD
+}
+
 // ── Enriched types ────────────────────────────────────────────────
 
 export interface EnrichedWorkItem {
@@ -373,6 +386,7 @@ export interface DashboardActiveTask {
   task: Task;
   workItemSummary: { total: number; byState: Record<string, number> };
   prSummary: { total: number; active: number; completed: number };
+  todoSummary: { total: number; done: number; open: number; overdue: number };
   hasUnread: boolean;
   hasBusySession: boolean;
   lastActivity: string;
@@ -387,12 +401,26 @@ export interface DashboardOrphanSession {
   unread: boolean;
 }
 
+export interface DashboardTodo {
+  id: string;
+  taskId: string;
+  text: string;
+  done: boolean;
+  order: number;
+  createdAt: string;
+  deadline?: string;
+  taskTitle: string;
+  taskGroupColor: string | null;
+}
+
 export interface DashboardData {
   busySessions: DashboardBusySession[];
   unreadSessions: DashboardUnreadSession[];
   lastActiveTask: DashboardActiveTask | null;
   activeTasks: DashboardActiveTask[];
   orphanSessions: DashboardOrphanSession[];
+  openTodos: DashboardTodo[];
+  completedTodos: DashboardTodo[];
 }
 
 export async function fetchDashboard(): Promise<DashboardData> {
@@ -507,4 +535,51 @@ export async function deleteSchedule(id: string): Promise<void> {
 
 export async function triggerSchedule(id: string): Promise<{ sessionId?: string; skipped?: string }> {
   return apiFetch<{ sessionId?: string; skipped?: string }>(`/api/schedules/${id}/trigger`, {});
+}
+
+// ── Todo API ──────────────────────────────────────────────────────
+
+export async function fetchTodos(taskId: string): Promise<Todo[]> {
+  const data = await apiFetch<{ todos: Todo[] }>(`/api/tasks/${taskId}/todos`);
+  return data.todos;
+}
+
+export async function createTodo(taskId: string, text: string, deadline?: string): Promise<Todo> {
+  const data = await apiFetch<{ todo: Todo }>(`/api/tasks/${taskId}/todos`, { text, deadline });
+  return data.todo;
+}
+
+export async function patchTodo(
+  id: string,
+  updates: Partial<Pick<Todo, "text" | "done">> & { deadline?: string | null },
+): Promise<Todo> {
+  const res = await fetch(`${API_BASE}/api/todos/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.todo;
+}
+
+export async function deleteTodo(id: string): Promise<void> {
+  await fetch(`${API_BASE}/api/todos/${id}`, { method: "DELETE" });
+}
+
+export async function reorderTodos(taskId: string, todoIds: string[]): Promise<Todo[]> {
+  const res = await fetch(`${API_BASE}/api/tasks/${taskId}/todos/reorder`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ todoIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.todos;
 }

@@ -23,6 +23,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
+import type { TodoStore } from "./todo-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -167,7 +168,10 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Get task details including title, status, linked work items, PRs, and notes",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
-      return ctx.taskStore.getTask(args.taskId) ?? { error: "Task not found" };
+      const task = ctx.taskStore.getTask(args.taskId);
+      if (!task) return { error: "Task not found" };
+      const todos = ctx.todoStore.listTodos(args.taskId);
+      return { ...task, todos: todos.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })) };
     },
   }),
   defineTool("task_list", {
@@ -208,6 +212,49 @@ export function createBridgeTools(ctx: AppContext) {
       for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: undefined });
       ctx.taskGroupStore.deleteGroup(args.groupId);
       return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
+    },
+  }),
+  // ── Todo tools ────────────────────────────────────────────────
+  defineTool("todo_add", {
+    description: "Add a to-do item to a task's checklist",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, text: { type: "string", description: "The to-do text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["taskId", "text"] },
+    handler: async (args: any) => {
+      const todo = ctx.todoStore.createTodo(args.taskId, args.text, args.deadline);
+      return { success: true, message: `Todo added: "${todo.text}"${todo.deadline ? ` (due ${todo.deadline})` : ""}`, todoId: todo.id };
+    },
+  }),
+  defineTool("todo_list", {
+    description: "List all to-do items for a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
+    handler: async (args: any) => {
+      const todos = ctx.todoStore.listTodos(args.taskId);
+      const today = new Date().toISOString().slice(0, 10);
+      return {
+        todos: todos.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null, isOverdue: !t.done && !!t.deadline && t.deadline < today })),
+        total: todos.length,
+        done: todos.filter((t) => t.done).length,
+      };
+    },
+  }),
+  defineTool("todo_update", {
+    description: "Update a to-do item's text, done status, or deadline",
+    parameters: { type: "object", properties: { todoId: { type: "string", description: "The to-do item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: "string", description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["todoId"] },
+    handler: async (args: any) => {
+      const updates: Record<string, any> = {};
+      if (args.text !== undefined) updates.text = args.text;
+      if (args.done !== undefined) updates.done = args.done;
+      if (args.deadline !== undefined) updates.deadline = args.deadline || undefined;
+      if (Object.keys(updates).length === 0) return { error: "Provide at least one of: text, done, deadline" };
+      const todo = ctx.todoStore.updateTodo(args.todoId, updates);
+      return { success: true, message: `Todo ${args.done ? "completed" : "updated"}: "${todo.text}"` };
+    },
+  }),
+  defineTool("todo_remove", {
+    description: "Remove a to-do item from a task's checklist",
+    parameters: { type: "object", properties: { todoId: { type: "string", description: "The to-do item ID" } }, required: ["todoId"] },
+    handler: async (args: any) => {
+      ctx.todoStore.deleteTodo(args.todoId);
+      return { success: true, message: "Todo removed" };
     },
   }),
   defineTool("session_rename", {
@@ -390,6 +437,7 @@ export interface SessionManagerDeps {
   eventBusRegistry: EventBusRegistry;
   sessionTitles: SessionTitlesStore;
   taskStore: TaskStore;
+  todoStore?: TodoStore;
   config: { sessionMcpServers: Record<string, any> };
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
@@ -447,6 +495,19 @@ export class SessionManager {
       }
       if (task.notes.trim()) {
         contextParts.push(`Task notes:\n${task.notes}`);
+      }
+      const todos = this.deps.todoStore?.listTodos(task.id) ?? [];
+      if (todos.length > 0) {
+        const today = new Date().toISOString().slice(0, 10);
+        const todoLines = todos.map((t: any) => {
+          let line = `- [${t.done ? "x" : " "}] ${t.text}`;
+          if (t.deadline) {
+            const overdue = !t.done && t.deadline < today;
+            line += ` (due ${t.deadline}${overdue ? " ⚠️ OVERDUE" : ""})`;
+          }
+          return line;
+        }).join("\n");
+        contextParts.push(`Task checklist:\n${todoLines}`);
       }
     }
 

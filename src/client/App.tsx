@@ -255,8 +255,9 @@ export default function App() {
 
   // ── Navigation handlers ───────────────────────────────────────
 
-  const handleSelectTask = (id: string) => {
+  const handleSelectTask = (id: string, opts?: { todoId?: string }) => {
     setQuickChatsMode(false);
+    const todoParam = opts?.todoId ? `?todo=${opts.todoId}` : "";
     if (!isMobile) {
       const task = tasks.find((t) => t.id === id);
       if (task && task.sessionIds.length > 0) {
@@ -265,11 +266,11 @@ export default function App() {
           lastViewed && task.sessionIds.includes(lastViewed)
             ? lastViewed
             : task.sessionIds[task.sessionIds.length - 1];
-        navigate(`/tasks/${id}/sessions/${targetSessionId}`);
+        navigate(`/tasks/${id}/sessions/${targetSessionId}${todoParam}`);
         return;
       }
     }
-    navigate(`/tasks/${id}`);
+    navigate(`/tasks/${id}${todoParam}`);
   };
 
   const handleSelectQuickChats = () => {

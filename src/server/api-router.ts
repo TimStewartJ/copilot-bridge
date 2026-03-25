@@ -526,10 +526,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/tasks/:taskId/todos", (req, res) => {
-    const { text } = req.body;
+    const { text, deadline } = req.body;
     if (!text) return res.status(400).json({ error: "text is required" });
     try {
-      const todo = ctx.todoStore.createTodo(req.params.taskId, text);
+      const todo = ctx.todoStore.createTodo(req.params.taskId, text, deadline);
       res.json({ todo });
     } catch (err) {
       res.status(404).json({ error: String(err) });
@@ -696,10 +696,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
           enrichedSessions.find((s: any) => s.sessionId === sid)?.busy,
         );
 
+        // Todo summary
+        const todos = ctx.todoStore.listTodos(task.id);
+        const todoDone = todos.filter((t) => t.done).length;
+        const today = new Date().toISOString().slice(0, 10);
+        const todoOverdue = todos.filter((t) => !t.done && t.deadline && t.deadline < today).length;
+
         return {
           task,
           workItemSummary: { total: task.workItems.length, byState },
           prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted },
+          todoSummary: { total: todos.length, done: todoDone, open: todos.length - todoDone, overdue: todoOverdue },
           hasUnread,
           hasBusySession,
           lastActivity,
@@ -734,12 +741,34 @@ export function createApiRouter(ctx: AppContext): express.Router {
           unread: isUnread(s.sessionId, s.modifiedTime),
         }));
 
+      // Open todos across all active tasks
+      const openTodos = ctx.todoStore.listAllOpen().map((todo) => {
+        const task = tasks.find((t) => t.id === todo.taskId);
+        const taskTitle = task?.title ?? "Unknown";
+        const taskGroupColor = task?.groupId
+          ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
+          : null;
+        return { ...todo, taskTitle, taskGroupColor };
+      });
+
+      // Recently completed todos
+      const completedTodos = ctx.todoStore.listRecentlyCompleted().map((todo) => {
+        const task = tasks.find((t) => t.id === todo.taskId);
+        const taskTitle = task?.title ?? "Unknown";
+        const taskGroupColor = task?.groupId
+          ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
+          : null;
+        return { ...todo, taskTitle, taskGroupColor };
+      });
+
       res.json({
         busySessions,
         unreadSessions,
         lastActiveTask,
         activeTasks,
         orphanSessions,
+        openTodos,
+        completedTodos,
       });
     } catch (err) {
       console.error("[dashboard] Error:", err);

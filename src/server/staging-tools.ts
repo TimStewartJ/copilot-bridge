@@ -195,6 +195,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     eventBusRegistry,
     sessionTitles,
     taskStore,
+    todoStore,
     config: { sessionMcpServers: settingsStore.getMcpServers() },
     clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
   });

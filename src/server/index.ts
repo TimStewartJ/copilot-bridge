@@ -66,6 +66,7 @@ const sessionManager = new SessionManager({
   eventBusRegistry: defaultEventBusRegistry,
   sessionTitles,
   taskStore,
+  todoStore,
   config: { sessionMcpServers: config.sessionMcpServers },
 });
 defaultContext.sessionManager = sessionManager;

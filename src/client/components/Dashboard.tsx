@@ -1,15 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   fetchDashboard,
+  patchTodo,
   type DashboardData,
   type DashboardActiveTask,
   type DashboardOrphanSession,
+  type DashboardTodo,
 } from "../api";
 import { getLastViewedSession } from "../last-viewed";
-import { Loader2, MessageSquare, Plus, Zap, GitPullRequest, LayoutList } from "lucide-react";
+import { deadlineUrgency, deadlineLabel, CHECKBOX_URGENCY } from "../todo-helpers";
+import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
+import { Loader2, MessageSquare, Plus, Zap, GitPullRequest, LayoutList, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays } from "lucide-react";
 
 interface DashboardProps {
-  onSelectTask: (id: string) => void;
+  onSelectTask: (id: string, opts?: { todoId?: string }) => void;
   onSelectSession: (id: string) => void;
   onNewTask: () => void;
   onNewSession: () => void;
@@ -34,11 +38,17 @@ export default function Dashboard({
 }: DashboardProps) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [localOpenTodos, setLocalOpenTodos] = useState<DashboardTodo[]>([]);
+  const [localCompletedTodos, setLocalCompletedTodos] = useState<DashboardTodo[]>([]);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
 
   const loadDashboard = async () => {
     try {
       const d = await fetchDashboard();
       setData(d);
+      setLocalOpenTodos(d.openTodos);
+      setLocalCompletedTodos(d.completedTodos);
     } catch (err) {
       console.error("Failed to load dashboard:", err);
     } finally {
@@ -216,6 +226,82 @@ export default function Dashboard({
             )}
           </div>
         </div>
+
+        {/* ── Open Todos ──────────────────────────────────── */}
+        {(localOpenTodos.length > 0 || localCompletedTodos.length > 0) && (
+          <div className="space-y-3">
+            {localOpenTodos.length > 0 && (
+              <>
+                <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+                  <CheckSquare size={14} />
+                  Open To-Dos
+                  <span className="text-text-faint font-normal">({localOpenTodos.filter((t) => !exitingIds.has(t.id)).length})</span>
+                </h2>
+                <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
+                  {localOpenTodos.map((todo) => (
+                    <div
+                      key={todo.id}
+                      className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
+                      onAnimationEnd={() => {
+                        if (exitingIds.has(todo.id)) {
+                          setExitingIds((prev) => { const n = new Set(prev); n.delete(todo.id); return n; });
+                          setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                          setLocalCompletedTodos((prev) => [{ ...todo, done: true }, ...prev]);
+                        }
+                      }}
+                    >
+                      <DashboardTodoRow
+                        todo={todo}
+                        done={false}
+                        onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
+                        onToggle={async () => {
+                          setExitingIds((prev) => new Set(prev).add(todo.id));
+                          await patchTodo(todo.id, { done: true });
+                        }}
+                        onDeadlineChange={(deadline) => {
+                          setLocalOpenTodos((prev) => prev.map((t) =>
+                            t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
+                          ));
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {localCompletedTodos.length > 0 && (
+              <>
+                <button
+                  onClick={() => setShowCompleted((v) => !v)}
+                  className="text-sm font-medium text-text-muted flex items-center gap-1.5 hover:text-text-secondary transition-colors"
+                >
+                  {showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <Check size={14} />
+                  Completed
+                  <span className="text-text-faint font-normal">({localCompletedTodos.length})</span>
+                </button>
+                {showCompleted && (
+                  <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
+                    {localCompletedTodos.map((todo) => (
+                      <DashboardTodoRow
+                        key={todo.id}
+                        todo={todo}
+                        done={true}
+                        onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
+                        onToggle={async () => {
+                          setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                          setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
+                          await patchTodo(todo.id, { done: false });
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -255,6 +341,9 @@ function ResumeStrip({
           {activeTask.prSummary.total > 0 && (
             <span>{activeTask.prSummary.active} active PR{activeTask.prSummary.active !== 1 ? "s" : ""}</span>
           )}
+          {activeTask.todoSummary.total > 0 && (
+            <span>{activeTask.todoSummary.done}/{activeTask.todoSummary.total} todos</span>
+          )}
           <span>{timeAgo(activeTask.lastActivity)}</span>
         </div>
       </div>
@@ -289,7 +378,7 @@ function TaskCard({
   isResume: boolean;
   onSelect: () => void;
 }) {
-  const { task, workItemSummary, prSummary, hasUnread, hasBusySession } = data;
+  const { task, workItemSummary, prSummary, todoSummary, hasUnread, hasBusySession } = data;
 
   return (
     <button
@@ -346,6 +435,21 @@ function TaskCard({
                 {prSummary.completed} merged
               </span>
             )}
+          </span>
+        )}
+        {/* Todo summary */}
+        {todoSummary.total > 0 && (
+          <span className="flex items-center gap-1">
+            <CheckSquare size={10} />
+            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+              todoSummary.overdue > 0
+                ? "bg-danger/15 text-danger"
+                : todoSummary.open === 0
+                  ? "bg-success/15 text-success"
+                  : "bg-text-muted/15 text-text-muted"
+            }`}>
+              {todoSummary.done}/{todoSummary.total}{todoSummary.overdue > 0 ? ` · ${todoSummary.overdue} overdue` : ""}
+            </span>
           </span>
         )}
         <span>{timeAgo(data.lastActivity)}</span>
@@ -427,4 +531,98 @@ function stateColor(state: string): string {
   if (s === "removed")
     return "bg-danger/15 text-danger";
   return "bg-text-muted/10 text-text-muted";
+}
+
+// ── Dashboard Todo Row (unified open + completed) ─────────────────
+
+function DashboardTodoRow({
+  todo,
+  done,
+  onSelectTask,
+  onToggle,
+  onDeadlineChange,
+}: {
+  todo: DashboardTodo;
+  done: boolean;
+  onSelectTask: () => void;
+  onToggle: () => void;
+  onDeadlineChange?: (deadline: string | null) => void;
+}) {
+  const dateRef = useRef<HTMLInputElement>(null);
+  const urgency = deadlineUrgency(todo.deadline, done);
+  const groupBg = todo.taskGroupColor ? GROUP_COLOR_BG[todo.taskGroupColor] ?? "" : "";
+  const groupDot = todo.taskGroupColor ? GROUP_COLOR_DOT[todo.taskGroupColor] ?? "" : "";
+
+  return (
+    <div className="flex items-start gap-2.5 px-4 py-2.5 hover:bg-bg-hover transition-colors first:rounded-t-lg last:rounded-b-lg group">
+      {/* Checkbox */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        className={`mt-0.5 w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-colors ${
+          done
+            ? "bg-success/80 border-success/80 text-white hover:bg-success/60"
+            : CHECKBOX_URGENCY[urgency]
+        }`}
+        title={done ? "Mark incomplete" : "Mark complete"}
+      >
+        {done && <Check size={9} strokeWidth={3} />}
+      </button>
+
+      {/* Content — click navigates to task */}
+      <button
+        onClick={onSelectTask}
+        className="flex-1 min-w-0 text-left"
+      >
+        <div className={`text-sm truncate ${done ? "text-text-faint line-through" : "text-text-primary"}`}>
+          {todo.text}
+        </div>
+        <div className="text-xs mt-0.5 flex items-center gap-2">
+          {/* Task name pill with group color */}
+          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
+            groupBg ? `${groupBg} text-text-secondary` : "bg-bg-hover text-text-faint"
+          }`}>
+            {groupDot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${groupDot}`} />}
+            {todo.taskTitle}
+          </span>
+          {/* Deadline */}
+          {todo.deadline && !done && (
+            <span className={`shrink-0 flex items-center gap-0.5 ${
+              urgency === "overdue" ? "text-error" : urgency === "soon" ? "text-warning" : "text-text-faint"
+            }`}>
+              {urgency === "overdue" && <AlertTriangle size={10} />}
+              {deadlineLabel(todo.deadline)}
+            </span>
+          )}
+        </div>
+      </button>
+
+      {/* Date picker (hover action, open todos only) */}
+      {!done && (
+        <div className="hidden group-hover:flex items-center shrink-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              try { dateRef.current?.showPicker(); } catch { dateRef.current?.click(); }
+            }}
+            className="p-1 text-text-faint hover:text-accent transition-colors"
+            title="Set deadline"
+          >
+            <CalendarDays size={12} />
+          </button>
+          <input
+            ref={dateRef}
+            type="date"
+            className="sr-only"
+            tabIndex={-1}
+            value={todo.deadline ?? ""}
+            onChange={async (e) => {
+              const val = e.target.value || null;
+              onDeadlineChange?.(val);
+              await patchTodo(todo.id, { deadline: val });
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
 }
