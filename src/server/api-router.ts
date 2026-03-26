@@ -907,5 +907,155 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // ── Docs / Knowledge Base ─────────────────────────────────────────
+
+  if (ctx.docsStore && ctx.docsIndex) {
+    const docs = ctx.docsStore;
+    const docsIdx = ctx.docsIndex;
+
+    router.get("/docs/tree", (_req, res) => {
+      try {
+        res.json({ tree: docs.listTree() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.get("/docs/search", (req, res) => {
+      try {
+        const q = String(req.query.q || "");
+        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        const offset = Number(req.query.offset) || 0;
+        res.json(docsIdx.search(q, limit, offset));
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.post("/docs/reindex", (_req, res) => {
+      try {
+        const result = docsIdx.reindex();
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // Page CRUD — explicit sub-path to avoid wildcard conflicts
+    router.get("/docs/pages/*path", (req, res) => {
+      try {
+        const pagePath = (req.params as any).path;
+        const page = docs.readPage(pagePath);
+        if (!page) return res.status(404).json({ error: "Page not found" });
+        res.json(page);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.put("/docs/pages/*path", (req, res) => {
+      try {
+        const pagePath = (req.params as any).path;
+        const { content } = req.body;
+        if (typeof content !== "string") return res.status(400).json({ error: "content is required" });
+        const page = docs.writePage(pagePath, content);
+        docsIdx.indexPage(page);
+        res.json({ path: page.path, success: true });
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || String(err) });
+      }
+    });
+
+    router.delete("/docs/pages/*path", (req, res) => {
+      try {
+        const pagePath = (req.params as any).path;
+        docsIdx.removePage(pagePath);
+        const deleted = docs.deletePage(pagePath);
+        res.json({ deleted });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // DB collection routes
+    router.get("/docs/schema/:folder", (req, res) => {
+      try {
+        const schema = docs.readSchema(req.params.folder);
+        if (!schema) return res.status(404).json({ error: "Schema not found" });
+        const entries = docs.listDbEntries(req.params.folder);
+        res.json({ ...schema, entryCount: entries.length });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.put("/docs/schema/:folder", (req, res) => {
+      try {
+        const { name, fields } = req.body;
+        if (!name || !Array.isArray(fields)) return res.status(400).json({ error: "name and fields are required" });
+        const schema = docs.writeSchema(req.params.folder, { name, fields });
+        res.json({ ...schema, success: true });
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || String(err) });
+      }
+    });
+
+    router.get("/docs/db/:folder", (req, res) => {
+      try {
+        const folder = req.params.folder;
+        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        const offset = Number(req.query.offset) || 0;
+        const sortField = req.query._sort as string | undefined;
+        const sortOrder = (req.query._order as string | undefined) === "asc" ? "asc" as const : "desc" as const;
+
+        // Extract field filters from query (skip meta params)
+        const filters: Record<string, any> = {};
+        for (const [key, value] of Object.entries(req.query)) {
+          if (key.startsWith("_") || key === "limit" || key === "offset") continue;
+          filters[key] = value;
+        }
+
+        const result = docsIdx.queryByFolder(
+          folder,
+          Object.keys(filters).length ? filters : undefined,
+          sortField ? { field: sortField, order: sortOrder } : undefined,
+          limit,
+          offset,
+        );
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.post("/docs/db/:folder", (req, res) => {
+      try {
+        const { fields, body } = req.body;
+        if (!fields || typeof fields !== "object") return res.status(400).json({ error: "fields object is required" });
+        const entry = docs.addDbEntry(req.params.folder, fields, body);
+        // Index the new page
+        const page = docs.readPage(entry.path);
+        if (page) docsIdx.indexPage(page);
+        res.json({ path: entry.path, slug: entry.slug, success: true });
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || String(err) });
+      }
+    });
+
+    router.patch("/docs/db/:folder/:slug", (req, res) => {
+      try {
+        const { fields, body } = req.body;
+        if (!fields || typeof fields !== "object") return res.status(400).json({ error: "fields object is required" });
+        const entry = docs.updateDbEntry(req.params.folder, req.params.slug, fields, body);
+        // Re-index the updated page
+        const page = docs.readPage(entry.path);
+        if (page) docsIdx.indexPage(page);
+        res.json({ path: entry.path, success: true });
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || String(err) });
+      }
+    });
+  }
+
   return router;
 }

@@ -152,6 +152,20 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
     CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
+
+    -- Docs knowledge base — structured metadata table
+    CREATE TABLE IF NOT EXISTS docs_pages (
+      rowid INTEGER PRIMARY KEY,
+      path TEXT UNIQUE NOT NULL,
+      title TEXT,
+      tags TEXT,
+      body TEXT,
+      frontmatter_json TEXT,
+      folder TEXT,
+      created TEXT,
+      modified TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_docs_pages_folder ON docs_pages(folder);
   `);
 
   // ── Migrations ──────────────────────────────────────────────────
@@ -165,6 +179,18 @@ function initSchema(db: DatabaseSync): void {
   const todoCols = db.prepare("PRAGMA table_info(todos)").all() as any[];
   if (!todoCols.some((c: any) => c.name === "deadline")) {
     db.exec('ALTER TABLE todos ADD COLUMN deadline TEXT');
+  }
+
+  // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+        path, title, tags, body,
+        content='docs_pages', content_rowid='rowid'
+      );
+    `);
+  } catch {
+    // FTS5 table already exists or other issue — safe to ignore
   }
 }
 

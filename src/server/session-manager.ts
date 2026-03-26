@@ -425,6 +425,107 @@ export function createBridgeTools(ctx: AppContext) {
       return result;
     },
   }),
+
+  // ── Docs / Knowledge Base tools ─────────────────────────────────
+
+  ...(ctx.docsStore && ctx.docsIndex ? [
+    defineTool("docs_search", {
+      description: "Search the knowledge base using full-text search. Returns matching pages with titles, snippets, and relevance scores.",
+      parameters: { type: "object", properties: { query: { type: "string", description: "Search query text" }, limit: { type: "number", description: "Max results (default 20)" }, offset: { type: "number", description: "Offset for pagination (default 0)" } }, required: ["query"] },
+      handler: async (args: any) => ctx.docsIndex!.search(args.query, args.limit ?? 20, args.offset ?? 0),
+    }),
+    defineTool("docs_read", {
+      description: "Read a knowledge base page by its path. Returns frontmatter metadata and markdown body.",
+      parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'incidents/march-outage')" } }, required: ["path"] },
+      handler: async (args: any) => {
+        const page = ctx.docsStore!.readPage(args.path);
+        if (!page) return { error: `Page not found: ${args.path}` };
+        return { path: page.path, title: page.title, tags: page.tags, frontmatter: page.frontmatter, body: page.body };
+      },
+    }),
+    defineTool("docs_write", {
+      description: "Create or update a knowledge base page. Provide raw markdown content (with optional YAML frontmatter). Rejects writes to database collection folders — use docs_db_add for those.",
+      parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" }, content: { type: "string", description: "Raw markdown content (may include YAML frontmatter)" } }, required: ["path", "content"] },
+      handler: async (args: any) => {
+        try {
+          const page = ctx.docsStore!.writePage(args.path, args.content);
+          ctx.docsIndex!.indexPage(page);
+          return { path: page.path, success: true };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
+    defineTool("docs_list", {
+      description: "List pages and folders in the knowledge base. Returns a tree structure with file/folder types and database folder indicators.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Folder path to list (omit for root)" } }, required: [] },
+      handler: async (args: any) => ({ tree: ctx.docsStore!.listTree(args.folder) }),
+    }),
+    defineTool("docs_db_schema", {
+      description: "Get the schema for a database collection folder. Returns field names, types, options, and entry count. Call this before docs_db_add to discover valid fields.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" } }, required: ["folder"] },
+      handler: async (args: any) => {
+        const schema = ctx.docsStore!.readSchema(args.folder);
+        if (!schema) return { error: `No schema found for folder "${args.folder}"` };
+        const entries = ctx.docsStore!.listDbEntries(args.folder);
+        return { ...schema, entryCount: entries.length };
+      },
+    }),
+    defineTool("docs_db_add", {
+      description: "Create a new entry in a database collection. Pass structured field values — the server validates against the schema and generates the markdown file. Always include a 'title' field.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, fields: { type: "object", description: "Field values as key-value pairs. Must include 'title'. Other fields are validated against the folder's schema." }, body: { type: "string", description: "Optional markdown body content for the entry" } }, required: ["folder", "fields"] },
+      handler: async (args: any) => {
+        try {
+          const entry = ctx.docsStore!.addDbEntry(args.folder, args.fields, args.body);
+          const page = ctx.docsStore!.readPage(entry.path);
+          if (page) ctx.docsIndex!.indexPage(page);
+          return { path: entry.path, slug: entry.slug, success: true };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
+    defineTool("docs_db_update", {
+      description: "Update an existing database entry. Only the provided fields are changed — other fields are preserved. The server validates against the schema.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, slug: { type: "string", description: "Entry slug (filename without .md, returned by docs_db_add or docs_db_query)" }, fields: { type: "object", description: "Field values to update (only changed fields needed)" }, body: { type: "string", description: "Optional new markdown body content" } }, required: ["folder", "slug", "fields"] },
+      handler: async (args: any) => {
+        try {
+          const entry = ctx.docsStore!.updateDbEntry(args.folder, args.slug, args.fields, args.body);
+          const page = ctx.docsStore!.readPage(entry.path);
+          if (page) ctx.docsIndex!.indexPage(page);
+          return { path: entry.path, success: true };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
+    defineTool("docs_db_query", {
+      description: "Query entries in a database collection by field values. Supports equality filters, multi-value OR (pass array), pagination, and sorting.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, filters: { type: "object", description: "Field filters as key-value pairs. Arrays match any value (OR). Example: { severity: 'sev1' } or { severity: ['sev1', 'sev2'] }" }, _sort: { type: "string", description: "Field to sort by (default: 'modified')" }, _order: { type: "string", enum: ["asc", "desc"], description: "Sort order (default: 'desc')" }, _limit: { type: "number", description: "Max results (default 50)" }, _offset: { type: "number", description: "Offset for pagination (default 0)" } }, required: ["folder"] },
+      handler: async (args: any) => {
+        return ctx.docsIndex!.queryByFolder(
+          args.folder,
+          args.filters,
+          args._sort ? { field: args._sort, order: args._order ?? "desc" } : undefined,
+          args._limit ?? 50,
+          args._offset ?? 0,
+        );
+      },
+    }),
+    defineTool("docs_db_create", {
+      description: "Create a new database collection by defining a schema. Creates a folder with a _schema.yaml file. Supported field types: text, select, date, number, boolean, url.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Folder name for the new database (e.g., 'incidents')" }, name: { type: "string", description: "Human-readable name for the database (e.g., 'Incidents')" }, fields: { type: "array", description: "Array of field definitions", items: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["text", "select", "date", "number", "boolean", "url"] }, options: { type: "array", items: { type: "string" }, description: "Options for select fields" }, required: { type: "boolean" } }, required: ["name", "type"] } } }, required: ["folder", "name", "fields"] },
+      handler: async (args: any) => {
+        try {
+          ctx.docsStore!.writeSchema(args.folder, { name: args.name, fields: args.fields });
+          return { folder: args.folder, success: true };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
+  ] : []),
+
     ...STAGING_TOOLS,
   ];
 }

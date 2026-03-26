@@ -136,7 +136,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     taskStoreMod, taskGroupStoreMod,
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod,
     sessionTitlesMod, readStateStoreMod, todoStoreMod,
-    sessionManagerMod, apiRouterMod,
+    docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
@@ -150,6 +150,8 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     import(ts("session-titles.ts")),
     import(ts("read-state-store.ts")),
     import(ts("todo-store.ts")),
+    import(ts("docs-store.ts")).catch(() => null),
+    import(ts("docs-index.ts")).catch(() => null),
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
   ]);
@@ -169,6 +171,9 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
   const readStateStore = readStateStoreMod.createReadStateStore(db);
   const todoStore = todoStoreMod.createTodoStore(db, globalBus);
+  const docsStore = docsStoreMod?.createDocsStore(join(dataDir, "docs"));
+  const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
+  if (docsIndex) docsIndex.reindex();
 
   // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
   const copilotHome = join(dataDir, ".copilot");
@@ -177,6 +182,8 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const ctx: AppContext = {
     taskStore, taskGroupStore, scheduleStore, settingsStore,
     sessionMetaStore, sessionTitles, readStateStore, todoStore,
+    ...(docsStore && { docsStore }),
+    ...(docsIndex && { docsIndex }),
     globalBus, eventBusRegistry,
     sessionManager: null as any,
     copilotHome,

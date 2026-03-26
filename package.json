@@ -32,6 +32,7 @@
     "@github/copilot-sdk": "0.2.1-preview.1",
     "esbuild": "^0.27.4",
     "express": "^5.2.1",
+    "gray-matter": "^4.0.3",
     "lucide-react": "^0.577.0",
     "marked": "^17.0.4",
     "node-cron": "^4.2.1",
@@ -40,7 +41,8 @@
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.1",
     "remark-breaks": "^4.0.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
