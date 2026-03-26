@@ -204,7 +204,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     sessionTitles,
     taskStore,
     todoStore,
-    config: { sessionMcpServers: settingsStore.getMcpServers(), model: "gpt-4.1" },
+    config: { sessionMcpServers: settingsStore.getMcpServers(), model: "claude-haiku-4.5" },
     clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
     copilotHome,
   });
