@@ -155,13 +155,13 @@ export default function App() {
         break;
       case "session:idle":
         setSessions((prev) =>
-          prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: false, modifiedTime: new Date().toISOString() } : s),
+          prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: false } : s),
         );
         break;
       case "session:title":
         if (event.title) {
           setSessions((prev) =>
-            prev.map((s) => s.sessionId === event.sessionId ? { ...s, summary: event.title, modifiedTime: new Date().toISOString() } : s),
+            prev.map((s) => s.sessionId === event.sessionId ? { ...s, summary: event.title } : s),
           );
         }
         break;
