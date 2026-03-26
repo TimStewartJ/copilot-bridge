@@ -75,17 +75,17 @@ export default function TaskList({
   // Busy sessions are excluded from the unread check — unread only applies
   // once a session goes idle with new content the user hasn't seen.
   const taskIndicators = useMemo(() => {
-    const indicators = new Map<string, { busy: boolean; unread: boolean }>();
+    const indicators = new Map<string, { busy: boolean; unread: boolean; busyCount: number; unreadCount: number }>();
     for (const task of tasks) {
-      let hasBusy = false;
-      let hasUnread = false;
+      let busyCount = 0;
+      let unreadCount = 0;
       for (const sid of task.sessionIds) {
         const session = sessionMap.get(sid);
         if (!session || session.archived) continue;
-        if (session.busy) { hasBusy = true; continue; }
-        if (isUnread?.(sid, session.modifiedTime)) hasUnread = true;
+        if (session.busy) { busyCount++; continue; }
+        if (isUnread?.(sid, session.modifiedTime)) unreadCount++;
       }
-      indicators.set(task.id, { busy: hasBusy, unread: hasUnread });
+      indicators.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount });
     }
     return indicators;
   }, [tasks, sessionMap, isUnread]);
@@ -439,7 +439,7 @@ function SortableListItem({
 }: {
   task: Task;
   isActive: boolean;
-  indicator: { busy: boolean; unread: boolean } | undefined;
+  indicator: { busy: boolean; unread: boolean; busyCount: number; unreadCount: number } | undefined;
   isCtxTarget: boolean;
   isLongPressTarget: boolean;
   bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
@@ -452,11 +452,6 @@ function SortableListItem({
     opacity: isDragging ? 0 : 1,
     zIndex: isDragging ? 10 : undefined,
   };
-
-  const linkCount =
-    task.sessionIds.length +
-    task.workItems.length +
-    task.pullRequests.length;
 
   return (
     <div ref={setNodeRef} style={style} className="group">
@@ -494,7 +489,8 @@ function SortableListItem({
         </div>
         <div className="text-xs text-text-muted mt-0.5 transition-all duration-150 pl-0 group-hover:pl-4">
           {timeAgo(task.updatedAt)}
-          {linkCount > 0 && ` · ${linkCount} linked`}
+          {(indicator?.busyCount ?? 0) > 0 && ` · ${indicator!.busyCount} in flight`}
+          {(indicator?.unreadCount ?? 0) > 0 && ` · ${indicator!.unreadCount} unread`}
         </div>
       </button>
     </div>
