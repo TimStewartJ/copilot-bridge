@@ -8,8 +8,10 @@ import {
   type DashboardTodo,
 } from "../api";
 import { getLastViewedSession } from "../last-viewed";
+import { timeAgo } from "../time";
 import { deadlineUrgency, deadlineLabel, CHECKBOX_URGENCY } from "../todo-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
+import EmptyState from "./shared/EmptyState";
 import { Loader2, MessageSquare, Plus, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays } from "lucide-react";
 
 interface DashboardProps {
@@ -17,15 +19,6 @@ interface DashboardProps {
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
   onResumeTask: (taskId: string, sessionId?: string) => void;
-}
-
-function timeAgo(iso?: string): string {
-  if (!iso) return "";
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
 }
 
 export default function Dashboard({
@@ -378,33 +371,7 @@ function OrphanSessionRow({
   );
 }
 
-function EmptyState({
-  message,
-  sub,
-  action,
-  actionLabel,
-}: {
-  message: string;
-  sub: string;
-  action?: () => void;
-  actionLabel?: string;
-}) {
-  return (
-    <div className="text-center py-8 px-4 rounded-md bg-bg-surface border border-border">
-      <div className="text-sm text-text-muted">{message}</div>
-      <div className="text-xs text-text-faint mt-1">{sub}</div>
-      {action && actionLabel && (
-        <button
-          onClick={action}
-          className="mt-3 text-xs text-accent hover:text-accent-hover flex items-center gap-1 mx-auto"
-        >
-          <Plus size={12} />
-          {actionLabel}
-        </button>
-      )}
-    </div>
-  );
-}
+
 
 // ── Dashboard Todo Row (unified open + completed) ─────────────────
 

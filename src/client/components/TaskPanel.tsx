@@ -1,8 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session, EnrichedWorkItem, EnrichedPR, Schedule, Todo } from "../api";
+import type { Task, TaskGroup, Session, Todo } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
-import { fetchEnrichedTask, unlinkResource, fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule, patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
+import { unlinkResource, patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
+import { timeAgo } from "../time";
+import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
+import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
+import { useTaskSchedules } from "../hooks/useTaskSchedules";
+import { useNotesSheet } from "../hooks/useNotesSheet";
 import { deadlineLabel, deadlineUrgency, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../todo-helpers";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
@@ -14,11 +19,6 @@ import remarkBreaks from "remark-breaks";
 import {
   MessageSquare,
   MoreHorizontal,
-  Bug,
-  CheckSquare,
-  BookOpen,
-  Target,
-  Trophy,
   GitPullRequest,
   ClipboardList,
   Clock,
@@ -33,49 +33,10 @@ import {
   X,
   ListChecks,
   CalendarDays,
+  LayoutDashboard,
 } from "lucide-react";
 
-// ── Helpers ──────────────────────────────────────────────────────
-
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  if (diff < 0) {
-    // Future date
-    const absDiff = -diff;
-    if (absDiff < 60_000) return "in <1m";
-    if (absDiff < 3_600_000) return `in ${Math.round(absDiff / 60_000)}m`;
-    if (absDiff < 86_400_000) return `in ${Math.round(absDiff / 3_600_000)}h`;
-    return `in ${Math.round(absDiff / 86_400_000)}d`;
-  }
-  if (diff < 60_000) return "<1m ago";
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
-  return `${Math.round(diff / 86_400_000)}d ago`;
-}
-
-
-const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode }> = {
-  Bug: { icon: <Bug size={12} className="text-error" /> },
-  Task: { icon: <CheckSquare size={12} className="text-accent" /> },
-  "User Story": { icon: <BookOpen size={12} className="text-success" /> },
-  Feature: { icon: <Target size={12} className="text-agent" /> },
-  Epic: { icon: <Trophy size={12} className="text-warning" /> },
-};
-
-const WI_STATE_STYLES: Record<string, string> = {
-  New: "bg-text-muted/15 text-text-muted",
-  Active: "bg-accent/15 text-accent",
-  "In Progress": "bg-accent/15 text-accent",
-  Resolved: "bg-success/15 text-success",
-  Closed: "bg-text-faint/15 text-text-faint",
-  Done: "bg-success/15 text-success",
-};
-
-const PR_STATUS_DOTS: Record<string, string> = {
-  active: "bg-accent",
-  completed: "bg-success",
-  abandoned: "bg-warning",
-};
+// ── Compact section header for sidebar ───────────────────────────
 
 
 
@@ -127,6 +88,7 @@ interface TaskPanelProps {
   hasDraft?: (sessionId: string) => boolean;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onRefresh?: () => Promise<void>;
+  onViewDashboard?: (taskId: string) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -157,28 +119,27 @@ export default function TaskPanel({
   hasDraft,
   onMoveTaskToGroup,
   onRefresh,
+  onViewDashboard,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
-  // ── Notes sheet state ────────────────────────────────────────
-  const [notesSheetOpen, setNotesSheetOpen] = useState(false);
-  const [notesStartEdit, setNotesStartEdit] = useState(false);
+  // ── Notes sheet (shared hook) ────────────────────────────────
+  const notes = useNotesSheet(task?.id);
 
   // ── CWD editing state ──────────────────────────────────────
   const [editingCwd, setEditingCwd] = useState(false);
   const [cwdDraft, setCwdDraft] = useState("");
   const [cwdCopied, setCwdCopied] = useState(false);
 
-  // ── Enrichment state ─────────────────────────────────────────
-  const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
-  const [enrichedPRs, setEnrichedPRs] = useState<EnrichedPR[]>([]);
+  // ── Enrichment (shared hook) ─────────────────────────────────
+  const { enrichedWIs, enrichedPRs } = useTaskEnrichment(
+    task?.id, task?.workItems.length ?? 0, task?.pullRequests.length ?? 0,
+  );
 
-  // ── Schedules state ─────────────────────────────────────────
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
-  const [scheduleEditorOpen, setScheduleEditorOpen] = useState(false);
-  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  // ── Schedules (shared hook) ─────────────────────────────────
+  const sched = useTaskSchedules(task?.id, scheduleVersion);
 
   // ── Todos state ─────────────────────────────────────────────
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -198,32 +159,6 @@ export default function TaskPanel({
     }
   }, [searchParams]);
 
-  useEffect(() => {
-    if (
-      task &&
-      (task.workItems.length > 0 || task.pullRequests.length > 0)
-    ) {
-      fetchEnrichedTask(task.id)
-        .then((data) => {
-          setEnrichedWIs(data.workItems);
-          setEnrichedPRs(data.pullRequests);
-        })
-        .catch(() => {});
-    } else {
-      setEnrichedWIs([]);
-      setEnrichedPRs([]);
-    }
-  }, [task?.id, task?.workItems.length, task?.pullRequests.length]);
-
-  // Fetch schedules for this task
-  useEffect(() => {
-    if (task) {
-      fetchSchedules(task.id).then(setSchedules).catch(() => setSchedules([]));
-    } else {
-      setSchedules([]);
-    }
-  }, [task?.id, scheduleVersion]);
-
   // Fetch todos for this task
   useEffect(() => {
     if (task) {
@@ -236,8 +171,6 @@ export default function TaskPanel({
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
-    setNotesSheetOpen(false);
-    setNotesStartEdit(false);
     setEditingCwd(false);
   }, [task?.id]);
 
@@ -306,6 +239,16 @@ export default function TaskPanel({
     <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border min-w-0 overflow-hidden">
       {/* Header — inline task editing */}
       <div className="p-3 border-b border-border">
+        {/* Dashboard link */}
+        {onViewDashboard && (
+          <button
+            onClick={() => onViewDashboard(task.id)}
+            className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-accent transition-colors mb-1.5"
+          >
+            <LayoutDashboard size={10} />
+            <span>Task Overview</span>
+          </button>
+        )}
         <div className="flex items-start gap-2">
           {/* Title (click-to-edit) */}
           <div className="flex-1 min-w-0">
@@ -506,7 +449,7 @@ export default function TaskPanel({
                   <div className="flex items-center gap-1.5">
                     {pr.status && (
                       <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${PR_STATUS_DOTS[pr.status] ?? "bg-text-muted"}`}
+                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${PR_STATUS_STYLES[pr.status]?.dot ?? "bg-text-muted"}`}
                       />
                     )}
                     {!pr.status && (
@@ -535,9 +478,9 @@ export default function TaskPanel({
         {/* Schedules */}
         <div>
           <div className="flex items-center justify-between px-3 py-1">
-            <SectionLabel label="Schedules" count={schedules.length} />
+            <SectionLabel label="Schedules" count={sched.schedules.length} />
             <button
-              onClick={() => { setEditingSchedule(null); setScheduleEditorOpen(true); }}
+              onClick={() => sched.openEditor()}
               className="text-[10px] text-accent hover:text-accent-hover transition-colors flex items-center gap-0.5"
               title="Add schedule"
             >
@@ -545,9 +488,9 @@ export default function TaskPanel({
               <span>Add</span>
             </button>
           </div>
-          {schedules.length > 0 ? (
+          {sched.schedules.length > 0 ? (
             <div className="space-y-0.5">
-              {schedules.map((schedule) => (
+              {sched.schedules.map((schedule) => (
                 <div
                   key={schedule.id}
                   className="px-3 py-1.5 text-xs hover:bg-bg-hover rounded-md transition-colors group"
@@ -559,37 +502,28 @@ export default function TaskPanel({
                     </span>
                     <div className="hidden group-hover:flex items-center gap-0.5">
                       <button
-                        onClick={async () => {
-                          await triggerSchedule(schedule.id);
-                          fetchSchedules(task.id).then(setSchedules).catch(() => {});
-                        }}
+                        onClick={() => sched.trigger(schedule.id)}
                         className="p-0.5 text-text-muted hover:text-success transition-colors"
                         title="Run now"
                       >
                         <Play size={10} />
                       </button>
                       <button
-                        onClick={async () => {
-                          await patchSchedule(schedule.id, { enabled: !schedule.enabled });
-                          fetchSchedules(task.id).then(setSchedules).catch(() => {});
-                        }}
+                        onClick={() => sched.toggle(schedule)}
                         className="p-0.5 text-text-muted hover:text-warning transition-colors"
                         title={schedule.enabled ? "Pause" : "Resume"}
                       >
                         <Pause size={10} />
                       </button>
                       <button
-                        onClick={() => { setEditingSchedule(schedule); setScheduleEditorOpen(true); }}
+                        onClick={() => sched.openEditor(schedule)}
                         className="p-0.5 text-text-muted hover:text-text-primary transition-colors"
                         title="Edit"
                       >
                         <MoreHorizontal size={10} />
                       </button>
                       <button
-                        onClick={async () => {
-                          await deleteSchedule(schedule.id);
-                          fetchSchedules(task.id).then(setSchedules).catch(() => {});
-                        }}
+                        onClick={() => sched.remove(schedule.id)}
                         className="p-0.5 text-text-muted hover:text-error transition-colors"
                         title="Delete"
                       >
@@ -614,16 +548,12 @@ export default function TaskPanel({
         </div>
 
         {/* Schedule Editor Dialog */}
-        {scheduleEditorOpen && (
+        {sched.scheduleEditorOpen && (
           <ScheduleEditorDialog
             taskId={task.id}
-            schedule={editingSchedule}
-            onClose={() => { setScheduleEditorOpen(false); setEditingSchedule(null); }}
-            onSaved={() => {
-              setScheduleEditorOpen(false);
-              setEditingSchedule(null);
-              fetchSchedules(task.id).then(setSchedules).catch(() => {});
-            }}
+            schedule={sched.editingSchedule}
+            onClose={sched.closeEditor}
+            onSaved={sched.onSaved}
           />
         )}
 
@@ -697,7 +627,7 @@ export default function TaskPanel({
           <SectionLabel label="Notes" />
           {task.notes ? (
             <div
-              onClick={() => { setNotesStartEdit(false); setNotesSheetOpen(true); }}
+              onClick={notes.openToView}
               className="px-3 py-1.5 cursor-pointer hover:bg-bg-hover rounded-md transition-colors relative"
               title="Click to view notes"
             >
@@ -716,7 +646,7 @@ export default function TaskPanel({
           ) : (
             <div className="px-3 py-1">
               <button
-                onClick={() => { setNotesStartEdit(true); setNotesSheetOpen(true); }}
+                onClick={notes.openToEdit}
                 className="text-[10px] text-text-faint hover:text-accent transition-colors"
               >
                 Add notes…
@@ -726,15 +656,15 @@ export default function TaskPanel({
         </div>
 
         {/* Notes Sheet */}
-        {notesSheetOpen && (
+        {notes.notesSheetOpen && (
           <NotesSheet
             notes={task.notes}
-            startInEditMode={notesStartEdit}
+            startInEditMode={notes.notesStartEdit}
             onSave={async (newNotes) => {
               await patchTask(task.id, { notes: newNotes });
               onTasksChanged?.();
             }}
-            onClose={() => { setNotesSheetOpen(false); setNotesStartEdit(false); }}
+            onClose={notes.close}
           />
         )}
       </PullToRefresh>

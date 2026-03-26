@@ -27,6 +27,7 @@ import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
+import TaskDashboard from "./components/TaskDashboard";
 import TaskList from "./components/TaskList";
 import ChatView from "./components/ChatView";
 import Dashboard from "./components/Dashboard";
@@ -48,6 +49,7 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [taskNotFound, setTaskNotFound] = useState(false);
   const [quickChatsMode, setQuickChatsMode] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
   const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
@@ -77,14 +79,20 @@ export default function App() {
   // Sync selectedTask when activeTaskId changes
   useEffect(() => {
     if (activeTaskId) {
+      setTaskNotFound(false);
       // Try local cache first
       const cached = tasks.find((t) => t.id === activeTaskId);
       if (cached) {
         setSelectedTask(cached);
       } else {
-        fetchTask(activeTaskId).then(setSelectedTask).catch(() => setSelectedTask(null));
+        fetchTask(activeTaskId).then(setSelectedTask).catch(() => {
+          setSelectedTask(null);
+          setTaskNotFound(true);
+        });
       }
       setQuickChatsMode(false);
+    } else {
+      setTaskNotFound(false);
     }
   }, [activeTaskId]);
 
@@ -561,9 +569,12 @@ export default function App() {
   // On mobile (< md / 768px), we show stacked full-screen views.
   // The route determines which level of the hierarchy is visible.
 
+  const isTaskDashboard = !!activeTaskId && !activeSessionId;
+
   const isMobileRoute = {
     taskList: location.pathname === "/" && !activeTaskId && !activeSessionId,
-    taskPanel: !!activeTaskId && !activeSessionId,
+    taskDashboard: isTaskDashboard,
+    taskPanel: !!activeTaskId && !!activeSessionId,
     chat: !!activeSessionId,
     settings: location.pathname === "/settings",
   };
@@ -598,93 +609,101 @@ export default function App() {
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
-      {/* Desktop: always visible as fixed-width middle column */}
-      {/* Mobile: show task list at /, task panel at /tasks/:id */}
-      <div className={`
-        md:flex md:shrink-0 min-w-0
-        ${isMobileRoute.taskList || isMobileRoute.taskPanel ? "flex flex-1 md:flex-none" : ""}
-        ${isMobileRoute.chat || isMobileRoute.settings ? "hidden md:flex" : ""}
-      `.trim()}>
-        {/* Mobile task list — full screen at / */}
-        <div className={`md:hidden min-w-0 ${isMobileRoute.taskList ? "flex flex-col flex-1" : "hidden"}`}>
-          <MobileTaskListView
-            tasks={tasks}
-            activeTaskId={activeTaskId}
-            onSelectTask={handleSelectTask}
-            onNewTask={handleNewTask}
-            onSelectQuickChats={handleSelectQuickChats}
-            onGoHome={handleGoHome}
-            onOpenSettings={handleOpenSettings}
-            sessions={sessions}
-            isUnread={isUnread}
-            markRead={markRead}
-            onUpdateTask={handleUpdateTask}
-            onDeleteTask={handleDeleteTask}
-            onReorderTasks={handleReorderTasks}
-            quickChatsMode={quickChatsMode}
-            taskGroups={taskGroups}
-            onMoveTaskToGroup={handleMoveTaskToGroup}
-            onMoveAndReorder={handleMoveAndReorder}
-            onCreateGroup={handleCreateGroup}
-            onUpdateGroup={handleUpdateGroup}
-            onDeleteGroup={handleDeleteGroup}
-            onReorderGroups={handleReorderGroups}
-            orphanSessions={globalSessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={(id) => navigate(`/sessions/${id}`)}
-            onNewQuickChat={handleNewQuickChat}
-            onArchiveSession={handleArchiveSession}
-            archivingIds={archivingIds}
-            exitingIds={exitingIds}
-            allTasks={tasks}
-            onLinkToTask={handleLinkToTask}
-            onDeleteSession={handleDeleteSession}
-            markUnread={markUnread}
-            onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
-            hasDraft={hasDraft}
-          />
-        </div>
+      {/* Desktop: visible when a session is active or quick chats (not on task dashboard or home) */}
+      {/* Mobile: show task list at / only */}
+      {(() => {
+        const showDesktopPanel = !!activeSessionId || (quickChatsMode && !activeTaskId);
+        const showMobileTaskList = isMobileRoute.taskList;
+        const showOuterContainer = showDesktopPanel || showMobileTaskList;
+        return showOuterContainer ? (
+          <div className={`
+            md:shrink-0 min-w-0
+            ${showMobileTaskList ? "flex flex-1 md:flex-none" : "hidden md:flex"}
+          `.trim()}>
+            {/* Mobile task list — full screen at / */}
+            {showMobileTaskList && (
+              <div className="md:hidden min-w-0 flex flex-col flex-1">
+                <MobileTaskListView
+                  tasks={tasks}
+                  activeTaskId={activeTaskId}
+                  onSelectTask={handleSelectTask}
+                  onNewTask={handleNewTask}
+                  onSelectQuickChats={handleSelectQuickChats}
+                  onGoHome={handleGoHome}
+                  onOpenSettings={handleOpenSettings}
+                  sessions={sessions}
+                  isUnread={isUnread}
+                  markRead={markRead}
+                  onUpdateTask={handleUpdateTask}
+                  onDeleteTask={handleDeleteTask}
+                  onReorderTasks={handleReorderTasks}
+                  quickChatsMode={quickChatsMode}
+                  taskGroups={taskGroups}
+                  onMoveTaskToGroup={handleMoveTaskToGroup}
+                  onMoveAndReorder={handleMoveAndReorder}
+                  onCreateGroup={handleCreateGroup}
+                  onUpdateGroup={handleUpdateGroup}
+                  onDeleteGroup={handleDeleteGroup}
+                  onReorderGroups={handleReorderGroups}
+                  orphanSessions={globalSessions}
+                  activeSessionId={activeSessionId}
+                  onSelectSession={(id) => navigate(`/sessions/${id}`)}
+                  onNewQuickChat={handleNewQuickChat}
+                  onArchiveSession={handleArchiveSession}
+                  archivingIds={archivingIds}
+                  exitingIds={exitingIds}
+                  allTasks={tasks}
+                  onLinkToTask={handleLinkToTask}
+                  onDeleteSession={handleDeleteSession}
+                  markUnread={markUnread}
+                  onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+                  hasDraft={hasDraft}
+                />
+              </div>
+            )}
 
-        {/* Desktop panel + mobile task detail */}
-        <div className={`
-          md:flex md:shrink-0 min-w-0
-          ${isMobileRoute.taskPanel ? "flex flex-1 md:flex-none" : "hidden md:flex"}
-        `.trim()}>
-          <TaskPanel
-            task={selectedTask}
-            taskGroups={taskGroups}
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={handleSelectSession}
-            onNewSession={handleNewSession}
-            onUpdateTask={handleUpdateTask}
-            onTasksChanged={loadTasks}
-            scheduleVersion={scheduleVersion}
-            isUnread={isUnread}
-            onArchiveSession={handleArchiveSession}
-            archivingIds={archivingIds}
-            exitingIds={exitingIds}
-            isQuickChats={quickChatsMode}
-            orphanSessions={globalSessions}
-            onNewQuickChat={handleNewQuickChat}
-            tasks={tasks}
-            onLinkToTask={handleLinkToTask}
-            onDeleteTask={handleDeleteTask}
-            onDeleteSession={handleDeleteSession}
-            onMarkUnread={markUnread}
-            hasDraft={hasDraft}
-            onMoveTaskToGroup={handleMoveTaskToGroup}
-            onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
-          />
-        </div>
-      </div>
+            {/* Desktop panel (only when inside a session or quick chats) */}
+            {showDesktopPanel && (
+              <div className="hidden md:flex md:shrink-0 min-w-0">
+                <TaskPanel
+                  task={selectedTask}
+                  taskGroups={taskGroups}
+                  sessions={sessions}
+                  activeSessionId={activeSessionId}
+                  onSelectSession={handleSelectSession}
+                  onNewSession={handleNewSession}
+                  onUpdateTask={handleUpdateTask}
+                  onTasksChanged={loadTasks}
+                  scheduleVersion={scheduleVersion}
+                  isUnread={isUnread}
+                  onArchiveSession={handleArchiveSession}
+                  archivingIds={archivingIds}
+                  exitingIds={exitingIds}
+                  isQuickChats={quickChatsMode}
+                  orphanSessions={globalSessions}
+                  onNewQuickChat={handleNewQuickChat}
+                  tasks={tasks}
+                  onLinkToTask={handleLinkToTask}
+                  onDeleteTask={handleDeleteTask}
+                  onDeleteSession={handleDeleteSession}
+                  onMarkUnread={markUnread}
+                  hasDraft={hasDraft}
+                  onMoveTaskToGroup={handleMoveTaskToGroup}
+                  onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+                  onViewDashboard={(taskId) => navigate(`/tasks/${taskId}`)}
+                />
+              </div>
+            )}
+          </div>
+        ) : null;
+      })()}
 
       {/* ── Main content area ─────────────────────────────── */}
       <div className={`
         flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
         ${/* Desktop: always visible */""}
-        ${/* Mobile: only when viewing chat or settings */""}
-        ${isMobileRoute.chat || isMobileRoute.settings ? "flex" : "hidden md:flex"}
+        ${/* Mobile: visible for chat, settings, and task dashboard */""}
+        ${isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard ? "flex" : "hidden md:flex"}
       `.trim()}>
         {restartPhase && <RestartBanner phase={restartPhase} waitingSessions={restartWaiting} />}
 
@@ -721,15 +740,33 @@ export default function App() {
             <Route
               path="tasks/:taskId"
               element={
-                <Dashboard
-                  onSelectTask={handleSelectTask}
-                  onSelectSession={(id) => {
-                    if (activeTaskId) navigate(`/tasks/${activeTaskId}/sessions/${id}`);
-                    else navigate(`/sessions/${id}`);
-                  }}
-                  onNewSession={handleNewQuickChat}
-                  onResumeTask={handleResumeTask}
-                />
+                selectedTask ? (
+                  <TaskDashboard
+                    task={selectedTask}
+                    taskGroups={taskGroups}
+                    sessions={sessions}
+                    onSelectSession={(id) => navigate(`/tasks/${activeTaskId}/sessions/${id}`)}
+                    onNewSession={handleNewSession}
+                    onUpdateTask={handleUpdateTask}
+                    onTasksChanged={loadTasks}
+                    scheduleVersion={scheduleVersion}
+                    isUnread={isUnread}
+                  />
+                ) : taskNotFound ? (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-3">
+                    <div className="text-text-muted text-sm">Task not found</div>
+                    <button
+                      onClick={() => navigate("/")}
+                      className="text-xs text-accent hover:text-accent-hover"
+                    >
+                      ← Back to Home
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
+                    Loading…
+                  </div>
+                )
               }
             />
             <Route

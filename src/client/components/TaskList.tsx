@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
+import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -19,15 +20,6 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 const STATUS_ORDER = { active: 0, paused: 1, done: 2, archived: 3 } as const;
-
-function timeAgo(iso?: string): string {
-  if (!iso) return "";
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 
 
