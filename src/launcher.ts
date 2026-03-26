@@ -20,7 +20,7 @@ const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 30_000;
 
 // Notification config
-const TUNNEL_NAME = "copilot-bridge";
+const TUNNEL_NAME = process.env.BRIDGE_TUNNEL_NAME || "copilot-bridge";
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 const BUSY_CHECK_INTERVAL = 3_000;
