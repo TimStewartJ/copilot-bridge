@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -41,6 +41,7 @@ interface TaskRailProps {
   onDeleteGroup?: (groupId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
+  onReorderGroups?: (groupIds: string[]) => void;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -99,6 +100,7 @@ export default function TaskRail({
   onDeleteGroup,
   onMoveTaskToGroup,
   onMoveAndReorder,
+  onReorderGroups,
 }: TaskRailProps) {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -650,6 +652,9 @@ export default function TaskRail({
       {groupCtx && (() => {
         const group = taskGroups.find((g) => g.id === groupCtx.groupId);
         if (!group) return null;
+        const groupIndex = taskGroups.indexOf(group);
+        const isFirst = groupIndex === 0;
+        const isLast = groupIndex === taskGroups.length - 1;
         return (
           <ContextMenu position={{ x: groupCtx.x, y: groupCtx.y }} onClose={() => setGroupCtx(null)}>
             <CtxItem
@@ -681,6 +686,35 @@ export default function TaskRail({
                 ))}
               </div>
             </div>
+            {taskGroups.length > 1 && onReorderGroups && (
+              <>
+                <CtxDivider />
+                <CtxItem
+                  icon={<ArrowUp size={14} />}
+                  label="Move Up"
+                  disabled={isFirst}
+                  onClick={() => {
+                    if (isFirst) return;
+                    const ids = taskGroups.map((g) => g.id);
+                    [ids[groupIndex - 1], ids[groupIndex]] = [ids[groupIndex], ids[groupIndex - 1]];
+                    onReorderGroups(ids);
+                    setGroupCtx(null);
+                  }}
+                />
+                <CtxItem
+                  icon={<ArrowDown size={14} />}
+                  label="Move Down"
+                  disabled={isLast}
+                  onClick={() => {
+                    if (isLast) return;
+                    const ids = taskGroups.map((g) => g.id);
+                    [ids[groupIndex], ids[groupIndex + 1]] = [ids[groupIndex + 1], ids[groupIndex]];
+                    onReorderGroups(ids);
+                    setGroupCtx(null);
+                  }}
+                />
+              </>
+            )}
             <CtxDivider />
             <CtxItem
               icon={<Trash2 size={14} />}

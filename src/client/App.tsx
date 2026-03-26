@@ -13,6 +13,7 @@ import {
   createTaskSession,
   linkResource,
   reorderTasks,
+  reorderTaskGroups,
   fetchTaskGroups,
   createTaskGroup,
   patchTaskGroup,
@@ -419,6 +420,26 @@ export default function App() {
     }
   };
 
+  const handleReorderGroups = async (groupIds: string[]) => {
+    // Optimistic update
+    setTaskGroups((prev) => {
+      const map = new Map(prev.map((g) => [g.id, g]));
+      const reordered = groupIds.map((id, i) => {
+        const g = map.get(id);
+        return g ? { ...g, order: i } : null;
+      }).filter(Boolean) as TaskGroup[];
+      const reorderedIds = new Set(groupIds);
+      const rest = prev.filter((g) => !reorderedIds.has(g.id));
+      return [...reordered, ...rest];
+    });
+    try {
+      await reorderTaskGroups(groupIds);
+    } catch (err) {
+      console.error("Failed to reorder groups:", err);
+      setTaskGroups(await fetchTaskGroups());
+    }
+  };
+
   const handleMoveTaskToGroup = async (taskId: string, groupId: string | undefined) => {
     // Optimistic update
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, groupId } : t)));
@@ -571,6 +592,7 @@ export default function App() {
         onCreateGroup={handleCreateGroup}
         onUpdateGroup={handleUpdateGroup}
         onDeleteGroup={handleDeleteGroup}
+        onReorderGroups={handleReorderGroups}
         onMoveTaskToGroup={handleMoveTaskToGroup}
         onMoveAndReorder={handleMoveAndReorder}
       />
@@ -606,6 +628,7 @@ export default function App() {
             onCreateGroup={handleCreateGroup}
             onUpdateGroup={handleUpdateGroup}
             onDeleteGroup={handleDeleteGroup}
+            onReorderGroups={handleReorderGroups}
             orphanSessions={globalSessions}
             activeSessionId={activeSessionId}
             onSelectSession={(id) => navigate(`/sessions/${id}`)}
@@ -753,6 +776,7 @@ function MobileTaskListView({
   onCreateGroup,
   onUpdateGroup,
   onDeleteGroup,
+  onReorderGroups,
   orphanSessions,
   activeSessionId,
   onSelectSession,
@@ -787,6 +811,7 @@ function MobileTaskListView({
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
   onDeleteGroup?: (groupId: string) => void;
+  onReorderGroups?: (groupIds: string[]) => void;
   orphanSessions: Session[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
@@ -871,6 +896,7 @@ function MobileTaskListView({
             onCreateGroup={onCreateGroup}
             onUpdateGroup={onUpdateGroup}
             onDeleteGroup={onDeleteGroup}
+            onReorderGroups={onReorderGroups}
             className="p-2 space-y-2"
           />
         )}

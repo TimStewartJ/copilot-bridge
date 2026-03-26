@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
-import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -48,6 +48,7 @@ interface TaskListProps {
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
   onDeleteGroup?: (groupId: string) => void;
+  onReorderGroups?: (groupIds: string[]) => void;
   className?: string;
 }
 
@@ -68,6 +69,7 @@ export default function TaskList({
   onCreateGroup,
   onUpdateGroup,
   onDeleteGroup,
+  onReorderGroups,
   className,
 }: TaskListProps) {
   // Build a lookup of sessionId → Session for quick access
@@ -206,15 +208,48 @@ export default function TaskList({
             return (
               <DroppableGroup key={groupId} id={groupId}>
                 <div className={colorBg ? `${colorBg} rounded-lg` : ""}>
-                <button
-                  onClick={() => {
-                    if (group && onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
-                  }}
-                  className="w-full px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-1.5"
-                >
-                  {group ? (isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />) : null}
-                  {group?.name ?? "Ungrouped"} ({section.tasks.length})
-                </button>
+                <div className="flex items-center">
+                  <button
+                    onClick={() => {
+                      if (group && onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
+                    }}
+                    className="flex-1 px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-1.5"
+                  >
+                    {group ? (isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />) : null}
+                    {group?.name ?? "Ungrouped"} ({section.tasks.length})
+                  </button>
+                  {group && onReorderGroups && taskGroups.length > 1 && (() => {
+                    const groupIndex = taskGroups.indexOf(group);
+                    return (
+                      <div className="flex items-center mr-1.5 gap-0.5">
+                        <button
+                          disabled={groupIndex === 0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const ids = taskGroups.map((g) => g.id);
+                            [ids[groupIndex - 1], ids[groupIndex]] = [ids[groupIndex], ids[groupIndex - 1]];
+                            onReorderGroups(ids);
+                          }}
+                          className="p-0.5 text-text-faint hover:text-text-primary disabled:opacity-30 disabled:pointer-events-none transition-colors rounded"
+                        >
+                          <ArrowUp size={12} />
+                        </button>
+                        <button
+                          disabled={groupIndex === taskGroups.length - 1}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const ids = taskGroups.map((g) => g.id);
+                            [ids[groupIndex], ids[groupIndex + 1]] = [ids[groupIndex + 1], ids[groupIndex]];
+                            onReorderGroups(ids);
+                          }}
+                          className="p-0.5 text-text-faint hover:text-text-primary disabled:opacity-30 disabled:pointer-events-none transition-colors rounded"
+                        >
+                          <ArrowDown size={12} />
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </div>
                 {!isCollapsed && (
                   <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                     {section.tasks.map((task) => (
