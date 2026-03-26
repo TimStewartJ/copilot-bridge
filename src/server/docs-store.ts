@@ -138,7 +138,7 @@ export function createDocsStore(docsDir: string) {
 
   // ── Field validation ──────────────────────────────────────────
 
-  function validateFields(schema: DbSchema, fields: Record<string, any>): string[] {
+  function validateFields(schema: DbSchema, fields: Record<string, any>, partial = false): string[] {
     const errors: string[] = [];
     const knownFields = new Set(schema.fields.map((f) => f.name));
 
@@ -151,7 +151,8 @@ export function createDocsStore(docsDir: string) {
     for (const field of schema.fields) {
       const value = fields[field.name];
 
-      if (field.required && (value === undefined || value === null || value === "")) {
+      // Skip required-field check for partial updates (PATCH)
+      if (field.required && !partial && (value === undefined || value === null || value === "")) {
         errors.push(`Required field "${field.name}" is missing`);
         continue;
       }
@@ -331,7 +332,7 @@ export function createDocsStore(docsDir: string) {
     const filePath = toFilePath(pagePath);
     if (!existsSync(filePath)) throw new Error(`Entry "${pagePath}" not found`);
 
-    const errors = validateFields(schema, fields);
+    const errors = validateFields(schema, fields, true);
     if (errors.length) throw new Error(errors.join("; "));
 
     const { data: existing, content: existingContent } = matter(readFileSync(filePath, "utf-8"));

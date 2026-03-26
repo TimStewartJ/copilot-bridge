@@ -944,7 +944,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
     // Page CRUD — explicit sub-path to avoid wildcard conflicts
     router.get("/docs/pages/*path", (req, res) => {
       try {
-        const pagePath = (req.params as any).path;
+        const raw = (req.params as any).path;
+        const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const page = docs.readPage(pagePath);
         if (!page) return res.status(404).json({ error: "Page not found" });
         res.json(page);
@@ -955,7 +956,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     router.put("/docs/pages/*path", (req, res) => {
       try {
-        const pagePath = (req.params as any).path;
+        const raw = (req.params as any).path;
+        const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const { content } = req.body;
         if (typeof content !== "string") return res.status(400).json({ error: "content is required" });
         const page = docs.writePage(pagePath, content);
@@ -968,7 +970,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     router.delete("/docs/pages/*path", (req, res) => {
       try {
-        const pagePath = (req.params as any).path;
+        const raw = (req.params as any).path;
+        const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         docsIdx.removePage(pagePath);
         const deleted = docs.deletePage(pagePath);
         res.json({ deleted });
