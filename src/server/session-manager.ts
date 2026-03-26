@@ -2,7 +2,7 @@
 // Universal tools — taskId is a parameter, same tools for every session
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
-import type { SectionOverride } from "@github/copilot-sdk";
+import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -537,16 +537,21 @@ export class SessionManager {
       sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
     }
 
-    const hasContent = contextParts.length > 0;
-    const hasSections = Object.keys(sections).length > 0;
+    // Inject server-local time into environment context (dynamic per turn via transform)
+    const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    sections.environment_context = {
+      action: ((current: string) =>
+        `${current}\n* Server local time: ${new Date().toLocaleString("en-US", { timeZone: serverTz })} (${serverTz})`
+      ) as SectionOverrideAction,
+    };
 
-    if (hasContent || hasSections) {
-      cfg.systemMessage = {
-        mode: "customize" as const,
-        sections: hasSections ? sections : undefined,
-        content: hasContent ? contextParts.join("\n") : undefined,
-      };
-    }
+    const hasContent = contextParts.length > 0;
+
+    cfg.systemMessage = {
+      mode: "customize" as const,
+      sections,
+      content: hasContent ? contextParts.join("\n") : undefined,
+    };
 
     return cfg;
   }
