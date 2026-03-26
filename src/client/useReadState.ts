@@ -38,6 +38,13 @@ export function useReadState(sessions: Session[]) {
               changed = true;
             }
           }
+          // Push locally-newer entries back to server (self-heal missed writes)
+          for (const [id, localTs] of Object.entries(local)) {
+            const serverTs = server[id];
+            if (!serverTs || new Date(localTs) > new Date(serverTs)) {
+              markSessionRead(id).catch(() => {});
+            }
+          }
           if (!changed) return local;
           save(merged);
           return merged;
