@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { ToolCall } from "../api";
 import ToolCallBlock from "./ToolCallBlock";
+import ToolResultModal from "./ToolResultModal";
 import { Bot, ChevronDown, ChevronRight, XCircle } from "lucide-react";
 
 interface SubAgentGroupProps {
@@ -13,6 +14,7 @@ interface SubAgentGroupProps {
 
 export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGroupProps) {
   const [expanded, setExpanded] = useState(false);
+  const [showFullModal, setShowFullModal] = useState(false);
   const agentLabel = agentTool.name.replace(/^🤖\s*/, "");
   const childCount = childTools.length;
   const failed = agentTool.success === false;
@@ -60,9 +62,25 @@ export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGr
                   {agentTool.result!.length > 5000 ? agentTool.result!.slice(0, 5000) + "\n\n... (truncated)" : agentTool.result!}
                 </ReactMarkdown>
               </div>
+              {agentTool.result!.length > 5000 && (
+                <button
+                  onClick={() => setShowFullModal(true)}
+                  className="text-accent/70 hover:text-accent text-[11px] mt-1 cursor-pointer"
+                >
+                  Show full response
+                </button>
+              )}
             </div>
           )}
         </div>
+      )}
+      {showFullModal && (
+        <ToolResultModal
+          title={agentLabel}
+          content={agentTool.result!}
+          format="markdown"
+          onClose={() => setShowFullModal(false)}
+        />
       )}
     </div>
   );

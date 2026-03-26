@@ -1,6 +1,7 @@
 import { useState, memo, useMemo } from "react";
 import type { ToolCall } from "../api";
 import { Settings, XCircle, ChevronDown, ChevronRight } from "lucide-react";
+import ToolResultModal from "./ToolResultModal";
 
 function formatToolTime(tc: ToolCall): string | null {
   if (!tc.startedAt) return null;
@@ -43,6 +44,7 @@ function argSummary(tc: ToolCall): string {
 
 export default memo(function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
+  const [showFullModal, setShowFullModal] = useState(false);
   const summary = argSummary(toolCall);
   const hasResult = toolCall.result && toolCall.result.trim().length > 0;
   const hasDetails = hasResult || (toolCall.args && Object.keys(toolCall.args).length > 0);
@@ -84,9 +86,24 @@ export default memo(function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
               <pre className="text-text-muted whitespace-pre-wrap break-all text-[11px] max-h-64 overflow-auto">
                 {toolCall.result!.length > 2000 ? toolCall.result!.slice(0, 2000) + "\n... (truncated)" : toolCall.result}
               </pre>
+              {toolCall.result!.length > 2000 && (
+                <button
+                  onClick={() => setShowFullModal(true)}
+                  className="text-accent/70 hover:text-accent text-[11px] mt-1 cursor-pointer"
+                >
+                  Show full response
+                </button>
+              )}
             </div>
           )}
         </div>
+      )}
+      {showFullModal && (
+        <ToolResultModal
+          title={toolCall.name}
+          content={toolCall.result!}
+          onClose={() => setShowFullModal(false)}
+        />
       )}
     </div>
   );
