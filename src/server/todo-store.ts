@@ -7,7 +7,7 @@ import type { GlobalBus } from "./global-bus.js";
 
 export interface Todo {
   id: string;
-  taskId: string;
+  taskId: string | null;
   text: string;
   done: boolean;
   order: number;
@@ -24,7 +24,7 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
   function hydrate(row: any): Todo {
     return {
       id: row.id,
-      taskId: row.taskId,
+      taskId: row.taskId ?? null,
       text: row.text,
       done: row.done === 1,
       order: row.order,
@@ -34,8 +34,8 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
     };
   }
 
-  function emitChange(taskId: string): void {
-    bus.emit({ type: "task:changed", taskId });
+  function emitChange(taskId: string | null): void {
+    bus.emit({ type: "task:changed", taskId: taskId ?? undefined });
   }
 
   function listTodos(taskId: string): Todo[] {
@@ -47,14 +47,17 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
     return row ? hydrate(row) : undefined;
   }
 
-  function createTodo(taskId: string, text: string, deadline?: string): Todo {
-    // Verify task exists
-    const task = db.prepare("SELECT id FROM tasks WHERE id = ?").get(taskId) as any;
-    if (!task) throw new Error(`Task ${taskId} not found`);
+  function createTodo(taskId: string | null, text: string, deadline?: string): Todo {
+    if (taskId !== null) {
+      const task = db.prepare("SELECT id FROM tasks WHERE id = ?").get(taskId) as any;
+      if (!task) throw new Error(`Task ${taskId} not found`);
+    }
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const maxOrder = (db.prepare('SELECT MAX("order") as mx FROM todos WHERE taskId = ?').get(taskId) as any).mx ?? -1;
+    const maxOrder = taskId !== null
+      ? (db.prepare('SELECT MAX("order") as mx FROM todos WHERE taskId = ?').get(taskId) as any).mx ?? -1
+      : (db.prepare('SELECT MAX("order") as mx FROM todos WHERE taskId IS NULL').get() as any).mx ?? -1;
 
     db.prepare(`
       INSERT INTO todos (id, taskId, text, done, "order", createdAt, deadline)
@@ -114,23 +117,23 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
     return listTodos(taskId);
   }
 
-  /** Get all unchecked todos across all tasks (for dashboard rollup) */
+  /** Get all unchecked todos across all active tasks and global (unparented) todos */
   function listAllOpen(): Todo[] {
     return (db.prepare(`
       SELECT todos.* FROM todos
-      JOIN tasks ON todos.taskId = tasks.id
-      WHERE todos.done = 0 AND tasks.status = 'active'
-      ORDER BY tasks."order", todos."order"
+      LEFT JOIN tasks ON todos.taskId = tasks.id
+      WHERE todos.done = 0 AND (todos.taskId IS NULL OR tasks.status = 'active')
+      ORDER BY todos.createdAt DESC, todos.id DESC
     `).all() as any[]).map(hydrate);
   }
 
-  /** Get recently completed todos (last 7 days) across active tasks */
+  /** Get recently completed todos (last 7 days) across active tasks and global todos */
   function listRecentlyCompleted(): Todo[] {
     const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
     return (db.prepare(`
       SELECT todos.* FROM todos
-      JOIN tasks ON todos.taskId = tasks.id
-      WHERE todos.done = 1 AND tasks.status = 'active' AND todos.completedAt >= ?
+      LEFT JOIN tasks ON todos.taskId = tasks.id
+      WHERE todos.done = 1 AND (todos.taskId IS NULL OR tasks.status = 'active') AND todos.completedAt >= ?
       ORDER BY todos.completedAt DESC
     `).all(weekAgo) as any[]).map(hydrate);
   }
