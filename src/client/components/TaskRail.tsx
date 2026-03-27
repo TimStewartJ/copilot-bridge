@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -29,6 +29,8 @@ interface TaskRailProps {
   isQuickChatsActive: boolean;
   onGoHome: () => void;
   onOpenSettings: () => void;
+  onOpenDocs: () => void;
+  isDocsActive: boolean;
   expanded: boolean;
   onToggleExpanded: () => void;
   sessions?: Session[];
@@ -77,6 +79,8 @@ export default function TaskRail({
   isQuickChatsActive,
   onGoHome,
   onOpenSettings,
+  onOpenDocs,
+  isDocsActive,
   expanded,
   onToggleExpanded,
   sessions = [],
@@ -300,7 +304,7 @@ export default function TaskRail({
           )}
         </div>
 
-        {/* Quick Chats + New Task */}
+        {/* Quick Chats + Docs + New Task */}
         <div className="flex flex-col items-center gap-2 py-2">
           <button
             onClick={onSelectQuickChats}
@@ -308,6 +312,13 @@ export default function TaskRail({
             className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${isQuickChatsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"}`}
           >
             <MessageSquare size={18} />
+          </button>
+          <button
+            onClick={onOpenDocs}
+            title="Docs"
+            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${isDocsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"}`}
+          >
+            <BookOpen size={18} />
           </button>
           <button
             onClick={onNewTask}
@@ -513,6 +524,19 @@ export default function TaskRail({
         >
           <MessageSquare size={14} />
           Quick Chats
+        </button>
+      </div>
+
+      {/* Docs */}
+      <div className="px-2 pb-1">
+        <button
+          onClick={onOpenDocs}
+          className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${
+            isDocsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
+          }`}
+        >
+          <BookOpen size={14} />
+          Docs
         </button>
       </div>
 

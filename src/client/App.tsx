@@ -32,6 +32,7 @@ import TaskList from "./components/TaskList";
 import ChatView from "./components/ChatView";
 import Dashboard from "./components/Dashboard";
 import SettingsView from "./components/SettingsView";
+import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import PullToRefresh from "./components/PullToRefresh";
@@ -297,6 +298,12 @@ export default function App() {
   const handleOpenSettings = () => {
     navigate("/settings");
   };
+
+  const handleOpenDocs = () => {
+    navigate("/docs");
+  };
+
+  const isDocsActive = location.pathname.startsWith("/docs");
 
   const handleSelectSession = (sessionId: string) => {
     if (activeTaskId) {
@@ -577,6 +584,7 @@ export default function App() {
     taskPanel: !!activeTaskId && !!activeSessionId,
     chat: !!activeSessionId,
     settings: location.pathname === "/settings",
+    docs: location.pathname.startsWith("/docs"),
   };
 
   return (
@@ -592,6 +600,8 @@ export default function App() {
         isQuickChatsActive={quickChatsMode && !activeTaskId}
         onGoHome={handleGoHome}
         onOpenSettings={handleOpenSettings}
+        onOpenDocs={handleOpenDocs}
+        isDocsActive={isDocsActive}
         expanded={railExpanded}
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
@@ -631,6 +641,7 @@ export default function App() {
                   onSelectQuickChats={handleSelectQuickChats}
                   onGoHome={handleGoHome}
                   onOpenSettings={handleOpenSettings}
+                  onOpenDocs={handleOpenDocs}
                   sessions={sessions}
                   isUnread={isUnread}
                   markRead={markRead}
@@ -703,7 +714,7 @@ export default function App() {
         flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
         ${/* Desktop: always visible */""}
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
-        ${isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard ? "flex" : "hidden md:flex"}
+        ${isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs ? "flex" : "hidden md:flex"}
       `.trim()}>
         {restartPhase && <RestartBanner phase={restartPhase} waitingSessions={restartWaiting} />}
 
@@ -781,6 +792,7 @@ export default function App() {
                 <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} />
               }
             />
+            <Route path="docs/*" element={<DocsView />} />
             <Route path="settings" element={<SettingsView />} />
           </Routes>
         </main>
@@ -800,6 +812,7 @@ function MobileTaskListView({
   onSelectQuickChats,
   onGoHome,
   onOpenSettings,
+  onOpenDocs,
   sessions,
   isUnread,
   markRead,
@@ -835,6 +848,7 @@ function MobileTaskListView({
   onSelectQuickChats: () => void;
   onGoHome: () => void;
   onOpenSettings: () => void;
+  onOpenDocs?: () => void;
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;
@@ -878,7 +892,7 @@ function MobileTaskListView({
         </button>
       </div>
 
-      {/* Tab toggle: Tasks | Quick Chats */}
+      {/* Tab toggle: Tasks | Quick Chats | Docs */}
       <div className="flex border-b border-border">
         <button
           onClick={() => { if (quickChatsMode) onGoHome(); }}
@@ -892,6 +906,14 @@ function MobileTaskListView({
         >
           Quick Chats
         </button>
+        {onOpenDocs && (
+          <button
+            onClick={onOpenDocs}
+            className="flex-1 py-2.5 text-xs font-medium transition-colors text-text-muted"
+          >
+            Docs
+          </button>
+        )}
       </div>
 
       {/* Content — pull-to-refresh wraps both tabs */}

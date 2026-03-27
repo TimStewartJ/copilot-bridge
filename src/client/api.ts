@@ -582,3 +582,103 @@ export async function reorderTodos(taskId: string, todoIds: string[]): Promise<T
   const data = await res.json();
   return data.todos;
 }
+
+// ── Docs API ──────────────────────────────────────────────────────
+
+export interface DocTreeNode {
+  name: string;
+  type: "file" | "folder";
+  path: string;
+  isDb?: boolean;
+  children?: DocTreeNode[];
+}
+
+export interface DocPage {
+  path: string;
+  title: string;
+  tags: string[];
+  frontmatter: Record<string, unknown>;
+  body: string;
+  folder: string;
+  created: string;
+  modified: string;
+}
+
+export interface DocSearchResult {
+  path: string;
+  title: string;
+  snippet: string;
+  score: number;
+  folder: string;
+  tags: string[];
+}
+
+export interface DbSchema {
+  name: string;
+  fields: { name: string; type: string; options?: string[]; required?: boolean }[];
+  entryCount?: number;
+}
+
+export interface DbEntry {
+  path: string;
+  slug: string;
+  title: string;
+  fields: Record<string, unknown>;
+  tags?: string[];
+  created: string;
+  modified: string;
+}
+
+export async function fetchDocsTree(): Promise<DocTreeNode[]> {
+  const data = await apiFetch<{ tree: DocTreeNode[] }>("/api/docs/tree");
+  return data.tree;
+}
+
+export async function searchDocs(query: string, limit = 20, offset = 0): Promise<{ results: DocSearchResult[]; total: number }> {
+  return apiFetch<{ results: DocSearchResult[]; total: number }>(`/api/docs/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`);
+}
+
+export async function fetchDocPage(path: string): Promise<DocPage> {
+  return apiFetch<DocPage>(`/api/docs/pages/${path}`);
+}
+
+export async function writeDocPage(path: string, content: string): Promise<{ path: string; success: boolean }> {
+  const res = await fetch(`${API_BASE}/api/docs/pages/${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function deleteDocPage(path: string): Promise<{ deleted: boolean }> {
+  const res = await fetch(`${API_BASE}/api/docs/pages/${path}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function fetchDbSchema(folder: string): Promise<DbSchema> {
+  return apiFetch<DbSchema>(`/api/docs/schema/${folder}`);
+}
+
+export async function fetchDbEntries(folder: string, filters?: Record<string, string>): Promise<{ entries: DbEntry[]; total: number }> {
+  const params = new URLSearchParams();
+  if (filters) {
+    for (const [k, v] of Object.entries(filters)) {
+      params.set(k, String(v));
+    }
+  }
+  const qs = params.toString();
+  return apiFetch<{ entries: DbEntry[]; total: number }>(`/api/docs/db/${folder}${qs ? `?${qs}` : ""}`);
+}
+
+export async function reindexDocs(): Promise<{ indexed: number }> {
+  return apiFetch<{ indexed: number }>("/api/docs/reindex", {});
+}
