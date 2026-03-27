@@ -692,12 +692,19 @@ export async function fetchDbSchema(folder: string): Promise<DbSchema> {
   return apiFetch<DbSchema>(`/api/docs/schema/${folder}`);
 }
 
-export async function fetchDbEntries(folder: string, filters?: Record<string, string>): Promise<{ entries: DbEntry[]; total: number }> {
+export async function fetchDbEntries(
+  folder: string,
+  options?: { filters?: Record<string, string>; sort?: { field: string; order: "asc" | "desc" } },
+): Promise<{ entries: DbEntry[]; total: number }> {
   const params = new URLSearchParams();
-  if (filters) {
-    for (const [k, v] of Object.entries(filters)) {
+  if (options?.filters) {
+    for (const [k, v] of Object.entries(options.filters)) {
       params.set(k, String(v));
     }
+  }
+  if (options?.sort) {
+    params.set("_sort", options.sort.field);
+    params.set("_order", options.sort.order);
   }
   const qs = params.toString();
   return apiFetch<{ entries: DbEntry[]; total: number }>(`/api/docs/db/${folder}${qs ? `?${qs}` : ""}`);

@@ -31,11 +31,14 @@ import {
   Trash2,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Database,
   BookOpen,
   X,
   Save,
   ArrowLeft,
+  Check,
+  ExternalLink,
 } from "lucide-react";
 
 // ── Persisted folder expansion state ─────────────────────────────
@@ -52,6 +55,31 @@ function getExpandedFolders(): Set<string> {
 
 function saveExpandedFolders(set: Set<string>) {
   localStorage.setItem(EXPANDED_KEY, JSON.stringify([...set]));
+}
+
+// ── Persisted DB sort state ─────────────────────────────────────
+const DB_SORT_KEY = "bridge-docs-db-sort";
+type DbSortState = { field: string; order: "asc" | "desc" };
+const DEFAULT_DB_SORT: DbSortState = { field: "modified", order: "desc" };
+
+function getDbSort(folder: string): DbSortState {
+  try {
+    const raw = localStorage.getItem(DB_SORT_KEY);
+    if (!raw) return DEFAULT_DB_SORT;
+    const map = JSON.parse(raw) as Record<string, DbSortState>;
+    return map[folder] ?? DEFAULT_DB_SORT;
+  } catch {
+    return DEFAULT_DB_SORT;
+  }
+}
+
+function saveDbSort(folder: string, sort: DbSortState) {
+  try {
+    const raw = localStorage.getItem(DB_SORT_KEY);
+    const map = raw ? JSON.parse(raw) as Record<string, DbSortState> : {};
+    map[folder] = sort;
+    localStorage.setItem(DB_SORT_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
 }
 
 // ── Tree node component ─────────────────────────────────────────
@@ -184,6 +212,76 @@ function wikiUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
+// ── DB collection helpers ───────────────────────────────────────
+
+const SELECT_BADGE_COLORS = [
+  { bg: "bg-blue-500/15", text: "text-blue-400" },
+  { bg: "bg-emerald-500/15", text: "text-emerald-400" },
+  { bg: "bg-amber-500/15", text: "text-amber-400" },
+  { bg: "bg-purple-500/15", text: "text-purple-400" },
+  { bg: "bg-rose-500/15", text: "text-rose-400" },
+  { bg: "bg-cyan-500/15", text: "text-cyan-400" },
+  { bg: "bg-orange-500/15", text: "text-orange-400" },
+  { bg: "bg-indigo-500/15", text: "text-indigo-400" },
+];
+
+function hashString(s: string): number {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function getBadgeColor(value: string, options?: string[]) {
+  const idx = options?.indexOf(value);
+  const colorIdx = idx != null && idx >= 0 ? idx : hashString(value);
+  return SELECT_BADGE_COLORS[colorIdx % SELECT_BADGE_COLORS.length];
+}
+
+function DbCell({ field, value }: { field: { name: string; type: string; options?: string[] }; value: unknown }) {
+  if (value == null || value === "") return <span className="text-text-faint">—</span>;
+
+  switch (field.type) {
+    case "select": {
+      const s = String(value);
+      const c = getBadgeColor(s, field.options);
+      return (
+        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${c.bg} ${c.text}`}>
+          {s}
+        </span>
+      );
+    }
+    case "boolean":
+      return value === true || value === "true"
+        ? <Check size={13} className="text-emerald-400" />
+        : <X size={13} className="text-text-faint" />;
+    case "date":
+      try {
+        return <span className="whitespace-nowrap">{new Date(String(value)).toLocaleDateString()}</span>;
+      } catch {
+        return <span>{String(value)}</span>;
+      }
+    case "number":
+      return <span className="tabular-nums">{String(value)}</span>;
+    case "url":
+      return (
+        <a
+          href={String(value)}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex items-center gap-1 text-accent hover:underline max-w-[200px] truncate"
+        >
+          {String(value).replace(/^https?:\/\/(www\.)?/, "").slice(0, 40)}
+          <ExternalLink size={10} className="shrink-0" />
+        </a>
+      );
+    default:
+      return <span>{String(value)}</span>;
+  }
+}
+
 // ── Main DocsView ───────────────────────────────────────────────
 
 export default function DocsView() {
@@ -226,6 +324,12 @@ export default function DocsView() {
   const [dbSchema, setDbSchema] = useState<DbSchema | null>(null);
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
   const [dbFolder, setDbFolder] = useState<string | null>(null);
+  const [dbSort, setDbSort] = useState<DbSortState>(DEFAULT_DB_SORT);
+
+  // Restore persisted sort when switching to a DB collection
+  useEffect(() => {
+    if (dbFolder) setDbSort(getDbSort(dbFolder));
+  }, [dbFolder]);
 
   // Folder expansion state (persisted to localStorage)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => getExpandedFolders());
@@ -308,6 +412,48 @@ export default function DocsView() {
 
     return () => { cancelled = true; };
   }, [selectedPath, isDbFromUrl]);
+
+  // Client-side sorting of DB entries
+  const sortedDbEntries = useMemo(() => {
+    if (!dbEntries.length || !dbSort) return dbEntries;
+    const { field, order } = dbSort;
+    return [...dbEntries].sort((a, b) => {
+      let va: unknown, vb: unknown;
+      if (field === "title") {
+        va = a.title; vb = b.title;
+      } else if (field === "modified") {
+        va = a.modified; vb = b.modified;
+      } else if (field === "created") {
+        va = a.created; vb = b.created;
+      } else {
+        va = a.fields[field]; vb = b.fields[field];
+      }
+      // Nulls last
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      // Type-aware comparison
+      if (typeof va === "number" && typeof vb === "number") {
+        return order === "asc" ? va - vb : vb - va;
+      }
+      if (typeof va === "boolean" && typeof vb === "boolean") {
+        return order === "asc" ? Number(va) - Number(vb) : Number(vb) - Number(va);
+      }
+      const sa = String(va), sb = String(vb);
+      // Try date comparison for date-like strings
+      if (field === "modified" || field === "created") {
+        const da = new Date(sa).getTime(), db = new Date(sb).getTime();
+        if (!isNaN(da) && !isNaN(db)) return order === "asc" ? da - db : db - da;
+      }
+      // Try numeric comparison for number-ish strings
+      const na = Number(sa), nb = Number(sb);
+      if (!isNaN(na) && !isNaN(nb) && sa !== "" && sb !== "") {
+        return order === "asc" ? na - nb : nb - na;
+      }
+      const cmp = sa.localeCompare(sb, undefined, { sensitivity: "base" });
+      return order === "asc" ? cmp : -cmp;
+    });
+  }, [dbEntries, dbSort]);
 
   const loadTree = useCallback(async () => {
     setTreeLoading(true);
@@ -786,6 +932,26 @@ export default function DocsView() {
 
     // DB collection view
     if (dbFolder && dbSchema) {
+      const handleSort = (field: string) => {
+        setDbSort((prev) => {
+          const next = prev.field === field
+            ? { field, order: prev.order === "asc" ? "desc" as const : "asc" as const }
+            : { field, order: "desc" as const };
+          saveDbSort(dbFolder, next);
+          return next;
+        });
+      };
+
+      const SortIcon = ({ field }: { field: string }) => {
+        if (dbSort.field !== field) return null;
+        return dbSort.order === "asc"
+          ? <ChevronUp size={12} className="inline ml-0.5" />
+          : <ChevronDown size={12} className="inline ml-0.5" />;
+      };
+
+      const thClass = "text-left px-3 py-2 font-medium cursor-pointer select-none hover:text-text-primary transition-colors";
+      const visibleFields = dbSchema.fields.filter((f) => f.name !== "title");
+
       return (
         <div className="flex-1 flex flex-col overflow-y-auto">
           <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-border bg-bg-secondary">
@@ -797,26 +963,32 @@ export default function DocsView() {
           </div>
           <div className="flex-1 overflow-auto">
             <table className="w-full text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="border-b border-border bg-bg-secondary text-text-muted">
-                  <th className="text-left px-3 py-2 font-medium">Title</th>
-                  {dbSchema.fields.filter((f) => f.name !== "title").map((f) => (
-                    <th key={f.name} className="text-left px-3 py-2 font-medium">{f.name}</th>
+                  <th className={thClass} onClick={() => handleSort("title")}>
+                    Title<SortIcon field="title" />
+                  </th>
+                  {visibleFields.map((f) => (
+                    <th key={f.name} className={`${thClass} ${f.type === "number" ? "text-right" : ""}`} onClick={() => handleSort(f.name)}>
+                      {f.name}<SortIcon field={f.name} />
+                    </th>
                   ))}
-                  <th className="text-left px-3 py-2 font-medium">Modified</th>
+                  <th className={thClass} onClick={() => handleSort("modified")}>
+                    Modified<SortIcon field="modified" />
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {dbEntries.map((entry) => (
+                {sortedDbEntries.map((entry) => (
                   <tr
                     key={entry.path}
                     onClick={() => handleSelectNode(entry.path)}
                     className="border-b border-border hover:bg-bg-hover cursor-pointer transition-colors"
                   >
                     <td className="px-3 py-2 text-text-primary font-medium">{entry.title}</td>
-                    {dbSchema.fields.filter((f) => f.name !== "title").map((f) => (
-                      <td key={f.name} className="px-3 py-2 text-text-muted">
-                        {entry.fields[f.name] != null ? String(entry.fields[f.name]) : "—"}
+                    {visibleFields.map((f) => (
+                      <td key={f.name} className={`px-3 py-2 text-text-muted ${f.type === "number" ? "text-right" : ""}`}>
+                        <DbCell field={f} value={entry.fields[f.name]} />
                       </td>
                     ))}
                     <td className="px-3 py-2 text-text-faint whitespace-nowrap">
@@ -824,9 +996,9 @@ export default function DocsView() {
                     </td>
                   </tr>
                 ))}
-                {dbEntries.length === 0 && (
+                {sortedDbEntries.length === 0 && (
                   <tr>
-                    <td colSpan={dbSchema.fields.filter((f) => f.name !== "title").length + 2} className="px-3 py-8 text-center text-text-faint">
+                    <td colSpan={visibleFields.length + 2} className="px-3 py-8 text-center text-text-faint">
                       No entries yet
                     </td>
                   </tr>
