@@ -188,6 +188,15 @@ function initSchema(db: DatabaseSync): void {
       FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tagId);
+
+    -- Tag ↔ MCP server configs
+    CREATE TABLE IF NOT EXISTS tag_mcp_servers (
+      tagId TEXT NOT NULL,
+      serverName TEXT NOT NULL,
+      config TEXT NOT NULL,
+      PRIMARY KEY (tagId, serverName),
+      FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
+    );
   `);
 
   // ── Migrations ──────────────────────────────────────────────────

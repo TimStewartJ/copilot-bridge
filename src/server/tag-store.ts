@@ -18,6 +18,22 @@ export interface Tag {
   updatedAt: string;
 }
 
+export interface TagMcpServer {
+  serverName: string;
+  config: {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+    tools?: string[];
+  };
+}
+
+export interface ResolvedTagConfig {
+  tags: Tag[];
+  mergedInstructions: string;
+  mergedMcpServers: Record<string, TagMcpServer["config"]>;
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createTagStore(db: DatabaseSync) {
@@ -157,9 +173,61 @@ export function createTagStore(db: DatabaseSync) {
     return taskTags;
   }
 
+  // ── Tag MCP server management ────────────────────────────────────
+
+  function getTagMcpServers(tagId: string): TagMcpServer[] {
+    const rows = db.prepare("SELECT serverName, config FROM tag_mcp_servers WHERE tagId = ?").all(tagId) as any[];
+    return rows.map((r) => ({
+      serverName: r.serverName,
+      config: JSON.parse(r.config),
+    }));
+  }
+
+  function setTagMcpServer(tagId: string, serverName: string, config: TagMcpServer["config"]): void {
+    const tag = getTag(tagId);
+    if (!tag) throw new Error(`Tag ${tagId} not found`);
+    db.prepare(`
+      INSERT OR REPLACE INTO tag_mcp_servers (tagId, serverName, config)
+      VALUES (?, ?, ?)
+    `).run(tagId, serverName, JSON.stringify(config));
+  }
+
+  function removeTagMcpServer(tagId: string, serverName: string): void {
+    db.prepare("DELETE FROM tag_mcp_servers WHERE tagId = ? AND serverName = ?").run(tagId, serverName);
+  }
+
+  // ── Tag resolution ───────────────────────────────────────────────
+
+  function resolveEffectiveTags(taskId: string, groupId?: string): ResolvedTagConfig {
+    const tags = getEffectiveTaskTags(taskId, groupId);
+
+    const instructionParts: string[] = [];
+    const mcpServers: Record<string, TagMcpServer["config"]> = {};
+
+    for (const tag of tags) {
+      if (tag.instructions.trim()) {
+        instructionParts.push(`[${tag.name}] ${tag.instructions.trim()}`);
+      }
+      const servers = getTagMcpServers(tag.id);
+      for (const srv of servers) {
+        if (!mcpServers[srv.serverName]) {
+          mcpServers[srv.serverName] = srv.config;
+        }
+      }
+    }
+
+    return {
+      tags,
+      mergedInstructions: instructionParts.join("\n\n"),
+      mergedMcpServers: mcpServers,
+    };
+  }
+
   return {
     listTags, getTag, getTagByName, createTag, updateTag, deleteTag, reorderTags,
     setEntityTags, getEntityTags, getEntitiesByTag, getEffectiveTaskTags,
+    getTagMcpServers, setTagMcpServer, removeTagMcpServer,
+    resolveEffectiveTags,
   };
 }
 

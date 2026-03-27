@@ -26,6 +26,7 @@ import type { TaskStore } from "./task-store.js";
 import type { TodoStore } from "./todo-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
+import type { TagStore } from "./tag-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -620,6 +621,7 @@ export interface SessionManagerDeps {
   taskStore: TaskStore;
   todoStore?: TodoStore;
   settingsStore?: SettingsStore;
+  tagStore?: TagStore;
   config: { sessionMcpServers: Record<string, any>; model?: string };
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
@@ -732,6 +734,19 @@ export class SessionManager {
     // Custom instructions — append user-defined instructions to context
     if (settings?.customInstructions?.trim()) {
       contextParts.push(settings.customInstructions.trim());
+    }
+
+    // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
+    if (task && this.deps.tagStore) {
+      const resolved = this.deps.tagStore.resolveEffectiveTags(task.id, task.groupId);
+      if (resolved.mergedInstructions) {
+        contextParts.push(`\n<tag_instructions>\n${resolved.mergedInstructions}\n</tag_instructions>`);
+      }
+      // Merge tag MCP servers into session config
+      if (Object.keys(resolved.mergedMcpServers).length > 0) {
+        const currentMcp = cfg.mcpServers ?? {};
+        cfg.mcpServers = { ...currentMcp, ...resolved.mergedMcpServers };
+      }
     }
 
     // Inject server-local time into environment context (dynamic per turn via transform)
