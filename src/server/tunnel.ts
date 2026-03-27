@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
-const TUNNEL_NAME = "copilot-bridge";
+const TUNNEL_NAME = process.env.BRIDGE_TUNNEL_NAME || "copilot-bridge";
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 let cachedTunnelUrl: string | undefined;
