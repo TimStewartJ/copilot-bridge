@@ -1009,32 +1009,36 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
     });
 
-    // DB collection routes
-    router.get("/docs/schema/:folder", (req, res) => {
+    // DB collection routes — use wildcard (*) to support nested folders (e.g. areas/cooking/recipes)
+    const paramPath = (raw: any): string => Array.isArray(raw) ? raw.join("/") : String(raw);
+
+    router.get("/docs/schema/*folder", (req, res) => {
       try {
-        const schema = docs.readSchema(req.params.folder);
+        const folder = paramPath((req.params as any).folder);
+        const schema = docs.readSchema(folder);
         if (!schema) return res.status(404).json({ error: "Schema not found" });
-        const entries = docs.listDbEntries(req.params.folder);
+        const entries = docs.listDbEntries(folder);
         res.json({ ...schema, entryCount: entries.length });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
     });
 
-    router.put("/docs/schema/:folder", (req, res) => {
+    router.put("/docs/schema/*folder", (req, res) => {
       try {
+        const folder = paramPath((req.params as any).folder);
         const { name, fields } = req.body;
         if (!name || !Array.isArray(fields)) return res.status(400).json({ error: "name and fields are required" });
-        const schema = docs.writeSchema(req.params.folder, { name, fields });
+        const schema = docs.writeSchema(folder, { name, fields });
         res.json({ ...schema, success: true });
       } catch (err: any) {
         res.status(400).json({ error: err.message || String(err) });
       }
     });
 
-    router.get("/docs/db/:folder", (req, res) => {
+    router.get("/docs/db/*folder", (req, res) => {
       try {
-        const folder = req.params.folder;
+        const folder = paramPath((req.params as any).folder);
         const limit = Math.min(Number(req.query.limit) || 50, 200);
         const offset = Number(req.query.offset) || 0;
         const sortField = req.query._sort as string | undefined;
@@ -1060,11 +1064,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
     });
 
-    router.post("/docs/db/:folder", (req, res) => {
+    router.post("/docs/db/*folder", (req, res) => {
       try {
+        const folder = paramPath((req.params as any).folder);
         const { fields, body } = req.body;
         if (!fields || typeof fields !== "object") return res.status(400).json({ error: "fields object is required" });
-        const entry = docs.addDbEntry(req.params.folder, fields, body);
+        const entry = docs.addDbEntry(folder, fields, body);
         // Index the new page
         const page = docs.readPage(entry.path);
         if (page) docsIdx.indexPage(page);
@@ -1074,11 +1079,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
     });
 
-    router.patch("/docs/db/:folder/:slug", (req, res) => {
+    router.patch("/docs/db/*path", (req, res) => {
       try {
+        const fullPath = paramPath((req.params as any).path);
+        const lastSlash = fullPath.lastIndexOf("/");
+        if (lastSlash === -1) return res.status(400).json({ error: "Path must be folder/slug" });
+        const folder = fullPath.slice(0, lastSlash);
+        const slug = fullPath.slice(lastSlash + 1);
         const { fields, body } = req.body;
         if (!fields || typeof fields !== "object") return res.status(400).json({ error: "fields object is required" });
-        const entry = docs.updateDbEntry(req.params.folder, req.params.slug, fields, body);
+        const entry = docs.updateDbEntry(folder, slug, fields, body);
         // Re-index the updated page
         const page = docs.readPage(entry.path);
         if (page) docsIdx.indexPage(page);
