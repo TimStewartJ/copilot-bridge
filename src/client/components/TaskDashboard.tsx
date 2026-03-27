@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { Task, TaskGroup, Session, Todo } from "../api";
+import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
 import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
@@ -13,6 +13,8 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import NotesSheet from "./NotesSheet";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
+import { TagPillList } from "./TagPill";
+import TagPicker from "./TagPicker";
 import {
   MessageSquare,
   Plus,
@@ -46,6 +48,9 @@ interface TaskDashboardProps {
   onTasksChanged?: () => void;
   scheduleVersion?: number;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  allTags?: Tag[];
+  onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
+  onTagCreated?: (tag: Tag) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -60,6 +65,9 @@ export default function TaskDashboard({
   onTasksChanged,
   scheduleVersion,
   isUnread,
+  allTags = [],
+  onSetTaskTags,
+  onTagCreated,
 }: TaskDashboardProps) {
   // ── Shared hooks ─────────────────────────────────────────────
   const { enrichedWIs, enrichedPRs } = useTaskEnrichment(
@@ -80,6 +88,13 @@ export default function TaskDashboard({
     task.sessionIds.includes(s.sessionId) && !s.archived
   );
   const group = taskGroups.find((g) => g.id === task.groupId);
+  const taskOwnTags = task.tags ?? [];
+  const groupTags = group?.tags ?? [];
+  const inheritedTagIds = new Set(groupTags.map((t) => t.id));
+  const effectiveTags = [
+    ...taskOwnTags,
+    ...groupTags.filter((gt) => !taskOwnTags.some((tt) => tt.id === gt.id)),
+  ];
 
   const openTodos = todos.filter((t) => !t.done);
   const doneTodos = todos.filter((t) => t.done);
@@ -112,6 +127,29 @@ export default function TaskDashboard({
               <h1 className="text-xl font-semibold text-text-primary leading-tight">
                 {task.title}
               </h1>
+              {/* Tags */}
+              {(effectiveTags.length > 0 || onSetTaskTags) && (
+                <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                  <TagPillList
+                    tags={effectiveTags}
+                    inheritedTagIds={inheritedTagIds}
+                    size="sm"
+                    onRemove={onSetTaskTags ? (tagId) => {
+                      const newIds = taskOwnTags.filter((t) => t.id !== tagId).map((t) => t.id);
+                      onSetTaskTags(task.id, newIds);
+                    } : undefined}
+                  />
+                  {onSetTaskTags && (
+                    <TagPicker
+                      allTags={allTags}
+                      selectedTagIds={taskOwnTags.map((t) => t.id)}
+                      inheritedTagIds={inheritedTagIds}
+                      onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
+                      onTagCreated={onTagCreated}
+                    />
+                  )}
+                </div>
+              )}
               {task.cwd && (
                 <div className="flex items-center gap-1.5 mt-1.5 text-xs text-text-muted">
                   <FolderOpen size={12} className="text-text-faint" />

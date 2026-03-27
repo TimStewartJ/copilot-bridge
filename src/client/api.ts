@@ -78,6 +78,7 @@ export interface Task {
   sessionIds: string[];
   workItems: WorkItemRef[];
   pullRequests: PRRef[];
+  tags?: Tag[];
 }
 
 export interface TaskGroup {
@@ -86,6 +87,19 @@ export interface TaskGroup {
   color: string;
   order: number;
   collapsed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  tags?: Tag[];
+}
+
+// ── Tag types ─────────────────────────────────────────────────────
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+  instructions: string;
+  order: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -350,6 +364,67 @@ export async function reorderTaskGroups(groupIds: string[]): Promise<TaskGroup[]
   }
   const data = await res.json();
   return data.groups;
+}
+
+// ── Tag API ───────────────────────────────────────────────────────
+
+export async function fetchTags(): Promise<Tag[]> {
+  const data = await apiFetch<{ tags: Tag[] }>("/api/tags");
+  return data.tags;
+}
+
+export async function createTag(name: string, color?: string): Promise<Tag> {
+  const data = await apiFetch<{ tag: Tag }>("/api/tags", { name, color });
+  return data.tag;
+}
+
+export async function patchTag(
+  id: string,
+  updates: Partial<Pick<Tag, "name" | "color" | "instructions">>,
+): Promise<Tag> {
+  const res = await fetch(`${API_BASE}/api/tags/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.tag;
+}
+
+export async function deleteTag(id: string): Promise<void> {
+  await fetch(`${API_BASE}/api/tags/${id}`, { method: "DELETE" });
+}
+
+export async function setTaskTags(taskId: string, tagIds: string[]): Promise<Tag[]> {
+  const res = await fetch(`${API_BASE}/api/tasks/${taskId}/tags`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tagIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.tags;
+}
+
+export async function setGroupTags(groupId: string, tagIds: string[]): Promise<Tag[]> {
+  const res = await fetch(`${API_BASE}/api/task-groups/${groupId}/tags`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tagIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.tags;
 }
 
 // ── Plan API ──────────────────────────────────────────────────────

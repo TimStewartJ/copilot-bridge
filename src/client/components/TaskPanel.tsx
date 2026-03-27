@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session, Todo } from "../api";
+import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { unlinkResource, patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
 import { timeAgo } from "../time";
@@ -16,6 +16,8 @@ import NotesSheet from "./NotesSheet";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { TagPillList } from "./TagPill";
+import TagPicker from "./TagPicker";
 import {
   MessageSquare,
   MoreHorizontal,
@@ -94,6 +96,10 @@ interface TaskPanelProps {
   // Bulk actions
   onMarkAllRead?: () => void;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
+  // Tags
+  allTags?: Tag[];
+  onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
+  onTagCreated?: (tag: Tag) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -128,6 +134,9 @@ export default function TaskPanel({
   onViewDashboard,
   onMarkAllRead,
   onBulkAction,
+  allTags = [],
+  onSetTaskTags,
+  onTagCreated,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
@@ -352,6 +361,41 @@ export default function TaskPanel({
             );
           })()}
         </div>
+        {/* Tags */}
+        {(() => {
+          const taskOwnTags = task.tags ?? [];
+          const group = taskGroups.find((g) => g.id === task.groupId);
+          const groupTags = group?.tags ?? [];
+          const inheritedTagIds = new Set(groupTags.map((t) => t.id));
+          const effectiveTags = [
+            ...taskOwnTags,
+            ...groupTags.filter((gt) => !taskOwnTags.some((tt) => tt.id === gt.id)),
+          ];
+          if (effectiveTags.length === 0 && !onSetTaskTags) return null;
+          return (
+            <div className="flex items-center gap-1 flex-wrap px-3 pb-2">
+              <TagPillList
+                tags={effectiveTags}
+                inheritedTagIds={inheritedTagIds}
+                onRemove={onSetTaskTags ? (tagId) => {
+                  const newIds = taskOwnTags.filter((t) => t.id !== tagId).map((t) => t.id);
+                  onSetTaskTags(task.id, newIds);
+                } : undefined}
+                max={4}
+              />
+              {onSetTaskTags && (
+                <TagPicker
+                  allTags={allTags}
+                  selectedTagIds={taskOwnTags.map((t) => t.id)}
+                  inheritedTagIds={inheritedTagIds}
+                  onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
+                  onTagCreated={onTagCreated}
+                  compact
+                />
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Scrollable content */}

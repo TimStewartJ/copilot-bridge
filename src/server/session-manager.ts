@@ -160,17 +160,28 @@ export function createBridgeTools(ctx: AppContext) {
     },
   }),
   defineTool("task_update", {
-    description: "Update a task's title, notes, working directory, and/or group. Only provided fields are changed.",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "New title" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, cwd: { type: "string", description: "Working directory path for the task" }, groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" } }, required: ["taskId"] },
+    description: "Update a task's title, notes, working directory, group, and/or tags. Only provided fields are changed.",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "New title" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, cwd: { type: "string", description: "Working directory path for the task" }, groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." } }, required: ["taskId"] },
     handler: async (args: any) => {
       const updates: Record<string, string> = {};
       if (args.title !== undefined) updates.title = args.title;
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
-      if (Object.keys(updates).length === 0) return { error: "No fields to update. Provide at least one of: title, notes, cwd, groupId" };
-      ctx.taskStore.updateTask(args.taskId, updates);
-      const fields = Object.keys(updates).join(", ");
+      const hasTags = Array.isArray(args.tags);
+      if (Object.keys(updates).length === 0 && !hasTags) return { error: "No fields to update. Provide at least one of: title, notes, cwd, groupId, tags" };
+      if (Object.keys(updates).length > 0) {
+        ctx.taskStore.updateTask(args.taskId, updates);
+      }
+      if (hasTags) {
+        const tagIds = args.tags.map((name: string) => {
+          const existing = ctx.tagStore?.getTagByName(name);
+          if (existing) return existing.id;
+          return ctx.tagStore?.createTag(name).id;
+        });
+        ctx.tagStore?.setEntityTags("task", args.taskId, tagIds);
+      }
+      const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
       return { success: true, message: `Task updated (${fields})` };
     },
   }),
@@ -193,9 +204,17 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("task_create", {
     description: "Create a new task",
-    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" } }, required: ["title"] },
+    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." } }, required: ["title"] },
     handler: async (args: any) => {
       const task = ctx.taskStore.createTask(args.title);
+      if (Array.isArray(args.tags) && args.tags.length > 0) {
+        const tagIds = args.tags.map((name: string) => {
+          const existing = ctx.tagStore?.getTagByName(name);
+          if (existing) return existing.id;
+          return ctx.tagStore?.createTag(name).id;
+        });
+        ctx.tagStore?.setEntityTags("task", task.id, tagIds);
+      }
       return { success: true, message: `Task "${task.title}" created`, taskId: task.id };
     },
   }),
@@ -222,6 +241,44 @@ export function createBridgeTools(ctx: AppContext) {
       for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: undefined });
       ctx.taskGroupStore.deleteGroup(args.groupId);
       return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
+    },
+  }),
+  // ── Tag tools ────────────────────────────────────────────────
+  defineTool("tag_list", {
+    description: "List all tags with their IDs, names, and colors",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      return { tags: ctx.tagStore?.listTags().map((t) => ({ id: t.id, name: t.name, color: t.color })) };
+    },
+  }),
+  defineTool("tag_create", {
+    description: "Create a new tag for organizing tasks, groups, and docs",
+    parameters: { type: "object", properties: { name: { type: "string", description: "Tag name (e.g., 'python', 'frontend', 'urgent')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate, emerald, indigo, pink" } }, required: ["name"] },
+    handler: async (args: any) => {
+      if (!ctx.tagStore) return { error: "Tags not available" };
+      const tag = ctx.tagStore.createTag(args.name, args.color);
+      return { success: true, message: `Tag "${tag.name}" created`, tagId: tag.id };
+    },
+  }),
+  defineTool("tag_update", {
+    description: "Update a tag's name, color, or instructions",
+    parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID" }, name: { type: "string", description: "New name" }, color: { type: "string", description: "New color" }, instructions: { type: "string", description: "Custom instructions for sessions with this tag" } }, required: ["tagId"] },
+    handler: async (args: any) => {
+      const updates: Record<string, any> = {};
+      if (args.name !== undefined) updates.name = args.name;
+      if (args.color !== undefined) updates.color = args.color;
+      if (args.instructions !== undefined) updates.instructions = args.instructions;
+      if (Object.keys(updates).length === 0) return { error: "Provide at least one of: name, color, instructions" };
+      ctx.tagStore?.updateTag(args.tagId, updates);
+      return { success: true, message: `Tag updated` };
+    },
+  }),
+  defineTool("tag_delete", {
+    description: "Delete a tag. Removes it from all entities.",
+    parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID to delete" } }, required: ["tagId"] },
+    handler: async (args: any) => {
+      ctx.tagStore?.deleteTag(args.tagId);
+      return { success: true, message: "Tag deleted" };
     },
   }),
   // ── Todo tools ────────────────────────────────────────────────

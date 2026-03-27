@@ -20,10 +20,14 @@ import {
   patchTaskGroup,
   deleteTaskGroup,
   batchSessionAction,
+  fetchTags,
+  setTaskTags,
+  setGroupTags,
   API_BASE,
   type Session,
   type Task,
   type TaskGroup,
+  type Tag,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { useDrafts } from "./useDrafts";
@@ -60,6 +64,7 @@ export default function App() {
   const [restartWaiting, setRestartWaiting] = useState(0);
   const [faviconKey, setFaviconKey] = useState<string | undefined>();
   const [scheduleVersion, setScheduleVersion] = useState(0);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
 
   // Apply favicon from settings on load
   useFavicon(faviconKey);
@@ -143,10 +148,19 @@ export default function App() {
     }
   };
 
+  const loadTags = async () => {
+    try {
+      setAllTags(await fetchTags());
+    } catch (err) {
+      console.error("Failed to load tags:", err);
+    }
+  };
+
   useEffect(() => {
     loadSessions();
     loadTasks();
     loadTaskGroups();
+    loadTags();
   }, []);
 
   // Real-time status updates via SSE
@@ -503,6 +517,27 @@ export default function App() {
     }
   };
 
+  // ── Tag handlers ────────────────────────────────────────────────
+
+  const handleSetTaskTags = async (taskId: string, tagIds: string[]) => {
+    try {
+      const tags = await setTaskTags(taskId, tagIds);
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, tags } : t)));
+      setSelectedTask((prev) => (prev?.id === taskId ? { ...prev, tags } : prev));
+    } catch (err) {
+      console.error("Failed to set task tags:", err);
+    }
+  };
+
+  const handleSetGroupTags = async (groupId: string, tagIds: string[]) => {
+    try {
+      const tags = await setGroupTags(groupId, tagIds);
+      setTaskGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, tags } : g)));
+    } catch (err) {
+      console.error("Failed to set group tags:", err);
+    }
+  };
+
   const handleArchiveSession = async (sessionId: string, archived: boolean) => {
     const nextId = archived && activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     // Animate out before removing
@@ -813,6 +848,9 @@ export default function App() {
                   onViewDashboard={(taskId) => navigate(`/tasks/${taskId}`)}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
+                  allTags={allTags}
+                  onSetTaskTags={handleSetTaskTags}
+                  onTagCreated={loadTags}
                 />
               </div>
             )}
@@ -873,6 +911,9 @@ export default function App() {
                     onTasksChanged={loadTasks}
                     scheduleVersion={scheduleVersion}
                     isUnread={isUnread}
+                    allTags={allTags}
+                    onSetTaskTags={handleSetTaskTags}
+                    onTagCreated={loadTags}
                   />
                 ) : taskNotFound ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">

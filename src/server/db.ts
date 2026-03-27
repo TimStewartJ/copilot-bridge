@@ -167,6 +167,27 @@ function initSchema(db: DatabaseSync): void {
       modified TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_docs_pages_folder ON docs_pages(folder);
+
+    -- Tags
+    CREATE TABLE IF NOT EXISTS tags (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      color TEXT NOT NULL DEFAULT 'slate',
+      instructions TEXT NOT NULL DEFAULT '',
+      "order" INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    -- Tag ↔ Entity junction
+    CREATE TABLE IF NOT EXISTS entity_tags (
+      entityType TEXT NOT NULL,
+      entityId TEXT NOT NULL,
+      tagId TEXT NOT NULL,
+      PRIMARY KEY (entityType, entityId, tagId),
+      FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tagId);
   `);
 
   // ── Migrations ──────────────────────────────────────────────────
