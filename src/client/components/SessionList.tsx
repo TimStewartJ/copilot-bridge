@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
-import type { Session, Task } from "../api";
+import type { Session, Task, BatchAction } from "../api";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, CheckSquare, Square, SquareCheckBig } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -36,6 +36,87 @@ const styles = {
   },
 } as const;
 
+// ── Bulk action bar for multi-select mode ────────────────────────
+function BulkActionBar({
+  activeSessions,
+  selectedIds,
+  onToggleSelect,
+  onBulkAction,
+  isUnread,
+}: {
+  activeSessions: Session[];
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onBulkAction: (action: BatchAction, ids: string[]) => void;
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+}) {
+  const count = selectedIds.size;
+  const allSelected = activeSessions.length > 0 && activeSessions.every((s) => selectedIds.has(s.sessionId));
+  const unreadSelected = activeSessions.filter(
+    (s) => selectedIds.has(s.sessionId) && isUnread?.(s.sessionId, s.modifiedTime),
+  );
+
+  const handleToggleAll = () => {
+    if (allSelected) {
+      for (const s of activeSessions) onToggleSelect(s.sessionId);
+    } else {
+      for (const s of activeSessions) {
+        if (!selectedIds.has(s.sessionId)) onToggleSelect(s.sessionId);
+      }
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap text-xs">
+      <button
+        onClick={handleToggleAll}
+        className="flex items-center gap-1 px-2 py-1 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+        title={allSelected ? "Deselect all" : "Select all"}
+      >
+        {allSelected ? <SquareCheckBig size={13} className="text-accent" /> : <Square size={13} />}
+        <span>{allSelected ? "All" : "All"}</span>
+      </button>
+      {count > 0 && (
+        <>
+          <span className="text-text-faint">·</span>
+          <span className="text-text-muted">{count} selected</span>
+          <span className="text-text-faint">·</span>
+          {unreadSelected.length > 0 && (
+            <button
+              onClick={() => onBulkAction("markRead", [...selectedIds])}
+              className="flex items-center gap-1 px-2 py-1 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+              title={`Mark ${count} as read`}
+            >
+              <Check size={13} />
+              Read
+            </button>
+          )}
+          <button
+            onClick={() => onBulkAction("archive", [...selectedIds])}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+            title={`Archive ${count} sessions`}
+          >
+            <Archive size={13} />
+            Archive
+          </button>
+          <button
+            onClick={() => {
+              if (confirm(`Delete ${count} session${count === 1 ? "" : "s"}? This cannot be undone.`)) {
+                onBulkAction("delete", [...selectedIds]);
+              }
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-bg-hover transition-colors text-error"
+            title={`Delete ${count} sessions`}
+          >
+            <Trash2 size={13} />
+            Delete
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 interface SessionListProps {
   variant: "global" | "compact";
   sessions: Session[];
@@ -63,6 +144,11 @@ interface SessionListProps {
   hasDraft?: (sessionId: string) => boolean;
   exitingIds?: Set<string>;
   className?: string;
+  // Multi-select / bulk actions
+  selectMode?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (sessionId: string) => void;
+  onBulkAction?: (action: BatchAction, sessionIds: string[]) => void;
 }
 
 export default function SessionList({
@@ -86,6 +172,10 @@ export default function SessionList({
   hasDraft,
   exitingIds,
   className,
+  selectMode,
+  selectedIds,
+  onToggleSelect,
+  onBulkAction,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
@@ -112,6 +202,7 @@ export default function SessionList({
     const isArch = session.archived;
     const isArchiving = archivingIds?.has(id);
     const isExiting = exitingIds?.has(id);
+    const isSelected = selectedIds?.has(id);
     const dotColor = isArchiving
       ? ""
       : session.busy
@@ -122,21 +213,31 @@ export default function SessionList({
             ? "bg-text-faint"
             : "bg-text-faint";
 
+    const handleClick = selectMode && onToggleSelect
+      ? () => onToggleSelect(id)
+      : undefined;
+
     return (
       <div key={id} className={`group relative min-w-0${isExiting ? " animate-session-exit" : ""}`}>
         <button
-          {...bindLongPress(id, () => onSelectSession(id))}
+          {...(selectMode ? { onClick: handleClick } : bindLongPress(id, () => onSelectSession(id)))}
           title={session.summary || id}
           className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
-            ctxMenu?.id === id
-              ? "bg-bg-hover ring-1 ring-border"
-              : isActive
-                ? "bg-bg-hover"
-                : "hover:bg-bg-hover"
+            selectMode && isSelected
+              ? "bg-accent/10 ring-1 ring-accent/30"
+              : ctxMenu?.id === id
+                ? "bg-bg-hover ring-1 ring-border"
+                : isActive
+                  ? "bg-bg-hover"
+                  : "hover:bg-bg-hover"
           } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""}`}
         >
           <div className={`${unread ? s.titleClass.replace("font-medium", "font-semibold") : s.titleClass} flex items-center min-w-0`}>
-            {isArchiving ? (
+            {selectMode ? (
+              isSelected
+                ? <SquareCheckBig size={14} className="text-accent shrink-0 mr-1.5" />
+                : <Square size={14} className="text-text-muted shrink-0 mr-1.5" />
+            ) : isArchiving ? (
               <Loader2 size={10} className={`${s.dotSize} animate-spin text-text-muted shrink-0`} />
             ) : (
               <span
@@ -168,9 +269,20 @@ export default function SessionList({
 
   return (
     <div className={className ?? s.wrapper}>
-      <button onClick={onNewSession} className={s.newButton}>
-        {newButtonLabel}
-      </button>
+      {!selectMode && (
+        <button onClick={onNewSession} className={s.newButton}>
+          {newButtonLabel}
+        </button>
+      )}
+      {selectMode && onBulkAction && selectedIds && onToggleSelect && (
+        <BulkActionBar
+          activeSessions={activeSessions}
+          selectedIds={selectedIds}
+          onToggleSelect={onToggleSelect}
+          onBulkAction={onBulkAction}
+          isUnread={isUnread}
+        />
+      )}
       {showEmptyState && activeSessions.length === 0 && archivedSessions.length === 0 ? (
         <div className="text-xs text-text-faint px-3 py-1">No sessions yet</div>
       ) : (
