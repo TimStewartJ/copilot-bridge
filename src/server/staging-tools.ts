@@ -4,7 +4,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, copyFileSync, cpSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -120,6 +120,12 @@ function seedStagingData(stagingDir: string): string {
         writeFileSync(join(dataDir, "schedules.json"), "[]");
       }
     }
+  }
+
+  // Copy docs directory (source of truth is filesystem, not SQLite)
+  const docsSrc = join(PRODUCTION_DATA_DIR, "docs");
+  if (existsSync(docsSrc)) {
+    cpSync(docsSrc, join(dataDir, "docs"), { recursive: true });
   }
 
   log(`Seeded staging data at ${dataDir}`);
