@@ -135,15 +135,16 @@ function initSchema(db: DatabaseSync): void {
       lastReadAt TEXT NOT NULL
     );
 
-    -- Todos (per-task checklists)
+    -- Todos (per-task checklists or global/unparented)
     CREATE TABLE IF NOT EXISTS todos (
       id TEXT PRIMARY KEY,
-      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
       text TEXT NOT NULL,
       done INTEGER NOT NULL DEFAULT 0,
       "order" INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
-      completedAt TEXT
+      completedAt TEXT,
+      deadline TEXT
     );
 
     -- Indexes for common queries
@@ -179,6 +180,29 @@ function initSchema(db: DatabaseSync): void {
   const todoCols = db.prepare("PRAGMA table_info(todos)").all() as any[];
   if (!todoCols.some((c: any) => c.name === "deadline")) {
     db.exec('ALTER TABLE todos ADD COLUMN deadline TEXT');
+  }
+
+  // Make taskId nullable for global (unparented) todos
+  const todoInfo = db.prepare("PRAGMA table_info(todos)").all() as any[];
+  const taskIdCol = todoInfo.find((c: any) => c.name === "taskId");
+  if (taskIdCol && taskIdCol.notnull === 1) {
+    db.exec(`
+      CREATE TABLE todos_new (
+        id TEXT PRIMARY KEY,
+        taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        done INTEGER NOT NULL DEFAULT 0,
+        "order" INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        completedAt TEXT,
+        deadline TEXT
+      );
+      INSERT INTO todos_new (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        SELECT id, taskId, text, done, "order", createdAt, completedAt, deadline FROM todos;
+      DROP TABLE todos;
+      ALTER TABLE todos_new RENAME TO todos;
+      CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
+    `);
   }
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)

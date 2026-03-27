@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   fetchDashboard,
   patchTodo,
+  deleteTodo,
+  createGlobalTodo,
   type DashboardData,
   type DashboardActiveTask,
   type DashboardOrphanSession,
@@ -12,7 +14,51 @@ import { timeAgo } from "../time";
 import { deadlineUrgency, deadlineLabel, CHECKBOX_URGENCY } from "../todo-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
-import { Loader2, MessageSquare, Plus, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays } from "lucide-react";
+import { Loader2, MessageSquare, Plus, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays, Trash2, ArrowUpDown } from "lucide-react";
+
+type TodoSort = "newest" | "deadline" | "task";
+
+const SORT_LABELS: Record<TodoSort, string> = {
+  newest: "Newest",
+  deadline: "Deadline",
+  task: "By task",
+};
+
+const SORT_STORAGE_KEY = "dashboard-todo-sort";
+
+function getSavedSort(): TodoSort {
+  try {
+    const val = localStorage.getItem(SORT_STORAGE_KEY);
+    if (val === "newest" || val === "deadline" || val === "task") return val;
+  } catch {}
+  return "newest";
+}
+
+function deadlineSortKey(deadline: string | undefined): number {
+  if (!deadline) return Infinity;
+  return new Date(deadline + "T00:00:00").getTime();
+}
+
+function sortTodos(todos: DashboardTodo[], sort: TodoSort): DashboardTodo[] {
+  const copy = [...todos];
+  switch (sort) {
+    case "newest":
+      return copy.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    case "deadline":
+      return copy.sort((a, b) => deadlineSortKey(a.deadline) - deadlineSortKey(b.deadline) || b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    case "task":
+      return copy.sort((a, b) => {
+        // Global todos first, then group by task title
+        if (!a.taskId && b.taskId) return -1;
+        if (a.taskId && !b.taskId) return 1;
+        const titleCmp = (a.taskTitle ?? "").localeCompare(b.taskTitle ?? "");
+        if (titleCmp !== 0) return titleCmp;
+        return a.order - b.order;
+      });
+    default:
+      return copy;
+  }
+}
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { todoId?: string }) => void;
@@ -33,13 +79,42 @@ export default function Dashboard({
   const [localCompletedTodos, setLocalCompletedTodos] = useState<DashboardTodo[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
+  const [newTodoText, setNewTodoText] = useState("");
+  const [todoSort, setTodoSort] = useState<TodoSort>(getSavedSort);
+  const lastLocalChange = useRef(0);
 
-  const loadDashboard = async () => {
+  const sortedOpenTodos = useMemo(() => sortTodos(localOpenTodos, todoSort), [localOpenTodos, todoSort]);
+
+  const handleSortChange = (sort: TodoSort) => {
+    setTodoSort(sort);
+    try { localStorage.setItem(SORT_STORAGE_KEY, sort); } catch {}
+  };
+
+  const handleAddTodo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = newTodoText.trim();
+    if (!text) return;
+    setNewTodoText("");
+    try {
+      lastLocalChange.current = Date.now();
+      const todo = await createGlobalTodo(text);
+      setLocalOpenTodos((prev) => [{ ...todo, taskTitle: null, taskGroupColor: null }, ...prev]);
+    } catch (err) {
+      console.error("Failed to create todo:", err);
+    }
+  };
+
+  const loadDashboard = async (force = false) => {
     try {
       const d = await fetchDashboard();
       setData(d);
-      setLocalOpenTodos(d.openTodos);
-      setLocalCompletedTodos(d.completedTodos);
+      // Skip todo list replacement if user made a local change in the last 5s
+      // to avoid the poll stomping on optimistic UI
+      const recentLocalChange = Date.now() - lastLocalChange.current < 5000;
+      if (force || !recentLocalChange) {
+        setLocalOpenTodos(d.openTodos);
+        setLocalCompletedTodos(d.completedTodos);
+      }
     } catch (err) {
       console.error("Failed to load dashboard:", err);
     } finally {
@@ -48,7 +123,7 @@ export default function Dashboard({
   };
 
   useEffect(() => {
-    loadDashboard();
+    loadDashboard(true);
     // Auto-refresh every 15s when visible
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") loadDashboard();
@@ -148,24 +223,58 @@ export default function Dashboard({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left: To-Dos (wider) */}
           <div className="lg:col-span-2 space-y-3">
-            <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
-              <CheckSquare size={14} />
-              Open To-Dos
-              {localOpenTodos.length > 0 && (
-                <span className="text-text-faint font-normal">({localOpenTodos.filter((t) => !exitingIds.has(t.id)).length})</span>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+                <CheckSquare size={14} />
+                Open To-Dos
+                {localOpenTodos.length > 0 && (
+                  <span className="text-text-faint font-normal">({localOpenTodos.filter((t) => !exitingIds.has(t.id)).length})</span>
+                )}
+              </h2>
+              {localOpenTodos.length > 1 && (
+                <div className="flex items-center gap-1">
+                  <ArrowUpDown size={11} className="text-text-faint" />
+                  {(Object.keys(SORT_LABELS) as TodoSort[]).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => handleSortChange(s)}
+                      className={`text-[11px] px-1.5 py-0.5 rounded transition-colors ${
+                        todoSort === s
+                          ? "bg-accent/15 text-accent font-medium"
+                          : "text-text-faint hover:text-text-secondary"
+                      }`}
+                    >
+                      {SORT_LABELS[s]}
+                    </button>
+                  ))}
+                </div>
               )}
-            </h2>
+            </div>
+
+            {/* Add todo input */}
+            <form onSubmit={handleAddTodo}>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-bg-surface border border-border focus-within:border-accent transition-colors">
+                <Plus size={14} className="text-text-faint shrink-0" />
+                <input
+                  type="text"
+                  value={newTodoText}
+                  onChange={(e) => setNewTodoText(e.target.value)}
+                  placeholder="Add a to-do…"
+                  className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-faint outline-none"
+                />
+              </div>
+            </form>
 
             {localOpenTodos.length === 0 && localCompletedTodos.length === 0 ? (
               <EmptyState
                 message="No to-dos yet"
-                sub="To-dos added to tasks will show up here"
+                sub="Add one above or from within a task"
               />
             ) : (
               <>
                 {localOpenTodos.length > 0 && (
                   <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
-                    {localOpenTodos.map((todo) => (
+                    {sortedOpenTodos.map((todo) => (
                       <div
                         key={todo.id}
                         className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
@@ -180,16 +289,23 @@ export default function Dashboard({
                         <DashboardTodoRow
                           todo={todo}
                           done={false}
-                          onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
+                          onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
                           onToggle={async () => {
+                            lastLocalChange.current = Date.now();
                             setExitingIds((prev) => new Set(prev).add(todo.id));
                             await patchTodo(todo.id, { done: true });
                           }}
                           onDeadlineChange={(deadline) => {
+                            lastLocalChange.current = Date.now();
                             setLocalOpenTodos((prev) => prev.map((t) =>
                               t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
                             ));
                           }}
+                          onDelete={!todo.taskId ? async () => {
+                            lastLocalChange.current = Date.now();
+                            setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                            await deleteTodo(todo.id);
+                          } : undefined}
                         />
                       </div>
                     ))}
@@ -220,8 +336,9 @@ export default function Dashboard({
                             key={todo.id}
                             todo={todo}
                             done={true}
-                            onSelectTask={() => onSelectTask(todo.taskId, { todoId: todo.id })}
+                            onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
                             onToggle={async () => {
+                              lastLocalChange.current = Date.now();
                               setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
                               setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
                               await patchTodo(todo.id, { done: false });
@@ -381,12 +498,14 @@ function DashboardTodoRow({
   onSelectTask,
   onToggle,
   onDeadlineChange,
+  onDelete,
 }: {
   todo: DashboardTodo;
   done: boolean;
-  onSelectTask: () => void;
+  onSelectTask?: () => void;
   onToggle: () => void;
   onDeadlineChange?: (deadline: string | null) => void;
+  onDelete?: () => void;
 }) {
   const dateRef = useRef<HTMLInputElement>(null);
   const urgency = deadlineUrgency(todo.deadline, done);
@@ -408,22 +527,25 @@ function DashboardTodoRow({
         {done && <Check size={9} strokeWidth={3} />}
       </button>
 
-      {/* Content — click navigates to task */}
-      <button
+      {/* Content — click navigates to task (if linked) */}
+      <div
         onClick={onSelectTask}
-        className="flex-1 min-w-0 text-left"
+        className={`flex-1 min-w-0 text-left ${onSelectTask ? "cursor-pointer" : ""}`}
+        role={onSelectTask ? "button" : undefined}
       >
         <div className={`text-sm truncate ${done ? "text-text-faint line-through" : "text-text-primary"}`}>
           {todo.text}
         </div>
         <div className="text-xs mt-0.5 flex items-center gap-2">
-          {/* Task name pill with group color */}
-          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
-            groupBg ? `${groupBg} text-text-secondary` : "bg-bg-hover text-text-faint"
-          }`}>
-            {groupDot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${groupDot}`} />}
-            {todo.taskTitle}
-          </span>
+          {/* Task name pill with group color — only shown for task-linked todos */}
+          {todo.taskTitle && (
+            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
+              groupBg ? `${groupBg} text-text-secondary` : "bg-bg-hover text-text-faint"
+            }`}>
+              {groupDot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${groupDot}`} />}
+              {todo.taskTitle}
+            </span>
+          )}
           {/* Deadline */}
           {todo.deadline && !done && (
             <span className={`shrink-0 flex items-center gap-0.5 ${
@@ -434,11 +556,20 @@ function DashboardTodoRow({
             </span>
           )}
         </div>
-      </button>
+      </div>
 
-      {/* Date picker (hover action, open todos only) */}
+      {/* Hover actions (open todos only) */}
       {!done && (
         <div className="hidden group-hover:flex items-center shrink-0">
+          {onDelete && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              className="p-1 text-text-faint hover:text-error transition-colors"
+              title="Delete to-do"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
