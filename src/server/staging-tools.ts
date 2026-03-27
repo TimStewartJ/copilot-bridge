@@ -143,6 +143,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod,
     sessionTitlesMod, readStateStoreMod, todoStoreMod,
     docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
+    tagStoreMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
@@ -160,6 +161,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     import(ts("docs-index.ts")).catch(() => null),
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
+    import(ts("tag-store.ts")).catch(() => null),
   ]);
 
   // Open isolated staging database
@@ -177,6 +179,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
   const readStateStore = readStateStoreMod.createReadStateStore(db);
   const todoStore = todoStoreMod.createTodoStore(db, globalBus);
+  const tagStore = tagStoreMod?.createTagStore(db);
   const docsStore = docsStoreMod?.createDocsStore(join(dataDir, "docs"));
   const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
   if (docsIndex) docsIndex.reindex();
@@ -190,6 +193,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     sessionMetaStore, sessionTitles, readStateStore, todoStore,
     ...(docsStore && { docsStore }),
     ...(docsIndex && { docsIndex }),
+    ...(tagStore && { tagStore }),
     globalBus, eventBusRegistry,
     sessionManager: null as any,
     copilotHome,

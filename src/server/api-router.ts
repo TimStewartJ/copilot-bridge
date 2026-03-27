@@ -424,7 +424,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // ── Task Group routes ─────────────────────────────────────────────
 
   router.get("/task-groups", (_req, res) => {
-    res.json({ groups: ctx.taskGroupStore.listGroups() });
+    const groups = ctx.taskGroupStore.listGroups();
+    const groupsWithTags = groups.map((g) => ({
+      ...g,
+      tags: ctx.tagStore?.getEntityTags("task_group", g.id) ?? [],
+    }));
+    res.json({ groups: groupsWithTags });
   });
 
   router.post("/task-groups", (req, res) => {
@@ -466,10 +471,89 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // ── Tag routes ──────────────────────────────────────────────────
+
+  router.get("/tags", (_req, res) => {
+    res.json({ tags: ctx.tagStore?.listTags() ?? [] });
+  });
+
+  router.post("/tags", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    const { name, color } = req.body;
+    if (!name) return res.status(400).json({ error: "name is required" });
+    try {
+      const tag = ctx.tagStore.createTag(name, color);
+      res.json({ tag });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  router.patch("/tags/:id", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    try {
+      const tag = ctx.tagStore.updateTag(req.params.id, req.body);
+      res.json({ tag });
+    } catch (err) {
+      res.status(404).json({ error: String(err) });
+    }
+  });
+
+  router.delete("/tags/:id", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    ctx.tagStore.deleteTag(req.params.id);
+    res.json({ success: true });
+  });
+
+  router.put("/tags/reorder", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    const { tagIds } = req.body;
+    if (!Array.isArray(tagIds)) return res.status(400).json({ error: "tagIds array is required" });
+    try {
+      const tags = ctx.tagStore.reorderTags(tagIds);
+      res.json({ tags });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  // Set tags on a task
+  router.put("/tasks/:id/tags", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    const { tagIds } = req.body;
+    if (!Array.isArray(tagIds)) return res.status(400).json({ error: "tagIds array is required" });
+    try {
+      ctx.tagStore.setEntityTags("task", req.params.id, tagIds);
+      const tags = ctx.tagStore.getEntityTags("task", req.params.id);
+      res.json({ tags });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  // Set tags on a task group
+  router.put("/task-groups/:id/tags", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    const { tagIds } = req.body;
+    if (!Array.isArray(tagIds)) return res.status(400).json({ error: "tagIds array is required" });
+    try {
+      ctx.tagStore.setEntityTags("task_group", req.params.id, tagIds);
+      const tags = ctx.tagStore.getEntityTags("task_group", req.params.id);
+      res.json({ tags });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
   // ── Task routes ───────────────────────────────────────────────────
 
   router.get("/tasks", (_req, res) => {
-    res.json({ tasks: ctx.taskStore.listTasks() });
+    const tasks = ctx.taskStore.listTasks();
+    const tasksWithTags = tasks.map((t) => ({
+      ...t,
+      tags: ctx.tagStore?.getEntityTags("task", t.id) ?? [],
+    }));
+    res.json({ tasks: tasksWithTags });
   });
 
   router.put("/tasks/reorder", (req, res) => {
@@ -497,7 +581,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/tasks/:id", (req, res) => {
     const task = ctx.taskStore.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
-    res.json({ task });
+    const tags = ctx.tagStore?.getEntityTags("task", task.id) ?? [];
+    res.json({ task: { ...task, tags } });
   });
 
   // Enriched task data — fetches work item + PR metadata from configured providers

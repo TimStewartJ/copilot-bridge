@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
+import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -801,6 +802,14 @@ function SortableRailItem({
           <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>
+          {/* Tag dots */}
+          {(task.tags?.length ?? 0) > 0 && (
+            <span className="flex gap-0.5 shrink-0 ml-1">
+              {task.tags!.slice(0, 3).map((tag) => (
+                <span key={tag.id} className={`w-1.5 h-1.5 rounded-full ${TAG_DOT[tag.color] ?? "bg-slate-500"}`} title={tag.name} />
+              ))}
+            </span>
+          )}
           <span className={`text-[10px] ml-1 ${STATUS_TEXT[task.status]}`}>
             {task.status !== "active" ? task.status : ""}
           </span>

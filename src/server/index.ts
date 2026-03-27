@@ -19,6 +19,7 @@ import { createReadStateStore } from "./read-state-store.js";
 import { createTodoStore } from "./todo-store.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
+import { createTagStore } from "./tag-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
 import { notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./tunnel.js";
@@ -49,6 +50,7 @@ const sessionMetaStore = createSessionMetaStore(db);
 const sessionTitles = createSessionTitlesStore(db);
 const readStateStore = createReadStateStore(db);
 const todoStore = createTodoStore(db, defaultGlobalBus);
+const tagStore = createTagStore(db);
 const docsDir = process.env.BRIDGE_DOCS_DIR || join(dataDir, "docs");
 const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
@@ -60,7 +62,7 @@ setMcpServersGetter(() => settingsStore.getMcpServers());
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionTitles, readStateStore, todoStore, docsStore, docsIndex,
+  sessionMetaStore, sessionTitles, readStateStore, todoStore, docsStore, docsIndex, tagStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction

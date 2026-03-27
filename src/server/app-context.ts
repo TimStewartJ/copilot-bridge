@@ -11,6 +11,7 @@ import type { ReadStateStore } from "./read-state-store.js";
 import type { TodoStore } from "./todo-store.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
+import type { TagStore } from "./tag-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionManager } from "./session-manager.js";
@@ -26,6 +27,7 @@ export interface AppContext {
   todoStore: TodoStore;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
+  tagStore?: TagStore;
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   sessionManager: SessionManager;
