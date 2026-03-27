@@ -942,7 +942,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     router.get("/docs/tree", (_req, res) => {
       try {
-        res.json({ tree: docs.listTree() });
+        const tree = docs.listTree();
+        const hasRootIndex = docs.readPage("index") !== null;
+        res.json({ tree, hasRootIndex });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

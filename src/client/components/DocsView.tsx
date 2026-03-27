@@ -72,9 +72,10 @@ function TreeNode({
           <button
             onClick={() => {
               if (node.isDb) onSelect(node.path, true);
+              else if (node.hasIndex) { setExpanded(true); onSelect(node.path); }
               else setExpanded((v) => !v);
             }}
-            className="flex items-center gap-1.5 min-w-0 cursor-pointer"
+            className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer"
           >
             {node.isDb ? (
               <Database size={13} className="shrink-0" />
@@ -135,6 +136,7 @@ export default function DocsView() {
   // Tree state
   const [tree, setTree] = useState<DocTreeNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(true);
+  const [hasRootIndex, setHasRootIndex] = useState(false);
 
   // Page state
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -169,13 +171,22 @@ export default function DocsView() {
     loadTree();
   }, []);
 
+  // Auto-load root index page when tree loads
+  useEffect(() => {
+    if (!treeLoading && hasRootIndex && !selectedPath) {
+      handleSelectNode("index");
+    }
+  }, [treeLoading, hasRootIndex]);
+
   const loadTree = useCallback(async () => {
     setTreeLoading(true);
     try {
-      const t = await fetchDocsTree();
-      setTree(t);
+      const data = await fetchDocsTree();
+      setTree(data.tree);
+      setHasRootIndex(data.hasRootIndex);
     } catch {
       setTree([]);
+      setHasRootIndex(false);
     } finally {
       setTreeLoading(false);
     }
@@ -302,10 +313,33 @@ export default function DocsView() {
     setEditing(true);
   }, [page]);
 
+  // Navigate to root index
+  const handleGoHome = useCallback(() => {
+    if (hasRootIndex) {
+      handleSelectNode("index");
+    } else {
+      setSelectedPath(null);
+      setPage(null);
+      setEditing(false);
+      setCreatingNew(false);
+      setDbFolder(null);
+      setDbSchema(null);
+    }
+  }, [hasRootIndex, handleSelectNode]);
+
   // ── Sidebar ─────────────────────────────────────────────────────
 
   const sidebar = (
     <div className="flex flex-col h-full">
+      {/* Header */}
+      <button
+        onClick={handleGoHome}
+        className="hidden md:flex items-center gap-2 px-3 py-2 border-b border-border text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+      >
+        <BookOpen size={14} className="shrink-0" />
+        <span className="text-xs font-semibold">Docs</span>
+      </button>
+
       {/* Search bar */}
       <div className="p-2 border-b border-border">
         <div className="relative">
