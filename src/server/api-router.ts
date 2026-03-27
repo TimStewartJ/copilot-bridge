@@ -968,8 +968,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.patch("/settings", (req, res) => {
     try {
+      const prev = ctx.settingsStore.getSettings();
       const updated = ctx.settingsStore.updateSettings(req.body);
       clearProviderCache();
+
+      // If MCP servers changed, evict cached sessions so they re-resume with new config
+      if (JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers)) {
+        console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
+        ctx.sessionManager.evictAllCachedSessions();
+      }
+
       console.log("[settings] Settings updated");
       res.json(updated);
     } catch (err) {

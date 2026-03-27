@@ -74,7 +74,7 @@ const sessionManager = new SessionManager({
   taskStore,
   todoStore,
   settingsStore,
-  config: { sessionMcpServers: config.sessionMcpServers },
+  config: { get sessionMcpServers() { return config.sessionMcpServers; } },
 });
 defaultContext.sessionManager = sessionManager;
 

@@ -589,7 +589,7 @@ export class SessionManager {
     const cfg: any = {
       onPermissionRequest: approveAll,
       tools: this.deps.tools,
-      mcpServers: this.deps.config.sessionMcpServers,
+      mcpServers: this.deps.settingsStore?.getMcpServers() ?? this.deps.config.sessionMcpServers,
       skillDirectories: [
         join(REPO_ROOT, "skills"),                                          // built-in (ships with bridge)
         join(this.deps.copilotHome ?? join(homedir(), ".copilot"), "skills"), // user-level
@@ -1318,6 +1318,19 @@ export class SessionManager {
 
   getActiveSessions(): string[] {
     return Array.from(this.activeSessions);
+  }
+
+  /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
+  evictAllCachedSessions(): void {
+    const busy = new Set(this.activeSessions);
+    let evicted = 0;
+    for (const [id, session] of this.sessionObjects) {
+      if (busy.has(id)) continue; // don't disrupt active turns
+      try { session.disconnect(); } catch { /* best-effort */ }
+      this.sessionObjects.delete(id);
+      evicted++;
+    }
+    console.log(`[sdk] Evicted ${evicted} cached session(s) (${busy.size} busy, skipped)`);
   }
 
   getSessionActivity(): SessionActivity[] {
