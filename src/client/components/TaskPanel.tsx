@@ -788,7 +788,7 @@ function TodoRow({
       </div>
 
       {/* Actions (visible on hover) */}
-      <div className="hidden group-hover:flex items-center gap-0">
+      <div className="flex items-center gap-0 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity">
         <button
           onClick={() => {
             try { dateRef.current?.showPicker(); } catch { dateRef.current?.click(); }
