@@ -687,3 +687,7 @@ export async function fetchDbEntries(folder: string, filters?: Record<string, st
 export async function reindexDocs(): Promise<{ indexed: number }> {
   return apiFetch<{ indexed: number }>("/api/docs/reindex", {});
 }
+
+export async function resolveWikilinks(targets: string[]): Promise<Record<string, { path: string; title: string } | null>> {
+  return apiFetch<Record<string, { path: string; title: string } | null>>("/api/docs/resolve", { targets });
+}

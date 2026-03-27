@@ -961,6 +961,29 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
     });
 
+    // Wikilink resolution
+    router.get("/docs/resolve", (req, res) => {
+      try {
+        const target = String(req.query.target || "");
+        if (!target) return res.status(400).json({ error: "target is required" });
+        const resolved = docsIdx.resolveWikilink(target);
+        if (!resolved) return res.status(404).json({ error: "Page not found", target });
+        res.json(resolved);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.post("/docs/resolve", (req, res) => {
+      try {
+        const { targets } = req.body;
+        if (!Array.isArray(targets)) return res.status(400).json({ error: "targets array is required" });
+        res.json(docsIdx.resolveWikilinks(targets));
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     router.post("/docs/reindex", (_req, res) => {
       try {
         const result = docsIdx.reindex();

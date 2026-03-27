@@ -12,6 +12,11 @@ export interface SearchResult {
   tags: string[];
 }
 
+export interface ResolvedLink {
+  path: string;
+  title: string;
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
@@ -215,9 +220,43 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     };
   }
 
+  // ── Wikilink resolution ────────────────────────────────────────
+
+  function resolveWikilink(target: string): ResolvedLink | null {
+    // 1. Exact path match
+    const exact = db.prepare("SELECT path, title FROM docs_pages WHERE path = ?").get(target) as any;
+    if (exact) return { path: exact.path, title: exact.title || exact.path };
+
+    // 2. Case-insensitive path match
+    const ciPath = db.prepare("SELECT path, title FROM docs_pages WHERE path = ? COLLATE NOCASE").get(target) as any;
+    if (ciPath) return { path: ciPath.path, title: ciPath.title || ciPath.path };
+
+    // 3. Title match (exact then case-insensitive)
+    const byTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ?").get(target) as any;
+    if (byTitle) return { path: byTitle.path, title: byTitle.title };
+    const ciTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ? COLLATE NOCASE").get(target) as any;
+    if (ciTitle) return { path: ciTitle.path, title: ciTitle.title };
+
+    // 4. Slug match — target as the last path segment
+    const slugMatch = db.prepare(
+      "SELECT path, title FROM docs_pages WHERE path LIKE '%/' || ? OR path = ?",
+    ).get(target, target) as any;
+    if (slugMatch) return { path: slugMatch.path, title: slugMatch.title || slugMatch.path };
+
+    return null;
+  }
+
+  function resolveWikilinks(targets: string[]): Record<string, ResolvedLink | null> {
+    const result: Record<string, ResolvedLink | null> = {};
+    for (const t of targets) {
+      result[t] = resolveWikilink(t);
+    }
+    return result;
+  }
+
   return {
     reindex, indexPage, removePage, removeFolder,
-    search, queryByFolder,
+    search, queryByFolder, resolveWikilink, resolveWikilinks,
   };
 }
 

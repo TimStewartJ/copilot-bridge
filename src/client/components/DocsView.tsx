@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { setLastViewedDoc } from "../last-viewed";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import remarkWikilink from "../lib/remark-wikilink";
 import CodeBlock from "./CodeBlock";
 import {
   fetchDocsTree,
@@ -13,6 +14,7 @@ import {
   searchDocs,
   fetchDbSchema,
   fetchDbEntries,
+  resolveWikilinks,
   type DocTreeNode,
   type DocPage,
   type DocSearchResult,
@@ -155,6 +157,33 @@ function sanitizeSnippet(html: string): string {
     .replace(/&(?!amp;|lt;|gt;|quot;|#\d+;)/g, "&amp;");
 }
 
+/** Resolve a relative link path against a docs page path */
+function resolveRelativePath(currentPath: string, href: string): string {
+  // Separate fragment from path
+  const hashIdx = href.indexOf("#");
+  const rawPath = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+  const clean = rawPath.replace(/\.md$/, "");
+  if (!clean) return currentPath; // pure fragment link like "#section"
+  if (clean.startsWith("/")) return clean.slice(1);
+  // Current path might be a folder index (e.g. "guides" for guides/index.md)
+  // or a file (e.g. "guides/page"). We keep all segments as the "directory"
+  // if the page is a folder index (no slash or ends at a folder level).
+  const parts = currentPath.includes("/")
+    ? currentPath.split("/").slice(0, -1) // file: drop last segment
+    : [currentPath]; // folder index: keep as directory
+  for (const seg of clean.split("/")) {
+    if (seg === "..") parts.pop();
+    else if (seg !== ".") parts.push(seg);
+  }
+  return parts.filter(Boolean).join("/");
+}
+
+/** Allow wiki: URLs through react-markdown's URL sanitizer */
+function wikiUrlTransform(url: string): string {
+  if (url.startsWith("wiki:")) return url;
+  return defaultUrlTransform(url);
+}
+
 // ── Main DocsView ───────────────────────────────────────────────
 
 export default function DocsView() {
@@ -200,6 +229,9 @@ export default function DocsView() {
 
   // Folder expansion state (persisted to localStorage)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => getExpandedFolders());
+
+  // Wikilink resolution cache: target → resolved path (null = broken link)
+  const [resolvedLinks, setResolvedLinks] = useState<Record<string, { path: string; title: string } | null>>({});
 
   const handleToggleExpanded = useCallback((path: string, expanded: boolean) => {
     setExpandedFolders((prev) => {
@@ -402,6 +434,82 @@ export default function DocsView() {
       navigate("/docs");
     }
   }, [hasRootIndex, navigate]);
+
+  // Batch-resolve wikilinks when page body changes
+  useEffect(() => {
+    if (!page?.body) return;
+    const re = /\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g;
+    const targets = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(page.body)) !== null) targets.add(m[1].trim());
+    if (targets.size === 0) { setResolvedLinks({}); return; }
+
+    let cancelled = false;
+    resolveWikilinks([...targets]).then((result) => {
+      if (!cancelled) setResolvedLinks(result);
+    }).catch(() => {
+      if (!cancelled) setResolvedLinks({});
+    });
+    return () => { cancelled = true; };
+  }, [page?.body]);
+
+  // Custom markdown rendering with wikilink support
+  const remarkPlugins = useMemo(() => [remarkGfm, remarkBreaks, remarkWikilink], []);
+  const markdownComponents = useMemo(() => ({
+    pre: CodeBlock,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    a: ({ href, children, node: _node, ...props }: any) => {
+      // Wikilinks use the wiki: scheme
+      if (href?.startsWith("wiki:")) {
+        const target = href.slice(5);
+        const resolved = resolvedLinks[target];
+        const isBroken = resolvedLinks[target] === null && target in resolvedLinks;
+        return (
+          <a
+            {...props}
+            href="#"
+            onClick={(e: React.MouseEvent) => {
+              e.preventDefault();
+              if (resolved) navigate(`/docs/${resolved.path}`);
+            }}
+            className={isBroken ? "text-red-400 cursor-not-allowed opacity-70" : undefined}
+            title={isBroken ? `Page not found: ${target}` : resolved?.title || target}
+          >
+            {children}
+          </a>
+        );
+      }
+
+      // External links and other schemes (mailto:, tel:, etc.) — pass through
+      if (href && /^[a-z][a-z0-9+.-]*:/i.test(href)) {
+        return <a {...props} href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
+      }
+
+      // Fragment-only links — pass through for in-page navigation
+      if (!href || href.startsWith("#")) {
+        return <a {...props} href={href}>{children}</a>;
+      }
+
+      // Relative markdown links — resolve against current page path and navigate
+      if (selectedPath) {
+        const resolvedPath = resolveRelativePath(selectedPath, href);
+        return (
+          <a
+            {...props}
+            href="#"
+            onClick={(e: React.MouseEvent) => {
+              e.preventDefault();
+              navigate(`/docs/${resolvedPath}`);
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+
+      return <a {...props} href={href}>{children}</a>;
+    },
+  }), [resolvedLinks, selectedPath, navigate]);
 
   // ── Sidebar ─────────────────────────────────────────────────────
 
@@ -668,7 +776,7 @@ export default function DocsView() {
           </div>
           {/* Body */}
           <div className="flex-1 px-4 py-4 prose prose-sm max-w-none text-text-primary prose-headings:text-text-primary prose-a:text-accent prose-code:text-text-primary prose-pre:bg-bg-secondary prose-pre:border prose-pre:border-border">
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
+            <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents} urlTransform={wikiUrlTransform}>
               {page.body}
             </ReactMarkdown>
           </div>
