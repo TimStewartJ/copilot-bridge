@@ -1162,17 +1162,18 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
   // Create session on first message, then redirect to real URL
   const onCreateAndSend = useCallback(async (prompt: string, attachments?: import("./api").BlobAttachment[]) => {
     const newSessionId = await materializeSession(taskId);
-    // Navigate to real session URL (replace draft URL in history)
-    const path = taskId
-      ? `/tasks/${taskId}/sessions/${newSessionId}`
-      : `/sessions/${newSessionId}`;
-    navigate(path, { replace: true });
-    // Send the message
+    // Send the message BEFORE navigating so the session is busy when
+    // ChatView's effect reconnects the stream (avoids idle-close race).
     await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: newSessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
     });
+    // Navigate to real session URL (replace draft URL in history)
+    const path = taskId
+      ? `/tasks/${taskId}/sessions/${newSessionId}`
+      : `/sessions/${newSessionId}`;
+    navigate(path, { replace: true });
   }, [materializeSession, taskId, navigate]);
 
   return (
