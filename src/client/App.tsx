@@ -40,7 +40,7 @@ import PullToRefresh from "./components/PullToRefresh";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { fetchSettings } from "./api";
-import { getLastViewedSession, setLastViewedSession, clearLastViewedSession } from "./last-viewed";
+import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc } from "./last-viewed";
 
 export default function App() {
   const navigate = useNavigate();
@@ -301,7 +301,15 @@ export default function App() {
   };
 
   const handleOpenDocs = () => {
-    navigate("/docs");
+    const lastDoc = getLastViewedDoc();
+    if (lastDoc) {
+      // Stored as "path" or "path?db" for DB folders
+      const isDb = lastDoc.endsWith("?db");
+      const docPath = isDb ? lastDoc.slice(0, -3) : lastDoc;
+      navigate(isDb ? `/docs/${docPath}?db` : `/docs/${docPath}`);
+    } else {
+      navigate("/docs");
+    }
   };
 
   const isDocsActive = location.pathname.startsWith("/docs");

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
+import { setLastViewedDoc } from "../last-viewed";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -35,6 +36,22 @@ import {
   ArrowLeft,
 } from "lucide-react";
 
+// ── Persisted folder expansion state ─────────────────────────────
+const EXPANDED_KEY = "bridge-docs-expanded";
+
+function getExpandedFolders(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set<string>();
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function saveExpandedFolders(set: Set<string>) {
+  localStorage.setItem(EXPANDED_KEY, JSON.stringify([...set]));
+}
+
 // ── Tree node component ─────────────────────────────────────────
 
 function TreeNode({
@@ -42,15 +59,23 @@ function TreeNode({
   depth,
   selectedPath,
   onSelect,
+  expandedFolders,
+  onToggleExpanded,
 }: {
   node: DocTreeNode;
   depth: number;
   selectedPath: string | null;
   onSelect: (path: string, isDb?: boolean) => void;
+  expandedFolders: Set<string>;
+  onToggleExpanded: (path: string, expanded: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(depth < 1);
   const isFolder = node.type === "folder";
   const isSelected = node.path === selectedPath;
+  const expanded = isFolder && expandedFolders.has(node.path);
+
+  const toggleExpand = useCallback(() => {
+    onToggleExpanded(node.path, !expanded);
+  }, [node.path, expanded, onToggleExpanded]);
 
   if (isFolder) {
     return (
@@ -64,7 +89,7 @@ function TreeNode({
           style={{ paddingLeft: `${depth * 16 + 4}px` }}
         >
           <button
-            onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+            onClick={(e) => { e.stopPropagation(); toggleExpand(); }}
             className="shrink-0 p-0.5 rounded hover:bg-bg-primary transition-colors cursor-pointer"
           >
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -72,8 +97,8 @@ function TreeNode({
           <button
             onClick={() => {
               if (node.isDb) onSelect(node.path, true);
-              else if (node.hasIndex) { setExpanded(true); onSelect(node.path); }
-              else setExpanded((v) => !v);
+              else if (node.hasIndex) { onToggleExpanded(node.path, true); onSelect(node.path); }
+              else toggleExpand();
             }}
             className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer"
           >
@@ -96,6 +121,8 @@ function TreeNode({
                 depth={depth + 1}
                 selectedPath={selectedPath}
                 onSelect={onSelect}
+                expandedFolders={expandedFolders}
+                onToggleExpanded={onToggleExpanded}
               />
             ))}
           </div>
@@ -132,6 +159,12 @@ function sanitizeSnippet(html: string): string {
 
 export default function DocsView() {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Derive selectedPath and isDb from URL
+  const urlDocPath = location.pathname.replace(/^\/docs\/?/, "") || null;
+  const isDbFromUrl = new URLSearchParams(location.search).has("db");
+  const selectedPath = urlDocPath;
 
   // Tree state
   const [tree, setTree] = useState<DocTreeNode[]>([]);
@@ -139,7 +172,6 @@ export default function DocsView() {
   const [hasRootIndex, setHasRootIndex] = useState(false);
 
   // Page state
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [page, setPage] = useState<DocPage | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
 
@@ -166,17 +198,84 @@ export default function DocsView() {
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
   const [dbFolder, setDbFolder] = useState<string | null>(null);
 
+  // Folder expansion state (persisted to localStorage)
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => getExpandedFolders());
+
+  const handleToggleExpanded = useCallback((path: string, expanded: boolean) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (expanded) next.add(path);
+      else next.delete(path);
+      saveExpandedFolders(next);
+      return next;
+    });
+  }, []);
+
   // Load tree on mount
   useEffect(() => {
     loadTree();
   }, []);
 
-  // Auto-load root index page when tree loads
+  // Auto-redirect to root index when tree loads and no doc selected
   useEffect(() => {
     if (!treeLoading && hasRootIndex && !selectedPath) {
-      handleSelectNode("index");
+      navigate("/docs/index", { replace: true });
     }
-  }, [treeLoading, hasRootIndex]);
+  }, [treeLoading, hasRootIndex, selectedPath, navigate]);
+
+  // Load page/DB when URL-derived selectedPath changes
+  useEffect(() => {
+    if (!selectedPath) {
+      setPage(null);
+      setDbFolder(null);
+      setDbSchema(null);
+      return;
+    }
+
+    let cancelled = false;
+    setEditing(false);
+    setCreatingNew(false);
+    setPageLoading(true);
+    setSidebarOpen(false);
+
+    if (isDbFromUrl) {
+      setPage(null);
+      setDbFolder(selectedPath);
+      Promise.all([fetchDbSchema(selectedPath), fetchDbEntries(selectedPath)])
+        .then(([schema, data]) => {
+          if (cancelled) return;
+          setDbSchema(schema);
+          setDbEntries(data.entries);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setDbSchema(null);
+          setDbEntries([]);
+        })
+        .finally(() => {
+          if (!cancelled) setPageLoading(false);
+        });
+    } else {
+      setDbFolder(null);
+      setDbSchema(null);
+      fetchDocPage(selectedPath)
+        .then((p) => {
+          if (cancelled) return;
+          setPage(p);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setPage(null);
+        })
+        .finally(() => {
+          if (!cancelled) setPageLoading(false);
+        });
+    }
+
+    setLastViewedDoc(isDbFromUrl ? selectedPath + "?db" : selectedPath);
+
+    return () => { cancelled = true; };
+  }, [selectedPath, isDbFromUrl]);
 
   const loadTree = useCallback(async () => {
     setTreeLoading(true);
@@ -184,6 +283,17 @@ export default function DocsView() {
       const data = await fetchDocsTree();
       setTree(data.tree);
       setHasRootIndex(data.hasRootIndex);
+      // Auto-expand top-level folders on first visit (nothing persisted yet)
+      setExpandedFolders((prev) => {
+        if (prev.size > 0) return prev;
+        const topFolders = data.tree
+          .filter((n) => n.type === "folder")
+          .map((n) => n.path);
+        if (topFolders.length === 0) return prev;
+        const next = new Set(topFolders);
+        saveExpandedFolders(next);
+        return next;
+      });
     } catch {
       setTree([]);
       setHasRootIndex(false);
@@ -215,47 +325,13 @@ export default function DocsView() {
     };
   }, [searchQuery]);
 
-  // Load a page or DB folder
+  // Navigate to a page or DB folder via URL
   const handleSelectNode = useCallback(
-    async (path: string, isDb?: boolean) => {
-      setSelectedPath(path);
-      setEditing(false);
-      setCreatingNew(false);
-      setPageLoading(true);
-      setSidebarOpen(false);
-
-      if (isDb) {
-        // Load DB schema + entries
-        setPage(null);
-        setDbFolder(path);
-        try {
-          const [schema, data] = await Promise.all([
-            fetchDbSchema(path),
-            fetchDbEntries(path),
-          ]);
-          setDbSchema(schema);
-          setDbEntries(data.entries);
-        } catch {
-          setDbSchema(null);
-          setDbEntries([]);
-        } finally {
-          setPageLoading(false);
-        }
-        return;
-      }
-
-      setDbFolder(null);
-      setDbSchema(null);
-      try {
-        const p = await fetchDocPage(path);
-        setPage(p);
-      } catch {
-        setPage(null);
-      } finally {
-        setPageLoading(false);
-      }
+    (path: string, isDb?: boolean) => {
+      const url = isDb ? `/docs/${path}?db` : `/docs/${path}`;
+      navigate(url);
     },
-    [],
+    [navigate],
   );
 
   // Save edits
@@ -278,12 +354,12 @@ export default function DocsView() {
     try {
       await deleteDocPage(selectedPath);
       setPage(null);
-      setSelectedPath(null);
       loadTree();
+      navigate("/docs", { replace: true });
     } catch (err) {
       console.error("Delete failed:", err);
     }
-  }, [selectedPath, loadTree]);
+  }, [selectedPath, loadTree, navigate]);
 
   // Create new page
   const handleCreateNew = useCallback(async () => {
@@ -316,16 +392,16 @@ export default function DocsView() {
   // Navigate to root index
   const handleGoHome = useCallback(() => {
     if (hasRootIndex) {
-      handleSelectNode("index");
+      navigate("/docs/index");
     } else {
-      setSelectedPath(null);
       setPage(null);
       setEditing(false);
       setCreatingNew(false);
       setDbFolder(null);
       setDbSchema(null);
+      navigate("/docs");
     }
-  }, [hasRootIndex, handleSelectNode]);
+  }, [hasRootIndex, navigate]);
 
   // ── Sidebar ─────────────────────────────────────────────────────
 
@@ -421,6 +497,8 @@ export default function DocsView() {
               depth={0}
               selectedPath={selectedPath}
               onSelect={handleSelectNode}
+              expandedFolders={expandedFolders}
+              onToggleExpanded={handleToggleExpanded}
             />
           ))
         )}
@@ -432,9 +510,9 @@ export default function DocsView() {
           onClick={() => {
             setCreatingNew(true);
             setEditing(false);
-            setSelectedPath(null);
             setPage(null);
             setSidebarOpen(false);
+            navigate("/docs");
           }}
           className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-bg-hover text-text-primary hover:bg-bg-primary transition-colors"
         >
@@ -671,11 +749,11 @@ export default function DocsView() {
           <button
             onClick={() => {
               setPage(null);
-              setSelectedPath(null);
               setDbFolder(null);
               setDbSchema(null);
               setCreatingNew(false);
               setEditing(false);
+              navigate("/docs");
             }}
             className="text-text-muted hover:text-text-primary transition-colors"
             aria-label="Back to tree"
@@ -701,10 +779,10 @@ export default function DocsView() {
                 onClick={() => {
                   setCreatingNew(true);
                   setPage(null);
-                  setSelectedPath(null);
                   setEditing(false);
                   setNewPagePath("");
                   setNewPageContent("---\ntitle: \ntags: []\n---\n\n");
+                  navigate("/docs");
                 }}
                 className="text-text-muted hover:text-text-primary transition-colors"
                 title="New Page"
