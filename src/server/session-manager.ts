@@ -585,7 +585,10 @@ export class SessionManager {
       onPermissionRequest: approveAll,
       tools: this.deps.tools,
       mcpServers: this.deps.config.sessionMcpServers,
-      skillDirectories: [join(this.deps.copilotHome ?? join(homedir(), ".copilot"), "skills")],
+      skillDirectories: [
+        join(REPO_ROOT, "skills"),                                          // built-in (ships with bridge)
+        join(this.deps.copilotHome ?? join(homedir(), ".copilot"), "skills"), // user-level
+      ],
       ...(this.deps.config.model ? { model: this.deps.config.model } : {}),
     };
 
