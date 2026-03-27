@@ -456,6 +456,19 @@ export function createBridgeTools(ctx: AppContext) {
         }
       },
     }),
+    defineTool("docs_edit", {
+      description: "Make a surgical string replacement in a knowledge base page. Finds exactly one occurrence of old_str in the raw markdown (frontmatter + body) and replaces it with new_str. Errors if old_str is not found or matches multiple times — include more surrounding context to disambiguate.",
+      parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" }, old_str: { type: "string", description: "The exact string to find in the raw page content" }, new_str: { type: "string", description: "The replacement string" } }, required: ["path", "old_str", "new_str"] },
+      handler: async (args: any) => {
+        try {
+          const page = ctx.docsStore!.editPage(args.path, args.old_str, args.new_str);
+          ctx.docsIndex!.indexPage(page);
+          return { path: page.path, success: true };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
     defineTool("docs_list", {
       description: "List pages and folders in the knowledge base. Returns a tree structure with file/folder types and database folder indicators.",
       parameters: { type: "object", properties: { folder: { type: "string", description: "Folder path to list (omit for root)" } }, required: [] },
