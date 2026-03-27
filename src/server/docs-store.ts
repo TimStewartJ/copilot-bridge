@@ -249,6 +249,20 @@ export function createDocsStore(docsDir: string) {
     return readPage(pagePath)!;
   }
 
+  function editPage(pagePath: string, oldStr: string, newStr: string): DocPage {
+    if (!oldStr) throw new Error("old_str must be non-empty");
+    const filePath = toFilePath(pagePath);
+    if (!existsSync(filePath)) throw new Error(`Page not found: ${pagePath}`);
+
+    const raw = readFileSync(filePath, "utf-8");
+    const matchCount = raw.split(oldStr).length - 1;
+    if (matchCount === 0) throw new Error(`old_str not found in page "${pagePath}"`);
+    if (matchCount > 1) throw new Error(`old_str matches ${matchCount} times in "${pagePath}" — include more context to make it unique`);
+
+    const updated = raw.replace(oldStr, newStr);
+    return writePage(pagePath, updated);
+  }
+
   function deletePage(pagePath: string): boolean {
     const filePath = toFilePath(pagePath);
     if (!existsSync(filePath)) return false;
@@ -406,7 +420,7 @@ export function createDocsStore(docsDir: string) {
   }
 
   return {
-    readPage, writePage, deletePage, listTree, scanAllPages, deleteFolder,
+    readPage, writePage, editPage, deletePage, listTree, scanAllPages, deleteFolder,
     readSchema, writeSchema, isDbFolder,
     addDbEntry, updateDbEntry, listDbEntries,
     generateSlug, docsDir,
