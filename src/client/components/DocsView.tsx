@@ -323,6 +323,7 @@ export default function DocsView() {
   // DB view state
   const [dbSchema, setDbSchema] = useState<DbSchema | null>(null);
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
+  const [dbTotal, setDbTotal] = useState<number | null>(null);
   const [dbFolder, setDbFolder] = useState<string | null>(null);
   const [dbSort, setDbSort] = useState<DbSortState>(DEFAULT_DB_SORT);
 
@@ -382,11 +383,13 @@ export default function DocsView() {
           if (cancelled) return;
           setDbSchema(schema);
           setDbEntries(data.entries);
+          setDbTotal(data.total);
         })
         .catch(() => {
           if (cancelled) return;
           setDbSchema(null);
           setDbEntries([]);
+          setDbTotal(null);
         })
         .finally(() => {
           if (!cancelled) setPageLoading(false);
@@ -958,7 +961,7 @@ export default function DocsView() {
             <Database size={16} className="text-accent shrink-0" />
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-text-primary truncate">{dbSchema.name}</h2>
-              <div className="text-[10px] text-text-faint">{dbEntries.length} entries · {dbSchema.fields.length} fields</div>
+              <div className="text-[10px] text-text-faint">{dbTotal ?? dbEntries.length} entries · {dbSchema.fields.length} fields</div>
             </div>
           </div>
           <div className="flex-1 overflow-auto">

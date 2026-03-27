@@ -697,6 +697,7 @@ export async function fetchDbEntries(
   options?: { filters?: Record<string, string>; sort?: { field: string; order: "asc" | "desc" } },
 ): Promise<{ entries: DbEntry[]; total: number }> {
   const params = new URLSearchParams();
+  params.set("limit", "10000");
   if (options?.filters) {
     for (const [k, v] of Object.entries(options.filters)) {
       params.set(k, String(v));
