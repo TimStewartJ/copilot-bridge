@@ -185,6 +185,11 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
+export async function duplicateSession(id: string): Promise<string> {
+  const data = await apiFetch<{ sessionId: string }>(`/api/sessions/${id}/duplicate`, {});
+  return data.sessionId;
+}
+
 export async function fetchMessages(sessionId: string): Promise<{ messages: ChatMessage[]; busy: boolean }> {
   const data = await apiFetch<{ messages: ChatMessage[]; busy: boolean }>(
     `/api/sessions/${sessionId}/messages`,

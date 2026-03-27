@@ -3,7 +3,7 @@
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -696,6 +696,64 @@ export class SessionManager {
     this.sessionObjects.set(session.sessionId, session);
     console.log(`[sdk] Created session ${session.sessionId}`);
     return { sessionId: session.sessionId };
+  }
+
+  async duplicateSession(sourceSessionId: string): Promise<{ sessionId: string }> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const sessionStateDir = join(copilotHome, "session-state");
+    const sourceDir = join(sessionStateDir, sourceSessionId);
+
+    if (!existsSync(sourceDir)) {
+      throw new Error(`Source session directory not found: ${sourceSessionId}`);
+    }
+
+    // Create a new session through the SDK so it's properly registered with the CLI host.
+    // Simply copying a directory doesn't register the session; the CLI host needs to
+    // have created the session through its own session.create RPC.
+    const session = await this.client.createSession(this.buildSessionConfig());
+    const newId = session.sessionId;
+    const destDir = join(sessionStateDir, newId);
+
+    // Copy events.jsonl from source, rewriting the session.start event's sessionId
+    const sourceEventsPath = join(sourceDir, "events.jsonl");
+    if (existsSync(sourceEventsPath)) {
+      const sourceContent = readFileSync(sourceEventsPath, "utf-8");
+      const lines = sourceContent.split("\n");
+      const rewritten = lines.map((line) => {
+        if (!line.trim()) return line;
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "session.start" && event.data?.sessionId) {
+            event.data.sessionId = newId;
+            return JSON.stringify(event);
+          }
+          return line;
+        } catch {
+          return line;
+        }
+      });
+      writeFileSync(join(destDir, "events.jsonl"), rewritten.join("\n"));
+    }
+
+    // Copy auxiliary files from source session
+    for (const file of ["plan.md"]) {
+      const src = join(sourceDir, file);
+      if (existsSync(src)) cpSync(src, join(destDir, file), { force: true });
+    }
+    for (const dir of ["files", "research"]) {
+      const src = join(sourceDir, dir);
+      if (existsSync(src)) cpSync(src, join(destDir, dir), { recursive: true, force: true });
+    }
+
+    // Drop the cached session object so the next access does a fresh resume from disk,
+    // picking up the copied event history.
+    session.disconnect();
+    this.sessionObjects.delete(newId);
+
+    console.log(`[sdk] Duplicated session ${sourceSessionId.slice(0, 8)} → ${newId.slice(0, 8)}`);
+    return { sessionId: newId };
   }
 
   async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext): Promise<{ sessionId: string }> {

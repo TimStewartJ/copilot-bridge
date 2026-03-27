@@ -10,6 +10,7 @@ import {
   patchTask,
   deleteTask,
   deleteSession,
+  duplicateSession,
   createTaskSession,
   linkResource,
   reorderTasks,
@@ -559,6 +560,32 @@ export default function App() {
     }
   };
 
+  const handleDuplicateSession = async (sessionId: string) => {
+    try {
+      const newId = await duplicateSession(sessionId);
+      addOptimisticSession(newId);
+      // Navigate to the new session in the same context
+      const linkedTaskId = tasks.find((t) => t.sessionIds.includes(sessionId))?.id;
+      if (linkedTaskId) {
+        // Update task to include the new session
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === linkedTaskId ? { ...t, sessionIds: [...t.sessionIds, newId] } : t,
+          ),
+        );
+        setSelectedTask((prev) =>
+          prev?.id === linkedTaskId ? { ...prev, sessionIds: [...prev.sessionIds, newId] } : prev,
+        );
+        navigate(`/tasks/${linkedTaskId}/sessions/${newId}`);
+      } else {
+        navigate(`/sessions/${newId}`);
+      }
+      await Promise.all([loadSessions(), loadTasks()]);
+    } catch (err) {
+      console.error("Failed to duplicate session:", err);
+    }
+  };
+
   const handleResumeTask = async (taskId: string, sessionId?: string) => {
     if (sessionId) {
       navigate(`/tasks/${taskId}/sessions/${sessionId}`);
@@ -666,6 +693,7 @@ export default function App() {
                   allTasks={tasks}
                   onLinkToTask={handleLinkToTask}
                   onDeleteSession={handleDeleteSession}
+                  onDuplicateSession={handleDuplicateSession}
                   markUnread={markUnread}
                   onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
                   hasDraft={hasDraft}
@@ -697,6 +725,7 @@ export default function App() {
                   onLinkToTask={handleLinkToTask}
                   onDeleteTask={handleDeleteTask}
                   onDeleteSession={handleDeleteSession}
+                  onDuplicateSession={handleDuplicateSession}
                   onMarkUnread={markUnread}
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
@@ -837,6 +866,7 @@ function MobileTaskListView({
   allTasks,
   onLinkToTask,
   onDeleteSession,
+  onDuplicateSession,
   markUnread,
   onRefresh,
   hasDraft,
@@ -873,6 +903,7 @@ function MobileTaskListView({
   allTasks: Task[];
   onLinkToTask: (sessionId: string, taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onDuplicateSession?: (sessionId: string) => void;
   markUnread?: (sessionId: string) => void;
   onRefresh: () => Promise<void>;
   hasDraft?: (sessionId: string) => boolean;
@@ -933,6 +964,7 @@ function MobileTaskListView({
             tasks={allTasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
+            onDuplicateSession={onDuplicateSession}
             onMarkUnread={markUnread}
             hasDraft={hasDraft}
             className="min-w-0 overflow-x-hidden p-2 space-y-1"
