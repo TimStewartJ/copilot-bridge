@@ -19,6 +19,7 @@ import {
   createTaskGroup,
   patchTaskGroup,
   deleteTaskGroup,
+  batchSessionAction,
   type Session,
   type Task,
   type TaskGroup,
@@ -607,6 +608,77 @@ export default function App() {
     await loadTasks();
   };
 
+  // ── Bulk actions for quick chats ──────────────────────────────
+  const handleMarkAllRead = useCallback(() => {
+    const unreadIds = globalSessions
+      .filter((s) => !s.archived && isUnread(s.sessionId, s.modifiedTime))
+      .map((s) => s.sessionId);
+    if (unreadIds.length === 0) return;
+    // Mark each read locally (instant UI update)
+    for (const id of unreadIds) markRead(id);
+    // Batch sync to server
+    batchSessionAction("markRead", unreadIds).catch(() => {});
+  }, [globalSessions, isUnread, markRead]);
+
+  const handleBulkAction = useCallback(async (action: import("./api").BatchAction, sessionIds: string[]) => {
+    if (sessionIds.length === 0) return;
+
+    // If active session is in the set and we're archiving/deleting, navigate away
+    if ((action === "archive" || action === "delete") && activeSessionId && sessionIds.includes(activeSessionId)) {
+      navigate("/");
+    }
+
+    if (action === "markRead") {
+      for (const id of sessionIds) markRead(id);
+    }
+
+    if (action === "archive") {
+      // Animate out
+      setExitingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of sessionIds) next.add(id);
+        return next;
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      setArchivingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of sessionIds) next.add(id);
+        return next;
+      });
+    }
+
+    if (action === "delete") {
+      for (const id of sessionIds) {
+        clearDraft(id);
+        clearLastViewedSession(id);
+      }
+      setExitingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of sessionIds) next.add(id);
+        return next;
+      });
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    try {
+      await batchSessionAction(action, sessionIds);
+      await Promise.all([loadSessions(), loadTasks()]);
+    } catch (err) {
+      console.error(`Bulk ${action} failed:`, err);
+    } finally {
+      setArchivingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of sessionIds) next.delete(id);
+        return next;
+      });
+      setExitingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of sessionIds) next.delete(id);
+        return next;
+      });
+    }
+  }, [activeSessionId, navigate, markRead, clearDraft, loadSessions, loadTasks]);
+
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
   // The route determines which level of the hierarchy is visible.
@@ -705,6 +777,8 @@ export default function App() {
                   markUnread={markUnread}
                   onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
                   hasDraft={hasDraft}
+                  onMarkAllRead={handleMarkAllRead}
+                  onBulkAction={handleBulkAction}
                 />
               </div>
             )}
@@ -739,6 +813,8 @@ export default function App() {
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
                   onViewDashboard={(taskId) => navigate(`/tasks/${taskId}`)}
+                  onMarkAllRead={handleMarkAllRead}
+                  onBulkAction={handleBulkAction}
                 />
               </div>
             )}
@@ -878,6 +954,8 @@ function MobileTaskListView({
   markUnread,
   onRefresh,
   hasDraft,
+  onMarkAllRead,
+  onBulkAction,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -915,7 +993,33 @@ function MobileTaskListView({
   markUnread?: (sessionId: string) => void;
   onRefresh: () => Promise<void>;
   hasDraft?: (sessionId: string) => boolean;
+  onMarkAllRead?: () => void;
+  onBulkAction?: (action: import("./api").BatchAction, sessionIds: string[]) => void;
 }){
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleMobileBulkAction = useCallback((action: import("./api").BatchAction, ids: string[]) => {
+    onBulkAction?.(action, ids);
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  }, [onBulkAction]);
+
+  const unreadCount = orphanSessions.filter(
+    (s) => !s.archived && isUnread?.(s.sessionId, s.modifiedTime),
+  ).length;
+
+  const activeCount = orphanSessions.filter((s) => !s.archived).length;
+
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
       {/* Header */}
@@ -923,12 +1027,33 @@ function MobileTaskListView({
         <span className="text-sm font-semibold text-text-primary">
           {quickChatsMode ? "Quick Chats" : "Tasks"}
         </span>
-        <button
-          onClick={onOpenSettings}
-          className="text-text-muted hover:text-text-secondary transition-colors text-xs"
-        >
-          Settings
-        </button>
+        <div className="flex items-center gap-2">
+          {quickChatsMode && !selectMode && unreadCount > 0 && onMarkAllRead && (
+            <button
+              onClick={onMarkAllRead}
+              className="text-text-muted hover:text-accent transition-colors text-xs"
+            >
+              Read all
+            </button>
+          )}
+          {quickChatsMode && onBulkAction && activeCount > 0 && (
+            <button
+              onClick={() => {
+                setSelectMode(!selectMode);
+                if (selectMode) setSelectedIds(new Set());
+              }}
+              className={`text-xs transition-colors ${selectMode ? "text-accent font-medium" : "text-text-muted hover:text-text-secondary"}`}
+            >
+              {selectMode ? "Done" : "Select"}
+            </button>
+          )}
+          <button
+            onClick={onOpenSettings}
+            className="text-text-muted hover:text-text-secondary transition-colors text-xs"
+          >
+            Settings
+          </button>
+        </div>
       </div>
 
       {/* Tab toggle: Tasks | Quick Chats | Docs */}
@@ -976,6 +1101,10 @@ function MobileTaskListView({
             onDuplicateSession={onDuplicateSession}
             onMarkUnread={markUnread}
             hasDraft={hasDraft}
+            selectMode={selectMode}
+            selectedIds={selectedIds}
+            onToggleSelect={toggleSelect}
+            onBulkAction={handleMobileBulkAction}
             className="min-w-0 overflow-x-hidden p-2 space-y-1"
           />
         ) : (

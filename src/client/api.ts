@@ -185,6 +185,18 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
+export type BatchAction = "archive" | "unarchive" | "delete" | "markRead";
+
+export async function batchSessionAction(
+  action: BatchAction,
+  sessionIds: string[],
+): Promise<{ ok: boolean; errors: Record<string, string> }> {
+  return apiFetch<{ ok: boolean; errors: Record<string, string> }>("/api/sessions/batch", {
+    action,
+    sessionIds,
+  });
+}
+
 export async function duplicateSession(id: string): Promise<string> {
   const data = await apiFetch<{ sessionId: string }>(`/api/sessions/${id}/duplicate`, {});
   return data.sessionId;

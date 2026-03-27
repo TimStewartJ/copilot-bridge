@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session, Todo } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
@@ -34,6 +34,7 @@ import {
   ListChecks,
   CalendarDays,
   LayoutDashboard,
+  CheckCheck,
 } from "lucide-react";
 
 // ── Compact section header for sidebar ───────────────────────────
@@ -90,6 +91,9 @@ interface TaskPanelProps {
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onRefresh?: () => Promise<void>;
   onViewDashboard?: (taskId: string) => void;
+  // Bulk actions
+  onMarkAllRead?: () => void;
+  onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -122,6 +126,8 @@ export default function TaskPanel({
   onMoveTaskToGroup,
   onRefresh,
   onViewDashboard,
+  onMarkAllRead,
+  onBulkAction,
 }: TaskPanelProps) {
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
@@ -177,6 +183,28 @@ export default function TaskPanel({
   }, [task?.id]);
 
   // ── Quick Chats mode ─────────────────────────────────────────
+  const [qcSelectMode, setQcSelectMode] = useState(false);
+  const [qcSelectedIds, setQcSelectedIds] = useState<Set<string>>(new Set());
+
+  const qcToggleSelect = useCallback((id: string) => {
+    setQcSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const qcHandleBulkAction = useCallback((action: import("../api").BatchAction, ids: string[]) => {
+    onBulkAction?.(action, ids);
+    setQcSelectedIds(new Set());
+    setQcSelectMode(false);
+  }, [onBulkAction]);
+
+  const qcUnreadCount = (orphanSessions ?? []).filter(
+    (s) => !s.archived && isUnread?.(s.sessionId, s.modifiedTime),
+  ).length;
+
   if (!task && isQuickChats) {
     return (
       <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border min-w-0 overflow-hidden">
@@ -184,9 +212,33 @@ export default function TaskPanel({
         <div className="p-3 border-b border-border">
           <div className="flex items-center gap-2">
             <MessageSquare size={16} className="text-text-muted" />
-            <span className="text-sm font-semibold text-text-primary">
+            <span className="text-sm font-semibold text-text-primary flex-1">
               Quick Chats
             </span>
+            {!qcSelectMode && qcUnreadCount > 0 && onMarkAllRead && (
+              <button
+                onClick={onMarkAllRead}
+                className="text-text-muted hover:text-accent transition-colors p-1 rounded hover:bg-bg-hover"
+                title="Mark all as read"
+              >
+                <CheckCheck size={16} />
+              </button>
+            )}
+            {onBulkAction && (orphanSessions ?? []).filter((s) => !s.archived).length > 0 && (
+              <button
+                onClick={() => {
+                  setQcSelectMode(!qcSelectMode);
+                  if (qcSelectMode) setQcSelectedIds(new Set());
+                }}
+                className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                  qcSelectMode
+                    ? "text-accent bg-accent/10"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
+              >
+                {qcSelectMode ? "Done" : "Select"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -210,6 +262,10 @@ export default function TaskPanel({
             onDuplicateSession={onDuplicateSession}
             onMarkUnread={onMarkUnread}
             hasDraft={hasDraft}
+            selectMode={qcSelectMode}
+            selectedIds={qcSelectedIds}
+            onToggleSelect={qcToggleSelect}
+            onBulkAction={qcHandleBulkAction}
           />
         </PullToRefresh>
         </div>

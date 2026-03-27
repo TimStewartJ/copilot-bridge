@@ -368,6 +368,49 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // POST /sessions/batch — bulk actions on multiple sessions
+  router.post("/sessions/batch", async (req, res) => {
+    const { action, sessionIds } = req.body;
+    const validActions = ["archive", "unarchive", "delete", "markRead"];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({ error: `action must be one of: ${validActions.join(", ")}` });
+    }
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+      return res.status(400).json({ error: "sessionIds array is required" });
+    }
+    const errors: Record<string, string> = {};
+    for (const sid of sessionIds) {
+      try {
+        switch (action) {
+          case "archive":
+            ctx.sessionMetaStore.setArchived(sid, true);
+            break;
+          case "unarchive":
+            ctx.sessionMetaStore.setArchived(sid, false);
+            break;
+          case "delete": {
+            await ctx.sessionManager.deleteSession(sid);
+            ctx.sessionMetaStore.deleteMeta(sid);
+            ctx.sessionTitles.deleteTitle(sid);
+            const tasks = ctx.taskStore.listTasks();
+            for (const task of tasks) {
+              if (task.sessionIds.includes(sid)) {
+                ctx.taskStore.unlinkSession(task.id, sid);
+              }
+            }
+            break;
+          }
+          case "markRead":
+            ctx.readStateStore.markRead(sid);
+            break;
+        }
+      } catch (err) {
+        errors[sid] = String(err);
+      }
+    }
+    res.json({ ok: Object.keys(errors).length === 0, errors });
+  });
+
   // ── Task Group routes ─────────────────────────────────────────────
 
   router.get("/task-groups", (_req, res) => {
