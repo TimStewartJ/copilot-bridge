@@ -662,12 +662,12 @@ export default function App() {
         const showOuterContainer = showDesktopPanel || showMobileTaskList;
         return showOuterContainer ? (
           <div className={`
-            md:shrink-0 min-w-0
+            md:shrink-0 min-w-0 min-h-0 overflow-hidden
             ${showMobileTaskList ? "flex flex-1 md:flex-none" : "hidden md:flex"}
           `.trim()}>
             {/* Mobile task list — full screen at / */}
             {showMobileTaskList && (
-              <div className="md:hidden min-w-0 flex flex-col flex-1">
+              <div className="md:hidden min-w-0 min-h-0 flex flex-col flex-1">
                 <MobileTaskListView
                   tasks={tasks}
                   activeTaskId={activeTaskId}
@@ -711,7 +711,7 @@ export default function App() {
 
             {/* Desktop panel (only when inside a session or quick chats) */}
             {showDesktopPanel && (
-              <div className="hidden md:flex md:shrink-0 min-w-0">
+              <div className="hidden md:flex md:shrink-0 min-w-0 min-h-0">
                 <TaskPanel
                   task={selectedTask}
                   taskGroups={taskGroups}
@@ -956,7 +956,8 @@ function MobileTaskListView({
       </div>
 
       {/* Content — pull-to-refresh wraps both tabs */}
-      <PullToRefresh onRefresh={onRefresh} className="flex-1 overflow-x-hidden min-w-0" scrollKey={quickChatsMode ? "chats" : "tasks"}>
+      <div className="flex-1 min-h-0 relative">
+      <PullToRefresh onRefresh={onRefresh} className="absolute inset-0 overflow-x-hidden min-w-0" scrollKey={quickChatsMode ? "chats" : "tasks"}>
         {quickChatsMode ? (
           <SessionList
             variant="global"
@@ -1000,6 +1001,7 @@ function MobileTaskListView({
           />
         )}
       </PullToRefresh>
+      </div>
     </div>
   );
 }
