@@ -104,6 +104,11 @@ export interface Tag {
   updatedAt: string;
 }
 
+export interface TagMcpServer {
+  serverName: string;
+  config: McpServerConfig;
+}
+
 // ── Todo types ────────────────────────────────────────────────────
 
 export interface Todo {
@@ -425,6 +430,27 @@ export async function setGroupTags(groupId: string, tagIds: string[]): Promise<T
   }
   const data = await res.json();
   return data.tags;
+}
+
+export async function fetchTagMcpServers(tagId: string): Promise<TagMcpServer[]> {
+  const data = await apiFetch<{ servers: TagMcpServer[] }>(`/api/tags/${tagId}/mcp`);
+  return data.servers;
+}
+
+export async function setTagMcpServer(tagId: string, serverName: string, config: McpServerConfig): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
+export async function removeTagMcpServer(tagId: string, serverName: string): Promise<void> {
+  await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, { method: "DELETE" });
 }
 
 // ── Plan API ──────────────────────────────────────────────────────

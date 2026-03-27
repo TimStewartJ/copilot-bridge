@@ -8,9 +8,13 @@ import {
   createTag as apiCreateTag,
   patchTag,
   deleteTag as apiDeleteTag,
+  fetchTagMcpServers,
+  setTagMcpServer as apiSetTagMcpServer,
+  removeTagMcpServer as apiRemoveTagMcpServer,
   type AppSettings,
   type McpServerConfig,
   type McpServerStatus,
+  type TagMcpServer,
   type AdoProviderConfig,
   type GitHubProviderConfig,
   type ProvidersConfig,
@@ -1059,6 +1063,11 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editInstructions, setEditInstructions] = useState("");
+  const [editMcpServers, setEditMcpServers] = useState<TagMcpServer[]>([]);
+  const [addingMcp, setAddingMcp] = useState(false);
+  const [mcpName, setMcpName] = useState("");
+  const [mcpCommand, setMcpCommand] = useState("");
+  const [mcpArgs, setMcpArgs] = useState("");
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -1073,6 +1082,20 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
     }
   };
 
+  const startEditing = async (tag: Tag) => {
+    setEditingId(tag.id);
+    setEditName(tag.name);
+    setEditColor(tag.color);
+    setEditInstructions(tag.instructions);
+    setAddingMcp(false);
+    try {
+      const servers = await fetchTagMcpServers(tag.id);
+      setEditMcpServers(servers);
+    } catch {
+      setEditMcpServers([]);
+    }
+  };
+
   const handleSave = async (id: string) => {
     try {
       const updated = await patchTag(id, { name: editName, color: editColor, instructions: editInstructions });
@@ -1080,6 +1103,33 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
       setEditingId(null);
     } catch (e) {
       console.error("Failed to update tag:", e);
+    }
+  };
+
+  const handleAddMcp = async (tagId: string) => {
+    if (!mcpName.trim() || !mcpCommand.trim()) return;
+    try {
+      const config: McpServerConfig = {
+        command: mcpCommand.trim(),
+        args: mcpArgs.trim() ? mcpArgs.trim().split("\n") : [],
+      };
+      await apiSetTagMcpServer(tagId, mcpName.trim(), config);
+      setEditMcpServers((prev) => [...prev, { serverName: mcpName.trim(), config }]);
+      setMcpName("");
+      setMcpCommand("");
+      setMcpArgs("");
+      setAddingMcp(false);
+    } catch (e) {
+      console.error("Failed to add MCP server:", e);
+    }
+  };
+
+  const handleRemoveMcp = async (tagId: string, serverName: string) => {
+    try {
+      await apiRemoveTagMcpServer(tagId, serverName);
+      setEditMcpServers((prev) => prev.filter((s) => s.serverName !== serverName));
+    } catch (e) {
+      console.error("Failed to remove MCP server:", e);
     }
   };
 
@@ -1098,7 +1148,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
         <div>
           <h2 className="text-sm font-medium text-text-primary">Tags</h2>
           <p className="text-xs text-text-muted mt-0.5">
-            Organize tasks, groups, and docs. Tags can carry custom instructions.
+            Organize tasks, groups, and docs. Tags can carry custom instructions and MCP servers.
           </p>
         </div>
         <button
@@ -1140,6 +1190,67 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
                 className="w-full text-xs bg-bg-primary border border-border rounded px-2 py-1.5 text-text-primary outline-none focus:border-accent resize-none"
                 rows={3}
               />
+              {/* MCP Servers for this tag */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">MCP Servers</span>
+                  <button
+                    onClick={() => setAddingMcp(true)}
+                    className="text-[10px] text-accent hover:text-accent-hover"
+                  >
+                    + Add
+                  </button>
+                </div>
+                {editMcpServers.map((srv) => (
+                  <div key={srv.serverName} className="flex items-center gap-2 bg-bg-primary rounded px-2 py-1 mb-1 text-xs">
+                    <span className="font-mono text-text-primary flex-1 truncate">{srv.serverName}</span>
+                    <span className="text-text-faint truncate">{srv.config.command}</span>
+                    <button
+                      onClick={() => handleRemoveMcp(tag.id, srv.serverName)}
+                      className="text-text-faint hover:text-error shrink-0"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </div>
+                ))}
+                {editMcpServers.length === 0 && !addingMcp && (
+                  <div className="text-[10px] text-text-faint py-1">No tag-specific MCP servers</div>
+                )}
+                {addingMcp && (
+                  <div className="bg-bg-primary rounded p-2 space-y-1.5 mt-1">
+                    <input
+                      autoFocus
+                      value={mcpName}
+                      onChange={(e) => setMcpName(e.target.value)}
+                      placeholder="Server name"
+                      className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
+                    />
+                    <input
+                      value={mcpCommand}
+                      onChange={(e) => setMcpCommand(e.target.value)}
+                      placeholder="Command (e.g. npx, uvx)"
+                      className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
+                    />
+                    <textarea
+                      value={mcpArgs}
+                      onChange={(e) => setMcpArgs(e.target.value)}
+                      placeholder="Args (one per line)"
+                      className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent resize-none"
+                      rows={2}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => setAddingMcp(false)} className="text-[10px] text-text-muted hover:text-text-primary px-1.5 py-0.5">Cancel</button>
+                      <button
+                        onClick={() => handleAddMcp(tag.id)}
+                        disabled={!mcpName.trim() || !mcpCommand.trim()}
+                        className="text-[10px] bg-accent text-white px-2 py-0.5 rounded hover:bg-accent-hover disabled:opacity-50"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
               <div className="flex justify-end gap-2">
                 <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-primary px-2 py-1">
                   Cancel
@@ -1167,12 +1278,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
-                  onClick={() => {
-                    setEditingId(tag.id);
-                    setEditName(tag.name);
-                    setEditColor(tag.color);
-                    setEditInstructions(tag.instructions);
-                  }}
+                  onClick={() => startEditing(tag)}
                   className="p-1 text-text-muted hover:text-text-primary rounded"
                   title="Edit"
                 >

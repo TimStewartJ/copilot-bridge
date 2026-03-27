@@ -493,6 +493,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     try {
       const tag = ctx.tagStore.updateTag(req.params.id, req.body);
+      // If instructions or MCP config changed, evict cached sessions
+      if (req.body.instructions !== undefined) {
+        console.log("[tags] Tag instructions changed — evicting cached sessions");
+        ctx.sessionManager.evictAllCachedSessions();
+      }
       res.json({ tag });
     } catch (err) {
       res.status(404).json({ error: String(err) });
@@ -502,6 +507,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.delete("/tags/:id", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     ctx.tagStore.deleteTag(req.params.id);
+    console.log("[tags] Tag deleted — evicting cached sessions");
+    ctx.sessionManager.evictAllCachedSessions();
     res.json({ success: true });
   });
 
@@ -517,6 +524,32 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // Tag MCP servers
+  router.get("/tags/:id/mcp", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    res.json({ servers: ctx.tagStore.getTagMcpServers(req.params.id) });
+  });
+
+  router.put("/tags/:id/mcp/:serverName", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    try {
+      ctx.tagStore.setTagMcpServer(req.params.id, req.params.serverName, req.body);
+      console.log("[tags] Tag MCP server changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  router.delete("/tags/:id/mcp/:serverName", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    ctx.tagStore.removeTagMcpServer(req.params.id, req.params.serverName);
+    console.log("[tags] Tag MCP server removed — evicting cached sessions");
+    ctx.sessionManager.evictAllCachedSessions();
+    res.json({ success: true });
+  });
+
   // Set tags on a task
   router.put("/tasks/:id/tags", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
@@ -525,6 +558,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       ctx.tagStore.setEntityTags("task", req.params.id, tagIds);
       const tags = ctx.tagStore.getEntityTags("task", req.params.id);
+      console.log("[tags] Task tags changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
       res.json({ tags });
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -539,6 +574,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       ctx.tagStore.setEntityTags("task_group", req.params.id, tagIds);
       const tags = ctx.tagStore.getEntityTags("task_group", req.params.id);
+      console.log("[tags] Group tags changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
       res.json({ tags });
     } catch (err) {
       res.status(400).json({ error: String(err) });
