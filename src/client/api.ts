@@ -462,6 +462,8 @@ export interface AppSettings {
   mcpServers: Record<string, McpServerConfig>;
   favicon?: string;
   theme?: ThemePreference;
+  identity?: string;
+  customInstructions?: string;
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
