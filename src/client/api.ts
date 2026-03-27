@@ -595,6 +595,7 @@ export interface DocTreeNode {
   type: "file" | "folder";
   path: string;
   isDb?: boolean;
+  hasIndex?: boolean;
   children?: DocTreeNode[];
 }
 
@@ -634,9 +635,8 @@ export interface DbEntry {
   modified: string;
 }
 
-export async function fetchDocsTree(): Promise<DocTreeNode[]> {
-  const data = await apiFetch<{ tree: DocTreeNode[] }>("/api/docs/tree");
-  return data.tree;
+export async function fetchDocsTree(): Promise<{ tree: DocTreeNode[]; hasRootIndex: boolean }> {
+  return apiFetch<{ tree: DocTreeNode[]; hasRootIndex: boolean }>("/api/docs/tree");
 }
 
 export async function searchDocs(query: string, limit = 20, offset = 0): Promise<{ results: DocSearchResult[]; total: number }> {

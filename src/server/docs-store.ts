@@ -21,6 +21,7 @@ export interface DocTreeNode {
   type: "file" | "folder";
   path: string;
   isDb?: boolean;
+  hasIndex?: boolean;
   children?: DocTreeNode[];
 }
 
@@ -199,18 +200,30 @@ export function createDocsStore(docsDir: string) {
 
   // ── Page CRUD ─────────────────────────────────────────────────
 
-  function readPage(pagePath: string): DocPage | null {
+  /** Resolve a page path, falling back to folder/index.md if path.md doesn't exist */
+  function resolveFilePath(pagePath: string): { filePath: string; canonicalPath: string } | null {
     const filePath = toFilePath(pagePath);
-    if (!existsSync(filePath)) return null;
+    if (existsSync(filePath)) return { filePath, canonicalPath: pagePath };
 
-    const { data, content } = matter(readFileSync(filePath, "utf-8"));
+    // Fall back: if pagePath is a folder with an index.md, use that
+    const indexPath = join(docsDir, ...pagePath.replace(/\\/g, "/").split("/"), "index.md");
+    if (existsSync(indexPath)) return { filePath: indexPath, canonicalPath: pagePath };
+
+    return null;
+  }
+
+  function readPage(pagePath: string): DocPage | null {
+    const resolved = resolveFilePath(pagePath);
+    if (!resolved) return null;
+
+    const { data, content } = matter(readFileSync(resolved.filePath, "utf-8"));
     return {
-      path: pagePath,
-      title: data.title || basename(pagePath),
+      path: resolved.canonicalPath,
+      title: data.title || basename(resolved.canonicalPath),
       tags: Array.isArray(data.tags) ? data.tags : data.tags ? [data.tags] : [],
       frontmatter: data,
       body: content.trim(),
-      folder: folderOf(pagePath),
+      folder: folderOf(resolved.canonicalPath),
       created: data.created || "",
       modified: data.modified || "",
     };
@@ -228,7 +241,9 @@ export function createDocsStore(docsDir: string) {
       throw new Error(`Cannot write raw content to DB folder "${folder}" — use docs_db_add instead`);
     }
 
-    const filePath = toFilePath(pagePath);
+    // Resolve: prefer existing file, fall back to folder/index.md
+    const resolved = resolveFilePath(pagePath);
+    const filePath = resolved ? resolved.filePath : toFilePath(pagePath);
     const dir = dirname(filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
@@ -264,9 +279,9 @@ export function createDocsStore(docsDir: string) {
   }
 
   function deletePage(pagePath: string): boolean {
-    const filePath = toFilePath(pagePath);
-    if (!existsSync(filePath)) return false;
-    unlinkSync(filePath);
+    const resolved = resolveFilePath(pagePath);
+    if (!resolved) return false;
+    unlinkSync(resolved.filePath);
     return true;
   }
 
@@ -284,14 +299,22 @@ export function createDocsStore(docsDir: string) {
 
       if (entry.isDirectory()) {
         const childPath = folder ? `${folder}/${entry.name}` : entry.name;
+        const children = listTree(childPath);
+        // Check if the child folder itself has an index.md
+        const childIndexPath = join(rootPath, entry.name, "index.md");
+        const childHasIndex = existsSync(childIndexPath);
         nodes.push({
           name: entry.name,
           type: "folder",
           path: childPath,
           isDb: isDbFolder(childPath),
-          children: listTree(childPath),
+          ...(childHasIndex ? { hasIndex: true } : {}),
+          children,
         });
       } else if (entry.name.endsWith(".md")) {
+        // Hide index.md from the file list — it's accessed via the folder
+        if (entry.name === "index.md") continue;
+
         const pageName = entry.name.replace(/\.md$/, "");
         nodes.push({
           name: pageName,
@@ -400,9 +423,17 @@ export function createDocsStore(docsDir: string) {
         if (entry.isDirectory()) {
           walk(join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
         } else if (entry.name.endsWith(".md")) {
-          const pagePath = prefix ? `${prefix}/${entry.name.replace(/\.md$/, "")}` : entry.name.replace(/\.md$/, "");
-          const page = readPage(pagePath);
-          if (page) pages.push(page);
+          let pagePath: string;
+          if (entry.name === "index.md") {
+            // Canonicalize: folder/index → folder path, root index → "index"
+            pagePath = prefix || "index";
+          } else {
+            pagePath = prefix ? `${prefix}/${entry.name.replace(/\.md$/, "")}` : entry.name.replace(/\.md$/, "");
+          }
+          if (pagePath) {
+            const page = readPage(pagePath);
+            if (page) pages.push(page);
+          }
         }
       }
     }
