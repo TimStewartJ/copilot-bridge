@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import type { Session, Task } from "../api";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -55,6 +55,8 @@ interface SessionListProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   // Session deletion
   onDeleteSession?: (sessionId: string) => void;
+  // Session duplication
+  onDuplicateSession?: (sessionId: string) => void;
   // Mark unread
   onMarkUnread?: (sessionId: string) => void;
   // Draft indicator
@@ -79,6 +81,7 @@ export default function SessionList({
   taskContext,
   onUnlinkFromTask,
   onDeleteSession,
+  onDuplicateSession,
   onMarkUnread,
   hasDraft,
   exitingIds,
@@ -207,6 +210,17 @@ export default function SessionList({
             {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
             {copied ? "Copied!" : "Copy Session ID"}
           </button>
+          {onDuplicateSession && ctxSession && (
+            <CtxItem
+              icon={<CopyPlus size={14} />}
+              label="Duplicate"
+              disabled={ctxSession.busy}
+              onClick={() => {
+                onDuplicateSession(ctxMenu.id);
+                closeMenu();
+              }}
+            />
+          )}
           {onArchiveSession && ctxSession && (
             <CtxItem
               icon={ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}

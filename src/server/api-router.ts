@@ -175,6 +175,33 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // POST /sessions/:id/duplicate — duplicate an existing session
+  router.post("/sessions/:id/duplicate", async (req, res) => {
+    const sourceId = req.params.id;
+    try {
+      if (ctx.sessionManager.isSessionBusy(sourceId)) {
+        return res.status(409).json({ error: "Cannot duplicate a busy session" });
+      }
+      const result = await ctx.sessionManager.duplicateSession(sourceId);
+
+      // Copy title with "Copy of" prefix
+      const originalTitle = ctx.sessionTitles.getTitle(sourceId);
+      if (originalTitle) {
+        ctx.sessionTitles.setTitle(result.sessionId, `Copy of ${originalTitle}`);
+      }
+
+      // Copy task links if the source session was linked to a task
+      const linkedTask = ctx.taskStore.findTaskBySessionId(sourceId);
+      if (linkedTask) {
+        ctx.taskStore.linkSession(linkedTask.id, result.sessionId);
+      }
+
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // POST /chat — fire and forget, starts work in background
   router.post("/chat", (req, res) => {
     const { sessionId, prompt, attachments } = req.body;
