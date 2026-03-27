@@ -20,6 +20,7 @@ import {
   patchTaskGroup,
   deleteTaskGroup,
   batchSessionAction,
+  API_BASE,
   type Session,
   type Task,
   type TaskGroup,
@@ -323,40 +324,37 @@ export default function App() {
     }
   };
 
-  const handleNewSession = async (taskId: string) => {
-    try {
+  const handleNewSession = (taskId: string) => {
+    navigate(`/tasks/${taskId}/sessions/new`);
+  };
+
+  const handleNewQuickChat = () => {
+    navigate(`/sessions/new`);
+  };
+
+  // Actually create a session on the server (called on first message send)
+  const materializeSession = useCallback(async (taskId?: string): Promise<string> => {
+    if (taskId) {
       const sessionId = await createTaskSession(taskId);
       addOptimisticSession(sessionId);
       const addSession = (t: Task) =>
         t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
       setTasks((prev) => prev.map(addSession));
       setSelectedTask((prev) => (prev ? addSession(prev) : prev));
-      navigate(`/tasks/${taskId}/sessions/${sessionId}`);
-    } catch (err) {
-      console.error("Failed to create task session:", err);
-    }
-  };
-
-  const handleNewQuickChat = async () => {
-    try {
+      return sessionId;
+    } else {
       const sessionId = await createSession();
       addOptimisticSession(sessionId);
-      navigate(`/sessions/${sessionId}`);
-    } catch (err) {
-      console.error("Failed to create session:", err);
+      return sessionId;
     }
-  };
+  }, [addOptimisticSession]);
 
   const handleNewTask = async () => {
     try {
       const task = await createTask("New Task");
       setTasks((prev) => [task, ...prev]);
-      const sessionId = await createTaskSession(task.id);
-      addOptimisticSession(sessionId);
-      const updatedTask = { ...task, sessionIds: [...task.sessionIds, sessionId] };
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? updatedTask : t)));
-      setSelectedTask(updatedTask);
-      navigate(`/tasks/${task.id}/sessions/${sessionId}`);
+      setSelectedTask(task);
+      navigate(`/tasks/${task.id}/sessions/new`);
     } catch (err) {
       console.error("Failed to create task:", err);
     }
@@ -896,13 +894,13 @@ export default function App() {
             <Route
               path="tasks/:taskId/sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} />
+                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} />
+                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
               }
             />
             <Route path="docs/*" element={<DocsView />} />
@@ -1136,14 +1134,19 @@ function MobileTaskListView({
 }
 
 // Thin wrapper to extract sessionId from URL and pass hasPlan + draft props
-function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft }: {
+function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft, materializeSession }: {
   sessions: Session[];
   onMessageSent: () => void;
   getDraft: (id: string) => import("./useDrafts").Draft | null;
   setDraft: (id: string, text: string, attachments?: import("./api").BlobAttachment[]) => void;
   clearDraft: (id: string) => void;
+  materializeSession: (taskId?: string) => Promise<string>;
 }) {
-  const { sessionId } = useParams<{ sessionId: string }>();
+  const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
+  const navigate = useNavigate();
+
+  const isDraft = rawSessionId === "new";
+  const sessionId = isDraft ? null : (rawSessionId ?? null);
   const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
   const draft = sessionId ? getDraft(sessionId) : null;
   const handleDraftChange = useCallback(
@@ -1155,14 +1158,32 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft 
   const handleDraftClear = useCallback(() => {
     if (sessionId) clearDraft(sessionId);
   }, [sessionId, clearDraft]);
+
+  // Create session on first message, then redirect to real URL
+  const onCreateAndSend = useCallback(async (prompt: string, attachments?: import("./api").BlobAttachment[]) => {
+    const newSessionId = await materializeSession(taskId);
+    // Navigate to real session URL (replace draft URL in history)
+    const path = taskId
+      ? `/tasks/${taskId}/sessions/${newSessionId}`
+      : `/sessions/${newSessionId}`;
+    navigate(path, { replace: true });
+    // Send the message
+    await fetch(`${API_BASE}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: newSessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
+    });
+  }, [materializeSession, taskId, navigate]);
+
   return (
     <ChatView
-      sessionId={sessionId ?? null}
+      sessionId={sessionId}
       hasPlan={hasPlan}
       onMessageSent={onMessageSent}
       draft={draft}
       onDraftChange={handleDraftChange}
       onDraftClear={handleDraftClear}
+      onCreateAndSend={isDraft ? onCreateAndSend : undefined}
     />
   );
 }

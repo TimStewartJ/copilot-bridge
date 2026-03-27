@@ -9,6 +9,7 @@ interface ChatInputProps {
   onSend: (text: string, attachments?: BlobAttachment[]) => void;
   onAbort?: () => void;
   sessionId?: string | null;
+  isDraft?: boolean;
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
 }
@@ -27,7 +28,7 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
-export default function ChatInput({ onSend, onAbort, sessionId, draft, onDraftChange }: ChatInputProps) {
+export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, onDraftChange }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<BlobAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -62,10 +63,10 @@ export default function ChatInput({ onSend, onAbort, sessionId, draft, onDraftCh
 
   // Auto-focus on session change (desktop only — avoids keyboard popup on mobile)
   useEffect(() => {
-    if (sessionId && window.matchMedia("(pointer: fine)").matches) {
+    if ((sessionId || isDraft) && window.matchMedia("(pointer: fine)").matches) {
       textareaRef.current?.focus();
     }
-  }, [sessionId]);
+  }, [sessionId, isDraft]);
 
   const addImageFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
