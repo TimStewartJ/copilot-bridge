@@ -1116,7 +1116,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     router.get("/docs/db/*folder", (req, res) => {
       try {
         const folder = paramPath((req.params as any).folder);
-        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        const limit = Math.min(Number(req.query.limit) || 10000, 10000);
         const offset = Number(req.query.offset) || 0;
         const sortField = req.query._sort as string | undefined;
         const sortOrder = (req.query._order as string | undefined) === "asc" ? "asc" as const : "desc" as const;
