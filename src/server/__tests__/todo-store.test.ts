@@ -145,4 +145,63 @@ describe("todo-store", () => {
       expect(todoStore.getTodo(todo.id)).toBeUndefined();
     });
   });
+
+  describe("global (unparented) todos", () => {
+    it("creates a todo without a taskId", () => {
+      const todo = todoStore.createTodo(null, "Global item");
+      expect(todo.id).toBeTruthy();
+      expect(todo.taskId).toBeNull();
+      expect(todo.text).toBe("Global item");
+      expect(todo.done).toBe(false);
+    });
+
+    it("global todos have independent ordering", () => {
+      const task = taskStore.createTask("Test");
+      todoStore.createTodo(task.id, "Task item");
+      const g1 = todoStore.createTodo(null, "Global 1");
+      const g2 = todoStore.createTodo(null, "Global 2");
+      expect(g1.order).toBe(0);
+      expect(g2.order).toBe(1);
+    });
+
+    it("global todos appear in listAllOpen", () => {
+      const task = taskStore.createTask("Active");
+      todoStore.createTodo(task.id, "Task item");
+      todoStore.createTodo(null, "Global item");
+      const open = todoStore.listAllOpen();
+      expect(open).toHaveLength(2);
+      expect(open.some((t) => t.taskId === null && t.text === "Global item")).toBe(true);
+    });
+
+    it("global todos appear first in listAllOpen when created first", () => {
+      const globalTodo = todoStore.createTodo(null, "Global item");
+      const task = taskStore.createTask("Active");
+      todoStore.createTodo(task.id, "Task item");
+      const open = todoStore.listAllOpen();
+      // Server sorts by createdAt DESC, so the task item (created last) comes first
+      expect(open[0].taskId).toBe(task.id);
+      expect(open[1].taskId).toBeNull();
+    });
+
+    it("completed global todos appear in listRecentlyCompleted", () => {
+      const todo = todoStore.createTodo(null, "Done global");
+      todoStore.updateTodo(todo.id, { done: true });
+      const completed = todoStore.listRecentlyCompleted();
+      expect(completed).toHaveLength(1);
+      expect(completed[0].taskId).toBeNull();
+    });
+
+    it("global todo can be updated and deleted", () => {
+      const todo = todoStore.createTodo(null, "Editable");
+      const updated = todoStore.updateTodo(todo.id, { text: "Changed" });
+      expect(updated.text).toBe("Changed");
+      todoStore.deleteTodo(todo.id);
+      expect(todoStore.getTodo(todo.id)).toBeUndefined();
+    });
+
+    it("global todo supports deadline", () => {
+      const todo = todoStore.createTodo(null, "With deadline", "2026-04-01");
+      expect(todo.deadline).toBe("2026-04-01");
+    });
+  });
 });

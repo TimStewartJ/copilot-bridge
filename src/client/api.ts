@@ -94,7 +94,7 @@ export interface TaskGroup {
 
 export interface Todo {
   id: string;
-  taskId: string;
+  taskId: string | null;
   text: string;
   done: boolean;
   order: number;
@@ -420,13 +420,13 @@ export interface DashboardOrphanSession {
 
 export interface DashboardTodo {
   id: string;
-  taskId: string;
+  taskId: string | null;
   text: string;
   done: boolean;
   order: number;
   createdAt: string;
   deadline?: string;
-  taskTitle: string;
+  taskTitle: string | null;
   taskGroupColor: string | null;
 }
 
@@ -564,6 +564,11 @@ export async function fetchTodos(taskId: string): Promise<Todo[]> {
 
 export async function createTodo(taskId: string, text: string, deadline?: string): Promise<Todo> {
   const data = await apiFetch<{ todo: Todo }>(`/api/tasks/${taskId}/todos`, { text, deadline });
+  return data.todo;
+}
+
+export async function createGlobalTodo(text: string, deadline?: string): Promise<Todo> {
+  const data = await apiFetch<{ todo: Todo }>(`/api/todos`, { text, deadline });
   return data.todo;
 }
 
