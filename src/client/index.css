@@ -111,16 +111,18 @@
   --tw-prose-td-borders: var(--color-border-subtle);
 }
 
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: -0.011em;
-  overscroll-behavior: none;
-}
-
-html {
-  overscroll-behavior: none;
+  margin: 0;
 }
 
 @keyframes ctx-menu-in {

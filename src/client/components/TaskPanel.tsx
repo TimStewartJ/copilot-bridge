@@ -191,7 +191,8 @@ export default function TaskPanel({
         </div>
 
         {/* Content */}
-        <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="flex-1 overflow-x-hidden p-2 space-y-3">
+        <div className="flex-1 min-h-0 relative">
+        <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
            <SessionList
             variant="global"
             sessions={orphanSessions ?? []}
@@ -211,6 +212,7 @@ export default function TaskPanel({
             hasDraft={hasDraft}
           />
         </PullToRefresh>
+        </div>
       </div>
     );
   }
@@ -297,7 +299,8 @@ export default function TaskPanel({
       </div>
 
       {/* Scrollable content */}
-      <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="flex-1 overflow-x-hidden p-2 space-y-3">
+      <div className="flex-1 min-h-0 relative">
+      <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
         {/* Sessions */}
         <div>
           <SectionLabel label="Sessions" count={linkedSessions.length} />
@@ -672,6 +675,7 @@ export default function TaskPanel({
           />
         )}
       </PullToRefresh>
+      </div>
     </div>
   );
 }
