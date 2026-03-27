@@ -2,6 +2,7 @@
 // Windows uses taskkill, wmic, mklink /J; Linux uses kill, pkill, ln -s.
 
 import { execSync } from "node:child_process";
+import { lstatSync, rmSync } from "node:fs";
 
 const isWindows = process.platform === "win32";
 
@@ -81,27 +82,18 @@ export function createDirectoryLink(
  */
 export function removeDirectoryLink(
   linkPath: string,
-  cwd: string,
+  _cwd: string,
 ): { ok: boolean; output: string } {
   try {
-    if (isWindows) {
-      // rmdir removes junction without deleting target contents
-      const output = execSync(`cmd /c rmdir "${linkPath}"`, {
-        cwd,
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      return { ok: true, output };
-    } else {
-      // rm on a symlink removes just the link, not the target
-      const output = execSync(`rm -f "${linkPath}"`, {
-        cwd,
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      return { ok: true, output };
+    const stat = lstatSync(linkPath);
+    if (stat.isSymbolicLink()) {
+      rmSync(linkPath);
+    } else if (stat.isDirectory()) {
+      rmSync(linkPath, { recursive: true, force: true });
     }
+    return { ok: true, output: "" };
   } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
+    if (err.code === "ENOENT") return { ok: true, output: "already removed" };
+    return { ok: false, output: String(err) };
   }
 }

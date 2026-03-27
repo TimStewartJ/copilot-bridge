@@ -251,6 +251,21 @@ function run(cmd: string, cwd: string): { ok: boolean; output: string } {
   }
 }
 
+/** Ensure node_modules is properly ignored (covers both directories and symlinks). */
+function ensureNodeModulesIgnored(stagingDir: string): void {
+  const gitignorePath = join(stagingDir, ".gitignore");
+  if (!existsSync(gitignorePath)) return;
+  const content = readFileSync(gitignorePath, "utf-8");
+  if (content.split("\n").some(line => line.trim() === "node_modules")) return;
+  // Replace dir-only pattern with one that covers symlinks too
+  const fixed = content.replace(/^node_modules\/$/m, "node_modules");
+  if (fixed !== content) {
+    writeFileSync(gitignorePath, fixed);
+  } else {
+    writeFileSync(gitignorePath, content.trimEnd() + "\nnode_modules\n");
+  }
+}
+
 /** Remove a staging worktree and its branch. Handles node_modules junction cleanup. */
 function removeWorktree(stagingDir: string, branch: string): void {
   // Remove node_modules junction/symlink first — git worktree remove can't handle it
@@ -398,6 +413,9 @@ export const STAGING_TOOLS = [
         run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
         return { success: false, error: `Failed to create worktree: ${wtResult.output}` };
       }
+
+      // Ensure node_modules is ignored in the staging worktree (prevents accidental git add)
+      ensureNodeModulesIgnored(stagingDir);
 
       // Share node_modules via junction (Windows) or symlink (Linux)
       const prodModules = join(PRODUCTION_ROOT, "node_modules");
@@ -569,6 +587,9 @@ export const STAGING_TOOLS = [
       const branch = `staging/${prefix}`;
 
       log(`Deploying from ${stagingDir} (branch: ${branch})`);
+
+      // Ensure node_modules is ignored before staging (prevents accidental commit of symlinks)
+      ensureNodeModulesIgnored(stagingDir);
 
       // Stage and commit if there are uncommitted changes (skip on retry after conflict resolution)
       run("git add -A", stagingDir);
