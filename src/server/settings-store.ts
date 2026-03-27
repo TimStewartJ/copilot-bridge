@@ -20,6 +20,8 @@ export interface AppSettings {
   mcpServers: Record<string, McpServerConfig>;
   favicon?: string;
   theme?: ThemePreference;
+  identity?: string;
+  customInstructions?: string;
 }
 
 // ── Defaults (no hardcoded org — users configure their own) ───────
@@ -49,6 +51,8 @@ export function createSettingsStore(db: DatabaseSync) {
     if (updates.mcpServers !== undefined) current.mcpServers = updates.mcpServers;
     if (updates.favicon !== undefined) current.favicon = updates.favicon;
     if (updates.theme !== undefined) current.theme = updates.theme;
+    if (updates.identity !== undefined) current.identity = updates.identity;
+    if (updates.customInstructions !== undefined) current.customInstructions = updates.customInstructions;
 
     db.prepare(
       "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = ?",

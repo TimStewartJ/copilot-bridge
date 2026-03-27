@@ -25,9 +25,13 @@ import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
 import type { TodoStore } from "./todo-store.js";
 
+import type { SettingsStore } from "./settings-store.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
+
+const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.`;
 
 const STAGING_INSTRUCTIONS = `
 <staging_workflow>
@@ -558,6 +562,7 @@ export interface SessionManagerDeps {
   sessionTitles: SessionTitlesStore;
   taskStore: TaskStore;
   todoStore?: TodoStore;
+  settingsStore?: SettingsStore;
   config: { sessionMcpServers: Record<string, any>; model?: string };
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
@@ -652,6 +657,16 @@ export class SessionManager {
     const sections: Partial<Record<string, SectionOverride>> = {};
     if (isSelfRepo) {
       sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
+    }
+
+    // Identity override — always replace the SDK default with Bridge identity
+    const settings = this.deps.settingsStore?.getSettings();
+    const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
+    sections.identity = { action: "replace", content: identityText };
+
+    // Custom instructions — append user-defined instructions to context
+    if (settings?.customInstructions?.trim()) {
+      contextParts.push(settings.customInstructions.trim());
     }
 
     // Inject server-local time into environment context (dynamic per turn via transform)
