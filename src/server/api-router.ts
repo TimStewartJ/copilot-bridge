@@ -611,6 +611,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  router.post("/todos", (req, res) => {
+    const { text, deadline } = req.body;
+    if (!text) return res.status(400).json({ error: "text is required" });
+    try {
+      const todo = ctx.todoStore.createTodo(null, text, deadline);
+      res.json({ todo });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   router.patch("/todos/:id", (req, res) => {
     try {
       const todo = ctx.todoStore.updateTodo(req.params.id, req.body);
@@ -816,10 +827,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
           unread: isUnread(s.sessionId, s.modifiedTime),
         }));
 
-      // Open todos across all active tasks
+      // Open todos across all active tasks and global todos
       const openTodos = ctx.todoStore.listAllOpen().map((todo) => {
-        const task = tasks.find((t) => t.id === todo.taskId);
-        const taskTitle = task?.title ?? "Unknown";
+        const task = todo.taskId ? tasks.find((t) => t.id === todo.taskId) : null;
+        const taskTitle = task?.title ?? (todo.taskId ? "Unknown" : null);
         const taskGroupColor = task?.groupId
           ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
           : null;
@@ -828,8 +839,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       // Recently completed todos
       const completedTodos = ctx.todoStore.listRecentlyCompleted().map((todo) => {
-        const task = tasks.find((t) => t.id === todo.taskId);
-        const taskTitle = task?.title ?? "Unknown";
+        const task = todo.taskId ? tasks.find((t) => t.id === todo.taskId) : null;
+        const taskTitle = task?.title ?? (todo.taskId ? "Unknown" : null);
         const taskGroupColor = task?.groupId
           ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
           : null;
@@ -1113,7 +1124,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     router.get("/docs/db/*folder", (req, res) => {
       try {
         const folder = paramPath((req.params as any).folder);
-        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        const limit = Math.min(Number(req.query.limit) || 10000, 10000);
         const offset = Number(req.query.offset) || 0;
         const sortField = req.query._sort as string | undefined;
         const sortOrder = (req.query._order as string | undefined) === "asc" ? "asc" as const : "desc" as const;

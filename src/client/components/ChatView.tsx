@@ -14,6 +14,7 @@ interface ChatViewProps {
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
   onDraftClear?: () => void;
+  onCreateAndSend?: (prompt: string, attachments?: BlobAttachment[]) => Promise<void>;
 }
 
 function formatToolArgs(args: Record<string, unknown>): string {
@@ -26,10 +27,11 @@ function formatToolArgs(args: Record<string, unknown>): string {
   return parts.join(" ");
 }
 
-export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear }: ChatViewProps) {
+export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
+  const [creating, setCreating] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
@@ -49,9 +51,24 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   } = useSessionStream(sessionId, handleNewMessages, onMessageSent);
 
   // Load history when session changes
+  const prevSessionRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    const prevSession = prevSessionRef.current;
+    const wasDraft = prevSession === null && creating;
+    prevSessionRef.current = sessionId;
+
     if (!sessionId) {
-      setMessages([]);
+      // Clear messages when entering draft mode from an existing session
+      // (but not on initial mount when prevSession is undefined)
+      if (prevSession !== undefined || !onCreateAndSend) setMessages([]);
+      setCreating(false);
+      return;
+    }
+
+    // Transitioning from draft → real session: keep messages, just connect stream
+    if (wasDraft) {
+      setCreating(false);
+      reconnect(sessionId);
       return;
     }
 
@@ -89,7 +106,25 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   }, [messages, isStreaming, streamingContent, activeTools]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
-    if (!sessionId || isStreaming) return;
+    if (isStreaming || creating) return;
+
+    // Draft mode: create session on first message
+    if (!sessionId && onCreateAndSend) {
+      setCreating(true);
+      setMessages([{ role: "user", content: prompt, ...(attachments?.length ? { attachments } : {}) }]);
+      try {
+        await onCreateAndSend(prompt, attachments);
+      } catch (err: any) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `⚠️ Error: ${err.message}` },
+        ]);
+        setCreating(false);
+      }
+      return;
+    }
+
+    if (!sessionId) return;
     onDraftClear?.();
     setMessages((prev) => [...prev, { role: "user", content: prompt, ...(attachments?.length ? { attachments } : {}) }]);
     try {
@@ -100,20 +135,22 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         { role: "assistant", content: `⚠️ Error: ${err.message}` },
       ]);
     }
-  }, [sessionId, isStreaming, sendMessage, onDraftClear]);
+  }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend]);
 
-  if (!sessionId) {
+  const renderedMessages = useMemo(
+    () => messages.map((msg, i) => <MessageBubble key={`${msg.role}-${i}`} message={msg} />),
+    [messages],
+  );
+
+  const isDraft = !sessionId && !!onCreateAndSend;
+
+  if (!sessionId && !isDraft) {
     return (
       <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
         Create or select a session to start
       </div>
     );
   }
-
-  const renderedMessages = useMemo(
-    () => messages.map((msg, i) => <MessageBubble key={`${msg.role}-${i}`} message={msg} />),
-    [messages],
-  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -136,7 +173,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         {loading && (
           <div className="text-accent italic">Loading history...</div>
         )}
-        {!loading && messages.length === 0 && !isStreaming && (
+        {!loading && messages.length === 0 && !isStreaming && !creating && (
           <div className="flex items-center justify-center h-full text-text-muted text-lg">
             Send a message to get started
           </div>
@@ -186,9 +223,12 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
                 : "Thinking..."}
           </div>
         )}
+        {creating && !isStreaming && (
+          <div className="text-accent italic animate-pulse">Creating session...</div>
+        )}
         <div ref={messagesEndRef} />
       </div>
-      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} draft={draft} onDraftChange={onDraftChange} />
+      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
         <PlanSheet sessionId={sessionId} onClose={() => setShowPlan(false)} />

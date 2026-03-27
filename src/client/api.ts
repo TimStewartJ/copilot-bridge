@@ -94,7 +94,7 @@ export interface TaskGroup {
 
 export interface Todo {
   id: string;
-  taskId: string;
+  taskId: string | null;
   text: string;
   done: boolean;
   order: number;
@@ -420,13 +420,13 @@ export interface DashboardOrphanSession {
 
 export interface DashboardTodo {
   id: string;
-  taskId: string;
+  taskId: string | null;
   text: string;
   done: boolean;
   order: number;
   createdAt: string;
   deadline?: string;
-  taskTitle: string;
+  taskTitle: string | null;
   taskGroupColor: string | null;
 }
 
@@ -567,6 +567,11 @@ export async function createTodo(taskId: string, text: string, deadline?: string
   return data.todo;
 }
 
+export async function createGlobalTodo(text: string, deadline?: string): Promise<Todo> {
+  const data = await apiFetch<{ todo: Todo }>(`/api/todos`, { text, deadline });
+  return data.todo;
+}
+
 export async function patchTodo(
   id: string,
   updates: Partial<Pick<Todo, "text" | "done">> & { deadline?: string | null },
@@ -687,12 +692,20 @@ export async function fetchDbSchema(folder: string): Promise<DbSchema> {
   return apiFetch<DbSchema>(`/api/docs/schema/${folder}`);
 }
 
-export async function fetchDbEntries(folder: string, filters?: Record<string, string>): Promise<{ entries: DbEntry[]; total: number }> {
+export async function fetchDbEntries(
+  folder: string,
+  options?: { filters?: Record<string, string>; sort?: { field: string; order: "asc" | "desc" } },
+): Promise<{ entries: DbEntry[]; total: number }> {
   const params = new URLSearchParams();
-  if (filters) {
-    for (const [k, v] of Object.entries(filters)) {
+  params.set("limit", "10000");
+  if (options?.filters) {
+    for (const [k, v] of Object.entries(options.filters)) {
       params.set(k, String(v));
     }
+  }
+  if (options?.sort) {
+    params.set("_sort", options.sort.field);
+    params.set("_order", options.sort.order);
   }
   const qs = params.toString();
   return apiFetch<{ entries: DbEntry[]; total: number }>(`/api/docs/db/${folder}${qs ? `?${qs}` : ""}`);
