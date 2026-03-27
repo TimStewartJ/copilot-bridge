@@ -3,14 +3,16 @@ import { useNavigate } from "react-router-dom";
 import {
   fetchSettings,
   patchSettings,
+  fetchGlobalMcpStatus,
   type AppSettings,
   type McpServerConfig,
+  type McpServerStatus,
   type AdoProviderConfig,
   type GitHubProviderConfig,
   type ProvidersConfig,
   type ThemePreference,
 } from "../api";
-import { Settings, ArrowLeft, Pencil, Trash2, Check, X } from "lucide-react";
+import { Settings, ArrowLeft, Pencil, Trash2, Check, X, CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
 import { FAVICON_OPTIONS, DEFAULT_FAVICON, type FaviconOption } from "../faviconOptions";
 import { useTheme } from "../useTheme";
 import ThemePicker from "./ThemePicker";
@@ -24,6 +26,7 @@ export default function SettingsView() {
   const [toast, setToast] = useState<string | null>(null);
   const [editingServer, setEditingServer] = useState<string | null>(null);
   const [addingServer, setAddingServer] = useState(false);
+  const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpServerStatus>>({});
 
   const hasChanges =
     settings && draft && JSON.stringify(settings) !== JSON.stringify(draft);
@@ -36,6 +39,15 @@ export default function SettingsView() {
       })
       .catch(() => setToast("Failed to load settings"))
       .finally(() => setLoading(false));
+
+    // Fetch live MCP status from any recent session
+    fetchGlobalMcpStatus()
+      .then((servers) => {
+        const map: Record<string, McpServerStatus> = {};
+        for (const s of servers) map[s.name] = s;
+        setMcpStatuses(map);
+      })
+      .catch(() => {});
   }, []);
 
   const handleSave = async () => {
@@ -206,6 +218,7 @@ export default function SettingsView() {
                   key={name}
                   name={name}
                   config={cfg}
+                  status={mcpStatuses[name]}
                   onEdit={() => setEditingServer(name)}
                   onRemove={() => removeServer(name)}
                 />
@@ -736,14 +749,53 @@ function GitHubProviderEditor({
 function ServerCard({
   name,
   config,
+  status,
   onEdit,
   onRemove,
 }: {
   name: string;
   config: McpServerConfig;
+  status?: McpServerStatus;
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const st = status?.status;
+  const statusBadge = (() => {
+    switch (st) {
+      case "connected":
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
+            <CheckCircle2 size={10} /> connected
+          </span>
+        );
+      case "failed":
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error rounded-full flex items-center gap-0.5" title={status?.error}>
+            <XCircle size={10} /> failed
+          </span>
+        );
+      case "pending":
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning rounded-full flex items-center gap-0.5">
+            <Loader2 size={10} className="animate-spin" /> connecting
+          </span>
+        );
+      case "disabled":
+      case "not_configured":
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 bg-bg-secondary text-text-muted rounded-full">
+            {st}
+          </span>
+        );
+      default:
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 bg-bg-secondary text-text-faint rounded-full flex items-center gap-0.5">
+            <AlertTriangle size={10} /> no status
+          </span>
+        );
+    }
+  })();
+
   return (
     <div className="bg-bg-elevated border border-border rounded-md p-4 group">
       <div className="flex items-start justify-between">
@@ -752,10 +804,13 @@ function ServerCard({
             <span className="text-sm font-medium text-accent">
               {name}
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full">
-              active
-            </span>
+            {statusBadge}
           </div>
+          {st === "failed" && status?.error && (
+            <div className="mt-1 text-[11px] text-error bg-error/5 px-2 py-1 rounded">
+              {status.error}
+            </div>
+          )}
           <div className="mt-2 space-y-1">
             <div className="text-xs text-text-muted">
               <span className="text-text-faint">command:</span>{" "}

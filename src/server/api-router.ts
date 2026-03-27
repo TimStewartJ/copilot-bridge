@@ -334,6 +334,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // GET /sessions/:id/mcp-status — get MCP server connection status for a session
+  router.get("/sessions/:id/mcp-status", async (req, res) => {
+    try {
+      const servers = await ctx.sessionManager.getMcpStatus(req.params.id);
+      res.json({ servers });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // PATCH /sessions/:id — update session metadata (archive/unarchive)
   router.patch("/sessions/:id", (req, res) => {
     const { archived } = req.body;
@@ -993,6 +1003,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
       res.json(updated);
     } catch (err) {
       res.status(400).json({ error: String(err) });
+    }
+  });
+
+  // GET /mcp-status — global MCP server status from any recent session
+  router.get("/mcp-status", (_req, res) => {
+    try {
+      const servers = ctx.sessionManager.getLatestMcpStatus();
+      res.json({ servers });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
     }
   });
 

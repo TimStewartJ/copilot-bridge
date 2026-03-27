@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { fetchMessages, type BlobAttachment, type ChatMessage } from "../api";
+import { fetchMessages, fetchMcpStatus, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
+import McpStatusBar from "./McpStatusBar";
 import { ClipboardList, Loader2 } from "lucide-react";
 
 interface ChatViewProps {
@@ -32,6 +33,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const [loading, setLoading] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
@@ -45,10 +47,23 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     toolProgress,
     isStreaming,
     streamStatus,
+    mcpServers: streamMcpServers,
     sendMessage,
     abortSession,
     reconnect,
   } = useSessionStream(sessionId, handleNewMessages, onMessageSent);
+
+  // Merge MCP status: prefer live stream updates over fetched status
+  const effectiveMcpServers = (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus) ?? [];
+
+  // Fetch MCP status when session changes
+  useEffect(() => {
+    if (!sessionId) {
+      setMcpStatus([]);
+      return;
+    }
+    fetchMcpStatus(sessionId).then(setMcpStatus).catch(() => {});
+  }, [sessionId]);
 
   // Load history when session changes
   const prevSessionRef = useRef<string | null | undefined>(undefined);
@@ -169,6 +184,8 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           </button>
         </div>
       )}
+      {/* MCP server status */}
+      <McpStatusBar servers={effectiveMcpServers} />
       <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-5 space-y-4">
         {loading && (
           <div className="text-accent italic">Loading history...</div>

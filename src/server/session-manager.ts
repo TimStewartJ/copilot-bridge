@@ -570,6 +570,13 @@ export interface SessionManagerDeps {
   copilotHome?: string;
 }
 
+export interface McpServerStatus {
+  name: string;
+  status: "connected" | "failed" | "pending" | "disabled" | "not_configured" | "unknown";
+  error?: string;
+  source?: string;
+}
+
 export class SessionManager {
   private client: CopilotClient | null = null;
   private deps: SessionManagerDeps;
@@ -578,6 +585,7 @@ export class SessionManager {
   private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
   private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
   private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
+  private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
@@ -706,12 +714,64 @@ export class SessionManager {
     return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
   }
 
+  /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
+  private probeMcpStatus(sessionId: string, session: any): void {
+    try {
+      session.rpc?.mcp?.list?.()
+        .then((result: any) => {
+          if (result?.servers) {
+            const servers: McpServerStatus[] = result.servers.map((s: any) => ({
+              name: s.name,
+              status: s.status ?? "unknown",
+              error: s.error,
+              source: s.source,
+            }));
+            this.mcpStatus.set(sessionId, servers);
+            const sid = sessionId.slice(0, 8);
+            console.log(`[sdk] [${sid}] 🔌 MCP probe: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
+          }
+        })
+        .catch(() => { /* best-effort */ });
+    } catch { /* session.rpc may not exist */ }
+  }
+
+  /** Get cached MCP status for a session, or probe live if session is cached */
+  async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
+    const session = this.sessionObjects.get(sessionId);
+    if (session) {
+      try {
+        const result = await session.rpc?.mcp?.list?.();
+        if (result?.servers) {
+          const servers: McpServerStatus[] = result.servers.map((s: any) => ({
+            name: s.name,
+            status: s.status ?? "unknown",
+            error: s.error,
+            source: s.source,
+          }));
+          this.mcpStatus.set(sessionId, servers);
+          return servers;
+        }
+      } catch { /* fall through to cached */ }
+    }
+    return this.mcpStatus.get(sessionId) ?? [];
+  }
+
+  /** Get latest MCP status from any session (for settings page) */
+  getLatestMcpStatus(): McpServerStatus[] {
+    // Return the most recent non-empty status from any session
+    for (const [, status] of this.mcpStatus) {
+      if (status.length > 0) return status;
+    }
+    return [];
+  }
+
   async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const session = await this.client.createSession(this.buildSessionConfig());
 
     this.sessionObjects.set(session.sessionId, session);
+    this.probeMcpStatus(session.sessionId, session);
     console.log(`[sdk] Created session ${session.sessionId}`);
     return { sessionId: session.sessionId };
   }
@@ -799,6 +859,7 @@ export class SessionManager {
     );
 
     this.sessionObjects.set(session.sessionId, session);
+    this.probeMcpStatus(session.sessionId, session);
     console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
     return { sessionId: session.sessionId };
   }
@@ -882,6 +943,7 @@ export class SessionManager {
         ),
       ]);
       this.sessionObjects.set(sessionId, session);
+      this.probeMcpStatus(sessionId, session);
       console.log(`[sdk] [${sid}] Session resumed (${Date.now() - resumeStart}ms)`);
     }
 
@@ -1028,10 +1090,49 @@ export class SessionManager {
           resolveWork();
           break;
         }
+        case "session.mcp_servers_loaded": {
+          const servers: McpServerStatus[] = (data?.servers ?? []).map((s: any) => ({
+            name: s.name,
+            status: s.status ?? "unknown",
+            error: s.error,
+            source: s.source,
+          }));
+          this.mcpStatus.set(sessionId, servers);
+          const failed = servers.filter((s) => s.status === "failed");
+          if (failed.length > 0) {
+            console.warn(`[sdk] [${sid}] ⚠️ MCP failures: ${failed.map((s) => `${s.name} (${s.error ?? "unknown"})`).join(", ")}`);
+          }
+          console.log(`[sdk] [${sid}] 🔌 MCP: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
+          bus.emit({ type: "mcp_status", servers });
+          break;
+        }
+        case "session.mcp_server_status_changed": {
+          const current = this.mcpStatus.get(sessionId) ?? [];
+          const name = data?.serverName;
+          const status = data?.status ?? "unknown";
+          const existing = current.find((s) => s.name === name);
+          if (existing) {
+            existing.status = status;
+            if (data?.error) existing.error = data.error;
+          } else if (name) {
+            current.push({ name, status, error: data?.error, source: data?.source });
+          }
+          this.mcpStatus.set(sessionId, current);
+          console.log(`[sdk] [${sid}] 🔌 MCP ${name}: ${status}${data?.error ? ` — ${data.error}` : ""}`);
+          bus.emit({ type: "mcp_status", servers: current });
+          break;
+        }
         default:
           break;
       }
     });
+
+    // Emit cached MCP status to the bus — the mcp_servers_loaded event fires during
+    // create/resume before our handler is attached, so replay from the stored map
+    const cachedMcp = this.mcpStatus.get(sessionId);
+    if (cachedMcp?.length) {
+      bus.emit({ type: "mcp_status", servers: cachedMcp });
+    }
 
     // Periodic heartbeat log so silence = genuinely hung
     const sendStart = Date.now();

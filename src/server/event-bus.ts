@@ -44,6 +44,7 @@ export class SessionEventBus {
   private intentText = "";
   private finalContent?: string;
   private errorMessage?: string;
+  private mcpServers: unknown[] = [];
 
   constructor(
     private sessionId: string,
@@ -110,6 +111,9 @@ export class SessionEventBus {
         this.activeTools = [];
         this.scheduleCleanup();
         break;
+      case "mcp_status":
+        this.mcpServers = (event.servers as unknown[]) ?? [];
+        break;
     }
 
     // Broadcast to live listeners
@@ -129,6 +133,7 @@ export class SessionEventBus {
       complete: this._complete,
       finalContent: this.finalContent,
       errorMessage: this.errorMessage,
+      mcpServers: [...this.mcpServers],
     };
   }
 

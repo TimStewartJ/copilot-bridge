@@ -495,6 +495,25 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
   return res.json();
 }
 
+// ── MCP Status API ───────────────────────────────────────────────
+
+export interface McpServerStatus {
+  name: string;
+  status: "connected" | "failed" | "pending" | "disabled" | "not_configured" | "unknown";
+  error?: string;
+  source?: string;
+}
+
+export async function fetchMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
+  const result = await apiFetch<{ servers: McpServerStatus[] }>(`/api/sessions/${sessionId}/mcp-status`);
+  return result.servers;
+}
+
+export async function fetchGlobalMcpStatus(): Promise<McpServerStatus[]> {
+  const result = await apiFetch<{ servers: McpServerStatus[] }>("/api/mcp-status");
+  return result.servers;
+}
+
 // ── Schedule API ──────────────────────────────────────────────────
 
 export interface Schedule {
