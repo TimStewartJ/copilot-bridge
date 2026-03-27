@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { BlobAttachment, ChatMessage, ToolCall } from "./api";
+import type { BlobAttachment, ChatMessage, McpServerStatus, ToolCall } from "./api";
 import { API_BASE } from "./api";
 
 export interface PendingTool {
@@ -21,6 +21,8 @@ export interface StreamState {
   streamStatus: StreamStatus;
   /** Derived from streamStatus for backward compat */
   isStreaming: boolean;
+  /** MCP server connection status from SDK events */
+  mcpServers: McpServerStatus[];
 }
 
 export function useSessionStream(
@@ -33,6 +35,7 @@ export function useSessionStream(
     activeTools: [],
     intentText: "",
     toolProgress: "",
+    mcpServers: [],
     ...partial,
     streamStatus: status,
     isStreaming: status !== "idle",
@@ -118,14 +121,16 @@ export function useSessionStream(
                   // Determine status from snapshot content
                   const snapshotStatus: StreamStatus =
                     accumulatedContent || tools.length > 0 ? "streaming" : "thinking";
-                  setStreamState({
+                  setStreamState((prev) => ({
+                    ...prev,
                     streamingContent: accumulatedContent,
                     activeTools: tools,
                     intentText: event.intentText ?? "",
                     toolProgress: "",
+                    mcpServers: event.mcpServers ?? prev.mcpServers,
                     streamStatus: snapshotStatus,
                     isStreaming: true,
-                  });
+                  }));
                   break;
                 }
                 case "thinking":
@@ -229,7 +234,7 @@ export function useSessionStream(
                     content: event.content ?? "",
                     toolCalls: drainTools(),
                   }]);
-                  setStreamState(mkState("idle"));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   onTitleChangedRef.current();
                   // Delayed refreshes to pick up LLM-generated session title
                   setTimeout(() => onTitleChangedRef.current(), 5_000);
@@ -245,13 +250,16 @@ export function useSessionStream(
                       toolCalls: drainTools(),
                     }]);
                   }
-                  setStreamState(mkState("idle"));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";
                   break;
                 }
                 case "error":
                   onMessagesUpdatedRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
-                  setStreamState(mkState("idle"));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  break;
+                case "mcp_status":
+                  setStreamState((s) => ({ ...s, mcpServers: event.servers ?? [] }));
                   break;
                 case "idle":
                   setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
