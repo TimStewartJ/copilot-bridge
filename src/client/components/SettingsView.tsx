@@ -261,6 +261,28 @@ export default function SettingsView() {
           </div>
         </section>
       </div>
+
+      {/* Sticky unsaved-changes bar */}
+      {hasChanges && (
+        <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-3 border-t border-accent/30 bg-accent/10 backdrop-blur">
+          <span className="text-xs text-accent font-medium">You have unsaved changes</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDiscard}
+              className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
+            >
+              Discard
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-4 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -574,7 +596,7 @@ function ProviderCard({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           <button
             onClick={onEdit}
             className="p-1.5 text-text-muted hover:text-accent transition-colors"
@@ -859,7 +881,7 @@ function ServerCard({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           <button
             onClick={onEdit}
             className="p-1.5 text-text-muted hover:text-accent transition-colors"
