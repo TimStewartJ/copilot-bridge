@@ -43,6 +43,7 @@ import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import PullToRefresh from "./components/PullToRefresh";
+import { MobileBottomNav } from "./components/MobileBottomNav";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { fetchSettings } from "./api";
@@ -329,6 +330,30 @@ export default function App() {
   };
 
   const isDocsActive = location.pathname.startsWith("/docs");
+
+  // ── Mobile bottom nav state ──────────────────────────────────
+  const mobileActiveTab = isDocsActive
+    ? "docs" as const
+    : location.pathname === "/settings"
+      ? "settings" as const
+      : quickChatsMode
+        ? "chats" as const
+        : "tasks" as const;
+
+  const mobileUnreadCount = useMemo(() => {
+    return globalSessions.filter(
+      (s) => !s.archived && isUnread(s.sessionId, s.modifiedTime),
+    ).length;
+  }, [globalSessions, isUnread]);
+
+  const handleMobileTab = useCallback((tab: "tasks" | "chats" | "docs" | "settings") => {
+    switch (tab) {
+      case "tasks": handleGoHome(); break;
+      case "chats": handleSelectQuickChats(); break;
+      case "docs": handleOpenDocs(); break;
+      case "settings": handleOpenSettings(); break;
+    }
+  }, [handleGoHome, handleSelectQuickChats, handleOpenDocs, handleOpenSettings]);
 
   const handleSelectSession = (sessionId: string) => {
     if (activeTaskId) {
@@ -728,7 +753,10 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-dvh bg-bg-primary text-text-primary">
+    <div
+      className="flex h-dvh bg-bg-primary text-text-primary"
+      style={{ paddingTop: "env(safe-area-inset-top)" }}
+    >
       {/* ── Task Rail (desktop only) ──────────────────────── */}
       <TaskRail
         tasks={tasks}
@@ -778,10 +806,6 @@ export default function App() {
                   activeTaskId={activeTaskId}
                   onSelectTask={handleSelectTask}
                   onNewTask={handleNewTask}
-                  onSelectQuickChats={handleSelectQuickChats}
-                  onGoHome={handleGoHome}
-                  onOpenSettings={handleOpenSettings}
-                  onOpenDocs={handleOpenDocs}
                   sessions={sessions}
                   isUnread={isUnread}
                   markRead={markRead}
@@ -955,6 +979,15 @@ export default function App() {
           </Routes>
         </main>
       </div>
+
+      {/* ── Mobile bottom navigation ──────────────────────── */}
+      {isMobile && (isMobileRoute.taskList || isMobileRoute.settings || isMobileRoute.docs) && (
+        <MobileBottomNav
+          activeTab={mobileActiveTab}
+          onSelectTab={handleMobileTab}
+          unreadCount={mobileUnreadCount}
+        />
+      )}
     </div>
   );
 }
@@ -967,10 +1000,6 @@ function MobileTaskListView({
   activeTaskId,
   onSelectTask,
   onNewTask,
-  onSelectQuickChats,
-  onGoHome,
-  onOpenSettings,
-  onOpenDocs,
   sessions,
   isUnread,
   markRead,
@@ -1006,10 +1035,6 @@ function MobileTaskListView({
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
   onNewTask: () => void;
-  onSelectQuickChats: () => void;
-  onGoHome: () => void;
-  onOpenSettings: () => void;
-  onOpenDocs?: () => void;
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;
@@ -1092,37 +1117,7 @@ function MobileTaskListView({
               {selectMode ? "Done" : "Select"}
             </button>
           )}
-          <button
-            onClick={onOpenSettings}
-            className="text-text-muted hover:text-text-secondary transition-colors text-xs"
-          >
-            Settings
-          </button>
         </div>
-      </div>
-
-      {/* Tab toggle: Tasks | Quick Chats | Docs */}
-      <div className="flex border-b border-border">
-        <button
-          onClick={() => { if (quickChatsMode) onGoHome(); }}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors ${!quickChatsMode ? "text-accent border-b-2 border-accent" : "text-text-muted"}`}
-        >
-          Tasks
-        </button>
-        <button
-          onClick={onSelectQuickChats}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors ${quickChatsMode ? "text-accent border-b-2 border-accent" : "text-text-muted"}`}
-        >
-          Quick Chats
-        </button>
-        {onOpenDocs && (
-          <button
-            onClick={onOpenDocs}
-            className="flex-1 py-2.5 text-xs font-medium transition-colors text-text-muted"
-          >
-            Docs
-          </button>
-        )}
       </div>
 
       {/* Content — pull-to-refresh wraps both tabs */}
@@ -1150,7 +1145,7 @@ function MobileTaskListView({
             selectedIds={selectedIds}
             onToggleSelect={toggleSelect}
             onBulkAction={handleMobileBulkAction}
-            className="min-w-0 overflow-x-hidden p-2 space-y-1"
+            className="min-w-0 overflow-x-hidden p-2 pb-20 space-y-1"
           />
         ) : (
           <TaskList
@@ -1171,7 +1166,7 @@ function MobileTaskListView({
             onUpdateGroup={onUpdateGroup}
             onDeleteGroup={onDeleteGroup}
             onReorderGroups={onReorderGroups}
-            className="p-2 space-y-2"
+            className="p-2 pb-20 space-y-2"
           />
         )}
       </PullToRefresh>
