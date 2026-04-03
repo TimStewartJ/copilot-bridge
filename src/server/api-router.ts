@@ -821,6 +821,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         })
         .filter((s: any) => !s.archived);
 
+      const sessionById = new Map(enrichedSessions.map((s: any) => [s.sessionId, s]));
+
       // Helper: is session unread?
       const isUnread = (sessionId: string, modifiedTime?: string): boolean => {
         if (!modifiedTime) return false;
@@ -897,13 +899,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
         // Unread check — busy sessions excluded (busy is a separate signal)
         const hasUnread = task.sessionIds.some((sid) => {
-          const session = enrichedSessions.find((s: any) => s.sessionId === sid);
+          const session = sessionById.get(sid);
           return session && !session.busy && isUnread(sid, session.modifiedTime);
         });
 
         // Last activity across task sessions
         const sessionTimes = task.sessionIds
-          .map((sid) => enrichedSessions.find((s: any) => s.sessionId === sid)?.modifiedTime)
+          .map((sid) => sessionById.get(sid)?.modifiedTime)
           .filter(Boolean) as string[];
         const lastActivity = sessionTimes.length > 0
           ? sessionTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
@@ -911,7 +913,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
         // Has busy session?
         const hasBusySession = task.sessionIds.some((sid) =>
-          enrichedSessions.find((s: any) => s.sessionId === sid)?.busy,
+          sessionById.get(sid)?.busy,
         );
 
         // Todo summary
