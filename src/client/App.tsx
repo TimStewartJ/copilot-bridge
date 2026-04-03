@@ -48,18 +48,19 @@ import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { fetchSettings } from "./api";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc } from "./last-viewed";
+import { useAppBack } from "./hooks/useAppBack";
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const { goBack } = useAppBack();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskNotFound, setTaskNotFound] = useState(false);
-  const [quickChatsMode, setQuickChatsMode] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
   const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
   const [restartWaiting, setRestartWaiting] = useState(0);
@@ -79,12 +80,13 @@ export default function App() {
   // Guard: skip SSE-driven loadTasks() while a task mutation is in-flight
   const taskMutationInFlight = useRef(0);
 
-  // Derive active IDs from URL
+  // Derive active IDs and mode from URL
   const activeSessionId =
     location.pathname.match(/^\/tasks\/[^/]+\/sessions\/(.+)/)?.[1] ??
     location.pathname.match(/^\/sessions\/(.+)/)?.[1] ??
     null;
   const activeTaskId = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
+  const quickChatsMode = location.pathname === "/chats";
 
   // Sync selectedTask when activeTaskId changes
   useEffect(() => {
@@ -100,7 +102,6 @@ export default function App() {
           setTaskNotFound(true);
         });
       }
-      setQuickChatsMode(false);
     } else {
       setTaskNotFound(false);
     }
@@ -284,7 +285,6 @@ export default function App() {
   // ── Navigation handlers ───────────────────────────────────────
 
   const handleSelectTask = (id: string, opts?: { todoId?: string }) => {
-    setQuickChatsMode(false);
     const todoParam = opts?.todoId ? `?todo=${opts.todoId}` : "";
     if (!isMobile) {
       const task = tasks.find((t) => t.id === id);
@@ -303,13 +303,11 @@ export default function App() {
 
   const handleSelectQuickChats = () => {
     setSelectedTask(null);
-    setQuickChatsMode(true);
-    navigate("/");
+    navigate("/chats");
   };
 
   const handleGoHome = () => {
     setSelectedTask(null);
-    setQuickChatsMode(false);
     navigate("/");
   };
 
@@ -664,6 +662,10 @@ export default function App() {
   const handleLinkToTask = async (sessionId: string, taskId: string) => {
     await linkResource(taskId, { type: "session", sessionId });
     await loadTasks();
+    // Update URL to reflect the new task context
+    if (activeSessionId === sessionId && !activeTaskId) {
+      navigate(`/tasks/${taskId}/sessions/${sessionId}`, { replace: true });
+    }
   };
 
   // ── Bulk actions for quick chats ──────────────────────────────
@@ -681,9 +683,24 @@ export default function App() {
   const handleBulkAction = useCallback(async (action: import("./api").BatchAction, sessionIds: string[]) => {
     if (sessionIds.length === 0) return;
 
-    // If active session is in the set and we're archiving/deleting, navigate away
+    // If active session is in the set and we're archiving/deleting, navigate to best fallback
     if ((action === "archive" || action === "delete") && activeSessionId && sessionIds.includes(activeSessionId)) {
-      navigate("/");
+      const bulkSet = new Set(sessionIds);
+      const nextId = (() => {
+        // Find the next sibling session not in the bulk set
+        const pool = activeTaskId
+          ? sessions.filter((s) => !s.archived && selectedTask?.sessionIds.includes(s.sessionId))
+          : globalSessions.filter((s) => !s.archived);
+        const remaining = pool.filter((s) => !bulkSet.has(s.sessionId));
+        return remaining.length > 0 ? remaining[remaining.length - 1].sessionId : null;
+      })();
+      if (nextId) {
+        navigate(activeTaskId ? `/tasks/${activeTaskId}/sessions/${nextId}` : `/sessions/${nextId}`);
+      } else if (activeTaskId) {
+        navigate(`/tasks/${activeTaskId}`);
+      } else {
+        navigate("/");
+      }
     }
 
     if (action === "markRead") {
@@ -735,7 +752,7 @@ export default function App() {
         return next;
       });
     }
-  }, [activeSessionId, navigate, markRead, clearDraft, loadSessions, loadTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, loadSessions, loadTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
@@ -744,7 +761,7 @@ export default function App() {
   const isTaskDashboard = !!activeTaskId && !activeSessionId;
 
   const isMobileRoute = {
-    taskList: location.pathname === "/" && !activeTaskId && !activeSessionId,
+    taskList: (location.pathname === "/" || location.pathname === "/chats") && !activeTaskId && !activeSessionId,
     taskDashboard: isTaskDashboard,
     taskPanel: !!activeTaskId && !!activeSessionId,
     chat: !!activeSessionId,
@@ -894,13 +911,7 @@ export default function App() {
         {/* Mobile back bar */}
         <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
           <button
-            onClick={() => {
-              if (window.history.length > 1) {
-                navigate(-1);
-              } else {
-                navigate("/");
-              }
-            }}
+            onClick={goBack}
             className="text-text-muted hover:text-text-primary transition-colors text-sm"
             aria-label="Back"
           >
@@ -919,6 +930,14 @@ export default function App() {
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
                 />
+              }
+            />
+            <Route
+              path="chats"
+              element={
+                <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
+                  Select a chat or start a new one
+                </div>
               }
             />
             <Route
