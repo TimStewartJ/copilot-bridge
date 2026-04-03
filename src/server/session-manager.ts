@@ -1259,7 +1259,7 @@ export class SessionManager {
     }
   }
 
-  async getSessionMessages(sessionId: string): Promise<Array<{ role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>> {
+  async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: Array<{ id: string; role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>; total: number; hasMore: boolean }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const sid = sessionId.slice(0, 8);
@@ -1302,7 +1302,8 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
     }
 
-    const messages: Array<{ role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> }> = [];
+    const messages: Array<{ id: string; role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> }> = [];
+    let msgIndex = 0;
 
     // Index tool events by toolCallId for fast lookup
     const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string; timestamp?: string }>();
@@ -1336,6 +1337,7 @@ export class SessionManager {
             ?.filter((a: any) => a.type === "blob" && a.mimeType?.startsWith("image/"))
             ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
           messages.push({
+            id: `msg-${msgIndex++}`,
             role: "user",
             content,
             timestamp: data.timestamp ?? (event as any).timestamp,
@@ -1412,6 +1414,7 @@ export class SessionManager {
         // Include message if it has content or tool calls
         if (content.trim() || toolCalls) {
           messages.push({
+            id: `msg-${msgIndex++}`,
             role: "assistant",
             content,
             timestamp: data.timestamp ?? (event as any).timestamp,
@@ -1422,7 +1425,18 @@ export class SessionManager {
     }
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
-    return messages;
+
+    const total = messages.length;
+
+    // Apply pagination: return a window of messages from the end
+    if (opts?.limit != null && opts.limit > 0) {
+      const end = opts.before != null ? opts.before : total;
+      const start = Math.max(0, end - opts.limit);
+      const sliced = messages.slice(start, end);
+      return { messages: sliced, total, hasMore: start > 0 };
+    }
+
+    return { messages, total, hasMore: false };
   }
 
   // Generate a concise session title via a lightweight LLM call

@@ -8,6 +8,9 @@ import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import { ClipboardList, Loader2 } from "lucide-react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+
+const PAGE_SIZE = 50;
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -36,10 +39,19 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const atBottomRef = useRef(true);
+  const firstItemIndex = useRef(0);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
-    setMessages((prev) => [...prev, ...newMsgs]);
+    // Assign client-side IDs to streamed messages that don't have server IDs
+    const withIds = newMsgs.map((m, i) => ({
+      ...m,
+      id: m.id ?? `stream-${Date.now()}-${i}`,
+    }));
+    setMessages((prev) => [...prev, ...withIds]);
   }, []);
 
   const {
@@ -79,6 +91,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       // (but not on initial mount when prevSession is undefined)
       if (prevSession !== undefined || !onCreateAndSend) setMessages([]);
       setCreating(false);
+      setHasMore(false);
       return;
     }
 
@@ -91,9 +104,12 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     const loadAndReconnect = () => {
       setLoading(true);
-      fetchMessages(sessionId)
-        .then(({ messages: msgs, busy }) => {
+      fetchMessages(sessionId, { limit: PAGE_SIZE })
+        .then(({ messages: msgs, busy, total, hasMore: more }) => {
           setMessages(msgs);
+          setHasMore(more);
+          // firstItemIndex tracks the virtual index offset for prepending
+          firstItemIndex.current = total - msgs.length;
           if (busy) reconnect(sessionId);
         })
         .catch((err) =>
@@ -105,6 +121,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     };
 
     setMessages([]);
+    setHasMore(false);
     loadAndReconnect();
 
     // Close plan sheet when switching sessions (close is a stable callback)
@@ -119,10 +136,20 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [sessionId, reconnect]);
 
-  // Auto-scroll
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isStreaming, streamingContent, activeTools]);
+  // Load older messages when scrolling to top
+  const loadOlderMessages = useCallback(() => {
+    if (!sessionId || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const beforeIndex = firstItemIndex.current;
+    fetchMessages(sessionId, { limit: PAGE_SIZE, before: beforeIndex })
+      .then(({ messages: older, hasMore: more }) => {
+        setMessages((prev) => [...older, ...prev]);
+        firstItemIndex.current = beforeIndex - older.length;
+        setHasMore(more);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  }, [sessionId, loadingMore, hasMore]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (isStreaming || creating) return;
@@ -130,13 +157,13 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
       setCreating(true);
-      setMessages([{ role: "user", content: prompt, ...(attachments?.length ? { attachments } : {}) }]);
+      setMessages([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }]);
       try {
         await onCreateAndSend(prompt, attachments);
       } catch (err: any) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: `⚠️ Error: ${err.message}` },
+          { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `draft-err-0` },
         ]);
         setCreating(false);
       }
@@ -145,21 +172,85 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     if (!sessionId) return;
     onDraftClear?.();
-    setMessages((prev) => [...prev, { role: "user", content: prompt, ...(attachments?.length ? { attachments } : {}) }]);
+    setMessages((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
     try {
       await sendMessage(prompt, attachments);
     } catch (err: any) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `⚠️ Error: ${err.message}` },
+        { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` },
       ]);
     }
   }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend]);
 
-  const renderedMessages = useMemo(
-    () => messages.map((msg, i) => <MessageBubble key={`${msg.role}-${i}`} message={msg} />),
-    [messages],
-  );
+  // Build the footer content (streaming bubble + active tools + status text)
+  const footerContent = useMemo(() => {
+    const parts: React.ReactNode[] = [];
+
+    if (streamingContent) {
+      parts.push(
+        <div key="streaming" className="px-3 md:px-5">
+          <MessageBubble message={{ role: "assistant", content: streamingContent }} />
+        </div>,
+      );
+    }
+
+    if (activeTools.length > 0) {
+      parts.push(
+        <div key="tools" className="text-xs text-accent/70 px-7 md:px-9 py-1 space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Loader2 size={12} className="animate-spin" />
+            {activeTools
+              .filter((t) => !t.parentToolCallId)
+              .map((t) => {
+                const isAgent = t.isSubAgent || t.name.startsWith("🤖");
+                const childCount = t.isSubAgent
+                  ? activeTools.filter((c) => c.parentToolCallId === t.toolCallId).length
+                  : 0;
+                return (
+                  <span
+                    key={t.toolCallId || t.name}
+                    className={`px-2 py-0.5 rounded ${isAgent ? "bg-agent-muted text-agent" : "bg-accent/10"}`}
+                  >
+                    {t.name}
+                    {childCount > 0 && (
+                      <span className="text-agent/50 ml-1">({childCount})</span>
+                    )}
+                    {!isAgent && t.args && Object.keys(t.args).length > 0 && (
+                      <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>
+                    )}
+                  </span>
+                );
+              })}
+          </div>
+          {toolProgress && (
+            <div className="text-accent/50 pl-6 truncate">{toolProgress}</div>
+          )}
+        </div>,
+      );
+    }
+
+    if (isStreaming && !streamingContent && activeTools.length === 0) {
+      parts.push(
+        <div key="thinking" className="px-3 md:px-5 text-accent italic animate-pulse">
+          {streamStatus === "sending"
+            ? "Sending..."
+            : intentText
+              ? `${intentText}...`
+              : "Thinking..."}
+        </div>,
+      );
+    }
+
+    if (creating && !isStreaming) {
+      parts.push(
+        <div key="creating" className="px-3 md:px-5 text-accent italic animate-pulse">Creating session...</div>,
+      );
+    }
+
+    if (parts.length === 0) return null;
+    return <div className="space-y-4 pb-4">{parts}</div>;
+  }, [streamingContent, activeTools, toolProgress, isStreaming, streamStatus, intentText, creating]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
 
@@ -190,65 +281,46 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       )}
       {/* MCP server status */}
       <McpStatusBar servers={effectiveMcpServers} />
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-5 space-y-4">
-        {loading && (
-          <div className="text-accent italic">Loading history...</div>
-        )}
-        {!loading && messages.length === 0 && !isStreaming && !creating && (
-          <div className="flex items-center justify-center h-full text-text-muted text-lg">
-            Send a message to get started
-          </div>
-        )}
-        {renderedMessages}
-        {streamingContent && (
-          <MessageBubble message={{ role: "assistant", content: streamingContent }} />
-        )}
-        {activeTools.length > 0 && (
-          <div className="text-xs text-accent/70 px-4 py-1 space-y-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Loader2 size={12} className="animate-spin" />
-              {activeTools
-                .filter((t) => !t.parentToolCallId)
-                .map((t) => {
-                  const isAgent = t.isSubAgent || t.name.startsWith("🤖");
-                  const childCount = t.isSubAgent
-                    ? activeTools.filter((c) => c.parentToolCallId === t.toolCallId).length
-                    : 0;
-                  return (
-                    <span
-                      key={t.toolCallId || t.name}
-                      className={`px-2 py-0.5 rounded ${isAgent ? "bg-agent-muted text-agent" : "bg-accent/10"}`}
-                    >
-                      {t.name}
-                      {childCount > 0 && (
-                        <span className="text-agent/50 ml-1">({childCount})</span>
-                      )}
-                      {!isAgent && t.args && Object.keys(t.args).length > 0 && (
-                        <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>
-                      )}
-                    </span>
-                  );
-                })}
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center text-accent italic">
+          Loading history...
+        </div>
+      ) : messages.length === 0 && !isStreaming && !creating ? (
+        <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
+          Send a message to get started
+        </div>
+      ) : (
+        <Virtuoso
+          ref={virtuosoRef}
+          className="flex-1 overflow-x-hidden"
+          data={messages}
+          firstItemIndex={firstItemIndex.current}
+          initialTopMostItemIndex={messages.length - 1}
+          followOutput={(isAtBottom) => isAtBottom ? "smooth" : false}
+          atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom; }}
+          startReached={loadOlderMessages}
+          increaseViewportBy={{ top: 200, bottom: 200 }}
+          itemContent={(_index, msg) => (
+            <div className="px-3 md:px-5 pt-4">
+              <MessageBubble key={msg.id ?? `${msg.role}-${_index}`} message={msg} />
             </div>
-            {toolProgress && (
-              <div className="text-accent/50 pl-6 truncate">{toolProgress}</div>
-            )}
-          </div>
-        )}
-        {isStreaming && !streamingContent && activeTools.length === 0 && (
-          <div className="text-accent italic animate-pulse">
-            {streamStatus === "sending"
-              ? "Sending..."
-              : intentText
-                ? `${intentText}...`
-                : "Thinking..."}
-          </div>
-        )}
-        {creating && !isStreaming && (
-          <div className="text-accent italic animate-pulse">Creating session...</div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          )}
+          components={{
+            Header: () =>
+              loadingMore ? (
+                <div className="text-center py-3 text-accent/60 text-xs">
+                  <Loader2 size={14} className="inline animate-spin mr-1" />
+                  Loading older messages...
+                </div>
+              ) : hasMore ? (
+                <div className="text-center py-2 text-text-muted text-xs">
+                  Scroll up for more
+                </div>
+              ) : null,
+            Footer: () => footerContent ? <>{footerContent}</> : <div className="h-4" />,
+          }}
+        />
+      )}
       <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
