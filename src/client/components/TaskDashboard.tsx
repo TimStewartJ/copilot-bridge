@@ -61,6 +61,9 @@ interface TaskDashboardProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   hasDraft?: (sessionId: string) => boolean;
+  // Lazy-load archived sessions
+  onRequestArchived?: () => void;
+  archivedLoaded?: boolean;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -85,6 +88,8 @@ export default function TaskDashboard({
   onUnlinkFromTask,
   onMarkUnread,
   hasDraft,
+  onRequestArchived,
+  archivedLoaded,
 }: TaskDashboardProps) {
   // ── Shared hooks ─────────────────────────────────────────────
   const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
@@ -238,6 +243,8 @@ export default function TaskDashboard({
                   onDuplicateSession={onDuplicateSession}
                   onMarkUnread={onMarkUnread}
                   hasDraft={hasDraft}
+                  onRequestArchived={onRequestArchived}
+                  archivedLoaded={archivedLoaded}
                   className=""
                 />
               )}

@@ -77,6 +77,9 @@ export default function App() {
   // Track optimistic sessions that the server doesn't know about yet
   const optimisticIdsRef = useRef(new Set<string>());
 
+  // Track whether archived sessions have been fetched
+  const archivedLoadedRef = useRef(false);
+
   // Guard: skip SSE-driven loadTasks() while a task mutation is in-flight
   const taskMutationInFlight = useRef(0);
 
@@ -120,7 +123,8 @@ export default function App() {
 
   const loadSessions = async () => {
     try {
-      const serverSessions = await fetchSessions(true);
+      const includeArchived = archivedLoadedRef.current;
+      const serverSessions = await fetchSessions(includeArchived);
       setSessions((prev) => {
         const serverIds = new Set(serverSessions.map((s) => s.sessionId));
         for (const id of serverIds) optimisticIdsRef.current.delete(id);
@@ -133,6 +137,12 @@ export default function App() {
       console.error("Failed to load sessions:", err);
     }
   };
+
+  const requestArchivedSessions = useCallback(async () => {
+    if (archivedLoadedRef.current) return;
+    archivedLoadedRef.current = true;
+    await loadSessions();
+  }, []);
 
   const loadTasks = async () => {
     try {
@@ -853,6 +863,8 @@ export default function App() {
                   hasDraft={hasDraft}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
+                  onRequestArchived={requestArchivedSessions}
+                  archivedLoaded={archivedLoadedRef.current}
                 />
               </div>
             )}
@@ -889,6 +901,8 @@ export default function App() {
                   onViewDashboard={(taskId) => navigate(`/tasks/${taskId}`)}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
+                  onRequestArchived={requestArchivedSessions}
+                  archivedLoaded={archivedLoadedRef.current}
                   allTags={allTags}
                   onSetTaskTags={handleSetTaskTags}
                   onTagCreated={loadTags}
@@ -963,6 +977,8 @@ export default function App() {
                     onArchiveSession={handleArchiveSession}
                     onMarkUnread={markUnread}
                     hasDraft={hasDraft}
+                    onRequestArchived={requestArchivedSessions}
+                    archivedLoaded={archivedLoadedRef.current}
                   />
                 ) : taskNotFound ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
@@ -1049,6 +1065,8 @@ function MobileTaskListView({
   hasDraft,
   onMarkAllRead,
   onBulkAction,
+  onRequestArchived,
+  archivedLoaded,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -1084,6 +1102,8 @@ function MobileTaskListView({
   hasDraft?: (sessionId: string) => boolean;
   onMarkAllRead?: () => void;
   onBulkAction?: (action: import("./api").BatchAction, sessionIds: string[]) => void;
+  onRequestArchived?: () => void;
+  archivedLoaded?: boolean;
 }){
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -1164,6 +1184,8 @@ function MobileTaskListView({
             selectedIds={selectedIds}
             onToggleSelect={toggleSelect}
             onBulkAction={handleMobileBulkAction}
+            onRequestArchived={onRequestArchived}
+            archivedLoaded={archivedLoaded}
             className="min-w-0 overflow-x-hidden p-2 pb-20 space-y-1"
           />
         ) : (

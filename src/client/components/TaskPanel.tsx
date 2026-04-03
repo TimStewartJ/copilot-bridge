@@ -96,6 +96,9 @@ interface TaskPanelProps {
   // Bulk actions
   onMarkAllRead?: () => void;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
+  // Lazy-load archived sessions
+  onRequestArchived?: () => void;
+  archivedLoaded?: boolean;
   // Tags
   allTags?: Tag[];
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
@@ -134,6 +137,8 @@ export default function TaskPanel({
   onViewDashboard,
   onMarkAllRead,
   onBulkAction,
+  onRequestArchived,
+  archivedLoaded,
   allTags = [],
   onSetTaskTags,
   onTagCreated,
@@ -275,6 +280,8 @@ export default function TaskPanel({
             selectedIds={qcSelectedIds}
             onToggleSelect={qcToggleSelect}
             onBulkAction={qcHandleBulkAction}
+            onRequestArchived={onRequestArchived}
+            archivedLoaded={archivedLoaded}
           />
         </PullToRefresh>
         </div>
@@ -431,6 +438,8 @@ export default function TaskPanel({
             onDuplicateSession={onDuplicateSession}
             onMarkUnread={onMarkUnread}
             hasDraft={hasDraft}
+            onRequestArchived={onRequestArchived}
+            archivedLoaded={archivedLoaded}
           />
         </div>
 
