@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { EnrichedWorkItem, EnrichedPR } from "../api";
 import { fetchEnrichedTask } from "../api";
 
@@ -7,7 +7,7 @@ export function useTaskEnrichment(taskId: string | undefined, workItemCount: num
   const [enrichedWIs, setEnrichedWIs] = useState<EnrichedWorkItem[]>([]);
   const [enrichedPRs, setEnrichedPRs] = useState<EnrichedPR[]>([]);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     if (taskId && (workItemCount > 0 || prCount > 0)) {
       fetchEnrichedTask(taskId)
         .then((data) => {
@@ -21,5 +21,7 @@ export function useTaskEnrichment(taskId: string | undefined, workItemCount: num
     }
   }, [taskId, workItemCount, prCount]);
 
-  return { enrichedWIs, enrichedPRs };
+  useEffect(() => { reload(); }, [reload]);
+
+  return { enrichedWIs, enrichedPRs, reload };
 }

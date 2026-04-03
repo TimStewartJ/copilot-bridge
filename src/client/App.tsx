@@ -914,6 +914,7 @@ export default function App() {
                     allTags={allTags}
                     onSetTaskTags={handleSetTaskTags}
                     onTagCreated={loadTags}
+                    onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
                   />
                 ) : taskNotFound ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
