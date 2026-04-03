@@ -1,5 +1,5 @@
 diff --git a/node_modules/@github/copilot/definitions/code-review.agent.yaml b/node_modules/@github/copilot/definitions/code-review.agent.yaml
-index 23924d0..8bbcd76 100644
+index d66438c..a236d5d 100644
 --- a/node_modules/@github/copilot/definitions/code-review.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/code-review.agent.yaml
 @@ -4,7 +4,7 @@ description: >
@@ -25,11 +25,11 @@ index 48a3d2f..90102a1 100644
    - cli
  tools:
 diff --git a/node_modules/@github/copilot/definitions/explore.agent.yaml b/node_modules/@github/copilot/definitions/explore.agent.yaml
-index 197f059..9adad52 100644
+index f94f548..026f7e6 100644
 --- a/node_modules/@github/copilot/definitions/explore.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/explore.agent.yaml
 @@ -4,7 +4,7 @@ description: >
-   Fast codebase exploration and answering questions. Uses code intelligence, grep, glob, view, bash/powershell
+   Fast codebase exploration and answering questions. Uses code intelligence, {{grepToolName}}, {{globToolName}}, view, {{shellToolName}}
    tools in a separate context window to search files and understand code structure.
    Safe to call in parallel.
 -model: claude-haiku-4.5
@@ -51,7 +51,7 @@ index 55001c5..32715c8 100644
    # GitHub MCP tools (using short 'github/' prefix which maps to 'github-mcp-server/')
    - github/get_me # IMPORTANT: Use this first to understand user context and org
 diff --git a/node_modules/@github/copilot/definitions/task.agent.yaml b/node_modules/@github/copilot/definitions/task.agent.yaml
-index 3d842f4..5c60c0d 100644
+index 21d10cb..2465224 100644
 --- a/node_modules/@github/copilot/definitions/task.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/task.agent.yaml
 @@ -4,7 +4,7 @@ description: >
