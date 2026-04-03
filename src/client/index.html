@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" style="background:#09090b">
+<html lang="en" data-theme="dark" style="background:#111113">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
   <title>Copilot Bridge</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="/manifest.json" />
@@ -21,7 +21,7 @@
           ? (matchMedia('(prefers-color-scheme:light)').matches?'light':'dark')
           : p;
         document.documentElement.setAttribute('data-theme',t);
-        document.documentElement.style.background=t==='light'?'#ffffff':'#09090b';
+        document.documentElement.style.background=t==='light'?'#f8f8fa':'#111113';
         const m=document.querySelector('meta[name=theme-color]');
         if(m)m.content=t==='light'?'#ffffff':'#09090b';
       }).catch(()=>{});
