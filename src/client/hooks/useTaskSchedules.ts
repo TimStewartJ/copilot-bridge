@@ -52,6 +52,7 @@ export function useTaskSchedules(taskId: string | undefined, scheduleVersion?: n
     schedules,
     scheduleEditorOpen,
     editingSchedule,
+    reload,
     trigger,
     toggle,
     remove,

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
 import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
@@ -8,6 +8,7 @@ import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
 import EmptyState from "./shared/EmptyState";
+import PullToRefresh from "./PullToRefresh";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -51,6 +52,7 @@ interface TaskDashboardProps {
   allTags?: Tag[];
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   onTagCreated?: (tag: Tag) => void;
+  onRefresh?: () => Promise<void>;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -68,9 +70,10 @@ export default function TaskDashboard({
   allTags = [],
   onSetTaskTags,
   onTagCreated,
+  onRefresh,
 }: TaskDashboardProps) {
   // ── Shared hooks ─────────────────────────────────────────────
-  const { enrichedWIs, enrichedPRs } = useTaskEnrichment(
+  const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
     task.id, task.workItems.length, task.pullRequests.length,
   );
   const sched = useTaskSchedules(task.id, scheduleVersion);
@@ -83,6 +86,15 @@ export default function TaskDashboard({
   useEffect(() => {
     fetchTodos(task.id).then(setTodos).catch(() => setTodos([]));
   }, [task.id]);
+
+  const handleRefresh = useCallback(async () => {
+    await Promise.all([
+      fetchTodos(task.id).then(setTodos).catch(() => setTodos([])),
+      reloadEnriched(),
+      sched.reload(),
+      onRefresh?.(),
+    ]);
+  }, [task.id, reloadEnriched, sched.reload, onRefresh]);
 
   const linkedSessions = sessions.filter((s) =>
     task.sessionIds.includes(s.sessionId) && !s.archived
@@ -101,7 +113,7 @@ export default function TaskDashboard({
   const today = new Date().toISOString().slice(0, 10);
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <PullToRefresh onRefresh={handleRefresh} className="flex-1">
       <div className="max-w-4xl mx-auto px-4 md:px-8 py-6 space-y-6">
         {/* ── Task Header ─────────────────────────────────── */}
         <div>
@@ -587,7 +599,7 @@ export default function TaskDashboard({
           onSaved={sched.onSaved}
         />
       )}
-    </div>
+    </PullToRefresh>
   );
 }
 
