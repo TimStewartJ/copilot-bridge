@@ -43,6 +43,7 @@ export interface BlobAttachment {
 }
 
 export interface ChatMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
@@ -221,9 +222,16 @@ export async function duplicateSession(id: string): Promise<string> {
   return data.sessionId;
 }
 
-export async function fetchMessages(sessionId: string): Promise<{ messages: ChatMessage[]; busy: boolean }> {
-  const data = await apiFetch<{ messages: ChatMessage[]; busy: boolean }>(
-    `/api/sessions/${sessionId}/messages`,
+export async function fetchMessages(
+  sessionId: string,
+  opts?: { limit?: number; before?: number },
+): Promise<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.before != null) params.set("before", String(opts.before));
+  const qs = params.toString();
+  const data = await apiFetch<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean }>(
+    `/api/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`,
   );
   return data;
 }

@@ -157,9 +157,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/sessions/:id/messages", async (req, res) => {
     try {
-      const messages = await ctx.sessionManager.getSessionMessages(req.params.id);
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
+      const { messages, total, hasMore } = await ctx.sessionManager.getSessionMessages(
+        req.params.id,
+        { limit, before },
+      );
       const busy = ctx.sessionManager.isSessionBusy(req.params.id);
-      res.json({ messages, busy });
+      res.json({ messages, busy, total, hasMore });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
