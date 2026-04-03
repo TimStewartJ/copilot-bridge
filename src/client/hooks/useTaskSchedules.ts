@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Schedule } from "../api";
 import { fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule } from "../api";
+import { useOverlayParam } from "./useOverlayParam";
 
 /** Manages schedule CRUD for a single task. */
 export function useTaskSchedules(taskId: string | undefined, scheduleVersion?: number) {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
-  const [scheduleEditorOpen, setScheduleEditorOpen] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const overlay = useOverlayParam("modal");
+  const scheduleEditorOpen = overlay.isOpen && (overlay.value === "schedule" || overlay.value?.startsWith("schedule:"));
 
   const reload = useCallback(() => {
     if (taskId) {
@@ -35,13 +37,13 @@ export function useTaskSchedules(taskId: string | undefined, scheduleVersion?: n
 
   const openEditor = useCallback((schedule?: Schedule) => {
     setEditingSchedule(schedule ?? null);
-    setScheduleEditorOpen(true);
-  }, []);
+    overlay.open(schedule ? `schedule:${schedule.id}` : "schedule");
+  }, [overlay]);
 
   const closeEditor = useCallback(() => {
-    setScheduleEditorOpen(false);
+    overlay.close();
     setEditingSchedule(null);
-  }, []);
+  }, [overlay]);
 
   const onSaved = useCallback(() => {
     closeEditor();

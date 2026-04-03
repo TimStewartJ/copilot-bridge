@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   fetchSettings,
   patchSettings,
@@ -27,9 +26,10 @@ import { TAG_COLOR_BG, TAG_COLOR_TEXT, TAG_COLOR_DOT } from "../tag-colors";
 import { FAVICON_OPTIONS, DEFAULT_FAVICON, type FaviconOption } from "../faviconOptions";
 import { useTheme } from "../useTheme";
 import ThemePicker from "./ThemePicker";
+import { useAppBack } from "../hooks/useAppBack";
 
 export default function SettingsView() {
-  const navigate = useNavigate();
+  const { goBack } = useAppBack();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -141,7 +141,7 @@ export default function SettingsView() {
       <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-secondary">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate("/")}
+            onClick={goBack}
             className="text-text-muted hover:text-accent transition-colors text-sm flex items-center gap-1"
           >
             <ArrowLeft size={14} />

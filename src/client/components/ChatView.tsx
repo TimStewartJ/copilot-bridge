@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { fetchMessages, fetchMcpStatus, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
 import { useSessionStream } from "../useSessionStream";
+import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
@@ -31,7 +32,8 @@ function formatToolArgs(args: Record<string, unknown>): string {
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showPlan, setShowPlan] = useState(false);
+  const planOverlay = useOverlayParam("sheet");
+  const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -105,7 +107,9 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     setMessages([]);
     loadAndReconnect();
 
-    setShowPlan(false);
+    // Close plan sheet when switching sessions (close is a stable callback)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    planOverlay.close();
 
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
@@ -177,7 +181,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
             Plan available
           </span>
           <button
-            onClick={() => setShowPlan(true)}
+            onClick={() => planOverlay.open("plan")}
             className="text-xs text-accent hover:text-accent-hover transition-colors font-medium"
           >
             View
@@ -248,7 +252,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
-        <PlanSheet sessionId={sessionId} onClose={() => setShowPlan(false)} />
+        <PlanSheet sessionId={sessionId} onClose={planOverlay.close} />
       )}
     </div>
   );

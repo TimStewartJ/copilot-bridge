@@ -1,30 +1,31 @@
-import { useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { useOverlayParam } from "./useOverlayParam";
 
-/** Manages notes sheet open/close/edit state, resetting on task change. */
+/** Manages notes sheet open/close/edit state via URL params, resetting on task change. */
 export function useNotesSheet(taskId: string | undefined) {
-  const [notesSheetOpen, setNotesSheetOpen] = useState(false);
-  const [notesStartEdit, setNotesStartEdit] = useState(false);
+  const { isOpen: notesSheetOpen, value, open, close: overlayClose } = useOverlayParam("sheet");
+
+  // The sheet is open when ?sheet=notes or ?sheet=notes-edit
+  const isOpen = notesSheetOpen && (value === "notes" || value === "notes-edit");
+  const notesStartEdit = value === "notes-edit";
 
   // Reset when task changes
   useEffect(() => {
-    setNotesSheetOpen(false);
-    setNotesStartEdit(false);
+    if (isOpen) overlayClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
   const openToView = useCallback(() => {
-    setNotesStartEdit(false);
-    setNotesSheetOpen(true);
-  }, []);
+    open("notes");
+  }, [open]);
 
   const openToEdit = useCallback(() => {
-    setNotesStartEdit(true);
-    setNotesSheetOpen(true);
-  }, []);
+    open("notes-edit");
+  }, [open]);
 
   const close = useCallback(() => {
-    setNotesSheetOpen(false);
-    setNotesStartEdit(false);
-  }, []);
+    overlayClose();
+  }, [overlayClose]);
 
-  return { notesSheetOpen, notesStartEdit, openToView, openToEdit, close };
+  return { notesSheetOpen: isOpen, notesStartEdit, openToView, openToEdit, close };
 }

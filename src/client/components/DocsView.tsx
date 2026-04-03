@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { setLastViewedDoc } from "../last-viewed";
+import { useAppBack } from "../hooks/useAppBack";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -287,6 +288,7 @@ function DbCell({ field, value }: { field: { name: string; type: string; options
 export default function DocsView() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { goBack: appGoBack } = useAppBack();
 
   // Derive selectedPath and isDb from URL
   const urlDocPath = location.pathname.replace(/^\/docs\/?/, "") || null;
@@ -1045,7 +1047,7 @@ export default function DocsView() {
           </button>
         ) : (
           <button
-            onClick={() => navigate("/")}
+            onClick={appGoBack}
             className="text-text-muted hover:text-text-primary transition-colors"
             aria-label="Back to home"
           >
