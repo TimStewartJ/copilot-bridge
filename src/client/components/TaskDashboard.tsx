@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
-import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
+import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo, unlinkResource } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
@@ -9,6 +9,7 @@ import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh from "./PullToRefresh";
+import SessionList from "./SessionList";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -53,6 +54,13 @@ interface TaskDashboardProps {
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   onTagCreated?: (tag: Tag) => void;
   onRefresh?: () => Promise<void>;
+  // Session actions (for context menu)
+  onDeleteSession?: (sessionId: string) => void;
+  onDuplicateSession?: (sessionId: string) => void;
+  onArchiveSession?: (sessionId: string, archived: boolean) => void;
+  onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
+  onMarkUnread?: (sessionId: string) => void;
+  hasDraft?: (sessionId: string) => boolean;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -71,6 +79,12 @@ export default function TaskDashboard({
   onSetTaskTags,
   onTagCreated,
   onRefresh,
+  onDeleteSession,
+  onDuplicateSession,
+  onArchiveSession,
+  onUnlinkFromTask,
+  onMarkUnread,
+  hasDraft,
 }: TaskDashboardProps) {
   // ── Shared hooks ─────────────────────────────────────────────
   const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
@@ -97,7 +111,7 @@ export default function TaskDashboard({
   }, [task.id, reloadEnriched, sched.reload, onRefresh]);
 
   const linkedSessions = sessions.filter((s) =>
-    task.sessionIds.includes(s.sessionId) && !s.archived
+    task.sessionIds.includes(s.sessionId)
   );
   const group = taskGroups.find((g) => g.id === task.groupId);
   const taskOwnTags = task.tags ?? [];
@@ -190,7 +204,7 @@ export default function TaskDashboard({
             <Section
               icon={<MessageSquare size={14} />}
               title="Sessions"
-              count={linkedSessions.length}
+              count={linkedSessions.filter((s) => !s.archived).length}
               action={
                 <button
                   onClick={() => onNewSession(task.id)}
@@ -203,45 +217,29 @@ export default function TaskDashboard({
               {linkedSessions.length === 0 ? (
                 <EmptyState message="No sessions yet" sub="Start a chat to begin working" />
               ) : (
-                <div className="space-y-1">
-                  {linkedSessions
-                    .slice()
-                    .sort((a, b) => {
-                      const aTime = a.modifiedTime ? new Date(a.modifiedTime).getTime() : 0;
-                      const bTime = b.modifiedTime ? new Date(b.modifiedTime).getTime() : 0;
-                      return bTime - aTime;
-                    })
-                    .map((session) => {
-                      const unread = isUnread?.(session.sessionId, session.modifiedTime);
-                      return (
-                        <button
-                          key={session.sessionId}
-                          onClick={() => onSelectSession(session.sessionId)}
-                          className="w-full text-left px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-                        >
-                          <div className="flex items-center gap-2">
-                            {(session.busy || unread) && (
-                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                session.busy ? "bg-info animate-pulse" : "bg-success"
-                              }`} />
-                            )}
-                            <span className={`text-sm truncate ${unread ? "font-semibold" : ""}`}>
-                              {session.summary || "Untitled"}
-                            </span>
-                          </div>
-                          <div className="text-xs text-text-muted mt-0.5 ml-3.5 flex items-center gap-2">
-                            <span>{timeAgo(session.modifiedTime)}</span>
-                            {session.context?.branch && (
-                              <span className="text-text-faint">{session.context.branch}</span>
-                            )}
-                            {session.hasPlan && (
-                              <span className="text-accent text-[10px]">has plan</span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
-                </div>
+                <SessionList
+                  variant="compact"
+                  sessions={linkedSessions}
+                  activeSessionId={null}
+                  onSelectSession={onSelectSession}
+                  onNewSession={() => onNewSession(task.id)}
+                  showEmptyState={false}
+                  isUnread={isUnread}
+                  onArchiveSession={onArchiveSession}
+                  taskContext={task}
+                  onUnlinkFromTask={
+                    onUnlinkFromTask
+                      ?? (async (sessionId, taskId) => {
+                           await unlinkResource(taskId, { type: "session", sessionId });
+                           onTasksChanged?.();
+                         })
+                  }
+                  onDeleteSession={onDeleteSession}
+                  onDuplicateSession={onDuplicateSession}
+                  onMarkUnread={onMarkUnread}
+                  hasDraft={hasDraft}
+                  className=""
+                />
               )}
             </Section>
 

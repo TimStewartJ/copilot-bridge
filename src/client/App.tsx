@@ -915,6 +915,11 @@ export default function App() {
                     onSetTaskTags={handleSetTaskTags}
                     onTagCreated={loadTags}
                     onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+                    onDeleteSession={handleDeleteSession}
+                    onDuplicateSession={handleDuplicateSession}
+                    onArchiveSession={handleArchiveSession}
+                    onMarkUnread={markUnread}
+                    hasDraft={hasDraft}
                   />
                 ) : taskNotFound ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
