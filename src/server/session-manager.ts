@@ -786,6 +786,12 @@ export class SessionManager {
     return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
   }
 
+  async getSessionMetadata(sessionId: string) {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (this.disposableSessionIds.has(sessionId)) return undefined;
+    return this.client.getSessionMetadata(sessionId);
+  }
+
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
   private probeMcpStatus(sessionId: string, session: any): void {
     try {
