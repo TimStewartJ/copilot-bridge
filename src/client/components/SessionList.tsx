@@ -149,6 +149,9 @@ interface SessionListProps {
   selectedIds?: Set<string>;
   onToggleSelect?: (sessionId: string) => void;
   onBulkAction?: (action: BatchAction, sessionIds: string[]) => void;
+  // Lazy-load archived sessions
+  onRequestArchived?: () => void;
+  archivedLoaded?: boolean;
 }
 
 export default function SessionList({
@@ -176,6 +179,8 @@ export default function SessionList({
   selectedIds,
   onToggleSelect,
   onBulkAction,
+  onRequestArchived,
+  archivedLoaded,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
@@ -283,24 +288,32 @@ export default function SessionList({
           isUnread={isUnread}
         />
       )}
-      {showEmptyState && activeSessions.length === 0 && archivedSessions.length === 0 ? (
+      {showEmptyState && activeSessions.length === 0 && archivedSessions.length === 0 && archivedLoaded !== false ? (
         <div className="text-xs text-text-faint px-3 py-1">No sessions yet</div>
       ) : (
         <>
           <div className={s.listGap}>
             {activeSessions.map(renderItem)}
           </div>
-          {archivedSessions.length > 0 && (
+          {(archivedSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
             <>
               <button
-                onClick={() => setShowArchived(!showArchived)}
+                onClick={() => {
+                  const next = !showArchived;
+                  setShowArchived(next);
+                  if (next && onRequestArchived && !archivedLoaded) onRequestArchived();
+                }}
                 className="w-full px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors mt-2 flex items-center gap-1"
               >
-                {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Archived ({archivedSessions.length})
+                {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Archived{archivedLoaded !== false ? ` (${archivedSessions.length})` : ""}
               </button>
               {showArchived && (
                 <div className={s.listGap}>
-                  {archivedSessions.map(renderItem)}
+                  {!archivedLoaded && archivedSessions.length === 0 ? (
+                    <div className="text-xs text-text-faint px-3 py-1">Loading…</div>
+                  ) : (
+                    archivedSessions.map(renderItem)
+                  )}
                 </div>
               )}
             </>
