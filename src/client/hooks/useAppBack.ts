@@ -12,11 +12,14 @@ export function useAppBack() {
   const navigate = useNavigate();
   const stackRef = useRef<string[]>([]);
   const currentRef = useRef<string | null>(null);
+  const isGoingBackRef = useRef(false);
 
   useEffect(() => {
     const path = location.pathname + location.search;
-    // Push previous path onto the stack (skip initial mount and same-path)
-    if (currentRef.current && currentRef.current !== path) {
+    if (isGoingBackRef.current) {
+      // Back-navigation: don't push the departing page onto the stack
+      isGoingBackRef.current = false;
+    } else if (currentRef.current && currentRef.current !== path) {
       stackRef.current.push(currentRef.current);
       // Cap the stack to avoid unbounded growth
       if (stackRef.current.length > 50) {
@@ -27,6 +30,7 @@ export function useAppBack() {
   }, [location.pathname, location.search]);
 
   const goBack = useCallback(() => {
+    isGoingBackRef.current = true;
     const prev = stackRef.current.pop();
     if (prev) {
       navigate(prev);
