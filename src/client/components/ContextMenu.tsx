@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, useLayoutEffect } from "react";
+import { useEffect, useRef, useCallback, useState, useLayoutEffect, type ReactNode } from "react";
 
 export interface ContextMenuPosition {
   x: number;
@@ -82,18 +82,28 @@ export function CtxItem({
   className = "",
   disabled,
 }: {
-  icon?: React.ReactNode;
+  icon?: ReactNode;
   label: string;
   onClick: () => void;
   className?: string;
   disabled?: boolean;
 }) {
+  const [tapped, setTapped] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const handleClick = () => {
+    setTapped(true);
+    timer.current = setTimeout(onClick, 120);
+  };
+
   return (
     <button
-      className={`w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors ${
-        disabled ? "opacity-40 pointer-events-none" : ""
-      } ${className}`}
-      onClick={onClick}
+      className={`w-full px-3 py-1.5 text-left hover:bg-bg-hover active:bg-bg-hover flex items-center gap-2 transition-colors ${
+        tapped ? "bg-bg-hover" : ""
+      } ${disabled ? "opacity-40 pointer-events-none" : ""} ${className}`}
+      onClick={handleClick}
       disabled={disabled}
     >
       {icon}
