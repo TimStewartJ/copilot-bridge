@@ -89,7 +89,12 @@ export default function App() {
     location.pathname.match(/^\/sessions\/(.+)/)?.[1] ??
     null;
   const activeTaskId = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
-  const quickChatsMode = location.pathname === "/chats";
+  const quickChatsRoute = location.pathname === "/chats";
+  // Also treat as quick-chats mode when viewing a session not linked to any task
+  const quickChatsMode = quickChatsRoute || (
+    !!activeSessionId && !activeTaskId &&
+    !tasks.some((t) => t.sessionIds.includes(activeSessionId))
+  );
 
   // Sync selectedTask when activeTaskId changes
   useEffect(() => {
