@@ -44,6 +44,9 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const atBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
+  const loadingMoreRef = useRef(false);
+  // Suppress startReached during initial positioning to prevent cascading loads
+  const initialPositioningRef = useRef(true);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
     // Assign client-side IDs to streamed messages that don't have server IDs
@@ -104,6 +107,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     const loadAndReconnect = () => {
       setLoading(true);
+      initialPositioningRef.current = true;
       fetchMessages(sessionId, { limit: PAGE_SIZE })
         .then(({ messages: msgs, busy, total, hasMore: more }) => {
           setMessages(msgs);
@@ -111,6 +115,12 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           // firstItemIndex tracks the virtual index offset for prepending
           firstItemIndex.current = total - msgs.length;
           if (busy) reconnect(sessionId);
+          // Allow startReached after Virtuoso has settled at the bottom
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              initialPositioningRef.current = false;
+            });
+          });
         })
         .catch((err) =>
           setMessages([
@@ -136,20 +146,26 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [sessionId, reconnect]);
 
-  // Load older messages when scrolling to top
+  // Load older messages when user scrolls to top
   const loadOlderMessages = useCallback(() => {
-    if (!sessionId || loadingMore || !hasMore) return;
+    if (!sessionId || !hasMore || initialPositioningRef.current || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
     const beforeIndex = firstItemIndex.current;
     fetchMessages(sessionId, { limit: PAGE_SIZE, before: beforeIndex })
       .then(({ messages: older, hasMore: more }) => {
-        setMessages((prev) => [...older, ...prev]);
-        firstItemIndex.current = beforeIndex - older.length;
+        if (older.length > 0) {
+          setMessages((prev) => [...older, ...prev]);
+          firstItemIndex.current = beforeIndex - older.length;
+        }
         setHasMore(more);
       })
       .catch(() => {})
-      .finally(() => setLoadingMore(false));
-  }, [sessionId, loadingMore, hasMore]);
+      .finally(() => {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      });
+  }, [sessionId, hasMore]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (isStreaming || creating) return;
@@ -295,10 +311,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           className="flex-1 overflow-x-hidden"
           data={messages}
           firstItemIndex={firstItemIndex.current}
-          initialTopMostItemIndex={messages.length - 1}
+          initialTopMostItemIndex={{ index: "LAST", align: "end" }}
           followOutput={(isAtBottom) => isAtBottom ? "smooth" : false}
           atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom; }}
-          startReached={loadOlderMessages}
+          atTopStateChange={(atTop) => { if (atTop) loadOlderMessages(); }}
+          atTopThreshold={100}
           increaseViewportBy={{ top: 200, bottom: 200 }}
           itemContent={(_index, msg) => (
             <div className="px-3 md:px-5 pt-4">
