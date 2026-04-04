@@ -1016,7 +1016,7 @@ export default function App() {
       </div>
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
-      {isMobile && (isMobileRoute.taskList || isMobileRoute.settings || isMobileRoute.docs) && (
+      {isMobile && (isMobileRoute.taskList || isMobileRoute.taskDashboard || isMobileRoute.settings || isMobileRoute.docs) && (
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
