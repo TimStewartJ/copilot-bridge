@@ -108,6 +108,13 @@ export function useSessionStream(
                     setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
                     break;
                   }
+                  // Recover the user prompt for late-connecting clients (e.g. page refresh)
+                  if (event.pendingPrompt) {
+                    onMessagesUpdatedRef.current([{
+                      role: "user",
+                      content: event.pendingPrompt,
+                    }]);
+                  }
                   accumulatedContent = event.accumulatedContent ?? "";
                   const tools: PendingTool[] = (event.activeTools ?? [])
                     .filter((t: any) => t.name !== "report_intent")

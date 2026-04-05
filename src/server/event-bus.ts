@@ -26,6 +26,8 @@ export interface BusSnapshot {
   complete: boolean;
   finalContent?: string;
   errorMessage?: string;
+  /** The user prompt that initiated this turn (for reconnect recovery) */
+  pendingPrompt?: string;
   [key: string]: unknown;
 }
 
@@ -45,6 +47,8 @@ export class SessionEventBus {
   private finalContent?: string;
   private errorMessage?: string;
   private mcpServers: unknown[] = [];
+  /** The user prompt that initiated this turn (for reconnect recovery) */
+  private pendingPrompt?: string;
 
   constructor(
     private sessionId: string,
@@ -53,6 +57,11 @@ export class SessionEventBus {
 
   getIntentText(): string {
     return this.intentText;
+  }
+
+  /** Store the user prompt so late-connecting clients can recover it */
+  setPendingPrompt(prompt: string): void {
+    this.pendingPrompt = prompt;
   }
 
   emit(event: StreamEvent): void {
@@ -134,6 +143,7 @@ export class SessionEventBus {
       finalContent: this.finalContent,
       errorMessage: this.errorMessage,
       mcpServers: [...this.mcpServers],
+      pendingPrompt: this.pendingPrompt,
     };
   }
 
@@ -170,6 +180,7 @@ export class SessionEventBus {
     this.intentText = "";
     this.finalContent = undefined;
     this.errorMessage = undefined;
+    this.pendingPrompt = undefined;
     this.cancelCleanup();
   }
 

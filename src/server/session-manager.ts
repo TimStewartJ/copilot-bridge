@@ -973,6 +973,7 @@ export class SessionManager {
 
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
+    bus.setPendingPrompt(prompt);
     this.activeSessions.add(sessionId);
     const now = Date.now();
     this.sessionActivity.set(sessionId, { startedAt: now, lastEventAt: now });
