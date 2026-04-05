@@ -31,13 +31,22 @@ const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
 
+// Tunnel resilience config
+const MAX_TUNNEL_RESTARTS = 5;
+const TUNNEL_CRASH_WINDOW = 300_000; // reset crash counter after 5 min of stability
+const TUNNEL_BACKOFF_BASE = 5_000; // 5s initial backoff
+const TUNNEL_BACKOFF_CAP = 60_000; // 60s max backoff
+
 let serverProcess: ChildProcess | null = null;
 let tunnelProcess: ChildProcess | null = null;
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
 let restarting = false;
+let shuttingDown = false;
 let crashRestarts = 0;
 let lastCrashTime = 0;
+let tunnelCrashRestarts = 0;
+let tunnelStartedAt = 0;
 
 function log(msg: string) {
   console.log(`[launcher] ${msg}`);
@@ -127,8 +136,8 @@ function startServer(): ChildProcess {
       serverProcess = null;
     }
 
-    // Auto-restart on unexpected crash (non-zero exit, not during intentional restart)
-    if (code !== 0 && code !== null && !restarting) {
+    // Auto-restart on unexpected crash (non-zero exit, not during intentional restart/shutdown)
+    if (code !== 0 && code !== null && !restarting && !shuttingDown) {
       const now = Date.now();
       if (now - lastCrashTime > CRASH_WINDOW) {
         crashRestarts = 0; // stable long enough, reset counter
@@ -279,7 +288,16 @@ async function restart() {
   if (healthy) {
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
-    await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
+
+    // Cycle the tunnel so it gets a fresh connection
+    try {
+      tunnelCrashRestarts = 0; // reset since this is intentional
+      const url = await startTunnel();
+      await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, url);
+    } catch (err) {
+      log(`Tunnel restart failed (non-fatal): ${err}`);
+      await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
+    }
   } else {
     log("❌ Health check failed — rolling back");
     await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
@@ -297,6 +315,9 @@ async function restart() {
 // ── Dev Tunnel ────────────────────────────────────────────────────
 
 function startTunnel(): Promise<string> {
+  // Kill any existing tunnel first (idempotent)
+  killTunnel();
+
   return new Promise((resolve, reject) => {
     log("Starting dev tunnel...");
     tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME], {
@@ -305,6 +326,7 @@ function startTunnel(): Promise<string> {
     });
 
     let stdout = "";
+    let resolved = false;
     const timeout = setTimeout(() => {
       reject(new Error("Tunnel failed to start within 30s"));
     }, 30_000);
@@ -313,9 +335,11 @@ function startTunnel(): Promise<string> {
       stdout += data.toString();
       // Look for the URL: "Connect via browser: https://xxx-3333.usw2.devtunnels.ms"
       const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/);
-      if (match) {
+      if (match && !resolved) {
+        resolved = true;
         clearTimeout(timeout);
         currentTunnelUrl = match[1];
+        tunnelStartedAt = Date.now();
         log(`Tunnel URL: ${currentTunnelUrl}`);
         resolve(currentTunnelUrl);
       }
@@ -324,6 +348,41 @@ function startTunnel(): Promise<string> {
     tunnelProcess.on("exit", (code) => {
       log(`Tunnel exited with code ${code}`);
       tunnelProcess = null;
+
+      if (!resolved) {
+        clearTimeout(timeout);
+        reject(new Error(`Tunnel process exited with code ${code} before producing URL`));
+        return;
+      }
+
+      // Auto-respawn on unexpected exit
+      if (shuttingDown || restarting) return;
+
+      const now = Date.now();
+      const uptime = now - tunnelStartedAt;
+      if (uptime > TUNNEL_CRASH_WINDOW) {
+        tunnelCrashRestarts = 0; // stable long enough, reset counter
+      }
+      tunnelCrashRestarts++;
+
+      if (tunnelCrashRestarts > MAX_TUNNEL_RESTARTS) {
+        log(`❌ Tunnel crashed ${tunnelCrashRestarts} times in quick succession — not restarting. Manual intervention needed.`);
+        return;
+      }
+
+      const backoff = Math.min(TUNNEL_BACKOFF_BASE * Math.pow(2, tunnelCrashRestarts - 1), TUNNEL_BACKOFF_CAP);
+      log(`⚡ Tunnel crashed (exit code ${code}). Auto-restarting in ${backoff / 1000}s... (attempt ${tunnelCrashRestarts}/${MAX_TUNNEL_RESTARTS})`);
+
+      setTimeout(async () => {
+        if (tunnelProcess || shuttingDown) return; // something else already started it
+        try {
+          const url = await startTunnel();
+          log(`✅ Tunnel auto-restarted successfully`);
+          await notifyWebhook(`⚡ Tunnel auto-restarted (attempt ${tunnelCrashRestarts}/${MAX_TUNNEL_RESTARTS}, ${tag()})`, url);
+        } catch (err) {
+          log(`❌ Tunnel auto-restart failed: ${err}`);
+        }
+      }, backoff);
     });
   });
 }
@@ -405,12 +464,14 @@ async function main() {
 
 process.on("SIGINT", () => {
   log("Shutting down...");
+  shuttingDown = true;
   killServer();
   killTunnel();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
+  shuttingDown = true;
   killServer();
   killTunnel();
   process.exit(0);
