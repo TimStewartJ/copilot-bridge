@@ -1266,7 +1266,10 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
 
   return (
     <ChatView
-      key={sessionId ?? "draft"}
+      // No `key` here — the component must survive draft→real session transitions
+      // so the optimistic user message is preserved and the wasDraft recovery path
+      // in ChatView fires correctly.  Session-switch resets are handled by the
+      // useEffect on sessionId inside ChatView.
       sessionId={sessionId}
       hasPlan={hasPlan}
       onMessageSent={onMessageSent}

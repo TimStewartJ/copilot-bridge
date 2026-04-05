@@ -54,7 +54,15 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       ...m,
       id: m.id ?? `stream-${Date.now()}-${i}`,
     }));
-    setMessages((prev) => [...prev, ...withIds]);
+    setMessages((prev) => {
+      // Deduplicate user messages that are already present (e.g. pendingPrompt
+      // recovery producing a duplicate of the optimistic message or fetched history)
+      const filtered = withIds.filter((msg) => {
+        if (msg.role !== "user") return true;
+        return !prev.some((p) => p.role === "user" && p.content === msg.content);
+      });
+      return filtered.length > 0 ? [...prev, ...filtered] : prev;
+    });
   }, []);
 
   const {
