@@ -95,6 +95,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       if (prevSession !== undefined || !onCreateAndSend) setMessages([]);
       setCreating(false);
       setHasMore(false);
+      firstItemIndex.current = 0;
       return;
     }
 
@@ -145,6 +146,12 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [sessionId, reconnect]);
+
+  // Auto-scroll to bottom when footer content changes, but only if already at bottom
+  useEffect(() => {
+    if (!atBottomRef.current) return;
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+  }, [streamingContent, activeTools, toolProgress, isStreaming, creating]);
 
   // Load older messages when user scrolls to top
   const loadOlderMessages = useCallback(() => {

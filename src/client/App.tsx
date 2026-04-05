@@ -1266,6 +1266,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
 
   return (
     <ChatView
+      key={sessionId ?? "draft"}
       sessionId={sessionId}
       hasPlan={hasPlan}
       onMessageSent={onMessageSent}
