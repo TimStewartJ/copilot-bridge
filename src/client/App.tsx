@@ -866,6 +866,8 @@ export default function App() {
         onLinkToTask={handleLinkToTask}
         onMarkUnread={markUnread}
         onMarkAllQuickChatsRead={handleMarkAllRead}
+        onRequestArchived={requestArchivedSessions}
+        archivedLoaded={archivedLoadedRef.current}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
