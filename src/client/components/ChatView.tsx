@@ -83,16 +83,10 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   // Merge MCP status: prefer live stream updates over fetched status
   const effectiveMcpServers = (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus) ?? [];
 
-  // Fetch MCP status when session changes
-  useEffect(() => {
-    if (!sessionId) {
-      setMcpStatus([]);
-      return;
-    }
-    fetchMcpStatus(sessionId).then(setMcpStatus).catch(() => {});
-  }, [sessionId]);
-
-  // Load history when session changes
+  // Load history + MCP status when session changes.
+  // Both are co-fetched so McpStatusBar is already rendered when Virtuoso
+  // mounts — preventing an async layout shift that would invalidate
+  // Virtuoso's initialTopMostItemIndex positioning.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const prevSession = prevSessionRef.current;
@@ -105,6 +99,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       if (prevSession !== undefined || !onCreateAndSend) setMessages([]);
       setCreating(false);
       setHasMore(false);
+      setMcpStatus([]);
       firstItemIndex.current = 0;
       return;
     }
@@ -123,23 +118,18 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     const loadAndReconnect = () => {
       setLoading(true);
       initialPositioningRef.current = true;
-      fetchMessages(sessionId, { limit: PAGE_SIZE })
-        .then(({ messages: msgs, busy, total, hasMore: more }) => {
+
+      const messagesP = fetchMessages(sessionId, { limit: PAGE_SIZE });
+      const mcpP = fetchMcpStatus(sessionId).catch(() => [] as McpServerStatus[]);
+
+      Promise.all([messagesP, mcpP])
+        .then(([{ messages: msgs, busy, total, hasMore: more }, mcpServers]) => {
           setMessages(msgs);
           setHasMore(more);
-          // firstItemIndex tracks the virtual index offset for prepending
           firstItemIndex.current = total - msgs.length;
+          setMcpStatus(mcpServers);
           if (busy) reconnect(sessionId);
-          // Allow startReached after Virtuoso has settled at the bottom,
-          // then force a scroll correction in case dynamic content (markdown,
-          // images, code blocks) caused Virtuoso's initial measurement to
-          // land at the wrong offset.
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              initialPositioningRef.current = false;
-              virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
-            });
-          });
+          // initialPositioningRef is cleared by atBottomStateChange below
         })
         .catch((err) =>
           setMessages([
@@ -354,7 +344,16 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           firstItemIndex={firstItemIndex.current}
           initialTopMostItemIndex={{ index: "LAST", align: "end" }}
           followOutput={() => stickToBottomRef.current ? "smooth" : false}
-          atBottomStateChange={(atBottom) => { stickToBottomRef.current = atBottom; }}
+          atBottomStateChange={(atBottom) => {
+            stickToBottomRef.current = atBottom;
+            // Virtuoso's initialTopMostItemIndex scrolls from top → bottom over
+            // several rAFs, transiently triggering atTopStateChange along the way.
+            // Use reaching bottom as the definitive signal that initial positioning
+            // is complete — event-driven, no hardcoded delays.
+            if (atBottom && initialPositioningRef.current) {
+              initialPositioningRef.current = false;
+            }
+          }}
           atTopStateChange={(atTop) => { if (atTop) loadOlderMessages(); }}
           atTopThreshold={100}
           increaseViewportBy={{ top: 200, bottom: 200 }}
