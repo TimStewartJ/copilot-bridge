@@ -490,7 +490,6 @@ export default function TaskRail({
                           isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
                         ) : null}
                         <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
-                        <span className="text-text-faint ml-auto text-[10px]">{section.tasks.length}</span>
                       </button>
                       {group && (
                         <button
