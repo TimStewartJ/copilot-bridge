@@ -868,6 +868,8 @@ export default function App() {
         onMarkAllQuickChatsRead={handleMarkAllRead}
         onRequestArchived={requestArchivedSessions}
         archivedLoaded={archivedLoadedRef.current}
+        archivingIds={archivingIds}
+        exitingIds={exitingIds}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
