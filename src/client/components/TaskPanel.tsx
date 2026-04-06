@@ -38,6 +38,7 @@ import {
   LayoutDashboard,
   CheckCheck,
 } from "lucide-react";
+import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 
 // ── Compact section header for sidebar ───────────────────────────
 
@@ -450,19 +451,42 @@ export default function TaskPanel({
             count={todos.length > 0 ? undefined : 0}
             progress={todos.length > 0 ? `${todos.filter((t) => t.done).length}/${todos.length}` : undefined}
           />
-          {todos.length > 0 && (
-            <div className="space-y-0">
-              {todos.map((todo) => (
-                <TodoRow
-                  key={todo.id}
-                  todo={todo}
-                  highlight={todo.id === highlightTodoId}
-                  onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
-                  onDelete={(id) => setTodos((prev) => prev.filter((t) => t.id !== id))}
-                />
-              ))}
-            </div>
-          )}
+          {(() => {
+            const openTodos = todos.filter((t) => !t.done);
+            const doneTodos = todos.filter((t) => t.done);
+            return (
+              <>
+                {openTodos.length > 0 && (
+                  <div className="space-y-0">
+                    {openTodos.map((todo) => (
+                      <TodoRow
+                        key={todo.id}
+                        todo={todo}
+                        highlight={todo.id === highlightTodoId}
+                        onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
+                        onDelete={(id) => setTodos((prev) => prev.filter((t) => t.id !== id))}
+                      />
+                    ))}
+                  </div>
+                )}
+                {doneTodos.length > 0 && (
+                  <CollapsibleCompleted count={doneTodos.length}>
+                    <div className="space-y-0">
+                      {doneTodos.map((todo) => (
+                        <TodoRow
+                          key={todo.id}
+                          todo={todo}
+                          highlight={todo.id === highlightTodoId}
+                          onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
+                          onDelete={(id) => setTodos((prev) => prev.filter((t) => t.id !== id))}
+                        />
+                      ))}
+                    </div>
+                  </CollapsibleCompleted>
+                )}
+              </>
+            );
+          })()}
           <div className="px-3 py-1">
             <input
               className="w-full text-xs bg-transparent border-none outline-none text-text-secondary placeholder:text-text-faint"

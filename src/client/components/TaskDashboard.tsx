@@ -37,6 +37,7 @@ import {
   CheckSquare,
   LayoutDashboard,
 } from "lucide-react";
+import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -420,36 +421,33 @@ export default function TaskDashboard({
                   );
                 })}
                 {doneTodos.length > 0 && (
-                  <div className="pt-1">
-                    {doneTodos.slice(0, 3).map((todo) => (
-                      <div key={todo.id} className="flex items-start gap-2 px-3 py-1.5 group">
-                        <button
-                          onClick={async () => {
-                            await patchTodo(todo.id, { done: false });
-                            setTodos(await fetchTodos(task.id));
-                          }}
-                          className="mt-0.5 shrink-0 text-success hover:text-text-muted transition-colors"
-                        >
-                          <CheckCircle2 size={14} />
-                        </button>
-                        <span className="text-sm text-text-faint line-through flex-1">{todo.text}</span>
-                        <button
-                          onClick={async () => {
-                            await deleteTodo(todo.id);
-                            setTodos(await fetchTodos(task.id));
-                          }}
-                          className="hidden group-hover:block shrink-0 text-text-faint hover:text-error transition-colors"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))}
-                    {doneTodos.length > 3 && (
-                      <div className="text-[10px] text-text-faint px-3 py-1">
-                        +{doneTodos.length - 3} more completed
-                      </div>
-                    )}
-                  </div>
+                  <CollapsibleCompleted count={doneTodos.length}>
+                    <div className="pt-1">
+                      {doneTodos.map((todo) => (
+                        <div key={todo.id} className="flex items-start gap-2 px-3 py-1.5 group">
+                          <button
+                            onClick={async () => {
+                              await patchTodo(todo.id, { done: false });
+                              setTodos(await fetchTodos(task.id));
+                            }}
+                            className="mt-0.5 shrink-0 text-success hover:text-text-muted transition-colors"
+                          >
+                            <CheckCircle2 size={14} />
+                          </button>
+                          <span className="text-sm text-text-faint line-through flex-1">{todo.text}</span>
+                          <button
+                            onClick={async () => {
+                              await deleteTodo(todo.id);
+                              setTodos(await fetchTodos(task.id));
+                            }}
+                            className="hidden group-hover:block shrink-0 text-text-faint hover:text-error transition-colors"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </CollapsibleCompleted>
                 )}
                 {/* Add new todo */}
                 <form
