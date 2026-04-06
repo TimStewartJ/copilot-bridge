@@ -111,8 +111,20 @@ app.use("/staging/:prefix", (req, res, next) => {
 });
 
 const distPath = join(__dirname, "..", "..", "dist", "client");
-app.use(express.static(distPath));
+app.use(
+  express.static(distPath, {
+    maxAge: "1y",
+    immutable: true,
+    setHeaders: (res, filePath) => {
+      // HTML and SW must not be cached — browser needs to check for updates
+      if (filePath.endsWith(".html") || filePath.endsWith("sw.js")) {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    },
+  }),
+);
 app.get("/{*splat}", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
   res.sendFile(join(distPath, "index.html"));
 });
 
