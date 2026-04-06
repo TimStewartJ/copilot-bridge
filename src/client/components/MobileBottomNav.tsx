@@ -1,7 +1,7 @@
-import { ListTodo, MessageSquare, BookOpen, Settings } from "lucide-react";
+import { LayoutDashboard, ListTodo, MessageSquare, BookOpen, Settings } from "lucide-react";
 import { useMemo } from "react";
 
-type Tab = "tasks" | "chats" | "docs" | "settings";
+type Tab = "home" | "tasks" | "chats" | "docs" | "settings";
 
 interface MobileBottomNavProps {
   activeTab: Tab;
@@ -21,6 +21,7 @@ export function MobileBottomNav({
   showDocs = true,
 }: MobileBottomNavProps) {
   const tabs: { id: Tab; label: string; icon: typeof ListTodo }[] = useMemo(() => [
+    { id: "home", label: "Home", icon: LayoutDashboard },
     { id: "tasks", label: "Tasks", icon: ListTodo },
     { id: "chats", label: "Chats", icon: MessageSquare },
     ...(showDocs ? [{ id: "docs" as Tab, label: "Docs", icon: BookOpen }] : []),
