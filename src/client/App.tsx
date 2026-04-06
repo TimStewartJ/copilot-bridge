@@ -860,6 +860,12 @@ export default function App() {
         onNewQuickChat={handleNewQuickChat}
         quickChatsExpanded={quickChatsExpanded}
         onToggleQuickChats={() => persistQuickChatsExpanded((v) => !v)}
+        onArchiveSession={handleArchiveSession}
+        onDeleteSession={handleDeleteSession}
+        onDuplicateSession={handleDuplicateSession}
+        onLinkToTask={handleLinkToTask}
+        onMarkUnread={markUnread}
+        onMarkAllQuickChatsRead={handleMarkAllRead}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
