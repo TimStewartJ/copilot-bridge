@@ -29,7 +29,7 @@ export function MobileBottomNav({
 
   return (
     <nav
-      className="md:hidden fixed bottom-0 inset-x-0 z-50 bg-bg-secondary border-t border-border"
+      className="md:hidden shrink-0 bg-bg-secondary border-t border-border"
       style={isStandalone ? undefined : { paddingBottom: "env(safe-area-inset-bottom)" }}
     >
       <div className="flex items-center justify-around h-14">
