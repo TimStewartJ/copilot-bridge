@@ -63,6 +63,8 @@ interface TaskRailProps {
   onMarkAllQuickChatsRead?: () => void;
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  archivingIds?: Set<string>;
+  exitingIds?: Set<string>;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -128,6 +130,8 @@ export default function TaskRail({
   onMarkAllQuickChatsRead,
   onRequestArchived,
   archivedLoaded,
+  archivingIds,
+  exitingIds,
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
@@ -168,10 +172,10 @@ export default function TaskRail({
   }, [orphanSessions, isUnread]);
 
   const sortedOrphanSessions = useMemo(
-    () => orphanSessions.filter((s) => !s.archived).sort(
-      (a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime(),
-    ),
-    [orphanSessions],
+    () => orphanSessions
+      .filter((s) => !s.archived && !archivingIds?.has(s.sessionId) && !exitingIds?.has(s.sessionId))
+      .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime()),
+    [orphanSessions, archivingIds, exitingIds],
   );
 
   const sortedTasks = useMemo(
