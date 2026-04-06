@@ -345,13 +345,15 @@ export default function App() {
   const isDocsActive = location.pathname.startsWith("/docs");
 
   // ── Mobile bottom nav state ──────────────────────────────────
-  const mobileActiveTab = isDocsActive
-    ? "docs" as const
-    : location.pathname === "/settings"
-      ? "settings" as const
-      : quickChatsMode
-        ? "chats" as const
-        : "tasks" as const;
+  const mobileActiveTab = location.pathname === "/dashboard"
+    ? "home" as const
+    : isDocsActive
+      ? "docs" as const
+      : location.pathname === "/settings"
+        ? "settings" as const
+        : quickChatsMode
+          ? "chats" as const
+          : "tasks" as const;
 
   const mobileUnreadCount = useMemo(() => {
     return globalSessions.filter(
@@ -359,14 +361,15 @@ export default function App() {
     ).length;
   }, [globalSessions, isUnread]);
 
-  const handleMobileTab = useCallback((tab: "tasks" | "chats" | "docs" | "settings") => {
+  const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "docs" | "settings") => {
     switch (tab) {
+      case "home": navigate("/dashboard"); break;
       case "tasks": handleGoHome(); break;
       case "chats": handleSelectQuickChats(); break;
       case "docs": handleOpenDocs(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [handleGoHome, handleSelectQuickChats, handleOpenDocs, handleOpenSettings]);
+  }, [navigate, handleGoHome, handleSelectQuickChats, handleOpenDocs, handleOpenSettings]);
 
   const handleSelectSession = (sessionId: string) => {
     if (activeTaskId) {
@@ -776,6 +779,7 @@ export default function App() {
   const isTaskDashboard = !!activeTaskId && !activeSessionId;
 
   const isMobileRoute = {
+    dashboard: location.pathname === "/dashboard",
     taskList: (location.pathname === "/" || location.pathname === "/chats") && !activeTaskId && !activeSessionId,
     taskDashboard: isTaskDashboard,
     taskPanel: !!activeTaskId && !!activeSessionId,
@@ -925,12 +929,12 @@ export default function App() {
         flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
         ${/* Desktop: always visible */""}
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
-        ${isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs ? "flex" : "hidden md:flex"}
+        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs ? "flex" : "hidden md:flex"}
       `.trim()}>
         {restartPhase && <RestartBanner phase={restartPhase} waitingSessions={restartWaiting} />}
 
-        {/* Mobile back bar */}
-        <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden">
+        {/* Mobile back bar (hidden on top-level tab views) */}
+        <div className={`shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden ${isMobileRoute.dashboard ? "hidden" : ""}`}>
           <button
             onClick={goBack}
             className="text-text-muted hover:text-text-primary transition-colors text-sm"
@@ -944,6 +948,17 @@ export default function App() {
           <Routes>
             <Route
               index
+              element={
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onSelectSession={(id) => navigate(`/sessions/${id}`)}
+                  onNewSession={handleNewQuickChat}
+                  onResumeTask={handleResumeTask}
+                />
+              }
+            />
+            <Route
+              path="dashboard"
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
@@ -1024,7 +1039,7 @@ export default function App() {
       </div>{/* ← close row wrapper */}
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
-      {isMobile && (isMobileRoute.taskList || isMobileRoute.taskDashboard || isMobileRoute.settings || isMobileRoute.docs) && (
+      {isMobile && (isMobileRoute.dashboard || isMobileRoute.taskList || isMobileRoute.taskDashboard || isMobileRoute.settings || isMobileRoute.docs) && (
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
