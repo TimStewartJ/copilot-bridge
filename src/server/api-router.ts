@@ -72,6 +72,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
             triggeredBy: meta[id]?.triggeredBy,
             scheduleId: meta[id]?.scheduleId,
             scheduleName: meta[id]?.scheduleName,
+            scheduleEnabled: meta[id]?.scheduleId
+              ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
+              : undefined,
           };
         })
         .filter((s: any) => includeArchived || !s.archived);
