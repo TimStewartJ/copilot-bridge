@@ -366,6 +366,7 @@ export default function App() {
   };
 
   const isDocsActive = location.pathname.startsWith("/docs");
+  const isDashboardActive = location.pathname === "/" || location.pathname === "/dashboard";
 
   // ── Mobile bottom nav state ──────────────────────────────────
   const mobileActiveTab = location.pathname === "/dashboard"
@@ -831,6 +832,7 @@ export default function App() {
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
         isDocsActive={isDocsActive}
+        isDashboardActive={isDashboardActive}
         expanded={railExpanded}
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
