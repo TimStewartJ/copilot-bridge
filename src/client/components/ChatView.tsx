@@ -204,6 +204,10 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     if (!sessionId) return;
     onDraftClear?.();
     setMessages((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
+    // Always scroll to bottom when the user sends a message, even if they scrolled up
+    requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+    });
     try {
       await sendMessage(prompt, attachments);
     } catch (err: any) {
