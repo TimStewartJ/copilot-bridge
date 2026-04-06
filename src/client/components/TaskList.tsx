@@ -208,7 +208,7 @@ export default function TaskList({
                     className="flex-1 px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-1.5"
                   >
                     {group ? (isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />) : null}
-                    {group?.name ?? "Ungrouped"} ({section.tasks.length})
+                    {group?.name ?? "Ungrouped"}
                   </button>
                   {group && (
                     <button
