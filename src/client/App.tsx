@@ -786,9 +786,11 @@ export default function App() {
 
   return (
     <div
-      className="flex h-dvh bg-bg-primary text-text-primary"
+      className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
+      {/* Row wrapper: TaskRail + sidebar + main content fill space above mobile nav */}
+      <div className="flex flex-1 min-h-0">
       {/* ── Task Rail (desktop only) ──────────────────────── */}
       <TaskRail
         tasks={tasks}
@@ -1019,6 +1021,7 @@ export default function App() {
           </Routes>
         </main>
       </div>
+      </div>{/* ← close row wrapper */}
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
       {isMobile && (isMobileRoute.taskList || isMobileRoute.taskDashboard || isMobileRoute.settings || isMobileRoute.docs) && (
@@ -1191,7 +1194,7 @@ function MobileTaskListView({
             onBulkAction={handleMobileBulkAction}
             onRequestArchived={onRequestArchived}
             archivedLoaded={archivedLoaded}
-            className="min-w-0 overflow-x-hidden p-2 pb-20 space-y-1"
+            className="min-w-0 overflow-x-hidden p-2 space-y-1"
           />
         ) : (
           <TaskList
@@ -1212,7 +1215,7 @@ function MobileTaskListView({
             onUpdateGroup={onUpdateGroup}
             onDeleteGroup={onDeleteGroup}
             onReorderGroups={onReorderGroups}
-            className="p-2 pb-20 space-y-2"
+            className="p-2 space-y-2"
           />
         )}
       </PullToRefresh>
