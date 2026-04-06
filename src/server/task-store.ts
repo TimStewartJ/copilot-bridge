@@ -94,7 +94,7 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
     return row ? hydrate(row) : undefined;
   }
 
-  function createTask(title: string): Task {
+  function createTask(title: string, groupId?: string): Task {
     // Bump order of all existing active tasks to make room at top
     db.prepare('UPDATE tasks SET "order" = "order" + 1 WHERE status = \'active\'').run();
 
@@ -102,9 +102,9 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
     const now = new Date().toISOString();
 
     db.prepare(`
-      INSERT INTO tasks (id, title, status, notes, priority, "order", createdAt, updatedAt)
-      VALUES (?, ?, 'active', '', 0, 0, ?, ?)
-    `).run(id, title, now, now);
+      INSERT INTO tasks (id, title, status, notes, priority, "order", groupId, createdAt, updatedAt)
+      VALUES (?, ?, 'active', '', 0, 0, ?, ?, ?)
+    `).run(id, title, groupId || null, now, now);
 
     const task = getTask(id)!;
     emitChange(id);

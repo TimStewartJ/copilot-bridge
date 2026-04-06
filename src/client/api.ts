@@ -243,8 +243,8 @@ export async function fetchTasks(): Promise<Task[]> {
   return data.tasks;
 }
 
-export async function createTask(title: string): Promise<Task> {
-  const data = await apiFetch<{ task: Task }>("/api/tasks", { title });
+export async function createTask(title: string, groupId?: string): Promise<Task> {
+  const data = await apiFetch<{ task: Task }>("/api/tasks", { title, groupId });
   return data.task;
 }
 

@@ -428,9 +428,9 @@ export default function App() {
     }
   }, [addOptimisticSession]);
 
-  const handleNewTask = async () => {
+  const handleNewTask = async (groupId?: string) => {
     try {
-      const task = await createTask("New Task");
+      const task = await createTask("New Task", groupId);
       setTasks((prev) => [task, ...prev]);
       setSelectedTask(task);
       navigate(`/tasks/${task.id}/sessions/new`);
@@ -1122,7 +1122,7 @@ function MobileTaskListView({
   tasks: Task[];
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
-  onNewTask: () => void;
+  onNewTask: (groupId?: string) => void;
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;

@@ -610,10 +610,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/tasks", (req, res) => {
-    const { title } = req.body;
+    const { title, groupId } = req.body;
     if (!title) return res.status(400).json({ error: "title is required" });
     try {
-      const task = ctx.taskStore.createTask(title);
+      const task = ctx.taskStore.createTask(title, groupId);
       res.json({ task });
     } catch (err) {
       res.status(500).json({ error: String(err) });
