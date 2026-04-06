@@ -47,6 +47,9 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const loadingMoreRef = useRef(false);
+  // Tracks the session that Virtuoso is currently displaying, so
+  // followOutput can unconditionally stick during initial mount.
+  const mountedSessionRef = useRef<string | null>(null);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
     // Assign client-side IDs to streamed messages that don't have server IDs
@@ -112,6 +115,9 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     // Reset stick-to-bottom so the new session starts following output,
     // regardless of scroll position in the previous session.
     stickToBottomRef.current = true;
+    // Mark that Virtuoso hasn't mounted for this session yet — followOutput
+    // will unconditionally stick until atBottomStateChange confirms we're there.
+    mountedSessionRef.current = null;
 
     const controller = new AbortController();
 
@@ -346,11 +352,25 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           ref={virtuosoRef}
           className="flex-1 overflow-x-hidden"
           alignToBottom
+          defaultItemHeight={150}
           data={displayMessages}
           firstItemIndex={firstItemIndex.current}
           initialTopMostItemIndex={{ index: "LAST", align: "end" }}
-          followOutput={() => stickToBottomRef.current ? "smooth" : false}
-          atBottomStateChange={(atBottom) => { stickToBottomRef.current = atBottom; }}
+          followOutput={() => {
+            // During initial mount (before atBottomStateChange has confirmed
+            // we've settled), always follow — Virtuoso's progressive item
+            // measurement can transiently set atBottom=false as content heights
+            // grow, which would disable followOutput exactly when we need it.
+            if (!mountedSessionRef.current) return "auto";
+            return stickToBottomRef.current ? "smooth" : false;
+          }}
+          atBottomStateChange={(atBottom) => {
+            stickToBottomRef.current = atBottom;
+            // First time we reach bottom after mount = initial positioning done.
+            if (atBottom && !mountedSessionRef.current) {
+              mountedSessionRef.current = sessionId;
+            }
+          }}
           atTopStateChange={(atTop) => { if (atTop) loadOlderMessages(); }}
           atTopThreshold={100}
           increaseViewportBy={{ top: 200, bottom: 200 }}
