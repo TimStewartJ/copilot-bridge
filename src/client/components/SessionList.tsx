@@ -249,7 +249,7 @@ export default function SessionList({
                 className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
               />
             )}
-            {session.triggeredBy === "schedule" && (
+            {session.triggeredBy === "schedule" && session.scheduleEnabled && (
               <Clock size={10} className="text-accent shrink-0 mr-0.5" title={`Scheduled: ${session.scheduleName ?? ""}`} />
             )}
             <span className="truncate">

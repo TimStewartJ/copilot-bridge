@@ -11,6 +11,7 @@ export interface Session {
   triggeredBy?: "user" | "schedule";
   scheduleId?: string;
   scheduleName?: string;
+  scheduleEnabled?: boolean;
   context?: {
     cwd?: string;
     gitRoot?: string;
