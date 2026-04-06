@@ -61,6 +61,8 @@ interface TaskRailProps {
   onLinkToTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   onMarkAllQuickChatsRead?: () => void;
+  onRequestArchived?: () => void;
+  archivedLoaded?: boolean;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -124,6 +126,8 @@ export default function TaskRail({
   onLinkToTask,
   onMarkUnread,
   onMarkAllQuickChatsRead,
+  onRequestArchived,
+  archivedLoaded,
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
@@ -679,15 +683,19 @@ export default function TaskRail({
                 );
               })}
               {/* Archived quick chats */}
-              {archivedOrphanSessions.length > 0 && (
+              {(archivedOrphanSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
                 <>
                   <button
-                    onClick={() => setShowArchivedQc((v) => !v)}
+                    onClick={() => {
+                      const willExpand = !showArchivedQc;
+                      setShowArchivedQc(willExpand);
+                      if (willExpand && !archivedLoaded && onRequestArchived) onRequestArchived();
+                    }}
                     className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-1 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
                   >
                     {showArchivedQc ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
                     <Archive size={10} />
-                    Archived ({archivedOrphanSessions.length})
+                    Archived{archivedLoaded ? ` (${archivedOrphanSessions.length})` : "…"}
                   </button>
                   {showArchivedQc && archivedOrphanSessions.map((session) => {
                     const isActive = session.sessionId === activeSessionId;
