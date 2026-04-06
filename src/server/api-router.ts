@@ -967,24 +967,26 @@ export function createApiRouter(ctx: AppContext): express.Router {
         }));
 
       // Open todos across all active tasks and global todos
-      const openTodos = ctx.todoStore.listAllOpen().map((todo) => {
+      const taskGroups = ctx.taskGroupStore.listGroups();
+      const enrichTodo = (todo: ReturnType<typeof ctx.todoStore.listAllOpen>[number]) => {
         const task = todo.taskId ? tasks.find((t) => t.id === todo.taskId) : null;
         const taskTitle = task?.title ?? (todo.taskId ? "Unknown" : null);
         const taskGroupColor = task?.groupId
           ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
           : null;
-        return { ...todo, taskTitle, taskGroupColor };
-      });
+        const taskOrder = task?.order ?? 0;
+        const taskStatus = task?.status ?? null;
+        const taskGroupId = task?.groupId ?? null;
+        const taskGroupOrder = taskGroupId
+          ? taskGroups.find((g) => g.id === taskGroupId)?.order ?? null
+          : null;
+        return { ...todo, taskTitle, taskGroupColor, taskOrder, taskStatus, taskGroupId, taskGroupOrder };
+      };
+
+      const openTodos = ctx.todoStore.listAllOpen().map(enrichTodo);
 
       // Recently completed todos
-      const completedTodos = ctx.todoStore.listRecentlyCompleted().map((todo) => {
-        const task = todo.taskId ? tasks.find((t) => t.id === todo.taskId) : null;
-        const taskTitle = task?.title ?? (todo.taskId ? "Unknown" : null);
-        const taskGroupColor = task?.groupId
-          ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
-          : null;
-        return { ...todo, taskTitle, taskGroupColor };
-      });
+      const completedTodos = ctx.todoStore.listRecentlyCompleted().map(enrichTodo);
 
       res.json({
         busySessions,

@@ -12,7 +12,7 @@ import {
 import { getLastViewedSession } from "../last-viewed";
 import { timeAgo } from "../time";
 import { deadlineUrgency, deadlineLabel, CHECKBOX_URGENCY } from "../todo-helpers";
-import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
+import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
 import { Loader2, MessageSquare, Plus, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays, Trash2, ArrowUpDown } from "lucide-react";
 
@@ -67,6 +67,86 @@ interface DashboardProps {
   onResumeTask: (taskId: string, sessionId?: string) => void;
 }
 
+// ── Task grouping for "By task" view ──────────────────────────────
+
+interface TodoGroup {
+  key: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  taskGroupColor: string | null;
+  todos: DashboardTodo[];
+}
+
+const TASK_STATUS_ORDER: Record<string, number> = { active: 0, paused: 1, done: 2, archived: 3 };
+
+function groupTodosByTask(todos: DashboardTodo[]): TodoGroup[] {
+  const globalTodos: DashboardTodo[] = [];
+  const taskMap = new Map<string, {
+    todos: DashboardTodo[];
+    taskTitle: string | null;
+    taskGroupColor: string | null;
+    taskGroupOrder: number | null;
+    taskStatusOrder: number;
+    taskOrder: number;
+  }>();
+
+  for (const todo of todos) {
+    if (!todo.taskId) {
+      globalTodos.push(todo);
+    } else {
+      let entry = taskMap.get(todo.taskId);
+      if (!entry) {
+        entry = {
+          todos: [],
+          taskTitle: todo.taskTitle,
+          taskGroupColor: todo.taskGroupColor,
+          taskGroupOrder: todo.taskGroupOrder,
+          taskStatusOrder: TASK_STATUS_ORDER[todo.taskStatus ?? "active"] ?? 0,
+          taskOrder: todo.taskOrder,
+        };
+        taskMap.set(todo.taskId, entry);
+      }
+      entry.todos.push(todo);
+    }
+  }
+
+  for (const entry of taskMap.values()) {
+    entry.todos.sort((a, b) => a.order - b.order);
+  }
+  globalTodos.sort((a, b) => a.order - b.order);
+
+  // Match TaskRail order: grouped tasks first (by group order), then ungrouped; within each: status → task order
+  const taskEntries = [...taskMap.entries()].sort(([, a], [, b]) => {
+    const aGrouped = a.taskGroupOrder != null ? 0 : 1;
+    const bGrouped = b.taskGroupOrder != null ? 0 : 1;
+    if (aGrouped !== bGrouped) return aGrouped - bGrouped;
+    if (a.taskGroupOrder != null && b.taskGroupOrder != null && a.taskGroupOrder !== b.taskGroupOrder) {
+      return a.taskGroupOrder - b.taskGroupOrder;
+    }
+    if (a.taskStatusOrder !== b.taskStatusOrder) return a.taskStatusOrder - b.taskStatusOrder;
+    return a.taskOrder - b.taskOrder;
+  });
+
+  const groups: TodoGroup[] = [];
+  if (globalTodos.length > 0) {
+    groups.push({ key: "__global__", taskId: null, taskTitle: null, taskGroupColor: null, todos: globalTodos });
+  }
+  for (const [taskId, entry] of taskEntries) {
+    groups.push({ key: taskId, taskId, taskTitle: entry.taskTitle, taskGroupColor: entry.taskGroupColor, todos: entry.todos });
+  }
+  return groups;
+}
+
+const COLLAPSE_STORAGE_KEY = "dashboard-todo-collapsed";
+
+function getCollapsedSet(): Set<string> {
+  try {
+    const val = localStorage.getItem(COLLAPSE_STORAGE_KEY);
+    if (val) return new Set(JSON.parse(val));
+  } catch {}
+  return new Set();
+}
+
 export default function Dashboard({
   onSelectTask,
   onSelectSession,
@@ -82,8 +162,20 @@ export default function Dashboard({
   const [newTodoText, setNewTodoText] = useState("");
   const [todoSort, setTodoSort] = useState<TodoSort>(getSavedSort);
   const lastLocalChange = useRef(0);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(getCollapsedSet);
 
   const sortedOpenTodos = useMemo(() => sortTodos(localOpenTodos, todoSort), [localOpenTodos, todoSort]);
+  const todoGroups = useMemo(() => groupTodosByTask(localOpenTodos), [localOpenTodos]);
+
+  const toggleGroupCollapse = (key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try { localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
 
   const handleSortChange = (sort: TodoSort) => {
     setTodoSort(sort);
@@ -98,7 +190,7 @@ export default function Dashboard({
     try {
       lastLocalChange.current = Date.now();
       const todo = await createGlobalTodo(text);
-      setLocalOpenTodos((prev) => [{ ...todo, taskTitle: null, taskGroupColor: null }, ...prev]);
+      setLocalOpenTodos((prev) => [{ ...todo, taskTitle: null, taskGroupColor: null, taskOrder: 0, taskStatus: null, taskGroupId: null, taskGroupOrder: null }, ...prev]);
     } catch (err) {
       console.error("Failed to create todo:", err);
     }
@@ -272,7 +364,74 @@ export default function Dashboard({
               />
             ) : (
               <>
-                {localOpenTodos.length > 0 && (
+                {localOpenTodos.length > 0 && todoSort === "task" ? (
+                  <div className="space-y-2">
+                    {todoGroups.map((group) => {
+                      const isCollapsed = collapsedGroups.has(group.key);
+                      const visibleCount = group.todos.filter((t) => !exitingIds.has(t.id)).length;
+                      return (
+                        <div key={group.key} className="bg-bg-surface border border-border rounded-lg overflow-hidden">
+                          <button
+                            onClick={() => toggleGroupCollapse(group.key)}
+                            className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-bg-hover transition-colors"
+                          >
+                            {isCollapsed
+                              ? <ChevronRight size={14} className="text-text-faint shrink-0" />
+                              : <ChevronDown size={14} className="text-text-faint shrink-0" />
+                            }
+                            {group.taskGroupColor && (
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${GROUP_COLOR_DOT[group.taskGroupColor] ?? ""}`} />
+                            )}
+                            <span className="font-medium text-text-secondary truncate">
+                              {group.taskTitle ?? "Global To-Dos"}
+                            </span>
+                            <span className="text-text-faint text-xs ml-auto shrink-0">{visibleCount}</span>
+                          </button>
+                          {!isCollapsed && (
+                            <div className="divide-y divide-border border-t border-border">
+                              {group.todos.map((todo) => (
+                                <div
+                                  key={todo.id}
+                                  className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
+                                  onAnimationEnd={() => {
+                                    if (exitingIds.has(todo.id)) {
+                                      setExitingIds((prev) => { const n = new Set(prev); n.delete(todo.id); return n; });
+                                      setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                                      setLocalCompletedTodos((prev) => [{ ...todo, done: true }, ...prev]);
+                                    }
+                                  }}
+                                >
+                                  <DashboardTodoRow
+                                    todo={todo}
+                                    done={false}
+                                    hideTaskPill
+                                    onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
+                                    onToggle={async () => {
+                                      lastLocalChange.current = Date.now();
+                                      setExitingIds((prev) => new Set(prev).add(todo.id));
+                                      await patchTodo(todo.id, { done: true });
+                                    }}
+                                    onDeadlineChange={(deadline) => {
+                                      lastLocalChange.current = Date.now();
+                                      setLocalOpenTodos((prev) => prev.map((t) =>
+                                        t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
+                                      ));
+                                    }}
+                                    onDelete={!todo.taskId ? async () => {
+                                      lastLocalChange.current = Date.now();
+                                      setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                                      await deleteTodo(todo.id);
+                                    } : undefined}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : localOpenTodos.length > 0 ? (
                   <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
                     {sortedOpenTodos.map((todo) => (
                       <div
@@ -310,7 +469,7 @@ export default function Dashboard({
                       </div>
                     ))}
                   </div>
-                )}
+                ) : null}
 
                 {localOpenTodos.length === 0 && localCompletedTodos.length > 0 && (
                   <div className="text-center py-6 px-4 rounded-md bg-bg-surface border border-border">
@@ -495,6 +654,7 @@ function OrphanSessionRow({
 function DashboardTodoRow({
   todo,
   done,
+  hideTaskPill,
   onSelectTask,
   onToggle,
   onDeadlineChange,
@@ -502,11 +662,12 @@ function DashboardTodoRow({
 }: {
   todo: DashboardTodo;
   done: boolean;
+  hideTaskPill?: boolean;
   onSelectTask?: () => void;
   onToggle: () => void;
   onDeadlineChange?: (deadline: string | null) => void;
   onDelete?: () => void;
-}) {
+}){
   const dateRef = useRef<HTMLInputElement>(null);
   const urgency = deadlineUrgency(todo.deadline, done);
   const groupBg = todo.taskGroupColor ? GROUP_COLOR_BG[todo.taskGroupColor] ?? "" : "";
@@ -538,7 +699,7 @@ function DashboardTodoRow({
         </div>
         <div className="text-xs mt-0.5 flex items-center gap-2">
           {/* Task name pill with group color — only shown for task-linked todos */}
-          {todo.taskTitle && (
+          {todo.taskTitle && !hideTaskPill && (
             <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
               groupBg ? `${groupBg} text-text-secondary` : "bg-bg-hover text-text-faint"
             }`}>

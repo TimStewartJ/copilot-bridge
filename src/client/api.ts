@@ -537,6 +537,10 @@ export interface DashboardTodo {
   deadline?: string;
   taskTitle: string | null;
   taskGroupColor: string | null;
+  taskOrder: number;
+  taskStatus: string | null;
+  taskGroupId: string | null;
+  taskGroupOrder: number | null;
 }
 
 export interface DashboardData {
