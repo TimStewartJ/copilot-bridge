@@ -32,6 +32,8 @@ function formatToolArgs(args: Record<string, unknown>): string {
   return parts.join(" ");
 }
 
+const PENDING_ID = "__pending__";
+
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -42,7 +44,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const atBottomRef = useRef(true);
+  const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const loadingMoreRef = useRef(false);
   // Suppress startReached during initial positioning to prevent cascading loads
@@ -155,10 +157,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [sessionId, reconnect]);
 
-  // Auto-scroll to bottom when footer content changes, but only if already at bottom
+  // Auto-scroll when streaming state changes, but only if sticking to bottom.
+  // Uses Virtuoso's own scrollToIndex which is always available via the handle ref.
   useEffect(() => {
-    if (!atBottomRef.current) return;
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
   }, [streamingContent, activeTools, toolProgress, isStreaming, creating]);
 
   // Load older messages when user scrolls to top
@@ -204,10 +207,8 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     if (!sessionId) return;
     onDraftClear?.();
     setMessages((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
-    // Always scroll to bottom when the user sends a message, even if they scrolled up
-    requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
-    });
+    // Force stick-to-bottom so the layoutEffect scrolls on the next render
+    stickToBottomRef.current = true;
     try {
       await sendMessage(prompt, attachments);
     } catch (err: any) {
@@ -218,8 +219,10 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     }
   }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend]);
 
-  // Build the footer content (streaming bubble + active tools + status text)
-  const footerContent = useMemo(() => {
+  // Build pending indicator content (streaming bubble + active tools + status text).
+  // This is rendered as a synthetic data item (not a Virtuoso Footer) so that
+  // scrollToIndex("LAST") and followOutput naturally scroll it into view.
+  const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
 
     if (streamingContent) {
@@ -287,6 +290,17 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     return <div className="space-y-4 pb-4">{parts}</div>;
   }, [streamingContent, activeTools, toolProgress, isStreaming, streamStatus, intentText, creating]);
 
+  // Build display list: real messages + optional synthetic pending item.
+  // Putting the pending indicator in the data array (instead of the Footer)
+  // ensures scrollToIndex("LAST") and followOutput include it.
+  // Depend on !!pendingContent (not the JSX itself) so the array reference
+  // stays stable during streaming — avoids re-spreading on every token.
+  const hasPending = !!pendingContent;
+  const displayMessages = useMemo(() => {
+    if (!hasPending) return messages;
+    return [...messages, { role: "assistant" as const, content: "", id: PENDING_ID }];
+  }, [messages, hasPending]);
+
   const isDraft = !sessionId && !!onCreateAndSend;
 
   if (!sessionId && !isDraft) {
@@ -328,19 +342,23 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         <Virtuoso
           ref={virtuosoRef}
           className="flex-1 overflow-x-hidden"
-          data={messages}
+          data={displayMessages}
           firstItemIndex={firstItemIndex.current}
           initialTopMostItemIndex={{ index: "LAST", align: "end" }}
-          followOutput={(isAtBottom) => isAtBottom ? "smooth" : false}
-          atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom; }}
+          followOutput={() => stickToBottomRef.current ? "smooth" : false}
+          atBottomStateChange={(atBottom) => { stickToBottomRef.current = atBottom; }}
           atTopStateChange={(atTop) => { if (atTop) loadOlderMessages(); }}
           atTopThreshold={100}
           increaseViewportBy={{ top: 200, bottom: 200 }}
-          itemContent={(_index, msg) => (
-            <div className="px-3 md:px-5 pt-4">
-              <MessageBubble key={msg.id ?? `${msg.role}-${_index}`} message={msg} />
-            </div>
-          )}
+          itemContent={(_index, msg) =>
+            msg.id === PENDING_ID ? (
+              <div className="pt-4">{pendingContent}</div>
+            ) : (
+              <div className="px-3 md:px-5 pt-4">
+                <MessageBubble key={msg.id ?? `${msg.role}-${_index}`} message={msg} />
+              </div>
+            )
+          }
           components={{
             Header: () =>
               loadingMore ? (
@@ -353,7 +371,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
                   Scroll up for more
                 </div>
               ) : null,
-            Footer: () => footerContent ? <>{footerContent}</> : <div className="h-4" />,
+            Footer: () => <div className="h-4" />,
           }}
         />
       )}
