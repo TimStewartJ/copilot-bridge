@@ -47,8 +47,6 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const loadingMoreRef = useRef(false);
-  // Suppress startReached during initial positioning to prevent cascading loads
-  const initialPositioningRef = useRef(true);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
     // Assign client-side IDs to streamed messages that don't have server IDs
@@ -86,7 +84,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   // Load history + MCP status when session changes.
   // Both are co-fetched so McpStatusBar is already rendered when Virtuoso
   // mounts — preventing an async layout shift that would invalidate
-  // Virtuoso's initialTopMostItemIndex positioning.
+  // Virtuoso's initial scroll position.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const prevSession = prevSessionRef.current;
@@ -115,28 +113,32 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     // regardless of scroll position in the previous session.
     stickToBottomRef.current = true;
 
+    const controller = new AbortController();
+
     const loadAndReconnect = () => {
       setLoading(true);
-      initialPositioningRef.current = true;
 
       const messagesP = fetchMessages(sessionId, { limit: PAGE_SIZE });
       const mcpP = fetchMcpStatus(sessionId).catch(() => [] as McpServerStatus[]);
 
       Promise.all([messagesP, mcpP])
         .then(([{ messages: msgs, busy, total, hasMore: more }, mcpServers]) => {
+          if (controller.signal.aborted) return;
           setMessages(msgs);
           setHasMore(more);
           firstItemIndex.current = total - msgs.length;
           setMcpStatus(mcpServers);
           if (busy) reconnect(sessionId);
-          // initialPositioningRef is cleared by atBottomStateChange below
         })
-        .catch((err) =>
+        .catch((err) => {
+          if (controller.signal.aborted) return;
           setMessages([
             { role: "assistant", content: `Error loading history: ${err.message}` },
-          ]),
-        )
-        .finally(() => setLoading(false));
+          ]);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false);
+        });
     };
 
     setMessages([]);
@@ -152,7 +154,10 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       if (document.visibilityState === "visible") loadAndReconnect();
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      controller.abort();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [sessionId, reconnect]);
 
   // Auto-scroll when streaming state changes, but only if sticking to bottom.
@@ -164,7 +169,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
   // Load older messages when user scrolls to top
   const loadOlderMessages = useCallback(() => {
-    if (!sessionId || !hasMore || initialPositioningRef.current || loadingMoreRef.current) return;
+    if (!sessionId || !hasMore || loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const beforeIndex = firstItemIndex.current;
@@ -340,20 +345,12 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         <Virtuoso
           ref={virtuosoRef}
           className="flex-1 overflow-x-hidden"
+          alignToBottom
           data={displayMessages}
           firstItemIndex={firstItemIndex.current}
           initialTopMostItemIndex={{ index: "LAST", align: "end" }}
           followOutput={() => stickToBottomRef.current ? "smooth" : false}
-          atBottomStateChange={(atBottom) => {
-            stickToBottomRef.current = atBottom;
-            // Virtuoso's initialTopMostItemIndex scrolls from top → bottom over
-            // several rAFs, transiently triggering atTopStateChange along the way.
-            // Use reaching bottom as the definitive signal that initial positioning
-            // is complete — event-driven, no hardcoded delays.
-            if (atBottom && initialPositioningRef.current) {
-              initialPositioningRef.current = false;
-            }
-          }}
+          atBottomStateChange={(atBottom) => { stickToBottomRef.current = atBottom; }}
           atTopStateChange={(atTop) => { if (atTop) loadOlderMessages(); }}
           atTopThreshold={100}
           increaseViewportBy={{ top: 200, bottom: 200 }}
