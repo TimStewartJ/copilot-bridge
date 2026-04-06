@@ -62,6 +62,16 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskNotFound, setTaskNotFound] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
+  const [quickChatsExpanded, setQuickChatsExpanded] = useState(() => {
+    try { return localStorage.getItem("bridge-quick-chats-expanded") === "true"; } catch { return false; }
+  });
+  const persistQuickChatsExpanded = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    setQuickChatsExpanded((prev) => {
+      const next = typeof v === "function" ? v(prev) : v;
+      try { localStorage.setItem("bridge-quick-chats-expanded", String(next)); } catch {}
+      return next;
+    });
+  }, []);
   const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
   const [restartWaiting, setRestartWaiting] = useState(0);
   const [faviconKey, setFaviconKey] = useState<string | undefined>();
@@ -114,6 +124,13 @@ export default function App() {
       setTaskNotFound(false);
     }
   }, [activeTaskId]);
+
+  // Auto-expand quick chats section when entering quick-chats mode on desktop
+  useEffect(() => {
+    if (!isMobile && quickChatsMode) {
+      persistQuickChatsExpanded(true);
+    }
+  }, [quickChatsMode, isMobile]);
 
   // Keep selectedTask in sync with tasks list updates
   useEffect(() => {
@@ -317,8 +334,14 @@ export default function App() {
   };
 
   const handleSelectQuickChats = () => {
-    setSelectedTask(null);
-    navigate("/chats");
+    if (isMobile) {
+      setSelectedTask(null);
+      navigate("/chats");
+    } else {
+      // On desktop, toggle the quick chats section open in the rail
+      if (!railExpanded) setRailExpanded(true);
+      persistQuickChatsExpanded((v) => !v);
+    }
   };
 
   const handleGoHome = () => {
@@ -822,13 +845,19 @@ export default function App() {
         onReorderGroups={handleReorderGroups}
         onMoveTaskToGroup={handleMoveTaskToGroup}
         onMoveAndReorder={handleMoveAndReorder}
+        orphanSessions={globalSessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onNewQuickChat={handleNewQuickChat}
+        quickChatsExpanded={quickChatsExpanded}
+        onToggleQuickChats={() => persistQuickChatsExpanded((v) => !v)}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
       {/* Desktop: visible when a session is active or quick chats (not on task dashboard or home) */}
       {/* Mobile: show task list at / only */}
       {(() => {
-        const showDesktopPanel = !!activeSessionId || (quickChatsMode && !activeTaskId);
+        const showDesktopPanel = !!activeSessionId && !!activeTaskId;
         const showMobileTaskList = isMobileRoute.taskList;
         const showOuterContainer = showDesktopPanel || showMobileTaskList;
         return showOuterContainer ? (
@@ -897,9 +926,6 @@ export default function App() {
                   onArchiveSession={handleArchiveSession}
                   archivingIds={archivingIds}
                   exitingIds={exitingIds}
-                  isQuickChats={quickChatsMode}
-                  orphanSessions={globalSessions}
-                  onNewQuickChat={handleNewQuickChat}
                   tasks={tasks}
                   onLinkToTask={handleLinkToTask}
                   onDeleteTask={handleDeleteTask}
