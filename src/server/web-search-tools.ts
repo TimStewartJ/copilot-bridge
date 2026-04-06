@@ -29,18 +29,18 @@ function cleanup(): void {
 
 // No JSON.stringify — agent-browser eval auto-serializes return values
 const GOOGLE_EXTRACT_JS = `
-Array.from(document.querySelectorAll('#search .g, #rso .g'))
-  .map(el => {
-    const linkEl = el.querySelector('a[href]');
-    const titleEl = el.querySelector('h3');
-    const snippetEl = el.querySelector('[data-sncf], .VwiC3b, [style*="-webkit-line-clamp"]');
-    if (!linkEl || !titleEl) return null;
+Array.from(document.querySelectorAll('#rso > div'))
+  .map(div => {
+    const titleEl = div.querySelector('h3');
+    if (!titleEl) return null;
+    const linkEl = titleEl.closest('a') || div.querySelector('a[href^="http"]');
+    if (!linkEl) return null;
     const href = linkEl.getAttribute('href') || '';
-    if (href.startsWith('/search') || href.startsWith('/url?') === false && !href.startsWith('http')) return null;
-    const url = href.startsWith('/url?') ? new URL(href, location.origin).searchParams.get('q') || href : href;
+    if (!href.startsWith('http')) return null;
+    const snippetEl = div.querySelector('.kb0PBd, .VwiC3b, [data-sncf], [style*="-webkit-line-clamp"]');
     return {
       title: titleEl.textContent?.trim() || '',
-      url,
+      url: href,
       snippet: snippetEl?.textContent?.trim() || ''
     };
   })
