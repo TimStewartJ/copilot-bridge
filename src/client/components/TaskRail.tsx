@@ -46,6 +46,13 @@ interface TaskRailProps {
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
   onReorderGroups?: (groupIds: string[]) => void;
+  // Inline quick chats
+  orphanSessions?: Session[];
+  activeSessionId?: string | null;
+  onSelectSession?: (sessionId: string) => void;
+  onNewQuickChat?: () => void;
+  quickChatsExpanded?: boolean;
+  onToggleQuickChats?: () => void;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -96,6 +103,12 @@ export default function TaskRail({
   onMoveTaskToGroup,
   onMoveAndReorder,
   onReorderGroups,
+  orphanSessions = [],
+  activeSessionId,
+  onSelectSession,
+  onNewQuickChat,
+  quickChatsExpanded,
+  onToggleQuickChats,
 }: TaskRailProps) {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -119,6 +132,25 @@ export default function TaskRail({
     }
     return indicators;
   }, [tasks, sessionMap, isUnread]);
+
+  // Quick chat (orphan session) indicators
+  const orphanIndicators = useMemo(() => {
+    let totalUnread = 0;
+    let totalBusy = 0;
+    for (const s of orphanSessions) {
+      if (s.archived) continue;
+      if (s.busy) { totalBusy++; continue; }
+      if (isUnread?.(s.sessionId, s.modifiedTime)) totalUnread++;
+    }
+    return { totalUnread, totalBusy, hasActivity: totalUnread > 0 || totalBusy > 0 };
+  }, [orphanSessions, isUnread]);
+
+  const sortedOrphanSessions = useMemo(
+    () => orphanSessions.filter((s) => !s.archived).sort(
+      (a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime(),
+    ),
+    [orphanSessions],
+  );
 
   const sortedTasks = useMemo(
     () =>
@@ -308,11 +340,20 @@ export default function TaskRail({
         {/* Quick Chats + Docs + New Task */}
         <div className="flex flex-col items-center gap-2 py-2">
           <button
-            onClick={onSelectQuickChats}
+            onClick={() => {
+              onToggleExpanded();
+              if (!quickChatsExpanded) onToggleQuickChats?.();
+            }}
             title="Quick Chats"
-            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${isQuickChatsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"}`}
+            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${isQuickChatsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"}`}
           >
             <MessageSquare size={18} />
+            {orphanIndicators.totalBusy > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
+            )}
+            {orphanIndicators.totalUnread > 0 && !orphanIndicators.totalBusy && (
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
+            )}
           </button>
           <button
             onClick={onOpenDocs}
@@ -513,19 +554,83 @@ export default function TaskRail({
         )}
       </div>
 
-      {/* Quick Chats */}
+      {/* Quick Chats — collapsible inline section */}
       <div className="px-2 pb-1">
         <button
-          onClick={onSelectQuickChats}
-          className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${
+          onClick={onToggleQuickChats}
+          className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors cursor-pointer ${
             isQuickChatsActive
-              ? "bg-bg-hover text-text-primary"
-              : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
+              ? "text-text-primary"
+              : "text-text-muted hover:text-text-primary"
           }`}
         >
-          <MessageSquare size={14} />
-          Quick Chats
+          {quickChatsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <MessageSquare size={12} />
+          <span className="font-medium">Quick Chats</span>
+          {orphanIndicators.hasActivity && (
+            <span className="ml-auto flex items-center gap-1">
+              {orphanIndicators.totalBusy > 0 && (
+                <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse" />
+              )}
+              {orphanIndicators.totalUnread > 0 && (
+                <span className="text-[10px] text-text-faint">{orphanIndicators.totalUnread}</span>
+              )}
+            </span>
+          )}
+          {!orphanIndicators.hasActivity && sortedOrphanSessions.length > 0 && (
+            <span className="text-text-faint ml-auto text-[10px]">{sortedOrphanSessions.length}</span>
+          )}
         </button>
+        {quickChatsExpanded && (
+          <div className="space-y-0.5 mt-0.5">
+            {onNewQuickChat && (
+              <button
+                onClick={onNewQuickChat}
+                className="w-full mb-1 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors"
+              >
+                + Quick Chat
+              </button>
+            )}
+            {sortedOrphanSessions.length === 0 && (
+              <div className="text-center text-text-faint text-[10px] py-3">No quick chats yet</div>
+            )}
+            {sortedOrphanSessions.map((session) => {
+              const isActive = session.sessionId === activeSessionId;
+              const busy = session.busy;
+              const unread = !busy && isUnread?.(session.sessionId, session.modifiedTime);
+              return (
+                <button
+                  key={session.sessionId}
+                  onClick={() => onSelectSession?.(session.sessionId)}
+                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-all duration-150 ${
+                    isActive && unread
+                      ? "bg-bg-hover border-l-2 border-text-primary"
+                      : isActive
+                        ? "bg-bg-hover"
+                        : unread
+                          ? "border-l-2 border-text-primary hover:bg-bg-hover"
+                          : "hover:bg-bg-hover"
+                  }`}
+                >
+                  <div className="flex items-center">
+                    {busy ? (
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
+                    ) : unread ? (
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
+                    ) : null}
+                    <span className={`truncate flex-1 text-xs ${unread ? "font-semibold" : "font-medium"}`}>
+                      {session.summary || "New chat"}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-text-muted mt-0.5">
+                    {timeAgo(session.modifiedTime)}
+                    {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Docs */}

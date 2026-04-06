@@ -19,7 +19,6 @@ import remarkBreaks from "remark-breaks";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import {
-  MessageSquare,
   MoreHorizontal,
   GitPullRequest,
   ClipboardList,
@@ -36,7 +35,6 @@ import {
   ListChecks,
   CalendarDays,
   LayoutDashboard,
-  CheckCheck,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 
@@ -78,10 +76,6 @@ interface TaskPanelProps {
   onArchiveSession?: (id: string, archived: boolean) => void;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
-  // Quick Chats mode
-  isQuickChats?: boolean;
-  orphanSessions?: Session[];
-  onNewQuickChat?: () => void;
   // Linking
   tasks?: Task[];
   onLinkToTask?: (sessionId: string, taskId: string) => void;
@@ -122,9 +116,6 @@ export default function TaskPanel({
   onArchiveSession,
   archivingIds,
   exitingIds,
-  isQuickChats,
-  orphanSessions,
-  onNewQuickChat,
   tasks,
   onLinkToTask,
   onUnlinkFromTask,
@@ -196,99 +187,6 @@ export default function TaskPanel({
     setEditingTitle(false);
     setEditingCwd(false);
   }, [task?.id]);
-
-  // ── Quick Chats mode ─────────────────────────────────────────
-  const [qcSelectMode, setQcSelectMode] = useState(false);
-  const [qcSelectedIds, setQcSelectedIds] = useState<Set<string>>(new Set());
-
-  const qcToggleSelect = useCallback((id: string) => {
-    setQcSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const qcHandleBulkAction = useCallback((action: import("../api").BatchAction, ids: string[]) => {
-    onBulkAction?.(action, ids);
-    setQcSelectedIds(new Set());
-    setQcSelectMode(false);
-  }, [onBulkAction]);
-
-  const qcUnreadCount = (orphanSessions ?? []).filter(
-    (s) => !s.archived && isUnread?.(s.sessionId, s.modifiedTime),
-  ).length;
-
-  if (!task && isQuickChats) {
-    return (
-      <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border min-w-0 overflow-hidden">
-        {/* Header */}
-        <div className="p-3 border-b border-border">
-          <div className="flex items-center gap-2">
-            <MessageSquare size={16} className="text-text-muted" />
-            <span className="text-sm font-semibold text-text-primary flex-1">
-              Quick Chats
-            </span>
-            {!qcSelectMode && qcUnreadCount > 0 && onMarkAllRead && (
-              <button
-                onClick={onMarkAllRead}
-                className="text-text-muted hover:text-accent transition-colors p-1 rounded hover:bg-bg-hover"
-                title="Mark all as read"
-              >
-                <CheckCheck size={16} />
-              </button>
-            )}
-            {onBulkAction && (orphanSessions ?? []).filter((s) => !s.archived).length > 0 && (
-              <button
-                onClick={() => {
-                  setQcSelectMode(!qcSelectMode);
-                  if (qcSelectMode) setQcSelectedIds(new Set());
-                }}
-                className={`text-xs px-2 py-0.5 rounded transition-colors ${
-                  qcSelectMode
-                    ? "text-accent bg-accent/10"
-                    : "text-text-muted hover:text-text-secondary"
-                }`}
-              >
-                {qcSelectMode ? "Done" : "Select"}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 min-h-0 relative">
-        <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
-           <SessionList
-            variant="global"
-            sessions={orphanSessions ?? []}
-            activeSessionId={activeSessionId}
-            onSelectSession={onSelectSession}
-            onNewSession={onNewQuickChat ?? (() => {})}
-            newButtonLabel="+ Quick Chat"
-            isUnread={isUnread}
-            onArchiveSession={onArchiveSession}
-            archivingIds={archivingIds}
-            exitingIds={exitingIds}
-            tasks={tasks}
-            onLinkToTask={onLinkToTask}
-            onDeleteSession={onDeleteSession}
-            onDuplicateSession={onDuplicateSession}
-            onMarkUnread={onMarkUnread}
-            hasDraft={hasDraft}
-            selectMode={qcSelectMode}
-            selectedIds={qcSelectedIds}
-            onToggleSelect={qcToggleSelect}
-            onBulkAction={qcHandleBulkAction}
-            onRequestArchived={onRequestArchived}
-            archivedLoaded={archivedLoaded}
-          />
-        </PullToRefresh>
-        </div>
-      </div>
-    );
-  }
 
   // ── No task selected (empty state) ───────────────────────────
   if (!task) {
