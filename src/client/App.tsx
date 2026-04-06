@@ -849,7 +849,7 @@ export default function App() {
         onMoveAndReorder={handleMoveAndReorder}
         orphanSessions={globalSessions}
         activeSessionId={activeSessionId}
-        onSelectSession={handleSelectSession}
+        onSelectSession={(id) => navigate(`/sessions/${id}`)}
         onNewQuickChat={handleNewQuickChat}
         quickChatsExpanded={quickChatsExpanded}
         onToggleQuickChats={() => persistQuickChatsExpanded((v) => !v)}
