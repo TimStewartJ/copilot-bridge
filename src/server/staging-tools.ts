@@ -633,6 +633,19 @@ export const STAGING_TOOLS = [
         return { success: false, error: "Nothing to deploy — staging branch has no commits ahead of production." };
       }
 
+      // Stash any uncommitted changes so they don't block pull/push
+      const stashResult = run("git stash --include-untracked", PRODUCTION_ROOT);
+      const didStash = stashResult.ok && !stashResult.output.includes("No local changes");
+      if (didStash) {
+        log("Stashed uncommitted production changes");
+      }
+      const unstashProduction = () => {
+        if (didStash) {
+          run("git stash pop", PRODUCTION_ROOT);
+          log("Restored stashed production changes");
+        }
+      };
+
       // Pull latest production so the rebase target is current
       const pullResult = run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
       if (pullResult.ok) {
@@ -645,6 +658,7 @@ export const STAGING_TOOLS = [
       const rebaseResult = run(`git rebase ${prodBranch}`, stagingDir);
       if (!rebaseResult.ok) {
         run("git rebase --abort", stagingDir);
+        unstashProduction();
         log(`Staging rebase failed — manual conflict resolution needed`);
         return {
           success: false,
@@ -677,6 +691,7 @@ export const STAGING_TOOLS = [
       const mergeResult = run(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
       if (!mergeResult.ok) {
         run("git merge --abort", PRODUCTION_ROOT);
+        unstashProduction();
         try { unlinkSync(PRE_DEPLOY_SHA_FILE); } catch {}
         return {
           success: false,
@@ -717,8 +732,11 @@ export const STAGING_TOOLS = [
       if (pushResult.ok) {
         log("Pushed to origin");
       } else {
-        log(`Git push failed (non-fatal): ${pushResult.output.slice(-200)}`);
+        log(`WARNING: Git push to origin failed — commits are local only. ` +
+            `Run 'git push origin ${prodBranch}' manually. ${pushResult.output.slice(-200)}`);
       }
+
+      unstashProduction();
 
       // Signal launcher to restart
       const dataDir = join(PRODUCTION_ROOT, "data");
