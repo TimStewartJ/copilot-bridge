@@ -223,6 +223,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const meta = ctx.sessionMetaStore.getMeta(sessionId);
     if (meta?.archived) {
       ctx.sessionMetaStore.setArchived(sessionId, false);
+      ctx.globalBus.emit({ type: "session:archived", sessionId, archived: false });
       console.log(`[web] [${sessionId.slice(0, 8)}] auto-unarchived (user sent message)`);
     }
 
@@ -364,6 +365,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
     try {
       ctx.sessionMetaStore.setArchived(req.params.id, archived);
+      ctx.globalBus.emit({ type: "session:archived", sessionId: req.params.id, archived });
       res.json({ ok: true, archived });
     } catch (err) {
       res.status(500).json({ error: String(err) });

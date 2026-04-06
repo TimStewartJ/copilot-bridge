@@ -217,6 +217,13 @@ export default function App() {
           );
         }
         break;
+      case "session:archived":
+        if (typeof event.archived === "boolean") {
+          setSessions((prev) =>
+            prev.map((s) => s.sessionId === event.sessionId ? { ...s, archived: event.archived! } : s),
+          );
+        }
+        break;
       case "server:restart-pending":
         setRestartPhase("pending");
         setRestartWaiting(event.waitingSessions ?? 0);
