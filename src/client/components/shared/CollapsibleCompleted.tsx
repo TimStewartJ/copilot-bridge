@@ -4,11 +4,13 @@ import { ChevronRight } from "lucide-react";
 interface CollapsibleCompletedProps {
   count: number;
   children: ReactNode;
+  /** Label text after the count (default: "completed") */
+  label?: string;
   /** Extra classes on the toggle button text */
   className?: string;
 }
 
-export default function CollapsibleCompleted({ count, children, className }: CollapsibleCompletedProps) {
+export default function CollapsibleCompleted({ count, children, label = "completed", className }: CollapsibleCompletedProps) {
   const [collapsed, setCollapsed] = useState(true);
 
   if (count === 0) return null;
@@ -23,7 +25,7 @@ export default function CollapsibleCompleted({ count, children, className }: Col
           size={10}
           className={`transition-transform ${collapsed ? "" : "rotate-90"}`}
         />
-        <span>{count} completed</span>
+        <span>{count} {label}</span>
       </button>
       {!collapsed && children}
     </div>
