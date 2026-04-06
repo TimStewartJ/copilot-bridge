@@ -3,7 +3,7 @@ import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import TaskPickerDialog from "./TaskPickerDialog";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -65,6 +65,7 @@ interface TaskRailProps {
   archivedLoaded?: boolean;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
+  onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
 }
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -132,6 +133,7 @@ export default function TaskRail({
   archivedLoaded,
   archivingIds,
   exitingIds,
+  onBulkAction,
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
@@ -237,6 +239,25 @@ export default function TaskRail({
   const closeQcMenu = useCallback(() => rawQcCloseMenu(), [rawQcCloseMenu]);
   const qcCtxSession = qcCtxMenu ? orphanSessions.find((s) => s.sessionId === qcCtxMenu.id) : null;
   const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
+
+  // Quick chat select mode (bulk actions)
+  const [qcSelectMode, setQcSelectMode] = useState(false);
+  const [qcSelectedIds, setQcSelectedIds] = useState<Set<string>>(new Set());
+  const qcToggleSelect = useCallback((id: string) => {
+    setQcSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const qcExitSelectMode = useCallback(() => {
+    setQcSelectMode(false);
+    setQcSelectedIds(new Set());
+  }, []);
+  const qcHandleBulkAction = useCallback((action: import("../api").BatchAction, ids: string[]) => {
+    onBulkAction?.(action, ids);
+    qcExitSelectMode();
+  }, [onBulkAction, qcExitSelectMode]);
 
   // Archived orphan sessions
   const [showArchivedQc, setShowArchivedQc] = useState(false);
@@ -611,7 +632,7 @@ export default function TaskRail({
               {quickChatsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               <MessageSquare size={12} />
               <span className="font-medium">Quick Chats</span>
-              {orphanIndicators.hasActivity && (
+              {orphanIndicators.hasActivity && !qcSelectMode && (
                 <span className="ml-auto flex items-center gap-1">
                   {orphanIndicators.totalBusy > 0 && (
                     <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse" />
@@ -621,11 +642,11 @@ export default function TaskRail({
                   )}
                 </span>
               )}
-              {!orphanIndicators.hasActivity && sortedOrphanSessions.length > 0 && (
+              {!orphanIndicators.hasActivity && !qcSelectMode && sortedOrphanSessions.length > 0 && (
                 <span className="text-text-faint ml-auto text-[10px]">{sortedOrphanSessions.length}</span>
               )}
             </button>
-            {quickChatsExpanded && orphanIndicators.totalUnread > 0 && onMarkAllQuickChatsRead && (
+            {quickChatsExpanded && !qcSelectMode && orphanIndicators.totalUnread > 0 && onMarkAllQuickChatsRead && (
               <button
                 onClick={onMarkAllQuickChatsRead}
                 className="p-1 mr-2 rounded text-text-muted hover:text-accent hover:bg-bg-hover transition-colors"
@@ -634,10 +655,57 @@ export default function TaskRail({
                 <CheckCheck size={14} />
               </button>
             )}
+            {quickChatsExpanded && qcSelectMode && (
+              <button
+                onClick={qcExitSelectMode}
+                className="text-xs px-2 py-0.5 mr-2 rounded text-accent bg-accent/10 transition-colors"
+              >
+                Done
+              </button>
+            )}
           </div>
           {quickChatsExpanded && (
             <div className="space-y-0.5 mt-0.5">
-              {onNewQuickChat && (
+              {/* Bulk action bar */}
+              {qcSelectMode && onBulkAction && (
+                <div className="flex items-center gap-1 flex-wrap text-[11px] px-2 py-1">
+                  <button
+                    onClick={() => {
+                      const allIds = new Set(sortedOrphanSessions.map((s) => s.sessionId));
+                      setQcSelectedIds((prev) => prev.size === allIds.size ? new Set() : allIds);
+                    }}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+                  >
+                    {qcSelectedIds.size === sortedOrphanSessions.length && sortedOrphanSessions.length > 0
+                      ? <SquareCheckBig size={12} className="text-accent" />
+                      : <Square size={12} />}
+                    All
+                  </button>
+                  {qcSelectedIds.size > 0 && (
+                    <>
+                      <span className="text-text-faint">·</span>
+                      <span className="text-text-muted">{qcSelectedIds.size}</span>
+                      <span className="text-text-faint">·</span>
+                      <button
+                        onClick={() => qcHandleBulkAction("archive", [...qcSelectedIds])}
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+                      >
+                        <Archive size={12} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Delete ${qcSelectedIds.size} session${qcSelectedIds.size === 1 ? "" : "s"}? This cannot be undone.`))
+                            qcHandleBulkAction("delete", [...qcSelectedIds]);
+                        }}
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-error"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {!qcSelectMode && onNewQuickChat && (
                 <button
                   onClick={onNewQuickChat}
                   className="w-full mb-1 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors"
@@ -652,24 +720,34 @@ export default function TaskRail({
                 const isActive = session.sessionId === activeSessionId;
                 const busy = session.busy;
                 const unread = !busy && isUnread?.(session.sessionId, session.modifiedTime);
+                const isSelected = qcSelectedIds.has(session.sessionId);
+                const handleClick = qcSelectMode
+                  ? () => qcToggleSelect(session.sessionId)
+                  : undefined;
                 return (
                   <button
                     key={session.sessionId}
-                    {...bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId))}
+                    {...(qcSelectMode ? { onClick: handleClick } : bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId)))}
                     className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-                      qcCtxMenu?.id === session.sessionId
-                        ? "bg-bg-hover ring-1 ring-border"
-                        : isActive && unread
-                          ? "bg-bg-hover border-l-2 border-text-primary"
-                          : isActive
-                            ? "bg-bg-hover"
-                            : unread
-                              ? "border-l-2 border-text-primary hover:bg-bg-hover"
-                              : "hover:bg-bg-hover"
-                    } ${isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
+                      qcSelectMode && isSelected
+                        ? "bg-accent/10"
+                        : qcCtxMenu?.id === session.sessionId
+                          ? "bg-bg-hover ring-1 ring-border"
+                          : isActive && unread
+                            ? "bg-bg-hover border-l-2 border-text-primary"
+                            : isActive
+                              ? "bg-bg-hover"
+                              : unread
+                                ? "border-l-2 border-text-primary hover:bg-bg-hover"
+                                : "hover:bg-bg-hover"
+                    } ${!qcSelectMode && isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
                   >
                     <div className="flex items-center">
-                      {busy ? (
+                      {qcSelectMode ? (
+                        isSelected
+                          ? <SquareCheckBig size={13} className="text-accent shrink-0 mr-1.5" />
+                          : <Square size={13} className="text-text-muted shrink-0 mr-1.5" />
+                      ) : busy ? (
                         <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
                       ) : unread ? (
                         <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
@@ -686,7 +764,7 @@ export default function TaskRail({
                 );
               })}
               {/* Archived quick chats */}
-              {(archivedOrphanSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
+              {!qcSelectMode && (archivedOrphanSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
                 <>
                   <button
                     onClick={() => {
@@ -983,6 +1061,20 @@ export default function TaskRail({
               label="Duplicate"
               onClick={() => { onDuplicateSession(qcCtxSession.sessionId); closeQcMenu(); }}
             />
+          )}
+          {onBulkAction && (
+            <>
+              <CtxDivider />
+              <CtxItem
+                icon={<SquareCheckBig size={14} />}
+                label="Select"
+                onClick={() => {
+                  setQcSelectMode(true);
+                  setQcSelectedIds(new Set([qcCtxSession.sessionId]));
+                  closeQcMenu();
+                }}
+              />
+            </>
           )}
           {onDeleteSession && (
             <>
