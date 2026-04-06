@@ -219,6 +219,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(429).json({ error: "Session is busy, please wait" });
     }
 
+    // Auto-unarchive if user sends a message to an archived session
+    const meta = ctx.sessionMetaStore.getMeta(sessionId);
+    if (meta?.archived) {
+      ctx.sessionMetaStore.setArchived(sessionId, false);
+      console.log(`[web] [${sessionId.slice(0, 8)}] auto-unarchived (user sent message)`);
+    }
+
     const attachCount = Array.isArray(attachments) ? attachments.length : 0;
     console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"${attachCount ? ` (+${attachCount} attachment${attachCount > 1 ? "s" : ""})` : ""}`);
 
