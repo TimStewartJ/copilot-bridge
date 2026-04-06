@@ -3,7 +3,7 @@ import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -32,6 +32,7 @@ interface TaskRailProps {
   onOpenSettings: () => void;
   onOpenDocs: () => void;
   isDocsActive: boolean;
+  isDashboardActive: boolean;
   expanded: boolean;
   onToggleExpanded: () => void;
   sessions?: Session[];
@@ -89,6 +90,7 @@ export default function TaskRail({
   onOpenSettings,
   onOpenDocs,
   isDocsActive,
+  isDashboardActive,
   expanded,
   onToggleExpanded,
   sessions = [],
@@ -110,6 +112,9 @@ export default function TaskRail({
   quickChatsExpanded,
   onToggleQuickChats,
 }: TaskRailProps) {
+  const navBtn = (active: boolean) =>
+    active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
+
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
     for (const s of sessions) map.set(s.sessionId, s);
@@ -337,28 +342,19 @@ export default function TaskRail({
           )}
         </div>
 
-        {/* Quick Chats + Docs + New Task */}
+        {/* Dashboard + Docs + New Task */}
         <div className="flex flex-col items-center gap-2 py-2">
           <button
-            onClick={() => {
-              onToggleExpanded();
-              if (!quickChatsExpanded) onToggleQuickChats?.();
-            }}
-            title="Quick Chats"
-            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${isQuickChatsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"}`}
+            onClick={onGoHome}
+            title="Dashboard"
+            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
           >
-            <MessageSquare size={18} />
-            {orphanIndicators.totalBusy > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
-            )}
-            {orphanIndicators.totalUnread > 0 && !orphanIndicators.totalBusy && (
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
-            )}
+            <LayoutDashboard size={18} />
           </button>
           <button
             onClick={onOpenDocs}
             title="Docs"
-            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${isDocsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"}`}
+            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDocsActive)}`}
           >
             <BookOpen size={18} />
           </button>
@@ -552,94 +548,102 @@ export default function TaskRail({
             })}
           </>
         )}
+        {/* Quick Chats — collapsible inline section */}
+        <div className="mt-2">
+          <button
+            onClick={onToggleQuickChats}
+            className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors cursor-pointer ${
+              isQuickChatsActive
+                ? "text-text-primary"
+                : "text-text-muted hover:text-text-primary"
+            }`}
+          >
+            {quickChatsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            <MessageSquare size={12} />
+            <span className="font-medium">Quick Chats</span>
+            {orphanIndicators.hasActivity && (
+              <span className="ml-auto flex items-center gap-1">
+                {orphanIndicators.totalBusy > 0 && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse" />
+                )}
+                {orphanIndicators.totalUnread > 0 && (
+                  <span className="text-[10px] text-text-faint">{orphanIndicators.totalUnread}</span>
+                )}
+              </span>
+            )}
+            {!orphanIndicators.hasActivity && sortedOrphanSessions.length > 0 && (
+              <span className="text-text-faint ml-auto text-[10px]">{sortedOrphanSessions.length}</span>
+            )}
+          </button>
+          {quickChatsExpanded && (
+            <div className="space-y-0.5 mt-0.5">
+              {onNewQuickChat && (
+                <button
+                  onClick={onNewQuickChat}
+                  className="w-full mb-1 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors"
+                >
+                  + Quick Chat
+                </button>
+              )}
+              {sortedOrphanSessions.length === 0 && (
+                <div className="text-center text-text-faint text-[10px] py-3">No quick chats yet</div>
+              )}
+              {sortedOrphanSessions.map((session) => {
+                const isActive = session.sessionId === activeSessionId;
+                const busy = session.busy;
+                const unread = !busy && isUnread?.(session.sessionId, session.modifiedTime);
+                return (
+                  <button
+                    key={session.sessionId}
+                    onClick={() => onSelectSession?.(session.sessionId)}
+                    className={`w-full text-left px-3 py-2 rounded-md text-sm transition-all duration-150 ${
+                      isActive && unread
+                        ? "bg-bg-hover border-l-2 border-text-primary"
+                        : isActive
+                          ? "bg-bg-hover"
+                          : unread
+                            ? "border-l-2 border-text-primary hover:bg-bg-hover"
+                            : "hover:bg-bg-hover"
+                    }`}
+                  >
+                    <div className="flex items-center">
+                      {busy ? (
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
+                      ) : unread ? (
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
+                      ) : null}
+                      <span className={`truncate flex-1 text-xs ${unread ? "font-semibold" : "font-medium"}`}>
+                        {session.summary || "New chat"}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-text-muted mt-0.5">
+                      {timeAgo(session.modifiedTime)}
+                      {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Quick Chats — collapsible inline section */}
+      {/* Dashboard */}
       <div className="px-2 pb-1">
         <button
-          onClick={onToggleQuickChats}
-          className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors cursor-pointer ${
-            isQuickChatsActive
-              ? "text-text-primary"
-              : "text-text-muted hover:text-text-primary"
-          }`}
+          onClick={onGoHome}
+          className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isDashboardActive)}`}
         >
-          {quickChatsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <MessageSquare size={12} />
-          <span className="font-medium">Quick Chats</span>
-          {orphanIndicators.hasActivity && (
-            <span className="ml-auto flex items-center gap-1">
-              {orphanIndicators.totalBusy > 0 && (
-                <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse" />
-              )}
-              {orphanIndicators.totalUnread > 0 && (
-                <span className="text-[10px] text-text-faint">{orphanIndicators.totalUnread}</span>
-              )}
-            </span>
-          )}
-          {!orphanIndicators.hasActivity && sortedOrphanSessions.length > 0 && (
-            <span className="text-text-faint ml-auto text-[10px]">{sortedOrphanSessions.length}</span>
-          )}
+          <LayoutDashboard size={14} />
+          Dashboard
         </button>
-        {quickChatsExpanded && (
-          <div className="space-y-0.5 mt-0.5">
-            {onNewQuickChat && (
-              <button
-                onClick={onNewQuickChat}
-                className="w-full mb-1 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors"
-              >
-                + Quick Chat
-              </button>
-            )}
-            {sortedOrphanSessions.length === 0 && (
-              <div className="text-center text-text-faint text-[10px] py-3">No quick chats yet</div>
-            )}
-            {sortedOrphanSessions.map((session) => {
-              const isActive = session.sessionId === activeSessionId;
-              const busy = session.busy;
-              const unread = !busy && isUnread?.(session.sessionId, session.modifiedTime);
-              return (
-                <button
-                  key={session.sessionId}
-                  onClick={() => onSelectSession?.(session.sessionId)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-all duration-150 ${
-                    isActive && unread
-                      ? "bg-bg-hover border-l-2 border-text-primary"
-                      : isActive
-                        ? "bg-bg-hover"
-                        : unread
-                          ? "border-l-2 border-text-primary hover:bg-bg-hover"
-                          : "hover:bg-bg-hover"
-                  }`}
-                >
-                  <div className="flex items-center">
-                    {busy ? (
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
-                    ) : unread ? (
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
-                    ) : null}
-                    <span className={`truncate flex-1 text-xs ${unread ? "font-semibold" : "font-medium"}`}>
-                      {session.summary || "New chat"}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-text-muted mt-0.5">
-                    {timeAgo(session.modifiedTime)}
-                    {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* Docs */}
       <div className="px-2 pb-1">
         <button
           onClick={onOpenDocs}
-          className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${
-            isDocsActive ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
-          }`}
+          className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isDocsActive)}`}
         >
           <BookOpen size={14} />
           Docs
