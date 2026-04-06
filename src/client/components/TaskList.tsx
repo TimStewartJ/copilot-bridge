@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown, Plus } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -28,7 +28,7 @@ interface TaskListProps {
   taskGroups?: TaskGroup[];
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
-  onNewTask: () => void;
+  onNewTask: (groupId?: string) => void;
   sessions?: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;
@@ -210,6 +210,18 @@ export default function TaskList({
                     {group ? (isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />) : null}
                     {group?.name ?? "Ungrouped"} ({section.tasks.length})
                   </button>
+                  {group && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNewTask(group.id);
+                      }}
+                      title={`New task in ${group.name}`}
+                      className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  )}
                   {group && onReorderGroups && taskGroups.length > 1 && (() => {
                     const groupIndex = taskGroups.indexOf(group);
                     return (

@@ -206,9 +206,9 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("task_create", {
     description: "Create a new task",
-    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." } }, required: ["title"] },
+    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { type: "string", description: "Optional task group ID to create the task in" } }, required: ["title"] },
     handler: async (args: any) => {
-      const task = ctx.taskStore.createTask(args.title);
+      const task = ctx.taskStore.createTask(args.title, args.groupId);
       if (Array.isArray(args.tags) && args.tags.length > 0) {
         const tagIds = args.tags.map((name: string) => {
           const existing = ctx.tagStore?.getTagByName(name);

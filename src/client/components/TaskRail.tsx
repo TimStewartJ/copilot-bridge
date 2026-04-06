@@ -25,7 +25,7 @@ interface TaskRailProps {
   taskGroups?: TaskGroup[];
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
-  onNewTask: () => void;
+  onNewTask: (groupId?: string) => void;
   onSelectQuickChats: () => void;
   isQuickChatsActive: boolean;
   onGoHome: () => void;
@@ -435,6 +435,7 @@ export default function TaskRail({
                   <DroppableGroup key={groupId} id={groupId}>
                     <div className={`mb-1 ${colorBg ? `${colorBg} rounded-lg` : ""}`}>
                       {/* Group header */}
+                      <div className="flex items-center group/header">
                       <button
                         onClick={() => {
                           if (group && onUpdateGroup) {
@@ -447,7 +448,7 @@ export default function TaskRail({
                             setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
                           }
                         }}
-                        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer group/header"
+                        className="flex-1 min-w-0 flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                       >
                         {group ? (
                           isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
@@ -455,6 +456,19 @@ export default function TaskRail({
                         <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
                         <span className="text-text-faint ml-auto text-[10px]">{section.tasks.length}</span>
                       </button>
+                      {group && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onNewTask(group.id);
+                          }}
+                          title={`New task in ${group.name}`}
+                          className="p-1 mr-1.5 rounded text-text-faint opacity-0 group-hover/header:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
+                        >
+                          <Plus size={12} />
+                        </button>
+                      )}
+                      </div>
 
                       {/* Group tasks */}
                       {!isCollapsed && (
