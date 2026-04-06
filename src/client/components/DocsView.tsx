@@ -22,6 +22,7 @@ import {
   type DbSchema,
   type DbEntry,
 } from "../api";
+import { TAG_COLOR_BG, TAG_COLOR_TEXT } from "../tag-colors";
 import {
   FileText,
   Folder,
@@ -894,14 +895,18 @@ export default function DocsView() {
                 {page.title}
               </h1>
               <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                {page.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="px-1.5 py-0.5 text-[10px] rounded bg-bg-hover text-text-muted"
-                  >
-                    {tag}
-                  </span>
-                ))}
+                {page.tags.map((tag) => {
+                  const bg = TAG_COLOR_BG[tag] ?? "bg-bg-hover";
+                  const text = TAG_COLOR_TEXT[tag] ?? "text-text-muted";
+                  return (
+                    <span
+                      key={tag}
+                      className={`px-1.5 py-0.5 text-[10px] rounded ${bg} ${text}`}
+                    >
+                      {tag}
+                    </span>
+                  );
+                })}
               </div>
               <div className="text-[10px] text-text-faint mt-1">
                 Created {new Date(page.created).toLocaleDateString()} · Modified{" "}

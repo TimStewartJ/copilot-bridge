@@ -28,6 +28,8 @@ import type { TodoStore } from "./todo-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
+import type { DocsIndex } from "./docs-index.js";
+import type { DocsStore, DocTreeNode } from "./docs-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -625,6 +627,8 @@ export interface SessionManagerDeps {
   todoStore?: TodoStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
+  docsIndex?: DocsIndex;
+  docsStore?: DocsStore;
   config: { sessionMcpServers: Record<string, any>; model?: string };
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
@@ -749,6 +753,39 @@ export class SessionManager {
       if (Object.keys(resolved.mergedMcpServers).length > 0) {
         const currentMcp = cfg.mcpServers ?? {};
         cfg.mcpServers = { ...currentMcp, ...resolved.mergedMcpServers };
+      }
+
+      // Inject related docs manifest — tell the AI which docs are available
+      if (resolved.tags.length > 0 && this.deps.docsIndex) {
+        const tagNames = resolved.tags.map((t) => t.name);
+        const relatedDocs = this.deps.docsIndex.findDocsByTagNames(tagNames, 20);
+        if (relatedDocs.length > 0) {
+          const manifest = relatedDocs.map((d) => `- ${d.title} (${d.path})`).join("\n");
+          contextParts.push(
+            `\n<related_docs>\nThese knowledge base docs are related to your current task's tags (${tagNames.join(", ")}). Use docs_read to access them when relevant:\n${manifest}\n</related_docs>`,
+          );
+        }
+      }
+    }
+
+    // Inject 2-level docs tree so the AI knows the knowledge base structure
+    if (this.deps.docsStore) {
+      const tree = this.deps.docsStore.listTree();
+      if (tree.length > 0) {
+        const renderTree = (nodes: DocTreeNode[], depth = 0): string => {
+          return nodes.map((n) => {
+            const indent = "  ".repeat(depth);
+            if (n.type === "folder") {
+              const label = n.isDb ? `${n.name}/ (collection)` : `${n.name}/`;
+              const children = depth < 1 && n.children?.length
+                ? "\n" + renderTree(n.children, depth + 1)
+                : n.children?.length ? ` (${n.children.length} items)` : "";
+              return `${indent}- 📁 ${label}${children}`;
+            }
+            return `${indent}- ${n.name}`;
+          }).join("\n");
+        };
+        contextParts.push(`\n<docs_tree>\nKnowledge base structure (use docs_read/docs_search to access):\n${renderTree(tree)}\n</docs_tree>`);
       }
     }
 

@@ -564,6 +564,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
     res.json({ success: true });
   });
 
+  // Related docs by tag
+  router.get("/tags/related-docs", (req, res) => {
+    if (!ctx.tagStore || !ctx.docsIndex) return res.json({ docs: [] });
+    const tagIds = (req.query.tags as string || "").split(",").filter(Boolean);
+    if (tagIds.length === 0) return res.json({ docs: [] });
+    const tagNames = tagIds
+      .map((id) => ctx.tagStore!.getTag(id))
+      .filter(Boolean)
+      .map((t) => t!.name);
+    const docs = ctx.docsIndex.findDocsByTagNames(tagNames);
+    res.json({ docs });
+  });
+
   // Set tags on a task
   router.put("/tasks/:id/tags", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });

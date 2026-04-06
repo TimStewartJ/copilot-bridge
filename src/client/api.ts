@@ -461,6 +461,20 @@ export async function removeTagMcpServer(tagId: string, serverName: string): Pro
   await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, { method: "DELETE" });
 }
 
+export interface RelatedDoc {
+  path: string;
+  title: string;
+  tags: string[];
+  folder: string;
+  modified: string;
+}
+
+export async function fetchRelatedDocs(tagIds: string[]): Promise<RelatedDoc[]> {
+  if (tagIds.length === 0) return [];
+  const data = await apiFetch<{ docs: RelatedDoc[] }>(`/api/tags/related-docs?tags=${tagIds.join(",")}`);
+  return data.docs;
+}
+
 // ── Plan API ──────────────────────────────────────────────────────
 
 export interface PlanData {

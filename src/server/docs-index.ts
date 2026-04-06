@@ -254,9 +254,39 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     return result;
   }
 
+  /** Find docs whose frontmatter tags match any of the given tag names (case-insensitive) */
+  function findDocsByTagNames(tagNames: string[], limit = 50): { path: string; title: string; tags: string[]; folder: string; modified: string }[] {
+    if (tagNames.length === 0) return [];
+
+    // docs_pages.tags is comma-separated. Use LIKE matching for each tag name.
+    const conditions = tagNames.map(() => "LOWER(tags) LIKE ?");
+    const params = tagNames.map((n) => `%${n.toLowerCase()}%`);
+
+    const rows = db.prepare(`
+      SELECT path, title, tags, folder, modified
+      FROM docs_pages
+      WHERE ${conditions.join(" OR ")}
+      ORDER BY modified DESC
+      LIMIT ?
+    `).all(...params, limit) as any[];
+
+    // Post-filter to ensure exact tag name match (not substring)
+    const tagNamesLower = new Set(tagNames.map((n) => n.toLowerCase()));
+    return rows
+      .map((r) => ({
+        path: r.path as string,
+        title: (r.title || r.path) as string,
+        tags: r.tags ? (r.tags as string).split(", ").filter(Boolean) : [] as string[],
+        folder: (r.folder || "") as string,
+        modified: (r.modified || "") as string,
+      }))
+      .filter((doc) => doc.tags.some((t) => tagNamesLower.has(t.toLowerCase())));
+  }
+
   return {
     reindex, indexPage, removePage, removeFolder,
     search, queryByFolder, resolveWikilink, resolveWikilinks,
+    findDocsByTagNames,
   };
 }
 
