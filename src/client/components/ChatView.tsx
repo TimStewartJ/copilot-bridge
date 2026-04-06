@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { fetchMessages, fetchMcpStatus, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
@@ -8,7 +8,6 @@ import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import { ClipboardList, Loader2 } from "lucide-react";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 
 const PAGE_SIZE = 50;
 
@@ -32,8 +31,6 @@ function formatToolArgs(args: Record<string, unknown>): string {
   return parts.join(" ");
 }
 
-const PENDING_ID = "__pending__";
-
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -43,13 +40,13 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const loadingMoreRef = useRef(false);
-  // Tracks the session that Virtuoso is currently displaying, so
-  // followOutput can unconditionally stick during initial mount.
-  const mountedSessionRef = useRef<string | null>(null);
+  // Stores scrollHeight before a prepend so we can preserve scroll position.
+  const prevScrollHeightRef = useRef<number | null>(null);
 
   const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
     // Assign client-side IDs to streamed messages that don't have server IDs
@@ -85,9 +82,6 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const effectiveMcpServers = (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus) ?? [];
 
   // Load history + MCP status when session changes.
-  // Both are co-fetched so McpStatusBar is already rendered when Virtuoso
-  // mounts — preventing an async layout shift that would invalidate
-  // Virtuoso's initial scroll position.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const prevSession = prevSessionRef.current;
@@ -115,9 +109,6 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     // Reset stick-to-bottom so the new session starts following output,
     // regardless of scroll position in the previous session.
     stickToBottomRef.current = true;
-    // Mark that Virtuoso hasn't mounted for this session yet — followOutput
-    // will unconditionally stick until atBottomStateChange confirms we're there.
-    mountedSessionRef.current = null;
 
     const controller = new AbortController();
 
@@ -166,11 +157,38 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     };
   }, [sessionId, reconnect]);
 
-  // Auto-scroll when streaming state changes, but only if sticking to bottom.
-  // Uses Virtuoso's own scrollToIndex which is always available via the handle ref.
+  // Detect stick-to-bottom: if user is near the bottom, keep auto-scrolling.
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }, []);
+
+  // Scroll preservation on prepend + auto-scroll on message changes.
+  // useLayoutEffect runs before paint, preventing flash.
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    // If we just prepended older messages, preserve scroll position.
+    const prevHeight = prevScrollHeightRef.current;
+    if (prevHeight != null) {
+      el.scrollTop += el.scrollHeight - prevHeight;
+      prevScrollHeightRef.current = null;
+      return;
+    }
+
+    // Otherwise auto-scroll to bottom (initial load, new messages appended, etc.)
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages]);
+
+  // Auto-scroll during streaming (content grows within the pending block).
   useEffect(() => {
     if (!stickToBottomRef.current) return;
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [streamingContent, activeTools, toolProgress, isStreaming, creating]);
 
   // Load older messages when user scrolls to top
@@ -182,6 +200,8 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     fetchMessages(sessionId, { limit: PAGE_SIZE, before: beforeIndex })
       .then(({ messages: older, hasMore: more }) => {
         if (older.length > 0) {
+          // Save scroll height before prepending so the layout effect can preserve position.
+          prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
           setMessages((prev) => [...older, ...prev]);
           firstItemIndex.current = beforeIndex - older.length;
         }
@@ -193,6 +213,19 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         setLoadingMore(false);
       });
   }, [sessionId, hasMore]);
+
+  // Load older messages when the top sentinel scrolls into view.
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    const container = scrollContainerRef.current;
+    if (!sentinel || !container) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) loadOlderMessages(); },
+      { root: container, rootMargin: "100px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadOlderMessages]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (isStreaming || creating) return;
@@ -216,7 +249,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     if (!sessionId) return;
     onDraftClear?.();
     setMessages((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
-    // Force stick-to-bottom so the layoutEffect scrolls on the next render
+    // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
     try {
       await sendMessage(prompt, attachments);
@@ -229,8 +262,6 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend]);
 
   // Build pending indicator content (streaming bubble + active tools + status text).
-  // This is rendered as a synthetic data item (not a Virtuoso Footer) so that
-  // scrollToIndex("LAST") and followOutput naturally scroll it into view.
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
 
@@ -299,17 +330,6 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     return <div className="space-y-4 pb-4">{parts}</div>;
   }, [streamingContent, activeTools, toolProgress, isStreaming, streamStatus, intentText, creating]);
 
-  // Build display list: real messages + optional synthetic pending item.
-  // Putting the pending indicator in the data array (instead of the Footer)
-  // ensures scrollToIndex("LAST") and followOutput include it.
-  // Depend on !!pendingContent (not the JSX itself) so the array reference
-  // stays stable during streaming — avoids re-spreading on every token.
-  const hasPending = !!pendingContent;
-  const displayMessages = useMemo(() => {
-    if (!hasPending) return messages;
-    return [...messages, { role: "assistant" as const, content: "", id: PENDING_ID }];
-  }, [messages, hasPending]);
-
   const isDraft = !sessionId && !!onCreateAndSend;
 
   if (!sessionId && !isDraft) {
@@ -348,56 +368,31 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           Send a message to get started
         </div>
       ) : (
-        <Virtuoso
-          ref={virtuosoRef}
-          className="flex-1 overflow-x-hidden"
-          alignToBottom
-          defaultItemHeight={150}
-          data={displayMessages}
-          firstItemIndex={firstItemIndex.current}
-          initialTopMostItemIndex={{ index: "LAST", align: "end" }}
-          followOutput={() => {
-            // During initial mount (before atBottomStateChange has confirmed
-            // we've settled), always follow — Virtuoso's progressive item
-            // measurement can transiently set atBottom=false as content heights
-            // grow, which would disable followOutput exactly when we need it.
-            if (!mountedSessionRef.current) return "auto";
-            return stickToBottomRef.current ? "smooth" : false;
-          }}
-          atBottomStateChange={(atBottom) => {
-            stickToBottomRef.current = atBottom;
-            // First time we reach bottom after mount = initial positioning done.
-            if (atBottom && !mountedSessionRef.current) {
-              mountedSessionRef.current = sessionId;
-            }
-          }}
-          atTopStateChange={(atTop) => { if (atTop) loadOlderMessages(); }}
-          atTopThreshold={100}
-          increaseViewportBy={{ top: 200, bottom: 200 }}
-          itemContent={(_index, msg) =>
-            msg.id === PENDING_ID ? (
-              <div className="pt-4">{pendingContent}</div>
-            ) : (
-              <div className="px-3 md:px-5 pt-4">
-                <MessageBubble key={msg.id ?? `${msg.role}-${_index}`} message={msg} />
-              </div>
-            )
-          }
-          components={{
-            Header: () =>
-              loadingMore ? (
-                <div className="text-center py-3 text-accent/60 text-xs">
-                  <Loader2 size={14} className="inline animate-spin mr-1" />
-                  Loading older messages...
-                </div>
-              ) : hasMore ? (
-                <div className="text-center py-2 text-text-muted text-xs">
-                  Scroll up for more
-                </div>
-              ) : null,
-            Footer: () => <div className="h-4" />,
-          }}
-        />
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto overflow-x-hidden"
+          onScroll={handleScroll}
+        >
+          {/* Top sentinel for loading older messages */}
+          <div ref={topSentinelRef} className="h-px" />
+          {loadingMore ? (
+            <div className="text-center py-3 text-accent/60 text-xs">
+              <Loader2 size={14} className="inline animate-spin mr-1" />
+              Loading older messages...
+            </div>
+          ) : hasMore ? (
+            <div className="text-center py-2 text-text-muted text-xs">
+              Scroll up for more
+            </div>
+          ) : null}
+          {messages.map((msg, i) => (
+            <div key={msg.id ?? `${msg.role}-${i}`} className="px-3 md:px-5 pt-4">
+              <MessageBubble message={msg} />
+            </div>
+          ))}
+          {pendingContent && <div className="pt-4">{pendingContent}</div>}
+          <div className="h-4" />
+        </div>
       )}
       <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} />
       {/* Plan sheet overlay */}
