@@ -1,4 +1,6 @@
-// Web search tool — uses agent-browser to search Google (with DuckDuckGo fallback)
+// Web search tool — uses agent-browser to search Google (with DuckDuckGo fallback).
+// Returns an accessibility-tree snapshot of the results page for the LLM to interpret,
+// avoiding fragile CSS selectors that break when search engines change their DOM.
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
@@ -27,98 +29,18 @@ function cleanup(): void {
   }
 }
 
-// No JSON.stringify — agent-browser eval auto-serializes return values
-const GOOGLE_EXTRACT_JS = `
-Array.from(document.querySelectorAll('#rso > div'))
-  .map(div => {
-    const titleEl = div.querySelector('h3');
-    if (!titleEl) return null;
-    const linkEl = titleEl.closest('a') || div.querySelector('a[href^="http"]');
-    if (!linkEl) return null;
-    const href = linkEl.getAttribute('href') || '';
-    if (!href.startsWith('http')) return null;
-    const snippetEl = div.querySelector('.kb0PBd, .VwiC3b, [data-sncf], [style*="-webkit-line-clamp"]');
-    return {
-      title: titleEl.textContent?.trim() || '',
-      url: href,
-      snippet: snippetEl?.textContent?.trim() || ''
-    };
-  })
-  .filter(Boolean)
-`;
-
-const DDG_EXTRACT_JS = `
-Array.from(document.querySelectorAll('.result, .web-result'))
-  .map(el => {
-    const linkEl = el.querySelector('a.result__a, a[data-testid="result-title-a"]');
-    const snippetEl = el.querySelector('.result__snippet, a.result__snippet, [data-result="snippet"]');
-    if (!linkEl) return null;
-    let url = linkEl.getAttribute('href') || '';
-    // Unwrap DuckDuckGo redirect URLs
-    if (url.includes('duckduckgo.com/l/')) {
-      try { url = new URL(url, location.origin).searchParams.get('uddg') || url; } catch {}
-    }
-    return {
-      title: linkEl.textContent?.trim() || '',
-      url,
-      snippet: snippetEl?.textContent?.trim() || ''
-    };
-  })
-  .filter(Boolean)
-`;
-
-function runExtraction(
-  engine: "google" | "duckduckgo",
-  maxResults: number,
-): { results: Array<{ title: string; url: string; snippet: string }>; source: string } | { error: string } {
-  const js = engine === "google" ? GOOGLE_EXTRACT_JS : DDG_EXTRACT_JS;
-
-  let output: string;
-  try {
-    // Pipe JS via stdin — avoids shell escaping issues
-    output = execSync(`agent-browser --session ${SESSION_NAME} eval --stdin`, {
-      input: js,
-      encoding: "utf-8",
-      timeout: SEARCH_TIMEOUT,
-    }).trim();
-  } catch (err: any) {
-    return { error: `Failed to extract results: ${(err.stderr || err.stdout || String(err)).slice(0, 200)}` };
-  }
-
-  try {
-    let parsed = JSON.parse(output);
-    // agent-browser may double-encode (string wrapping JSON)
-    if (typeof parsed === "string") {
-      parsed = JSON.parse(parsed);
-    }
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return { error: "No results found" };
-    }
-    return {
-      results: parsed.slice(0, maxResults),
-      source: engine,
-    };
-  } catch {
-    return { error: `Failed to parse results: ${output.slice(0, 200)}` };
-  }
+/** Take a scoped accessibility snapshot of the results area */
+function takeSnapshot(selector?: string): { ok: boolean; output: string } {
+  const scope = selector ? ` -s "${selector}"` : "";
+  return ab(`snapshot -i${scope}`);
 }
 
-function searchGoogle(query: string): boolean {
-  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-  const openResult = ab(`open "${url}"`);
-  if (!openResult.ok) return false;
-
-  ab('wait --load networkidle');
-  return true;
-}
-
-function searchDuckDuckGo(query: string): boolean {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const openResult = ab(`open "${url}"`);
-  if (!openResult.ok) return false;
-
-  ab('wait --load networkidle');
-  return true;
+/** Check if snapshot contains meaningful search results */
+function hasResults(snapshot: string): boolean {
+  // A valid results snapshot will have multiple links with headings
+  const linkCount = (snapshot.match(/^- link /gm) || []).length;
+  const headingCount = (snapshot.match(/heading /gm) || []).length;
+  return linkCount >= 3 && headingCount >= 2;
 }
 
 export const WEB_SEARCH_TOOLS = [
@@ -143,10 +65,8 @@ export const WEB_SEARCH_TOOLS = [
       required: ["query"],
     },
     handler: async (args: any) => {
-      const maxResults = args.max_results ?? 5;
       const query: string = args.query;
 
-      // Check agent-browser is available
       const check = run("which agent-browser");
       if (!check.ok) {
         return {
@@ -157,25 +77,49 @@ export const WEB_SEARCH_TOOLS = [
 
       try {
         // Try Google first
-        const googleOk = searchGoogle(query);
-        if (googleOk) {
-          const googleResults = runExtraction("google", maxResults);
-          if ("results" in googleResults && googleResults.results.length > 0) {
+        const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+        const googleOpen = ab(`open "${googleUrl}"`);
+
+        if (googleOpen.ok) {
+          ab("wait --load networkidle");
+          // Scoped snapshot of results area — avoids nav/footer noise
+          const snapshot = takeSnapshot("#rso");
+
+          if (snapshot.ok && hasResults(snapshot.output)) {
             cleanup();
-            return googleResults;
+            return {
+              source: "google",
+              query,
+              url: googleUrl,
+              snapshot: snapshot.output,
+            };
           }
         }
 
         // Fallback to DuckDuckGo
-        const ddgOk = searchDuckDuckGo(query);
-        if (!ddgOk) {
+        const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+        const ddgOpen = ab(`open "${ddgUrl}"`);
+
+        if (!ddgOpen.ok) {
           cleanup();
           return { error: "Failed to open search engine" };
         }
 
-        const results = runExtraction("duckduckgo", maxResults);
+        ab("wait --load networkidle");
+        const snapshot = takeSnapshot();
+
         cleanup();
-        return results;
+
+        if (!snapshot.ok) {
+          return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
+        }
+
+        return {
+          source: "duckduckgo",
+          query,
+          url: ddgUrl,
+          snapshot: snapshot.output,
+        };
       } catch (err: any) {
         cleanup();
         return { error: `Search failed: ${String(err).slice(0, 200)}` };
