@@ -870,6 +870,7 @@ export default function App() {
         archivedLoaded={archivedLoadedRef.current}
         archivingIds={archivingIds}
         exitingIds={exitingIds}
+        onBulkAction={handleBulkAction}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
