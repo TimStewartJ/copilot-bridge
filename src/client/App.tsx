@@ -140,7 +140,7 @@ export default function App() {
     }
   }, [tasks]);
 
-  const { isUnread, markRead, markUnread, unreadCount } = useReadState(sessions);
+  const { isUnread, markRead, markUnread, unreadCount } = useReadState(sessions, archivedLoadedRef.current);
   const { getDraft, setDraft, clearDraft, hasDraft } = useDrafts(sessions);
 
   const loadSessions = async () => {

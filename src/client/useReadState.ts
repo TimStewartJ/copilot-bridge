@@ -19,7 +19,7 @@ function save(state: ReadState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-export function useReadState(sessions: Session[]) {
+export function useReadState(sessions: Session[], allLoaded = false) {
   const [state, setState] = useState<ReadState>(load);
 
   // Hydrate from server so read state syncs across devices
@@ -56,9 +56,11 @@ export function useReadState(sessions: Session[]) {
     };
   }, []); // once on mount
 
-  // GC: prune entries for sessions that no longer exist
+  // GC: prune entries for sessions that no longer exist.
+  // Skip when archived sessions haven't been loaded yet — we'd incorrectly
+  // prune their read-state, causing them to appear unread when expanded.
   useEffect(() => {
-    if (sessions.length === 0) return;
+    if (!allLoaded || sessions.length === 0) return;
     const validIds = new Set(sessions.map((s) => s.sessionId));
     setState((prev) => {
       const pruned: ReadState = {};
@@ -74,7 +76,7 @@ export function useReadState(sessions: Session[]) {
       save(pruned);
       return pruned;
     });
-  }, [sessions]);
+  }, [sessions, allLoaded]);
 
   const markRead = useCallback((sessionId: string) => {
     setState((prev) => {
