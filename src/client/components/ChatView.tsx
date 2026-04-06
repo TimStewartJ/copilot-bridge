@@ -116,6 +116,10 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       return;
     }
 
+    // Reset stick-to-bottom so the new session starts following output,
+    // regardless of scroll position in the previous session.
+    stickToBottomRef.current = true;
+
     const loadAndReconnect = () => {
       setLoading(true);
       initialPositioningRef.current = true;
@@ -126,10 +130,14 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           // firstItemIndex tracks the virtual index offset for prepending
           firstItemIndex.current = total - msgs.length;
           if (busy) reconnect(sessionId);
-          // Allow startReached after Virtuoso has settled at the bottom
+          // Allow startReached after Virtuoso has settled at the bottom,
+          // then force a scroll correction in case dynamic content (markdown,
+          // images, code blocks) caused Virtuoso's initial measurement to
+          // land at the wrong offset.
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
               initialPositioningRef.current = false;
+              virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
             });
           });
         })
