@@ -526,59 +526,67 @@ export default function TaskPanel({
               <span>Add</span>
             </button>
           </div>
-          {sched.schedules.length > 0 ? (
-            <div className="space-y-0.5">
-              {sched.schedules.map((schedule) => (
-                <div
-                  key={schedule.id}
-                  className="px-3 py-1.5 text-xs hover:bg-bg-hover rounded-md transition-colors group"
-                >
-                  <div className="flex items-center gap-1.5">
-                    <Clock size={12} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
-                    <span className={`font-medium truncate flex-1 ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}>
-                      {schedule.name}
-                    </span>
-                    <div className="hidden group-hover:flex items-center gap-0.5">
-                      <button
-                        onClick={() => sched.trigger(schedule.id)}
-                        className="p-0.5 text-text-muted hover:text-success transition-colors"
-                        title="Run now"
-                      >
-                        <Play size={10} />
-                      </button>
-                      <button
-                        onClick={() => sched.toggle(schedule)}
-                        className="p-0.5 text-text-muted hover:text-warning transition-colors"
-                        title={schedule.enabled ? "Pause" : "Resume"}
-                      >
-                        <Pause size={10} />
-                      </button>
-                      <button
-                        onClick={() => sched.openEditor(schedule)}
-                        className="p-0.5 text-text-muted hover:text-text-primary transition-colors"
-                        title="Edit"
-                      >
-                        <MoreHorizontal size={10} />
-                      </button>
-                      <button
-                        onClick={() => sched.remove(schedule.id)}
-                        className="p-0.5 text-text-muted hover:text-error transition-colors"
-                        title="Delete"
-                      >
-                        <Trash2 size={10} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
-                    {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
-                    {schedule.lastRunAt && ` · Last: ${timeAgo(schedule.lastRunAt)}`}
-                    {schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
-                    {schedule.runCount > 0 && ` · ${schedule.runCount} run${schedule.runCount !== 1 ? "s" : ""}`}
+          {sched.schedules.length > 0 ? (() => {
+            const activeSchedules = sched.schedules.filter((s) => s.enabled);
+            const disabledSchedules = sched.schedules.filter((s) => !s.enabled);
+            const renderScheduleRow = (schedule: typeof sched.schedules[0]) => (
+              <div
+                key={schedule.id}
+                className="px-3 py-1.5 text-xs hover:bg-bg-hover rounded-md transition-colors group"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Clock size={12} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
+                  <span className={`font-medium truncate flex-1 ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}>
+                    {schedule.name}
+                  </span>
+                  <div className="hidden group-hover:flex items-center gap-0.5">
+                    <button
+                      onClick={() => sched.trigger(schedule.id)}
+                      className="p-0.5 text-text-muted hover:text-success transition-colors"
+                      title="Run now"
+                    >
+                      <Play size={10} />
+                    </button>
+                    <button
+                      onClick={() => sched.toggle(schedule)}
+                      className="p-0.5 text-text-muted hover:text-warning transition-colors"
+                      title={schedule.enabled ? "Pause" : "Resume"}
+                    >
+                      <Pause size={10} />
+                    </button>
+                    <button
+                      onClick={() => sched.openEditor(schedule)}
+                      className="p-0.5 text-text-muted hover:text-text-primary transition-colors"
+                      title="Edit"
+                    >
+                      <MoreHorizontal size={10} />
+                    </button>
+                    <button
+                      onClick={() => sched.remove(schedule.id)}
+                      className="p-0.5 text-text-muted hover:text-error transition-colors"
+                      title="Delete"
+                    >
+                      <Trash2 size={10} />
+                    </button>
                   </div>
                 </div>
-              ))}
-            </div>
-          ) : (
+                <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
+                  {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+                  {schedule.lastRunAt && ` · Last: ${timeAgo(schedule.lastRunAt)}`}
+                  {schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
+                  {schedule.runCount > 0 && ` · ${schedule.runCount} run${schedule.runCount !== 1 ? "s" : ""}`}
+                </div>
+              </div>
+            );
+            return (
+              <div className="space-y-0.5">
+                {activeSchedules.map(renderScheduleRow)}
+                <CollapsibleCompleted count={disabledSchedules.length} label="disabled">
+                  {disabledSchedules.map(renderScheduleRow)}
+                </CollapsibleCompleted>
+              </div>
+            );
+          })() : (
             <div className="px-3 py-2 text-[10px] text-text-faint">
               No schedules — add one to automate recurring work
             </div>

@@ -498,61 +498,69 @@ export default function TaskDashboard({
             >
               {sched.schedules.length === 0 ? (
                 <EmptyState message="No schedules" sub="Automate recurring work with scheduled sessions" />
-              ) : (
-                <div className="space-y-1">
-                  {sched.schedules.map((schedule) => (
-                    <div
-                      key={schedule.id}
-                      className="px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors group"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Clock size={14} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
-                        <span className={`text-sm font-medium truncate flex-1 ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}>
-                          {schedule.name}
-                        </span>
-                        <div className="hidden group-hover:flex items-center gap-1">
-                          <button
-                            onClick={() => sched.trigger(schedule.id)}
-                            className="p-1 text-text-muted hover:text-success transition-colors"
-                            title="Run now"
-                          >
-                            <Play size={12} />
-                          </button>
-                          <button
-                            onClick={() => sched.toggle(schedule)}
-                            className="p-1 text-text-muted hover:text-warning transition-colors"
-                            title={schedule.enabled ? "Pause" : "Resume"}
-                          >
-                            <Pause size={12} />
-                          </button>
-                          <button
-                            onClick={() => sched.openEditor(schedule)}
-                            className="p-1 text-text-muted hover:text-text-primary transition-colors"
-                            title="Edit"
-                          >
-                            <MoreHorizontal size={12} />
-                          </button>
-                          <button
-                            onClick={() => sched.remove(schedule.id)}
-                            className="p-1 text-text-muted hover:text-error transition-colors"
-                            title="Delete"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="text-xs text-text-muted mt-1 ml-6">
-                        {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
-                      </div>
-                      <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
-                        {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
-                        {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
-                        {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
+              ) : (() => {
+                const activeSchedules = sched.schedules.filter((s) => s.enabled);
+                const disabledSchedules = sched.schedules.filter((s) => !s.enabled);
+                const renderScheduleCard = (schedule: typeof sched.schedules[0]) => (
+                  <div
+                    key={schedule.id}
+                    className="px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors group"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Clock size={14} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
+                      <span className={`text-sm font-medium truncate flex-1 ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}>
+                        {schedule.name}
+                      </span>
+                      <div className="hidden group-hover:flex items-center gap-1">
+                        <button
+                          onClick={() => sched.trigger(schedule.id)}
+                          className="p-1 text-text-muted hover:text-success transition-colors"
+                          title="Run now"
+                        >
+                          <Play size={12} />
+                        </button>
+                        <button
+                          onClick={() => sched.toggle(schedule)}
+                          className="p-1 text-text-muted hover:text-warning transition-colors"
+                          title={schedule.enabled ? "Pause" : "Resume"}
+                        >
+                          <Pause size={12} />
+                        </button>
+                        <button
+                          onClick={() => sched.openEditor(schedule)}
+                          className="p-1 text-text-muted hover:text-text-primary transition-colors"
+                          title="Edit"
+                        >
+                          <MoreHorizontal size={12} />
+                        </button>
+                        <button
+                          onClick={() => sched.remove(schedule.id)}
+                          className="p-1 text-text-muted hover:text-error transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <div className="text-xs text-text-muted mt-1 ml-6">
+                      {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+                    </div>
+                    <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
+                      {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
+                      {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
+                      {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
+                    </div>
+                  </div>
+                );
+                return (
+                  <div className="space-y-1">
+                    {activeSchedules.map(renderScheduleCard)}
+                    <CollapsibleCompleted count={disabledSchedules.length} label="disabled">
+                      {disabledSchedules.map(renderScheduleCard)}
+                    </CollapsibleCompleted>
+                  </div>
+                );
+              })()}
             </Section>
 
             {/* Notes */}
