@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
-import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo, unlinkResource } from "../api";
+import type { Task, TaskGroup, Session, Todo, Tag, RelatedDoc } from "../api";
+import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo, unlinkResource, fetchRelatedDocs } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
@@ -36,6 +36,7 @@ import {
   StickyNote,
   CheckSquare,
   LayoutDashboard,
+  BookOpen,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 
@@ -131,6 +132,14 @@ export default function TaskDashboard({
   const openTodos = todos.filter((t) => !t.done);
   const doneTodos = todos.filter((t) => t.done);
   const today = new Date().toISOString().slice(0, 10);
+
+  // ── Related Docs ─────────────────────────────────────────────
+  const [relatedDocs, setRelatedDocs] = useState<RelatedDoc[]>([]);
+  useEffect(() => {
+    const tagIds = effectiveTags.map((t) => t.id);
+    if (tagIds.length === 0) { setRelatedDocs([]); return; }
+    fetchRelatedDocs(tagIds).then(setRelatedDocs).catch(() => setRelatedDocs([]));
+  }, [effectiveTags.map((t) => t.id).join(",")]);
 
   return (
     <PullToRefresh onRefresh={handleRefresh} className="flex-1">
@@ -576,6 +585,33 @@ export default function TaskDashboard({
                 <EmptyState message="No notes" sub="Add notes to keep track of context and decisions" />
               )}
             </Section>
+
+            {/* Related Docs */}
+            {relatedDocs.length > 0 && (
+              <Section
+                icon={<BookOpen size={14} />}
+                title="Related Docs"
+                count={relatedDocs.length}
+              >
+                <div className="space-y-1">
+                  {relatedDocs.map((doc) => (
+                    <a
+                      key={doc.path}
+                      href={`/docs/${doc.path}`}
+                      className="block px-3 py-2 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
+                    >
+                      <div className="text-sm text-text-primary truncate">{doc.title}</div>
+                      <div className="text-[10px] text-text-faint mt-0.5 flex items-center gap-2">
+                        <span className="font-mono">{doc.path}</span>
+                        {doc.tags.length > 0 && (
+                          <span>{doc.tags.join(", ")}</span>
+                        )}
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              </Section>
+            )}
           </div>
         </div>
       </div>
