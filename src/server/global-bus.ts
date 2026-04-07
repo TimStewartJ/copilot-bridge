@@ -2,7 +2,7 @@
 // Pushes busy/idle/title/intent events to all connected SSE clients
 
 export interface StatusEvent {
-  type: "session:busy" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed";
+  type: "session:busy" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
   sessionId?: string;
   title?: string;
   intent?: string;
@@ -11,6 +11,7 @@ export interface StatusEvent {
   scheduleId?: string;
   scheduleName?: string;
   taskId?: string;
+  readState?: Record<string, string>;
 }
 
 type Listener = (event: StatusEvent) => void;

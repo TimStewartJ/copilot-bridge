@@ -93,6 +93,10 @@ export default function App() {
   // Guard: skip SSE-driven loadTasks() while a task mutation is in-flight
   const taskMutationInFlight = useRef(0);
 
+  // Ref for read-state SSE handler (avoids stale closure in useCallback)
+  const applyServerStateRef = useRef(applyServerState);
+  applyServerStateRef.current = applyServerState;
+
   // Derive active IDs and mode from URL
   const activeSessionId =
     location.pathname.match(/^\/tasks\/[^/]+\/sessions\/(.+)/)?.[1] ??
@@ -140,7 +144,7 @@ export default function App() {
     }
   }, [tasks]);
 
-  const { isUnread, markRead, markUnread, unreadCount } = useReadState(sessions, archivedLoadedRef.current);
+  const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
   const { getDraft, setDraft, clearDraft, hasDraft } = useDrafts(sessions);
 
   const loadSessions = async () => {
@@ -209,6 +213,8 @@ export default function App() {
         setSessions((prev) =>
           prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: false } : s),
         );
+        // Reload to pick up updated modifiedTime so unread dots appear immediately
+        loadSessions();
         break;
       case "session:title":
         if (event.title) {
@@ -241,8 +247,12 @@ export default function App() {
       case "task:changed":
         if (taskMutationInFlight.current === 0) loadTasks();
         break;
+      case "readstate:changed":
+        if (event.readState) applyServerStateRef.current(event.readState);
+        break;
       case "status:connected":
-        // Don't touch restart state — server sends authoritative state on connect
+        // Refresh sessions + read state on reconnect (covers tab sleep / network blips)
+        loadSessions();
         break;
     }
   }, []));
@@ -255,12 +265,20 @@ export default function App() {
   }, [restartPhase]);
 
   // Background poll for reconciliation (slow: 30s, visibility-aware)
+  // Also immediately refresh when tab becomes visible after being hidden
   useEffect(() => {
     const poll = () => {
       if (document.visibilityState === "visible") loadSessions();
     };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") loadSessions();
+    };
     const timer = setInterval(poll, 30_000);
-    return () => clearInterval(timer);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   // Mark session as read after 2s dwell, and again on departure to capture
