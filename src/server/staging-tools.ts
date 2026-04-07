@@ -58,7 +58,7 @@ function ensureStagingDeps(stagingDir: string): void {
 
   // Use a longer timeout (5 min) — clean installs can be slow
   try {
-    const output = execSync("npm install --no-audit --no-fund", {
+    const output = execSync("npm install --no-audit --no-fund --include=dev", {
       cwd: stagingDir,
       encoding: "utf-8",
       timeout: 300_000,
@@ -781,7 +781,7 @@ export const STAGING_TOOLS = [
       const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- package.json package-lock.json`, PRODUCTION_ROOT);
       if (pkgChanged.ok && pkgChanged.output.trim()) {
         log("Package files changed — running npm install in production...");
-        const npmResult = run("npm install --no-audit --no-fund", PRODUCTION_ROOT);
+        const npmResult = run("npm install --no-audit --no-fund --include=dev", PRODUCTION_ROOT);
         if (!npmResult.ok) {
           log(`npm install failed (non-fatal): ${npmResult.output.slice(-300)}`);
         } else {
