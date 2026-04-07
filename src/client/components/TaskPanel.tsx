@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session, Todo } from "../api";
+import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
-import { unlinkResource, patchTask, fetchTodos, createTodo } from "../api";
+import { unlinkResource, patchTask } from "../api";
 import TodoRow from "./TodoRow";
 import { timeAgo } from "../time";
 import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
@@ -10,6 +10,7 @@ import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
 import { useTagsQuery } from "../hooks/queries/useTags";
+import { useTaskTodosQuery, useCreateTodoMutation, useTodoCacheUpdaters } from "../hooks/queries/useTodos";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
@@ -70,7 +71,6 @@ interface TaskPanelProps {
     updates: Partial<Pick<Task, "title" | "status">>,
   ) => void;
   onTasksChanged?: () => void;
-  scheduleVersion?: number;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onArchiveSession?: (id: string, archived: boolean) => void;
   archivingIds?: Set<string>;
@@ -108,7 +108,6 @@ export default function TaskPanel({
   onNewSession,
   onUpdateTask,
   onTasksChanged,
-  scheduleVersion,
   isUnread,
   onArchiveSession,
   archivingIds,
@@ -150,10 +149,12 @@ export default function TaskPanel({
   );
 
   // ── Schedules (shared hook) ─────────────────────────────────
-  const sched = useTaskSchedules(task?.id, scheduleVersion);
+  const sched = useTaskSchedules(task?.id);
 
-  // ── Todos state ─────────────────────────────────────────────
-  const [todos, setTodos] = useState<Todo[]>([]);
+  // ── Todos ──────────────────────────────────────────────────
+  const { data: todos = [] } = useTaskTodosQuery(task?.id);
+  const createTodoMutation = useCreateTodoMutation(task?.id);
+  const { onUpdate: onTodoUpdate, onDelete: onTodoDelete } = useTodoCacheUpdaters(task?.id);
   const [newTodoText, setNewTodoText] = useState("");
 
   // ── Todo highlight (from dashboard navigation) ──────────────
@@ -169,15 +170,6 @@ export default function TaskPanel({
       return () => clearTimeout(timer);
     }
   }, [searchParams]);
-
-  // Fetch todos for this task
-  useEffect(() => {
-    if (task) {
-      fetchTodos(task.id).then(setTodos).catch(() => setTodos([]));
-    } else {
-      setTodos([]);
-    }
-  }, [task?.id, task?.updatedAt]);
 
   // Reset editing state when task changes
   useEffect(() => {
@@ -357,8 +349,8 @@ export default function TaskPanel({
                         variant="panel"
                         todo={todo}
                         highlight={todo.id === highlightTodoId}
-                        onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
-                        onDelete={(id) => setTodos((prev) => prev.filter((t) => t.id !== id))}
+                        onUpdate={onTodoUpdate}
+                        onDelete={() => onTodoDelete(todo.id)}
                       />
                     ))}
                   </div>
@@ -372,8 +364,8 @@ export default function TaskPanel({
                           variant="panel"
                           todo={todo}
                           highlight={todo.id === highlightTodoId}
-                          onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
-                          onDelete={(id) => setTodos((prev) => prev.filter((t) => t.id !== id))}
+                          onUpdate={onTodoUpdate}
+                          onDelete={() => onTodoDelete(todo.id)}
                         />
                       ))}
                     </div>
@@ -390,9 +382,8 @@ export default function TaskPanel({
               onChange={(e) => setNewTodoText(e.target.value)}
               onKeyDown={async (e) => {
                 if (e.key === "Enter" && newTodoText.trim()) {
-                  const todo = await createTodo(task.id, newTodoText.trim());
-                  setTodos((prev) => [...prev, todo]);
                   setNewTodoText("");
+                  await createTodoMutation.mutateAsync({ text: newTodoText.trim() });
                 }
               }}
             />

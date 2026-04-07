@@ -32,6 +32,7 @@ import { useReadState } from "./useReadState";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
+import { useQueryClient } from "@tanstack/react-query";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
 import TaskDashboard from "./components/TaskDashboard";
@@ -54,6 +55,7 @@ export default function App() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const { goBack } = useAppBack();
+  const queryClient = useQueryClient();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -73,7 +75,6 @@ export default function App() {
   }, []);
   const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
   const [restartWaiting, setRestartWaiting] = useState(0);
-  const [scheduleVersion, setScheduleVersion] = useState(0);
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
@@ -228,7 +229,7 @@ export default function App() {
         setRestartWaiting(0);
         break;
       case "schedule:changed":
-        setScheduleVersion((v) => v + 1);
+        queryClient.invalidateQueries({ queryKey: ["task"] });
         break;
       case "task:changed":
         if (taskMutationInFlight.current === 0) loadTasks();
@@ -946,7 +947,6 @@ export default function App() {
                   onNewSession={handleNewSession}
                   onUpdateTask={handleUpdateTask}
                   onTasksChanged={loadTasks}
-                  scheduleVersion={scheduleVersion}
                   isUnread={isUnread}
                   onArchiveSession={handleArchiveSession}
                   archivingIds={archivingIds}
@@ -1037,7 +1037,6 @@ export default function App() {
                     onNewSession={handleNewSession}
                     onUpdateTask={handleUpdateTask}
                     onTasksChanged={loadTasks}
-                    scheduleVersion={scheduleVersion}
                     isUnread={isUnread}
                     onSetTaskTags={handleSetTaskTags}
                     onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
