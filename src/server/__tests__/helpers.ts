@@ -17,6 +17,7 @@ import { createSessionTitlesStore } from "../session-titles.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createTodoStore } from "../todo-store.js";
 import { createTagStore } from "../tag-store.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createApiRouter } from "../api-router.js";
@@ -79,6 +80,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     readStateStore: createReadStateStore(db),
     todoStore: createTodoStore(db, globalBus),
     tagStore: createTagStore(db),
+    telemetryStore: createTelemetryStore(db),
     docsStore,
     docsIndex,
     globalBus,

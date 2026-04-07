@@ -168,6 +168,20 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_docs_pages_folder ON docs_pages(folder);
 
+    -- Telemetry spans (performance profiling)
+    CREATE TABLE IF NOT EXISTS telemetry_spans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      sessionId TEXT,
+      duration REAL NOT NULL,
+      metadata TEXT,
+      source TEXT NOT NULL,
+      createdAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_name ON telemetry_spans(name);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry_spans(sessionId);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_created ON telemetry_spans(createdAt);
+
     -- Tags
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY,

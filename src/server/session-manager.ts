@@ -29,6 +29,7 @@ import type { TodoStore } from "./todo-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
+import type { TelemetryStore } from "./telemetry-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
 
@@ -737,6 +738,7 @@ export interface SessionManagerDeps {
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   config: { sessionMcpServers: Record<string, any>; model?: string };
+  telemetryStore?: TelemetryStore;
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
@@ -762,6 +764,12 @@ export class SessionManager {
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
+  }
+
+  private recordSpan(name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>): void {
+    try {
+      this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
+    } catch { /* telemetry should never break core flow */ }
   }
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
@@ -993,11 +1001,14 @@ export class SessionManager {
   async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
+    const t0 = Date.now();
     const session = await this.client.createSession(this.buildSessionConfig());
+    const duration = Date.now() - t0;
 
     this.sessionObjects.set(session.sessionId, session);
     this.probeMcpStatus(session.sessionId, session);
-    console.log(`[sdk] Created session ${session.sessionId}`);
+    this.recordSpan("session.create", duration, session.sessionId);
+    console.log(`[sdk] Created session ${session.sessionId} (${duration}ms)`);
     return { sessionId: session.sessionId };
   }
 
@@ -1079,13 +1090,16 @@ export class SessionManager {
       pullRequests: [] as any[],
     };
 
+    const t0 = Date.now();
     const session = await this.client.createSession(
       this.buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext }),
     );
+    const duration = Date.now() - t0;
 
     this.sessionObjects.set(session.sessionId, session);
     this.probeMcpStatus(session.sessionId, session);
-    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}"`);
+    this.recordSpan("session.createTask", duration, session.sessionId, { taskId });
+    console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" (${duration}ms)`);
     return { sessionId: session.sessionId };
   }
 
@@ -1170,7 +1184,9 @@ export class SessionManager {
       ]);
       this.sessionObjects.set(sessionId, session);
       this.probeMcpStatus(sessionId, session);
-      console.log(`[sdk] [${sid}] Session resumed (${Date.now() - resumeStart}ms)`);
+      const resumeDuration = Date.now() - resumeStart;
+      this.recordSpan("session.resume", resumeDuration, sessionId, { context: "doWork" });
+      console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
     }
 
     // Track tool names by toolCallId — completion events don't include the tool name
@@ -1306,6 +1322,7 @@ export class SessionManager {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
+          this.recordSpan("session.sendToIdle", Date.now() - sendStart, sessionId, { chars: content.length });
           bus.emit({ type: "done", content });
 
           // Fire-and-forget title generation for sessions without a title
@@ -1410,6 +1427,7 @@ export class SessionManager {
   async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: Array<{ id: string; role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>; total: number; hasMore: boolean }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
+    const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
     const msgResumeConfig = this.buildSessionConfig({ task: linkedTask });
@@ -1417,6 +1435,7 @@ export class SessionManager {
     // Reuse cached session object — avoids overwriting the active one in the SDK
     let session = this.sessionObjects.get(sessionId);
     let events: any[];
+    let cacheHit = true;
 
     if (session) {
       console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
@@ -1425,6 +1444,7 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Loaded ${events.length} events from cached session`);
       } catch (err) {
         // Stale cache — CLI may have restarted. Evict and re-resume.
+        cacheHit = false;
         console.log(`[sdk] [${sid}] Cached session stale (${err instanceof Error ? err.message : String(err)}), re-resuming...`);
         this.sessionObjects.delete(sessionId);
         session = await Promise.race([
@@ -1438,6 +1458,7 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
       }
     } else {
+      cacheHit = false;
       console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
       session = await Promise.race([
         this.client.resumeSession(sessionId, msgResumeConfig),
@@ -1573,6 +1594,11 @@ export class SessionManager {
     }
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
+    this.recordSpan("session.getMessages", Date.now() - t0, sessionId, {
+      eventCount: events.length,
+      messageCount: messages.length,
+      cacheHit,
+    });
 
     const total = messages.length;
 

@@ -20,6 +20,7 @@ import { createTodoStore } from "./todo-store.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
 import { createTagStore } from "./tag-store.js";
+import { createTelemetryStore } from "./telemetry-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
 import { notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./tunnel.js";
@@ -51,6 +52,7 @@ const sessionTitles = createSessionTitlesStore(db);
 const readStateStore = createReadStateStore(db);
 const todoStore = createTodoStore(db, defaultGlobalBus);
 const tagStore = createTagStore(db);
+const telemetryStore = createTelemetryStore(db);
 const docsDir = process.env.BRIDGE_DOCS_DIR || join(dataDir, "docs");
 const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
@@ -62,7 +64,7 @@ setMcpServersGetter(() => settingsStore.getMcpServers());
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionTitles, readStateStore, todoStore, docsStore, docsIndex, tagStore,
+  sessionMetaStore, sessionTitles, readStateStore, todoStore, docsStore, docsIndex, tagStore, telemetryStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction
@@ -77,6 +79,7 @@ const sessionManager = new SessionManager({
   todoStore,
   settingsStore,
   tagStore,
+  telemetryStore,
   docsIndex,
   docsStore,
   config: { get sessionMcpServers() { return config.sessionMcpServers; } },
@@ -142,6 +145,10 @@ async function main(): Promise<void> {
   console.log();
 
   await sessionManager.initialize();
+
+  // Prune old telemetry data
+  const pruned = telemetryStore.pruneOldSpans(7);
+  if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
 
   // Clean up orphaned staging worktrees and restore surviving previews (incl. backends)
   await pruneOrphanedWorktrees();

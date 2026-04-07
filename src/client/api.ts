@@ -160,6 +160,7 @@ const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
 export { API_BASE };
 
 async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
+  const t0 = performance.now();
   const opts: RequestInit = body
     ? {
         method: "POST",
@@ -172,7 +173,46 @@ async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
   }
-  return res.json();
+  const result = await res.json();
+  // Fire-and-forget client timing report (skip telemetry endpoint to avoid recursion)
+  if (!path.startsWith("/api/telemetry")) {
+    const duration = Math.round(performance.now() - t0);
+    reportTiming(`api${path.replace(/\/api/, "")}`, duration).catch(() => {});
+  }
+  return result;
+}
+
+// ── Client telemetry ──────────────────────────────────────────────
+
+/** Fire-and-forget: report a client-side timing span to the server */
+export async function reportTiming(
+  name: string,
+  duration: number,
+  opts?: { sessionId?: string; metadata?: Record<string, unknown> },
+): Promise<void> {
+  try {
+    const payload = { name, duration, sessionId: opts?.sessionId, metadata: opts?.metadata };
+    await fetch(`${API_BASE}/api/telemetry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch { /* never throw from telemetry */ }
+}
+
+export interface TelemetryStats {
+  name: string;
+  count: number;
+  avg: number;
+  min: number;
+  max: number;
+  p50: number;
+  p95: number;
+}
+
+export async function fetchTelemetryStats(since?: string): Promise<TelemetryStats[]> {
+  const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+  return apiFetch<TelemetryStats[]>(`/api/telemetry/stats${qs}`);
 }
 
 export async function fetchSessions(includeArchived = false): Promise<Session[]> {
