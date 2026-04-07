@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
