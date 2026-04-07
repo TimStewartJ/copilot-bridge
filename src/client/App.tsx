@@ -93,9 +93,6 @@ export default function App() {
   // Guard: skip SSE-driven loadTasks() while a task mutation is in-flight
   const taskMutationInFlight = useRef(0);
 
-  // Ref for read-state SSE handler (avoids stale closure in useCallback)
-  const applyServerStateRef = useRef(applyServerState);
-  applyServerStateRef.current = applyServerState;
 
   // Derive active IDs and mode from URL
   const activeSessionId =
@@ -145,6 +142,9 @@ export default function App() {
   }, [tasks]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
+  // Ref for read-state SSE handler (avoids stale closure in useCallback)
+  const applyServerStateRef = useRef(applyServerState);
+  applyServerStateRef.current = applyServerState;
   const { getDraft, setDraft, clearDraft, hasDraft } = useDrafts(sessions);
 
   const loadSessions = async () => {
