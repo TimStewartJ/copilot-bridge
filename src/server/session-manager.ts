@@ -255,6 +255,7 @@ export function createBridgeTools(ctx: AppContext) {
     handler: async (args: any) => {
       const tasks = ctx.taskStore.listTasks().filter((t) => t.groupId === args.groupId);
       for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: undefined });
+      ctx.tagStore?.setEntityTags("task_group", args.groupId, []);
       ctx.taskGroupStore.deleteGroup(args.groupId);
       return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
     },
@@ -286,6 +287,7 @@ export function createBridgeTools(ctx: AppContext) {
       if (args.instructions !== undefined) updates.instructions = args.instructions;
       if (Object.keys(updates).length === 0) return { error: "Provide at least one of: name, color, instructions" };
       ctx.tagStore?.updateTag(args.tagId, updates);
+      ctx.sessionManager.evictAllCachedSessions();
       return { success: true, message: `Tag updated` };
     },
   }),
@@ -294,6 +296,7 @@ export function createBridgeTools(ctx: AppContext) {
     parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID to delete" } }, required: ["tagId"] },
     handler: async (args: any) => {
       ctx.tagStore?.deleteTag(args.tagId);
+      ctx.sessionManager.evictAllCachedSessions();
       return { success: true, message: "Tag deleted" };
     },
   }),

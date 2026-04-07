@@ -3,7 +3,9 @@ import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag } from "lucide-react";
+import TagPicker from "./TagPicker";
+import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import TaskPickerDialog from "./TaskPickerDialog";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -48,6 +50,7 @@ interface TaskRailProps {
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
   onReorderGroups?: (groupIds: string[]) => void;
+  onSetGroupTags?: (groupId: string, tagIds: string[]) => void;
   // Inline quick chats
   orphanSessions?: Session[];
   activeSessionId?: string | null;
@@ -117,6 +120,7 @@ export default function TaskRail({
   onMoveTaskToGroup,
   onMoveAndReorder,
   onReorderGroups,
+  onSetGroupTags,
   orphanSessions = [],
   activeSessionId,
   onSelectSession,
@@ -988,6 +992,32 @@ export default function TaskRail({
                 ))}
               </div>
             </div>
+            {/* Group tags */}
+            {onSetGroupTags && (
+              <>
+                <CtxDivider />
+                <div className="px-3 py-1.5">
+                  <div className="text-[10px] text-text-faint mb-1 flex items-center gap-1">
+                    <Tag size={10} /> Tags
+                  </div>
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <TagPillList
+                      tags={group.tags ?? []}
+                      size="xs"
+                      onRemove={(tagId) => {
+                        const currentIds = (group.tags ?? []).map((t) => t.id);
+                        onSetGroupTags(group.id, currentIds.filter((id) => id !== tagId));
+                      }}
+                    />
+                    <TagPicker
+                      selectedTagIds={(group.tags ?? []).map((t) => t.id)}
+                      onChange={(tagIds) => onSetGroupTags(group.id, tagIds)}
+                      compact
+                    />
+                  </div>
+                </div>
+              </>
+            )}
             {taskGroups.length > 1 && onReorderGroups && (
               <>
                 <CtxDivider />

@@ -19,8 +19,8 @@ import {
   type Tag,
 } from "../api";
 import { useSettingsQuery, useSettingsMutation } from "../hooks/queries/useSettings";
-import { useTagsQuery, useCreateTagMutation, usePatchTagMutation, useDeleteTagMutation } from "../hooks/queries/useTags";
-import { Settings, ArrowLeft, Pencil, Trash2, Check, X, CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
+import { useTagsQuery, useCreateTagMutation, usePatchTagMutation, useDeleteTagMutation, useReorderTagsMutation } from "../hooks/queries/useTags";
+import { Settings, ArrowLeft, Pencil, Trash2, Check, X, CheckCircle2, XCircle, Loader2, AlertTriangle, ArrowUp, ArrowDown } from "lucide-react";
 import { TAG_COLORS } from "../tag-colors";
 import { TAG_COLOR_BG, TAG_COLOR_TEXT, TAG_COLOR_DOT } from "../tag-colors";
 import { FAVICON_OPTIONS, DEFAULT_FAVICON, type FaviconOption } from "../faviconOptions";
@@ -1087,6 +1087,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
   const createTagMutation = useCreateTagMutation();
   const patchTagMutation = usePatchTagMutation();
   const deleteTagMutation = useDeleteTagMutation();
+  const reorderTagsMutation = useReorderTagsMutation();
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState<string>("blue");
@@ -1170,6 +1171,14 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
     }
   };
 
+  const handleMoveTag = (index: number, direction: -1 | 1) => {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= tags.length) return;
+    const ids = tags.map((t) => t.id);
+    [ids[index], ids[newIndex]] = [ids[newIndex], ids[index]];
+    reorderTagsMutation.mutate(ids);
+  };
+
   return (
     <section>
       <div className="flex items-center justify-between mb-3">
@@ -1189,7 +1198,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
       </div>
 
       <div className="space-y-2">
-        {tags.map((tag) =>
+        {tags.map((tag, tagIndex) =>
           editingId === tag.id ? (
             <div key={tag.id} className="bg-bg-surface border border-border rounded-lg p-3 space-y-3">
               <div className="flex items-center gap-2">
@@ -1305,6 +1314,26 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
                 )}
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                {tags.length > 1 && (
+                  <>
+                    <button
+                      onClick={() => handleMoveTag(tagIndex, -1)}
+                      disabled={tagIndex === 0}
+                      className="p-1 text-text-muted hover:text-text-primary rounded disabled:opacity-30"
+                      title="Move up"
+                    >
+                      <ArrowUp size={12} />
+                    </button>
+                    <button
+                      onClick={() => handleMoveTag(tagIndex, 1)}
+                      disabled={tagIndex === tags.length - 1}
+                      className="p-1 text-text-muted hover:text-text-primary rounded disabled:opacity-30"
+                      title="Move down"
+                    >
+                      <ArrowDown size={12} />
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() => startEditing(tag)}
                   className="p-1 text-text-muted hover:text-text-primary rounded"
