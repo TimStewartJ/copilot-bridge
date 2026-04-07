@@ -424,7 +424,7 @@ export const STAGING_TOOLS = [
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
       "Returns the staging directory path where you should make all edits. " +
-      "Run quality checks (npx tsc --noEmit, npx vite build) in that directory before calling staging_deploy.",
+      "Run quality checks (npx tsc --noEmit, npx vite build, npx vitest run) in that directory before calling staging_deploy.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const prefix = randomBytes(4).toString("hex");
@@ -517,6 +517,12 @@ export const STAGING_TOOLS = [
 
       // Install deps if staging package.json diverged from production
       ensureStagingDeps(stagingDir);
+
+      // Run tests before building
+      const testResult = run("npx vitest run", stagingDir);
+      if (!testResult.ok) {
+        return { success: false, error: `Tests failed:\n${testResult.output.slice(-500)}` };
+      }
 
       // Build the client with the staging base path
       const buildResult = run(
