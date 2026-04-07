@@ -23,6 +23,41 @@ const SIGNAL_FILE= join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 
+/**
+ * Compare package.json between staging and production.
+ * If different, replace the node_modules symlink with a real npm install
+ * so new/removed dependencies are available for builds.
+ */
+function ensureStagingDeps(stagingDir: string): void {
+  const stagingPkg = join(stagingDir, "package.json");
+  const prodPkg = join(PRODUCTION_ROOT, "package.json");
+  if (!existsSync(stagingPkg) || !existsSync(prodPkg)) return;
+
+  const stagingContent = readFileSync(stagingPkg, "utf-8");
+  const prodContent = readFileSync(prodPkg, "utf-8");
+  if (stagingContent === prodContent) return;
+
+  log("Staging package.json differs from production — installing dependencies in staging...");
+
+  // Remove the symlink/junction so npm install can create a real node_modules
+  const stagingModules = join(stagingDir, "node_modules");
+  if (existsSync(stagingModules)) {
+    removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
+  }
+
+  const result = run("npm install --no-audit --no-fund", stagingDir);
+  if (!result.ok) {
+    log(`Warning: staging npm install failed: ${result.output.slice(-300)}`);
+    // Fall back to re-linking production node_modules so builds at least attempt to work
+    const prodModules = join(PRODUCTION_ROOT, "node_modules");
+    if (existsSync(prodModules) && !existsSync(stagingModules)) {
+      createDirectoryLink(stagingModules, prodModules, PRODUCTION_ROOT);
+    }
+  } else {
+    log("Staging npm install succeeded");
+  }
+}
+
 /** Active staging previews: prefix → dist path */
 const activePreviews = new Map<string, string>();
 
@@ -480,6 +515,9 @@ export const STAGING_TOOLS = [
         mkdirSync(STAGING_DIST_PARENT, { recursive: true });
       }
 
+      // Install deps if staging package.json diverged from production
+      ensureStagingDeps(stagingDir);
+
       // Build the client with the staging base path
       const buildResult = run(
         `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
@@ -707,15 +745,27 @@ export const STAGING_TOOLS = [
       const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
       log(`Merged to production: ${commitSha}`);
 
-      // Install deps if package.json changed (staging had its own node_modules)
-      const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- package.json`, PRODUCTION_ROOT);
-      if (pkgChanged.ok && pkgChanged.output.trim().includes("package.json")) {
-        log("package.json changed — running npm install in production...");
+      // Install deps if package.json or package-lock.json changed
+      const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- package.json package-lock.json`, PRODUCTION_ROOT);
+      if (pkgChanged.ok && pkgChanged.output.trim()) {
+        log("Package files changed — running npm install in production...");
         const npmResult = run("npm install --no-audit --no-fund", PRODUCTION_ROOT);
         if (!npmResult.ok) {
           log(`npm install failed (non-fatal): ${npmResult.output.slice(-300)}`);
         } else {
           log("npm install succeeded");
+          // Update launcher deps hash so it doesn't re-install on restart
+          try {
+            const { createHash } = await import("node:crypto");
+            const parts: string[] = [];
+            for (const f of ["package.json", "package-lock.json"]) {
+              const p = join(PRODUCTION_ROOT, f);
+              parts.push(existsSync(p) ? readFileSync(p, "utf-8") : "");
+            }
+            const hash = createHash("sha256").update(parts.join("\0")).digest("hex");
+            const hashFile = join(PRODUCTION_ROOT, "data", "deps-hash");
+            writeFileSync(hashFile, hash);
+          } catch {}
         }
       }
 

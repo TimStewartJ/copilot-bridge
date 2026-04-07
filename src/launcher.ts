@@ -2,7 +2,8 @@
 
 import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, unlinkSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
@@ -73,8 +74,44 @@ function run(cmd: string): { ok: boolean; output: string } {
   }
 }
 
+const DEPS_HASH_FILE = join(ROOT, "data", "deps-hash");
+
+/** Hash package.json + package-lock.json to detect dependency changes. */
+function depsHash(): string {
+  const parts: string[] = [];
+  for (const f of ["package.json", "package-lock.json"]) {
+    const p = join(ROOT, f);
+    parts.push(existsSync(p) ? readFileSync(p, "utf-8") : "");
+  }
+  return createHash("sha256").update(parts.join("\0")).digest("hex");
+}
+
+/** Run npm install if package.json or package-lock.json have changed since last install. */
+function ensureDeps(): boolean {
+  const current = depsHash();
+  try {
+    if (existsSync(DEPS_HASH_FILE) && readFileSync(DEPS_HASH_FILE, "utf-8").trim() === current) {
+      return true; // deps are in sync
+    }
+  } catch {}
+
+  log("Dependencies changed — running npm install...");
+  const result = run("npm install --no-audit --no-fund");
+  if (!result.ok) {
+    log(`npm install failed: ${result.output.slice(-500)}`);
+    return false;
+  }
+  // Update stored hash
+  const dataDir = join(ROOT, "data");
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+  writeFileSync(DEPS_HASH_FILE, current);
+  log("npm install succeeded — deps hash updated");
+  return true;
+}
+
 function build(): boolean {
   log("Building...");
+  ensureDeps();
   const client = run("npx vite build");
   if (!client.ok) {
     log(`Client build failed:\n${client.output.slice(-500)}`);
@@ -104,6 +141,7 @@ function rollback() {
     }
   } catch {}
   run(`git reset --hard ${rollbackTarget}`);
+  ensureDeps();
   run("npx vite build");
   log("Rollback complete");
 }
@@ -434,6 +472,9 @@ async function main() {
   } else {
     log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
   }
+
+  // Ensure dependencies are in sync after pull
+  ensureDeps();
 
   // Start server
   serverProcess = startServer();
