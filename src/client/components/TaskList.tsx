@@ -184,7 +184,7 @@ export default function TaskList({
   return (
     <div className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
       <button
-        onClick={onNewTask}
+        onClick={() => onNewTask()}
         className="w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
       >
         + New Task

@@ -416,7 +416,7 @@ export default function TaskRail({
             <BookOpen size={18} />
           </button>
           <button
-            onClick={onNewTask}
+            onClick={() => onNewTask()}
             title="New Task"
             className="p-1.5 rounded-lg text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
           >
@@ -469,7 +469,7 @@ export default function TaskRail({
       {/* New Task button */}
       <div className="px-2 pt-2">
         <button
-          onClick={onNewTask}
+          onClick={() => onNewTask()}
           className="w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
         >
           + New Task
