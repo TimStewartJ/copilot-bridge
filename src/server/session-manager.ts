@@ -4,6 +4,7 @@
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,16 @@ import type { DocsStore, DocTreeNode } from "./docs-store.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
+const PRE_DEPLOY_SHA_FILE = join(REPO_ROOT, "data", "pre-deploy-sha");
+
+function run(cmd: string): { ok: boolean; output: string } {
+  try {
+    const output = execSync(cmd, { cwd: REPO_ROOT, encoding: "utf-8", timeout: 120_000 });
+    return { ok: true, output };
+  } catch (err: any) {
+    return { ok: false, output: err.stderr || err.stdout || String(err) };
+  }
+}
 
 const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.`;
 
@@ -59,6 +70,7 @@ If staging_deploy fails due to rebase conflicts:
 IMPORTANT: Never edit source files directly in the production directory.
 Always use the staging workflow for any code changes to this codebase.
 For non-code restarts (config, env), use self_restart instead.
+For pulling the latest remote code and restarting, use self_update instead.
 </staging_workflow>
 `.trim();
 
@@ -351,6 +363,98 @@ export function createBridgeTools(ctx: AppContext) {
       return {
         success: true,
         message: `Restart signal sent.${waitNote} Do NOT make any more tool calls — this session is considered active and will block the restart until it is idle.`,
+      };
+    },
+  }),
+  defineTool("self_update", {
+    description:
+      "Pull the latest code from the remote repository, sync dependencies, and restart the server. " +
+      "Use this to update the Copilot Bridge to the latest version without the full staging workflow. " +
+      "Saves a rollback checkpoint before pulling so the launcher can revert if the build or health check fails. " +
+      "IMPORTANT: Do not make further tool calls after invoking this — the server will restart. " +
+      "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      if (existsSync(SIGNAL_FILE)) {
+        return { success: false, error: "A restart is already pending. Wait for it to complete before updating." };
+      }
+
+      const dataDir = join(REPO_ROOT, "data");
+      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+
+      // Determine current branch
+      const branchResult = run("git rev-parse --abbrev-ref HEAD");
+      const branch = branchResult.ok ? branchResult.output.trim() : "main";
+
+      // Save pre-update checkpoint so the launcher can roll back
+      const headResult = run("git rev-parse HEAD");
+      const preUpdateSha = headResult.ok ? headResult.output.trim() : "";
+      if (preUpdateSha) {
+        writeFileSync(PRE_DEPLOY_SHA_FILE, preUpdateSha);
+      }
+
+      // Pull latest
+      const pullResult = run(`git pull --rebase origin ${branch}`);
+      if (!pullResult.ok) {
+        // Abort rebase if it left us in a conflicted state
+        run("git rebase --abort");
+        try { if (preUpdateSha) writeFileSync(PRE_DEPLOY_SHA_FILE, preUpdateSha); } catch {}
+        return {
+          success: false,
+          error:
+            `Git pull failed — likely due to merge conflicts or network issues. ` +
+            `The working tree has been restored to its previous state.\n\n` +
+            pullResult.output.slice(-500),
+        };
+      }
+
+      const newHead = run("git rev-parse --short HEAD");
+      const newSha = newHead.ok ? newHead.output.trim() : "unknown";
+      const changed = preUpdateSha !== (run("git rev-parse HEAD").ok ? run("git rev-parse HEAD").output.trim() : "");
+
+      if (!changed) {
+        // Clean up checkpoint — nothing changed
+        try { const { unlinkSync } = await import("node:fs"); unlinkSync(PRE_DEPLOY_SHA_FILE); } catch {}
+        return { success: true, message: "Already up to date — no restart needed." };
+      }
+
+      // Sync deps if package files changed
+      const depsChanged = run(`git diff "${preUpdateSha}" HEAD --name-only -- package.json package-lock.json`);
+      if (depsChanged.ok && depsChanged.output.trim()) {
+        const npmResult = run("npm install --no-audit --no-fund");
+        if (!npmResult.ok) {
+          return {
+            success: false,
+            error: `Pulled to ${newSha} but npm install failed. The launcher will retry on restart.\n\n` + npmResult.output.slice(-300),
+          };
+        }
+        // Update deps hash so launcher doesn't re-install
+        try {
+          const { createHash } = await import("node:crypto");
+          const parts: string[] = [];
+          for (const f of ["package.json", "package-lock.json"]) {
+            const p = join(REPO_ROOT, f);
+            parts.push(existsSync(p) ? readFileSync(p, "utf-8") : "");
+          }
+          const hash = createHash("sha256").update(parts.join("\0")).digest("hex");
+          writeFileSync(join(dataDir, "deps-hash"), hash);
+        } catch {}
+      }
+
+      // Signal restart — launcher will build, health-check, and rollback if needed
+      writeFileSync(SIGNAL_FILE, new Date().toISOString());
+      const otherBusy = triggerRestartPending();
+      const waitNote = otherBusy > 0
+        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish.`
+        : "";
+
+      return {
+        success: true,
+        previousSha: preUpdateSha.slice(0, 8),
+        newSha,
+        message:
+          `Updated ${preUpdateSha.slice(0, 8)} → ${newSha}. Restart signal sent.${waitNote} ` +
+          `Do NOT make any more tool calls — this session will block the restart until idle.`,
       };
     },
   }),
