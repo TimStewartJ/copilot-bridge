@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Task, TaskGroup, Session, Todo, Tag, RelatedDoc } from "../api";
-import { patchTask, fetchTodos, createTodo, patchTodo, deleteTodo, unlinkResource, fetchRelatedDocs } from "../api";
+import { patchTask, fetchTodos, createTodo, unlinkResource, fetchRelatedDocs } from "../api";
+import TodoRow from "./TodoRow";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
@@ -29,10 +30,6 @@ import {
   FolderOpen,
   Pencil,
   MoreHorizontal,
-  Circle,
-  CheckCircle2,
-  AlertCircle,
-  Calendar,
   StickyNote,
   CheckSquare,
   LayoutDashboard,
@@ -131,7 +128,6 @@ export default function TaskDashboard({
 
   const openTodos = todos.filter((t) => !t.done);
   const doneTodos = todos.filter((t) => t.done);
-  const today = new Date().toISOString().slice(0, 10);
 
   // ── Related Docs ─────────────────────────────────────────────
   const [relatedDocs, setRelatedDocs] = useState<RelatedDoc[]>([]);
@@ -394,66 +390,26 @@ export default function TaskDashboard({
               count={todos.length > 0 ? `${doneTodos.length}/${todos.length}` : undefined}
             >
               <div className="space-y-1">
-                {openTodos.map((todo) => {
-                  const overdue = todo.deadline && todo.deadline < today;
-                  return (
-                    <div key={todo.id} className="flex items-start gap-2 px-3 py-2 rounded-md bg-bg-surface group">
-                      <button
-                        onClick={async () => {
-                          await patchTodo(todo.id, { done: true });
-                          setTodos(await fetchTodos(task.id));
-                        }}
-                        className="mt-0.5 shrink-0 text-text-faint hover:text-success transition-colors"
-                      >
-                        <Circle size={14} />
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm text-text-primary">{todo.text}</span>
-                        {todo.deadline && (
-                          <div className={`text-[10px] mt-0.5 flex items-center gap-1 ${overdue ? "text-error" : "text-text-faint"}`}>
-                            {overdue && <AlertCircle size={10} />}
-                            <Calendar size={10} />
-                            {todo.deadline}
-                          </div>
-                        )}
-                      </div>
-                      <button
-                        onClick={async () => {
-                          await deleteTodo(todo.id);
-                          setTodos(await fetchTodos(task.id));
-                        }}
-                        className="hidden group-hover:block shrink-0 text-text-faint hover:text-error transition-colors"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  );
-                })}
+                {openTodos.map((todo) => (
+                  <TodoRow
+                    key={todo.id}
+                    variant="card"
+                    todo={todo}
+                    onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
+                    onDelete={() => setTodos((prev) => prev.filter((t) => t.id !== todo.id))}
+                  />
+                ))}
                 {doneTodos.length > 0 && (
                   <CollapsibleCompleted count={doneTodos.length}>
-                    <div className="pt-1">
+                    <div className="pt-1 space-y-1">
                       {doneTodos.map((todo) => (
-                        <div key={todo.id} className="flex items-start gap-2 px-3 py-1.5 group">
-                          <button
-                            onClick={async () => {
-                              await patchTodo(todo.id, { done: false });
-                              setTodos(await fetchTodos(task.id));
-                            }}
-                            className="mt-0.5 shrink-0 text-success hover:text-text-muted transition-colors"
-                          >
-                            <CheckCircle2 size={14} />
-                          </button>
-                          <span className="text-sm text-text-faint line-through flex-1">{todo.text}</span>
-                          <button
-                            onClick={async () => {
-                              await deleteTodo(todo.id);
-                              setTodos(await fetchTodos(task.id));
-                            }}
-                            className="hidden group-hover:block shrink-0 text-text-faint hover:text-error transition-colors"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
+                        <TodoRow
+                          key={todo.id}
+                          variant="card"
+                          todo={todo}
+                          onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
+                          onDelete={() => setTodos((prev) => prev.filter((t) => t.id !== todo.id))}
+                        />
                       ))}
                     </div>
                   </CollapsibleCompleted>

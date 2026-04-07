@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import {
   fetchDashboard,
   patchTodo,
-  deleteTodo,
   createGlobalTodo,
   type DashboardData,
   type DashboardActiveTask,
@@ -11,10 +10,10 @@ import {
 } from "../api";
 import { getLastViewedSession } from "../last-viewed";
 import { timeAgo } from "../time";
-import { deadlineUrgency, deadlineLabel, CHECKBOX_URGENCY } from "../todo-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
-import { Loader2, MessageSquare, Plus, CheckSquare, AlertTriangle, Check, ChevronDown, ChevronRight, CalendarDays, Trash2, ArrowUpDown } from "lucide-react";
+import TodoRow from "./TodoRow";
+import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown } from "lucide-react";
 
 type TodoSort = "newest" | "deadline" | "task";
 
@@ -401,9 +400,9 @@ export default function Dashboard({
                                     }
                                   }}
                                 >
-                                  <DashboardTodoRow
+                                  <TodoRow
+                                    variant="dashboard"
                                     todo={todo}
-                                    done={false}
                                     hideTaskPill
                                     onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
                                     onToggle={async () => {
@@ -417,11 +416,12 @@ export default function Dashboard({
                                         t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
                                       ));
                                     }}
-                                    onDelete={!todo.taskId ? async () => {
+                                    onUpdate={() => { lastLocalChange.current = Date.now(); }}
+                                    onDelete={() => {
                                       lastLocalChange.current = Date.now();
                                       setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                                      await deleteTodo(todo.id);
-                                    } : undefined}
+                                    }}
+                                    canDelete={!todo.taskId}
                                   />
                                 </div>
                               ))}
@@ -445,9 +445,9 @@ export default function Dashboard({
                           }
                         }}
                       >
-                        <DashboardTodoRow
+                        <TodoRow
+                          variant="dashboard"
                           todo={todo}
-                          done={false}
                           onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
                           onToggle={async () => {
                             lastLocalChange.current = Date.now();
@@ -460,11 +460,12 @@ export default function Dashboard({
                               t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
                             ));
                           }}
-                          onDelete={!todo.taskId ? async () => {
+                          onUpdate={() => { lastLocalChange.current = Date.now(); }}
+                          onDelete={() => {
                             lastLocalChange.current = Date.now();
                             setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                            await deleteTodo(todo.id);
-                          } : undefined}
+                          }}
+                          canDelete={!todo.taskId}
                         />
                       </div>
                     ))}
@@ -491,10 +492,10 @@ export default function Dashboard({
                     {showCompleted && (
                       <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
                         {localCompletedTodos.map((todo) => (
-                          <DashboardTodoRow
+                          <TodoRow
                             key={todo.id}
+                            variant="dashboard"
                             todo={todo}
-                            done={true}
                             onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
                             onToggle={async () => {
                               lastLocalChange.current = Date.now();
@@ -502,6 +503,12 @@ export default function Dashboard({
                               setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
                               await patchTodo(todo.id, { done: false });
                             }}
+                            onUpdate={() => { lastLocalChange.current = Date.now(); }}
+                            onDelete={() => {
+                              lastLocalChange.current = Date.now();
+                              setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                            }}
+                            canDelete={!todo.taskId}
                           />
                         ))}
                       </div>
@@ -644,117 +651,5 @@ function OrphanSessionRow({
         )}
       </div>
     </button>
-  );
-}
-
-
-
-// ── Dashboard Todo Row (unified open + completed) ─────────────────
-
-function DashboardTodoRow({
-  todo,
-  done,
-  hideTaskPill,
-  onSelectTask,
-  onToggle,
-  onDeadlineChange,
-  onDelete,
-}: {
-  todo: DashboardTodo;
-  done: boolean;
-  hideTaskPill?: boolean;
-  onSelectTask?: () => void;
-  onToggle: () => void;
-  onDeadlineChange?: (deadline: string | null) => void;
-  onDelete?: () => void;
-}){
-  const dateRef = useRef<HTMLInputElement>(null);
-  const urgency = deadlineUrgency(todo.deadline, done);
-  const groupBg = todo.taskGroupColor ? GROUP_COLOR_BG[todo.taskGroupColor] ?? "" : "";
-  const groupDot = todo.taskGroupColor ? GROUP_COLOR_DOT[todo.taskGroupColor] ?? "" : "";
-
-  return (
-    <div className="flex items-start gap-2.5 px-4 py-2.5 hover:bg-bg-hover transition-colors first:rounded-t-lg last:rounded-b-lg group">
-      {/* Checkbox */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        className={`mt-0.5 w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-colors ${
-          done
-            ? "bg-success/80 border-success/80 text-white hover:bg-success/60"
-            : CHECKBOX_URGENCY[urgency]
-        }`}
-        title={done ? "Mark incomplete" : "Mark complete"}
-      >
-        {done && <Check size={9} strokeWidth={3} />}
-      </button>
-
-      {/* Content — click navigates to task (if linked) */}
-      <div
-        onClick={onSelectTask}
-        className={`flex-1 min-w-0 text-left ${onSelectTask ? "cursor-pointer" : ""}`}
-        role={onSelectTask ? "button" : undefined}
-      >
-        <div className={`text-sm truncate ${done ? "text-text-faint line-through" : "text-text-primary"}`}>
-          {todo.text}
-        </div>
-        <div className="text-xs mt-0.5 flex items-center gap-2">
-          {/* Task name pill with group color — only shown for task-linked todos */}
-          {todo.taskTitle && !hideTaskPill && (
-            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
-              groupBg ? `${groupBg} text-text-secondary` : "bg-bg-hover text-text-faint"
-            }`}>
-              {groupDot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${groupDot}`} />}
-              {todo.taskTitle}
-            </span>
-          )}
-          {/* Deadline */}
-          {todo.deadline && !done && (
-            <span className={`shrink-0 flex items-center gap-0.5 ${
-              urgency === "overdue" ? "text-error" : urgency === "soon" ? "text-warning" : "text-text-faint"
-            }`}>
-              {urgency === "overdue" && <AlertTriangle size={10} />}
-              {deadlineLabel(todo.deadline)}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Hover actions (open todos only) */}
-      {!done && (
-        <div className="hidden group-hover:flex items-center shrink-0">
-          {onDelete && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              className="p-1 text-text-faint hover:text-error transition-colors"
-              title="Delete to-do"
-            >
-              <Trash2 size={12} />
-            </button>
-          )}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              try { dateRef.current?.showPicker(); } catch { dateRef.current?.click(); }
-            }}
-            className="p-1 text-text-faint hover:text-accent transition-colors"
-            title="Set deadline"
-          >
-            <CalendarDays size={12} />
-          </button>
-          <input
-            ref={dateRef}
-            type="date"
-            className="sr-only"
-            tabIndex={-1}
-            value={todo.deadline ?? ""}
-            onChange={async (e) => {
-              const val = e.target.value || null;
-              onDeadlineChange?.(val);
-              await patchTodo(todo.id, { deadline: val });
-            }}
-          />
-        </div>
-      )}
-    </div>
   );
 }

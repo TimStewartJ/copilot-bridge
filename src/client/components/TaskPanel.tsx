@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
-import { unlinkResource, patchTask, fetchTodos, createTodo, patchTodo, deleteTodo } from "../api";
+import { unlinkResource, patchTask, fetchTodos, createTodo } from "../api";
+import TodoRow from "./TodoRow";
 import { timeAgo } from "../time";
 import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
 import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
-import { deadlineLabel, deadlineUrgency, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../todo-helpers";
+
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
@@ -31,9 +32,7 @@ import {
   Copy,
   Check,
   Pencil,
-  X,
   ListChecks,
-  CalendarDays,
   LayoutDashboard,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
@@ -359,6 +358,7 @@ export default function TaskPanel({
                     {openTodos.map((todo) => (
                       <TodoRow
                         key={todo.id}
+                        variant="panel"
                         todo={todo}
                         highlight={todo.id === highlightTodoId}
                         onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
@@ -373,6 +373,7 @@ export default function TaskPanel({
                       {doneTodos.map((todo) => (
                         <TodoRow
                           key={todo.id}
+                          variant="panel"
                           todo={todo}
                           highlight={todo.id === highlightTodoId}
                           onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
@@ -715,153 +716,6 @@ export default function TaskPanel({
         )}
       </PullToRefresh>
       </div>
-    </div>
-  );
-}
-
-// ── TodoRow (extracted so each row can own a ref) ─────────────────
-
-function TodoRow({
-  todo,
-  highlight,
-  onUpdate,
-  onDelete,
-}: {
-  todo: Todo;
-  highlight?: boolean;
-  onUpdate: (todo: Todo) => void;
-  onDelete: (id: string) => void;
-}) {
-  const dateRef = useRef<HTMLInputElement>(null);
-  const rowRef = useRef<HTMLDivElement>(null);
-  const editRef = useRef<HTMLInputElement>(null);
-  const urgency = deadlineUrgency(todo.deadline, todo.done);
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(todo.text);
-
-  useEffect(() => {
-    if (highlight && rowRef.current) {
-      rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [highlight]);
-
-  useEffect(() => {
-    if (editing && editRef.current) {
-      editRef.current.focus();
-      editRef.current.select();
-    }
-  }, [editing]);
-
-  const commitEdit = async () => {
-    const trimmed = editText.trim();
-    setEditing(false);
-    if (!trimmed || trimmed === todo.text) {
-      setEditText(todo.text);
-      return;
-    }
-    const updated = await patchTodo(todo.id, { text: trimmed });
-    onUpdate(updated);
-  };
-
-  return (
-    <div
-      ref={rowRef}
-      data-todo-id={todo.id}
-      className={`flex items-start gap-1.5 px-3 py-1 group hover:bg-bg-hover rounded-md transition-colors ${
-        highlight ? "animate-todo-highlight" : ""
-      }`}
-    >
-      {/* Checkbox */}
-      <button
-        onClick={async () => {
-          const updated = await patchTodo(todo.id, { done: !todo.done });
-          onUpdate(updated);
-        }}
-        className={`mt-0.5 w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-colors ${
-          todo.done
-            ? "bg-success/80 border-success/80 text-white"
-            : CHECKBOX_URGENCY[urgency]
-        }`}
-      >
-        {todo.done && <Check size={9} strokeWidth={3} />}
-      </button>
-
-      {/* Text + deadline badge */}
-      <div className="flex-1 min-w-0">
-        {editing ? (
-          <input
-            ref={editRef}
-            type="text"
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit();
-              if (e.key === "Escape") { setEditText(todo.text); setEditing(false); }
-            }}
-            className="w-full text-xs bg-transparent border-b border-accent outline-none text-text-secondary py-0"
-          />
-        ) : (
-          <span
-            onClick={() => { if (!todo.done) { setEditText(todo.text); setEditing(true); } }}
-            className={`text-xs break-words ${
-              todo.done ? "text-text-faint line-through" : "text-text-secondary cursor-text"
-            }`}
-          >
-            {todo.text}
-          </span>
-        )}
-        {todo.deadline && !todo.done && !editing && (
-          <button
-            onClick={async () => {
-              const updated = await patchTodo(todo.id, { deadline: null });
-              onUpdate(updated);
-            }}
-            className={`inline-flex items-center gap-0.5 ml-1.5 px-1 py-0.5 -my-0.5 rounded text-[10px] cursor-pointer hover:opacity-70 transition-opacity ${DEADLINE_STYLES[urgency]}`}
-            title="Click to clear deadline"
-          >
-            {urgency === "overdue" && "⚠ "}{deadlineLabel(todo.deadline)}
-            <X size={8} className="opacity-0 group-hover:opacity-100" />
-          </button>
-        )}
-      </div>
-
-      {/* Actions (visible on hover) */}
-      <div className="flex items-center gap-0 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity">
-        <button
-          onClick={() => {
-            try { dateRef.current?.showPicker(); } catch { dateRef.current?.click(); }
-          }}
-          className="p-0.5 text-text-faint hover:text-accent transition-colors shrink-0"
-          title="Set deadline"
-        >
-          <CalendarDays size={10} />
-        </button>
-        <button
-          onClick={async () => {
-            await deleteTodo(todo.id);
-            onDelete(todo.id);
-          }}
-          className="p-0.5 text-text-faint hover:text-error transition-colors shrink-0"
-          title="Remove"
-        >
-          <X size={10} />
-        </button>
-      </div>
-
-      {/* Hidden date input — triggered programmatically via showPicker() */}
-      <input
-        ref={dateRef}
-        type="date"
-        className="sr-only"
-        tabIndex={-1}
-        value={todo.deadline ?? ""}
-        onChange={async (e) => {
-          const val = e.target.value || null;
-          const updated = await patchTodo(todo.id, { deadline: val });
-          onUpdate(updated);
-        }}
-      />
     </div>
   );
 }
