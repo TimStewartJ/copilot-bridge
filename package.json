@@ -43,6 +43,7 @@
     "react-router-dom": "^7.13.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "tsx": "^4.21.0",
     "yaml": "^2.8.3"
   },
   "devDependencies": {
@@ -53,10 +54,11 @@
     "@types/node-cron": "^3.0.11",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/supertest": "^7.2.0",
     "@vitejs/plugin-react": "^6.0.1",
     "patch-package": "^8.0.1",
+    "supertest": "^7.2.2",
     "tailwindcss": "^4.2.2",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vite": "^8.0.1",
     "vitest": "^4.1.1"
