@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchTags, createTag, patchTag, deleteTag as apiDeleteTag, type Tag } from "../../api";
+import { fetchTags, createTag, patchTag, deleteTag as apiDeleteTag, reorderTags as apiReorderTags, type Tag } from "../../api";
 import { queryKeys } from "../../queryClient";
 
 export function useTagsQuery() {
@@ -48,6 +48,16 @@ export function useDeleteTagMutation() {
       queryClient.setQueryData<Tag[]>(queryKeys.tags, (old) =>
         old?.filter((t) => t.id !== id),
       );
+    },
+  });
+}
+
+export function useReorderTagsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (tagIds: string[]) => apiReorderTags(tagIds),
+    onSuccess: (reordered) => {
+      queryClient.setQueryData<Tag[]>(queryKeys.tags, reordered);
     },
   });
 }

@@ -441,6 +441,32 @@ export function createDocsStore(docsDir: string) {
     return pages;
   }
 
+  // ── Tag rename propagation ────────────────────────────────────
+
+  function renameTagInDocs(oldName: string, newName: string): number {
+    let updated = 0;
+    const pages = scanAllPages();
+    for (const page of pages) {
+      const idx = page.tags.findIndex((t) => t.toLowerCase() === oldName.toLowerCase());
+      if (idx === -1) continue;
+
+      const resolved = resolveFilePath(page.path);
+      if (!resolved) continue;
+
+      const raw = readFileSync(resolved.filePath, "utf-8");
+      const { data, content } = matter(raw);
+      const tags: string[] = Array.isArray(data.tags) ? data.tags : data.tags ? [data.tags] : [];
+      const tagIdx = tags.findIndex((t) => t.toLowerCase() === oldName.toLowerCase());
+      if (tagIdx === -1) continue;
+
+      tags[tagIdx] = newName;
+      data.tags = tags;
+      writeFileSync(resolved.filePath, matter.stringify(content, data), "utf-8");
+      updated++;
+    }
+    return updated;
+  }
+
   // ── Folder operations ─────────────────────────────────────────
 
   function deleteFolder(folder: string): boolean {
@@ -454,7 +480,7 @@ export function createDocsStore(docsDir: string) {
     readPage, writePage, editPage, deletePage, listTree, scanAllPages, deleteFolder,
     readSchema, writeSchema, isDbFolder,
     addDbEntry, updateDbEntry, listDbEntries,
-    generateSlug, docsDir,
+    generateSlug, docsDir, renameTagInDocs,
   };
 }
 

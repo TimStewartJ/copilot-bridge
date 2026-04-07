@@ -458,6 +458,20 @@ export async function setTagMcpServer(tagId: string, serverName: string, config:
   }
 }
 
+export async function reorderTags(tagIds: string[]): Promise<Tag[]> {
+  const res = await fetch(`${API_BASE}/api/tags/reorder`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tagIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.tags;
+}
+
 export async function removeTagMcpServer(tagId: string, serverName: string): Promise<void> {
   await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, { method: "DELETE" });
 }

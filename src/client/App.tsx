@@ -856,6 +856,7 @@ export default function App() {
         onUpdateGroup={handleUpdateGroup}
         onDeleteGroup={handleDeleteGroup}
         onReorderGroups={handleReorderGroups}
+        onSetGroupTags={handleSetGroupTags}
         onMoveTaskToGroup={handleMoveTaskToGroup}
         onMoveAndReorder={handleMoveAndReorder}
         orphanSessions={globalSessions}

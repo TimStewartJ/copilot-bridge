@@ -476,6 +476,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     // Ungroup any tasks that belong to this group
     const tasks = ctx.taskStore.listTasks().filter((t) => t.groupId === req.params.id);
     for (const t of tasks) ctx.taskStore.updateTask(t.id, { groupId: undefined });
+    ctx.tagStore?.setEntityTags("task_group", req.params.id, []);
     ctx.taskGroupStore.deleteGroup(req.params.id);
     res.json({ success: true });
   });
@@ -512,10 +513,22 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.patch("/tags/:id", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     try {
+      // Capture old name before update for doc tag rename propagation
+      const oldTag = ctx.tagStore.getTag(req.params.id);
       const tag = ctx.tagStore.updateTag(req.params.id, req.body);
-      // If instructions or MCP config changed, evict cached sessions
-      if (req.body.instructions !== undefined) {
-        console.log("[tags] Tag instructions changed — evicting cached sessions");
+
+      // Propagate tag rename to doc frontmatter
+      if (req.body.name !== undefined && oldTag && oldTag.name !== tag.name && ctx.docsStore) {
+        const updated = ctx.docsStore.renameTagInDocs(oldTag.name, tag.name);
+        if (updated > 0) {
+          console.log(`[tags] Renamed tag in ${updated} doc(s): "${oldTag.name}" → "${tag.name}"`);
+          ctx.docsIndex?.reindex();
+        }
+      }
+
+      // Evict cached sessions if name or instructions changed
+      if (req.body.instructions !== undefined || req.body.name !== undefined) {
+        console.log("[tags] Tag changed — evicting cached sessions");
         ctx.sessionManager.evictAllCachedSessions();
       }
       res.json({ tag });
@@ -682,6 +695,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.delete("/tasks/:id", (req, res) => {
+    ctx.tagStore?.setEntityTags("task", req.params.id, []);
     ctx.taskStore.deleteTask(req.params.id);
     res.json({ ok: true });
   });
