@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "./queryClient";
 import {
-  fetchSessions,
   createSession,
   patchSession,
   fetchTasks,
@@ -26,13 +27,14 @@ import {
   type Session,
   type Task,
   type TaskGroup,
-  type Tag,
 } from "./api";
 import { useReadState } from "./useReadState";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
-import { useQueryClient } from "@tanstack/react-query";
+import { useTasksQuery } from "./hooks/queries/useTasks";
+import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
+import { useSessionsQuery } from "./hooks/queries/useSessions";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
 import TaskDashboard from "./components/TaskDashboard";
@@ -57,9 +59,12 @@ export default function App() {
   const { goBack } = useAppBack();
   const queryClient = useQueryClient();
 
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  // ── React Query data ────────────────────────────────────────
+  const [archivedLoaded, setArchivedLoaded] = useState(false);
+  const { data: sessions = [] } = useSessionsQuery(archivedLoaded);
+  const { data: tasks = [] } = useTasksQuery();
+  const { data: taskGroups = [] } = useTaskGroupsQuery();
+
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskNotFound, setTaskNotFound] = useState(false);
   const [railExpanded, setRailExpanded] = useState(true);
@@ -83,10 +88,7 @@ export default function App() {
   // Track optimistic sessions that the server doesn't know about yet
   const optimisticIdsRef = useRef(new Set<string>());
 
-  // Track whether archived sessions have been fetched
-  const archivedLoadedRef = useRef(false);
-
-  // Guard: skip SSE-driven loadTasks() while a task mutation is in-flight
+  // Guard: skip SSE-driven task refetch while a task mutation is in-flight
   const taskMutationInFlight = useRef(0);
 
 
@@ -143,78 +145,44 @@ export default function App() {
   applyServerStateRef.current = applyServerState;
   const { getDraft, setDraft, clearDraft, hasDraft } = useDrafts(sessions);
 
-  const loadSessions = async () => {
-    try {
-      const includeArchived = archivedLoadedRef.current;
-      const serverSessions = await fetchSessions(includeArchived);
-      setSessions((prev) => {
-        const serverIds = new Set(serverSessions.map((s) => s.sessionId));
-        for (const id of serverIds) optimisticIdsRef.current.delete(id);
-        const survivors = prev.filter(
-          (s) => optimisticIdsRef.current.has(s.sessionId) && !serverIds.has(s.sessionId),
-        );
-        return [...survivors, ...serverSessions];
-      });
-    } catch (err) {
-      console.error("Failed to load sessions:", err);
-    }
-  };
+  // Helper to invalidate session/task/group queries
+  const invalidateSessions = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: ["sessions"] }), [queryClient]);
+  const invalidateTasks = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
+  const invalidateTaskGroups = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.taskGroups }), [queryClient]);
 
-  const requestArchivedSessions = useCallback(async () => {
-    if (archivedLoadedRef.current) return;
-    archivedLoadedRef.current = true;
-    await loadSessions();
-  }, []);
-
-  const loadTasks = async () => {
-    try {
-      setTasks(await fetchTasks());
-    } catch (err) {
-      console.error("Failed to load tasks:", err);
-    }
-  };
-
-  const loadTaskGroups = async () => {
-    try {
-      setTaskGroups(await fetchTaskGroups());
-    } catch (err) {
-      console.error("Failed to load task groups:", err);
-    }
-  };
-
-  useEffect(() => {
-    loadSessions();
-    loadTasks();
-    loadTaskGroups();
-  }, []);
+  const requestArchivedSessions = useCallback(() => {
+    if (archivedLoaded) return;
+    setArchivedLoaded(true);
+  }, [archivedLoaded]);
 
   // Real-time status updates via SSE
+  const patchSessionInCache = useCallback((sessionId: string, patch: Partial<Session>) => {
+    queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) =>
+      prev?.map((s) => s.sessionId === sessionId ? { ...s, ...patch } : s),
+    );
+  }, [queryClient]);
+
   useStatusStream(useCallback((event) => {
     switch (event.type) {
       case "session:busy":
-        setSessions((prev) =>
-          prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: true } : s),
-        );
+        patchSessionInCache(event.sessionId, { busy: true });
         break;
       case "session:idle":
-        setSessions((prev) =>
-          prev.map((s) => s.sessionId === event.sessionId ? { ...s, busy: false } : s),
-        );
+        patchSessionInCache(event.sessionId, { busy: false });
         // Reload to pick up updated modifiedTime so unread dots appear immediately
-        loadSessions();
+        invalidateSessions();
         break;
       case "session:title":
         if (event.title) {
-          setSessions((prev) =>
-            prev.map((s) => s.sessionId === event.sessionId ? { ...s, summary: event.title } : s),
-          );
+          patchSessionInCache(event.sessionId, { summary: event.title });
         }
         break;
       case "session:archived":
         if (typeof event.archived === "boolean") {
-          setSessions((prev) =>
-            prev.map((s) => s.sessionId === event.sessionId ? { ...s, archived: event.archived! } : s),
-          );
+          patchSessionInCache(event.sessionId, { archived: event.archived });
         }
         break;
       case "server:restart-pending":
@@ -232,17 +200,17 @@ export default function App() {
         queryClient.invalidateQueries({ queryKey: ["task"] });
         break;
       case "task:changed":
-        if (taskMutationInFlight.current === 0) loadTasks();
+        if (taskMutationInFlight.current === 0) invalidateTasks();
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
         break;
       case "status:connected":
         // Refresh sessions + read state on reconnect (covers tab sleep / network blips)
-        loadSessions();
+        invalidateSessions();
         break;
     }
-  }, []));
+  }, [patchSessionInCache, invalidateSessions, invalidateTasks, queryClient]));
 
   // Auto-dismiss "reconnected" banner after 2 seconds
   useEffect(() => {
@@ -250,23 +218,6 @@ export default function App() {
     const timer = setTimeout(() => setRestartPhase(null), 2000);
     return () => clearTimeout(timer);
   }, [restartPhase]);
-
-  // Background poll for reconciliation (slow: 30s, visibility-aware)
-  // Also immediately refresh when tab becomes visible after being hidden
-  useEffect(() => {
-    const poll = () => {
-      if (document.visibilityState === "visible") loadSessions();
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") loadSessions();
-    };
-    const timer = setInterval(poll, 30_000);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, []);
 
   // Mark session as read after 2s dwell, and again on departure to capture
   // any messages that arrived after the initial mark.
@@ -288,8 +239,8 @@ export default function App() {
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
     optimisticIdsRef.current.add(sessionId);
-    setSessions((prev) => {
-      if (prev.some((s) => s.sessionId === sessionId)) return prev;
+    queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) => {
+      if (!prev || prev.some((s) => s.sessionId === sessionId)) return prev;
       return [{
         sessionId,
         summary: "New session",
@@ -297,7 +248,7 @@ export default function App() {
         diskSizeBytes: 0,
       }, ...prev];
     });
-  }, []);
+  }, [queryClient]);
 
   // Sessions not linked to any task
   const globalSessions = useMemo(() => {
@@ -430,7 +381,7 @@ export default function App() {
       addOptimisticSession(sessionId);
       const addSession = (t: Task) =>
         t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
-      setTasks((prev) => prev.map(addSession));
+      queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => prev?.map(addSession));
       setSelectedTask((prev) => (prev ? addSession(prev) : prev));
       return sessionId;
     } else {
@@ -438,12 +389,12 @@ export default function App() {
       addOptimisticSession(sessionId);
       return sessionId;
     }
-  }, [addOptimisticSession]);
+  }, [addOptimisticSession, queryClient]);
 
   const handleNewTask = async (groupId?: string) => {
     try {
       const task = await createTask("New Task", groupId);
-      setTasks((prev) => [task, ...prev]);
+      queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => prev ? [task, ...prev] : [task]);
       setSelectedTask(task);
       navigate(`/tasks/${task.id}/sessions/new`);
     } catch (err) {
@@ -454,11 +405,13 @@ export default function App() {
   const handleUpdateTask = async (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => {
     try {
       const updated = await patchTask(taskId, updates);
-      // When status changes, refetch all tasks since order values shift
       if (updates.status) {
-        setTasks(await fetchTasks());
+        // When status changes, refetch all tasks since order values shift
+        await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
       } else {
-        setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+        queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
+          prev?.map((t) => (t.id === taskId ? updated : t)),
+        );
       }
       setSelectedTask((prev) => (prev?.id === taskId ? updated : prev));
     } catch (err) {
@@ -467,14 +420,14 @@ export default function App() {
   };
 
   const handleReorderTasks = async (taskIds: string[]) => {
-    // Optimistic: reorder in local state immediately
-    setTasks((prev) => {
+    // Optimistic: reorder in cache immediately
+    queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => {
+      if (!prev) return prev;
       const map = new Map(prev.map((t) => [t.id, t]));
       const reordered = taskIds.map((id, i) => {
         const t = map.get(id);
         return t ? { ...t, order: i } : null;
       }).filter(Boolean) as Task[];
-      // Keep tasks not in the reorder set
       const reorderedIds = new Set(taskIds);
       const rest = prev.filter((t) => !reorderedIds.has(t.id));
       return [...reordered, ...rest];
@@ -484,7 +437,7 @@ export default function App() {
       await reorderTasks(taskIds);
     } catch (err) {
       console.error("Failed to reorder tasks:", err);
-      setTasks(await fetchTasks());
+      await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } finally {
       taskMutationInFlight.current--;
     }
@@ -495,7 +448,7 @@ export default function App() {
       await deleteTask(taskId);
       setSelectedTask(null);
       navigate("/");
-      await loadTasks();
+      await invalidateTasks();
     } catch (err) {
       console.error("Failed to delete task:", err);
     }
@@ -506,7 +459,9 @@ export default function App() {
   const handleCreateGroup = async (name: string, color?: string) => {
     try {
       const group = await createTaskGroup(name, color);
-      setTaskGroups((prev) => [...prev, group]);
+      queryClient.setQueryData<TaskGroup[]>(queryKeys.taskGroups, (prev) =>
+        prev ? [...prev, group] : [group],
+      );
       return group;
     } catch (err) {
       console.error("Failed to create group:", err);
@@ -517,7 +472,9 @@ export default function App() {
   const handleUpdateGroup = async (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => {
     try {
       const updated = await patchTaskGroup(groupId, updates);
-      setTaskGroups((prev) => prev.map((g) => (g.id === groupId ? updated : g)));
+      queryClient.setQueryData<TaskGroup[]>(queryKeys.taskGroups, (prev) =>
+        prev?.map((g) => (g.id === groupId ? updated : g)),
+      );
     } catch (err) {
       console.error("Failed to update group:", err);
     }
@@ -526,9 +483,11 @@ export default function App() {
   const handleDeleteGroup = async (groupId: string) => {
     try {
       await deleteTaskGroup(groupId);
-      setTaskGroups((prev) => prev.filter((g) => g.id !== groupId));
+      queryClient.setQueryData<TaskGroup[]>(queryKeys.taskGroups, (prev) =>
+        prev?.filter((g) => g.id !== groupId),
+      );
       // Tasks in this group become ungrouped — refetch
-      setTasks(await fetchTasks());
+      await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } catch (err) {
       console.error("Failed to delete group:", err);
     }
@@ -536,7 +495,8 @@ export default function App() {
 
   const handleReorderGroups = async (groupIds: string[]) => {
     // Optimistic update
-    setTaskGroups((prev) => {
+    queryClient.setQueryData<TaskGroup[]>(queryKeys.taskGroups, (prev) => {
+      if (!prev) return prev;
       const map = new Map(prev.map((g) => [g.id, g]));
       const reordered = groupIds.map((id, i) => {
         const g = map.get(id);
@@ -550,19 +510,21 @@ export default function App() {
       await reorderTaskGroups(groupIds);
     } catch (err) {
       console.error("Failed to reorder groups:", err);
-      setTaskGroups(await fetchTaskGroups());
+      await queryClient.refetchQueries({ queryKey: queryKeys.taskGroups });
     }
   };
 
   const handleMoveTaskToGroup = async (taskId: string, groupId: string | undefined) => {
     // Optimistic update
-    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, groupId } : t)));
+    queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
+      prev?.map((t) => (t.id === taskId ? { ...t, groupId } : t)),
+    );
     taskMutationInFlight.current++;
     try {
       await patchTask(taskId, { groupId: groupId ?? ("" as any) });
     } catch (err) {
       console.error("Failed to move task to group:", err);
-      setTasks(await fetchTasks());
+      await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } finally {
       taskMutationInFlight.current--;
     }
@@ -570,7 +532,8 @@ export default function App() {
 
   const handleMoveAndReorder = async (taskId: string, groupId: string | undefined, taskIds: string[]) => {
     // Single optimistic update: group move + reorder combined
-    setTasks((prev) => {
+    queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => {
+      if (!prev) return prev;
       const withGroup = prev.map((t) => (t.id === taskId ? { ...t, groupId } : t));
       const map = new Map(withGroup.map((t) => [t.id, t]));
       const reordered = taskIds.map((id, i) => {
@@ -581,14 +544,13 @@ export default function App() {
       const rest = withGroup.filter((t) => !reorderedIds.has(t.id));
       return [...reordered, ...rest];
     });
-    // Serialize server calls to avoid load/save race
     taskMutationInFlight.current++;
     try {
       await patchTask(taskId, { groupId: groupId ?? ("" as any) });
       await reorderTasks(taskIds);
     } catch (err) {
       console.error("Failed to move and reorder:", err);
-      setTasks(await fetchTasks());
+      await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } finally {
       taskMutationInFlight.current--;
     }
@@ -599,7 +561,9 @@ export default function App() {
   const handleSetTaskTags = async (taskId: string, tagIds: string[]) => {
     try {
       const tags = await setTaskTags(taskId, tagIds);
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, tags } : t)));
+      queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
+        prev?.map((t) => (t.id === taskId ? { ...t, tags } : t)),
+      );
       setSelectedTask((prev) => (prev?.id === taskId ? { ...prev, tags } : prev));
     } catch (err) {
       console.error("Failed to set task tags:", err);
@@ -609,7 +573,9 @@ export default function App() {
   const handleSetGroupTags = async (groupId: string, tagIds: string[]) => {
     try {
       const tags = await setGroupTags(groupId, tagIds);
-      setTaskGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, tags } : g)));
+      queryClient.setQueryData<TaskGroup[]>(queryKeys.taskGroups, (prev) =>
+        prev?.map((g) => (g.id === groupId ? { ...g, tags } : g)),
+      );
     } catch (err) {
       console.error("Failed to set group tags:", err);
     }
@@ -632,7 +598,7 @@ export default function App() {
     setArchivingIds((prev) => new Set(prev).add(sessionId));
     try {
       await patchSession(sessionId, { archived });
-      await loadSessions();
+      await invalidateSessions();
     } catch (err) {
       console.error("Failed to archive session:", err);
     } finally {
@@ -667,7 +633,7 @@ export default function App() {
     await new Promise((r) => setTimeout(r, EXIT_ANIM_MS));
     try {
       await deleteSession(sessionId);
-      await Promise.all([loadSessions(), loadTasks()]);
+      await Promise.all([invalidateSessions(), invalidateTasks()]);
     } catch (err) {
       console.error("Failed to delete session:", err);
     } finally {
@@ -687,8 +653,8 @@ export default function App() {
       const linkedTaskId = tasks.find((t) => t.sessionIds.includes(sessionId))?.id;
       if (linkedTaskId) {
         // Update task to include the new session
-        setTasks((prev) =>
-          prev.map((t) =>
+        queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
+          prev?.map((t) =>
             t.id === linkedTaskId ? { ...t, sessionIds: [...t.sessionIds, newId] } : t,
           ),
         );
@@ -699,7 +665,7 @@ export default function App() {
       } else {
         navigate(`/sessions/${newId}`);
       }
-      await Promise.all([loadSessions(), loadTasks()]);
+      await Promise.all([invalidateSessions(), invalidateTasks()]);
     } catch (err) {
       console.error("Failed to duplicate session:", err);
     }
@@ -715,7 +681,7 @@ export default function App() {
 
   const handleLinkToTask = async (sessionId: string, taskId: string) => {
     await linkResource(taskId, { type: "session", sessionId });
-    await loadTasks();
+    await invalidateTasks();
     // Update URL to reflect the new task context
     if (activeSessionId === sessionId && !activeTaskId) {
       navigate(`/tasks/${taskId}/sessions/${sessionId}`, { replace: true });
@@ -791,7 +757,7 @@ export default function App() {
 
     try {
       await batchSessionAction(action, sessionIds);
-      await Promise.all([loadSessions(), loadTasks()]);
+      await Promise.all([invalidateSessions(), invalidateTasks()]);
     } catch (err) {
       console.error(`Bulk ${action} failed:`, err);
     } finally {
@@ -806,7 +772,7 @@ export default function App() {
         return next;
       });
     }
-  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, loadSessions, loadTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, invalidateSessions, invalidateTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
@@ -873,7 +839,7 @@ export default function App() {
         onMarkUnread={markUnread}
         onMarkAllQuickChatsRead={handleMarkAllRead}
         onRequestArchived={requestArchivedSessions}
-        archivedLoaded={archivedLoadedRef.current}
+        archivedLoaded={archivedLoaded}
         archivingIds={archivingIds}
         exitingIds={exitingIds}
         onBulkAction={handleBulkAction}
@@ -925,12 +891,12 @@ export default function App() {
                   onDeleteSession={handleDeleteSession}
                   onDuplicateSession={handleDuplicateSession}
                   markUnread={markUnread}
-                  onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+                  onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
                   hasDraft={hasDraft}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
-                  archivedLoaded={archivedLoadedRef.current}
+                  archivedLoaded={archivedLoaded}
                 />
               </div>
             )}
@@ -946,7 +912,7 @@ export default function App() {
                   onSelectSession={handleSelectSession}
                   onNewSession={handleNewSession}
                   onUpdateTask={handleUpdateTask}
-                  onTasksChanged={loadTasks}
+                  onTasksChanged={invalidateTasks}
                   isUnread={isUnread}
                   onArchiveSession={handleArchiveSession}
                   archivingIds={archivingIds}
@@ -959,12 +925,12 @@ export default function App() {
                   onMarkUnread={markUnread}
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
-                  onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+                  onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
                   onViewDashboard={(taskId) => navigate(`/tasks/${taskId}`)}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
-                  archivedLoaded={archivedLoadedRef.current}
+                  archivedLoaded={archivedLoaded}
                   onSetTaskTags={handleSetTaskTags}
                 />
               </div>
@@ -1036,17 +1002,17 @@ export default function App() {
                     onSelectSession={(id) => navigate(`/tasks/${activeTaskId}/sessions/${id}`)}
                     onNewSession={handleNewSession}
                     onUpdateTask={handleUpdateTask}
-                    onTasksChanged={loadTasks}
+                    onTasksChanged={invalidateTasks}
                     isUnread={isUnread}
                     onSetTaskTags={handleSetTaskTags}
-                    onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
+                    onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
                     onDeleteSession={handleDeleteSession}
                     onDuplicateSession={handleDuplicateSession}
                     onArchiveSession={handleArchiveSession}
                     onMarkUnread={markUnread}
                     hasDraft={hasDraft}
                     onRequestArchived={requestArchivedSessions}
-                    archivedLoaded={archivedLoadedRef.current}
+                    archivedLoaded={archivedLoaded}
                   />
                 ) : taskNotFound ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
@@ -1068,13 +1034,13 @@ export default function App() {
             <Route
               path="tasks/:taskId/sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
+                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={loadSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
+                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
               }
             />
             <Route path="docs/*" element={<DocsView />} />
