@@ -1,6 +1,9 @@
 // Shared test helpers — SQLite in-memory database setup
 
 import express from "express";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { openMemoryDatabase } from "../db.js";
 import type { DatabaseSync } from "../db.js";
 import { createGlobalBus } from "../global-bus.js";
@@ -14,6 +17,8 @@ import { createSessionTitlesStore } from "../session-titles.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createTodoStore } from "../todo-store.js";
 import { createTagStore } from "../tag-store.js";
+import { createDocsStore } from "../docs-store.js";
+import { createDocsIndex } from "../docs-index.js";
 import { createApiRouter } from "../api-router.js";
 import type { AppContext } from "../app-context.js";
 
@@ -52,13 +57,17 @@ export function createMockSessionManager() {
 
 /**
  * Create a fully wired Express app for integration testing.
- * Uses in-memory SQLite, real stores, and a mock session manager.
- * Returns the app and the AppContext for direct store access in assertions.
+ * Uses in-memory SQLite, real stores (including docs), and a mock session manager.
+ * Returns the app, AppContext, and db for direct access in assertions.
  */
 export function createTestApp(overrides?: Partial<AppContext>) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
+
+  const docsDir = mkdtempSync(join(tmpdir(), "bridge-test-docs-"));
+  const docsStore = createDocsStore(docsDir);
+  const docsIndex = createDocsIndex(db, docsStore);
 
   const ctx: AppContext = {
     taskStore: createTaskStore(db, globalBus),
@@ -70,6 +79,8 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     readStateStore: createReadStateStore(db),
     todoStore: createTodoStore(db, globalBus),
     tagStore: createTagStore(db),
+    docsStore,
+    docsIndex,
     globalBus,
     eventBusRegistry,
     sessionManager: createMockSessionManager(),
@@ -80,5 +91,5 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   app.use(express.json({ limit: "20mb" }));
   app.use("/api", createApiRouter(ctx));
 
-  return { app, ctx };
+  return { app, ctx, db };
 }
