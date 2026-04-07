@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session, Todo, Tag } from "../api";
+import type { Task, TaskGroup, Session, Todo } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { unlinkResource, patchTask, fetchTodos, createTodo } from "../api";
 import TodoRow from "./TodoRow";
@@ -9,7 +9,7 @@ import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-s
 import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
-
+import { useTagsQuery } from "../hooks/queries/useTags";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleEditorDialog from "./ScheduleEditorDialog";
@@ -94,9 +94,7 @@ interface TaskPanelProps {
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
   // Tags
-  allTags?: Tag[];
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
-  onTagCreated?: (tag: Tag) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -130,10 +128,10 @@ export default function TaskPanel({
   onBulkAction,
   onRequestArchived,
   archivedLoaded,
-  allTags = [],
   onSetTaskTags,
-  onTagCreated,
 }: TaskPanelProps) {
+  const { data: allTags = [] } = useTagsQuery();
+
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -290,11 +288,9 @@ export default function TaskPanel({
               />
               {onSetTaskTags && (
                 <TagPicker
-                  allTags={allTags}
                   selectedTagIds={taskOwnTags.map((t) => t.id)}
                   inheritedTagIds={inheritedTagIds}
                   onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
-                  onTagCreated={onTagCreated}
                   compact
                 />
               )}
