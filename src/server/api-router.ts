@@ -435,6 +435,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
         errors[sid] = String(err);
       }
     }
+    if (action === "markRead" && sessionIds.length > 0) {
+      ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
+    }
     res.json({ ok: Object.keys(errors).length === 0, errors });
   });
 
@@ -817,11 +820,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/read-state/:sessionId", (req, res) => {
     const ts = ctx.readStateStore.markRead(req.params.sessionId);
+    ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
     res.json({ ok: true, lastReadAt: ts });
   });
 
   router.delete("/read-state/:sessionId", (req, res) => {
     ctx.readStateStore.markUnread(req.params.sessionId);
+    ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
     res.json({ ok: true });
   });
 
