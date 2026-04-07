@@ -79,6 +79,8 @@ export function createDirectoryLink(
 /**
  * Remove a directory junction (Windows) or symlink (Linux)
  * without recursing into the target directory.
+ * Refuses to delete real directories — callers that need recursive
+ * deletion should use rmSync directly.
  */
 export function removeDirectoryLink(
   linkPath: string,
@@ -88,8 +90,9 @@ export function removeDirectoryLink(
     const stat = lstatSync(linkPath);
     if (stat.isSymbolicLink()) {
       rmSync(linkPath);
+      return { ok: true, output: "" };
     } else if (stat.isDirectory()) {
-      rmSync(linkPath, { recursive: true, force: true });
+      return { ok: false, output: `Refusing to delete real directory: ${linkPath}` };
     }
     return { ok: true, output: "" };
   } catch (err: any) {

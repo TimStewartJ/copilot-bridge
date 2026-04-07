@@ -4,7 +4,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, copyFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, copyFileSync, cpSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -39,22 +39,39 @@ function ensureStagingDeps(stagingDir: string): void {
 
   log("Staging package.json differs from production — installing dependencies in staging...");
 
-  // Remove the symlink/junction so npm install can create a real node_modules
+  // If node_modules is a symlink/junction, remove it so npm can create a real directory.
+  // If it's already a real directory, leave it — npm install is incremental.
   const stagingModules = join(stagingDir, "node_modules");
   if (existsSync(stagingModules)) {
-    removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
+    try {
+      const stat = lstatSync(stagingModules);
+      if (stat.isSymbolicLink()) {
+        removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
+        log("Removed node_modules symlink for fresh install");
+      } else {
+        log("node_modules is a real directory — running incremental install");
+      }
+    } catch {
+      // lstat failed — try to proceed anyway
+    }
   }
 
-  const result = run("npm install --no-audit --no-fund", stagingDir);
-  if (!result.ok) {
-    log(`Warning: staging npm install failed: ${result.output.slice(-300)}`);
+  // Use a longer timeout (5 min) — clean installs can be slow
+  try {
+    const output = execSync("npm install --no-audit --no-fund", {
+      cwd: stagingDir,
+      encoding: "utf-8",
+      timeout: 300_000,
+    });
+    log("Staging npm install succeeded");
+  } catch (err: any) {
+    const errOutput = err.stderr || err.stdout || String(err);
+    log(`Warning: staging npm install failed: ${errOutput.slice(-300)}`);
     // Fall back to re-linking production node_modules so builds at least attempt to work
     const prodModules = join(PRODUCTION_ROOT, "node_modules");
     if (existsSync(prodModules) && !existsSync(stagingModules)) {
       createDirectoryLink(stagingModules, prodModules, PRODUCTION_ROOT);
     }
-  } else {
-    log("Staging npm install succeeded");
   }
 }
 
@@ -312,12 +329,21 @@ function ensureNodeModulesIgnored(stagingDir: string): void {
   }
 }
 
-/** Remove a staging worktree and its branch. Handles node_modules junction cleanup. */
+/** Remove a staging worktree and its branch. Handles node_modules cleanup. */
 function removeWorktree(stagingDir: string, branch: string): void {
-  // Remove node_modules junction/symlink first — git worktree remove can't handle it
+  // Remove node_modules first — git worktree remove can't handle symlinks or large dirs
   const junctionPath = join(stagingDir, "node_modules");
   if (existsSync(junctionPath)) {
-    removeDirectoryLink(junctionPath, PRODUCTION_ROOT);
+    try {
+      const stat = lstatSync(junctionPath);
+      if (stat.isSymbolicLink()) {
+        rmSync(junctionPath);
+      } else if (stat.isDirectory()) {
+        rmSync(junctionPath, { recursive: true, force: true });
+      }
+    } catch (err: any) {
+      if (err.code !== "ENOENT") log(`Warning: failed to remove node_modules: ${err.message}`);
+    }
   }
   run(`git worktree remove "${stagingDir}" --force`, PRODUCTION_ROOT);
   run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
