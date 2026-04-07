@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
-  fetchDashboard,
   patchTodo,
   createGlobalTodo,
   type DashboardData,
@@ -8,6 +7,7 @@ import {
   type DashboardOrphanSession,
   type DashboardTodo,
 } from "../api";
+import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { getLastViewedSession } from "../last-viewed";
 import { timeAgo } from "../time";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
@@ -152,8 +152,7 @@ export default function Dashboard({
   onNewSession,
   onResumeTask,
 }: DashboardProps) {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, isLoading: loading } = useDashboardQuery();
   const [localOpenTodos, setLocalOpenTodos] = useState<DashboardTodo[]>([]);
   const [localCompletedTodos, setLocalCompletedTodos] = useState<DashboardTodo[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
@@ -162,6 +161,16 @@ export default function Dashboard({
   const [todoSort, setTodoSort] = useState<TodoSort>(getSavedSort);
   const lastLocalChange = useRef(0);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(getCollapsedSet);
+
+  // Sync local todo state from query data, respecting the optimistic update guard
+  useEffect(() => {
+    if (!data) return;
+    const recentLocalChange = Date.now() - lastLocalChange.current < 5000;
+    if (!recentLocalChange) {
+      setLocalOpenTodos(data.openTodos);
+      setLocalCompletedTodos(data.completedTodos);
+    }
+  }, [data]);
 
   const sortedOpenTodos = useMemo(() => sortTodos(localOpenTodos, todoSort), [localOpenTodos, todoSort]);
   const todoGroups = useMemo(() => groupTodosByTask(localOpenTodos), [localOpenTodos]);
@@ -194,33 +203,6 @@ export default function Dashboard({
       console.error("Failed to create todo:", err);
     }
   };
-
-  const loadDashboard = async (force = false) => {
-    try {
-      const d = await fetchDashboard();
-      setData(d);
-      // Skip todo list replacement if user made a local change in the last 5s
-      // to avoid the poll stomping on optimistic UI
-      const recentLocalChange = Date.now() - lastLocalChange.current < 5000;
-      if (force || !recentLocalChange) {
-        setLocalOpenTodos(d.openTodos);
-        setLocalCompletedTodos(d.completedTodos);
-      }
-    } catch (err) {
-      console.error("Failed to load dashboard:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadDashboard(true);
-    // Auto-refresh every 15s when visible
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") loadDashboard();
-    }, 15_000);
-    return () => clearInterval(timer);
-  }, []);
 
   if (loading) {
     return (
