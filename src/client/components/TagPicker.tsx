@@ -1,36 +1,34 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import type { Tag } from "../api";
-import { createTag } from "../api";
+import { useTagsQuery, useCreateTagMutation } from "../hooks/queries/useTags";
 import TagPill from "./TagPill";
 import { TAG_COLOR_BG, TAG_COLOR_TEXT } from "../tag-colors";
 import { Plus, Search } from "lucide-react";
 
 interface TagPickerProps {
-  /** All available tags */
-  allTags: Tag[];
   /** Currently selected tag IDs (own tags, not inherited) */
   selectedTagIds: string[];
   /** Inherited tag IDs (shown but not removable) */
   inheritedTagIds?: Set<string>;
   /** Called when selection changes (only own tags, not inherited) */
   onChange: (tagIds: string[]) => void;
-  /** Called when a new tag is created */
-  onTagCreated?: (tag: Tag) => void;
   /** Compact mode — just a + button */
   compact?: boolean;
+  // Legacy props — accepted but ignored (tags come from query cache now)
+  allTags?: Tag[];
+  onTagCreated?: (tag: Tag) => void;
 }
 
 export default function TagPicker({
-  allTags,
   selectedTagIds,
   inheritedTagIds,
   onChange,
-  onTagCreated,
   compact,
 }: TagPickerProps) {
+  const { data: allTags = [] } = useTagsQuery();
+  const createTagMutation = useCreateTagMutation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [creating, setCreating] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -77,17 +75,13 @@ export default function TagPicker({
   };
 
   const handleCreate = async () => {
-    if (!canCreate || creating) return;
-    setCreating(true);
+    if (!canCreate || createTagMutation.isPending) return;
     try {
-      const tag = await createTag(search.trim());
-      onTagCreated?.(tag);
+      const tag = await createTagMutation.mutateAsync({ name: search.trim() });
       onChange([...selectedTagIds, tag.id]);
       setSearch("");
     } catch (e) {
       console.error("Failed to create tag:", e);
-    } finally {
-      setCreating(false);
     }
   };
 
@@ -169,7 +163,7 @@ export default function TagPicker({
             {canCreate && (
               <button
                 onClick={handleCreate}
-                disabled={creating}
+                disabled={createTagMutation.isPending}
                 className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-bg-hover transition-colors text-accent"
               >
                 <Plus size={12} />

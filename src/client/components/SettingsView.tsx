@@ -1,9 +1,7 @@
 import { useState, useEffect } from "react";
 import {
-  fetchSettings,
   patchSettings,
   fetchGlobalMcpStatus,
-  fetchTags,
   createTag as apiCreateTag,
   patchTag,
   deleteTag as apiDeleteTag,
@@ -20,6 +18,8 @@ import {
   type ThemePreference,
   type Tag,
 } from "../api";
+import { useSettingsQuery, useSettingsMutation } from "../hooks/queries/useSettings";
+import { useTagsQuery, useCreateTagMutation, usePatchTagMutation, useDeleteTagMutation } from "../hooks/queries/useTags";
 import { Settings, ArrowLeft, Pencil, Trash2, Check, X, CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
 import { TAG_COLORS } from "../tag-colors";
 import { TAG_COLOR_BG, TAG_COLOR_TEXT, TAG_COLOR_DOT } from "../tag-colors";
@@ -30,6 +30,9 @@ import { useAppBack } from "../hooks/useAppBack";
 
 export default function SettingsView() {
   const { goBack } = useAppBack();
+  const { data: queriedSettings, isLoading: settingsLoading } = useSettingsQuery();
+  const settingsMutation = useSettingsMutation();
+  const { data: queriedTags = [] } = useTagsQuery();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,16 +46,22 @@ export default function SettingsView() {
   const hasChanges =
     settings && draft && JSON.stringify(settings) !== JSON.stringify(draft);
 
+  // Sync settings from query
   useEffect(() => {
-    fetchSettings()
-      .then((s) => {
-        setSettings(s);
-        setDraft(structuredClone(s));
-      })
-      .catch(() => setToast("Failed to load settings"))
-      .finally(() => setLoading(false));
+    if (queriedSettings && !settings) {
+      setSettings(queriedSettings);
+      setDraft(structuredClone(queriedSettings));
+      setLoading(false);
+    }
+  }, [queriedSettings, settings]);
 
-    // Fetch live MCP status from any recent session
+  // Sync tags from query
+  useEffect(() => {
+    setTags(queriedTags);
+  }, [queriedTags]);
+
+  // Fetch MCP status on mount
+  useEffect(() => {
     fetchGlobalMcpStatus()
       .then((servers) => {
         const map: Record<string, McpServerStatus> = {};
@@ -60,18 +69,15 @@ export default function SettingsView() {
         setMcpStatuses(map);
       })
       .catch(() => {});
-
-    fetchTags().then(setTags).catch(() => {});
   }, []);
 
   const handleSave = async () => {
     if (!draft) return;
     setSaving(true);
     try {
-      const updated = await patchSettings(draft);
+      const updated = await settingsMutation.mutateAsync(draft);
       setSettings(updated);
       setDraft(structuredClone(updated));
-      // Favicon auto-updates via useFavicon hook reacting to theme
       showToast("Settings saved — changes apply on next session interaction");
     } catch (err) {
       showToast(`Save failed: ${err instanceof Error ? err.message : err}`);
@@ -1078,6 +1084,9 @@ function Field({
 // ── Tags Section ────────────────────────────────────────────────────
 
 function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => void }) {
+  const createTagMutation = useCreateTagMutation();
+  const patchTagMutation = usePatchTagMutation();
+  const deleteTagMutation = useDeleteTagMutation();
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState<string>("blue");
@@ -1094,8 +1103,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
   const handleCreate = async () => {
     if (!newName.trim()) return;
     try {
-      const tag = await apiCreateTag(newName.trim(), newColor);
-      setTags([...tags, tag]);
+      await createTagMutation.mutateAsync({ name: newName.trim(), color: newColor });
       setNewName("");
       setNewColor("blue");
       setAdding(false);
@@ -1120,8 +1128,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
 
   const handleSave = async (id: string) => {
     try {
-      const updated = await patchTag(id, { name: editName, color: editColor, instructions: editInstructions });
-      setTags(tags.map((t) => (t.id === id ? updated : t)));
+      await patchTagMutation.mutateAsync({ id, updates: { name: editName, color: editColor, instructions: editInstructions } });
       setEditingId(null);
     } catch (e) {
       console.error("Failed to update tag:", e);
@@ -1157,8 +1164,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
 
   const handleDelete = async (id: string) => {
     try {
-      await apiDeleteTag(id);
-      setTags(tags.filter((t) => t.id !== id));
+      await deleteTagMutation.mutateAsync(id);
     } catch (e) {
       console.error("Failed to delete tag:", e);
     }

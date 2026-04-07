@@ -20,7 +20,6 @@ import {
   patchTaskGroup,
   deleteTaskGroup,
   batchSessionAction,
-  fetchTags,
   setTaskTags,
   setGroupTags,
   API_BASE,
@@ -32,6 +31,7 @@ import {
 import { useReadState } from "./useReadState";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
+import { useSettingsQuery } from "./hooks/queries/useSettings";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
 import TaskDashboard from "./components/TaskDashboard";
@@ -46,7 +46,6 @@ import PullToRefresh from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
-import { fetchSettings } from "./api";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc } from "./last-viewed";
 import { useAppBack } from "./hooks/useAppBack";
 
@@ -74,15 +73,11 @@ export default function App() {
   }, []);
   const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
   const [restartWaiting, setRestartWaiting] = useState(0);
-  const [faviconKey, setFaviconKey] = useState<string | undefined>();
   const [scheduleVersion, setScheduleVersion] = useState(0);
-  const [allTags, setAllTags] = useState<Tag[]>([]);
 
-  // Apply favicon from settings on load
-  useFavicon(faviconKey);
-  useEffect(() => {
-    fetchSettings().then((s) => setFaviconKey(s.favicon)).catch(() => {});
-  }, []);
+  // Settings query (shared with useTheme, SettingsView, etc.)
+  const { data: settings } = useSettingsQuery();
+  useFavicon(settings?.favicon);
 
   // Track optimistic sessions that the server doesn't know about yet
   const optimisticIdsRef = useRef(new Set<string>());
@@ -186,19 +181,10 @@ export default function App() {
     }
   };
 
-  const loadTags = async () => {
-    try {
-      setAllTags(await fetchTags());
-    } catch (err) {
-      console.error("Failed to load tags:", err);
-    }
-  };
-
   useEffect(() => {
     loadSessions();
     loadTasks();
     loadTaskGroups();
-    loadTags();
   }, []);
 
   // Real-time status updates via SSE
@@ -978,9 +964,7 @@ export default function App() {
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
                   archivedLoaded={archivedLoadedRef.current}
-                  allTags={allTags}
                   onSetTaskTags={handleSetTaskTags}
-                  onTagCreated={loadTags}
                 />
               </div>
             )}
@@ -1054,9 +1038,7 @@ export default function App() {
                     onTasksChanged={loadTasks}
                     scheduleVersion={scheduleVersion}
                     isUnread={isUnread}
-                    allTags={allTags}
                     onSetTaskTags={handleSetTaskTags}
-                    onTagCreated={loadTags}
                     onRefresh={async () => { await Promise.all([loadTasks(), loadSessions(), loadTaskGroups()]); }}
                     onDeleteSession={handleDeleteSession}
                     onDuplicateSession={handleDuplicateSession}

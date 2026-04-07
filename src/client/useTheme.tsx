@@ -8,7 +8,8 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { fetchSettings, patchSettings, type ThemePreference } from "./api";
+import { patchSettings, type ThemePreference } from "./api";
+import { useSettingsQuery } from "./hooks/queries/useSettings";
 
 type EffectiveTheme = "light" | "dark";
 
@@ -49,22 +50,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>("dark");
   const [loaded, setLoaded] = useState(false);
 
-  // Load theme from server on mount
+  const { data: settings } = useSettingsQuery();
+
+  // Sync theme from server settings (on initial load and when settings change)
   useEffect(() => {
-    fetchSettings()
-      .then((s) => {
-        const pref = s.theme ?? "dark";
-        _setTheme(pref);
-        const eff = resolveTheme(pref);
-        setEffectiveTheme(eff);
-        applyTheme(eff);
-      })
-      .catch(() => {
-        // keep dark default
-        applyTheme("dark");
-      })
-      .finally(() => setLoaded(true));
-  }, []);
+    if (!settings) return;
+    const pref = settings.theme ?? "dark";
+    _setTheme(pref);
+    const eff = resolveTheme(pref);
+    setEffectiveTheme(eff);
+    applyTheme(eff);
+    setLoaded(true);
+  }, [settings]);
+
+  // Apply default theme immediately while loading
+  useEffect(() => {
+    if (!loaded) applyTheme("dark");
+  }, [loaded]);
 
   // Listen for system preference changes when in "system" mode
   useEffect(() => {

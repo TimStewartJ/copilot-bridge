@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { Task, TaskGroup, Session, Todo, Tag, RelatedDoc } from "../api";
+import type { Task, TaskGroup, Session, Todo, RelatedDoc } from "../api";
 import { patchTask, fetchTodos, createTodo, unlinkResource, fetchRelatedDocs } from "../api";
 import TodoRow from "./TodoRow";
 import { GROUP_COLOR_DOT } from "../group-colors";
@@ -8,6 +8,7 @@ import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-s
 import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
+import { useTagsQuery } from "../hooks/queries/useTags";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh from "./PullToRefresh";
 import SessionList from "./SessionList";
@@ -49,9 +50,7 @@ interface TaskDashboardProps {
   onTasksChanged?: () => void;
   scheduleVersion?: number;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
-  allTags?: Tag[];
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
-  onTagCreated?: (tag: Tag) => void;
   onRefresh?: () => Promise<void>;
   // Session actions (for context menu)
   onDeleteSession?: (sessionId: string) => void;
@@ -77,9 +76,7 @@ export default function TaskDashboard({
   onTasksChanged,
   scheduleVersion,
   isUnread,
-  allTags = [],
   onSetTaskTags,
-  onTagCreated,
   onRefresh,
   onDeleteSession,
   onDuplicateSession,
@@ -90,6 +87,8 @@ export default function TaskDashboard({
   onRequestArchived,
   archivedLoaded,
 }: TaskDashboardProps) {
+  const { data: allTags = [] } = useTagsQuery();
+
   // ── Shared hooks ─────────────────────────────────────────────
   const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
     task.id, task.workItems.length, task.pullRequests.length,
@@ -178,11 +177,9 @@ export default function TaskDashboard({
                   />
                   {onSetTaskTags && (
                     <TagPicker
-                      allTags={allTags}
                       selectedTagIds={taskOwnTags.map((t) => t.id)}
                       inheritedTagIds={inheritedTagIds}
                       onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
-                      onTagCreated={onTagCreated}
                     />
                   )}
                 </div>
