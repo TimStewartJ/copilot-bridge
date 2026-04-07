@@ -545,7 +545,7 @@ export const STAGING_TOOLS = [
       ensureStagingDeps(stagingDir);
 
       // Run tests before building
-      const testResult = run("npx vitest run", stagingDir);
+      const testResult = run("npx vitest run --coverage", stagingDir);
       if (!testResult.ok) {
         return { success: false, error: `Tests failed:\n${testResult.output.slice(-500)}` };
       }

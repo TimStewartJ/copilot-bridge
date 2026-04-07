@@ -122,7 +122,7 @@ function build(): boolean {
     log(`Server type check failed:\n${server.output.slice(-500)}`);
     return false;
   }
-  const tests = run("npx vitest run");
+  const tests = run("npx vitest run --coverage");
   if (!tests.ok) {
     log(`Tests failed:\n${tests.output.slice(-500)}`);
     return false;
