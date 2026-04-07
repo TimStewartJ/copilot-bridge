@@ -1379,5 +1379,35 @@ export function createApiRouter(ctx: AppContext): express.Router {
     });
   }
 
+  // ── Telemetry routes ────────────────────────────────────────────
+
+  router.post("/telemetry", (req, res) => {
+    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
+    const { name, sessionId, duration, metadata } = req.body;
+    if (!name || typeof duration !== "number") {
+      return res.status(400).json({ error: "name (string) and duration (number) are required" });
+    }
+    ctx.telemetryStore.recordSpan({ name, sessionId, duration, metadata, source: "client" });
+    res.json({ ok: true });
+  });
+
+  router.get("/telemetry", (_req, res) => {
+    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
+    const { name, sessionId, source, limit, since } = _req.query as Record<string, string>;
+    const spans = ctx.telemetryStore.querySpans({
+      name, sessionId, source: source as any,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      since,
+    });
+    res.json(spans);
+  });
+
+  router.get("/telemetry/stats", (_req, res) => {
+    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
+    const { since } = _req.query as Record<string, string>;
+    const stats = ctx.telemetryStore.getStats({ since });
+    res.json(stats);
+  });
+
   return router;
 }

@@ -196,6 +196,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     sessionTitlesMod, readStateStoreMod, todoStoreMod,
     docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
+    telemetryStoreMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
@@ -214,6 +215,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
     import(ts("tag-store.ts")).catch(() => null),
+    import(ts("telemetry-store.ts")).catch(() => null),
   ]);
 
   // Open isolated staging database
@@ -232,6 +234,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const readStateStore = readStateStoreMod.createReadStateStore(db);
   const todoStore = todoStoreMod.createTodoStore(db, globalBus);
   const tagStore = tagStoreMod?.createTagStore(db);
+  const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
   const docsStore = docsStoreMod?.createDocsStore(join(dataDir, "docs"));
   const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
   if (docsIndex) docsIndex.reindex();
@@ -246,6 +249,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     ...(docsStore && { docsStore }),
     ...(docsIndex && { docsIndex }),
     ...(tagStore && { tagStore }),
+    ...(telemetryStore && { telemetryStore }),
     globalBus, eventBusRegistry,
     sessionManager: null as any,
     copilotHome,
@@ -267,6 +271,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     taskStore,
     todoStore,
     ...(tagStore && { tagStore }),
+    ...(telemetryStore && { telemetryStore }),
     config: { sessionMcpServers: settingsStore.getMcpServers(), model: "claude-haiku-4.5" },
     clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
     copilotHome,
