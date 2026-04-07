@@ -96,7 +96,7 @@ function ensureDeps(): boolean {
   } catch {}
 
   log("Dependencies changed — running npm install...");
-  const result = run("npm install --no-audit --no-fund");
+  const result = run("npm install --no-audit --no-fund --include=dev");
   if (!result.ok) {
     log(`npm install failed: ${result.output.slice(-500)}`);
     return false;
