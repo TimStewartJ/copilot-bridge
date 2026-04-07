@@ -5,10 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
   <title>Copilot Bridge</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="manifest" href="/manifest.json" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#09090b" />
+  <!-- Unregister stale service workers from previous PWA builds -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { r.unregister(); });
+      });
+      caches.keys().then(function(names) {
+        names.forEach(function(n) { caches.delete(n); });
+      });
+    }
+  </script>
   <!-- Prevent flash: apply cached theme before React hydrates -->
   <script>
     try {

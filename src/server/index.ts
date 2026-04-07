@@ -84,7 +84,10 @@ const sessionManager = new SessionManager({
 defaultContext.sessionManager = sessionManager;
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
-app.use("/api", createApiRouter(defaultContext));
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+}, createApiRouter(defaultContext));
 
 // ── Static files (Vite build output) ──────────────────────────────
 
@@ -118,15 +121,15 @@ app.use(
     maxAge: "1y",
     immutable: true,
     setHeaders: (res, filePath) => {
-      // HTML and SW must not be cached — browser needs to check for updates
-      if (filePath.endsWith(".html") || filePath.endsWith("sw.js")) {
-        res.setHeader("Cache-Control", "no-cache");
+      // HTML must not be cached — browser needs to check for updates
+      if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-store");
       }
     },
   }),
 );
 app.get("/{*splat}", (_req, res) => {
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-store");
   res.sendFile(join(distPath, "index.html"));
 });
 
