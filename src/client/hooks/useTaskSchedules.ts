@@ -1,39 +1,38 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import type { Schedule } from "../api";
-import { fetchSchedules, patchSchedule, deleteSchedule, triggerSchedule } from "../api";
+import { useTaskSchedulesQuery, useTriggerScheduleMutation, useToggleScheduleMutation, useDeleteScheduleMutation } from "./queries/useSchedules";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "../queryClient";
 import { useOverlayParam } from "./useOverlayParam";
 
 /** Manages schedule CRUD for a single task. */
-export function useTaskSchedules(taskId: string | undefined, scheduleVersion?: number) {
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
+export function useTaskSchedules(taskId: string | undefined, _scheduleVersion?: number) {
+  const { data: schedules = [] } = useTaskSchedulesQuery(taskId);
+  const queryClient = useQueryClient();
+  const triggerMutation = useTriggerScheduleMutation(taskId);
+  const toggleMutation = useToggleScheduleMutation(taskId);
+  const removeMutation = useDeleteScheduleMutation(taskId);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
   const overlay = useOverlayParam("modal");
   const scheduleEditorOpen = overlay.isOpen && (overlay.value === "schedule" || overlay.value?.startsWith("schedule:"));
 
   const reload = useCallback(() => {
     if (taskId) {
-      fetchSchedules(taskId).then(setSchedules).catch(() => setSchedules([]));
-    } else {
-      setSchedules([]);
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskSchedules(taskId) });
     }
-  }, [taskId]);
-
-  useEffect(() => { reload(); }, [reload, scheduleVersion]);
+  }, [taskId, queryClient]);
 
   const trigger = useCallback(async (scheduleId: string) => {
-    await triggerSchedule(scheduleId);
-    reload();
-  }, [reload]);
+    await triggerMutation.mutateAsync(scheduleId);
+  }, [triggerMutation]);
 
   const toggle = useCallback(async (schedule: Schedule) => {
-    await patchSchedule(schedule.id, { enabled: !schedule.enabled });
-    reload();
-  }, [reload]);
+    await toggleMutation.mutateAsync(schedule);
+  }, [toggleMutation]);
 
   const remove = useCallback(async (scheduleId: string) => {
-    await deleteSchedule(scheduleId);
-    reload();
-  }, [reload]);
+    await removeMutation.mutateAsync(scheduleId);
+  }, [removeMutation]);
 
   const openEditor = useCallback((schedule?: Schedule) => {
     setEditingSchedule(schedule ?? null);

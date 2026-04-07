@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import type { Task, TaskGroup, Session, Todo, RelatedDoc } from "../api";
-import { patchTask, fetchTodos, createTodo, unlinkResource, fetchRelatedDocs } from "../api";
+import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
+import { patchTask, unlinkResource, fetchRelatedDocs } from "../api";
 import TodoRow from "./TodoRow";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
@@ -8,6 +8,7 @@ import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-s
 import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
+import { useTaskTodosQuery, useCreateTodoMutation, useTodoCacheUpdaters } from "../hooks/queries/useTodos";
 import { useTagsQuery } from "../hooks/queries/useTags";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh from "./PullToRefresh";
@@ -48,7 +49,6 @@ interface TaskDashboardProps {
   onNewSession: (taskId: string) => void;
   onUpdateTask: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
   onTasksChanged?: () => void;
-  scheduleVersion?: number;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   onRefresh?: () => Promise<void>;
@@ -74,7 +74,6 @@ export default function TaskDashboard({
   onNewSession,
   onUpdateTask,
   onTasksChanged,
-  scheduleVersion,
   isUnread,
   onSetTaskTags,
   onRefresh,
@@ -93,25 +92,23 @@ export default function TaskDashboard({
   const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
     task.id, task.workItems.length, task.pullRequests.length,
   );
-  const sched = useTaskSchedules(task.id, scheduleVersion);
+  const sched = useTaskSchedules(task.id);
   const notes = useNotesSheet(task.id);
 
   // ── Todos ───────────────────────────────────────────────────
-  const [todos, setTodos] = useState<Todo[]>([]);
+  const { data: todos = [], refetch: refetchTodos } = useTaskTodosQuery(task.id);
+  const createTodoMutation = useCreateTodoMutation(task.id);
+  const { onUpdate: onTodoUpdate, onDelete: onTodoDelete } = useTodoCacheUpdaters(task.id);
   const [newTodoText, setNewTodoText] = useState("");
-
-  useEffect(() => {
-    fetchTodos(task.id).then(setTodos).catch(() => setTodos([]));
-  }, [task.id]);
 
   const handleRefresh = useCallback(async () => {
     await Promise.all([
-      fetchTodos(task.id).then(setTodos).catch(() => setTodos([])),
+      refetchTodos(),
       reloadEnriched(),
       sched.reload(),
       onRefresh?.(),
     ]);
-  }, [task.id, reloadEnriched, sched.reload, onRefresh]);
+  }, [refetchTodos, reloadEnriched, sched.reload, onRefresh]);
 
   const linkedSessions = sessions.filter((s) =>
     task.sessionIds.includes(s.sessionId)
@@ -392,8 +389,8 @@ export default function TaskDashboard({
                     key={todo.id}
                     variant="card"
                     todo={todo}
-                    onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
-                    onDelete={() => setTodos((prev) => prev.filter((t) => t.id !== todo.id))}
+                    onUpdate={onTodoUpdate}
+                    onDelete={() => onTodoDelete(todo.id)}
                   />
                 ))}
                 {doneTodos.length > 0 && (
@@ -404,8 +401,8 @@ export default function TaskDashboard({
                           key={todo.id}
                           variant="card"
                           todo={todo}
-                          onUpdate={(updated) => setTodos((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
-                          onDelete={() => setTodos((prev) => prev.filter((t) => t.id !== todo.id))}
+                          onUpdate={onTodoUpdate}
+                          onDelete={() => onTodoDelete(todo.id)}
                         />
                       ))}
                     </div>
@@ -419,8 +416,7 @@ export default function TaskDashboard({
                     const text = newTodoText.trim();
                     if (!text) return;
                     setNewTodoText("");
-                    await createTodo(task.id, text);
-                    setTodos(await fetchTodos(task.id));
+                    await createTodoMutation.mutateAsync({ text });
                   }}
                 >
                   <Plus size={14} className="text-text-faint shrink-0" />
