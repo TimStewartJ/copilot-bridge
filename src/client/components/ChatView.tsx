@@ -118,17 +118,13 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       setWarming(false);
       const pageLoadStart = performance.now();
 
-      // Phase 1: Fast load from disk — instant messages
-      const fastP = fetchMessagesFast(sessionId, { limit: PAGE_SIZE });
-      const mcpP = fetchMcpStatus(sessionId).catch(() => [] as McpServerStatus[]);
-
-      Promise.all([fastP, mcpP])
-        .then(([{ messages: msgs, busy, total, hasMore: more, warm }, mcpServers]) => {
+      // Phase 1: Fast load messages from disk — don't wait for MCP status
+      fetchMessagesFast(sessionId, { limit: PAGE_SIZE })
+        .then(({ messages: msgs, busy, total, hasMore: more, warm }) => {
           if (controller.signal.aborted) return;
           setMessages(msgs);
           setHasMore(more);
           firstItemIndex.current = total - msgs.length;
-          setMcpStatus(mcpServers);
           setLoading(false);
 
           // Report time from navigation to messages rendered
@@ -162,6 +158,13 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           ]);
           setLoading(false);
         });
+
+      // MCP status loads independently — doesn't block message rendering
+      fetchMcpStatus(sessionId)
+        .then((mcpServers) => {
+          if (!controller.signal.aborted) setMcpStatus(mcpServers);
+        })
+        .catch(() => {});
     };
 
     setMessages([]);
