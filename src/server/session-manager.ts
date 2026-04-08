@@ -3,7 +3,7 @@
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
-import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -1014,6 +1014,64 @@ export class SessionManager {
     this.recordSpan("session.listSessions", Date.now() - t0);
     this.sessionListCache = { data: sessions, timestamp: Date.now() };
     return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
+  }
+
+  /**
+   * Fast session listing — reads workspace.yaml from disk instead of SDK RPC.
+   * ~170ms for 4000+ sessions vs ~2500ms for SDK listSessions.
+   */
+  listSessionsFromDisk(): any[] {
+    const t0 = Date.now();
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const sessionStateDir = join(copilotHome, "session-state");
+
+    let dirs: string[];
+    try {
+      dirs = readdirSync(sessionStateDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+    } catch {
+      return [];
+    }
+
+    const sessions: any[] = [];
+    for (const dirName of dirs) {
+      if (this.disposableSessionIds.has(dirName)) continue;
+      const yamlPath = join(sessionStateDir, dirName, "workspace.yaml");
+      try {
+        const content = readFileSync(yamlPath, "utf-8");
+        const session: any = { sessionId: dirName };
+        let inSummary = false;
+        const summaryLines: string[] = [];
+
+        for (const line of content.split("\n")) {
+          if (inSummary) {
+            if (line.startsWith("  ")) {
+              summaryLines.push(line.slice(2));
+              continue;
+            }
+            inSummary = false;
+          }
+          if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
+          else if (line.startsWith("updated_at:")) session.modifiedTime = line.slice(12).trim();
+          else if (line.startsWith("cwd:")) {
+            const cwd = line.slice(5).trim();
+            if (cwd) session.context = { cwd };
+          } else if (line.startsWith("summary: |-")) {
+            inSummary = true;
+          } else if (line.startsWith("summary:")) {
+            session.summary = line.slice(9).trim();
+          }
+        }
+        if (summaryLines.length > 0 && !session.summary) {
+          session.summary = summaryLines.join("\n");
+        }
+        sessions.push(session);
+      } catch { /* skip sessions without workspace.yaml */ }
+    }
+
+    this.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: sessions.length });
+    return sessions;
   }
 
   /** Invalidate the listSessions cache (call after create/delete) */

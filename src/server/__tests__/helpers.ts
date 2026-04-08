@@ -40,19 +40,24 @@ export function createTestBus() {
 export function createMockSessionManager() {
   return {
     listSessions: async () => [],
+    listSessionsFromDisk: () => [],
     getSessionActivity: () => [],
     isSessionBusy: () => false,
+    isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),
     duplicateSession: async () => ({ sessionId: "dup-session" }),
     startWork: () => {},
     abortSession: async () => true,
     getSessionMessages: async () => ({ messages: [], total: 0, hasMore: false }),
+    readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false }),
+    warmSession: async () => {},
     deleteSession: async () => {},
     gracefulShutdown: async () => {},
     evictAllCachedSessions: () => {},
     getMcpStatus: async () => [],
     getLatestMcpStatus: () => [],
     createTaskSession: async () => ({ sessionId: "task-session" }),
+    invalidateSessionListCache: () => {},
   } as any;
 }
 
