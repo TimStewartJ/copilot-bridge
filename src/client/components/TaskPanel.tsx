@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session } from "../api";
+import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
-import { unlinkResource, patchTask } from "../api";
+import { unlinkResource, patchTask, fetchRelatedDocs } from "../api";
 import TodoRow from "./TodoRow";
 import { timeAgo } from "../time";
 import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
@@ -35,8 +35,10 @@ import {
   Pencil,
   ListChecks,
   LayoutDashboard,
+  BookOpen,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
+import DocPreviewSheet from "./DocPreviewSheet";
 
 // ── Compact section header for sidebar ───────────────────────────
 
@@ -171,6 +173,34 @@ export default function TaskPanel({
     }
   }, [searchParams]);
 
+  // ── Effective tags (lifted for reuse) ─────────────────────────
+  const taskOwnTags = task?.tags ?? [];
+  const taskGroup = taskGroups.find((g) => g.id === task?.groupId);
+  const groupTags = taskGroup?.tags ?? [];
+  const inheritedTagIds = new Set(groupTags.map((t) => t.id));
+  const effectiveTags = [
+    ...taskOwnTags,
+    ...groupTags.filter((gt) => !taskOwnTags.some((tt) => tt.id === gt.id)),
+  ];
+
+  // ── Related docs ────────────────────────────────────────────
+  const [relatedDocs, setRelatedDocs] = useState<RelatedDoc[]>([]);
+  const [docsExpanded, setDocsExpanded] = useState(false);
+  const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
+  const effectiveTagKey = effectiveTags.map((t) => t.id).join(",");
+
+  useEffect(() => {
+    const tagIds = effectiveTags.map((t) => t.id);
+    if (tagIds.length === 0) { setRelatedDocs([]); return; }
+    fetchRelatedDocs(tagIds).then(setRelatedDocs).catch(() => setRelatedDocs([]));
+  }, [effectiveTagKey]);
+
+  // Reset expanded state when task changes
+  useEffect(() => {
+    setDocsExpanded(false);
+    setPreviewDocPath(null);
+  }, [task?.id]);
+
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
@@ -257,38 +287,27 @@ export default function TaskPanel({
           })()}
         </div>
         {/* Tags */}
-        {(() => {
-          const taskOwnTags = task.tags ?? [];
-          const group = taskGroups.find((g) => g.id === task.groupId);
-          const groupTags = group?.tags ?? [];
-          const inheritedTagIds = new Set(groupTags.map((t) => t.id));
-          const effectiveTags = [
-            ...taskOwnTags,
-            ...groupTags.filter((gt) => !taskOwnTags.some((tt) => tt.id === gt.id)),
-          ];
-          if (effectiveTags.length === 0 && !onSetTaskTags) return null;
-          return (
-            <div className="flex items-center gap-1 flex-wrap px-3 pb-2">
-              <TagPillList
-                tags={effectiveTags}
+        {(effectiveTags.length > 0 || onSetTaskTags) && (
+          <div className="flex items-center gap-1 flex-wrap px-3 pb-2">
+            <TagPillList
+              tags={effectiveTags}
+              inheritedTagIds={inheritedTagIds}
+              onRemove={onSetTaskTags ? (tagId) => {
+                const newIds = taskOwnTags.filter((t) => t.id !== tagId).map((t) => t.id);
+                onSetTaskTags(task.id, newIds);
+              } : undefined}
+              max={4}
+            />
+            {onSetTaskTags && (
+              <TagPicker
+                selectedTagIds={taskOwnTags.map((t) => t.id)}
                 inheritedTagIds={inheritedTagIds}
-                onRemove={onSetTaskTags ? (tagId) => {
-                  const newIds = taskOwnTags.filter((t) => t.id !== tagId).map((t) => t.id);
-                  onSetTaskTags(task.id, newIds);
-                } : undefined}
-                max={4}
+                onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
+                compact
               />
-              {onSetTaskTags && (
-                <TagPicker
-                  selectedTagIds={taskOwnTags.map((t) => t.id)}
-                  inheritedTagIds={inheritedTagIds}
-                  onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
-                  compact
-                />
-              )}
-            </div>
-          );
-        })()}
+            )}
+          </div>
+        )}
       </div>
 
       {/* Scrollable content */}
@@ -688,6 +707,51 @@ export default function TaskPanel({
             </div>
           )}
         </div>
+
+        {/* Related Docs */}
+        {relatedDocs.length > 0 && (() => {
+          const COLLAPSED_MAX = 5;
+          const visibleDocs = docsExpanded ? relatedDocs : relatedDocs.slice(0, COLLAPSED_MAX);
+          const hiddenCount = relatedDocs.length - COLLAPSED_MAX;
+          return (
+            <div>
+              <SectionLabel label="Docs" count={relatedDocs.length} />
+              <div className="space-y-0.5">
+                {visibleDocs.map((doc) => (
+                  <button
+                    key={doc.path}
+                    onClick={() => setPreviewDocPath(doc.path)}
+                    className="block w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <BookOpen size={12} className="text-text-faint shrink-0" />
+                      <span className="text-text-primary truncate">{doc.title}</span>
+                    </div>
+                    <div className="text-[10px] text-text-faint mt-0.5 ml-5 font-mono truncate">
+                      {doc.path}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {hiddenCount > 0 && (
+                <button
+                  onClick={() => setDocsExpanded(!docsExpanded)}
+                  className="px-3 py-1 text-[10px] text-accent hover:text-accent-hover transition-colors"
+                >
+                  {docsExpanded ? "Show less" : `Show ${hiddenCount} more…`}
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Doc Preview Sheet */}
+        {previewDocPath && (
+          <DocPreviewSheet
+            docPath={previewDocPath}
+            onClose={() => setPreviewDocPath(null)}
+          />
+        )}
 
         {/* Notes Sheet */}
         {notes.notesSheetOpen && (
