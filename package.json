@@ -30,7 +30,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@fontsource-variable/inter": "^5.2.8",
-    "@github/copilot-sdk": "^0.2.1",
+    "@github/copilot-sdk": "^0.2.2-preview.0",
     "@tanstack/react-query": "^5.96.2",
     "esbuild": "^0.27.4",
     "express": "^5.2.1",
