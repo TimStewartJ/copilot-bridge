@@ -36,29 +36,69 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Wire settings getter for providers (so they can resolve without module-level imports)
   setSettingsGetter(() => ctx.settingsStore.getSettings());
 
+  // ── Enriched session list cache ─────────────────────────────────
+  // Caches the expensive enriched session list (disk sizes, plan checks, metadata).
+  // Invalidated by session create/delete/archive and globalBus events.
+  let enrichedSessionCache: { data: any[]; diskSizes: Map<string, number>; timestamp: number } | null = null;
+  const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
+
+  function invalidateEnrichedCache() {
+    enrichedSessionCache = null;
+  }
+
+  // Invalidate on session lifecycle events
+  ctx.globalBus.subscribe((event: any) => {
+    switch (event.type) {
+      case "session:title":
+      case "session:archived":
+        invalidateEnrichedCache();
+        break;
+    }
+  });
+
   // ── Session routes ──────────────────────────────────────────────
 
   router.get("/sessions", async (req, res) => {
     try {
       const includeArchived = req.query.includeArchived === "true";
+      const skipDiskSize = req.query.skipDiskSize === "true";
+
+      const now = Date.now();
+      const cacheValid = enrichedSessionCache && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
+
+      if (cacheValid) {
+        // Serve from cache — only refresh volatile fields (busy status)
+        const cached = enrichedSessionCache!.data.map((s: any) => ({
+          ...s,
+          busy: ctx.sessionManager.isSessionBusy(s.sessionId),
+        }));
+        const filtered = cached.filter((s: any) => includeArchived || !s.archived);
+        return res.json({ sessions: filtered });
+      }
+
+      // Cache miss — rebuild
       const sessions = await ctx.sessionManager.listSessions();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
+      const prevDiskSizes = enrichedSessionCache?.diskSizes ?? new Map<string, number>();
 
       const enriched = sessions
-        .filter((s: any) => s.summary) // hide empty/zombie sessions
-        .filter((s: any) => !s.summary?.startsWith("Generate a concise")) // hide leaked title-generation sessions
+        .filter((s: any) => s.summary)
+        .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
         .map((s: any) => {
           const id = s.sessionId;
           let diskSizeBytes = 0;
-          try {
-            const sessionDir = join(sessionStateDir, id);
-            diskSizeBytes = getDirSize(sessionDir);
-          } catch { /* session dir may not exist */ }
+          if (skipDiskSize) {
+            diskSizeBytes = prevDiskSizes.get(id) ?? 0;
+          } else {
+            try {
+              const sessionDir = join(sessionStateDir, id);
+              diskSizeBytes = getDirSize(sessionDir);
+            } catch { /* session dir may not exist */ }
+          }
           const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
           const archived = meta[id]?.archived === true;
           const archivedAt = meta[id]?.archivedAt ?? null;
-          // Prefer LLM-generated title over raw first-message summary
           const generatedTitle = ctx.sessionTitles.getTitle(id);
           const summary = generatedTitle ?? s.summary;
           return {
@@ -76,10 +116,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
               ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
               : undefined,
           };
-        })
-        .filter((s: any) => includeArchived || !s.archived);
+        });
 
-      res.json({ sessions: enriched });
+      // Update cache (store all sessions, filter happens on read)
+      const diskSizes = new Map<string, number>();
+      for (const s of enriched) diskSizes.set(s.sessionId, s.diskSizeBytes);
+      enrichedSessionCache = { data: enriched, diskSizes, timestamp: now };
+
+      const filtered = enriched.filter((s: any) => includeArchived || !s.archived);
+      res.json({ sessions: filtered });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -177,6 +222,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const { name } = req.body ?? {};
       const result = await ctx.sessionManager.createSession();
+      invalidateEnrichedCache();
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -191,6 +237,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(409).json({ error: "Cannot duplicate a busy session" });
       }
       const result = await ctx.sessionManager.duplicateSession(sourceId);
+      invalidateEnrichedCache();
 
       // Copy title with "Copy of" prefix
       const originalTitle = ctx.sessionTitles.getTitle(sourceId);
@@ -380,6 +427,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const sessionId = req.params.id;
     try {
       await ctx.sessionManager.deleteSession(sessionId);
+      invalidateEnrichedCache();
       ctx.sessionMetaStore.deleteMeta(sessionId);
       ctx.sessionTitles.deleteTitle(sessionId);
       // Unlink from any tasks that reference this session
@@ -417,6 +465,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             break;
           case "delete": {
             await ctx.sessionManager.deleteSession(sid);
+            invalidateEnrichedCache();
             ctx.sessionMetaStore.deleteMeta(sid);
             ctx.sessionTitles.deleteTitle(sid);
             const tasks = ctx.taskStore.listTasks();
@@ -768,6 +817,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         undefined,
         groupNotes,
       );
+      invalidateEnrichedCache();
 
       // Auto-link session to task
       ctx.taskStore.linkSession(task.id, result.sessionId);

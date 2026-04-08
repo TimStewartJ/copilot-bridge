@@ -813,6 +813,10 @@ export class SessionManager {
   private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
 
+  // listSessions cache — avoids expensive SDK filesystem scan on every call
+  private sessionListCache: { data: any[]; timestamp: number } | null = null;
+  private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
+
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
   }
@@ -998,9 +1002,22 @@ export class SessionManager {
 
   async listSessions() {
     if (!this.client) throw new Error("SessionManager not initialized");
+
+    const now = Date.now();
+    if (this.sessionListCache && (now - this.sessionListCache.timestamp) < SessionManager.SESSION_LIST_TTL) {
+      return this.sessionListCache.data.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
+    }
+
+    const t0 = Date.now();
     const sessions = await this.client.listSessions();
-    // Filter out temporary sessions (e.g., title generation) that may not have been deleted yet
+    this.recordSpan("session.listSessions", Date.now() - t0);
+    this.sessionListCache = { data: sessions, timestamp: Date.now() };
     return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
+  }
+
+  /** Invalidate the listSessions cache (call after create/delete) */
+  invalidateSessionListCache(): void {
+    this.sessionListCache = null;
   }
 
   async getSessionMetadata(sessionId: string) {
@@ -1069,6 +1086,7 @@ export class SessionManager {
 
     this.sessionObjects.set(session.sessionId, session);
     this.probeMcpStatus(session.sessionId, session);
+    this.invalidateSessionListCache();
     this.recordSpan("session.create", duration, session.sessionId);
     console.log(`[sdk] Created session ${session.sessionId} (${duration}ms)`);
     return { sessionId: session.sessionId };
@@ -1129,6 +1147,7 @@ export class SessionManager {
     this.sessionObjects.delete(newId);
 
     console.log(`[sdk] Duplicated session ${sourceSessionId.slice(0, 8)} → ${newId.slice(0, 8)}`);
+    this.invalidateSessionListCache();
     return { sessionId: newId };
   }
 
@@ -1164,6 +1183,7 @@ export class SessionManager {
 
     this.sessionObjects.set(session.sessionId, session);
     this.probeMcpStatus(session.sessionId, session);
+    this.invalidateSessionListCache();
     this.recordSpan("session.createTask", duration, session.sessionId, { taskId });
     console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" (${duration}ms)`);
     return { sessionId: session.sessionId };
@@ -1738,6 +1758,7 @@ export class SessionManager {
     }
     this.sessionObjects.delete(sessionId);
     await this.client.deleteSession(sessionId);
+    this.invalidateSessionListCache();
     console.log(`[sdk] Deleted session ${sessionId}`);
   }
 
