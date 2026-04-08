@@ -762,6 +762,40 @@ export interface SessionManagerDeps {
   copilotHome?: string;
 }
 
+/** Options that don't come from AppContext — caller provides these directly. */
+export interface CreateSessionManagerOpts {
+  tools: ReturnType<typeof defineTool>[];
+  config: SessionManagerDeps["config"];
+  clientEnv?: SessionManagerDeps["clientEnv"];
+  copilotHome?: string;
+}
+
+/**
+ * Factory that maps AppContext → SessionManagerDeps.
+ *
+ * Staging preview dynamically imports this from the worktree, so new deps are
+ * picked up automatically without touching staging-tools.ts.
+ */
+export function createSessionManager(ctx: AppContext, opts: CreateSessionManagerOpts): SessionManager {
+  return new SessionManager({
+    tools: opts.tools,
+    globalBus: ctx.globalBus,
+    eventBusRegistry: ctx.eventBusRegistry,
+    sessionTitles: ctx.sessionTitles,
+    taskStore: ctx.taskStore,
+    taskGroupStore: ctx.taskGroupStore,
+    todoStore: ctx.todoStore,
+    settingsStore: ctx.settingsStore,
+    tagStore: ctx.tagStore,
+    docsIndex: ctx.docsIndex,
+    docsStore: ctx.docsStore,
+    telemetryStore: ctx.telemetryStore,
+    config: opts.config,
+    clientEnv: opts.clientEnv,
+    copilotHome: opts.copilotHome,
+  });
+}
+
 export interface McpServerStatus {
   name: string;
   status: "connected" | "failed" | "pending" | "disabled" | "not_configured" | "unknown";
