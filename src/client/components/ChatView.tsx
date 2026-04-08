@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
-import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
+import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
@@ -116,6 +116,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     const loadAndReconnect = () => {
       setLoading(true);
       setWarming(false);
+      const pageLoadStart = performance.now();
 
       // Phase 1: Fast load from disk — instant messages
       const fastP = fetchMessagesFast(sessionId, { limit: PAGE_SIZE });
@@ -129,6 +130,13 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           firstItemIndex.current = total - msgs.length;
           setMcpStatus(mcpServers);
           setLoading(false);
+
+          // Report time from navigation to messages rendered
+          const loadDuration = Math.round(performance.now() - pageLoadStart);
+          reportTiming("page.sessionLoad", loadDuration, {
+            sessionId,
+            metadata: { messageCount: msgs.length, warm, busy },
+          }).catch(() => {});
 
           if (busy) {
             reconnect(sessionId);
