@@ -28,8 +28,8 @@ export const WI_STATE_STYLES: Record<string, string> = {
 
 /** CSS dot class + label for PR statuses */
 export const PR_STATUS_STYLES: Record<string, { dot: string; label: string }> = {
-  active: { dot: "bg-success", label: "Active" },
-  completed: { dot: "bg-accent", label: "Completed" },
+  active: { dot: "bg-accent", label: "Active" },
+  completed: { dot: "bg-success", label: "Completed" },
   abandoned: { dot: "bg-text-muted", label: "Abandoned" },
 };
 
