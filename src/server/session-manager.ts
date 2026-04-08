@@ -3,7 +3,7 @@
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
-import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -1053,7 +1053,6 @@ export class SessionManager {
             inSummary = false;
           }
           if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
-          else if (line.startsWith("updated_at:")) session.modifiedTime = line.slice(12).trim();
           else if (line.startsWith("cwd:")) {
             const cwd = line.slice(5).trim();
             if (cwd) session.context = { cwd };
@@ -1065,6 +1064,14 @@ export class SessionManager {
         }
         if (summaryLines.length > 0 && !session.summary) {
           session.summary = summaryLines.join("\n");
+        }
+        // Use events.jsonl mtime for modifiedTime — workspace.yaml updated_at is stale
+        const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
+        try {
+          session.modifiedTime = statSync(eventsPath).mtime.toISOString();
+        } catch {
+          // Fallback to workspace.yaml mtime
+          try { session.modifiedTime = statSync(yamlPath).mtime.toISOString(); } catch {}
         }
         sessions.push(session);
       } catch { /* skip sessions without workspace.yaml */ }
