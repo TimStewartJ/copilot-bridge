@@ -333,6 +333,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // GET /sessions/:id/stream — SSE stream with snapshot + live events
   router.get("/sessions/:id/stream", (req, res) => {
     const sessionId = req.params.id;
+    const streamStart = Date.now();
+    let firstEventSent = false;
 
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -363,6 +365,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     const sendEvent = (event: any) => {
       if (closed || res.writableEnded) return;
+      if (!firstEventSent) {
+        firstEventSent = true;
+        ctx.telemetryStore?.recordSpan({
+          name: "sse.firstEvent",
+          sessionId,
+          duration: Date.now() - streamStart,
+          metadata: { eventType: event.type },
+          source: "server",
+        });
+      }
       try {
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       } catch {
@@ -930,6 +942,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/dashboard", async (_req, res) => {
     try {
+      const t0 = Date.now();
       const sessions = await ctx.sessionManager.listSessions();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
@@ -1122,6 +1135,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         openTodos,
         completedTodos,
       });
+      ctx.telemetryStore?.recordSpan({ name: "dashboard", duration: Date.now() - t0, source: "server" });
     } catch (err) {
       console.error("[dashboard] Error:", err);
       res.status(500).json({ error: String(err) });
@@ -1489,6 +1503,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const { since } = _req.query as Record<string, string>;
     const stats = ctx.telemetryStore.getStats({ since });
     res.json(stats);
+  });
+
+  router.delete("/telemetry", (_req, res) => {
+    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
+    const pruned = ctx.telemetryStore.pruneOldSpans(0);
+    res.json({ pruned });
   });
 
   return router;
