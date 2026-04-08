@@ -931,7 +931,7 @@ export default function DocsView() {
             </div>
           </div>
           {/* Body */}
-          <div className="flex-1 px-4 py-4 prose prose-sm max-w-none text-text-primary prose-headings:text-text-primary prose-a:text-accent prose-code:text-text-primary prose-pre:bg-bg-secondary prose-pre:border prose-pre:border-border">
+          <div className="flex-1 px-4 py-4 prose prose-invert prose-sm max-w-none text-text-primary prose-headings:text-text-primary prose-a:text-accent prose-code:text-text-primary prose-strong:text-text-primary prose-pre:bg-bg-secondary prose-pre:border prose-pre:border-border">
             <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents} urlTransform={wikiUrlTransform}>
               {page.body}
             </ReactMarkdown>
