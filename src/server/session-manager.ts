@@ -1077,6 +1077,9 @@ export class SessionManager {
       } catch { /* skip sessions without workspace.yaml */ }
     }
 
+    // Sort by most recently modified first
+    sessions.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
+
     this.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: sessions.length });
     return sessions;
   }
