@@ -200,7 +200,13 @@ export default function App() {
         queryClient.invalidateQueries({ queryKey: ["task"] });
         break;
       case "task:changed":
-        if (taskMutationInFlight.current === 0) invalidateTasks();
+        if (taskMutationInFlight.current === 0) {
+          invalidateTasks();
+          // Also refresh enriched WI/PR data so linked items show latest state
+          queryClient.invalidateQueries({
+            predicate: (q) => q.queryKey[0] === "task" && q.queryKey[2] === "enriched",
+          });
+        }
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);

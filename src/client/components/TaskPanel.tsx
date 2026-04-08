@@ -144,7 +144,7 @@ export default function TaskPanel({
   const [cwdCopied, setCwdCopied] = useState(false);
 
   // ── Enrichment (shared hook) ─────────────────────────────────
-  const { enrichedWIs, enrichedPRs } = useTaskEnrichment(
+  const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
     task?.id, task?.workItems.length ?? 0, task?.pullRequests.length ?? 0,
   );
 
@@ -293,7 +293,7 @@ export default function TaskPanel({
 
       {/* Scrollable content */}
       <div className="flex-1 min-h-0 relative">
-      <PullToRefresh onRefresh={onRefresh ?? (async () => {})} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
+      <PullToRefresh onRefresh={async () => { await Promise.all([reloadEnriched(), onRefresh?.()]); }} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
         {/* Sessions */}
         <div>
           <SectionLabel label="Sessions" count={linkedSessions.length} />
