@@ -266,8 +266,9 @@ export function createDocsStore(docsDir: string) {
 
   function editPage(pagePath: string, oldStr: string, newStr: string): DocPage {
     if (!oldStr) throw new Error("old_str must be non-empty");
-    const filePath = toFilePath(pagePath);
-    if (!existsSync(filePath)) throw new Error(`Page not found: ${pagePath}`);
+    const resolved = resolveFilePath(pagePath);
+    if (!resolved) throw new Error(`Page not found: ${pagePath}`);
+    const filePath = resolved.filePath;
 
     const raw = readFileSync(filePath, "utf-8");
     const matchCount = raw.split(oldStr).length - 1;
