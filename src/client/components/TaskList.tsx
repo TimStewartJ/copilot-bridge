@@ -2,8 +2,9 @@ import { useState, useMemo, useCallback } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
+import NotesSheet from "./NotesSheet";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import {
@@ -38,7 +39,7 @@ interface TaskListProps {
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
-  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onDeleteGroup?: (groupId: string) => void;
   onReorderGroups?: (groupIds: string[]) => void;
   className?: string;
@@ -120,6 +121,10 @@ export default function TaskList({
   };
 
   const [showArchived, setShowArchived] = useState(false);
+
+  // Group notes sheet state
+  const [groupNotesId, setGroupNotesId] = useState<string | null>(null);
+  const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
 
   const hasGroups = taskGroups.length > 0;
 
@@ -211,6 +216,18 @@ export default function TaskList({
                     {group?.name ?? "Ungrouped"}
                   </button>
                   {group && (
+                    <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setGroupNotesId(group.id);
+                        setGroupNotesStartEdit(!group.notes);
+                      }}
+                      title={group.notes ? "Edit group notes" : "Add group notes"}
+                      className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+                    >
+                      <FileText size={12} />
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -221,6 +238,7 @@ export default function TaskList({
                     >
                       <Plus size={12} />
                     </button>
+                    </>
                   )}
                   {group && onReorderGroups && taskGroups.length > 1 && (() => {
                     const groupIndex = taskGroups.indexOf(group);
@@ -434,6 +452,22 @@ export default function TaskList({
           )}
         </ContextMenu>
       )}
+
+      {/* Group notes sheet */}
+      {groupNotesId && (() => {
+        const group = taskGroups.find((g) => g.id === groupNotesId);
+        if (!group) return null;
+        return (
+          <NotesSheet
+            notes={group.notes}
+            startInEditMode={groupNotesStartEdit}
+            onSave={(newNotes) => {
+              if (onUpdateGroup) onUpdateGroup(group.id, { notes: newNotes });
+            }}
+            onClose={() => setGroupNotesId(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -3,10 +3,11 @@ import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
+import NotesSheet from "./NotesSheet";
 import TaskPickerDialog from "./TaskPickerDialog";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -45,7 +46,7 @@ interface TaskRailProps {
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
-  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onDeleteGroup?: (groupId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
@@ -274,6 +275,10 @@ export default function TaskRail({
 
   // Group context menu state
   const [groupCtx, setGroupCtx] = useState<{ groupId: string; x: number; y: number } | null>(null);
+
+  // Group notes sheet state
+  const [groupNotesId, setGroupNotesId] = useState<string | null>(null);
+  const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
 
   // DnD setup
   const {
@@ -517,6 +522,20 @@ export default function TaskRail({
                         <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
                       </button>
                       {group && (
+                        <>
+                        {group.notes && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setGroupNotesId(group.id);
+                              setGroupNotesStartEdit(false);
+                            }}
+                            title="Group notes"
+                            className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
+                          >
+                            <FileText size={11} />
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -527,6 +546,7 @@ export default function TaskRail({
                         >
                           <Plus size={12} />
                         </button>
+                        </>
                       )}
                       </div>
 
@@ -974,6 +994,15 @@ export default function TaskRail({
                 }
               }}
             />
+            <CtxItem
+              icon={<FileText size={14} />}
+              label={group.notes ? "Edit Notes" : "Add Notes"}
+              onClick={() => {
+                setGroupCtx(null);
+                setGroupNotesId(group.id);
+                setGroupNotesStartEdit(!group.notes);
+              }}
+            />
             {/* Color picker */}
             <div className="px-3 py-1.5">
               <div className="text-[10px] text-text-faint mb-1 flex items-center gap-1">
@@ -1058,6 +1087,22 @@ export default function TaskRail({
               }}
             />
           </ContextMenu>
+        );
+      })()}
+
+      {/* Group notes sheet */}
+      {groupNotesId && (() => {
+        const group = taskGroups.find((g) => g.id === groupNotesId);
+        if (!group) return null;
+        return (
+          <NotesSheet
+            notes={group.notes}
+            startInEditMode={groupNotesStartEdit}
+            onSave={(newNotes) => {
+              if (onUpdateGroup) onUpdateGroup(group.id, { notes: newNotes });
+            }}
+            onClose={() => setGroupNotesId(null)}
+          />
         );
       })()}
 

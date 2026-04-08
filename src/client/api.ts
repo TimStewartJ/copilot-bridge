@@ -87,6 +87,7 @@ export interface TaskGroup {
   id: string;
   name: string;
   color: string;
+  notes: string;
   order: number;
   collapsed: boolean;
   createdAt: string;
@@ -387,7 +388,7 @@ export async function createTaskGroup(name: string, color?: string): Promise<Tas
 
 export async function patchTaskGroup(
   id: string,
-  updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>,
+  updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>,
 ): Promise<TaskGroup> {
   const res = await fetch(`${API_BASE}/api/task-groups/${id}`, {
     method: "PATCH",

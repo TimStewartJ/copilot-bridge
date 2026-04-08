@@ -469,7 +469,7 @@ export default function App() {
     }
   };
 
-  const handleUpdateGroup = async (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => {
+  const handleUpdateGroup = async (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => {
     try {
       const updated = await patchTaskGroup(groupId, updates);
       queryClient.setQueryData<TaskGroup[]>(queryKeys.taskGroups, (prev) =>
@@ -1002,6 +1002,7 @@ export default function App() {
                     onSelectSession={(id) => navigate(`/tasks/${activeTaskId}/sessions/${id}`)}
                     onNewSession={handleNewSession}
                     onUpdateTask={handleUpdateTask}
+                    onUpdateGroup={handleUpdateGroup}
                     onTasksChanged={invalidateTasks}
                     isUnread={isUnread}
                     onSetTaskTags={handleSetTaskTags}
@@ -1118,7 +1119,7 @@ function MobileTaskListView({
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onMoveAndReorder?: (taskId: string, groupId: string | undefined, taskIds: string[]) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
-  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>) => void;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onDeleteGroup?: (groupId: string) => void;
   onReorderGroups?: (groupIds: string[]) => void;
   orphanSessions: Session[];
