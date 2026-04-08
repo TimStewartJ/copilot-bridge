@@ -795,7 +795,6 @@ export class SessionManager {
     if (!group?.notes?.trim()) return null;
     return { groupName: group.name, notes: group.notes };
   }
-  }
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const { task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
