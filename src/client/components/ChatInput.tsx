@@ -12,6 +12,9 @@ interface ChatInputProps {
   isDraft?: boolean;
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
+  /** When true, input is visible but send is disabled (e.g., session warming up) */
+  disabled?: boolean;
+  disabledHint?: string;
 }
 
 /** Read a File as base64 (no data-URI prefix) */
@@ -28,7 +31,7 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
-export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, onDraftChange }: ChatInputProps) {
+export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, onDraftChange, disabled, disabledHint }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<BlobAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -248,10 +251,11 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
         ) : (
           <button
             onClick={handleSend}
-            disabled={!hasContent}
+            disabled={!hasContent || disabled}
             className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
+            title={disabled ? disabledHint : undefined}
           >
-            Send
+            {disabled ? (disabledHint ?? "Warming up…") : "Send"}
           </button>
         )}
       </div>
