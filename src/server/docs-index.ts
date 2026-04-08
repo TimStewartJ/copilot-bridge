@@ -32,7 +32,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
     const pages = docsStore.scanAllPages();
     const insert = db.prepare(`
-      INSERT INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
+      INSERT OR REPLACE INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertFts = db.prepare(`
@@ -81,7 +81,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
   function insert(page: DocPage, tagsStr: string, fmJson: string): void {
     db.prepare(`
-      INSERT INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
+      INSERT OR REPLACE INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(page.path, page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified);
     const row = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
