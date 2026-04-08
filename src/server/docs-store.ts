@@ -224,8 +224,8 @@ export function createDocsStore(docsDir: string) {
       frontmatter: data,
       body: content.trim(),
       folder: folderOf(resolved.canonicalPath),
-      created: data.created || "",
-      modified: data.modified || "",
+      created: String(data.created || ""),
+      modified: String(data.modified || ""),
     };
   }
 
@@ -407,7 +407,7 @@ export function createDocsStore(docsDir: string) {
         return {
           path: `${folder}/${slug}`, slug, title: data.title || slug,
           fields: data, body: content.trim(),
-          created: data.created || "", modified: data.modified || "",
+          created: String(data.created || ""), modified: String(data.modified || ""),
         };
       });
   }
