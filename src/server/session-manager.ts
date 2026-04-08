@@ -1324,25 +1324,32 @@ export class SessionManager {
     }
 
     // Get or resume session — reuse cached object if available
-    const resumeStart = Date.now();
-    let session = this.sessionObjects.get(sessionId);
+    let usedCache = false;
+    const resumeSession = async (): Promise<any> => {
+      const resumeStart = Date.now();
+      let s = this.sessionObjects.get(sessionId);
+      if (s) {
+        usedCache = true;
+        console.log(`[sdk] [${sid}] Reusing cached session object`);
+      } else {
+        usedCache = false;
+        console.log(`[sdk] [${sid}] Resuming session...`);
+        s = await Promise.race([
+          this.client!.resumeSession(sessionId, resumeConfig),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+          ),
+        ]);
+        this.sessionObjects.set(sessionId, s);
+        this.probeMcpStatus(sessionId, s);
+        const resumeDuration = Date.now() - resumeStart;
+        this.recordSpan("session.resume", resumeDuration, sessionId, { context: "doWork" });
+        console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
+      }
+      return s;
+    };
 
-    if (session) {
-      console.log(`[sdk] [${sid}] Reusing cached session object`);
-    } else {
-      console.log(`[sdk] [${sid}] Resuming session...`);
-      session = await Promise.race([
-        this.client!.resumeSession(sessionId, resumeConfig),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-        ),
-      ]);
-      this.sessionObjects.set(sessionId, session);
-      this.probeMcpStatus(sessionId, session);
-      const resumeDuration = Date.now() - resumeStart;
-      this.recordSpan("session.resume", resumeDuration, sessionId, { context: "doWork" });
-      console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
-    }
+    let session = await resumeSession();
 
     // Track tool names by toolCallId — completion events don't include the tool name
     const toolNameMap = new Map<string, string>();
@@ -1351,7 +1358,8 @@ export class SessionManager {
     // Capture sub-agent response text: parentToolCallId → last response content
     const subAgentResponseMap = new Map<string, string>();
 
-    const unsub = session.on((event: any) => {
+    // Event handler extracted so it can be re-registered on session retry
+    const handleEvent = (event: any) => {
       const data = (event as any).data;
       switch (event.type) {
         case "assistant.turn_start":
@@ -1523,7 +1531,9 @@ export class SessionManager {
         default:
           break;
       }
-    });
+    };
+
+    let unsub = session.on(handleEvent);
 
     // Emit cached MCP status to the bus — the mcp_servers_loaded event fires during
     // create/resume before our handler is attached, so replay from the stored map
@@ -1566,7 +1576,22 @@ export class SessionManager {
     try {
       const attachCount = attachments?.length ?? 0;
       console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
-      await session.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
+
+      try {
+        await session.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
+      } catch (sendErr) {
+        // If the agent evicted this session, the cached object is stale — re-resume and retry once
+        if (sendErr instanceof Error && sendErr.message.includes("Session not found") && usedCache) {
+          console.warn(`[sdk] [${sid}] Stale cached session — evicting and re-resuming...`);
+          unsub();
+          this.sessionObjects.delete(sessionId);
+          session = await resumeSession();
+          unsub = session.on(handleEvent);
+          await session.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
+        } else {
+          throw sendErr;
+        }
+      }
 
       // Wait for session.idle or session.error (resolved from event handler)
       await new Promise<void>((resolve) => {
