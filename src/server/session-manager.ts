@@ -1517,46 +1517,60 @@ export class SessionManager {
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
     const msgResumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const tConfig = Date.now();
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
     let session = this.sessionObjects.get(sessionId);
     let events: any[];
     let cacheHit = true;
+    let resumeMs = 0;
+    let getMessagesMs = 0;
 
     if (session) {
       console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
       try {
+        const tGm = Date.now();
         events = await session.getMessages();
+        getMessagesMs = Date.now() - tGm;
         console.log(`[sdk] [${sid}] Loaded ${events.length} events from cached session`);
       } catch (err) {
         // Stale cache — CLI may have restarted. Evict and re-resume.
         cacheHit = false;
         console.log(`[sdk] [${sid}] Cached session stale (${err instanceof Error ? err.message : String(err)}), re-resuming...`);
         this.sessionObjects.delete(sessionId);
+        const tResume = Date.now();
         session = await Promise.race([
           this.client.resumeSession(sessionId, msgResumeConfig),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
           ),
         ]);
+        resumeMs = Date.now() - tResume;
         this.sessionObjects.set(sessionId, session);
+        const tGm = Date.now();
         events = await session.getMessages();
+        getMessagesMs = Date.now() - tGm;
         console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
       }
     } else {
       cacheHit = false;
       console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
+      const tResume = Date.now();
       session = await Promise.race([
         this.client.resumeSession(sessionId, msgResumeConfig),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
         ),
       ]);
+      resumeMs = Date.now() - tResume;
       this.sessionObjects.set(sessionId, session);
+      const tGm = Date.now();
       events = await session.getMessages();
+      getMessagesMs = Date.now() - tGm;
       console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
     }
 
+    const tTransform = Date.now();
     const messages: Array<{ id: string; role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> }> = [];
     let msgIndex = 0;
 
@@ -1680,10 +1694,15 @@ export class SessionManager {
     }
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
+    const transformMs = Date.now() - tTransform;
     this.recordSpan("session.getMessages", Date.now() - t0, sessionId, {
       eventCount: events.length,
       messageCount: messages.length,
       cacheHit,
+      configMs: tConfig - t0,
+      resumeMs,
+      getMessagesMs,
+      transformMs,
     });
 
     const total = messages.length;
