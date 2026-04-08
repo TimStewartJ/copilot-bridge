@@ -281,6 +281,25 @@ export async function fetchMessages(
   return data;
 }
 
+/** Fast message loading — reads from disk, no SDK resume needed */
+export async function fetchMessagesFast(
+  sessionId: string,
+  opts?: { limit?: number; before?: number },
+): Promise<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.before != null) params.set("before", String(opts.before));
+  const qs = params.toString();
+  return apiFetch<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }>(
+    `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Warm a session — triggers SDK resume, returns when ready */
+export async function warmSession(sessionId: string): Promise<void> {
+  await apiFetch<{ ready: boolean }>(`/api/sessions/${sessionId}/warm`, {});
+}
+
 // ── Task API ──────────────────────────────────────────────────────
 
 export async function fetchTasks(): Promise<Task[]> {

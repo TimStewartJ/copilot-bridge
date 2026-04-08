@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
-import { fetchMessages, fetchMcpStatus, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
+import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
@@ -34,6 +34,7 @@ function formatToolArgs(args: Record<string, unknown>): string {
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
@@ -114,27 +115,44 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     const loadAndReconnect = () => {
       setLoading(true);
+      setWarming(false);
 
-      const messagesP = fetchMessages(sessionId, { limit: PAGE_SIZE });
+      // Phase 1: Fast load from disk — instant messages
+      const fastP = fetchMessagesFast(sessionId, { limit: PAGE_SIZE });
       const mcpP = fetchMcpStatus(sessionId).catch(() => [] as McpServerStatus[]);
 
-      Promise.all([messagesP, mcpP])
-        .then(([{ messages: msgs, busy, total, hasMore: more }, mcpServers]) => {
+      Promise.all([fastP, mcpP])
+        .then(([{ messages: msgs, busy, total, hasMore: more, warm }, mcpServers]) => {
           if (controller.signal.aborted) return;
           setMessages(msgs);
           setHasMore(more);
           firstItemIndex.current = total - msgs.length;
           setMcpStatus(mcpServers);
-          if (busy) reconnect(sessionId);
+          setLoading(false);
+
+          if (busy) {
+            reconnect(sessionId);
+            return;
+          }
+
+          // Phase 2: Warm the session in background if needed
+          if (!warm) {
+            setWarming(true);
+            warmSession(sessionId)
+              .then(() => {
+                if (!controller.signal.aborted) setWarming(false);
+              })
+              .catch(() => {
+                if (!controller.signal.aborted) setWarming(false);
+              });
+          }
         })
         .catch((err) => {
           if (controller.signal.aborted) return;
           setMessages([
             { role: "assistant", content: `Error loading history: ${err.message}` },
           ]);
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setLoading(false);
+          setLoading(false);
         });
     };
 
@@ -394,7 +412,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           <div className="h-4" />
         </div>
       )}
-      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} />
+      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} disabled={warming} disabledHint="Reconnecting…" />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
         <PlanSheet sessionId={sessionId} onClose={planOverlay.close} />

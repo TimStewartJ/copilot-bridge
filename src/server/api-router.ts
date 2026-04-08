@@ -218,6 +218,33 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
+  router.get("/sessions/:id/messages-fast", (req, res) => {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
+      const { messages, total, hasMore } = ctx.sessionManager.readMessagesFromDisk(
+        req.params.id,
+        { limit, before },
+      );
+      const busy = ctx.sessionManager.isSessionBusy(req.params.id);
+      const warm = ctx.sessionManager.isSessionWarm(req.params.id);
+      res.json({ messages, busy, total, hasMore, warm });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Warm a session — triggers background SDK resume, returns when ready
+  router.post("/sessions/:id/warm", async (req, res) => {
+    try {
+      await ctx.sessionManager.warmSession(req.params.id);
+      res.json({ ready: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post("/sessions", async (req, res) => {
     try {
       const { name } = req.body ?? {};

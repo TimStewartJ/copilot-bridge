@@ -8,6 +8,7 @@ import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { transformEventsToMessages } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
@@ -1571,127 +1572,7 @@ export class SessionManager {
     }
 
     const tTransform = Date.now();
-    const messages: Array<{ id: string; role: string; content: string; timestamp?: string; attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> }> = [];
-    let msgIndex = 0;
-
-    // Index tool events by toolCallId for fast lookup
-    const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string; timestamp?: string }>();
-    const toolCompletes = new Map<string, { success: boolean; content?: string; timestamp?: string }>();
-    // Track sub-agent lifecycle: toolCallId → agent info
-    const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
-    // Capture sub-agent response text: parentToolCallId → last response content
-    const subAgentResponses = new Map<string, string>();
-    for (const event of events) {
-      const data = (event as any).data;
-      if (event.type === "tool.execution_start" && data?.toolCallId) {
-        toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments, parentToolCallId: data.parentToolCallId, timestamp: (event as any).timestamp });
-      } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
-        toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content, timestamp: (event as any).timestamp });
-      } else if (event.type === "subagent.started" && data?.toolCallId) {
-        subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
-      } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
-        // Capture sub-agent response text (last one wins — that's the final response)
-        subAgentResponses.set(data.parentToolCallId, data.content);
-      }
-    }
-    console.log(`[sdk] Indexed ${toolStarts.size} tool starts, ${toolCompletes.size} tool completes, ${subAgentStarts.size} sub-agents`);
-
-    for (const event of events) {
-      if (event.type === "user.message") {
-        const data = event.data as any;
-        const content = data.content ?? data.prompt ?? "";
-        if (content.trim() || data.attachments?.length) {
-          // Extract blob attachments for display
-          const blobAttachments = data.attachments
-            ?.filter((a: any) => a.type === "blob" && a.mimeType?.startsWith("image/"))
-            ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
-          messages.push({
-            id: `msg-${msgIndex++}`,
-            role: "user",
-            content,
-            timestamp: data.timestamp ?? (event as any).timestamp,
-            ...(blobAttachments?.length ? { attachments: blobAttachments } : {}),
-          });
-        }
-      } else if (event.type === "assistant.message") {
-        const data = (event as any).data;
-        // Skip sub-agent messages — their content is captured during indexing
-        if (data?.parentToolCallId) continue;
-        const content = data.content ?? "";
-
-        // Build tool calls from toolRequests — flat format, grouping done by frontend
-        let toolCalls: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean; parentToolCallId?: string; isSubAgent?: boolean; startedAt?: string; completedAt?: string }> | undefined;
-        if (data.toolRequests?.length) {
-          toolCalls = data.toolRequests
-            .filter((tr: any) => tr.name !== "report_intent")
-            .map((tr: any) => {
-              const start = toolStarts.get(tr.toolCallId);
-              const complete = toolCompletes.get(tr.toolCallId);
-              const subAgent = subAgentStarts.get(tr.toolCallId);
-              if (subAgent) {
-                // Sub-agent parent tool — use response text if available, fall back to tool result
-                return {
-                  toolCallId: tr.toolCallId,
-                  name: `🤖 ${subAgent.agentDisplayName ?? subAgent.agentName ?? "agent"}`,
-                  isSubAgent: true,
-                  result: subAgentResponses.get(tr.toolCallId) ?? complete?.content,
-                  success: complete?.success,
-                  startedAt: start?.timestamp,
-                  completedAt: complete?.timestamp,
-                };
-              }
-              return {
-                toolCallId: tr.toolCallId,
-                name: tr.name,
-                args: start?.arguments ?? tr.arguments,
-                result: complete?.content,
-                success: complete?.success,
-                parentToolCallId: start?.parentToolCallId,
-                startedAt: start?.timestamp,
-                completedAt: complete?.timestamp,
-              };
-            });
-
-          // Inject child tool calls for sub-agent parents
-          const injected: typeof toolCalls = [];
-          for (const tc of toolCalls!) {
-            injected.push(tc);
-            if (tc.isSubAgent) {
-              // Find child tools that belong to this sub-agent
-              for (const [childId, s] of toolStarts.entries()) {
-                if (s.parentToolCallId === tc.toolCallId && s.toolName !== "report_intent") {
-                  const childComplete = toolCompletes.get(childId);
-                  injected.push({
-                    toolCallId: childId,
-                    name: s.toolName,
-                    args: s.arguments,
-                    result: childComplete?.content,
-                    success: childComplete?.success,
-                    parentToolCallId: tc.toolCallId,
-                    startedAt: s.timestamp,
-                    completedAt: childComplete?.timestamp,
-                  });
-                }
-              }
-            }
-          }
-          toolCalls = injected;
-
-          if (toolCalls.length === 0) toolCalls = undefined;
-        }
-
-        // Include message if it has content or tool calls
-        if (content.trim() || toolCalls) {
-          messages.push({
-            id: `msg-${msgIndex++}`,
-            role: "assistant",
-            content,
-            timestamp: data.timestamp ?? (event as any).timestamp,
-            toolCalls,
-          });
-        }
-      }
-    }
+    const messages = transformEventsToMessages(events);
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     const transformMs = Date.now() - tTransform;
@@ -1716,6 +1597,79 @@ export class SessionManager {
     }
 
     return { messages, total, hasMore: false };
+  }
+
+  /**
+   * Read messages directly from events.jsonl on disk — no SDK resume needed.
+   * Returns messages instantly for the fast-load path.
+   */
+  readMessagesFromDisk(sessionId: string, opts?: { limit?: number; before?: number }): { messages: any[]; total: number; hasMore: boolean } {
+    const t0 = Date.now();
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+
+    if (!existsSync(eventsPath)) {
+      return { messages: [], total: 0, hasMore: false };
+    }
+
+    const raw = readFileSync(eventsPath, "utf-8");
+    const events: any[] = [];
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        events.push(JSON.parse(line));
+      } catch { /* skip malformed lines */ }
+    }
+
+    const messages = transformEventsToMessages(events);
+    const duration = Date.now() - t0;
+    this.recordSpan("session.readFromDisk", duration, sessionId, {
+      eventCount: events.length,
+      messageCount: messages.length,
+    });
+
+    const total = messages.length;
+    if (opts?.limit != null && opts.limit > 0) {
+      const end = opts.before != null ? opts.before : total;
+      const start = Math.max(0, end - opts.limit);
+      const sliced = messages.slice(start, end);
+      return { messages: sliced, total, hasMore: start > 0 };
+    }
+    return { messages, total, hasMore: false };
+  }
+
+  /**
+   * Warm a session by resuming it in the background.
+   * Returns a promise that resolves when the session is ready for interaction.
+   */
+  async warmSession(sessionId: string): Promise<void> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (this.sessionObjects.has(sessionId)) return; // already warm
+
+    const sid = sessionId.slice(0, 8);
+    const t0 = Date.now();
+    console.log(`[sdk] [${sid}] Warming session...`);
+
+    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+
+    const session = await Promise.race([
+      this.client.resumeSession(sessionId, resumeConfig),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
+      ),
+    ]);
+    this.sessionObjects.set(sessionId, session);
+    this.probeMcpStatus(sessionId, session);
+
+    const duration = Date.now() - t0;
+    this.recordSpan("session.warm", duration, sessionId);
+    console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+  }
+
+  /** Check if a session object is cached and ready for interaction */
+  isSessionWarm(sessionId: string): boolean {
+    return this.sessionObjects.has(sessionId);
   }
 
   // Generate a concise session title via a lightweight LLM call
