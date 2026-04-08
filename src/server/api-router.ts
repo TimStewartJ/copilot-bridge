@@ -39,7 +39,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // ── Enriched session list cache ─────────────────────────────────
   // Caches the expensive enriched session list (disk sizes, plan checks, metadata).
   // Invalidated by session create/delete/archive and globalBus events.
-  let enrichedSessionCache: { data: any[]; diskSizes: Map<string, number>; timestamp: number } | null = null;
+  // Disk sizes are stored separately so skipDiskSize requests don't zero them out.
+  let enrichedSessionCache: { data: any[]; timestamp: number } | null = null;
+  const diskSizeCache = new Map<string, number>();
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
 
   function invalidateEnrichedCache() {
@@ -70,6 +72,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         // Serve from cache — only refresh volatile fields (busy status)
         const cached = enrichedSessionCache!.data.map((s: any) => ({
           ...s,
+          diskSizeBytes: diskSizeCache.get(s.sessionId) ?? 0,
           busy: ctx.sessionManager.isSessionBusy(s.sessionId),
         }));
         const filtered = cached.filter((s: any) => includeArchived || !s.archived);
@@ -80,31 +83,30 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const sessions = await ctx.sessionManager.listSessions();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
-      const prevDiskSizes = enrichedSessionCache?.diskSizes ?? new Map<string, number>();
 
       const enriched = sessions
         .filter((s: any) => s.summary)
         .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
         .map((s: any) => {
           const id = s.sessionId;
-          let diskSizeBytes = 0;
-          if (skipDiskSize) {
-            diskSizeBytes = prevDiskSizes.get(id) ?? 0;
-          } else {
+          const archived = meta[id]?.archived === true;
+
+          // Compute disk size: skip on polling, use cached for archived, compute for active
+          if (!skipDiskSize && !archived) {
             try {
               const sessionDir = join(sessionStateDir, id);
-              diskSizeBytes = getDirSize(sessionDir);
+              diskSizeCache.set(id, getDirSize(sessionDir));
             } catch { /* session dir may not exist */ }
           }
+
           const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
-          const archived = meta[id]?.archived === true;
           const archivedAt = meta[id]?.archivedAt ?? null;
           const generatedTitle = ctx.sessionTitles.getTitle(id);
           const summary = generatedTitle ?? s.summary;
           return {
             ...s,
             summary,
-            diskSizeBytes,
+            diskSizeBytes: diskSizeCache.get(id) ?? 0,
             busy: ctx.sessionManager.isSessionBusy(id),
             hasPlan,
             archived,
@@ -119,9 +121,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         });
 
       // Update cache (store all sessions, filter happens on read)
-      const diskSizes = new Map<string, number>();
-      for (const s of enriched) diskSizes.set(s.sessionId, s.diskSizeBytes);
-      enrichedSessionCache = { data: enriched, diskSizes, timestamp: now };
+      enrichedSessionCache = { data: enriched, timestamp: now };
 
       const filtered = enriched.filter((s: any) => includeArchived || !s.archived);
       res.json({ sessions: filtered });
