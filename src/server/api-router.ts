@@ -79,8 +79,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.json({ sessions: filtered });
       }
 
-      // Cache miss — rebuild
-      const sessions = await ctx.sessionManager.listSessions();
+      // Cache miss — rebuild (use fast disk read instead of SDK RPC)
+      const sessions = ctx.sessionManager.listSessionsFromDisk();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
 
@@ -943,7 +943,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/dashboard", async (_req, res) => {
     try {
       const t0 = Date.now();
-      const sessions = await ctx.sessionManager.listSessions();
+      const sessions = ctx.sessionManager.listSessionsFromDisk();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
