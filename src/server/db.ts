@@ -79,6 +79,7 @@ function initSchema(db: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       color TEXT NOT NULL DEFAULT 'blue',
+      notes TEXT NOT NULL DEFAULT '',
       "order" INTEGER NOT NULL DEFAULT 0,
       collapsed INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
@@ -247,6 +248,12 @@ function initSchema(db: DatabaseSync): void {
       ALTER TABLE todos_new RENAME TO todos;
       CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
     `);
+  }
+
+  // Add notes column to task_groups
+  const groupCols = db.prepare("PRAGMA table_info(task_groups)").all() as any[];
+  if (!groupCols.some((c: any) => c.name === "notes")) {
+    db.exec("ALTER TABLE task_groups ADD COLUMN notes TEXT NOT NULL DEFAULT ''");
   }
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)

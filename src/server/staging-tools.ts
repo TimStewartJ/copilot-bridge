@@ -269,6 +269,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     eventBusRegistry,
     sessionTitles,
     taskStore,
+    taskGroupStore,
     todoStore,
     ...(tagStore && { tagStore }),
     ...(telemetryStore && { telemetryStore }),

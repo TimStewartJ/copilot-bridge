@@ -36,6 +36,7 @@ import {
   CheckSquare,
   LayoutDashboard,
   BookOpen,
+  FileText,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 
@@ -48,6 +49,7 @@ interface TaskDashboardProps {
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
   onUpdateTask: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
+  onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
@@ -73,6 +75,7 @@ export default function TaskDashboard({
   onSelectSession,
   onNewSession,
   onUpdateTask,
+  onUpdateGroup,
   onTasksChanged,
   isUnread,
   onSetTaskTags,
@@ -94,6 +97,8 @@ export default function TaskDashboard({
   );
   const sched = useTaskSchedules(task.id);
   const notes = useNotesSheet(task.id);
+  const [groupNotesOpen, setGroupNotesOpen] = useState(false);
+  const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
 
   // ── Todos ───────────────────────────────────────────────────
   const { data: todos = [], refetch: refetchTodos } = useTaskTodosQuery(task.id);
@@ -512,6 +517,39 @@ export default function TaskDashboard({
               })()}
             </Section>
 
+            {/* Group Notes */}
+            {group && (
+              <Section
+                icon={<FileText size={14} />}
+                title={`Group Notes — ${group.name}`}
+                action={
+                  <button
+                    onClick={() => { setGroupNotesOpen(true); setGroupNotesStartEdit(!group.notes); }}
+                    className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
+                  >
+                    <Pencil size={12} /> {group.notes ? "Edit" : "Add"}
+                  </button>
+                }
+              >
+                {group.notes ? (
+                  <div
+                    onClick={() => { setGroupNotesOpen(true); setGroupNotesStartEdit(false); }}
+                    className="px-3 py-3 cursor-pointer rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
+                  >
+                    <div className="prose prose-invert prose-sm max-w-none text-text-secondary
+                      prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1
+                      prose-ul:my-1 prose-ol:my-1 prose-li:my-0
+                      prose-code:text-accent prose-code:text-xs
+                      prose-a:text-accent prose-a:no-underline">
+                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{group.notes}</ReactMarkdown>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState message="No group notes" sub="Add notes to capture project context and goals" />
+                )}
+              </Section>
+            )}
+
             {/* Notes */}
             <Section
               icon={<StickyNote size={14} />}
@@ -583,6 +621,18 @@ export default function TaskDashboard({
             onTasksChanged?.();
           }}
           onClose={notes.close}
+        />
+      )}
+
+      {/* Group Notes Sheet */}
+      {groupNotesOpen && group && (
+        <NotesSheet
+          notes={group.notes}
+          startInEditMode={groupNotesStartEdit}
+          onSave={(newNotes) => {
+            if (onUpdateGroup) onUpdateGroup(group.id, { notes: newNotes });
+          }}
+          onClose={() => setGroupNotesOpen(false)}
         />
       )}
 

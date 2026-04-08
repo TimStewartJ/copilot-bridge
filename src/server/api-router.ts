@@ -466,7 +466,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.patch("/task-groups/:id", (req, res) => {
     try {
       const group = ctx.taskGroupStore.updateGroup(req.params.id, req.body);
-      res.json({ group });
+      const tags = ctx.tagStore?.getEntityTags("task_group", group.id) ?? [];
+      res.json({ group: { ...group, tags } });
     } catch (err) {
       res.status(404).json({ error: String(err) });
     }
@@ -755,6 +756,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const prDescriptions = task.pullRequests.map(
         (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
       );
+      const group = task.groupId ? ctx.taskGroupStore.getGroup(task.groupId) : undefined;
+      const groupNotes = group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null;
       const result = await ctx.sessionManager.createTaskSession(
         task.id,
         task.title,
@@ -762,6 +765,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         prDescriptions,
         task.notes,
         task.cwd,
+        undefined,
+        groupNotes,
       );
 
       // Auto-link session to task

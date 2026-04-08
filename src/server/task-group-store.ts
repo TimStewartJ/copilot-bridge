@@ -12,6 +12,7 @@ export interface TaskGroup {
   id: string;
   name: string;
   color: GroupColor;
+  notes: string;
   order: number;
   collapsed: boolean;
   createdAt: string;
@@ -26,6 +27,7 @@ export function createTaskGroupStore(db: DatabaseSync) {
       id: row.id,
       name: row.name,
       color: row.color as GroupColor,
+      notes: row.notes ?? "",
       order: row.order,
       collapsed: row.collapsed === 1,
       createdAt: row.createdAt,
@@ -65,7 +67,7 @@ export function createTaskGroupStore(db: DatabaseSync) {
 
   function updateGroup(
     id: string,
-    updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed">>,
+    updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>,
   ): TaskGroup {
     const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as any;
     if (!row) throw new Error(`Group ${id} not found`);
@@ -78,6 +80,7 @@ export function createTaskGroupStore(db: DatabaseSync) {
       fields.push("color = ?"); values.push(updates.color);
     }
     if (updates.collapsed !== undefined) { fields.push("collapsed = ?"); values.push(updates.collapsed ? 1 : 0); }
+    if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
 
     values.push(id);
     db.prepare(`UPDATE task_groups SET ${fields.join(", ")} WHERE id = ?`).run(...values);

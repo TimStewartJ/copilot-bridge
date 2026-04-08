@@ -76,6 +76,7 @@ const sessionManager = new SessionManager({
   eventBusRegistry: defaultEventBusRegistry,
   sessionTitles,
   taskStore,
+  taskGroupStore,
   todoStore,
   settingsStore,
   tagStore,

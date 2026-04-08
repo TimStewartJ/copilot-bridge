@@ -12,6 +12,7 @@ import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
 import type { Task } from "./task-store.js";
+import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createScheduleStore } from "./schedule-store.js";
 import * as schedulerModule from "./scheduler.js";
@@ -89,6 +90,8 @@ interface SessionConfigOptions {
   isNewTask?: boolean;
   prDescriptions?: string[];
   scheduleContext?: ScheduleContext;
+  /** Group notes to inject into context (looked up by caller) */
+  groupNotes?: { groupName: string; notes: string } | null;
 }
 
 // Module-level ref so universal tools can query session state
@@ -237,17 +240,18 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("task_group_create", {
     description: "Create a new task group for organizing related tasks",
-    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate" } }, required: ["name"] },
+    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "Optional markdown notes for the group" } }, required: ["name"] },
     handler: async (args: any) => {
       const group = ctx.taskGroupStore.createGroup(args.name, args.color);
+      if (args.notes) ctx.taskGroupStore.updateGroup(group.id, { notes: args.notes });
       return { success: true, message: `Group "${group.name}" created`, groupId: group.id };
     },
   }),
   defineTool("task_group_list", {
-    description: "List all task groups with their IDs and names",
+    description: "List all task groups with their IDs, names, and notes",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { groups: ctx.taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color })) };
+      return { groups: ctx.taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color, notes: g.notes || undefined })) };
     },
   }),
   defineTool("task_group_delete", {
@@ -259,6 +263,18 @@ export function createBridgeTools(ctx: AppContext) {
       ctx.tagStore?.setEntityTags("task_group", args.groupId, []);
       ctx.taskGroupStore.deleteGroup(args.groupId);
       return { success: true, message: `Group deleted, ${tasks.length} task(s) ungrouped` };
+    },
+  }),
+  defineTool("task_group_update", {
+    description: "Update a task group's name, color, and/or notes. Only provided fields are changed.",
+    parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." } }, required: ["groupId"] },
+    handler: async (args: any) => {
+      const updates: any = {};
+      if (args.name !== undefined) updates.name = args.name;
+      if (args.color !== undefined) updates.color = args.color;
+      if (args.notes !== undefined) updates.notes = args.notes;
+      const group = ctx.taskGroupStore.updateGroup(args.groupId, updates);
+      return { success: true, message: `Group "${group.name}" updated`, groupId: group.id };
     },
   }),
   // ── Tag tools ────────────────────────────────────────────────
@@ -732,6 +748,7 @@ export interface SessionManagerDeps {
   eventBusRegistry: EventBusRegistry;
   sessionTitles: SessionTitlesStore;
   taskStore: TaskStore;
+  taskGroupStore?: TaskGroupStore;
   todoStore?: TodoStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
@@ -772,8 +789,16 @@ export class SessionManager {
     } catch { /* telemetry should never break core flow */ }
   }
 
+  private lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null {
+    if (!groupId || !this.deps.taskGroupStore) return null;
+    const group = this.deps.taskGroupStore.getGroup(groupId);
+    if (!group?.notes?.trim()) return null;
+    return { groupName: group.name, notes: group.notes };
+  }
+  }
+
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
-    const { task, isNewTask, prDescriptions, scheduleContext } = opts;
+    const { task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
 
     const cfg: any = {
       onPermissionRequest: approveAll,
@@ -815,6 +840,10 @@ export class SessionManager {
       }
       if (task.notes.trim()) {
         contextParts.push(`Task notes:\n${task.notes}`);
+      }
+      // Inject group notes if provided
+      if (groupNotes?.notes?.trim()) {
+        contextParts.push(`Group notes (from task group "${groupNotes.groupName}" that this task belongs to):\n${groupNotes.notes}`);
       }
       const todos = this.deps.todoStore?.listTodos(task.id) ?? [];
       if (todos.length > 0) {
@@ -1070,15 +1099,19 @@ export class SessionManager {
     return { sessionId: newId };
   }
 
-  async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext): Promise<{ sessionId: string }> {
+  async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const isPlaceholder = taskTitle === "New Task";
+
+    // Look up the full task to get groupId for context injection
+    const fullTask = this.deps.taskStore.getTask(taskId);
 
     const task = {
       id: taskId,
       title: taskTitle,
       status: "active" as const,
+      groupId: fullTask?.groupId,
       cwd,
       notes: notes || "",
       priority: 0,
@@ -1092,7 +1125,7 @@ export class SessionManager {
 
     const t0 = Date.now();
     const session = await this.client.createSession(
-      this.buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext }),
+      this.buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext, groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId) }),
     );
     const duration = Date.now() - t0;
 
@@ -1162,7 +1195,7 @@ export class SessionManager {
 
     // Build resume config with optional task context
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
-    const resumeConfig = this.buildSessionConfig({ task: linkedTask });
+    const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -1430,7 +1463,7 @@ export class SessionManager {
     const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
-    const msgResumeConfig = this.buildSessionConfig({ task: linkedTask });
+    const msgResumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
     let session = this.sessionObjects.get(sessionId);
