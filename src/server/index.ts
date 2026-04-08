@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, setMcpServersGetter } from "./config.js";
-import { SessionManager, createBridgeTools } from "./session-manager.js";
+import { SessionManager, createBridgeTools, createSessionManager } from "./session-manager.js";
 import { openDatabase } from "./db.js";
 import { migrateJsonToSqlite } from "./migrate-json-to-sqlite.js";
 import { createTaskStore } from "./task-store.js";
@@ -70,19 +70,8 @@ const defaultContext: AppContext = {
   sessionManager: null as any, // assigned below after construction
 };
 const tools = createBridgeTools(defaultContext);
-const sessionManager = new SessionManager({
+const sessionManager = createSessionManager(defaultContext, {
   tools,
-  globalBus: defaultGlobalBus,
-  eventBusRegistry: defaultEventBusRegistry,
-  sessionTitles,
-  taskStore,
-  taskGroupStore,
-  todoStore,
-  settingsStore,
-  tagStore,
-  telemetryStore,
-  docsIndex,
-  docsStore,
   config: { get sessionMcpServers() { return config.sessionMcpServers; } },
 });
 defaultContext.sessionManager = sessionManager;

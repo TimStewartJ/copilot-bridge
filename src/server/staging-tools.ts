@@ -261,18 +261,10 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
   const excludeTools = new Set(["self_restart", "staging_init", "staging_preview", "staging_deploy", "staging_cleanup"]);
   const stagingTools = allTools.filter((t: any) => !excludeTools.has(t.name));
 
-  // Create a real SessionManager with its own CopilotClient (stdio mode = independent CLI process)
-  // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
-  const sm = new sessionManagerMod.SessionManager({
+  // Create a real SessionManager via the worktree's factory — new deps are picked up
+  // automatically without updating this file (see createSessionManager in session-manager.ts)
+  const sm = sessionManagerMod.createSessionManager(ctx, {
     tools: stagingTools,
-    globalBus,
-    eventBusRegistry,
-    sessionTitles,
-    taskStore,
-    taskGroupStore,
-    todoStore,
-    ...(tagStore && { tagStore }),
-    ...(telemetryStore && { telemetryStore }),
     config: { sessionMcpServers: settingsStore.getMcpServers(), model: "claude-haiku-4.5" },
     clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
     copilotHome,
