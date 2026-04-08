@@ -123,7 +123,7 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
       SELECT todos.* FROM todos
       LEFT JOIN tasks ON todos.taskId = tasks.id
       WHERE todos.done = 0 AND (todos.taskId IS NULL OR tasks.status = 'active')
-      ORDER BY todos.createdAt DESC, todos.id DESC
+      ORDER BY todos.createdAt DESC, todos.ROWID DESC
     `).all() as any[]).map(hydrate);
   }
 
@@ -134,7 +134,7 @@ export function createTodoStore(db: DatabaseSync, bus: GlobalBus) {
       SELECT todos.* FROM todos
       LEFT JOIN tasks ON todos.taskId = tasks.id
       WHERE todos.done = 1 AND (todos.taskId IS NULL OR tasks.status = 'active') AND todos.completedAt >= ?
-      ORDER BY todos.completedAt DESC
+      ORDER BY todos.completedAt DESC, todos.ROWID DESC
     `).all(weekAgo) as any[]).map(hydrate);
   }
 
