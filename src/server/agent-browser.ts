@@ -1,21 +1,28 @@
 // Shared agent-browser helpers with automatic recovery from stale Chrome state.
 
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
 import { unlinkSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { promisify } from "node:util";
 
 const DEFAULT_TIMEOUT = 30_000;
+const execAsync = promisify(exec);
 
 const PROFILE_DIR = join(homedir(), ".copilot", "browser-profile");
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
 
-export function run(
+export async function run(
   cmd: string,
   timeout = DEFAULT_TIMEOUT,
-): { ok: boolean; output: string } {
+): Promise<{ ok: boolean; output: string }> {
   try {
-    const output = execSync(cmd, { encoding: "utf-8", timeout });
+    const { stdout, stderr } = await execAsync(cmd, {
+      encoding: "utf-8",
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const output = stdout || stderr;
     return { ok: true, output: output.trim() };
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
@@ -55,8 +62,11 @@ function clearStaleLocks(): boolean {
  * Run an agent-browser command using the default session.
  * On Chrome launch failure (stale lock), clears the lock and retries once.
  */
-export function ab(command: string, timeout = DEFAULT_TIMEOUT): { ok: boolean; output: string } {
-  const result = run(`agent-browser ${command}`, timeout);
+export async function ab(
+  command: string,
+  timeout = DEFAULT_TIMEOUT,
+): Promise<{ ok: boolean; output: string }> {
+  const result = await run(`agent-browser ${command}`, timeout);
   if (result.ok) return result;
 
   // Detect stale-lock failure and retry once

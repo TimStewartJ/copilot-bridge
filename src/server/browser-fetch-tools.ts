@@ -31,7 +31,7 @@ export const BROWSER_FETCH_TOOLS = [
       const url: string = args.url;
       const selector: string | undefined = args.selector;
 
-      const check = run("which agent-browser");
+      const check = await run("which agent-browser");
       if (!check.ok) {
         return {
           error:
@@ -40,19 +40,18 @@ export const BROWSER_FETCH_TOOLS = [
       }
 
       try {
-        const openResult = ab(`open "${url}"`);
+        const openResult = await ab(`open "${url}"`);
         if (!openResult.ok) {
           return { error: `Failed to open URL: ${openResult.output.slice(0, 200)}` };
         }
 
-        ab("wait --load networkidle");
+        await ab("wait --load networkidle");
 
         const scope = selector ? ` -s "${selector}"` : "";
-        const snapshot = ab(`snapshot -i${scope}`);
+        const snapshot = await ab(`snapshot -i${scope}`);
 
         // Also grab the page title and final URL for context
-        const titleResult = ab("get title");
-        const urlResult = ab("get url");
+        const [titleResult, urlResult] = await Promise.all([ab("get title"), ab("get url")]);
 
         if (!snapshot.ok) {
           return { error: `Failed to capture page: ${snapshot.output.slice(0, 200)}` };
