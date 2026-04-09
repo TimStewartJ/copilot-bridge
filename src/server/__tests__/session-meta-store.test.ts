@@ -62,4 +62,19 @@ describe("session-meta-store", () => {
     const all = store.listMeta();
     expect(Object.keys(all)).toHaveLength(2);
   });
+
+  it("listSessionIdsBySchedule returns sessions for a schedule", () => {
+    store.setScheduleMeta("s1", "sched-a", "Schedule A");
+    store.setScheduleMeta("s2", "sched-a", "Schedule A");
+    store.setScheduleMeta("s3", "sched-b", "Schedule B");
+
+    const result = store.listSessionIdsBySchedule("sched-a");
+    expect(result).toHaveLength(2);
+    expect(result).toContain("s1");
+    expect(result).toContain("s2");
+  });
+
+  it("listSessionIdsBySchedule returns empty for unknown schedule", () => {
+    expect(store.listSessionIdsBySchedule("unknown")).toEqual([]);
+  });
 });

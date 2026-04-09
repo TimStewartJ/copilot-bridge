@@ -6,15 +6,20 @@ import {
   type DashboardActiveTask,
   type DashboardOrphanSession,
   type DashboardTodo,
+  type DashboardSchedule,
 } from "../api";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
+import { useScheduleDetail } from "../hooks/useScheduleDetail";
+import { useTriggerScheduleMutation, useToggleScheduleMutation, useDeleteScheduleMutation } from "../hooks/queries/useSchedules";
 import { getLastViewedSession } from "../last-viewed";
 import { timeAgo } from "../time";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
+import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 import TodoRow from "./TodoRow";
 import PullToRefresh from "./PullToRefresh";
-import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown } from "lucide-react";
+import ScheduleDetailSheet from "./ScheduleDetailSheet";
+import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause } from "lucide-react";
 
 type TodoSort = "newest" | "deadline" | "task";
 
@@ -154,6 +159,10 @@ export default function Dashboard({
   onResumeTask,
 }: DashboardProps) {
   const { data, isLoading: loading, refetch } = useDashboardQuery();
+  const schedDetail = useScheduleDetail();
+  const triggerMutation = useTriggerScheduleMutation(undefined);
+  const toggleMutation = useToggleScheduleMutation(undefined);
+  const deleteMutation = useDeleteScheduleMutation(undefined);
   const [localOpenTodos, setLocalOpenTodos] = useState<DashboardTodo[]>([]);
   const [localCompletedTodos, setLocalCompletedTodos] = useState<DashboardTodo[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
@@ -236,8 +245,10 @@ export default function Dashboard({
     );
   }
 
-  const { busySessions, unreadSessions, lastActiveTask, orphanSessions } = data;
+  const { busySessions, unreadSessions, lastActiveTask, orphanSessions, schedules = [] } = data;
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
+  const activeSchedules = schedules.filter((s) => s.enabled);
+  const pausedSchedules = schedules.filter((s) => !s.enabled);
 
   return (
     <div className="flex-1 min-h-0 relative">
@@ -527,41 +538,102 @@ export default function Dashboard({
             )}
           </div>
 
-          {/* Right: Orphan Sessions */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
-                <MessageSquare size={14} />
-                Recent Chats
-              </h2>
-              <button
-                onClick={onNewSession}
-                className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-              >
-                <Plus size={12} />
-                Quick Chat
-              </button>
+          {/* Right: Orphan Sessions + Schedules */}
+          <div className="space-y-6">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+                  <MessageSquare size={14} />
+                  Recent Chats
+                </h2>
+                <button
+                  onClick={onNewSession}
+                  className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
+                >
+                  <Plus size={12} />
+                  Quick Chat
+                </button>
+              </div>
+
+              {orphanSessions.length === 0 ? (
+                <EmptyState
+                  message="All caught up"
+                  sub="No unlinked sessions need attention"
+                />
+              ) : (
+                <div className="space-y-1.5">
+                  {orphanSessions.map((s) => (
+                    <OrphanSessionRow
+                      key={s.sessionId}
+                      session={s}
+                      onSelect={() => onSelectSession(s.sessionId)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
-            {orphanSessions.length === 0 ? (
-              <EmptyState
-                message="All caught up"
-                sub="No unlinked sessions need attention"
-              />
-            ) : (
-              <div className="space-y-1.5">
-                {orphanSessions.map((s) => (
-                  <OrphanSessionRow
-                    key={s.sessionId}
-                    session={s}
-                    onSelect={() => onSelectSession(s.sessionId)}
-                  />
-                ))}
+            {/* Schedules */}
+            {schedules.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+                    <Clock size={14} />
+                    Schedules
+                    <span className="text-text-faint font-normal text-xs">
+                      ({activeSchedules.length} active{pausedSchedules.length > 0 ? ` · ${pausedSchedules.length} paused` : ""})
+                    </span>
+                  </h2>
+                </div>
+
+                <div className="space-y-1.5">
+                  {activeSchedules.map((schedule) => (
+                    <DashboardScheduleRow
+                      key={schedule.id}
+                      schedule={schedule}
+                      onOpen={() => schedDetail.openSheet(schedule)}
+                      onSelectTask={() => onSelectTask(schedule.taskId)}
+                      onTrigger={() => triggerMutation.mutate(schedule.id)}
+                      onToggle={() => toggleMutation.mutate(schedule)}
+                    />
+                  ))}
+                  <CollapsibleCompleted count={pausedSchedules.length} label="paused">
+                    {pausedSchedules.map((schedule) => (
+                      <DashboardScheduleRow
+                        key={schedule.id}
+                        schedule={schedule}
+                        onOpen={() => schedDetail.openSheet(schedule)}
+                        onSelectTask={() => onSelectTask(schedule.taskId)}
+                        onTrigger={() => triggerMutation.mutate(schedule.id)}
+                        onToggle={() => toggleMutation.mutate(schedule)}
+                      />
+                    ))}
+                  </CollapsibleCompleted>
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Schedule Detail Sheet (unified view/edit) */}
+      {schedDetail.isOpen && (
+        <ScheduleDetailSheet
+          schedule={schedDetail.schedule}
+          taskId={schedDetail.schedule?.taskId ?? ""}
+          taskTitle={(schedDetail.schedule as DashboardSchedule | null)?.taskTitle}
+          mode={schedDetail.mode}
+          onClose={schedDetail.close}
+          onSwitchToEdit={schedDetail.switchToEdit}
+          onSwitchToView={schedDetail.switchToView}
+          onTrigger={(id) => triggerMutation.mutate(id)}
+          onToggle={(s) => toggleMutation.mutate(s)}
+          onDelete={(id) => { deleteMutation.mutate(id); schedDetail.close(); }}
+          onSaved={() => { schedDetail.close(); refetch(); }}
+          onSelectSession={onSelectSession}
+          onSelectTask={onSelectTask}
+        />
+      )}
     </PullToRefresh>
     </div>
   );
@@ -660,5 +732,69 @@ function OrphanSessionRow({
         )}
       </div>
     </button>
+  );
+}
+
+function DashboardScheduleRow({
+  schedule,
+  onOpen,
+  onSelectTask,
+  onTrigger,
+  onToggle,
+}: {
+  schedule: DashboardSchedule;
+  onOpen: () => void;
+  onSelectTask: () => void;
+  onTrigger: () => void;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors group">
+      <div className="flex items-center gap-2">
+        <Clock size={14} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
+        <button
+          onClick={onOpen}
+          className={`text-sm font-medium truncate flex-1 text-left hover:text-accent transition-colors ${
+            schedule.enabled ? "text-text-primary" : "text-text-faint line-through"
+          }`}
+        >
+          {schedule.name}
+        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onTrigger}
+            className="p-1 text-text-muted hover:text-success transition-colors"
+            title="Run now"
+          >
+            <Play size={12} />
+          </button>
+          <button
+            onClick={onToggle}
+            className="p-1 text-text-muted hover:text-warning transition-colors"
+            title={schedule.enabled ? "Pause" : "Resume"}
+          >
+            <Pause size={12} />
+          </button>
+        </div>
+      </div>
+      <div className="text-xs text-text-muted mt-1 ml-6 flex items-center gap-2 flex-wrap">
+        {schedule.taskTitle && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelectTask(); }}
+            className="text-accent hover:text-accent-hover transition-colors truncate max-w-[150px]"
+          >
+            {schedule.taskTitle}
+          </button>
+        )}
+        <span className="text-text-faint">
+          {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+        </span>
+      </div>
+      <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
+        {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
+        {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
+        {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
+      </div>
+    </div>
   );
 }

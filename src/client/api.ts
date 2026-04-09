@@ -635,6 +635,11 @@ export interface DashboardTodo {
   taskGroupOrder: number | null;
 }
 
+export interface DashboardSchedule extends Schedule {
+  taskTitle: string | null;
+  taskGroupColor: string | null;
+}
+
 export interface DashboardData {
   busySessions: DashboardBusySession[];
   unreadSessions: DashboardUnreadSession[];
@@ -642,6 +647,7 @@ export interface DashboardData {
   orphanSessions: DashboardOrphanSession[];
   openTodos: DashboardTodo[];
   completedTodos: DashboardTodo[];
+  schedules: DashboardSchedule[];
 }
 
 export async function fetchDashboard(): Promise<DashboardData> {
@@ -777,6 +783,24 @@ export async function deleteSchedule(id: string): Promise<void> {
 
 export async function triggerSchedule(id: string): Promise<{ sessionId?: string; skipped?: string }> {
   return apiFetch<{ sessionId?: string; skipped?: string }>(`/api/schedules/${id}/trigger`, {});
+}
+
+export interface ScheduleSessionsResponse {
+  sessions: Session[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export async function fetchScheduleSessions(
+  scheduleId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<ScheduleSessionsResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.offset) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return apiFetch<ScheduleSessionsResponse>(`/api/schedules/${scheduleId}/sessions${qs ? `?${qs}` : ""}`);
 }
 
 // ── Todo API ──────────────────────────────────────────────────────

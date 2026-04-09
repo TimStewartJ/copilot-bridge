@@ -448,6 +448,45 @@ describe("Schedule routes", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/cron/);
   });
+
+  it("GET /api/schedules/:id/sessions returns sessions for a schedule", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Test Sched", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+
+    ctx.sessionMetaStore.setScheduleMeta("sess-1", schedule.id, "Test Sched");
+    ctx.sessionMetaStore.setScheduleMeta("sess-2", schedule.id, "Test Sched");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+    expect(res.status).toBe(200);
+    // Mock session manager returns no sessions on disk, so enriched list is empty
+    // but the route structure is correct
+    expect(res.body).toHaveProperty("sessions");
+    expect(Array.isArray(res.body.sessions)).toBe(true);
+    expect(res.body).toHaveProperty("offset", 0);
+    expect(res.body).toHaveProperty("limit");
+    expect(typeof res.body.total).toBe("number");
+  });
+
+  it("GET /api/schedules/:id/sessions returns 404 for unknown schedule", async () => {
+    const res = await request(app).get("/api/schedules/no-such-id/sessions");
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /api/schedules/:id/sessions respects limit and offset params", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Paged", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+
+    ctx.sessionMetaStore.setScheduleMeta("s1", schedule.id, "Paged");
+    ctx.sessionMetaStore.setScheduleMeta("s2", schedule.id, "Paged");
+    ctx.sessionMetaStore.setScheduleMeta("s3", schedule.id, "Paged");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=2&offset=1`);
+    expect(res.status).toBe(200);
+    expect(res.body.offset).toBe(1);
+    expect(res.body.limit).toBe(2);
+  });
 });
 
 // ── Session routes (mock-based) ──────────────────────────────────
@@ -478,6 +517,28 @@ describe("Session routes (mocked)", () => {
     expect(res.body).toHaveProperty("busy");
     expect(res.body).toHaveProperty("count");
     expect(Array.isArray(res.body.sessions)).toBe(true);
+  });
+
+  it("GET /api/dashboard includes schedules array", async () => {
+    const res = await request(app).get("/api/dashboard");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("schedules");
+    expect(Array.isArray(res.body.schedules)).toBe(true);
+  });
+
+  it("GET /api/dashboard enriches schedules with task title", async () => {
+    // Create a task and schedule via stores
+    const task = await request(app).post("/api/tasks").send({ title: "Dashboard Task" });
+    const taskId = task.body.task.id;
+    ctx.scheduleStore.createSchedule({
+      taskId, name: "Dash Sched", prompt: "test", type: "cron", cron: "0 0 * * *",
+    });
+
+    const res = await request(app).get("/api/dashboard");
+    expect(res.status).toBe(200);
+    const sched = res.body.schedules.find((s: any) => s.name === "Dash Sched");
+    expect(sched).toBeDefined();
+    expect(sched.taskTitle).toBe("Dashboard Task");
   });
 });
 

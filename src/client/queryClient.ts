@@ -21,6 +21,8 @@ export const queryKeys = {
   taskTodos: (id: string) => ["task", id, "todos"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
+  allSchedules: ["schedules"] as const,
+  scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,
   chatMessages: (sessionId: string) =>
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,
