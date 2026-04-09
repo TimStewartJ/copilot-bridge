@@ -4,6 +4,7 @@
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -1037,27 +1038,26 @@ export class SessionManager {
   /**
    * Fast session listing — reads workspace.yaml from disk instead of SDK RPC.
    * ~170ms for 4000+ sessions vs ~2500ms for SDK listSessions.
+   * Async to avoid blocking the event loop during filesystem I/O.
    */
-  listSessionsFromDisk(): any[] {
+  async listSessionsFromDisk(): Promise<any[]> {
     const t0 = Date.now();
     const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
     const sessionStateDir = join(copilotHome, "session-state");
 
-    let dirs: string[];
+    let entries: any[];
     try {
-      dirs = readdirSync(sessionStateDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name);
+      entries = await readdir(sessionStateDir, { withFileTypes: true });
     } catch {
       return [];
     }
+    const dirs = entries.filter((d: any) => d.isDirectory()).map((d: any) => d.name);
 
-    const sessions: any[] = [];
-    for (const dirName of dirs) {
-      if (this.disposableSessionIds.has(dirName)) continue;
+    const sessionPromises = dirs.map(async (dirName) => {
+      if (this.disposableSessionIds.has(dirName)) return null;
       const yamlPath = join(sessionStateDir, dirName, "workspace.yaml");
       try {
-        const content = readFileSync(yamlPath, "utf-8");
+        const content = await readFile(yamlPath, "utf-8");
         const session: any = { sessionId: dirName };
         let inSummary = false;
         const summaryLines: string[] = [];
@@ -1086,14 +1086,20 @@ export class SessionManager {
         // Use events.jsonl mtime for modifiedTime — workspace.yaml updated_at is stale
         const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
         try {
-          session.modifiedTime = statSync(eventsPath).mtime.toISOString();
+          const st = await stat(eventsPath);
+          session.modifiedTime = st.mtime.toISOString();
         } catch {
-          // Fallback to workspace.yaml mtime
-          try { session.modifiedTime = statSync(yamlPath).mtime.toISOString(); } catch {}
+          try {
+            const st = await stat(yamlPath);
+            session.modifiedTime = st.mtime.toISOString();
+          } catch {}
         }
-        sessions.push(session);
-      } catch { /* skip sessions without workspace.yaml */ }
-    }
+        return session;
+      } catch { return null; }
+    });
+
+    const results = await Promise.all(sessionPromises);
+    const sessions = results.filter((s): s is any => s !== null);
 
     // Sort by most recently modified first
     sessions.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
@@ -1713,17 +1719,20 @@ export class SessionManager {
   /**
    * Read messages directly from events.jsonl on disk — no SDK resume needed.
    * Returns messages instantly for the fast-load path.
+   * Async to avoid blocking the event loop.
    */
-  readMessagesFromDisk(sessionId: string, opts?: { limit?: number; before?: number }): { messages: any[]; total: number; hasMore: boolean } {
+  async readMessagesFromDisk(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: any[]; total: number; hasMore: boolean }> {
     const t0 = Date.now();
     const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
     const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
 
-    if (!existsSync(eventsPath)) {
+    let raw: string;
+    try {
+      raw = await readFile(eventsPath, "utf-8");
+    } catch {
       return { messages: [], total: 0, hasMore: false };
     }
 
-    const raw = readFileSync(eventsPath, "utf-8");
     const events: any[] = [];
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
