@@ -3,35 +3,12 @@
 // avoiding fragile CSS selectors that break when search engines change their DOM.
 
 import { defineTool } from "@github/copilot-sdk";
-import { execSync } from "node:child_process";
-
-const SEARCH_TIMEOUT = 30_000;
-
-function run(cmd: string): { ok: boolean; output: string } {
-  try {
-    const output = execSync(cmd, { encoding: "utf-8", timeout: SEARCH_TIMEOUT });
-    return { ok: true, output: output.trim() };
-  } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
-  }
-}
-
-function ab(session: string, command: string): { ok: boolean; output: string } {
-  return run(`agent-browser --session ${session} ${command}`);
-}
-
-function cleanup(session: string): void {
-  try {
-    ab(session, "close");
-  } catch {
-    // best-effort
-  }
-}
+import { run, ab } from "./agent-browser.js";
 
 /** Take a scoped accessibility snapshot of the results area */
-function takeSnapshot(session: string, selector?: string): { ok: boolean; output: string } {
+function takeSnapshot(selector?: string): { ok: boolean; output: string } {
   const scope = selector ? ` -s "${selector}"` : "";
-  return ab(session, `snapshot -i${scope}`);
+  return ab(`snapshot -i${scope}`);
 }
 
 /** Check if snapshot contains meaningful search results */
@@ -65,7 +42,6 @@ export const WEB_SEARCH_TOOLS = [
     },
     handler: async (args: any) => {
       const query: string = args.query;
-      const session = `ws-${Date.now()}`;
 
       const check = run("which agent-browser");
       if (!check.ok) {
@@ -78,15 +54,14 @@ export const WEB_SEARCH_TOOLS = [
       try {
         // Try Google first
         const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-        const googleOpen = ab(session, `open "${googleUrl}"`);
+        const googleOpen = ab(`open "${googleUrl}"`);
 
         if (googleOpen.ok) {
-          ab(session, "wait --load networkidle");
+          ab("wait --load networkidle");
           // Scoped snapshot of results area — avoids nav/footer noise
-          const snapshot = takeSnapshot(session, "#rso");
+          const snapshot = takeSnapshot("#rso");
 
           if (snapshot.ok && hasResults(snapshot.output)) {
-            cleanup(session);
             return {
               source: "google",
               query,
@@ -98,17 +73,14 @@ export const WEB_SEARCH_TOOLS = [
 
         // Fallback to DuckDuckGo
         const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const ddgOpen = ab(session, `open "${ddgUrl}"`);
+        const ddgOpen = ab(`open "${ddgUrl}"`);
 
         if (!ddgOpen.ok) {
-          cleanup(session);
           return { error: "Failed to open search engine" };
         }
 
-        ab(session, "wait --load networkidle");
-        const snapshot = takeSnapshot(session);
-
-        cleanup(session);
+        ab("wait --load networkidle");
+        const snapshot = takeSnapshot();
 
         if (!snapshot.ok) {
           return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
@@ -121,7 +93,6 @@ export const WEB_SEARCH_TOOLS = [
           snapshot: snapshot.output,
         };
       } catch (err: any) {
-        cleanup(session);
         return { error: `Search failed: ${String(err).slice(0, 200)}` };
       }
     },
