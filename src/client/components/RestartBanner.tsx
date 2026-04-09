@@ -1,4 +1,4 @@
-import { CheckCircle, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle, RefreshCw, Users } from "lucide-react";
 
 interface Props {
   phase: "pending" | "reconnected";
@@ -15,15 +15,39 @@ export default function RestartBanner({ phase, waitingSessions }: Props) {
     );
   }
 
+  const waitingOnSessions = waitingSessions > 0;
+
   return (
-    <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b text-sm" style={{ backgroundColor: "var(--color-restart-bg)", borderColor: "var(--color-restart-border)", color: "var(--color-restart-text)" }}>
-      <RefreshCw size={14} className="animate-spin" />
-      <span>
-        Server restart pending
-        {waitingSessions > 0
-          ? ` — waiting on ${waitingSessions} active session${waitingSessions !== 1 ? "s" : ""}`
-          : " — restarting shortly"}
-      </span>
+    <div
+      className="shrink-0 border-b px-4 py-3 text-sm"
+      style={waitingOnSessions
+        ? {
+            backgroundColor: "var(--color-restart-waiting-bg)",
+            borderColor: "var(--color-restart-waiting-border)",
+            color: "var(--color-restart-waiting-text)",
+          }
+        : {
+            backgroundColor: "var(--color-restart-imminent-bg)",
+            borderColor: "var(--color-restart-imminent-border)",
+            color: "var(--color-restart-imminent-text)",
+          }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 shrink-0">
+          {waitingOnSessions ? <Users size={16} /> : <AlertTriangle size={16} />}
+        </div>
+        <div className="min-w-0">
+          <div className="font-semibold">
+            {waitingOnSessions ? "Restart queued" : "Restart imminent"}
+          </div>
+          <div className="opacity-90">
+            {waitingOnSessions
+              ? `Waiting for ${waitingSessions} active session${waitingSessions !== 1 ? "s" : ""} to go idle before restarting.`
+              : "All blocking sessions are idle. The server is about to restart and this view may disconnect briefly."}
+          </div>
+        </div>
+        <RefreshCw size={14} className="mt-0.5 ml-auto shrink-0 animate-spin opacity-80" />
+      </div>
     </div>
   );
 }

@@ -270,17 +270,24 @@ export function useSessionStream(
 
   const sendMessage = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (!sessionId) return;
-    const res = await fetch(`${API_BASE}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Failed" }));
-      throw new Error(err.error);
+    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers }));
+    try {
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Failed" }));
+        setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+        throw new Error(err.error);
+      }
+      retryCountRef.current = 0;
+      connectStream(sessionId);
+    } catch (err) {
+      setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+      throw err;
     }
-    retryCountRef.current = 0;
-    connectStream(sessionId);
   }, [sessionId, connectStream]);
 
   const abortSession = useCallback(async () => {
