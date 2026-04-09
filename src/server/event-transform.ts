@@ -14,7 +14,7 @@ export interface TransformedEntry {
   toolCall?: {
     toolCallId: string;
     name: string;
-    args?: Record<string, unknown>;
+    args?: unknown;
     result?: string;
     success?: boolean;
     parentToolCallId?: string;

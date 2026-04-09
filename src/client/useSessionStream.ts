@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { BlobAttachment, ChatEntry, McpServerStatus, ToolCall } from "./api";
+import type { BlobAttachment, ChatEntry, McpServerStatus, ToolArgs, ToolCall } from "./api";
 import { API_BASE } from "./api";
 
 export interface PendingTool {
   toolCallId: string;
   name: string;
-  args?: Record<string, unknown>;
+  args?: ToolArgs;
   parentToolCallId?: string;
   isSubAgent?: boolean;
   startedAt?: string;
