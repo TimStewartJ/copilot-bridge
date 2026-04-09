@@ -9,6 +9,7 @@ import SubAgentGroup from "./SubAgentGroup";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
+import { hasToolArgs, summarizeToolArgs } from "../lib/tool-args";
 import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 
 const PAGE_SIZE = 50;
@@ -23,16 +24,6 @@ interface ChatViewProps {
   onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
   onDraftClear?: () => void;
   onCreateAndSend?: (prompt: string, attachments?: BlobAttachment[]) => Promise<void>;
-}
-
-function formatToolArgs(args: Record<string, unknown>): string {
-  const parts: string[] = [];
-  for (const [key, val] of Object.entries(args)) {
-    if (key === "intent") continue; // skip noise
-    const s = typeof val === "string" ? val : JSON.stringify(val);
-    parts.push(s.length > 60 ? s.slice(0, 57) + "..." : s);
-  }
-  return parts.join(" ");
 }
 
 function renderPendingStatusCard(
@@ -375,8 +366,8 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
                     {childCount > 0 && (
                       <span className="text-agent/50 ml-1">({childCount})</span>
                     )}
-                    {!isAgent && t.args && Object.keys(t.args).length > 0 && (
-                      <span className="text-accent/40 ml-1">{formatToolArgs(t.args)}</span>
+                    {!isAgent && hasToolArgs(t.args) && (
+                      <span className="text-accent/40 ml-1">{summarizeToolArgs(t.args, { maxLength: 60, separator: " " })}</span>
                     )}
                   </span>
                 );

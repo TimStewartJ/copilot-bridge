@@ -2,6 +2,7 @@ import { useState, memo, useMemo } from "react";
 import type { ToolCall } from "../api";
 import { Settings, XCircle, ChevronDown, ChevronRight } from "lucide-react";
 import ToolResultModal from "./ToolResultModal";
+import { formatToolArgsDetails, hasToolArgs, summarizeToolArgs } from "../lib/tool-args";
 
 function formatToolTime(tc: ToolCall): string | null {
   if (!tc.startedAt) return null;
@@ -19,35 +20,12 @@ interface ToolCallBlockProps {
   toolCall: ToolCall;
 }
 
-function formatArgs(args: Record<string, unknown>): string {
-  const parts: string[] = [];
-  for (const [key, val] of Object.entries(args)) {
-    if (key === "intent") continue;
-    const s = typeof val === "string" ? val : JSON.stringify(val);
-    parts.push(s.length > 80 ? s.slice(0, 77) + "..." : s);
-  }
-  return parts.join("  ");
-}
-
-function argSummary(tc: ToolCall): string {
-  if (!tc.args || Object.keys(tc.args).length === 0) return "";
-  // For common tools, show the most useful arg
-  const a = tc.args;
-  if (a.path) return String(a.path).replace(/\\/g, "/").split("/").slice(-3).join("/");
-  if (a.pattern) return String(a.pattern);
-  if (a.command) return String(a.command).slice(0, 60);
-  if (a.query) return String(a.query).slice(0, 60);
-  if (a.prompt) return String(a.prompt).slice(0, 60);
-  if (a.url) return String(a.url).slice(0, 60);
-  return formatArgs(a);
-}
-
 export default memo(function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const [showFullModal, setShowFullModal] = useState(false);
-  const summary = argSummary(toolCall);
+  const summary = summarizeToolArgs(toolCall.args);
   const hasResult = toolCall.result && toolCall.result.trim().length > 0;
-  const hasDetails = hasResult || (toolCall.args && Object.keys(toolCall.args).length > 0);
+  const hasDetails = hasResult || hasToolArgs(toolCall.args);
   const timeLabel = useMemo(() => formatToolTime(toolCall), [toolCall.startedAt, toolCall.completedAt]);
 
   return (
@@ -72,11 +50,11 @@ export default memo(function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
           {timeLabel && (
             <div className="text-text-faint text-[11px]">{timeLabel}</div>
           )}
-          {toolCall.args && Object.keys(toolCall.args).length > 0 && (
+          {hasToolArgs(toolCall.args) && (
             <div>
               <div className="text-text-muted mb-1">Arguments</div>
               <pre className="text-text-muted whitespace-pre-wrap break-all text-[11px] max-h-32 overflow-auto">
-                {JSON.stringify(toolCall.args, null, 2)}
+                {formatToolArgsDetails(toolCall.args)}
               </pre>
             </div>
           )}

@@ -13,7 +13,7 @@ export interface StreamEvent {
 export interface ActiveTool {
   toolCallId: string;
   name: string;
-  args?: Record<string, unknown>;
+  args?: unknown;
   parentToolCallId?: string;
   isSubAgent?: boolean;
 }
@@ -77,7 +77,7 @@ export class SessionEventBus {
         this.activeTools.push({
           toolCallId: (event.toolCallId as string) ?? "",
           name: event.name ?? "unknown",
-          args: event.args as Record<string, unknown> | undefined,
+          args: event.args,
           parentToolCallId: event.parentToolCallId as string | undefined,
           isSubAgent: event.isSubAgent as boolean | undefined,
         });

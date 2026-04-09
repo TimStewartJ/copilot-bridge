@@ -22,7 +22,7 @@ export interface Session {
 export interface ToolCall {
   toolCallId: string;
   name: string;
-  args?: Record<string, unknown>;
+  args?: ToolArgs;
   result?: string;
   success?: boolean;
   parentToolCallId?: string;
@@ -34,6 +34,14 @@ export interface ToolCall {
   /** ISO timestamp when the tool call completed */
   completedAt?: string;
 }
+
+export type ToolArgs =
+  | string
+  | number
+  | boolean
+  | null
+  | ToolArgs[]
+  | { [key: string]: ToolArgs };
 
 export interface BlobAttachment {
   type: "blob";
