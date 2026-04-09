@@ -5,7 +5,6 @@
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
 
-const SESSION_NAME = "web-search";
 const SEARCH_TIMEOUT = 30_000;
 
 function run(cmd: string): { ok: boolean; output: string } {
@@ -17,22 +16,22 @@ function run(cmd: string): { ok: boolean; output: string } {
   }
 }
 
-function ab(command: string): { ok: boolean; output: string } {
-  return run(`agent-browser --session ${SESSION_NAME} ${command}`);
+function ab(session: string, command: string): { ok: boolean; output: string } {
+  return run(`agent-browser --session ${session} ${command}`);
 }
 
-function cleanup(): void {
+function cleanup(session: string): void {
   try {
-    ab("close");
+    ab(session, "close");
   } catch {
     // best-effort
   }
 }
 
 /** Take a scoped accessibility snapshot of the results area */
-function takeSnapshot(selector?: string): { ok: boolean; output: string } {
+function takeSnapshot(session: string, selector?: string): { ok: boolean; output: string } {
   const scope = selector ? ` -s "${selector}"` : "";
-  return ab(`snapshot -i${scope}`);
+  return ab(session, `snapshot -i${scope}`);
 }
 
 /** Check if snapshot contains meaningful search results */
@@ -66,6 +65,7 @@ export const WEB_SEARCH_TOOLS = [
     },
     handler: async (args: any) => {
       const query: string = args.query;
+      const session = `ws-${Date.now()}`;
 
       const check = run("which agent-browser");
       if (!check.ok) {
@@ -78,15 +78,15 @@ export const WEB_SEARCH_TOOLS = [
       try {
         // Try Google first
         const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-        const googleOpen = ab(`open "${googleUrl}"`);
+        const googleOpen = ab(session, `open "${googleUrl}"`);
 
         if (googleOpen.ok) {
-          ab("wait --load networkidle");
+          ab(session, "wait --load networkidle");
           // Scoped snapshot of results area — avoids nav/footer noise
-          const snapshot = takeSnapshot("#rso");
+          const snapshot = takeSnapshot(session, "#rso");
 
           if (snapshot.ok && hasResults(snapshot.output)) {
-            cleanup();
+            cleanup(session);
             return {
               source: "google",
               query,
@@ -98,17 +98,17 @@ export const WEB_SEARCH_TOOLS = [
 
         // Fallback to DuckDuckGo
         const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const ddgOpen = ab(`open "${ddgUrl}"`);
+        const ddgOpen = ab(session, `open "${ddgUrl}"`);
 
         if (!ddgOpen.ok) {
-          cleanup();
+          cleanup(session);
           return { error: "Failed to open search engine" };
         }
 
-        ab("wait --load networkidle");
-        const snapshot = takeSnapshot();
+        ab(session, "wait --load networkidle");
+        const snapshot = takeSnapshot(session);
 
-        cleanup();
+        cleanup(session);
 
         if (!snapshot.ok) {
           return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
@@ -121,7 +121,7 @@ export const WEB_SEARCH_TOOLS = [
           snapshot: snapshot.output,
         };
       } catch (err: any) {
-        cleanup();
+        cleanup(session);
         return { error: `Search failed: ${String(err).slice(0, 200)}` };
       }
     },

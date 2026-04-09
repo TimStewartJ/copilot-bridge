@@ -1,11 +1,12 @@
 ---
 name: browser
 description: >
-  Browser automation via agent-browser CLI. Use when the user needs to interact
-  with websites — navigating pages, filling forms, clicking buttons, taking
-  screenshots, extracting data, or automating any browser task. Prefer this over
-  web_fetch when sites require JavaScript rendering, block bots, need login state,
-  or require interactive flows.
+  Browser automation via agent-browser CLI. Use for any website interaction —
+  reading content from JS-heavy or bot-protected sites, navigating pages,
+  filling forms, clicking buttons, taking screenshots, extracting data, or
+  automating multi-step browser tasks. Also use when web_fetch or browser_fetch
+  returns empty, blocked, or incomplete content. Covers SPAs, auth-gated pages,
+  dynamic dashboards, and any page that needs a real browser.
 allowed-tools: Bash(agent-browser:*)
 ---
 
@@ -13,17 +14,20 @@ allowed-tools: Bash(agent-browser:*)
 
 You have access to a headless browser via `agent-browser`. Use it through bash.
 
-## When to Use Browser vs web_fetch
+## When to Use Browser
 
-Use `agent-browser` when:
-- A website **blocks agentic access** or returns bot-detection pages
-- The page requires **JavaScript rendering** (SPAs, dynamic content)
-- You need an **interactive flow** (login, form submission, multi-step navigation)
-- You need a **screenshot** or **PDF** of a page
-- You need to **persist login state** across visits (cookies, sessions)
-- You need to interact with page elements (click buttons, fill forms)
+Use `agent-browser` (via this skill) when you need full control over multi-step browser interactions:
+- **Multi-step flows**: login → navigate → extract data across multiple pages
+- **Form interactions**: filling forms, clicking buttons, selecting dropdowns
+- **Screenshots and PDFs**: visual capture of pages
+- **Persistent sessions**: maintain login state across visits with `--profile` or `--session-name`
+- **Tab management**: working across multiple tabs simultaneously
+- **JavaScript evaluation**: running custom JS on the page
+- **Complex scraping**: paginated results, infinite scroll, dynamic content loading
 
-Continue using `web_fetch` for simple page reads, API calls, and known-friendly sites where you just need text content.
+For **simple page reads** where you just need the content of a single URL, use `browser_fetch` first (it's a direct tool — faster to invoke). Escalate to this skill when you need the full interactive browser workflow.
+
+Use `web_fetch` only for known-friendly sites, raw API calls, or simple static pages.
 
 ## Prerequisites
 
