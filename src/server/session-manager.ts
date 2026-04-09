@@ -1377,6 +1377,8 @@ export class SessionManager {
 
     // Track tool names by toolCallId — completion events don't include the tool name
     const toolNameMap = new Map<string, string>();
+    // Track tool start times for telemetry
+    const toolStartTimes = new Map<string, number>();
     // Track sub-agent parent tool call IDs → display name
     const subAgentMap = new Map<string, string>();
     // Capture sub-agent response text: parentToolCallId → last response content
@@ -1427,7 +1429,10 @@ export class SessionManager {
           break;
         case "tool.execution_start": {
           const toolName = data?.toolName ?? data?.name ?? "unknown";
-          if (data?.toolCallId) toolNameMap.set(data.toolCallId, toolName);
+          if (data?.toolCallId) {
+            toolNameMap.set(data.toolCallId, toolName);
+            toolStartTimes.set(data.toolCallId, Date.now());
+          }
           // If subagent.started already fired for this toolCallId, apply the upgrade immediately
           const pendingAgent = data?.toolCallId ? subAgentMap.get(data.toolCallId) : undefined;
           const displayName = pendingAgent ?? toolName;
@@ -1462,6 +1467,14 @@ export class SessionManager {
               ? (subAgentResponseMap.get(data?.toolCallId) ?? data?.result?.content)
               : data?.result?.content;
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${isAgent ? agentDisplayName : completedToolName} (${ok ? "ok" : "failed"})`);
+          const toolStart = toolStartTimes.get(data?.toolCallId);
+          if (toolStart) {
+            this.recordSpan("tool.execution", Date.now() - toolStart, sessionId, {
+              toolName: completedToolName,
+              success: ok,
+              isSubAgent: isAgent || undefined,
+            });
+          }
           bus.emit({
             type: "tool_done",
             toolCallId: data?.toolCallId,
