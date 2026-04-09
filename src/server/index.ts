@@ -152,6 +152,23 @@ async function main(): Promise<void> {
   initKeepAlive();
 
   const port = config.web.port;
+  // Event loop lag monitor — records telemetry when the event loop is blocked
+  const LAG_THRESHOLD = 50; // ms
+  setInterval(() => {
+    const scheduled = Date.now();
+    setImmediate(() => {
+      const lag = Date.now() - scheduled;
+      if (lag > LAG_THRESHOLD) {
+        telemetryStore.recordSpan({
+          name: "eventloop.lag",
+          duration: lag,
+          metadata: { activeSessions: sessionManager.getActiveSessions().length },
+          source: "server",
+        });
+      }
+    });
+  }, 200);
+
   app.listen(port, () => {
     console.log(`[web] 🟢 Server running at http://localhost:${port}`);
   });
