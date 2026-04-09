@@ -22,6 +22,7 @@ import { createSessionTitlesStore } from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
 import { STAGING_TOOLS } from "./staging-tools.js";
 import { WEB_SEARCH_TOOLS } from "./web-search-tools.js";
+import { BROWSER_FETCH_TOOLS } from "./browser-fetch-tools.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -75,6 +76,18 @@ Always use the staging workflow for any code changes to this codebase.
 For non-code restarts (config, env), use self_restart instead.
 For pulling the latest remote code and restarting, use self_update instead.
 </staging_workflow>
+`.trim();
+
+const BROWSER_GUIDANCE = `
+<browser_escalation>
+If web_fetch returns any of these signals, the site likely blocks automated access — retry with browser_fetch (a direct tool) instead:
+- HTTP 403/429 status or empty body
+- Page content contains "enable JavaScript", "captcha", "verify you are human", "access denied", "please wait", or "checking your browser"
+- Content is very short or clearly incomplete compared to what the page should have
+- The site is a known SPA or JS-heavy app (React, Angular, Vue dashboards, etc.)
+
+Escalation path: web_fetch (fast, simple) → browser_fetch (real browser, single page) → browser skill (multi-step interactive flows)
+</browser_escalation>
 `.trim();
 
 // ── Session config builder ───────────────────────────────────────
@@ -732,6 +745,8 @@ export function createBridgeTools(ctx: AppContext) {
     ...STAGING_TOOLS,
 
     ...WEB_SEARCH_TOOLS,
+
+    ...BROWSER_FETCH_TOOLS,
   ];
 }
 
@@ -978,6 +993,9 @@ export class SessionManager {
         `${current}\n* Server local time: ${new Date().toLocaleString("en-US", { timeZone: serverTz })} (${serverTz})`
       ) as SectionOverrideAction,
     };
+
+    // Browser escalation guidance — teach the model to recognize web_fetch failures
+    sections.web_fetch = { action: "append", content: BROWSER_GUIDANCE };
 
     const hasContent = contextParts.length > 0;
 
