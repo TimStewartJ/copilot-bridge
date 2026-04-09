@@ -862,8 +862,11 @@ export class SessionManager {
         join(REPO_ROOT, "skills"),                                          // built-in (ships with bridge)
         join(this.deps.copilotHome ?? join(homedir(), ".copilot"), "skills"), // user-level
       ],
-      ...(this.deps.config.model ? { model: this.deps.config.model } : {}),
     };
+
+    // Model priority: settings store > deps.config > SDK default
+    const model = this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
+    if (model) cfg.model = model;
 
     if (task?.cwd) {
       cfg.workingDirectory = task.cwd;
@@ -1033,6 +1036,15 @@ export class SessionManager {
     this.recordSpan("session.listSessions", Date.now() - t0);
     this.sessionListCache = { data: sessions, timestamp: Date.now() };
     return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
+  }
+
+  /** List available models from the Copilot SDK */
+  async listModels() {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    const t0 = Date.now();
+    const models = await this.client.listModels();
+    this.recordSpan("session.listModels", Date.now() - t0);
+    return models;
   }
 
   /**

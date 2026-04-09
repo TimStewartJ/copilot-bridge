@@ -22,6 +22,7 @@ export interface AppSettings {
   theme?: ThemePreference;
   identity?: string;
   customInstructions?: string;
+  model?: string;
 }
 
 // ── Defaults (no hardcoded org — users configure their own) ───────
@@ -53,6 +54,7 @@ export function createSettingsStore(db: DatabaseSync) {
     if (updates.theme !== undefined) current.theme = updates.theme;
     if (updates.identity !== undefined) current.identity = updates.identity;
     if (updates.customInstructions !== undefined) current.customInstructions = updates.customInstructions;
+    if (updates.model !== undefined) current.model = updates.model || undefined;
 
     db.prepare(
       "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = ?",

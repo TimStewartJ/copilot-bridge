@@ -19,6 +19,7 @@ import {
   type Tag,
 } from "../api";
 import { useSettingsQuery, useSettingsMutation } from "../hooks/queries/useSettings";
+import { useModelsQuery } from "../hooks/queries/useModels";
 import { useTagsQuery, useCreateTagMutation, usePatchTagMutation, useDeleteTagMutation, useReorderTagsMutation } from "../hooks/queries/useTags";
 import { Settings, ArrowLeft, Pencil, Trash2, Check, X, CheckCircle2, XCircle, Loader2, AlertTriangle, ArrowUp, ArrowDown } from "lucide-react";
 import { TAG_COLORS } from "../tag-colors";
@@ -193,6 +194,9 @@ export default function SettingsView() {
         {/* System Prompt Section */}
         <SystemPromptSection draft={draft} setDraft={setDraft} />
 
+        {/* Model Section */}
+        <ModelSection draft={draft} setDraft={setDraft} />
+
         {/* Appearance Section */}
         <AppearanceSection draft={draft} setDraft={setDraft} />
 
@@ -352,6 +356,74 @@ function SystemPromptSection({
             className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary placeholder:text-text-faint/50 focus:outline-none focus:ring-1 focus:ring-accent resize-y"
           />
         </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Model Section ─────────────────────────────────────────────────
+
+function ModelSection({
+  draft,
+  setDraft,
+}: {
+  draft: AppSettings;
+  setDraft: (d: AppSettings) => void;
+}) {
+  const { data: models, isLoading, error } = useModelsQuery();
+
+  // Only show enabled models, sorted by name
+  const availableModels = (models ?? [])
+    .filter((m) => !m.policy || m.policy.state !== "disabled")
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const currentModel = draft.model ?? "";
+
+  return (
+    <section>
+      <div className="mb-3">
+        <h2 className="text-sm font-medium text-text-primary">Model</h2>
+        <p className="text-xs text-text-muted mt-0.5">
+          Choose which AI model to use for new sessions. Changes apply on next session interaction.
+        </p>
+      </div>
+
+      <div className="bg-bg-elevated border border-border rounded-md p-4">
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-xs text-text-muted">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Loading available models…
+          </div>
+        ) : error ? (
+          <div className="flex items-center gap-2 text-xs text-red-400">
+            <AlertTriangle className="w-3 h-3" />
+            Failed to load models
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <select
+              value={currentModel}
+              onChange={(e) => {
+                const next = structuredClone(draft);
+                next.model = e.target.value || undefined;
+                setDraft(next);
+              }}
+              className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none cursor-pointer"
+            >
+              <option value="">Default (SDK default)</option>
+              {availableModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}{m.billing && m.billing.multiplier !== 1 ? ` (${m.billing.multiplier}×)` : ""}
+                </option>
+              ))}
+            </select>
+            {currentModel && (
+              <p className="text-xs text-text-faint">
+                Model ID: <code className="text-text-muted">{currentModel}</code>
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

@@ -12,6 +12,7 @@ export const queryClient = new QueryClient({
 
 export const queryKeys = {
   settings: ["settings"] as const,
+  models: ["models"] as const,
   tags: ["tags"] as const,
   tasks: ["tasks"] as const,
   taskGroups: ["task-groups"] as const,
