@@ -1,13 +1,17 @@
-// Shared event→message transform logic
+// Shared event→entry transform logic
+// Produces a flat chronological list of text messages and tool calls.
 // Used by both getSessionMessages (SDK path) and readMessagesFromDisk (fast path)
 
-export interface TransformedMessage {
+export interface TransformedEntry {
   id: string;
-  role: string;
-  content: string;
+  type: "message" | "tool";
+  // Message fields (when type === "message")
+  role?: string;
+  content?: string;
   timestamp?: string;
   attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
-  toolCalls?: Array<{
+  // Tool fields (when type === "tool")
+  toolCall?: {
     toolCallId: string;
     name: string;
     args?: Record<string, unknown>;
@@ -17,28 +21,28 @@ export interface TransformedMessage {
     isSubAgent?: boolean;
     startedAt?: string;
     completedAt?: string;
-  }>;
+  };
 }
 
-/**
- * Transform raw SDK/JSONL events into UI-ready messages.
- * Two-pass: first indexes tool events, then builds message list.
- */
-export function transformEventsToMessages(events: any[]): TransformedMessage[] {
-  const messages: TransformedMessage[] = [];
-  let msgIndex = 0;
+// Keep backward compat alias — server API consumers still reference this
+export type TransformedMessage = TransformedEntry;
 
-  // Pass 1: Index tool events by toolCallId for fast lookup
-  const toolStarts = new Map<string, { toolName: string; arguments?: Record<string, unknown>; parentToolCallId?: string; timestamp?: string }>();
+/**
+ * Transform raw SDK/JSONL events into a chronological list of entries.
+ * Pass 1 indexes tool completion results, pass 2 emits entries in event order.
+ */
+export function transformEventsToMessages(events: any[]): TransformedEntry[] {
+  const entries: TransformedEntry[] = [];
+  let idx = 0;
+
+  // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, { success: boolean; content?: string; timestamp?: string }>();
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
   const subAgentResponses = new Map<string, string>();
 
   for (const event of events) {
     const data = (event as any).data;
-    if (event.type === "tool.execution_start" && data?.toolCallId) {
-      toolStarts.set(data.toolCallId, { toolName: data.toolName, arguments: data.arguments, parentToolCallId: data.parentToolCallId, timestamp: (event as any).timestamp });
-    } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
+    if (event.type === "tool.execution_complete" && data?.toolCallId) {
       toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content, timestamp: (event as any).timestamp });
     } else if (event.type === "subagent.started" && data?.toolCallId) {
       subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
@@ -47,96 +51,60 @@ export function transformEventsToMessages(events: any[]): TransformedMessage[] {
     }
   }
 
-  // Pass 2: Build messages from user.message and assistant.message events
+  // Pass 2: Emit entries chronologically
   for (const event of events) {
+    const data = (event as any).data;
+
     if (event.type === "user.message") {
-      const data = event.data as any;
-      const content = data.content ?? data.prompt ?? "";
-      if (content.trim() || data.attachments?.length) {
-        const blobAttachments = data.attachments
-          ?.filter((a: any) => a.type === "blob" && a.mimeType?.startsWith("image/"))
-          ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
-        messages.push({
-          id: `msg-${msgIndex++}`,
-          role: "user",
-          content,
-          timestamp: data.timestamp ?? (event as any).timestamp,
-          ...(blobAttachments?.length ? { attachments: blobAttachments } : {}),
-        });
-      }
+      const content = data?.content ?? data?.prompt ?? "";
+      if (!content.trim() && !data?.attachments?.length) continue;
+      const blobAttachments = data.attachments
+        ?.filter((a: any) => a.type === "blob" && a.mimeType?.startsWith("image/"))
+        ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
+      entries.push({
+        id: `entry-${idx++}`,
+        type: "message",
+        role: "user",
+        content,
+        timestamp: data.timestamp ?? (event as any).timestamp,
+        ...(blobAttachments?.length ? { attachments: blobAttachments } : {}),
+      });
     } else if (event.type === "assistant.message") {
-      const data = (event as any).data;
-      if (data?.parentToolCallId) continue;
-      const content = data.content ?? "";
-
-      let toolCalls: TransformedMessage["toolCalls"];
-      if (data.toolRequests?.length) {
-        toolCalls = data.toolRequests
-          .filter((tr: any) => tr.name !== "report_intent")
-          .map((tr: any) => {
-            const start = toolStarts.get(tr.toolCallId);
-            const complete = toolCompletes.get(tr.toolCallId);
-            const subAgent = subAgentStarts.get(tr.toolCallId);
-            if (subAgent) {
-              return {
-                toolCallId: tr.toolCallId,
-                name: `🤖 ${subAgent.agentDisplayName ?? subAgent.agentName ?? "agent"}`,
-                isSubAgent: true,
-                result: subAgentResponses.get(tr.toolCallId) ?? complete?.content,
-                success: complete?.success,
-                startedAt: start?.timestamp,
-                completedAt: complete?.timestamp,
-              };
-            }
-            return {
-              toolCallId: tr.toolCallId,
-              name: tr.name,
-              args: start?.arguments ?? tr.arguments,
-              result: complete?.content,
-              success: complete?.success,
-              parentToolCallId: start?.parentToolCallId,
-              startedAt: start?.timestamp,
-              completedAt: complete?.timestamp,
-            };
-          });
-
-        // Inject child tool calls for sub-agent parents
-        const injected: typeof toolCalls = [];
-        for (const tc of toolCalls!) {
-          injected.push(tc);
-          if (tc.isSubAgent) {
-            for (const [childId, s] of toolStarts.entries()) {
-              if (s.parentToolCallId === tc.toolCallId && s.toolName !== "report_intent") {
-                const childComplete = toolCompletes.get(childId);
-                injected.push({
-                  toolCallId: childId,
-                  name: s.toolName,
-                  args: s.arguments,
-                  result: childComplete?.content,
-                  success: childComplete?.success,
-                  parentToolCallId: tc.toolCallId,
-                  startedAt: s.timestamp,
-                  completedAt: childComplete?.timestamp,
-                });
-              }
-            }
-          }
-        }
-        toolCalls = injected;
-        if (toolCalls.length === 0) toolCalls = undefined;
-      }
-
-      if (content.trim() || toolCalls) {
-        messages.push({
-          id: `msg-${msgIndex++}`,
+      if (data?.parentToolCallId) continue; // sub-agent response text, not a top-level message
+      const content = data?.content ?? "";
+      if (content.trim()) {
+        entries.push({
+          id: `entry-${idx++}`,
+          type: "message",
           role: "assistant",
           content,
           timestamp: data.timestamp ?? (event as any).timestamp,
-          toolCalls,
         });
       }
+    } else if (event.type === "tool.execution_start") {
+      if (!data?.toolCallId) continue;
+      const toolName = data.toolName ?? data.name ?? "unknown";
+      if (toolName === "report_intent") continue;
+      const subAgent = subAgentStarts.get(data.toolCallId);
+      const complete = toolCompletes.get(data.toolCallId);
+      const isSubAgent = !!subAgent;
+      entries.push({
+        id: `entry-${idx++}`,
+        type: "tool",
+        toolCall: {
+          toolCallId: data.toolCallId,
+          name: isSubAgent ? `🤖 ${subAgent!.agentDisplayName ?? subAgent!.agentName ?? "agent"}` : toolName,
+          args: data.arguments,
+          result: isSubAgent ? (subAgentResponses.get(data.toolCallId) ?? complete?.content) : complete?.content,
+          success: complete?.success,
+          parentToolCallId: data.parentToolCallId,
+          isSubAgent: isSubAgent || undefined,
+          startedAt: (event as any).timestamp,
+          completedAt: complete?.timestamp,
+        },
+      });
     }
   }
 
-  return messages;
+  return entries;
 }
