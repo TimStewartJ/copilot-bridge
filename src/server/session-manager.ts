@@ -333,10 +333,10 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   // ── Todo tools ────────────────────────────────────────────────
   defineTool("todo_add", {
-    description: "Add a to-do item to a task's checklist",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, text: { type: "string", description: "The to-do text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["taskId", "text"] },
+    description: "Add a to-do item to a task's checklist, or create a global to-do if no taskId is provided",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID. Omit to create a global (unparented) to-do item." }, text: { type: "string", description: "The to-do text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
     handler: async (args: any) => {
-      const todo = ctx.todoStore.createTodo(args.taskId, args.text, args.deadline);
+      const todo = ctx.todoStore.createTodo(args.taskId ?? null, args.text, args.deadline);
       return { success: true, message: `Todo added: "${todo.text}"${todo.deadline ? ` (due ${todo.deadline})` : ""}`, todoId: todo.id };
     },
   }),
