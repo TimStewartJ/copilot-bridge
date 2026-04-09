@@ -196,12 +196,25 @@ export default function Dashboard({
     const text = newTodoText.trim();
     if (!text) return;
     setNewTodoText("");
+    lastLocalChange.current = Date.now();
+    const tempId = `temp-${Date.now()}`;
+    const optimistic: DashboardTodo = {
+      id: tempId, taskId: null, text, done: false, order: 0,
+      createdAt: new Date().toISOString(),
+      taskTitle: null, taskGroupColor: null, taskOrder: 0,
+      taskStatus: null, taskGroupId: null, taskGroupOrder: null,
+    };
+    setLocalOpenTodos((prev) => [optimistic, ...prev]);
     try {
-      lastLocalChange.current = Date.now();
       const todo = await createGlobalTodo(text);
-      setLocalOpenTodos((prev) => [{ ...todo, taskTitle: null, taskGroupColor: null, taskOrder: 0, taskStatus: null, taskGroupId: null, taskGroupOrder: null }, ...prev]);
+      setLocalOpenTodos((prev) => prev.map((t) =>
+        t.id === tempId
+          ? { ...todo, taskTitle: null, taskGroupColor: null, taskOrder: 0, taskStatus: null, taskGroupId: null, taskGroupOrder: null }
+          : t
+      ));
     } catch (err) {
       console.error("Failed to create todo:", err);
+      setLocalOpenTodos((prev) => prev.filter((t) => t.id !== tempId));
     }
   };
 
@@ -402,7 +415,10 @@ export default function Dashboard({
                                         t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
                                       ));
                                     }}
-                                    onUpdate={() => { lastLocalChange.current = Date.now(); }}
+                                    onUpdate={(updated) => {
+                                      lastLocalChange.current = Date.now();
+                                      setLocalOpenTodos((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+                                    }}
                                     onDelete={() => {
                                       lastLocalChange.current = Date.now();
                                       setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
@@ -446,7 +462,10 @@ export default function Dashboard({
                               t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
                             ));
                           }}
-                          onUpdate={() => { lastLocalChange.current = Date.now(); }}
+                          onUpdate={(updated) => {
+                            lastLocalChange.current = Date.now();
+                            setLocalOpenTodos((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+                          }}
                           onDelete={() => {
                             lastLocalChange.current = Date.now();
                             setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
@@ -489,7 +508,10 @@ export default function Dashboard({
                               setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
                               await patchTodo(todo.id, { done: false });
                             }}
-                            onUpdate={() => { lastLocalChange.current = Date.now(); }}
+                            onUpdate={(updated) => {
+                              lastLocalChange.current = Date.now();
+                              setLocalCompletedTodos((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+                            }}
                             onDelete={() => {
                               lastLocalChange.current = Date.now();
                               setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));

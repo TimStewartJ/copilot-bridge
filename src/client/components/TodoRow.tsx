@@ -97,22 +97,36 @@ export default function TodoRow(props: TodoRowProps) {
       setEditText(todo.text);
       return;
     }
-    const updated = await patchTodo(todo.id, { text: trimmed });
-    onUpdate(updated);
-  }, [editText, todo.text, todo.id, onUpdate]);
+    const snapshot = { ...todo } as Todo;
+    onUpdate({ ...todo, text: trimmed } as Todo);
+    try {
+      await patchTodo(todo.id, { text: trimmed });
+    } catch {
+      onUpdate(snapshot);
+    }
+  }, [editText, todo, onUpdate]);
 
   const handleToggle = useCallback(async () => {
     if (props.onToggle) {
       props.onToggle();
     } else {
-      const updated = await patchTodo(todo.id, { done: !todo.done });
-      onUpdate(updated);
+      const snapshot = { ...todo } as Todo;
+      onUpdate({ ...todo, done: !todo.done } as Todo);
+      try {
+        await patchTodo(todo.id, { done: !todo.done });
+      } catch {
+        onUpdate(snapshot);
+      }
     }
-  }, [todo.id, todo.done, onUpdate, props.onToggle]);
+  }, [todo, onUpdate, props.onToggle]);
 
   const handleDelete = useCallback(async () => {
-    await deleteTodo(todo.id);
     onDelete(todo.id);
+    try {
+      await deleteTodo(todo.id);
+    } catch {
+      // Deletion failed; next refetch will restore the item
+    }
   }, [todo.id, onDelete]);
 
   const handleSetDeadline = useCallback(() => {
@@ -120,22 +134,40 @@ export default function TodoRow(props: TodoRowProps) {
   }, []);
 
   const handleClearDeadline = useCallback(async () => {
-    const updated = await patchTodo(todo.id, { deadline: null });
+    const prevDeadline = todo.deadline;
     if (props.onDeadlineChange) {
       props.onDeadlineChange(null);
     } else {
-      onUpdate(updated);
+      onUpdate({ ...todo, deadline: undefined } as Todo);
     }
-  }, [todo.id, onUpdate, props.onDeadlineChange]);
+    try {
+      await patchTodo(todo.id, { deadline: null });
+    } catch {
+      if (props.onDeadlineChange) {
+        props.onDeadlineChange(prevDeadline ?? null);
+      } else {
+        onUpdate({ ...todo } as Todo);
+      }
+    }
+  }, [todo, onUpdate, props.onDeadlineChange]);
 
   const handleDateChange = useCallback(async (val: string | null) => {
-    const updated = await patchTodo(todo.id, { deadline: val });
+    const prevDeadline = todo.deadline;
     if (props.onDeadlineChange) {
       props.onDeadlineChange(val);
     } else {
-      onUpdate(updated);
+      onUpdate({ ...todo, deadline: val ?? undefined } as Todo);
     }
-  }, [todo.id, onUpdate, props.onDeadlineChange]);
+    try {
+      await patchTodo(todo.id, { deadline: val });
+    } catch {
+      if (props.onDeadlineChange) {
+        props.onDeadlineChange(prevDeadline ?? null);
+      } else {
+        onUpdate({ ...todo } as Todo);
+      }
+    }
+  }, [todo, onUpdate, props.onDeadlineChange]);
 
   const startEdit = useCallback(() => {
     if (!todo.done) {
