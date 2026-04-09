@@ -6,7 +6,7 @@ import { defineTool } from "@github/copilot-sdk";
 import { run, ab } from "./agent-browser.js";
 
 /** Take a scoped accessibility snapshot of the results area */
-function takeSnapshot(selector?: string): { ok: boolean; output: string } {
+async function takeSnapshot(selector?: string): Promise<{ ok: boolean; output: string }> {
   const scope = selector ? ` -s "${selector}"` : "";
   return ab(`snapshot -i${scope}`);
 }
@@ -43,7 +43,7 @@ export const WEB_SEARCH_TOOLS = [
     handler: async (args: any) => {
       const query: string = args.query;
 
-      const check = run("which agent-browser");
+      const check = await run("which agent-browser");
       if (!check.ok) {
         return {
           error:
@@ -54,12 +54,12 @@ export const WEB_SEARCH_TOOLS = [
       try {
         // Try Google first
         const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-        const googleOpen = ab(`open "${googleUrl}"`);
+        const googleOpen = await ab(`open "${googleUrl}"`);
 
         if (googleOpen.ok) {
-          ab("wait --load networkidle");
+          await ab("wait --load networkidle");
           // Scoped snapshot of results area — avoids nav/footer noise
-          const snapshot = takeSnapshot("#rso");
+          const snapshot = await takeSnapshot("#rso");
 
           if (snapshot.ok && hasResults(snapshot.output)) {
             return {
@@ -73,14 +73,14 @@ export const WEB_SEARCH_TOOLS = [
 
         // Fallback to DuckDuckGo
         const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const ddgOpen = ab(`open "${ddgUrl}"`);
+        const ddgOpen = await ab(`open "${ddgUrl}"`);
 
         if (!ddgOpen.ok) {
           return { error: "Failed to open search engine" };
         }
 
-        ab("wait --load networkidle");
-        const snapshot = takeSnapshot();
+        await ab("wait --load networkidle");
+        const snapshot = await takeSnapshot();
 
         if (!snapshot.ok) {
           return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
