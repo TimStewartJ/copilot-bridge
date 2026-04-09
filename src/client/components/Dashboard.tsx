@@ -206,7 +206,7 @@ export default function Dashboard({
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex-1 min-h-0 flex items-center justify-center">
         <Loader2 className="animate-spin text-text-muted" size={24} />
       </div>
     );
@@ -214,7 +214,7 @@ export default function Dashboard({
 
   if (!data) {
     return (
-      <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
+      <div className="flex-1 min-h-0 flex items-center justify-center text-text-muted text-sm">
         Failed to load dashboard
       </div>
     );
@@ -224,7 +224,7 @@ export default function Dashboard({
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       {/* ── Attention Bar ─────────────────────────────────── */}
       {hasAttention && (
         <div className="border-b border-border bg-bg-secondary">
