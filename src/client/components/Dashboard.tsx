@@ -13,6 +13,7 @@ import { timeAgo } from "../time";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
 import TodoRow from "./TodoRow";
+import PullToRefresh from "./PullToRefresh";
 import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown } from "lucide-react";
 
 type TodoSort = "newest" | "deadline" | "task";
@@ -152,7 +153,7 @@ export default function Dashboard({
   onNewSession,
   onResumeTask,
 }: DashboardProps) {
-  const { data, isLoading: loading } = useDashboardQuery();
+  const { data, isLoading: loading, refetch } = useDashboardQuery();
   const [localOpenTodos, setLocalOpenTodos] = useState<DashboardTodo[]>([]);
   const [localCompletedTodos, setLocalCompletedTodos] = useState<DashboardTodo[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
@@ -204,6 +205,8 @@ export default function Dashboard({
     }
   };
 
+  const handleRefresh = async () => { await refetch(); };
+
   if (loading) {
     return (
       <div className="flex-1 min-h-0 flex items-center justify-center">
@@ -224,7 +227,8 @@ export default function Dashboard({
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
+    <div className="flex-1 min-h-0 relative">
+    <PullToRefresh onRefresh={handleRefresh} className="absolute inset-0">
       {/* ── Attention Bar ─────────────────────────────────── */}
       {hasAttention && (
         <div className="border-b border-border bg-bg-secondary">
@@ -536,6 +540,7 @@ export default function Dashboard({
           </div>
         </div>
       </div>
+    </PullToRefresh>
     </div>
   );
 }
