@@ -9,7 +9,7 @@ import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { transformEventsToMessages } from "./event-transform.js";
+import { transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
@@ -1418,9 +1418,11 @@ export class SessionManager {
           if (data?.content) {
             console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
             lastAssistantContent = data.content;
-            if (data.toolRequests?.length) {
-              bus.emit({ type: "assistant_partial", content: data.content });
-            }
+          }
+          // Emit assistant_partial when toolRequests exist (even with empty content)
+          // so completed tools from the previous turn get drained properly
+          if (data?.toolRequests?.length) {
+            bus.emit({ type: "assistant_partial", content: data.content ?? "" });
           }
           break;
         case "tool.execution_start": {
@@ -1628,7 +1630,7 @@ export class SessionManager {
     }
   }
 
-  async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: Array<{ id: string; role: string; content: string; timestamp?: string; toolCalls?: Array<{ toolCallId: string; name: string; args?: Record<string, unknown>; result?: string; success?: boolean }> }>; total: number; hasMore: boolean }> {
+  async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const t0 = Date.now();

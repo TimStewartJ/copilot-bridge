@@ -52,6 +52,16 @@ export interface ChatMessage {
   attachments?: BlobAttachment[];
 }
 
+/** A tool call rendered as its own entry in the chronological chat list */
+export interface ChatToolEntry {
+  id?: string;
+  type: "tool";
+  toolCall: ToolCall;
+}
+
+/** Union type for chronological chat rendering — either a text message or a tool call */
+export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry;
+
 export type ProviderName = "ado" | "github";
 
 export interface WorkItemRef {
@@ -270,12 +280,12 @@ export async function duplicateSession(id: string): Promise<string> {
 export async function fetchMessages(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean }> {
+): Promise<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  const data = await apiFetch<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean }>(
+  const data = await apiFetch<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean }>(
     `/api/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`,
   );
   return data;
@@ -285,12 +295,12 @@ export async function fetchMessages(
 export async function fetchMessagesFast(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }> {
+): Promise<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  return apiFetch<{ messages: ChatMessage[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }>(
+  return apiFetch<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }>(
     `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
   );
 }

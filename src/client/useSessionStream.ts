@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { BlobAttachment, ChatMessage, McpServerStatus, ToolCall } from "./api";
+import type { BlobAttachment, ChatEntry, McpServerStatus, ToolCall } from "./api";
 import { API_BASE } from "./api";
 
 export interface PendingTool {
@@ -19,20 +19,19 @@ export interface StreamState {
   intentText: string;
   toolProgress: string;
   streamStatus: StreamStatus;
-  /** Derived from streamStatus for backward compat */
   isStreaming: boolean;
-  /** MCP server connection status from SDK events */
   mcpServers: McpServerStatus[];
 }
 
 export function useSessionStream(
   sessionId: string | null,
-  onMessagesUpdated: (msgs: ChatMessage[]) => void,
+  onEntriesAppended: (entries: ChatEntry[]) => void,
   onTitleChanged: () => void,
 ) {
   const mkState = (status: StreamStatus, partial?: Partial<StreamState>): StreamState => ({
     streamingContent: "",
     activeTools: [],
+    completedStreamTools: [],
     intentText: "",
     toolProgress: "",
     mcpServers: [],
@@ -46,15 +45,13 @@ export function useSessionStream(
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
 
-  // Store callbacks in refs to avoid dependency chain instability
-  const onMessagesUpdatedRef = useRef(onMessagesUpdated);
-  onMessagesUpdatedRef.current = onMessagesUpdated;
+  const onEntriesRef = useRef(onEntriesAppended);
+  onEntriesRef.current = onEntriesAppended;
   const onTitleChangedRef = useRef(onTitleChanged);
   onTitleChangedRef.current = onTitleChanged;
 
   const retryCountRef = useRef(0);
 
-  // Connect to the SSE stream for the current session
   const connectStream = useCallback((sid: string) => {
     abortRef.current?.abort();
     const abort = new AbortController();
@@ -73,18 +70,9 @@ export function useSessionStream(
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedContent = "";
-        // Track tool calls for the current turn, preserving start order
-        const completedTools: (ToolCall & { _seq: number })[] = [];
-        const toolStartSeq = new Map<string, number>();
-        let nextSeq = 0;
 
-        const drainTools = (): ToolCall[] | undefined => {
-          if (completedTools.length === 0) return undefined;
-          completedTools.sort((a, b) => a._seq - b._seq);
-          const result: ToolCall[] = completedTools.map(({ _seq, ...tc }) => tc);
-          completedTools.length = 0;
-          return result;
-        };
+        // Plain Map for synchronous metadata access on tool_done
+        const activeToolMeta = new Map<string, PendingTool>();
 
         while (true) {
           const { done, value } = await reader.read();
@@ -102,18 +90,12 @@ export function useSessionStream(
 
               switch (event.type) {
                 case "snapshot": {
-                  // Catch-up event from EventBus — hydrate current state in one shot
                   if (event.complete) {
-                    // Turn already finished — nothing to stream
                     setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
                     break;
                   }
-                  // Recover the user prompt for late-connecting clients (e.g. page refresh)
                   if (event.pendingPrompt) {
-                    onMessagesUpdatedRef.current([{
-                      role: "user",
-                      content: event.pendingPrompt,
-                    }]);
+                    onEntriesRef.current([{ role: "user", content: event.pendingPrompt }]);
                   }
                   accumulatedContent = event.accumulatedContent ?? "";
                   const tools: PendingTool[] = (event.activeTools ?? [])
@@ -125,9 +107,8 @@ export function useSessionStream(
                       parentToolCallId: t.parentToolCallId,
                       isSubAgent: t.isSubAgent,
                     }));
-                  // Determine status from snapshot content
-                  const snapshotStatus: StreamStatus =
-                    accumulatedContent || tools.length > 0 ? "streaming" : "thinking";
+                  activeToolMeta.clear();
+                  for (const t of tools) activeToolMeta.set(t.toolCallId, t);
                   setStreamState((prev) => ({
                     ...prev,
                     streamingContent: accumulatedContent,
@@ -135,7 +116,7 @@ export function useSessionStream(
                     intentText: event.intentText ?? "",
                     toolProgress: "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
-                    streamStatus: snapshotStatus,
+                    streamStatus: accumulatedContent || tools.length > 0 ? "streaming" : "thinking",
                     isStreaming: true,
                   }));
                   break;
@@ -156,13 +137,8 @@ export function useSessionStream(
                   }));
                   break;
                 case "assistant_partial":
-                  // Intermediate message — emit with any completed tool calls from this turn
-                  if (event.content || completedTools.length > 0) {
-                    onMessagesUpdatedRef.current([{
-                      role: "assistant",
-                      content: event.content ?? "",
-                      toolCalls: drainTools(),
-                    }]);
+                  if (event.content) {
+                    onEntriesRef.current([{ role: "assistant", content: event.content }]);
                   }
                   accumulatedContent = "";
                   setStreamState((s) => ({ ...s, streamingContent: "" }));
@@ -177,7 +153,7 @@ export function useSessionStream(
                     startedAt: event.timestamp,
                   };
                   if (tool.name === "report_intent") break;
-                  toolStartSeq.set(tool.toolCallId, nextSeq++);
+                  activeToolMeta.set(tool.toolCallId, tool);
                   setStreamState((s) => ({
                     ...s,
                     activeTools: [...s.activeTools, tool],
@@ -193,8 +169,12 @@ export function useSessionStream(
                 case "tool_output":
                   setStreamState((s) => ({ ...s, toolProgress: event.content ?? "" }));
                   break;
-                case "tool_update":
-                  // Update an active tool's metadata (e.g., "task" → "🤖 explore")
+                case "tool_update": {
+                  const meta = activeToolMeta.get(event.toolCallId as string);
+                  if (meta) {
+                    meta.name = event.name ?? meta.name;
+                    meta.isSubAgent = (event.isSubAgent as boolean) ?? meta.isSubAgent;
+                  }
                   setStreamState((s) => ({
                     ...s,
                     activeTools: s.activeTools.map((t) =>
@@ -204,65 +184,54 @@ export function useSessionStream(
                     ),
                   }));
                   break;
+                }
                 case "tool_done": {
                   if (event.name === "report_intent") break;
-                  const completed: ToolCall = {
+                  const meta = activeToolMeta.get(event.toolCallId);
+                  activeToolMeta.delete(event.toolCallId);
+                  const tc: ToolCall = {
                     toolCallId: event.toolCallId ?? "",
-                    name: event.name ?? "unknown",
+                    name: meta?.name ?? event.name ?? "unknown",
+                    args: meta?.args,
                     result: event.result,
                     success: event.success,
-                    parentToolCallId: event.parentToolCallId,
-                    isSubAgent: event.isSubAgent,
+                    parentToolCallId: meta?.parentToolCallId ?? event.parentToolCallId,
+                    isSubAgent: meta?.isSubAgent ?? event.isSubAgent,
+                    startedAt: meta?.startedAt,
                     completedAt: event.timestamp,
                   };
-                  setStreamState((s) => {
-                    const match = s.activeTools.find((t) => t.toolCallId === event.toolCallId);
-                    if (match) {
-                      completed.args = match.args;
-                      completed.startedAt = match.startedAt;
-                      if (match.parentToolCallId) completed.parentToolCallId = match.parentToolCallId;
-                      if (match.isSubAgent) completed.isSubAgent = match.isSubAgent;
-                    }
-                    return {
-                      ...s,
-                      activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
-                      toolProgress: "",
-                    };
-                  });
-                  completedTools.push({ ...completed, _seq: toolStartSeq.get(event.toolCallId) ?? Infinity });
+                  onEntriesRef.current([{ type: "tool", toolCall: tc }]);
+                  setStreamState((s) => ({
+                    ...s,
+                    activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
+                    toolProgress: "",
+                  }));
                   break;
                 }
                 case "title_changed":
                   onTitleChangedRef.current();
                   break;
                 case "done":
-                  onMessagesUpdatedRef.current([{
-                    role: "assistant",
-                    content: event.content ?? "",
-                    toolCalls: drainTools(),
-                  }]);
+                  if (event.content) {
+                    onEntriesRef.current([{ role: "assistant", content: event.content }]);
+                  }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   onTitleChangedRef.current();
-                  // Delayed refreshes to pick up LLM-generated session title
                   setTimeout(() => onTitleChangedRef.current(), 5_000);
                   setTimeout(() => onTitleChangedRef.current(), 12_000);
                   accumulatedContent = "";
                   break;
                 case "aborted": {
-                  const partialContent = event.content || accumulatedContent;
-                  if (partialContent) {
-                    onMessagesUpdatedRef.current([{
-                      role: "assistant",
-                      content: partialContent + "\n\n*(stopped)*",
-                      toolCalls: drainTools(),
-                    }]);
+                  const text = event.content || accumulatedContent;
+                  if (text) {
+                    onEntriesRef.current([{ role: "assistant", content: text + "\n\n*(stopped)*" }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";
                   break;
                 }
                 case "error":
-                  onMessagesUpdatedRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
+                  onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   break;
                 case "mcp_status":
@@ -279,7 +248,6 @@ export function useSessionStream(
       .catch((err) => {
         if (err.name === "AbortError") return;
         console.error("[stream] Error:", err);
-        // Retry once on stream failure before giving up
         if (retryCountRef.current < 1 && sid === sessionRef.current) {
           retryCountRef.current++;
           console.warn("[stream] Retrying connection in 1s...");
@@ -292,38 +260,29 @@ export function useSessionStream(
       });
   }, []); // stable — callbacks accessed via refs
 
-  // Clean up on session change
   useEffect(() => {
     sessionRef.current = sessionId;
     retryCountRef.current = 0;
     setStreamState(mkState("idle"));
     abortRef.current?.abort();
-    return () => {
-      abortRef.current?.abort();
-    };
+    return () => { abortRef.current?.abort(); };
   }, [sessionId]);
 
-  // Send a message — POST then connect to stream
   const sendMessage = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
     if (!sessionId) return;
-
     const res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
     });
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Failed" }));
       throw new Error(err.error);
     }
-
-    // Connect to stream to watch the work
     retryCountRef.current = 0;
     connectStream(sessionId);
   }, [sessionId, connectStream]);
 
-  // Abort an in-progress session turn
   const abortSession = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -333,15 +292,9 @@ export function useSessionStream(
     }
   }, [sessionId]);
 
-  // Reconnect to an in-progress stream (e.g., navigating back)
   const reconnect = useCallback((sid: string) => {
     connectStream(sid);
   }, [connectStream]);
 
-  return {
-    ...streamState,
-    sendMessage,
-    abortSession,
-    reconnect,
-  };
+  return { ...streamState, sendMessage, abortSession, reconnect };
 }

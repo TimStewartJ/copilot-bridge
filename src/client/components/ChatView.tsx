@@ -1,9 +1,11 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
-import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type BlobAttachment, type ChatMessage, type McpServerStatus } from "../api";
+import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type BlobAttachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
+import ToolCallBlock from "./ToolCallBlock";
+import SubAgentGroup from "./SubAgentGroup";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
@@ -32,7 +34,7 @@ function formatToolArgs(args: Record<string, unknown>): string {
 }
 
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
@@ -46,21 +48,20 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const loadingMoreRef = useRef(false);
-  // Stores scrollHeight before a prepend so we can preserve scroll position.
   const prevScrollHeightRef = useRef<number | null>(null);
 
-  const handleNewMessages = useCallback((newMsgs: ChatMessage[]) => {
-    // Assign client-side IDs to streamed messages that don't have server IDs
-    const withIds = newMsgs.map((m, i) => ({
-      ...m,
-      id: m.id ?? `stream-${Date.now()}-${i}`,
+  const handleNewEntries = useCallback((newEntries: ChatEntry[]) => {
+    const withIds = newEntries.map((e, i) => ({
+      ...e,
+      id: e.id ?? `stream-${Date.now()}-${i}`,
     }));
-    setMessages((prev) => {
-      // Deduplicate user messages that are already present (e.g. pendingPrompt
-      // recovery producing a duplicate of the optimistic message or fetched history)
-      const filtered = withIds.filter((msg) => {
+    setEntries((prev) => {
+      // Deduplicate user messages (e.g. pendingPrompt recovery)
+      const filtered = withIds.filter((entry) => {
+        if (entry.type === "tool") return true;
+        const msg = entry as ChatMessage;
         if (msg.role !== "user") return true;
-        return !prev.some((p) => p.role === "user" && p.content === msg.content);
+        return !prev.some((p) => p.type !== "tool" && (p as ChatMessage).role === "user" && (p as ChatMessage).content === msg.content);
       });
       return filtered.length > 0 ? [...prev, ...filtered] : prev;
     });
@@ -77,7 +78,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     sendMessage,
     abortSession,
     reconnect,
-  } = useSessionStream(sessionId, handleNewMessages, onMessageSent);
+  } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
 
   // Merge MCP status: prefer live stream updates over fetched status
   const effectiveMcpServers = (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus) ?? [];
@@ -92,7 +93,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     if (!sessionId) {
       // Clear messages when entering draft mode from an existing session
       // (but not on initial mount when prevSession is undefined)
-      if (prevSession !== undefined || !onCreateAndSend) setMessages([]);
+      if (prevSession !== undefined || !onCreateAndSend) setEntries([]);
       setCreating(false);
       setHasMore(false);
       setMcpStatus([]);
@@ -122,7 +123,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       fetchMessagesFast(sessionId, { limit: PAGE_SIZE })
         .then(({ messages: msgs, busy, total, hasMore: more, warm }) => {
           if (controller.signal.aborted) return;
-          setMessages(msgs);
+          setEntries(msgs);
           setHasMore(more);
           firstItemIndex.current = total - msgs.length;
           setLoading(false);
@@ -153,7 +154,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         })
         .catch((err) => {
           if (controller.signal.aborted) return;
-          setMessages([
+          setEntries([
             { role: "assistant", content: `Error loading history: ${err.message}` },
           ]);
           setLoading(false);
@@ -167,7 +168,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         .catch(() => {});
     };
 
-    setMessages([]);
+    setEntries([]);
     setHasMore(false);
     loadAndReconnect();
 
@@ -211,7 +212,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     if (stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages]);
+  }, [entries]);
 
   // Auto-scroll during streaming (content grows within the pending block).
   useEffect(() => {
@@ -231,7 +232,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         if (older.length > 0) {
           // Save scroll height before prepending so the layout effect can preserve position.
           prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
-          setMessages((prev) => [...older, ...prev]);
+          setEntries((prev) => [...older, ...prev]);
           firstItemIndex.current = beforeIndex - older.length;
         }
         setHasMore(more);
@@ -262,11 +263,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
       setCreating(true);
-      setMessages([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }]);
+      setEntries([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }]);
       try {
         await onCreateAndSend(prompt, attachments);
       } catch (err: any) {
-        setMessages((prev) => [
+        setEntries((prev) => [
           ...prev,
           { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `draft-err-0` },
         ]);
@@ -277,13 +278,13 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     if (!sessionId) return;
     onDraftClear?.();
-    setMessages((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
+    setEntries((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
     try {
       await sendMessage(prompt, attachments);
     } catch (err: any) {
-      setMessages((prev) => [
+      setEntries((prev) => [
         ...prev,
         { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` },
       ]);
@@ -369,6 +370,54 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     );
   }
 
+  /** Render a chronological list of entries, grouping consecutive sub-agent children */
+  const renderedEntries = useMemo(() => {
+    const result: React.ReactNode[] = [];
+    let i = 0;
+    while (i < entries.length) {
+      const entry = entries[i];
+      if (entry.type === "tool") {
+        const tc = entry.toolCall!;
+        if (tc.isSubAgent) {
+          // Collect consecutive child tools belonging to this sub-agent
+          const children: ToolCall[] = [];
+          let j = i + 1;
+          while (j < entries.length && entries[j].type === "tool" && (entries[j] as any).toolCall?.parentToolCallId === tc.toolCallId) {
+            children.push((entries[j] as any).toolCall);
+            j++;
+          }
+          result.push(
+            <div key={entry.id ?? `tool-${i}`} className="px-3 md:px-5 pt-2">
+              <SubAgentGroup agentTool={tc} childTools={children} />
+            </div>,
+          );
+          i = j;
+        } else if (!tc.parentToolCallId) {
+          // Top-level tool (not a sub-agent child)
+          result.push(
+            <div key={entry.id ?? `tool-${i}`} className="px-3 md:px-5 pt-2">
+              <ToolCallBlock toolCall={tc} />
+            </div>,
+          );
+          i++;
+        } else {
+          // Orphan child tool (parent already rendered) — skip
+          i++;
+        }
+      } else {
+        // Message entry
+        const msg = entry as ChatMessage;
+        result.push(
+          <div key={entry.id ?? `${msg.role}-${i}`} className="px-3 md:px-5 pt-4">
+            <MessageBubble message={msg} />
+          </div>,
+        );
+        i++;
+      }
+    }
+    return result;
+  }, [entries]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Plan header bar */}
@@ -392,7 +441,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         <div className="flex-1 flex items-center justify-center text-accent italic">
           Loading history...
         </div>
-      ) : messages.length === 0 && !isStreaming && !creating ? (
+      ) : entries.length === 0 && !isStreaming && !creating ? (
         <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
           Send a message to get started
         </div>
@@ -414,11 +463,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
               Scroll up for more
             </div>
           ) : null}
-          {messages.map((msg, i) => (
-            <div key={msg.id ?? `${msg.role}-${i}`} className="px-3 md:px-5 pt-4">
-              <MessageBubble message={msg} />
-            </div>
-          ))}
+          {renderedEntries}
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           <div className="h-4" />
         </div>
