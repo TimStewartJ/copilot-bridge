@@ -9,9 +9,11 @@ import SubAgentGroup from "./SubAgentGroup";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
-import { ClipboardList, Loader2 } from "lucide-react";
+import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 
 const PAGE_SIZE = 50;
+
+type PendingStatusTone = "sending" | "thinking" | "creating";
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -31,6 +33,55 @@ function formatToolArgs(args: Record<string, unknown>): string {
     parts.push(s.length > 60 ? s.slice(0, 57) + "..." : s);
   }
   return parts.join(" ");
+}
+
+function renderPendingStatusCard(
+  key: string,
+  tone: PendingStatusTone,
+  title: string,
+  detail: string,
+) {
+  const sending = tone === "sending";
+  const creating = tone === "creating";
+  const style = sending
+    ? {
+        backgroundColor: "var(--color-chat-sending-bg)",
+        borderColor: "var(--color-chat-sending-border)",
+        color: "var(--color-chat-sending-text)",
+      }
+    : creating
+      ? {
+          backgroundColor: "var(--color-chat-creating-bg)",
+          borderColor: "var(--color-chat-creating-border)",
+          color: "var(--color-chat-creating-text)",
+        }
+      : {
+          backgroundColor: "var(--color-chat-thinking-bg)",
+          borderColor: "var(--color-chat-thinking-border)",
+          color: "var(--color-chat-thinking-text)",
+        };
+
+  return (
+    <div key={key} className="px-3 md:px-5">
+      <div
+        className="inline-flex max-w-lg items-start gap-3 rounded-2xl border px-4 py-3 shadow-sm"
+        style={style}
+      >
+        {sending ? (
+          <ArrowUpCircle size={18} className="mt-0.5 shrink-0" />
+        ) : (
+          <Loader2 size={18} className="mt-0.5 shrink-0 animate-spin" />
+        )}
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] opacity-80">
+            {sending ? "Sending" : creating ? "Creating" : "Thinking"}
+          </div>
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs opacity-80">{detail}</div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
@@ -339,21 +390,26 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     }
 
     if (isStreaming && !streamingContent && activeTools.length === 0) {
-      parts.push(
-        <div key="thinking" className="px-3 md:px-5 text-accent italic animate-pulse">
-          {streamStatus === "sending"
-            ? "Sending..."
-            : intentText
-              ? `${intentText}...`
-              : "Thinking..."}
-        </div>,
-      );
+      const sending = streamStatus === "sending";
+      const title = sending
+        ? "Handing off your message"
+        : intentText
+          ? `${intentText}...`
+          : "Waiting for the first response";
+      const detail = sending
+        ? "The session has your prompt and is opening the response stream."
+        : "The assistant is working before any text or tool activity is visible.";
+
+      parts.push(renderPendingStatusCard("thinking", sending ? "sending" : "thinking", title, detail));
     }
 
     if (creating && !isStreaming) {
-      parts.push(
-        <div key="creating" className="px-3 md:px-5 text-accent italic animate-pulse">Creating session...</div>,
-      );
+      parts.push(renderPendingStatusCard(
+        "creating",
+        "creating",
+        "Starting a new chat session",
+        "We're creating the session before the assistant can begin responding.",
+      ));
     }
 
     if (parts.length === 0) return null;
