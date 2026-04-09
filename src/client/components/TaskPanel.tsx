@@ -9,11 +9,12 @@ import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-s
 import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
 import { useTaskSchedules } from "../hooks/useTaskSchedules";
 import { useNotesSheet } from "../hooks/useNotesSheet";
+import { useScheduleDetail } from "../hooks/useScheduleDetail";
 import { useTagsQuery } from "../hooks/queries/useTags";
 import { useTaskTodosQuery, useCreateTodoMutation, useTodoCacheUpdaters } from "../hooks/queries/useTodos";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
-import ScheduleEditorDialog from "./ScheduleEditorDialog";
+import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -152,6 +153,7 @@ export default function TaskPanel({
 
   // ── Schedules (shared hook) ─────────────────────────────────
   const sched = useTaskSchedules(task?.id);
+  const schedDetail = useScheduleDetail();
 
   // ── Todos ──────────────────────────────────────────────────
   const { data: todos = [] } = useTaskTodosQuery(task?.id);
@@ -525,7 +527,7 @@ export default function TaskPanel({
           <div className="flex items-center justify-between px-3 py-1">
             <SectionLabel label="Schedules" count={sched.schedules.length} />
             <button
-              onClick={() => sched.openEditor()}
+              onClick={() => schedDetail.openForCreate(task.id)}
               className="text-[10px] text-accent hover:text-accent-hover transition-colors flex items-center gap-0.5"
               title="Add schedule"
             >
@@ -543,10 +545,13 @@ export default function TaskPanel({
               >
                 <div className="flex items-center gap-1.5">
                   <Clock size={12} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
-                  <span className={`font-medium truncate flex-1 ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}>
+                  <button
+                    onClick={() => schedDetail.openSheet(schedule)}
+                    className={`font-medium truncate flex-1 text-left hover:text-accent transition-colors ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}
+                  >
                     {schedule.name}
-                  </span>
-                  <div className="hidden group-hover:flex items-center gap-0.5">
+                  </button>
+                  <div className="flex items-center gap-0.5">
                     <button
                       onClick={() => sched.trigger(schedule.id)}
                       className="p-0.5 text-text-muted hover:text-success transition-colors"
@@ -562,15 +567,15 @@ export default function TaskPanel({
                       <Pause size={10} />
                     </button>
                     <button
-                      onClick={() => sched.openEditor(schedule)}
-                      className="p-0.5 text-text-muted hover:text-text-primary transition-colors"
+                      onClick={() => schedDetail.openSheet(schedule, "edit")}
+                      className="p-0.5 text-text-muted hover:text-text-primary transition-colors hidden group-hover:block"
                       title="Edit"
                     >
                       <MoreHorizontal size={10} />
                     </button>
                     <button
                       onClick={() => sched.remove(schedule.id)}
-                      className="p-0.5 text-text-muted hover:text-error transition-colors"
+                      className="p-0.5 text-text-muted hover:text-error transition-colors hidden group-hover:block"
                       title="Delete"
                     >
                       <Trash2 size={10} />
@@ -600,13 +605,21 @@ export default function TaskPanel({
           )}
         </div>
 
-        {/* Schedule Editor Dialog */}
-        {sched.scheduleEditorOpen && (
-          <ScheduleEditorDialog
+        {/* Schedule Detail Sheet (unified view/edit/create) */}
+        {schedDetail.isOpen && (
+          <ScheduleDetailSheet
+            schedule={schedDetail.schedule}
             taskId={task.id}
-            schedule={sched.editingSchedule}
-            onClose={sched.closeEditor}
-            onSaved={sched.onSaved}
+            taskTitle={task.title}
+            mode={schedDetail.mode}
+            onClose={schedDetail.close}
+            onSwitchToEdit={schedDetail.switchToEdit}
+            onSwitchToView={schedDetail.switchToView}
+            onTrigger={sched.trigger}
+            onToggle={sched.toggle}
+            onDelete={sched.remove}
+            onSaved={() => { schedDetail.close(); sched.reload(); }}
+            onSelectSession={onSelectSession}
           />
         )}
 

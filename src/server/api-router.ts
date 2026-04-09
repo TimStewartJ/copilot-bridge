@@ -1131,6 +1131,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
       // Recently completed todos
       const completedTodos = ctx.todoStore.listRecentlyCompleted().map(enrichTodo);
 
+      // Active schedules
+      const allSchedules = ctx.scheduleStore.listSchedules();
+      const dashboardSchedules = allSchedules.map((sched) => {
+        const task = tasks.find((t) => t.id === sched.taskId);
+        return {
+          ...sched,
+          taskTitle: task?.title ?? null,
+          taskGroupColor: task?.groupId
+            ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
+            : null,
+        };
+      });
+
       res.json({
         busySessions,
         unreadSessions,
@@ -1138,6 +1151,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         orphanSessions,
         openTodos,
         completedTodos,
+        schedules: dashboardSchedules,
       });
       ctx.telemetryStore?.recordSpan({ name: "dashboard", duration: Date.now() - t0, source: "server" });
     } catch (err) {
@@ -1235,6 +1249,51 @@ export function createApiRouter(ctx: AppContext): express.Router {
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: String(err) });
+    }
+  });
+
+  router.get("/schedules/:id/sessions", async (req, res) => {
+    try {
+      const schedule = ctx.scheduleStore.getSchedule(req.params.id);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const offset = Number(req.query.offset) || 0;
+
+      const allSessionIds = ctx.sessionMetaStore.listSessionIdsBySchedule(req.params.id);
+      const pageIds = allSessionIds.slice(offset, offset + limit);
+
+      const sessions = await ctx.sessionManager.listSessionsFromDisk();
+      const sessionMap = new Map(sessions.map((s: any) => [s.sessionId, s]));
+      const meta = ctx.sessionMetaStore.listMeta();
+      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
+
+      const enriched = await Promise.all(
+        pageIds.map(async (id) => {
+          const s = sessionMap.get(id);
+          if (!s) return null;
+          const archived = meta[id]?.archived === true;
+          const generatedTitle = ctx.sessionTitles.getTitle(id);
+          const summary = generatedTitle ?? s.summary;
+          const busy = ctx.sessionManager.isSessionBusy(id);
+          const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+          let diskSize = 0;
+          try { diskSize = getDirSize(join(sessionStateDir, id)); } catch {}
+          return { ...s, summary, busy, hasPlan, archived, diskSizeBytes: diskSize };
+        }),
+      );
+
+      // Count how many sessions still exist (some may have been deleted)
+      const existingTotal = allSessionIds.filter((id) => sessionMap.has(id)).length;
+
+      res.json({
+        sessions: enriched.filter(Boolean),
+        total: existingTotal,
+        offset,
+        limit,
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
     }
   });
 

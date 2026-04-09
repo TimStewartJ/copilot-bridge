@@ -77,7 +77,14 @@ export function createSessionMetaStore(db: DatabaseSync) {
     return result;
   }
 
-  return { getMeta, isArchived, setArchived, deleteMeta, setScheduleMeta, listMeta };
+  function listSessionIdsBySchedule(scheduleId: string): string[] {
+    const rows = db.prepare(
+      "SELECT sessionId FROM session_meta WHERE scheduleId = ? ORDER BY rowid DESC",
+    ).all(scheduleId) as any[];
+    return rows.map((r) => r.sessionId);
+  }
+
+  return { getMeta, isArchived, setArchived, deleteMeta, setScheduleMeta, listMeta, listSessionIdsBySchedule };
 }
 
 export type SessionMetaStore = ReturnType<typeof createSessionMetaStore>;

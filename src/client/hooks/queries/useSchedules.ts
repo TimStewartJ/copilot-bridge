@@ -16,6 +16,13 @@ export function useTaskSchedulesQuery(taskId: string | undefined) {
   });
 }
 
+export function useAllSchedulesQuery() {
+  return useQuery({
+    queryKey: queryKeys.allSchedules,
+    queryFn: () => fetchSchedules(),
+  });
+}
+
 export function useTriggerScheduleMutation(taskId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
