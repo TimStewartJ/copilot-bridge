@@ -697,6 +697,7 @@ export interface AppSettings {
   theme?: ThemePreference;
   identity?: string;
   customInstructions?: string;
+  model?: string;
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
@@ -733,6 +734,20 @@ export async function fetchMcpStatus(sessionId: string): Promise<McpServerStatus
 export async function fetchGlobalMcpStatus(): Promise<McpServerStatus[]> {
   const result = await apiFetch<{ servers: McpServerStatus[] }>("/api/mcp-status");
   return result.servers;
+}
+
+// ── Models API ──────────────────────────────────────────────────
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  policy?: { state: "enabled" | "disabled" | "unconfigured" };
+  billing?: { multiplier: number };
+}
+
+export async function fetchModels(): Promise<ModelInfo[]> {
+  const result = await apiFetch<{ models: ModelInfo[] }>("/api/models");
+  return result.models;
 }
 
 // ── Schedule API ──────────────────────────────────────────────────

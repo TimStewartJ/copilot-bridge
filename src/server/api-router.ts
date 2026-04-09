@@ -1327,9 +1327,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const updated = ctx.settingsStore.updateSettings(req.body);
       clearProviderCache();
 
-      // If MCP servers changed, evict cached sessions so they re-resume with new config
-      if (JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers)) {
-        console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
+      // If MCP servers or model changed, evict cached sessions so they re-resume with new config
+      const configChanged =
+        JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers) ||
+        prev.model !== updated.model;
+      if (configChanged) {
+        const reasons = [];
+        if (JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers)) reasons.push("MCP servers");
+        if (prev.model !== updated.model) reasons.push("model");
+        console.log(`[settings] ${reasons.join(" & ")} changed — evicting cached sessions for re-resume`);
         ctx.sessionManager.evictAllCachedSessions();
       }
 
@@ -1345,6 +1351,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const servers = ctx.sessionManager.getLatestMcpStatus();
       res.json({ servers });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /models — list available models from the Copilot SDK
+  router.get("/models", async (_req, res) => {
+    try {
+      const models = await ctx.sessionManager.listModels();
+      res.json({ models });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
