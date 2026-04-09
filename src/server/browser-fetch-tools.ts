@@ -3,30 +3,7 @@
 // (pure HTTP) and the full browser skill (multi-step interactive flows).
 
 import { defineTool } from "@github/copilot-sdk";
-import { execSync } from "node:child_process";
-
-const FETCH_TIMEOUT = 30_000;
-
-function run(cmd: string): { ok: boolean; output: string } {
-  try {
-    const output = execSync(cmd, { encoding: "utf-8", timeout: FETCH_TIMEOUT });
-    return { ok: true, output: output.trim() };
-  } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
-  }
-}
-
-function ab(session: string, command: string): { ok: boolean; output: string } {
-  return run(`agent-browser --session ${session} ${command}`);
-}
-
-function cleanup(session: string): void {
-  try {
-    ab(session, "close");
-  } catch {
-    // best-effort
-  }
-}
+import { run, ab } from "./agent-browser.js";
 
 export const BROWSER_FETCH_TOOLS = [
   defineTool("browser_fetch", {
@@ -53,7 +30,6 @@ export const BROWSER_FETCH_TOOLS = [
     handler: async (args: any) => {
       const url: string = args.url;
       const selector: string | undefined = args.selector;
-      const session = `bf-${Date.now()}`;
 
       const check = run("which agent-browser");
       if (!check.ok) {
@@ -64,22 +40,19 @@ export const BROWSER_FETCH_TOOLS = [
       }
 
       try {
-        const openResult = ab(session, `open "${url}"`);
+        const openResult = ab(`open "${url}"`);
         if (!openResult.ok) {
-          cleanup(session);
           return { error: `Failed to open URL: ${openResult.output.slice(0, 200)}` };
         }
 
-        ab(session, "wait --load networkidle");
+        ab("wait --load networkidle");
 
         const scope = selector ? ` -s "${selector}"` : "";
-        const snapshot = ab(session, `snapshot -i${scope}`);
+        const snapshot = ab(`snapshot -i${scope}`);
 
         // Also grab the page title and final URL for context
-        const titleResult = ab(session, "get title");
-        const urlResult = ab(session, "get url");
-
-        cleanup(session);
+        const titleResult = ab("get title");
+        const urlResult = ab("get url");
 
         if (!snapshot.ok) {
           return { error: `Failed to capture page: ${snapshot.output.slice(0, 200)}` };
@@ -91,7 +64,6 @@ export const BROWSER_FETCH_TOOLS = [
           snapshot: snapshot.output,
         };
       } catch (err: any) {
-        cleanup(session);
         return { error: `Browser fetch failed: ${String(err).slice(0, 200)}` };
       }
     },
