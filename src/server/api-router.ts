@@ -2,6 +2,7 @@
 
 import express from "express";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { stat as statAsync } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AppContext } from "./app-context.js";
@@ -79,46 +80,48 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.json({ sessions: filtered });
       }
 
-      // Cache miss — rebuild (use fast disk read instead of SDK RPC)
-      const sessions = ctx.sessionManager.listSessionsFromDisk();
+      // Cache miss — rebuild (use fast async disk read instead of SDK RPC)
+      const sessions = await ctx.sessionManager.listSessionsFromDisk();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
 
-      const enriched = sessions
-        .filter((s: any) => s.summary)
-        .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
-        .map((s: any) => {
-          const id = s.sessionId;
-          const archived = meta[id]?.archived === true;
+      const enriched = await Promise.all(
+        sessions
+          .filter((s: any) => s.summary)
+          .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
+          .map(async (s: any) => {
+            const id = s.sessionId;
+            const archived = meta[id]?.archived === true;
 
-          // Compute disk size: skip on polling, use cached for archived, compute for active
-          if (!skipDiskSize && !archived) {
-            try {
-              const sessionDir = join(sessionStateDir, id);
-              diskSizeCache.set(id, getDirSize(sessionDir));
-            } catch { /* session dir may not exist */ }
-          }
+            // Compute disk size: skip on polling, use cached for archived, compute for active
+            if (!skipDiskSize && !archived) {
+              try {
+                const sessionDir = join(sessionStateDir, id);
+                diskSizeCache.set(id, getDirSize(sessionDir));
+              } catch { /* session dir may not exist */ }
+            }
 
-          const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
-          const archivedAt = meta[id]?.archivedAt ?? null;
-          const generatedTitle = ctx.sessionTitles.getTitle(id);
-          const summary = generatedTitle ?? s.summary;
-          return {
-            ...s,
-            summary,
-            diskSizeBytes: diskSizeCache.get(id) ?? 0,
-            busy: ctx.sessionManager.isSessionBusy(id),
-            hasPlan,
-            archived,
-            archivedAt,
-            triggeredBy: meta[id]?.triggeredBy,
-            scheduleId: meta[id]?.scheduleId,
-            scheduleName: meta[id]?.scheduleName,
-            scheduleEnabled: meta[id]?.scheduleId
-              ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
-              : undefined,
-          };
-        });
+            const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+            const archivedAt = meta[id]?.archivedAt ?? null;
+            const generatedTitle = ctx.sessionTitles.getTitle(id);
+            const summary = generatedTitle ?? s.summary;
+            return {
+              ...s,
+              summary,
+              diskSizeBytes: diskSizeCache.get(id) ?? 0,
+              busy: ctx.sessionManager.isSessionBusy(id),
+              hasPlan,
+              archived,
+              archivedAt,
+              triggeredBy: meta[id]?.triggeredBy,
+              scheduleId: meta[id]?.scheduleId,
+              scheduleName: meta[id]?.scheduleName,
+              scheduleEnabled: meta[id]?.scheduleId
+                ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
+                : undefined,
+            };
+          }),
+      );
 
       // Update cache (store all sessions, filter happens on read)
       enrichedSessionCache = { data: enriched, timestamp: now };
@@ -219,11 +222,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
-  router.get("/sessions/:id/messages-fast", (req, res) => {
+  router.get("/sessions/:id/messages-fast", async (req, res) => {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore } = ctx.sessionManager.readMessagesFromDisk(
+      const { messages, total, hasMore } = await ctx.sessionManager.readMessagesFromDisk(
         req.params.id,
         { limit, before },
       );
@@ -943,7 +946,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/dashboard", async (_req, res) => {
     try {
       const t0 = Date.now();
-      const sessions = ctx.sessionManager.listSessionsFromDisk();
+      const sessions = await ctx.sessionManager.listSessionsFromDisk();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
@@ -951,19 +954,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
 
       // Enrich sessions (lightweight — skip disk size for dashboard)
-      const enrichedSessions = sessions
-        .filter((s: any) => s.summary)
-        .filter((s: any) => !s.summary?.startsWith("Generate a concise")) // hide leaked title-generation sessions
-        .map((s: any) => {
-          const id = s.sessionId;
-          const archived = meta[id]?.archived === true;
-          const generatedTitle = ctx.sessionTitles.getTitle(id);
-          const summary = generatedTitle ?? s.summary;
-          const busy = ctx.sessionManager.isSessionBusy(id);
-          const hasPlan = existsSync(join(sessionStateDir, id, "plan.md"));
-          return { ...s, summary, busy, hasPlan, archived };
-        })
-        .filter((s: any) => !s.archived);
+      const enrichedSessions = (await Promise.all(
+        sessions
+          .filter((s: any) => s.summary)
+          .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
+          .map(async (s: any) => {
+            const id = s.sessionId;
+            const archived = meta[id]?.archived === true;
+            const generatedTitle = ctx.sessionTitles.getTitle(id);
+            const summary = generatedTitle ?? s.summary;
+            const busy = ctx.sessionManager.isSessionBusy(id);
+            const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+            return { ...s, summary, busy, hasPlan, archived };
+          }),
+      )).filter((s: any) => !s.archived);
 
       const sessionById = new Map(enrichedSessions.map((s: any) => [s.sessionId, s]));
 
