@@ -802,7 +802,7 @@ export default function App() {
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
       {/* Row wrapper: TaskRail + sidebar + main content fill space above mobile nav */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
       {/* ── Task Rail (desktop only) ──────────────────────── */}
       <TaskRail
         tasks={tasks}
