@@ -22,8 +22,8 @@ import { getOrCreateBus, getBus } from "./event-bus.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
 import { STAGING_TOOLS } from "./staging-tools.js";
-import { WEB_SEARCH_TOOLS } from "./web-search-tools.js";
-import { BROWSER_FETCH_TOOLS } from "./browser-fetch-tools.js";
+import { createWebSearchTools } from "./web-search-tools.js";
+import { createBrowserFetchTools } from "./browser-fetch-tools.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -745,9 +745,9 @@ export function createBridgeTools(ctx: AppContext) {
 
     ...STAGING_TOOLS,
 
-    ...WEB_SEARCH_TOOLS,
+    ...createWebSearchTools(ctx),
 
-    ...BROWSER_FETCH_TOOLS,
+    ...createBrowserFetchTools(ctx),
   ];
 }
 
