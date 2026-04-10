@@ -135,7 +135,9 @@ function isLikelyChromeForProfile(pid: number, profileDir: string): boolean {
       /(chrome|chromium|google-chrome|msedge|microsoft-edge)/i.test(part),
     );
     if (!looksLikeChrome) return false;
-    return joined.includes(profileDir) || joined.includes(`--user-data-dir=${profileDir}`);
+    // Normalize separators so path comparisons work cross-platform
+    const normalizedDir = profileDir.replaceAll("\\", "/");
+    return joined.includes(normalizedDir) || joined.includes(`--user-data-dir=${normalizedDir}`);
   } catch {
     return false;
   }
