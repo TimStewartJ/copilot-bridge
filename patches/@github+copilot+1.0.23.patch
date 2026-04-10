@@ -12,7 +12,7 @@ index d66438c..a236d5d 100644
    - "*"
  promptParts:
 diff --git a/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml b/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
-index 48a3d2f..90102a1 100644
+index 1083bbb..e43331b 100644
 --- a/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
 @@ -3,7 +3,7 @@ displayName: Configure Copilot
@@ -25,7 +25,7 @@ index 48a3d2f..90102a1 100644
    - cli
  tools:
 diff --git a/node_modules/@github/copilot/definitions/explore.agent.yaml b/node_modules/@github/copilot/definitions/explore.agent.yaml
-index f94f548..026f7e6 100644
+index ba59197..78a8a81 100644
 --- a/node_modules/@github/copilot/definitions/explore.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/explore.agent.yaml
 @@ -4,7 +4,7 @@ description: >
