@@ -35,9 +35,11 @@ export function createWebSearchTools(ctx: AppContext) {
     defineTool("web_search", {
       description:
         "Search the web using a real browser. Returns structured results (title, URL, snippet) " +
-        "from Google with automatic DuckDuckGo fallback. Use this when you need to find current " +
-        "information, look up documentation, research topics, or answer questions that require " +
-        "up-to-date web knowledge. Requires agent-browser to be installed.",
+        "from Google with automatic DuckDuckGo fallback. Use this for current information, " +
+        "documentation lookup, source discovery, and parallel fact gathering when you want to " +
+        "verify claims or compare multiple sources quickly. After identifying promising results, " +
+        "follow up with browser_fetch when you need rendered-page confirmation or the canonical " +
+        "source. Requires agent-browser to be installed.",
       parameters: {
         type: "object" as const,
         properties: {
