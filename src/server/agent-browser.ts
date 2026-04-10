@@ -4,7 +4,7 @@ import { exec, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { promisify } from "node:util";
 import type { TelemetryStore } from "./telemetry-store.js";
 
@@ -230,6 +230,12 @@ export async function runFile(
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
   }
+}
+
+/** Cross-platform check for whether agent-browser is installed. */
+export async function isAgentBrowserInstalled(): Promise<boolean> {
+  const cmd = platform() === "win32" ? "where.exe agent-browser" : "which agent-browser";
+  return (await run(cmd, 5_000)).ok;
 }
 
 /** Remove stale Chrome profile lock files if the owning process is gone. */

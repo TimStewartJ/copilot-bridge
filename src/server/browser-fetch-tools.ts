@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, recordBrowserSpan, run, withBridgeBrowserSession } from "./agent-browser.js";
+import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, recordBrowserSpan, run, withBridgeBrowserSession } from "./agent-browser.js";
 
 function safeHost(url: string): string | undefined {
   try {
@@ -48,8 +48,8 @@ export function createBrowserFetchTools(ctx: AppContext) {
         const toolStart = Date.now();
         let success = false;
 
-        const check = await run("which agent-browser");
-        if (!check.ok) {
+        const check = await isAgentBrowserInstalled();
+        if (!check) {
           recordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
             browserOpId,
             toolName: "browser_fetch",
