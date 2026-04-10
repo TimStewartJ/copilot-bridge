@@ -46,7 +46,7 @@ describe("agent-browser wrapper", () => {
     expect(execFileMock).toHaveBeenCalledTimes(1);
     const [, , options] = execFileMock.mock.calls[0];
     expect(options.env.AGENT_BROWSER_SESSION).toMatch(/^copilot-bridge-/);
-    expect(options.env.AGENT_BROWSER_PROFILE).toContain("/tmp/test-copilot/browser-profile");
+    expect(options.env.AGENT_BROWSER_PROFILE.replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-profile");
   });
 
   it("clears stale dead lock owners and retries once", async () => {
