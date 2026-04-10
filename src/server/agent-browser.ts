@@ -226,6 +226,8 @@ export async function runFile(
       timeout,
       maxBuffer: 10 * 1024 * 1024,
       env: execOptions.env,
+      // On Windows, .cmd shims need a shell to resolve
+      shell: platform() === "win32",
     });
     const output = stdout || stderr;
     return { ok: true, output: output.trim() };
