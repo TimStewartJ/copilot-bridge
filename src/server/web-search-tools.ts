@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, recordBrowserSpan, run, withBridgeBrowserSession } from "./agent-browser.js";
+import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, recordBrowserSpan, run, withBridgeBrowserSession } from "./agent-browser.js";
 
 async function takeSnapshot(
   selector: string | undefined,
@@ -54,8 +54,8 @@ export function createWebSearchTools(ctx: AppContext) {
         let success = false;
         let source: string | undefined;
 
-        const check = await run("which agent-browser");
-        if (!check.ok) {
+        const check = await isAgentBrowserInstalled();
+        if (!check) {
           recordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
             browserOpId,
             toolName: "web_search",
