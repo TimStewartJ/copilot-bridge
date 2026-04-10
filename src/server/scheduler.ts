@@ -7,6 +7,7 @@ import type { TaskStore } from "./task-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
+import { isRestartPending, isRestartPendingError, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
@@ -132,6 +133,10 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
   // Check global pause
   if (_globalPause) return { skipped: "Scheduling is globally paused" };
 
+  if (isRestartPending()) {
+    return { skipped: RESTART_PENDING_MESSAGE };
+  }
+
   // Check if schedule is enabled (manual trigger bypasses this)
   // We allow manual triggers even when disabled
 
@@ -182,6 +187,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
   try {
     // Determine session: reuse or create new
     let sessionId: string;
+    let createdSession = false;
 
     if (schedule.reuseSession && schedule.lastSessionId) {
       // Reuse existing session — check if it's busy
@@ -205,6 +211,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
         { name: schedule.name, type: schedule.type, runCount: schedule.runCount, lastRunAt: schedule.lastRunAt },
       );
       sessionId = result.sessionId;
+      createdSession = true;
 
       // Link session to task
       taskStore.linkSession(task.id, sessionId);
@@ -216,7 +223,21 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
     }
 
     // Fire the prompt
-    sessionMgr.startWork(sessionId, schedule.prompt);
+    try {
+      sessionMgr.startWork(sessionId, schedule.prompt);
+    } catch (err) {
+      if (isRestartPendingError(err)) {
+        if (createdSession) {
+          try { taskStore.unlinkSession(task.id, sessionId); } catch {}
+          try { sessionMetaStore.deleteMeta(sessionId); } catch {}
+          try { await sessionMgr.deleteSession(sessionId); } catch (cleanupErr) {
+            console.warn(`[scheduler] Failed to roll back session ${sessionId.slice(0, 8)} after restart gate:`, cleanupErr);
+          }
+        }
+        return { skipped: RESTART_PENDING_MESSAGE };
+      }
+      throw err;
+    }
 
     // Record the run
     const nextRunAt = schedule.type === "cron" && schedule.cron

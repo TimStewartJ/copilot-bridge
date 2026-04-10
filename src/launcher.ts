@@ -7,6 +7,7 @@ import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
+import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -228,54 +229,19 @@ function killServer() {
 
 async function waitForIdleSessions(): Promise<boolean> {
   const busyUrl = `http://localhost:${PORT}/api/busy`;
-  const start = Date.now();
-
-  try {
-    const initial = await fetch(busyUrl);
-    if (initial.ok) {
-      const data = await initial.json() as any;
-      if (!data.busy) return true;
-      log(`Waiting for ${data.count} active session(s) to finish: ${(data.sessions ?? []).map((s: any) => s.id?.slice(0, 8)).join(", ")}`);
-    }
-  } catch {
-    log("Server not reachable for busy check — proceeding with restart");
-    return true;
-  }
-
-  while (Date.now() - start < BUSY_WAIT_TIMEOUT) {
-    await new Promise((r) => setTimeout(r, BUSY_CHECK_INTERVAL));
-    try {
+  return waitForIdleSessionsImpl({
+    fetchBusy: async () => {
       const res = await fetch(busyUrl);
-      if (res.ok) {
-        const data = await res.json() as any;
-        if (!data.busy) {
-          log("All sessions idle — proceeding with restart");
-          return true;
-        }
-
-        const sessions: Array<{ id: string; staleMs: number; elapsedMs: number }> = data.sessions ?? [];
-        const allStuck = sessions.length > 0 && sessions.every((s) => s.staleMs >= STALE_THRESHOLD);
-
-        if (allStuck) {
-          log(`All ${sessions.length} session(s) are stuck (no events for ${STALE_THRESHOLD / 1000}s+) — proceeding with restart`);
-          return true;
-        }
-
-        const elapsed = Math.floor((Date.now() - start) / 1000);
-        const stuckCount = sessions.filter((s) => s.staleMs >= STALE_THRESHOLD).length;
-        const detail = stuckCount > 0
-          ? ` (${stuckCount} stuck, ${sessions.length - stuckCount} active)`
-          : "";
-        log(`Still waiting for ${data.count} session(s)${detail}... (${elapsed}s)`);
-      }
-    } catch {
-      log("Server became unreachable during busy wait — proceeding with restart");
-      return true;
-    }
-  }
-
-  log(`⚠️ Timed out after ${BUSY_WAIT_TIMEOUT / 1000}s waiting for sessions — proceeding with restart`);
-  return true;
+      if (!res.ok) throw new Error(`Busy check failed: ${res.status}`);
+      return await res.json() as any;
+    },
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log,
+    isServerAlive: () => serverProcess !== null,
+    busyCheckInterval: BUSY_CHECK_INTERVAL,
+    busyWaitTimeout: BUSY_WAIT_TIMEOUT,
+    staleThreshold: STALE_THRESHOLD,
+  });
 }
 
 async function gracefulStopServer(): Promise<boolean> {
@@ -324,6 +290,7 @@ async function restart() {
     return;
   }
 
+  await waitForIdleSessions();
   await gracefulStopServer();
   serverProcess = startServer();
 

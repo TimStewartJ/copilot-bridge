@@ -6,7 +6,7 @@ import { stat as statAsync } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AppContext } from "./app-context.js";
-import { isRestartPending, getRestartWaitingCount, clearRestartPending } from "./session-manager.js";
+import { isRestartPending, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 
@@ -295,6 +295,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(400).json({ error: "sessionId and prompt are required" });
     }
 
+    if (isRestartPending()) {
+      res.set("Retry-After", "5");
+      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+    }
+
     if (ctx.sessionManager.isSessionBusy(sessionId)) {
       return res.status(429).json({ error: "Session is busy, please wait" });
     }
@@ -314,6 +319,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
       ctx.sessionManager.startWork(sessionId, prompt, attachments);
       res.status(202).json({ status: "accepted" });
     } catch (err) {
+      if (isRestartPendingError(err)) {
+        res.set("Retry-After", "5");
+        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
