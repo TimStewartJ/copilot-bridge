@@ -78,6 +78,7 @@ function renderPendingStatusCard(
 export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
@@ -89,10 +90,20 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
+  const sessionIdRef = useRef<string | null>(sessionId);
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
+  const loadRequestIdRef = useRef(0);
+  const refreshingHistoryRef = useRef(false);
+
+  const invalidateHistoryRefresh = useCallback(() => {
+    if (!refreshingHistoryRef.current) return;
+    loadRequestIdRef.current += 1;
+    setRefreshingHistory(false);
+  }, []);
 
   const handleNewEntries = useCallback((newEntries: ChatEntry[]) => {
+    invalidateHistoryRefresh();
     const withIds = newEntries.map((e, i) => ({
       ...e,
       id: e.id ?? `stream-${Date.now()}-${i}`,
@@ -137,9 +148,11 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       // (but not on initial mount when prevSession is undefined)
       if (prevSession !== undefined || !onCreateAndSend) setEntries([]);
       setCreating(false);
+      setLoadingMore(false);
       setHasMore(false);
       setMcpStatus([]);
       firstItemIndex.current = 0;
+      loadingMoreRef.current = false;
       return;
     }
 
@@ -156,19 +169,39 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     const controller = new AbortController();
 
-    const loadAndReconnect = () => {
-      setLoading(true);
-      setWarming(false);
+    const loadAndReconnect = ({ background = false }: { background?: boolean } = {}) => {
+      const requestId = ++loadRequestIdRef.current;
+      if (background) {
+        setRefreshingHistory(true);
+      } else {
+        setLoading(true);
+        setRefreshingHistory(false);
+        setWarming(false);
+      }
       const pageLoadStart = performance.now();
 
       // Phase 1: Fast load messages from disk — don't wait for MCP status
       fetchMessagesFast(sessionId, { limit: PAGE_SIZE })
-        .then(({ messages: msgs, busy, total, hasMore: more, warm }) => {
-          if (controller.signal.aborted) return;
-          setEntries(msgs);
-          setHasMore(more);
-          firstItemIndex.current = total - msgs.length;
+        .then(({ messages: msgs, busy, total, warm }) => {
+          if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
+          setEntries((prev) => {
+            if (!background) {
+              firstItemIndex.current = total - msgs.length;
+              return msgs;
+            }
+
+            const latestWindowStart = Math.max(0, total - msgs.length);
+            const currentFirstIndex = firstItemIndex.current;
+            const currentLoadedEnd = currentFirstIndex + prev.length;
+            const preserveCount = latestWindowStart <= currentLoadedEnd
+              ? Math.max(0, Math.min(prev.length, latestWindowStart - currentFirstIndex))
+              : 0;
+
+            firstItemIndex.current = preserveCount > 0 ? currentFirstIndex : latestWindowStart;
+            return preserveCount > 0 ? [...prev.slice(0, preserveCount), ...msgs] : msgs;
+          });
           setLoading(false);
+          setRefreshingHistory(false);
 
           // Report time from navigation to messages rendered
           const loadDuration = Math.round(performance.now() - pageLoadStart);
@@ -195,22 +228,30 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
           }
         })
         .catch((err) => {
-          if (controller.signal.aborted) return;
-          setEntries([
-            { role: "assistant", content: `Error loading history: ${err.message}` },
-          ]);
+          if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
+          if (!background) {
+            setEntries([
+              { role: "assistant", content: `Error loading history: ${err.message}` },
+            ]);
+          }
           setLoading(false);
+          setRefreshingHistory(false);
         });
 
       // MCP status loads independently — doesn't block message rendering
       fetchMcpStatus(sessionId)
         .then((mcpServers) => {
-          if (!controller.signal.aborted) setMcpStatus(mcpServers);
+          if (!controller.signal.aborted && requestId === loadRequestIdRef.current) {
+            setMcpStatus(mcpServers);
+          }
         })
         .catch(() => {});
     };
 
+    firstItemIndex.current = 0;
+    loadingMoreRef.current = false;
     setEntries([]);
+    setLoadingMore(false);
     setHasMore(false);
     loadAndReconnect();
 
@@ -220,7 +261,8 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
-      if (document.visibilityState === "visible") loadAndReconnect();
+      if (document.visibilityState !== "visible") return;
+      loadAndReconnect({ background: true });
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -234,7 +276,19 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     const el = scrollContainerRef.current;
     if (!el) return;
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  }, []);
+  }, [invalidateHistoryRefresh]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    refreshingHistoryRef.current = refreshingHistory;
+  }, [refreshingHistory]);
+
+  useEffect(() => {
+    setHasMore(sessionId ? firstItemIndex.current > 0 : false);
+  }, [entries, sessionId]);
 
   // Scroll preservation on prepend + auto-scroll on message changes.
   // useLayoutEffect runs before paint, preventing flash.
@@ -269,22 +323,29 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const beforeIndex = firstItemIndex.current;
+    const requestSessionId = sessionId;
     fetchMessages(sessionId, { limit: PAGE_SIZE, before: beforeIndex })
       .then(({ messages: older, hasMore: more }) => {
+        if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
         if (older.length > 0) {
+          invalidateHistoryRefresh();
           // Save scroll height before prepending so the layout effect can preserve position.
           prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
-          setEntries((prev) => [...older, ...prev]);
-          firstItemIndex.current = beforeIndex - older.length;
+          setEntries((prev) => {
+            firstItemIndex.current = beforeIndex - older.length;
+            return [...older, ...prev];
+          });
+        } else if (!more) {
+          firstItemIndex.current = 0;
+          setHasMore(false);
         }
-        setHasMore(more);
       })
       .catch(() => {})
       .finally(() => {
         loadingMoreRef.current = false;
         setLoadingMore(false);
       });
-  }, [sessionId, hasMore]);
+  }, [sessionId, hasMore, invalidateHistoryRefresh]);
 
   // Load older messages when the top sentinel scrolls into view.
   useEffect(() => {
@@ -320,6 +381,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
 
     if (!sessionId) return;
     onDraftClear?.();
+    invalidateHistoryRefresh();
     setEntries((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
@@ -331,7 +393,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` },
       ]);
     }
-  }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend]);
+  }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh]);
 
   // Build pending indicator content (streaming bubble + active tools + status text).
   const pendingContent = useMemo(() => {
@@ -484,7 +546,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       )}
       {/* MCP server status */}
       <McpStatusBar servers={effectiveMcpServers} />
-      {loading ? (
+      {loading && entries.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-accent italic">
           Loading history...
         </div>
@@ -500,6 +562,14 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
         >
           {/* Top sentinel for loading older messages */}
           <div ref={topSentinelRef} className="h-px" />
+          {refreshingHistory && (
+            <div className="sticky top-0 z-10 flex justify-center px-3 pt-3">
+              <div className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-secondary/95 px-3 py-1 text-xs text-text-muted shadow-sm backdrop-blur-sm">
+                <Loader2 size={12} className="animate-spin text-accent/70" />
+                Refreshing history...
+              </div>
+            </div>
+          )}
           {loadingMore ? (
             <div className="text-center py-3 text-accent/60 text-xs">
               <Loader2 size={14} className="inline animate-spin mr-1" />
