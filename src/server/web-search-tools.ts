@@ -5,8 +5,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
-import type { BrowserCommand } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, recordBrowserSpan, run, withBridgeBrowserSession } from "./agent-browser.js";
+import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
+import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
 
 async function takeSnapshot(
   selector: string | undefined,
@@ -24,6 +24,10 @@ function hasResults(snapshot: string): boolean {
 
 function queryFingerprint(query: string): string {
   return createHash("sha256").update(query).digest("hex").slice(0, 12);
+}
+
+function isToolErrorResult(value: unknown): value is { error: string } {
+  return typeof value === "object" && value !== null && "error" in value;
 }
 
 export function createWebSearchTools(ctx: AppContext) {
@@ -47,19 +51,23 @@ export function createWebSearchTools(ctx: AppContext) {
       handler: async (args: any) => {
         const query: string = args.query;
         const browserOpId = randomUUID();
-        const browserTarget = getBridgeBrowserTarget(ctx.copilotHome);
+        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome);
         const queryHash = queryFingerprint(query);
         const queryLength = query.length;
         const toolStart = Date.now();
         let success = false;
         let source: string | undefined;
+        let laneType: "primary" | "clone" = "primary";
+        let browserSession = primaryTarget.sessionName;
+        let attemptedClone = false;
+        let fallbackToPrimary = false;
 
         const check = await isAgentBrowserInstalled();
         if (!check) {
-          recordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
             browserOpId,
             toolName: "web_search",
-            browserSession: browserTarget.sessionName,
+            browserSession: primaryTarget.sessionName,
             queryHash,
           });
           return {
@@ -67,152 +75,217 @@ export function createWebSearchTools(ctx: AppContext) {
               "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
           };
         }
-        recordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
+        safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
           toolName: "web_search",
-          browserSession: browserTarget.sessionName,
+          browserSession: primaryTarget.sessionName,
           queryHash,
         });
 
-        try {
-          return await withBridgeBrowserSession(browserTarget, async () => {
-            const commandOptions = {
-              telemetryStore: ctx.telemetryStore,
-              toolName: "web_search",
-              browserOpId,
-              browserTarget,
-              metadata: { queryHash, queryLength },
-            };
-
-            const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-            const googleStart = Date.now();
-            const googleOpen = await ab(["open", googleUrl], undefined, commandOptions);
-
-            if (googleOpen.ok) {
-              const googleWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
-              if (googleWait.ok) {
-                const snapshot = await takeSnapshot("#rso", commandOptions);
-                const googleDuration = Date.now() - googleStart;
-                recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google", googleDuration, {
-                  browserOpId,
-                  browserSession: browserTarget.sessionName,
-                  queryHash,
-                  success: snapshot.ok && hasResults(snapshot.output),
-                });
-
-                if (snapshot.ok && hasResults(snapshot.output)) {
-                  source = "google";
-                  success = true;
-                  return {
-                    source,
-                    query,
-                    url: googleUrl,
-                    snapshot: snapshot.output,
-                  };
-                }
-              } else {
-                recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
-                  browserOpId,
-                  browserSession: browserTarget.sessionName,
-                  queryHash,
-                  failureCode: "navigation.wait_networkidle_timeout",
-                });
-              }
-            } else {
-              recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
-                browserOpId,
-                browserSession: browserTarget.sessionName,
-                queryHash,
-                failureCode: "navigation.open_failed",
-              });
-            }
-
-            console.log(`[browser] ${JSON.stringify({
-              event: "web_search.fallback",
-              browserOpId,
-              browserSession: browserTarget.sessionName,
-              from: "google",
-              to: "duckduckgo",
+        const runFlow = async (lane: BrowserLane) => {
+          laneType = lane.laneType;
+          browserSession = lane.browserTarget.sessionName;
+          const commandOptions = {
+            telemetryStore: ctx.telemetryStore,
+            toolName: "web_search",
+            browserOpId,
+            browserTarget: lane.browserTarget,
+            metadata: {
               queryHash,
               queryLength,
-            })}`);
-            recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.fallback", 0, {
-              browserOpId,
-              browserSession: browserTarget.sessionName,
-              from: "google",
-              to: "duckduckgo",
-              queryHash,
-            });
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
+            },
+          };
 
-            const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-            const ddgStart = Date.now();
-            const ddgOpen = await ab(["open", ddgUrl], undefined, commandOptions);
-            if (!ddgOpen.ok) {
-              recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", Date.now() - ddgStart, {
+          const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+          const googleStart = Date.now();
+          const googleOpen = await ab(["open", googleUrl], undefined, commandOptions);
+
+          if (googleOpen.ok) {
+            const googleWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
+            if (googleWait.ok) {
+              const snapshot = await takeSnapshot("#rso", commandOptions);
+              const googleDuration = Date.now() - googleStart;
+              safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google", googleDuration, {
                 browserOpId,
-                browserSession: browserTarget.sessionName,
+                browserSession: lane.browserTarget.sessionName,
+                browserLane: lane.laneType,
+                cloneId: lane.cloneId,
                 queryHash,
-                failureCode: "search.ddg_failed",
+                success: snapshot.ok && hasResults(snapshot.output),
               });
-              return { error: "Failed to open search engine" };
-            }
 
-            const ddgWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
-            if (!ddgWait.ok) {
-              recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", Date.now() - ddgStart, {
+              if (snapshot.ok && hasResults(snapshot.output)) {
+                source = "google";
+                success = true;
+                return {
+                  source,
+                  query,
+                  url: googleUrl,
+                  snapshot: snapshot.output,
+                };
+              }
+            } else {
+              safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
                 browserOpId,
-                browserSession: browserTarget.sessionName,
+                browserSession: lane.browserTarget.sessionName,
+                browserLane: lane.laneType,
+                cloneId: lane.cloneId,
                 queryHash,
                 failureCode: "navigation.wait_networkidle_timeout",
               });
-              return { error: `Failed to wait for DuckDuckGo results: ${ddgWait.output.slice(0, 200)}` };
             }
-
-            const snapshot = await takeSnapshot(undefined, commandOptions);
-            const ddgDuration = Date.now() - ddgStart;
-            recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo", ddgDuration, {
+          } else {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
               browserOpId,
-              browserSession: browserTarget.sessionName,
+              browserSession: lane.browserTarget.sessionName,
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
               queryHash,
-              success: snapshot.ok,
+              failureCode: "navigation.open_failed",
             });
+          }
 
-            if (!snapshot.ok) {
-              recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
-                browserOpId,
-                browserSession: browserTarget.sessionName,
-                queryHash,
-                failureCode: "extraction.snapshot_failed",
-              });
-              return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
-            }
-
-            source = "duckduckgo";
-            success = true;
-            return {
-              source,
-              query,
-              url: ddgUrl,
-              snapshot: snapshot.output,
-            };
+          console.log(`[browser] ${JSON.stringify({
+            event: "web_search.fallback",
+            browserOpId,
+            browserSession: lane.browserTarget.sessionName,
+            browserLane: lane.laneType,
+            cloneId: lane.cloneId,
+            from: "google",
+            to: "duckduckgo",
+            queryHash,
+            queryLength,
+          })}`);
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.fallback", 0, {
+            browserOpId,
+            browserSession: lane.browserTarget.sessionName,
+            browserLane: lane.laneType,
+            cloneId: lane.cloneId,
+            from: "google",
+            to: "duckduckgo",
+            queryHash,
           });
+
+          const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+          const ddgStart = Date.now();
+          const ddgOpen = await ab(["open", ddgUrl], undefined, commandOptions);
+          if (!ddgOpen.ok) {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", Date.now() - ddgStart, {
+              browserOpId,
+              browserSession: lane.browserTarget.sessionName,
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
+              queryHash,
+              failureCode: "search.ddg_failed",
+            });
+            return { error: "Failed to open search engine" };
+          }
+
+          const ddgWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
+          if (!ddgWait.ok) {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", Date.now() - ddgStart, {
+              browserOpId,
+              browserSession: lane.browserTarget.sessionName,
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
+              queryHash,
+              failureCode: "navigation.wait_networkidle_timeout",
+            });
+            return { error: `Failed to wait for DuckDuckGo results: ${ddgWait.output.slice(0, 200)}` };
+          }
+
+          const snapshot = await takeSnapshot(undefined, commandOptions);
+          const ddgDuration = Date.now() - ddgStart;
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo", ddgDuration, {
+            browserOpId,
+            browserSession: lane.browserTarget.sessionName,
+            browserLane: lane.laneType,
+            cloneId: lane.cloneId,
+            queryHash,
+            success: snapshot.ok,
+          });
+
+          if (!snapshot.ok) {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
+              browserOpId,
+              browserSession: lane.browserTarget.sessionName,
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
+              queryHash,
+              failureCode: "extraction.snapshot_failed",
+            });
+            return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
+          }
+
+          source = "duckduckgo";
+          success = true;
+          return {
+            source,
+            query,
+            url: ddgUrl,
+            snapshot: snapshot.output,
+          };
+        };
+
+        try {
+          attemptedClone = true;
+          try {
+            const cloneResult = await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
+              browserOpId,
+              toolName: "web_search",
+              queryHash,
+            }, runFlow);
+            if (!isToolErrorResult(cloneResult)) {
+              return cloneResult;
+            }
+            fallbackToPrimary = true;
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
+              browserOpId,
+              toolName: "web_search",
+              queryHash,
+              reason: "tool_error",
+            });
+          } catch (err) {
+            fallbackToPrimary = true;
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
+              browserOpId,
+              toolName: "web_search",
+              queryHash,
+              reason: "exception",
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+
+          return await withPrimaryBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
+            browserOpId,
+            toolName: "web_search",
+            queryHash,
+          }, runFlow);
         } catch (err: any) {
           return { error: `Search failed: ${String(err).slice(0, 200)}` };
         } finally {
           const duration = Date.now() - toolStart;
-          recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search", duration, {
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search", duration, {
             browserOpId,
-            browserSession: browserTarget.sessionName,
+            browserSession,
             success,
             source,
             queryHash,
             queryLength,
+            browserLane: laneType,
+            attemptedClone,
+            fallbackToPrimary,
           });
           if (!success) {
-            recordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.failed", duration, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.failed", duration, {
               browserOpId,
-              browserSession: browserTarget.sessionName,
+              browserSession,
               queryHash,
+              browserLane: laneType,
+              attemptedClone,
+              fallbackToPrimary,
             });
           }
         }

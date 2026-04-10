@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const execMock = vi.fn();
 const execFileMock = vi.fn();
+const cpMock = vi.fn();
+const mkdirMock = vi.fn();
+const readdirMock = vi.fn();
+const rmMock = vi.fn();
+const statMock = vi.fn();
 const readlinkSyncMock = vi.fn();
 const readFileSyncMock = vi.fn();
 const unlinkSyncMock = vi.fn();
@@ -10,6 +15,14 @@ const killMock = vi.spyOn(process, "kill");
 vi.mock("node:child_process", () => ({
   exec: execMock,
   execFile: execFileMock,
+}));
+
+vi.mock("node:fs/promises", () => ({
+  cp: cpMock,
+  mkdir: mkdirMock,
+  readdir: readdirMock,
+  rm: rmMock,
+  stat: statMock,
 }));
 
 vi.mock("node:fs", () => ({
@@ -23,6 +36,11 @@ describe("agent-browser wrapper", () => {
     vi.resetModules();
     execMock.mockReset();
     execFileMock.mockReset();
+    cpMock.mockReset();
+    mkdirMock.mockReset();
+    readdirMock.mockReset();
+    rmMock.mockReset();
+    statMock.mockReset();
     readlinkSyncMock.mockReset();
     readFileSyncMock.mockReset();
     unlinkSyncMock.mockReset();
@@ -31,6 +49,11 @@ describe("agent-browser wrapper", () => {
       if (signal === 0) return true as never;
       return true as never;
     }) as any);
+    cpMock.mockResolvedValue(undefined);
+    mkdirMock.mockResolvedValue(undefined);
+    readdirMock.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    rmMock.mockResolvedValue(undefined);
+    statMock.mockResolvedValue({ mtimeMs: Date.now() });
   });
 
   it("passes explicit bridge session env to browser commands", async () => {
@@ -177,5 +200,184 @@ describe("agent-browser wrapper", () => {
 
     await Promise.all([one, two]);
     expect(order).toEqual(["one:start", "one:end", "two:start", "two:end"]);
+  });
+
+  it("creates and cleans up sanitized clone lanes", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const mod = await import("../agent-browser.js");
+    const result = await mod.withCloneBrowserLane("/tmp/test-copilot", undefined, { toolName: "web_search" }, async (lane) => {
+      expect(lane.laneType).toBe("clone");
+      expect(lane.cloneId).toBeTruthy();
+      expect(lane.browserTarget.profileDir.replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-clones/profile-");
+      expect(lane.browserTarget.sessionName).toContain("-clone-");
+      return lane.browserTarget.sessionName;
+    });
+
+    expect(result).toContain("-clone-");
+    expect(mkdirMock).toHaveBeenCalled();
+    expect(cpMock).toHaveBeenCalledTimes(1);
+    const [, , options] = cpMock.mock.calls[0];
+    expect(options.filter("/tmp/test-copilot/browser-profile/SingletonLock")).toBe(false);
+    expect(options.filter("/tmp/test-copilot/browser-profile/Default/Cookies")).toBe(true);
+    expect(execFileMock).toHaveBeenCalledWith(
+      "agent-browser",
+      ["close"],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          AGENT_BROWSER_SESSION: expect.stringContaining("-clone-"),
+          AGENT_BROWSER_PROFILE: expect.stringContaining("browser-clones"),
+        }),
+      }),
+      expect.any(Function),
+    );
+    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("keeps the primary lane pinned to the caller copilotHome", async () => {
+    statMock.mockImplementation(async (path: string) => {
+      if (path.includes("/tmp/test-copilot/browser-profile")) {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      return { mtimeMs: Date.now() };
+    });
+
+    const mod = await import("../agent-browser.js");
+    const profileDir = await mod.withPrimaryBrowserLane("/tmp/test-copilot", undefined, {}, async (lane) => (
+      lane.browserTarget.profileDir
+    ));
+
+    expect(profileDir.replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-profile");
+  });
+
+  it("still removes clone profiles when browser close fails", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any) => void) => {
+      cb({ stderr: "close failed" });
+      return {} as any;
+    });
+
+    const mod = await import("../agent-browser.js");
+    await mod.withCloneBrowserLane("/tmp/test-copilot", undefined, { toolName: "web_search" }, async () => "ok");
+
+    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("seeds a missing local clone source profile before cloning", async () => {
+    statMock.mockImplementation(async (path: string) => {
+      if (path === "/tmp/test-copilot/browser-profile") {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      return { mtimeMs: Date.now() };
+    });
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const mod = await import("../agent-browser.js");
+    await mod.withCloneBrowserLane("/tmp/test-copilot", undefined, { toolName: "web_search" }, async () => "ok");
+
+    expect(cpMock).toHaveBeenCalledTimes(2);
+    expect(cpMock.mock.calls[0][0].replaceAll("\\", "/")).toContain("/.copilot/browser-profile");
+    expect(cpMock.mock.calls[0][1].replaceAll("\\", "/")).toBe("/tmp/test-copilot/browser-profile");
+    expect(cpMock.mock.calls[1][0].replaceAll("\\", "/")).toBe("/tmp/test-copilot/browser-profile");
+    expect(cpMock.mock.calls[1][1].replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-clones/profile-");
+  });
+
+  it("does not let queue telemetry break primary-lane progress", async () => {
+    const telemetryStore = {
+      recordSpan: vi.fn((span: { name: string }) => {
+        if (span.name === "browser.queue.wait.primary") throw new Error("db offline");
+      }),
+    };
+    const mod = await import("../agent-browser.js");
+    const order: string[] = [];
+
+    const one = mod.withPrimaryBrowserLane("/tmp/test-copilot", telemetryStore as any, {}, async () => {
+      order.push("one:start");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      order.push("one:end");
+    });
+    const two = mod.withPrimaryBrowserLane("/tmp/test-copilot", telemetryStore as any, {}, async () => {
+      order.push("two:start");
+      order.push("two:end");
+    });
+
+    await Promise.all([one, two]);
+    expect(order).toEqual(["one:start", "one:end", "two:start", "two:end"]);
+  });
+
+  it("does not let queue telemetry leak clone-pool slots", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const telemetryStore = {
+      recordSpan: vi.fn((span: { name: string }) => {
+        if (span.name === "browser.queue.wait.clone") throw new Error("db offline");
+      }),
+    };
+    const mod = await import("../agent-browser.js");
+    const started: string[] = [];
+    let releaseResolve!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseResolve = resolve;
+    });
+    const makeLane = (toolName: string, hold: boolean) =>
+      mod.withCloneBrowserLane("/tmp/test-copilot", telemetryStore as any, { toolName }, async (lane) => {
+        started.push(toolName);
+        if (hold) await release;
+        return lane.cloneId;
+      });
+
+    const resultsPromise = Promise.all([
+      makeLane("a", true),
+      makeLane("b", true),
+      makeLane("c", true),
+      makeLane("d", true),
+      makeLane("e", true),
+      makeLane("f", false),
+    ]);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(started).toEqual(["a", "b", "c", "d", "e"]);
+    releaseResolve();
+
+    const results = await resultsPromise;
+    expect(started).toContain("f");
+    expect(results).toHaveLength(6);
+    expect(results.every(Boolean)).toBe(true);
+  });
+
+  it("does not let clone lifecycle telemetry fail successful clone work", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const telemetryStore = {
+      recordSpan: vi.fn((span: { name: string }) => {
+        if (span.name.startsWith("browser.clone.")) throw new Error("db offline");
+      }),
+    };
+    const mod = await import("../agent-browser.js");
+
+    const result = await mod.withCloneBrowserLane("/tmp/test-copilot", telemetryStore as any, { toolName: "web_search" }, async (lane) => lane.cloneId);
+
+    expect(result).toBeTruthy();
+    expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
+      recursive: true,
+      force: true,
+    });
   });
 });
