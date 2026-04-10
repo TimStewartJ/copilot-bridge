@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import type { Task, TaskGroup, Session } from "../api";
+import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
@@ -159,7 +159,7 @@ export default function TaskRail({
         const session = sessionMap.get(sid);
         if (!session || session.archived) continue;
         if (session.busy) { busyCount++; continue; }
-        if (isUnread?.(sid, session.modifiedTime)) unreadCount++;
+        if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
       }
       indicators.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount });
     }
@@ -173,7 +173,7 @@ export default function TaskRail({
     for (const s of orphanSessions) {
       if (s.archived) continue;
       if (s.busy) { totalBusy++; continue; }
-      if (isUnread?.(s.sessionId, s.modifiedTime)) totalUnread++;
+      if (isUnread?.(s.sessionId, getSessionActivityTime(s))) totalUnread++;
     }
     return { totalUnread, totalBusy, hasActivity: totalUnread > 0 || totalBusy > 0 };
   }, [orphanSessions, isUnread]);
@@ -181,7 +181,7 @@ export default function TaskRail({
   const sortedOrphanSessions = useMemo(
     () => orphanSessions
       .filter((s) => !s.archived && !archivingIds?.has(s.sessionId) && !exitingIds?.has(s.sessionId))
-      .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime()),
+      .sort((a, b) => new Date(getSessionActivityTime(b) ?? 0).getTime() - new Date(getSessionActivityTime(a) ?? 0).getTime()),
     [orphanSessions, archivingIds, exitingIds],
   );
 
@@ -268,7 +268,7 @@ export default function TaskRail({
   const [showArchivedQc, setShowArchivedQc] = useState(false);
   const archivedOrphanSessions = useMemo(
     () => orphanSessions.filter((s) => s.archived).sort(
-      (a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime(),
+      (a, b) => new Date(getSessionActivityTime(b) ?? 0).getTime() - new Date(getSessionActivityTime(a) ?? 0).getTime(),
     ),
     [orphanSessions],
   );
@@ -301,7 +301,7 @@ export default function TaskRail({
     if (!ctxTask || !isUnread) return 0;
     return ctxTask.sessionIds.filter((sid) => {
       const session = sessionMap.get(sid);
-      return session && !session.archived && isUnread(sid, session.modifiedTime);
+      return session && !session.archived && isUnread(sid, getSessionActivityTime(session));
     }).length;
   }, [ctxTask, sessionMap, isUnread]);
 
@@ -743,7 +743,7 @@ export default function TaskRail({
               {sortedOrphanSessions.map((session) => {
                 const isActive = session.sessionId === activeSessionId;
                 const busy = session.busy;
-                const unread = !busy && isUnread?.(session.sessionId, session.modifiedTime);
+                const unread = !busy && isUnread?.(session.sessionId, getSessionActivityTime(session));
                 const isSelected = qcSelectedIds.has(session.sessionId);
                 const handleClick = qcSelectMode
                   ? () => qcToggleSelect(session.sessionId)
@@ -781,7 +781,7 @@ export default function TaskRail({
                       </span>
                     </div>
                     <div className="text-[10px] text-text-muted mt-0.5">
-                      {timeAgo(session.modifiedTime)}
+                      {timeAgo(getSessionActivityTime(session))}
                       {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
                     </div>
                   </button>
@@ -823,7 +823,7 @@ export default function TaskRail({
                           <span className="text-[10px] text-text-faint">archived</span>
                         </div>
                         <div className="text-[10px] text-text-muted mt-0.5">
-                          {timeAgo(session.modifiedTime)}
+                          {timeAgo(getSessionActivityTime(session))}
                         </div>
                       </button>
                     );
@@ -879,7 +879,7 @@ export default function TaskRail({
               onClick={() => {
                 for (const sid of ctxTask.sessionIds) {
                   const session = sessionMap.get(sid);
-                  if (session && isUnread?.(sid, session.modifiedTime)) {
+                  if (session && isUnread?.(sid, getSessionActivityTime(session))) {
                     markRead(sid);
                   }
                 }

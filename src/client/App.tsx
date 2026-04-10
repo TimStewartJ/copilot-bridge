@@ -23,6 +23,7 @@ import {
   batchSessionAction,
   setTaskTags,
   setGroupTags,
+  getSessionActivityTime,
   API_BASE,
   type Session,
   type Task,
@@ -177,7 +178,7 @@ export default function App() {
         break;
       case "session:idle":
         patchSessionInCache(event.sessionId, { busy: false });
-        // Reload to pick up updated modifiedTime so unread dots appear immediately
+        // Reload to pick up updated visible activity timestamps so unread dots appear immediately
         invalidateSessions();
         break;
       case "session:title":
@@ -254,6 +255,7 @@ export default function App() {
         sessionId,
         summary: "New session",
         modifiedTime: new Date().toISOString(),
+        lastVisibleActivityAt: new Date().toISOString(),
         diskSizeBytes: 0,
       }, ...prev];
     });
@@ -353,7 +355,7 @@ export default function App() {
 
   const mobileUnreadCount = useMemo(() => {
     return globalSessions.filter(
-      (s) => !s.archived && isUnread(s.sessionId, s.modifiedTime),
+      (s) => !s.archived && isUnread(s.sessionId, getSessionActivityTime(s)),
     ).length;
   }, [globalSessions, isUnread]);
 
@@ -700,7 +702,7 @@ export default function App() {
   // ── Bulk actions for quick chats ──────────────────────────────
   const handleMarkAllRead = useCallback(() => {
     const unreadIds = globalSessions
-      .filter((s) => !s.archived && isUnread(s.sessionId, s.modifiedTime))
+      .filter((s) => !s.archived && isUnread(s.sessionId, getSessionActivityTime(s)))
       .map((s) => s.sessionId);
     if (unreadIds.length === 0) return;
     // Mark each read locally (instant UI update)
@@ -1169,7 +1171,7 @@ function MobileTaskListView({
   }, [onBulkAction]);
 
   const unreadCount = orphanSessions.filter(
-    (s) => !s.archived && isUnread?.(s.sessionId, s.modifiedTime),
+    (s) => !s.archived && isUnread?.(s.sessionId, getSessionActivityTime(s)),
   ).length;
 
   const activeCount = orphanSessions.filter((s) => !s.archived).length;

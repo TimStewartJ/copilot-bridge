@@ -52,6 +52,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Invalidate on session lifecycle events
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
+      case "session:busy":
+      case "session:idle":
       case "session:title":
       case "session:archived":
         invalidateEnrichedCache();
@@ -981,11 +983,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const sessionById = new Map(enrichedSessions.map((s: any) => [s.sessionId, s]));
 
       // Helper: is session unread?
-      const isUnread = (sessionId: string, modifiedTime?: string): boolean => {
-        if (!modifiedTime) return false;
+      const isUnread = (sessionId: string, activityTime?: string): boolean => {
+        if (!activityTime) return false;
         const lastRead = readState[sessionId];
         if (!lastRead) return true;
-        return new Date(modifiedTime).getTime() > new Date(lastRead).getTime();
+        return new Date(activityTime).getTime() > new Date(lastRead).getTime();
       };
 
       // Busy sessions
@@ -1004,14 +1006,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       // Unread sessions (not busy — busy is separate)
       const unreadSessions = enrichedSessions
-        .filter((s: any) => !s.busy && isUnread(s.sessionId, s.modifiedTime))
+        .filter((s: any) => !s.busy && isUnread(s.sessionId, s.lastVisibleActivityAt))
         .map((s: any) => {
           const taskId = tasks.find((t) => t.sessionIds.includes(s.sessionId))?.id;
           return {
             sessionId: s.sessionId,
             title: s.summary,
             taskId: taskId ?? null,
-            modifiedTime: s.modifiedTime,
+            lastVisibleActivityAt: s.lastVisibleActivityAt,
           };
         });
 
@@ -1057,12 +1059,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
         // Unread check — busy sessions excluded (busy is a separate signal)
         const hasUnread = task.sessionIds.some((sid) => {
           const session = sessionById.get(sid);
-          return session && !session.busy && isUnread(sid, session.modifiedTime);
+          return session && !session.busy && isUnread(sid, session.lastVisibleActivityAt);
         });
 
         // Last activity across task sessions
         const sessionTimes = task.sessionIds
-          .map((sid) => sessionById.get(sid)?.modifiedTime)
+          .map((sid) => sessionById.get(sid)?.lastVisibleActivityAt)
           .filter(Boolean) as string[];
         const lastActivity = sessionTimes.length > 0
           ? sessionTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
@@ -1105,17 +1107,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const orphanSessions = enrichedSessions
         .filter((s: any) => {
           if (taskSessionIds.has(s.sessionId)) return false;
-          const unread = isUnread(s.sessionId, s.modifiedTime);
-          const recent = s.modifiedTime && new Date(s.modifiedTime).getTime() > oneDayAgo;
+          const unread = isUnread(s.sessionId, s.lastVisibleActivityAt);
+          const recent = s.lastVisibleActivityAt && new Date(s.lastVisibleActivityAt).getTime() > oneDayAgo;
           return s.busy || unread || recent;
         })
         .map((s: any) => ({
           sessionId: s.sessionId,
           title: s.summary,
-          modifiedTime: s.modifiedTime,
+          lastVisibleActivityAt: s.lastVisibleActivityAt,
           branch: s.context?.branch ?? null,
           busy: s.busy ?? false,
-          unread: isUnread(s.sessionId, s.modifiedTime),
+          unread: isUnread(s.sessionId, s.lastVisibleActivityAt),
         }));
 
       // Open todos across all active tasks and global todos

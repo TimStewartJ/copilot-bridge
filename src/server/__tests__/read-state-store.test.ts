@@ -27,21 +27,19 @@ describe("read-state-store", () => {
     expect(store.isUnread("session-1", new Date().toISOString())).toBe(true);
   });
 
-  it("isUnread returns false after markRead with no new modifications", () => {
-    const modifiedTime = new Date().toISOString();
-    // Small delay to ensure markRead timestamp is after modifiedTime
+  it("isUnread returns false after markRead with no new visible activity", () => {
+    const activityTime = new Date().toISOString();
     store.markRead("session-1");
-    expect(store.isUnread("session-1", modifiedTime)).toBe(false);
+    expect(store.isUnread("session-1", activityTime)).toBe(false);
   });
 
-  it("isUnread returns true when modified after last read", () => {
+  it("isUnread returns true when visible activity happens after last read", () => {
     store.markRead("session-1");
-    // Simulate modification 1 second in the future
     const futureTime = new Date(Date.now() + 1000).toISOString();
     expect(store.isUnread("session-1", futureTime)).toBe(true);
   });
 
-  it("isUnread returns false when modifiedTime is undefined", () => {
+  it("isUnread returns false when activityTime is undefined", () => {
     expect(store.isUnread("session-1")).toBe(false);
   });
 

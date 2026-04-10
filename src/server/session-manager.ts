@@ -9,7 +9,7 @@ import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
+import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
@@ -843,6 +843,7 @@ export class SessionManager {
   private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private titleModelCache: { key: string; value?: string; checkedAt: number } | null = null;
+  private visibleActivityCache = new Map<string, { eventsMtimeMs: number; lastVisibleActivityAt?: string }>();
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
   private sessionListCache: { data: any[]; timestamp: number } | null = null;
@@ -874,6 +875,39 @@ export class SessionManager {
     },
   ): void {
     this.recordSpan("session.title_generation", duration, sessionId, metadata);
+  }
+
+  private async getCachedLastVisibleActivityAt(
+    sessionId: string,
+    eventsPath: string,
+    eventsMtimeMs: number,
+  ): Promise<string | undefined> {
+    const cached = this.visibleActivityCache.get(sessionId);
+    if (cached && cached.eventsMtimeMs === eventsMtimeMs) {
+      return cached.lastVisibleActivityAt;
+    }
+
+    let raw: string;
+    try {
+      raw = await readFile(eventsPath, "utf-8");
+    } catch {
+      this.visibleActivityCache.set(sessionId, { eventsMtimeMs, lastVisibleActivityAt: cached?.lastVisibleActivityAt });
+      return cached?.lastVisibleActivityAt;
+    }
+
+    const events: any[] = [];
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        events.push(JSON.parse(line));
+      } catch {
+        continue;
+      }
+    }
+
+    const lastVisibleActivityAt = getLastVisibleActivityAt(events);
+    this.visibleActivityCache.set(sessionId, { eventsMtimeMs, lastVisibleActivityAt });
+    return lastVisibleActivityAt;
   }
 
   private getConfiguredModel(): string | undefined {
@@ -1173,15 +1207,16 @@ export class SessionManager {
         if (summaryLines.length > 0 && !session.summary) {
           session.summary = summaryLines.join("\n");
         }
-        // Use events.jsonl mtime for modifiedTime — workspace.yaml updated_at is stale
+        // Track session recency from the last visible event, not raw log-file mtime.
         const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
         try {
           const st = await stat(eventsPath);
-          session.modifiedTime = st.mtime.toISOString();
+          session.lastVisibleActivityAt = await this.getCachedLastVisibleActivityAt(dirName, eventsPath, st.mtimeMs);
+          session.modifiedTime = session.lastVisibleActivityAt ?? session.startTime;
         } catch {
           try {
             const st = await stat(yamlPath);
-            session.modifiedTime = st.mtime.toISOString();
+            session.modifiedTime = session.startTime ?? st.mtime.toISOString();
           } catch {}
         }
         return session;
@@ -1191,7 +1226,7 @@ export class SessionManager {
     const results = await Promise.all(sessionPromises);
     const sessions = results.filter((s): s is any => s !== null);
 
-    // Sort by most recently modified first
+    // Sort by most recent visible activity first
     sessions.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
 
     this.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: sessions.length });

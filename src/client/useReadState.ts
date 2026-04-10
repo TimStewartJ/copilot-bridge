@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { Session } from "./api";
-import { fetchReadState, markSessionRead, markSessionUnread } from "./api";
+import { fetchReadState, getSessionActivityTime, markSessionRead, markSessionUnread } from "./api";
 
 type ReadState = Record<string, string>; // sessionId → ISO lastReadAt
 
@@ -48,11 +48,11 @@ export function useReadState() {
   }, []);
 
   const isUnread = useCallback(
-    (sessionId: string, modifiedTime?: string): boolean => {
-      if (!modifiedTime) return false;
+    (sessionId: string, activityTime?: string): boolean => {
+      if (!activityTime) return false;
       const lastRead = state[sessionId];
       if (!lastRead) return true;
-      return new Date(modifiedTime).getTime() > new Date(lastRead).getTime();
+      return new Date(activityTime).getTime() > new Date(lastRead).getTime();
     },
     [state],
   );
@@ -62,7 +62,7 @@ export function useReadState() {
       return sessionList.filter(
         (s) =>
           s.sessionId !== activeSessionId &&
-          isUnread(s.sessionId, s.modifiedTime),
+          isUnread(s.sessionId, getSessionActivityTime(s)),
       ).length;
     },
     [isUnread],

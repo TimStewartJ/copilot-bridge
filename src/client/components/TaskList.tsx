@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import type { Task, TaskGroup, Session } from "../api";
+import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
@@ -84,7 +84,7 @@ export default function TaskList({
         const session = sessionMap.get(sid);
         if (!session || session.archived) continue;
         if (session.busy) { busyCount++; continue; }
-        if (isUnread?.(sid, session.modifiedTime)) unreadCount++;
+        if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
       }
       indicators.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount });
     }
@@ -103,7 +103,7 @@ export default function TaskList({
     if (!ctxTask || !isUnread) return 0;
     return ctxTask.sessionIds.filter((sid) => {
       const session = sessionMap.get(sid);
-      return session && isUnread(sid, session.modifiedTime);
+      return session && isUnread(sid, getSessionActivityTime(session));
     }).length;
   }, [ctxTask, sessionMap, isUnread]);
 
@@ -337,7 +337,7 @@ export default function TaskList({
               onClick={() => {
                 for (const sid of ctxTask.sessionIds) {
                   const session = sessionMap.get(sid);
-                  if (session && isUnread?.(sid, session.modifiedTime)) {
+                  if (session && isUnread?.(sid, getSessionActivityTime(session))) {
                     markRead(sid);
                   }
                 }
