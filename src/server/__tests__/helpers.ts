@@ -51,6 +51,7 @@ export function createMockSessionManager() {
     getSessionMessages: async () => ({ messages: [], total: 0, hasMore: false }),
     readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false }),
     warmSession: async () => {},
+    reloadSession: async () => [],
     deleteSession: async () => {},
     gracefulShutdown: async () => {},
     evictAllCachedSessions: () => {},

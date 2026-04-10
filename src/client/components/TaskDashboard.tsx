@@ -58,6 +58,7 @@ interface TaskDashboardProps {
   // Session actions (for context menu)
   onDeleteSession?: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
+  onReloadSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
@@ -83,6 +84,7 @@ export default function TaskDashboard({
   onRefresh,
   onDeleteSession,
   onDuplicateSession,
+  onReloadSession,
   onArchiveSession,
   onUnlinkFromTask,
   onMarkUnread,
@@ -249,6 +251,7 @@ export default function TaskDashboard({
                   }
                   onDeleteSession={onDeleteSession}
                   onDuplicateSession={onDuplicateSession}
+                  onReloadSession={onReloadSession}
                   onMarkUnread={onMarkUnread}
                   hasDraft={hasDraft}
                   onRequestArchived={onRequestArchived}

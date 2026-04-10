@@ -659,6 +659,45 @@ describe("Session manager routes", () => {
     expect(res.body).toHaveProperty("sessionId");
   });
 
+  it("POST /api/sessions/:id/reload reloads a session", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.reloadSession = vi.fn().mockResolvedValue([
+      { name: "demo", status: "connected", source: "settings" },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/reload");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ready: true,
+      servers: [{ name: "demo", status: "connected", source: "settings" }],
+    });
+    expect(sessionManager.reloadSession).toHaveBeenCalledWith("test-id");
+  });
+
+  it("POST /api/sessions/:id/reload rejects busy sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/reload");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot reload a busy session");
+  });
+
+  it("POST /api/sessions/:id/reload maps late busy errors to 409", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.reloadSession = vi.fn().mockRejectedValue(new Error("Cannot reload a busy session"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/reload");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot reload a busy session");
+  });
+
   it("POST /api/sessions/:id/abort aborts a session", async () => {
     const res = await request(app).post("/api/sessions/test-id/abort");
     expect(res.status).toBe(200);

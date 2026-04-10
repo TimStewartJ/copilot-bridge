@@ -3,7 +3,7 @@ import { getSessionActivityTime, type Task, type TaskGroup, type Session } from 
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText, RotateCw } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -62,6 +62,7 @@ interface TaskRailProps {
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
+  onReloadSession?: (sessionId: string) => void;
   onLinkToTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   onMarkAllQuickChatsRead?: () => void;
@@ -131,6 +132,7 @@ export default function TaskRail({
   onArchiveSession,
   onDeleteSession,
   onDuplicateSession,
+  onReloadSession,
   onLinkToTask,
   onMarkUnread,
   onMarkAllQuickChatsRead,
@@ -1135,6 +1137,14 @@ export default function TaskRail({
               icon={<CopyIcon size={14} />}
               label="Duplicate"
               onClick={() => { onDuplicateSession(qcCtxSession.sessionId); closeQcMenu(); }}
+            />
+          )}
+          {onReloadSession && (
+            <CtxItem
+              icon={<RotateCw size={14} />}
+              label="Reload MCPs"
+              disabled={qcCtxSession.busy}
+              onClick={() => { onReloadSession(qcCtxSession.sessionId); closeQcMenu(); }}
             />
           )}
           {onBulkAction && (

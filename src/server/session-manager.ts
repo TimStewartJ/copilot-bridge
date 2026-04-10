@@ -849,6 +849,7 @@ export class SessionManager {
   private client: CopilotClient | null = null;
   private deps: SessionManagerDeps;
   private activeSessions = new Set<string>();
+  private resumingSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
   private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
@@ -1449,7 +1450,7 @@ export class SessionManager {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
-    if (this.activeSessions.has(sessionId)) {
+    if (this.isSessionBusy(sessionId)) {
       throw new Error("Session is busy processing another message");
     }
 
@@ -1922,6 +1923,7 @@ export class SessionManager {
   async warmSession(sessionId: string): Promise<void> {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (this.sessionObjects.has(sessionId)) return; // already warm
+    if (this.isSessionBusy(sessionId)) throw new Error("Cannot warm a busy session");
 
     const sid = sessionId.slice(0, 8);
     const t0 = Date.now();
@@ -1930,18 +1932,23 @@ export class SessionManager {
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
     const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
-    const session = await Promise.race([
-      this.client.resumeSession(sessionId, resumeConfig),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
-      ),
-    ]);
-    this.sessionObjects.set(sessionId, session);
-    this.probeMcpStatus(sessionId, session);
+    this.resumingSessions.add(sessionId);
+    try {
+      const session = await Promise.race([
+        this.client.resumeSession(sessionId, resumeConfig),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
+        ),
+      ]);
+      this.sessionObjects.set(sessionId, session);
+      this.probeMcpStatus(sessionId, session);
 
-    const duration = Date.now() - t0;
-    this.recordSpan("session.warm", duration, sessionId);
-    console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+      const duration = Date.now() - t0;
+      this.recordSpan("session.warm", duration, sessionId);
+      console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+    } finally {
+      this.resumingSessions.delete(sessionId);
+    }
   }
 
   /** Check if a session object is cached and ready for interaction */
@@ -2034,17 +2041,47 @@ export class SessionManager {
 
   async deleteSession(sessionId: string): Promise<void> {
     if (!this.client) throw new Error("SessionManager not initialized");
-    if (this.activeSessions.has(sessionId)) {
+    if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot delete a busy session");
     }
-    this.sessionObjects.delete(sessionId);
+    this.evictCachedSession(sessionId);
     await this.client.deleteSession(sessionId);
     this.invalidateSessionListCache();
     console.log(`[sdk] Deleted session ${sessionId}`);
   }
 
+  async reloadSession(sessionId: string): Promise<McpServerStatus[]> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (this.isSessionBusy(sessionId)) {
+      throw new Error("Cannot reload a busy session");
+    }
+
+    const sid = sessionId.slice(0, 8);
+    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+
+    this.resumingSessions.add(sessionId);
+    try {
+      this.evictCachedSession(sessionId);
+      this.mcpStatus.delete(sessionId);
+
+      console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
+      const session = await Promise.race([
+        this.client.resumeSession(sessionId, resumeConfig),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("reloadSession timed out after 60s")), 60_000),
+        ),
+      ]);
+      this.sessionObjects.set(sessionId, session);
+
+      return this.getMcpStatus(sessionId);
+    } finally {
+      this.resumingSessions.delete(sessionId);
+    }
+  }
+
   isSessionBusy(sessionId: string): boolean {
-    return this.activeSessions.has(sessionId);
+    return this.activeSessions.has(sessionId) || this.resumingSessions.has(sessionId);
   }
 
   hasActiveTurns(): boolean {
@@ -2055,16 +2092,22 @@ export class SessionManager {
     return Array.from(this.activeSessions);
   }
 
+  private evictCachedSession(sessionId: string): boolean {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session) return false;
+    try { session.disconnect?.(); } catch { /* best-effort */ }
+    this.sessionObjects.delete(sessionId);
+    return true;
+  }
+
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
   evictAllCachedSessions(): void {
     const busy = new Set(this.activeSessions);
     let evicted = 0;
     this.titleModelCache = null;
-    for (const [id, session] of this.sessionObjects) {
+    for (const [id] of this.sessionObjects) {
       if (busy.has(id)) continue; // don't disrupt active turns
-      try { session.disconnect(); } catch { /* best-effort */ }
-      this.sessionObjects.delete(id);
-      evicted++;
+      if (this.evictCachedSession(id)) evicted++;
     }
     console.log(`[sdk] Evicted ${evicted} cached session(s) (${busy.size} busy, skipped)`);
   }
