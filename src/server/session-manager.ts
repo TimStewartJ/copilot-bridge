@@ -41,6 +41,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(REPO_ROOT, "data", "pre-deploy-sha");
+const TITLE_GENERATION_MODEL_BY_FAMILY = {
+  gpt: "gpt-5-mini",
+  claude: "claude-haiku-4.5",
+} as const;
 
 function run(cmd: string): { ok: boolean; output: string } {
   try {
@@ -786,6 +790,8 @@ export interface SessionManagerDeps {
   copilotHome?: string;
 }
 
+type TitleGenerationOutcome = "success" | "invalid" | "failed";
+
 /** Options that don't come from AppContext — caller provides these directly. */
 export interface CreateSessionManagerOpts {
   tools: ReturnType<typeof defineTool>[];
@@ -836,6 +842,7 @@ export class SessionManager {
   private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
   private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
+  private titleModelCache: { key: string; value?: string; checkedAt: number } | null = null;
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
   private sessionListCache: { data: any[]; timestamp: number } | null = null;
@@ -849,6 +856,70 @@ export class SessionManager {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
+  }
+
+  private recordTitleGenerationAttempt(
+    sessionId: string,
+    duration: number,
+    metadata: {
+      outcome: TitleGenerationOutcome;
+      model: string;
+      userChars: number;
+      assistantChars: number;
+      rawTitle?: string;
+      returnedChars?: number;
+      storedTitle?: string;
+      invalidReason?: "empty" | "too_long" | "prompt_echo";
+      error?: string;
+    },
+  ): void {
+    this.recordSpan("session.title_generation", duration, sessionId, metadata);
+  }
+
+  private getConfiguredModel(): string | undefined {
+    return this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
+  }
+
+  private getModelFamily(model?: string): keyof typeof TITLE_GENERATION_MODEL_BY_FAMILY | undefined {
+    if (!model) return undefined;
+    if (model.startsWith("gpt-")) return "gpt";
+    if (model.startsWith("claude-")) return "claude";
+    return undefined;
+  }
+
+  private async resolveTitleGenerationModel(): Promise<string | undefined> {
+    const now = Date.now();
+    const fallbackModel = this.getConfiguredModel();
+    const cacheKey = fallbackModel ?? "__sdk_default__";
+    if (this.titleModelCache && this.titleModelCache.key === cacheKey && now - this.titleModelCache.checkedAt < 5 * 60_000) {
+      return this.titleModelCache.value;
+    }
+
+    if (!this.client) {
+      this.titleModelCache = { key: cacheKey, value: fallbackModel, checkedAt: now };
+      return fallbackModel;
+    }
+
+    try {
+      const models = await this.client.listModels() as any[];
+      const enabledIds = new Set(
+        models
+          .filter((m) => !m.policy || m.policy.state !== "disabled")
+          .map((m) => m.id as string),
+      );
+      const configuredFamily = this.getModelFamily(fallbackModel);
+      const preferred = configuredFamily
+        ? TITLE_GENERATION_MODEL_BY_FAMILY[configuredFamily]
+        : undefined;
+      const resolved = (preferred && enabledIds.has(preferred))
+        ? preferred
+        : (fallbackModel && enabledIds.has(fallbackModel) ? fallbackModel : undefined);
+      this.titleModelCache = { key: cacheKey, value: resolved, checkedAt: now };
+      return resolved;
+    } catch {
+      this.titleModelCache = { key: cacheKey, value: fallbackModel, checkedAt: now };
+      return fallbackModel;
+    }
   }
 
   private lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null {
@@ -1836,21 +1907,24 @@ export class SessionManager {
 
     const sid = sessionId.slice(0, 8);
     console.log(`[titles] [${sid}] Generating session title...`);
+    const startedAt = Date.now();
+    const titleModel = await this.resolveTitleGenerationModel();
 
     let titleSessionId: string | undefined;
     try {
-      const titleSession = await this.client.createSession({ onPermissionRequest: approveAll });
+      const titleSession = await this.client.createSession({
+        onPermissionRequest: approveAll,
+        ...(titleModel ? { model: titleModel } : {}),
+      });
       titleSessionId = titleSession.sessionId;
       this.disposableSessionIds.add(titleSessionId);
-      const truncatedUser = userMessage.slice(0, 500);
-      const truncatedAssistant = assistantResponse.slice(0, 500);
 
       const prompt = [
         "Generate a concise 3-6 word title for this conversation.",
         "Reply with ONLY the title text — no quotes, no punctuation unless it's part of a name.",
         "",
-        `User: ${truncatedUser}`,
-        `Assistant: ${truncatedAssistant}`,
+        `User: ${userMessage}`,
+        `Assistant: ${assistantResponse}`,
       ].join("\n");
 
       const result = await titleSession.sendAndWait({ prompt }, 15_000);
@@ -1858,18 +1932,46 @@ export class SessionManager {
 
       // Reject titles that look like the prompt was echoed back
       const looksLikePrompt = title && /generate|concise|3-6 word|title for this/i.test(title);
+      const invalidReason =
+        !title ? "empty"
+          : looksLikePrompt ? "prompt_echo"
+            : title.length > 80 ? "too_long"
+              : undefined;
 
-      if (title && title.length > 0 && title.length <= 80 && !looksLikePrompt) {
+      if (!invalidReason && title) {
         this.deps.sessionTitles.setTitle(sessionId, title);
         const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
         bus.emit({ type: "title_changed", title });
         this.deps.globalBus.emit({ type: "session:title", sessionId, title });
         console.log(`[titles] [${sid}] Title: "${title}"`);
+        this.recordTitleGenerationAttempt(sessionId, Date.now() - startedAt, {
+          outcome: "success",
+          model: titleModel ?? "sdk-default",
+          userChars: userMessage.length,
+          assistantChars: assistantResponse.length,
+          rawTitle: title,
+          storedTitle: title,
+        });
       } else {
         console.log(`[titles] [${sid}] Title generation returned invalid result: "${title}"`);
+        this.recordTitleGenerationAttempt(sessionId, Date.now() - startedAt, {
+          outcome: "invalid",
+          model: titleModel ?? "sdk-default",
+          invalidReason,
+          userChars: userMessage.length,
+          assistantChars: assistantResponse.length,
+          returnedChars: title?.length ?? 0,
+        });
       }
     } catch (err) {
       console.error(`[titles] [${sid}] Title generation failed:`, err);
+      this.recordTitleGenerationAttempt(sessionId, Date.now() - startedAt, {
+        outcome: "failed",
+        model: titleModel ?? "sdk-default",
+        userChars: userMessage.length,
+        assistantChars: assistantResponse.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       this.titleGenerationInFlight.delete(sessionId);
       // Always clean up the disposable title session
@@ -1908,6 +2010,7 @@ export class SessionManager {
   evictAllCachedSessions(): void {
     const busy = new Set(this.activeSessions);
     let evicted = 0;
+    this.titleModelCache = null;
     for (const [id, session] of this.sessionObjects) {
       if (busy.has(id)) continue; // don't disrupt active turns
       try { session.disconnect(); } catch { /* best-effort */ }
