@@ -65,12 +65,13 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     // Upsert into docs_pages
     const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
     if (existing) {
+      // With external-content FTS, remove the old indexed row before mutating docs_pages.
+      // Otherwise SQLite can fail when the content table body/title has already changed.
+      db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
       db.prepare(`
         UPDATE docs_pages SET title=?, tags=?, body=?, frontmatter_json=?, folder=?, created=?, modified=?
         WHERE path=?
       `).run(page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified, page.path);
-      // Update FTS
-      db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
       db.prepare("INSERT INTO docs_fts (rowid, path, title, tags, body) VALUES (?, ?, ?, ?, ?)").run(
         existing.rowid, page.path, page.title, tagsStr, page.body,
       );

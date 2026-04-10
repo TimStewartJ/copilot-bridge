@@ -653,7 +653,7 @@ export function createBridgeTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_write", {
-      description: "Create or update a knowledge base page. Provide raw markdown content (with optional YAML frontmatter). Supports [[wikilinks]] — use [[page-path]] or [[page-path|Display Text]] to link between pages (resolved by path, title, or slug). Rejects writes to database collection folders — use docs_db_add for those.",
+      description: "Create or update a knowledge base page. Provide raw markdown content (with optional YAML frontmatter). Supports [[wikilinks]] — use [[page-path]] or [[page-path|Display Text]] to link between pages (resolved by path, title, or slug). Rejects writes to database collection folders — for those, use docs_db_add with { folder, fields: { title, ... }, body }.",
       parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" }, content: { type: "string", description: "Raw markdown content (may include YAML frontmatter)" } }, required: ["path", "content"] },
       handler: async (args: any) => {
         try {
@@ -694,11 +694,12 @@ export function createBridgeTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_db_add", {
-      description: "Create a new entry in a database collection. Pass structured field values — the server validates against the schema and generates the markdown file. Always include a 'title' field.",
-      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, fields: { type: "object", description: "Field values as key-value pairs. Must include 'title'. Other fields are validated against the folder's schema." }, body: { type: "string", description: "Optional markdown body content for the entry" } }, required: ["folder", "fields"] },
+      description: "Create a new entry in a database collection. Preferred shape: { folder: 'incidents', fields: { title: 'March Outage', severity: 'sev1' }, body: '# Notes' }. The server validates fields against the schema and generates the markdown file.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, fields: { type: "object", description: "Field values as key-value pairs. Preferred shape: { title: 'Entry title', ... }." }, body: { type: "string", description: "Optional markdown body content for the entry" } }, required: ["folder"] },
       handler: async (args: any) => {
         try {
-          const entry = ctx.docsStore!.addDbEntry(args.folder, args.fields, args.body);
+          const { fields, body } = ctx.docsStore!.normalizeDbEntryInput(args, "add", args.folder);
+          const entry = ctx.docsStore!.addDbEntry(args.folder, fields, body);
           const page = ctx.docsStore!.readPage(entry.path);
           if (page) ctx.docsIndex!.indexPage(page);
           return { path: entry.path, slug: entry.slug, success: true };
@@ -708,11 +709,12 @@ export function createBridgeTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_db_update", {
-      description: "Update an existing database entry. Only the provided fields are changed — other fields are preserved. The server validates against the schema.",
-      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, slug: { type: "string", description: "Entry slug (filename without .md, returned by docs_db_add or docs_db_query)" }, fields: { type: "object", description: "Field values to update (only changed fields needed)" }, body: { type: "string", description: "Optional new markdown body content" } }, required: ["folder", "slug", "fields"] },
+      description: "Update an existing database entry. Preferred shape: { folder: 'incidents', slug: 'march-outage', fields: { severity: 'sev2' }, body?: '# Updated notes' }. Only changed fields are updated; other fields are preserved.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, slug: { type: "string", description: "Entry slug (filename without .md, returned by docs_db_add or docs_db_query)" }, fields: { type: "object", description: "Field values to update (preferred shape: { fieldName: value })." }, body: { type: "string", description: "Optional new markdown body content" } }, required: ["folder", "slug"] },
       handler: async (args: any) => {
         try {
-          const entry = ctx.docsStore!.updateDbEntry(args.folder, args.slug, args.fields, args.body);
+          const { fields, body } = ctx.docsStore!.normalizeDbEntryInput(args, "update", args.folder);
+          const entry = ctx.docsStore!.updateDbEntry(args.folder, args.slug, fields, body);
           const page = ctx.docsStore!.readPage(entry.path);
           if (page) ctx.docsIndex!.indexPage(page);
           return { path: entry.path, success: true };

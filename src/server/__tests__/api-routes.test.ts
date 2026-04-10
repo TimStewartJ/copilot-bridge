@@ -876,6 +876,41 @@ describe("Docs DB routes", () => {
     expect(res.body.slug).toBeTruthy();
   });
 
+  it("POST /api/docs/db normalizes top-level fields into a DB entry", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        title: "Top-level outage",
+        severity: "sev2",
+        body: "Normalized from top-level fields.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const page = ctx.docsStore!.readPage(`${folder}/${res.body.slug}`);
+    expect(page?.frontmatter.title).toBe("Top-level outage");
+    expect(page?.frontmatter.severity).toBe("sev2");
+    expect(page?.body).toBe("Normalized from top-level fields.");
+  });
+
+  it("POST /api/docs/db extracts DB fields from body frontmatter when fields are missing", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        body: "---\ntitle: Frontmatter outage\nseverity: sev1\nresolved: false\ncreated: 2026-04-09T00:00:00.000Z\nmodified: 2026-04-09T00:00:00.000Z\n---\n\nRecovered from pasted raw markdown.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const page = ctx.docsStore!.readPage(`${folder}/${res.body.slug}`);
+    expect(page?.frontmatter.title).toBe("Frontmatter outage");
+    expect(page?.frontmatter.severity).toBe("sev1");
+    expect(page?.frontmatter.resolved).toBe(false);
+    expect(page?.body).toBe("Recovered from pasted raw markdown.");
+  });
+
   it("GET /api/docs/db queries entries", async () => {
     await request(app)
       .post(`/api/docs/db/${folder}`)
@@ -903,11 +938,70 @@ describe("Docs DB routes", () => {
     expect(res.body.success).toBe(true);
   });
 
+  it("PATCH /api/docs/db normalizes top-level update fields", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Patch top-level", severity: "sev3" } });
+    const slug = create.body.slug;
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ severity: "sev1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.frontmatter.severity).toBe("sev1");
+  });
+
+  it("PATCH /api/docs/db allows body-only updates", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Body only patch", severity: "sev3" }, body: "Original body" });
+    const slug = create.body.slug;
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ body: "Updated body only" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.body).toBe("Updated body only");
+
+    const updatedSearch = await request(app).get("/api/docs/search?q=Updated%20body%20only");
+    expect(updatedSearch.status).toBe(200);
+    expect(updatedSearch.body.results.map((r: any) => r.path)).toContain(`${folder}/${slug}`);
+
+    const staleSearch = await request(app).get("/api/docs/search?q=Original%20body");
+    expect(staleSearch.status).toBe(200);
+    expect(staleSearch.body.results.map((r: any) => r.path)).not.toContain(`${folder}/${slug}`);
+  });
+
   it("POST /api/docs/db validates required title", async () => {
     const res = await request(app)
       .post(`/api/docs/db/${folder}`)
       .send({ fields: { severity: "sev1" } });
     expect(res.status).toBe(400);
+  });
+
+  it("POST /api/docs/db returns actionable guidance when no fields can be inferred", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ body: "# Just markdown" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("docs_db_add expects");
+    expect(res.body.error).toContain(`folder: "${folder}"`);
+  });
+
+  it("PUT /api/docs/pages rejects DB-folder writes with docs_db_add guidance", async () => {
+    const res = await request(app)
+      .put(`/api/docs/pages/${folder}/manual-write`)
+      .send({ content: "# Raw write" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`Cannot write raw content to DB folder "${folder}"`);
+    expect(res.body.error).toContain("docs_db_add");
+    expect(res.body.error).toContain(`folder: "${folder}"`);
   });
 });
 
