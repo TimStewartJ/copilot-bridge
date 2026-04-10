@@ -25,6 +25,12 @@ Use this skill when you need browser control beyond a single page read:
 
 For **simple reads of one URL**, prefer `browser_fetch` first. For raw HTML/API calls or simple static pages, prefer `web_fetch`.
 
+For **online research or truth-checking**, prefer the built-in tools before escalating to this skill:
+- use `web_search` for source discovery and narrow, independent fact checks
+- use `browser_fetch` to confirm rendered or canonical pages after search
+- keep separate claims as separate checks when practical instead of collapsing everything into one broad search
+- use this skill only when verification requires a multi-step or stateful browser flow
+
 ## Bridge Browser Rules
 
 The bridge's built-in browser tools (`browser_fetch`, `web_search`) use a hardened, bridge-owned session/profile internally.

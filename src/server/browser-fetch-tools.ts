@@ -36,9 +36,11 @@ export function createBrowserFetchTools(ctx: AppContext) {
     defineTool("browser_fetch", {
       description:
         "Fetch a web page using a real browser and return its content as an accessibility snapshot. " +
-        "Use this instead of web_fetch when a site requires JavaScript rendering, blocks bots, " +
-        "returns empty/broken content via web_fetch, or is a single-page app (SPA). " +
-        "For multi-step interactive flows (login, form filling, pagination), use the browser skill instead.",
+        "Use this to confirm rendered or canonical pages after web_search, or instead of web_fetch " +
+        "when a site requires JavaScript rendering, blocks bots, returns empty/broken content via " +
+        "web_fetch, or is a single-page app (SPA). For broader source discovery or parallel " +
+        "research fan-out, use web_search first. For multi-step interactive flows (login, form " +
+        "filling, pagination), use the browser skill instead.",
       parameters: {
         type: "object" as const,
         properties: {

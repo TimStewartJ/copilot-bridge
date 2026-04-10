@@ -95,6 +95,18 @@ Escalation path: web_fetch (fast, simple) → browser_fetch (real browser, singl
 </browser_escalation>
 `.trim();
 
+const RESEARCH_GUIDANCE = `
+<research_behavior>
+When a question depends on current facts, third-party behavior, online documentation, or other information that can drift from model memory, verify it online before answering confidently.
+
+- Prefer web_search for source discovery and narrow fact-finding checks.
+- Split independent claims into separate checks, and run those checks in parallel when practical.
+- Use browser_fetch to confirm rendered or canonical pages after search fan-out, especially for JS-heavy or bot-protected sites.
+- For important claims, compare more than one source when reasonable before making a strong assertion.
+- Skip unnecessary browsing for purely local codebase work or when the answer is already fully grounded in the files/context you have.
+</research_behavior>
+`.trim();
+
 // ── Session config builder ───────────────────────────────────────
 
 interface ScheduleContext {
@@ -1055,6 +1067,8 @@ export class SessionManager {
     if (settings?.customInstructions?.trim()) {
       contextParts.push(settings.customInstructions.trim());
     }
+
+    contextParts.push(RESEARCH_GUIDANCE);
 
     // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
     if (task && this.deps.tagStore) {
