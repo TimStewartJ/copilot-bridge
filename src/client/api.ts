@@ -323,6 +323,16 @@ export async function warmSession(sessionId: string): Promise<void> {
   await apiFetch<{ ready: boolean }>(`/api/sessions/${sessionId}/warm`, {});
 }
 
+export interface ReloadSessionResult {
+  ready: boolean;
+  servers: McpServerStatus[];
+}
+
+/** Force a cached session to re-resume with fresh config */
+export async function reloadSession(sessionId: string): Promise<ReloadSessionResult> {
+  return apiFetch<ReloadSessionResult>(`/api/sessions/${sessionId}/reload`, {});
+}
+
 // ── Task API ──────────────────────────────────────────────────────
 
 export async function fetchTasks(): Promise<Task[]> {

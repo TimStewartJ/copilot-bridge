@@ -12,6 +12,7 @@ import {
   deleteTask,
   deleteSession,
   duplicateSession,
+  reloadSession,
   createTaskSession,
   linkResource,
   reorderTasks,
@@ -28,7 +29,8 @@ import {
   type Session,
   type Task,
   type TaskGroup,
-} from "./api";
+  type McpServerStatus,
+  } from "./api";
 import { useReadState } from "./useReadState";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
@@ -86,6 +88,7 @@ export default function App() {
     shouldReload: false,
     reconnectedSincePending: false,
   });
+  const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
@@ -682,6 +685,21 @@ export default function App() {
     }
   };
 
+  const handleReloadSession = async (sessionId: string) => {
+    try {
+      const result = await reloadSession(sessionId);
+      setSessionReloads((prev) => ({
+        ...prev,
+        [sessionId]: {
+          token: (prev[sessionId]?.token ?? 0) + 1,
+          servers: result.servers,
+        },
+      }));
+    } catch (err) {
+      console.error("Failed to reload session MCPs:", err);
+    }
+  };
+
   const handleResumeTask = async (taskId: string, sessionId?: string) => {
     if (sessionId) {
       navigate(`/tasks/${taskId}/sessions/${sessionId}`);
@@ -846,6 +864,7 @@ export default function App() {
         onArchiveSession={handleArchiveSession}
         onDeleteSession={handleDeleteSession}
         onDuplicateSession={handleDuplicateSession}
+        onReloadSession={handleReloadSession}
         onLinkToTask={handleLinkToTask}
         onMarkUnread={markUnread}
         onMarkAllQuickChatsRead={handleMarkAllRead}
@@ -901,6 +920,7 @@ export default function App() {
                   onLinkToTask={handleLinkToTask}
                   onDeleteSession={handleDeleteSession}
                   onDuplicateSession={handleDuplicateSession}
+                  onReloadSession={handleReloadSession}
                   markUnread={markUnread}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
                   hasDraft={hasDraft}
@@ -933,6 +953,7 @@ export default function App() {
                   onDeleteTask={handleDeleteTask}
                   onDeleteSession={handleDeleteSession}
                   onDuplicateSession={handleDuplicateSession}
+                  onReloadSession={handleReloadSession}
                   onMarkUnread={markUnread}
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
@@ -1020,6 +1041,7 @@ export default function App() {
                     onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
                     onDeleteSession={handleDeleteSession}
                     onDuplicateSession={handleDuplicateSession}
+                    onReloadSession={handleReloadSession}
                     onArchiveSession={handleArchiveSession}
                     onMarkUnread={markUnread}
                     hasDraft={hasDraft}
@@ -1046,13 +1068,13 @@ export default function App() {
             <Route
               path="tasks/:taskId/sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
+                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} />
+                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} />
               }
             />
             <Route path="docs/*" element={<DocsView />} />
@@ -1105,9 +1127,10 @@ function MobileTaskListView({
   exitingIds,
   allTasks,
   onLinkToTask,
-  onDeleteSession,
-  onDuplicateSession,
-  markUnread,
+        onDeleteSession,
+        onDuplicateSession,
+        onReloadSession,
+        markUnread,
   onRefresh,
   hasDraft,
   onMarkAllRead,
@@ -1144,6 +1167,7 @@ function MobileTaskListView({
   onLinkToTask: (sessionId: string, taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
+  onReloadSession?: (sessionId: string) => void;
   markUnread?: (sessionId: string) => void;
   onRefresh: () => Promise<void>;
   hasDraft?: (sessionId: string) => boolean;
@@ -1225,6 +1249,7 @@ function MobileTaskListView({
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
             onDuplicateSession={onDuplicateSession}
+            onReloadSession={onReloadSession}
             onMarkUnread={markUnread}
             hasDraft={hasDraft}
             selectMode={selectMode}
@@ -1264,19 +1289,21 @@ function MobileTaskListView({
 }
 
 // Thin wrapper to extract sessionId from URL and pass hasPlan + draft props
-function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft, materializeSession }: {
+function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft, materializeSession, sessionReloads }: {
   sessions: Session[];
   onMessageSent: () => void;
   getDraft: (id: string) => import("./useDrafts").Draft | null;
   setDraft: (id: string, text: string, attachments?: import("./api").BlobAttachment[]) => void;
   clearDraft: (id: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
+  sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
 
   const isDraft = rawSessionId === "new";
   const sessionId = isDraft ? null : (rawSessionId ?? null);
+  const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
   const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
   const draft = sessionId ? getDraft(sessionId) : null;
   const handleDraftChange = useCallback(
@@ -1319,6 +1346,8 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
       onDraftChange={handleDraftChange}
       onDraftClear={handleDraftClear}
       onCreateAndSend={isDraft ? onCreateAndSend : undefined}
+      reloadToken={sessionReload?.token ?? 0}
+      reloadMcpServers={sessionReload?.servers}
     />
   );
 }

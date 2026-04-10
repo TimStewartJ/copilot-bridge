@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { getSessionActivityTime, type Session, type Task, type BatchAction } from "../api";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, CheckSquare, Square, SquareCheckBig } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, CheckSquare, Square, SquareCheckBig, RotateCw } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -138,6 +138,8 @@ interface SessionListProps {
   onDeleteSession?: (sessionId: string) => void;
   // Session duplication
   onDuplicateSession?: (sessionId: string) => void;
+  // Session reload
+  onReloadSession?: (sessionId: string) => void;
   // Mark unread
   onMarkUnread?: (sessionId: string) => void;
   // Draft indicator
@@ -171,6 +173,7 @@ export default function SessionList({
   onUnlinkFromTask,
   onDeleteSession,
   onDuplicateSession,
+  onReloadSession,
   onMarkUnread,
   hasDraft,
   exitingIds,
@@ -352,6 +355,17 @@ export default function SessionList({
               label={ctxSession.archived ? "Unarchive" : "Archive"}
               onClick={() => {
                 onArchiveSession(ctxMenu.id, !ctxSession.archived);
+                closeMenu();
+              }}
+            />
+          )}
+          {onReloadSession && ctxSession && (
+            <CtxItem
+              icon={<RotateCw size={14} />}
+              label="Reload MCPs"
+              disabled={ctxSession.busy}
+              onClick={() => {
+                onReloadSession(ctxMenu.id);
                 closeMenu();
               }}
             />

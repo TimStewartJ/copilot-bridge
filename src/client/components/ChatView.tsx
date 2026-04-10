@@ -24,6 +24,8 @@ interface ChatViewProps {
   onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
   onDraftClear?: () => void;
   onCreateAndSend?: (prompt: string, attachments?: BlobAttachment[]) => Promise<void>;
+  reloadToken?: number;
+  reloadMcpServers?: McpServerStatus[];
 }
 
 function renderPendingStatusCard(
@@ -75,7 +77,17 @@ function renderPendingStatusCard(
   );
 }
 
-export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onDraftChange, onDraftClear, onCreateAndSend }: ChatViewProps) {
+export default function ChatView({
+  sessionId,
+  hasPlan,
+  onMessageSent,
+  draft,
+  onDraftChange,
+  onDraftClear,
+  onCreateAndSend,
+  reloadToken = 0,
+  reloadMcpServers,
+}: ChatViewProps) {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
@@ -84,6 +96,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   const [creating, setCreating] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
+  const [manualMcpOverride, setManualMcpOverride] = useState<McpServerStatus[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -133,8 +146,8 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
     reconnect,
   } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
 
-  // Merge MCP status: prefer live stream updates over fetched status
-  const effectiveMcpServers = (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus) ?? [];
+  // Prefer a manual override immediately after reload, then return to live stream updates.
+  const effectiveMcpServers = (manualMcpOverride ?? (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus)) ?? [];
 
   // Load history + MCP status when session changes.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
@@ -151,6 +164,7 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
       setLoadingMore(false);
       setHasMore(false);
       setMcpStatus([]);
+      setManualMcpOverride(null);
       firstItemIndex.current = 0;
       loadingMoreRef.current = false;
       return;
@@ -289,6 +303,17 @@ export default function ChatView({ sessionId, hasPlan, onMessageSent, draft, onD
   useEffect(() => {
     setHasMore(sessionId ? firstItemIndex.current > 0 : false);
   }, [entries, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || reloadMcpServers === undefined) return;
+    setManualMcpOverride(reloadMcpServers);
+    setMcpStatus(reloadMcpServers);
+  }, [sessionId, reloadToken, reloadMcpServers]);
+
+  useEffect(() => {
+    if ((streamMcpServers?.length ?? 0) === 0) return;
+    setManualMcpOverride(null);
+  }, [streamMcpServers]);
 
   // Scroll preservation on prepend + auto-scroll on message changes.
   // useLayoutEffect runs before paint, preventing flash.

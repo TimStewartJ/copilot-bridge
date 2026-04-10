@@ -250,6 +250,22 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // Reload a session with fresh config — evicts cached object, then resumes it
+  router.post("/sessions/:id/reload", async (req, res) => {
+    try {
+      if (ctx.sessionManager.isSessionBusy(req.params.id)) {
+        return res.status(409).json({ error: "Cannot reload a busy session" });
+      }
+      const servers = await ctx.sessionManager.reloadSession(req.params.id);
+      res.json({ ready: true, servers });
+    } catch (err) {
+      if (err instanceof Error && err.message === "Cannot reload a busy session") {
+        return res.status(409).json({ error: err.message });
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post("/sessions", async (req, res) => {
     try {
       const { name } = req.body ?? {};

@@ -85,6 +85,7 @@ interface TaskPanelProps {
   onDeleteTask?: (taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
+  onReloadSession?: (sessionId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   hasDraft?: (sessionId: string) => boolean;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
@@ -121,6 +122,7 @@ export default function TaskPanel({
   onDeleteTask,
   onDeleteSession,
   onDuplicateSession,
+  onReloadSession,
   onMarkUnread,
   hasDraft,
   onMoveTaskToGroup,
@@ -343,6 +345,7 @@ export default function TaskPanel({
             }
             onDeleteSession={onDeleteSession}
             onDuplicateSession={onDuplicateSession}
+            onReloadSession={onReloadSession}
             onMarkUnread={onMarkUnread}
             hasDraft={hasDraft}
             onRequestArchived={onRequestArchived}
