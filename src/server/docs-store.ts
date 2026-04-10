@@ -12,6 +12,7 @@ export interface DocPage {
   frontmatter: Record<string, any>;
   body: string;
   folder: string;
+  isDbItem: boolean;
   created: string;
   modified: string;
 }
@@ -253,6 +254,7 @@ export function createDocsStore(docsDir: string) {
       frontmatter: data,
       body: content.trim(),
       folder: folderOf(resolved.canonicalPath),
+      isDbItem: isDbFolder(folderOf(resolved.canonicalPath)),
       created: String(data.created || ""),
       modified: String(data.modified || ""),
     };

@@ -911,6 +911,7 @@ export interface DocPage {
   frontmatter: Record<string, unknown>;
   body: string;
   folder: string;
+  isDbItem: boolean;
   created: string;
   modified: string;
 }
