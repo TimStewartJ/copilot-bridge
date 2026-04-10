@@ -772,6 +772,7 @@ describe("Docs routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.body).toContain("Content here");
     expect(res.body.title).toBe("read-me");
+    expect(res.body.isDbItem).toBe(false);
   });
 
   it("GET /api/docs/pages returns 404 for missing page", async () => {
@@ -892,6 +893,20 @@ describe("Docs DB routes", () => {
     expect(page?.frontmatter.title).toBe("Top-level outage");
     expect(page?.frontmatter.severity).toBe("sev2");
     expect(page?.body).toBe("Normalized from top-level fields.");
+  });
+
+  it("GET /api/docs/pages marks DB entries", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        fields: { title: "Marked outage", severity: "sev1" },
+        body: "Body content",
+      });
+
+    const res = await request(app).get(`/api/docs/pages/${folder}/${create.body.slug}`);
+    expect(res.status).toBe(200);
+    expect(res.body.isDbItem).toBe(true);
+    expect(res.body.folder).toBe(folder);
   });
 
   it("POST /api/docs/db extracts DB fields from body frontmatter when fields are missing", async () => {

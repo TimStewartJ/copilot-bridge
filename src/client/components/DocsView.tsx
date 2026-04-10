@@ -304,6 +304,7 @@ export default function DocsView() {
   // Page state
   const [page, setPage] = useState<DocPage | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
+  const [dbItemSchema, setDbItemSchema] = useState<DbSchema | null>(null);
 
   // Editor state
   const [editing, setEditing] = useState(false);
@@ -377,6 +378,7 @@ export default function DocsView() {
     setCreatingNew(false);
     setPageLoading(true);
     setSidebarOpen(false);
+    setDbItemSchema(null);
 
     if (isDbFromUrl) {
       setPage(null);
@@ -604,6 +606,27 @@ export default function DocsView() {
     });
     return () => { cancelled = true; };
   }, [page?.body]);
+
+  useEffect(() => {
+    if (!page?.folder || !page.isDbItem) {
+      setDbItemSchema(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDbItemSchema(null);
+    fetchDbSchema(page.folder)
+      .then((schema) => {
+        if (!cancelled) setDbItemSchema(schema);
+      })
+      .catch(() => {
+        if (!cancelled) setDbItemSchema(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [page?.path, page?.folder, page?.isDbItem]);
 
   // Custom markdown rendering with wikilink support
   const remarkPlugins = useMemo(() => [remarkGfm, remarkBreaks, remarkWikilink], []);
@@ -886,6 +909,8 @@ export default function DocsView() {
 
     // Page view
     if (page) {
+      const dbPropertyFields = dbItemSchema?.fields.filter((field) => field.name !== "title") ?? [];
+
       return (
         <div className="flex-1 flex flex-col overflow-y-auto">
           {/* Header */}
@@ -930,6 +955,26 @@ export default function DocsView() {
               </button>
             </div>
           </div>
+          {dbPropertyFields.length > 0 && (
+            <div className="shrink-0 px-4 py-3 border-b border-border bg-bg-primary">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-text-faint mb-2">
+                Properties
+              </div>
+              <dl className="grid gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,160px)_minmax(0,1fr)]">
+                {dbPropertyFields.map((field) => (
+                  <div
+                    key={field.name}
+                    className="grid gap-1 sm:contents"
+                  >
+                    <dt className="text-xs text-text-muted">{field.name}</dt>
+                    <dd className="text-xs text-text-primary min-w-0">
+                      <DbCell field={field} value={page.frontmatter[field.name]} />
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
           {/* Body */}
           <div className="flex-1 px-4 py-4 prose prose-invert prose-sm max-w-none text-text-primary prose-headings:text-text-primary prose-a:text-accent prose-code:text-text-primary prose-strong:text-text-primary prose-pre:bg-bg-secondary prose-pre:border prose-pre:border-border">
             <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents} urlTransform={wikiUrlTransform}>
