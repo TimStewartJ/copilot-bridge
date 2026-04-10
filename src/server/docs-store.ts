@@ -48,6 +48,9 @@ export interface DbEntry {
 }
 
 const VALID_FIELD_TYPES = new Set(["text", "select", "date", "number", "boolean", "url"]);
+const DB_INPUT_RESERVED_KEYS = new Set(["folder", "slug", "body", "fields"]);
+const DANGEROUS_DB_FIELD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const SYSTEM_DB_FIELD_KEYS = new Set(["created", "modified"]);
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -70,6 +73,32 @@ export function createDocsStore(docsDir: string) {
 
   function isReservedName(name: string): boolean {
     return name.startsWith("_");
+  }
+
+  function isPlainObject(value: unknown): value is Record<string, any> {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function buildDbUsageError(mode: "add" | "update", folder?: string): string {
+    const targetFolder = folder ?? "folder/name";
+    if (mode === "add") {
+      return `docs_db_add expects { folder: "${targetFolder}", fields: { title: "Entry title", ... }, body: "# Markdown body" }. If you passed title/category at the top level, nest them under fields.`;
+    }
+    return `docs_db_update expects { folder: "${targetFolder}", slug: "entry-slug", fields: { ... }, body?: "# Markdown body" }. If you passed field values at the top level, nest them under fields.`;
+  }
+
+  function createSafeFieldMap(): Record<string, any> {
+    return Object.create(null) as Record<string, any>;
+  }
+
+  function assignDbFields(target: Record<string, any>, source: Record<string, any>): void {
+    for (const [key, value] of Object.entries(source)) {
+      if (DANGEROUS_DB_FIELD_KEYS.has(key)) {
+        throw new Error(`Field name "${key}" is not allowed`);
+      }
+      if (SYSTEM_DB_FIELD_KEYS.has(key)) continue;
+      target[key] = value;
+    }
   }
 
   function generateSlug(title: string): string {
@@ -238,7 +267,9 @@ export function createDocsStore(docsDir: string) {
     // Write guard: reject writes to DB folders
     const folder = folderOf(pagePath);
     if (folder && isDbFolder(folder)) {
-      throw new Error(`Cannot write raw content to DB folder "${folder}" — use docs_db_add instead`);
+      throw new Error(
+        `Cannot write raw content to DB folder "${folder}" — use docs_db_add with { folder: "${folder}", fields: { title: "Entry title", ... }, body: "# Markdown body" } instead.`,
+      );
     }
 
     // Resolve: prefer existing file, fall back to folder/index.md
@@ -332,6 +363,46 @@ export function createDocsStore(docsDir: string) {
   }
 
   // ── DB entry CRUD ─────────────────────────────────────────────
+
+  function normalizeDbEntryInput(input: Record<string, any>, mode: "add" | "update", folder?: string): { fields: Record<string, any>; body?: string } {
+    const explicitFields = isPlainObject(input.fields) ? input.fields : undefined;
+    let normalizedBody = typeof input.body === "string" ? input.body : undefined;
+    const inferredFields = createSafeFieldMap();
+    const fields = createSafeFieldMap();
+
+    if (normalizedBody) {
+      try {
+        const parsed = matter(normalizedBody);
+        if (isPlainObject(parsed.data) && Object.keys(parsed.data).length > 0) {
+          assignDbFields(inferredFields, parsed.data);
+          normalizedBody = parsed.content;
+        }
+      } catch {
+        // Treat malformed or non-object frontmatter-like bodies as plain markdown content.
+      }
+    }
+
+    for (const [key, value] of Object.entries(input)) {
+      if (DB_INPUT_RESERVED_KEYS.has(key) || value === undefined) continue;
+      if (DANGEROUS_DB_FIELD_KEYS.has(key)) {
+        throw new Error(`Field name "${key}" is not allowed`);
+      }
+      if (SYSTEM_DB_FIELD_KEYS.has(key)) continue;
+      inferredFields[key] = value;
+    }
+
+    assignDbFields(fields, inferredFields);
+    if (explicitFields) {
+      assignDbFields(fields, explicitFields);
+    }
+
+    const hasFields = Object.keys(fields).length > 0;
+    if (!hasFields && (mode === "add" || normalizedBody === undefined)) {
+      throw new Error(buildDbUsageError(mode, folder));
+    }
+
+    return { fields, body: normalizedBody };
+  }
 
   function addDbEntry(folder: string, fields: Record<string, any>, body?: string): DbEntry {
     const schema = readSchema(folder);
@@ -480,6 +551,7 @@ export function createDocsStore(docsDir: string) {
   return {
     readPage, writePage, editPage, deletePage, listTree, scanAllPages, deleteFolder,
     readSchema, writeSchema, isDbFolder,
+    normalizeDbEntryInput,
     addDbEntry, updateDbEntry, listDbEntries,
     generateSlug, docsDir, renameTagInDocs,
   };

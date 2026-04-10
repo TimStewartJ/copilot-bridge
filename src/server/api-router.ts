@@ -1531,8 +1531,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     router.post("/docs/db/*folder", (req, res) => {
       try {
         const folder = paramPath((req.params as any).folder);
-        const { fields, body } = req.body;
-        if (!fields || typeof fields !== "object") return res.status(400).json({ error: "fields object is required" });
+        const { fields, body } = docs.normalizeDbEntryInput(req.body ?? {}, "add", folder);
         const entry = docs.addDbEntry(folder, fields, body);
         // Index the new page
         const page = docs.readPage(entry.path);
@@ -1550,8 +1549,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         if (lastSlash === -1) return res.status(400).json({ error: "Path must be folder/slug" });
         const folder = fullPath.slice(0, lastSlash);
         const slug = fullPath.slice(lastSlash + 1);
-        const { fields, body } = req.body;
-        if (!fields || typeof fields !== "object") return res.status(400).json({ error: "fields object is required" });
+        const { fields, body } = docs.normalizeDbEntryInput(req.body ?? {}, "update", folder);
         const entry = docs.updateDbEntry(folder, slug, fields, body);
         // Re-index the updated page
         const page = docs.readPage(entry.path);
