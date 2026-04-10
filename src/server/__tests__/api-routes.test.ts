@@ -1,14 +1,20 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import type { AppContext } from "../app-context.js";
-import { createTestApp } from "./helpers.js";
+import { clearRestartPending, RESTART_PENDING_MESSAGE, triggerRestartPending } from "../session-manager.js";
+import { createMockSessionManager, createTestApp } from "./helpers.js";
 
 let app: Express;
 let ctx: AppContext;
 
 beforeEach(() => {
+  clearRestartPending();
   ({ app, ctx } = createTestApp());
+});
+
+afterEach(() => {
+  clearRestartPending();
 });
 
 // ── Task CRUD ────────────────────────────────────────────────────
@@ -509,6 +515,21 @@ describe("Session routes (mocked)", () => {
       .post("/api/chat")
       .send({});
     expect(res.status).toBe(400);
+  });
+
+  it("POST /api/chat rejects new work while restart is pending", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.startWork = vi.fn();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    triggerRestartPending();
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello" });
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
+    expect(sessionManager.startWork).not.toHaveBeenCalled();
   });
 
   it("GET /api/busy returns activity summary", async () => {

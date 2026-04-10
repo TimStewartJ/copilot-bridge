@@ -114,6 +114,7 @@ let _instance: SessionManager | null = null;
 let _restartPending = false;
 let _restartPendingSince = 0;
 const RESTART_TIMEOUT = 15 * 60 * 1000; // 15 min — if server is still alive, restart failed
+export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect.";
 
 export function isRestartPending(): boolean {
   if (_restartPending && _restartPendingSince && Date.now() - _restartPendingSince > RESTART_TIMEOUT) {
@@ -129,6 +130,10 @@ export function clearRestartPending(): void {
 }
 export function getRestartWaitingCount(): number {
   return _instance ? _instance.getActiveSessions().length : 0;
+}
+
+export function isRestartPendingError(err: unknown): boolean {
+  return err instanceof Error && err.message === RESTART_PENDING_MESSAGE;
 }
 
 /**
@@ -1318,6 +1323,9 @@ export class SessionManager {
   // Fire and forget — starts work and emits events to the session's EventBus
   startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): void {
     if (!this.client) throw new Error("SessionManager not initialized");
+    if (isRestartPending()) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
 
     if (this.activeSessions.has(sessionId)) {
       throw new Error("Session is busy processing another message");
