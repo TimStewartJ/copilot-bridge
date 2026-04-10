@@ -1018,7 +1018,7 @@ export class SessionManager {
       if (todos.length > 0) {
         const today = new Date().toISOString().slice(0, 10);
         const todoLines = todos.map((t: any) => {
-          let line = `- [${t.done ? "x" : " "}] ${t.text}`;
+          let line = `- [${t.done ? "x" : " "}] ${t.text} [id: ${t.id}]`;
           if (t.deadline) {
             const overdue = !t.done && t.deadline < today;
             line += ` (due ${t.deadline}${overdue ? " ⚠️ OVERDUE" : ""})`;
