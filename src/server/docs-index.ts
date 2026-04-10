@@ -169,6 +169,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     sort?: { field: string; order: "asc" | "desc" },
     limit = 50,
     offset = 0,
+    includeBody = false,
   ): { entries: any[]; total: number } {
     let where = "folder = ?";
     const params: any[] = [folder];
@@ -200,7 +201,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     const total = countRow?.total || 0;
 
     const rows = db.prepare(`
-      SELECT path, title, tags, frontmatter_json, folder, created, modified
+      SELECT path, title, tags, frontmatter_json, folder, created, modified${includeBody ? ", body" : ""}
       FROM docs_pages
       WHERE ${where}
       ORDER BY ${orderBy}
@@ -217,6 +218,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
         tags: r.tags ? r.tags.split(", ").filter(Boolean) : [],
         created: r.created || "",
         modified: r.modified || "",
+        ...(includeBody ? { body: r.body || "" } : {}),
       })),
     };
   }

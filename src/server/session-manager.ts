@@ -740,8 +740,8 @@ export function createBridgeTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_db_query", {
-      description: "Query entries in a database collection by field values. Supports equality filters, multi-value OR (pass array), pagination, and sorting.",
-      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, filters: { type: "object", description: "Field filters as key-value pairs. Arrays match any value (OR). Example: { severity: 'sev1' } or { severity: ['sev1', 'sev2'] }" }, _sort: { type: "string", description: "Field to sort by (default: 'modified')" }, _order: { type: "string", enum: ["asc", "desc"], description: "Sort order (default: 'desc')" }, _limit: { type: "number", description: "Max results (default 50)" }, _offset: { type: "number", description: "Offset for pagination (default 0)" } }, required: ["folder"] },
+      description: "Query entries in a database collection by field values. Supports equality filters, multi-value OR (pass array), pagination, sorting, and optional markdown body inclusion.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, filters: { type: "object", description: "Field filters as key-value pairs. Arrays match any value (OR). Example: { severity: 'sev1' } or { severity: ['sev1', 'sev2'] }" }, includeBody: { type: "boolean", description: "When true, include each entry's markdown body content in the response." }, _sort: { type: "string", description: "Field to sort by (default: 'modified')" }, _order: { type: "string", enum: ["asc", "desc"], description: "Sort order (default: 'desc')" }, _limit: { type: "number", description: "Max results (default 50)" }, _offset: { type: "number", description: "Offset for pagination (default 0)" } }, required: ["folder"] },
       handler: async (args: any) => {
         return ctx.docsIndex!.queryByFolder(
           args.folder,
@@ -749,6 +749,7 @@ export function createBridgeTools(ctx: AppContext) {
           args._sort ? { field: args._sort, order: args._order ?? "desc" } : undefined,
           args._limit ?? 50,
           args._offset ?? 0,
+          args.includeBody === true,
         );
       },
     }),

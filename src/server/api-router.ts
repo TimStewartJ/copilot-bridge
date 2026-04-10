@@ -1525,6 +1525,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const offset = Number(req.query.offset) || 0;
         const sortField = req.query._sort as string | undefined;
         const sortOrder = (req.query._order as string | undefined) === "asc" ? "asc" as const : "desc" as const;
+        const includeBody = ["1", "true", "yes", "on"].includes(String(req.query._includeBody ?? "").toLowerCase());
 
         // Extract field filters from query (skip meta params)
         const filters: Record<string, any> = {};
@@ -1539,6 +1540,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           sortField ? { field: sortField, order: sortOrder } : undefined,
           limit,
           offset,
+          includeBody,
         );
         res.json(result);
       } catch (err) {

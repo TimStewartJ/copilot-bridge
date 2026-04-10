@@ -977,6 +977,18 @@ describe("Docs DB routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.entries.length).toBe(2);
     expect(typeof res.body.total).toBe("number");
+    expect(res.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
+  });
+
+  it("GET /api/docs/db can include markdown bodies", async () => {
+    await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Body entry", severity: "sev1" }, body: "Body text for query results." });
+
+    const res = await request(app).get(`/api/docs/db/${folder}?_includeBody=true`);
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toHaveLength(1);
+    expect(res.body.entries[0].body).toBe("Body text for query results.");
   });
 
   it("PATCH /api/docs/db updates an entry", async () => {
