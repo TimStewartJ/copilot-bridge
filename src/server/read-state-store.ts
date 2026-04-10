@@ -24,11 +24,11 @@ export function createReadStateStore(db: DatabaseSync) {
     return now;
   }
 
-  function isUnread(sessionId: string, modifiedTime?: string): boolean {
-    if (!modifiedTime) return false;
+  function isUnread(sessionId: string, activityTime?: string): boolean {
+    if (!activityTime) return false;
     const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
     if (!row) return true; // never opened = unread
-    return new Date(modifiedTime).getTime() > new Date(row.lastReadAt).getTime();
+    return new Date(activityTime).getTime() > new Date(row.lastReadAt).getTime();
   }
 
   function markUnread(sessionId: string): void {

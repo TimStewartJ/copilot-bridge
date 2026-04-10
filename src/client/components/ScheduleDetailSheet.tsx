@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Schedule, ScheduleCreateInput, Session } from "../api";
-import { createSchedule, patchSchedule } from "../api";
+import { createSchedule, getSessionActivityTime, patchSchedule } from "../api";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
@@ -576,7 +576,7 @@ function SessionRunRow({ session, onSelect }: { session: Session; onSelect: () =
           {session.archived && <span className="text-[9px] text-text-faint bg-bg-surface px-1 py-0.5 rounded">archived</span>}
         </div>
         <div className="text-[10px] text-text-faint mt-0.5">
-          {timeAgo(session.modifiedTime)}
+          {timeAgo(getSessionActivityTime(session))}
           {session.diskSizeBytes != null && session.diskSizeBytes > 0 && <span> · {formatBytes(session.diskSizeBytes)}</span>}
         </div>
       </div>

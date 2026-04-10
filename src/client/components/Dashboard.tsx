@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
+  getSessionActivityTime,
   patchTodo,
   createGlobalTodo,
   type DashboardData,
@@ -726,7 +727,7 @@ function OrphanSessionRow({
         </span>
       </div>
       <div className="text-xs text-text-muted mt-0.5 ml-3.5">
-        {timeAgo(session.modifiedTime)}
+        {timeAgo(getSessionActivityTime(session))}
         {session.branch && (
           <span className="text-text-faint"> · {session.branch}</span>
         )}

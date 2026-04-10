@@ -27,6 +27,52 @@ export interface TransformedEntry {
 // Keep backward compat alias — server API consumers still reference this
 export type TransformedMessage = TransformedEntry;
 
+function isVisibleMessageEvent(event: any): boolean {
+  const data = event?.data;
+
+  if (event.type === "user.message") {
+    return Boolean((data?.content ?? data?.prompt ?? "").trim() || data?.attachments?.length);
+  }
+
+  if (event.type === "assistant.message") {
+    return !data?.parentToolCallId && Boolean((data?.content ?? "").trim());
+  }
+
+  if (event.type === "tool.execution_start") {
+    const toolName = data?.toolName ?? data?.name ?? "unknown";
+    return Boolean(data?.toolCallId) && toolName !== "report_intent";
+  }
+
+  return false;
+}
+
+export function getVisibleEventTimestamp(event: any): string | undefined {
+  if (!isVisibleMessageEvent(event)) return undefined;
+  return event?.data?.timestamp ?? event?.timestamp;
+}
+
+export function getLastVisibleActivityAt(events: any[]): string | undefined {
+  const visibleToolCallIds = new Set<string>();
+  let lastVisibleActivityAt: string | undefined;
+
+  for (const event of events) {
+    const timestamp = getVisibleEventTimestamp(event);
+    if (timestamp) {
+      lastVisibleActivityAt = timestamp;
+      if (event.type === "tool.execution_start" && event?.data?.toolCallId) {
+        visibleToolCallIds.add(event.data.toolCallId);
+      }
+      continue;
+    }
+
+    if (event.type === "tool.execution_complete" && event?.data?.toolCallId && visibleToolCallIds.has(event.data.toolCallId)) {
+      const completedAt = event?.timestamp;
+      if (completedAt) lastVisibleActivityAt = completedAt;
+    }
+  }
+  return lastVisibleActivityAt;
+}
+
 /**
  * Transform raw SDK/JSONL events into a chronological list of entries.
  * Pass 1 indexes tool completion results, pass 2 emits entries in event order.

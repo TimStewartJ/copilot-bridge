@@ -3,6 +3,7 @@ export interface Session {
   summary?: string;
   startTime?: string;
   modifiedTime?: string;
+  lastVisibleActivityAt?: string;
   diskSizeBytes?: number;
   busy?: boolean;
   hasPlan?: boolean;
@@ -17,6 +18,10 @@ export interface Session {
     gitRoot?: string;
     branch?: string;
   };
+}
+
+export function getSessionActivityTime(session: Pick<Session, "lastVisibleActivityAt" | "modifiedTime" | "startTime">): string | undefined {
+  return session.lastVisibleActivityAt ?? session.modifiedTime ?? session.startTime;
 }
 
 export interface ToolCall {
@@ -615,7 +620,7 @@ export interface DashboardUnreadSession {
   sessionId: string;
   title: string;
   taskId: string | null;
-  modifiedTime: string;
+  lastVisibleActivityAt?: string;
 }
 
 export interface DashboardActiveTask {
@@ -631,7 +636,7 @@ export interface DashboardActiveTask {
 export interface DashboardOrphanSession {
   sessionId: string;
   title: string;
-  modifiedTime: string;
+  lastVisibleActivityAt?: string;
   branch: string | null;
   busy: boolean;
   unread: boolean;

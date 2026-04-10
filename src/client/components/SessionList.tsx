@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { Session, Task, BatchAction } from "../api";
+import { getSessionActivityTime, type Session, type Task, type BatchAction } from "../api";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, CheckSquare, Square, SquareCheckBig } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
@@ -53,7 +53,7 @@ function BulkActionBar({
   const count = selectedIds.size;
   const allSelected = activeSessions.length > 0 && activeSessions.every((s) => selectedIds.has(s.sessionId));
   const unreadSelected = activeSessions.filter(
-    (s) => selectedIds.has(s.sessionId) && isUnread?.(s.sessionId, s.modifiedTime),
+    (s) => selectedIds.has(s.sessionId) && isUnread?.(s.sessionId, getSessionActivityTime(s)),
   );
 
   const handleToggleAll = () => {
@@ -203,7 +203,7 @@ export default function SessionList({
   const renderItem = (session: Session) => {
     const id = session.sessionId;
     const isActive = id === activeSessionId;
-    const unread = !isActive && isUnread?.(id, session.modifiedTime);
+    const unread = !isActive && isUnread?.(id, getSessionActivityTime(session));
     const isArch = session.archived;
     const isArchiving = archivingIds?.has(id);
     const isExiting = exitingIds?.has(id);
@@ -257,7 +257,7 @@ export default function SessionList({
             </span>
           </div>
           <div className={`${s.metaClass} truncate`}>
-            {isArchiving ? "Archiving…" : timeAgo(session.modifiedTime)}
+            {isArchiving ? "Archiving…" : timeAgo(getSessionActivityTime(session))}
             {session.context?.branch && ` · ${session.context.branch}`}
             {session.diskSizeBytes
               ? ` · ${formatSize(session.diskSizeBytes)}`
@@ -356,7 +356,7 @@ export default function SessionList({
               }}
             />
           )}
-          {onMarkUnread && ctxSession && !isUnread?.(ctxMenu.id, ctxSession.modifiedTime) && (
+          {onMarkUnread && ctxSession && !isUnread?.(ctxMenu.id, getSessionActivityTime(ctxSession)) && (
             <CtxItem
               icon={<EyeOff size={14} />}
               label="Mark Unread"
