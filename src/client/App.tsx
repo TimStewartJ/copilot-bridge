@@ -31,6 +31,7 @@ import {
 import { useReadState } from "./useReadState";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
+import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
@@ -78,8 +79,12 @@ export default function App() {
       return next;
     });
   }, []);
-  const [restartPhase, setRestartPhase] = useState<"pending" | "reconnected" | null>(null);
-  const [restartWaiting, setRestartWaiting] = useState(0);
+  const [restartBanner, setRestartBanner] = useState<RestartBannerState>({
+    phase: null,
+    waitingSessions: 0,
+    shouldReload: false,
+    reconnectedSincePending: false,
+  });
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
@@ -186,15 +191,13 @@ export default function App() {
         }
         break;
       case "server:restart-pending":
-        setRestartPhase("pending");
-        setRestartWaiting(event.waitingSessions ?? 0);
+        setRestartBanner((prev) => reduceRestartBannerState(prev, {
+          type: "server:restart-pending",
+          waitingSessions: event.waitingSessions,
+        }));
         break;
       case "server:restart-cleared":
-        setRestartPhase((prev) => {
-          if (prev !== "pending") return prev;
-          return "reconnected";
-        });
-        setRestartWaiting(0);
+        setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "server:restart-cleared" }));
         break;
       case "schedule:changed":
         queryClient.invalidateQueries({ queryKey: ["task"] });
@@ -212,18 +215,18 @@ export default function App() {
         if (event.readState) applyServerStateRef.current(event.readState);
         break;
       case "status:connected":
+        setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "status:connected" }));
         // Refresh sessions + read state on reconnect (covers tab sleep / network blips)
         invalidateSessions();
         break;
     }
   }, [patchSessionInCache, invalidateSessions, invalidateTasks, queryClient]));
 
-  // Auto-dismiss "reconnected" banner after 2 seconds
   useEffect(() => {
-    if (restartPhase !== "reconnected") return;
-    const timer = setTimeout(() => setRestartPhase(null), 2000);
+    if (!restartBanner.shouldReload) return;
+    const timer = window.setTimeout(() => window.location.reload(), 1000);
     return () => clearTimeout(timer);
-  }, [restartPhase]);
+  }, [restartBanner.shouldReload]);
 
   // Mark session as read after 2s dwell, and again on departure to capture
   // any messages that arrived after the initial mark.
@@ -952,7 +955,7 @@ export default function App() {
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
         ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs ? "flex" : "hidden md:flex"}
       `.trim()}>
-        {restartPhase && <RestartBanner phase={restartPhase} waitingSessions={restartWaiting} />}
+        {restartBanner.phase && <RestartBanner phase={restartBanner.phase} waitingSessions={restartBanner.waitingSessions} />}
 
         {/* Mobile back bar (hidden on top-level tab views) */}
         <div className={`shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden ${isMobileRoute.dashboard ? "hidden" : ""}`}>
