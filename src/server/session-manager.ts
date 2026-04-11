@@ -1532,6 +1532,9 @@ export class SessionManager {
     const handleEvent = (event: any) => {
       const data = (event as any).data;
       switch (event.type) {
+        case "user.message":
+          bus.clearPendingPrompt();
+          break;
         case "assistant.turn_start":
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           bus.emit({ type: "thinking" });

@@ -64,6 +64,11 @@ export class SessionEventBus {
     this.pendingPrompt = prompt;
   }
 
+  /** Stop advertising reconnect recovery once the prompt is durably persisted */
+  clearPendingPrompt(): void {
+    this.pendingPrompt = undefined;
+  }
+
   emit(event: StreamEvent): void {
     // Update snapshot state based on event type
     switch (event.type) {
