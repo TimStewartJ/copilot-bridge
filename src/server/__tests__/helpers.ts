@@ -96,7 +96,6 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   };
 
   const app = express();
-  app.use(express.json({ limit: "20mb" }));
   app.use("/api", createApiRouter(ctx));
 
   return { app, ctx, db };

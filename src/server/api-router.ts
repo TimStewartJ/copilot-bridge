@@ -9,6 +9,7 @@ import type { AppContext } from "./app-context.js";
 import { isRestartPending, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
+import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -33,6 +34,9 @@ function getCopilotHome(ctx: AppContext): string {
 
 export function createApiRouter(ctx: AppContext): express.Router {
   const router = express.Router();
+  router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
+  router.use(express.json({ limit: "20mb" }));
+  router.use(createApiJsonErrorHandler());
 
   // Wire settings getter for providers (so they can resolve without module-level imports)
   setSettingsGetter(() => ctx.settingsStore.getSettings());
