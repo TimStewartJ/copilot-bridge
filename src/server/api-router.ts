@@ -1587,14 +1587,52 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   // ── Telemetry routes ────────────────────────────────────────────
 
+  const parseTelemetrySpan = (
+    span: any,
+  ): { id?: string; name: string; sessionId?: string; duration: number; metadata?: Record<string, unknown> } | null => {
+    if (!span || typeof span !== "object") return null;
+    if (!span.name || typeof span.name !== "string" || typeof span.duration !== "number") return null;
+    if (span.id != null && typeof span.id !== "string") return null;
+    if (span.sessionId != null && typeof span.sessionId !== "string") return null;
+    if (span.metadata != null && (typeof span.metadata !== "object" || Array.isArray(span.metadata))) return null;
+    return {
+      ...(span.id != null ? { id: span.id } : {}),
+      name: span.name,
+      duration: span.duration,
+      ...(span.sessionId != null ? { sessionId: span.sessionId } : {}),
+      ...(span.metadata != null ? { metadata: span.metadata } : {}),
+    };
+  };
+
   router.post("/telemetry", (req, res) => {
     if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
-    const { name, sessionId, duration, metadata } = req.body;
-    if (!name || typeof duration !== "number") {
+    const span = parseTelemetrySpan(req.body);
+    if (!span) {
       return res.status(400).json({ error: "name (string) and duration (number) are required" });
     }
-    ctx.telemetryStore.recordSpan({ name, sessionId, duration, metadata, source: "client" });
+    ctx.telemetryStore.recordSpan({ ...span, ingestKey: span.id, source: "client" });
     res.json({ ok: true });
+  });
+
+  router.post("/telemetry/batch", (req, res) => {
+    if (!ctx.telemetryStore) return res.status(501).json({ error: "Telemetry not available" });
+    const { spans } = req.body ?? {};
+    if (!Array.isArray(spans)) {
+      return res.status(400).json({ error: "spans array is required" });
+    }
+
+    const parsed = spans.map(parseTelemetrySpan);
+    const invalidIndex = parsed.findIndex((span) => span == null);
+    if (invalidIndex >= 0) {
+      return res.status(400).json({ error: `Invalid telemetry span at index ${invalidIndex}` });
+    }
+
+    ctx.telemetryStore.recordSpans(parsed.map((span) => ({
+      ...span!,
+      ingestKey: span!.id,
+      source: "client",
+    })));
+    res.json({ ok: true, accepted: parsed.length });
   });
 
   router.get("/telemetry", (_req, res) => {

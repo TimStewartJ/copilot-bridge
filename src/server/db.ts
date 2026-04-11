@@ -182,6 +182,11 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_telemetry_name ON telemetry_spans(name);
     CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry_spans(sessionId);
     CREATE INDEX IF NOT EXISTS idx_telemetry_created ON telemetry_spans(createdAt);
+    CREATE TABLE IF NOT EXISTS telemetry_ingest_keys (
+      id TEXT PRIMARY KEY,
+      createdAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_ingest_keys_created ON telemetry_ingest_keys(createdAt);
 
     -- Tags
     CREATE TABLE IF NOT EXISTS tags (

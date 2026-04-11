@@ -1,3 +1,5 @@
+import { createTelemetryBatcher } from "./telemetry-batcher";
+
 export interface Session {
   sessionId: string;
   summary?: string;
@@ -182,6 +184,7 @@ export interface EnrichedTaskData {
 // Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/
 const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
 export { API_BASE };
+const telemetryBatcher = createTelemetryBatcher({ apiBase: API_BASE });
 
 async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
   const t0 = performance.now();
@@ -214,14 +217,7 @@ export async function reportTiming(
   duration: number,
   opts?: { sessionId?: string; metadata?: Record<string, unknown> },
 ): Promise<void> {
-  try {
-    const payload = { name, duration, sessionId: opts?.sessionId, metadata: opts?.metadata };
-    await fetch(`${API_BASE}/api/telemetry`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch { /* never throw from telemetry */ }
+  telemetryBatcher.enqueue({ name, duration, sessionId: opts?.sessionId, metadata: opts?.metadata });
 }
 
 export interface TelemetryStats {
