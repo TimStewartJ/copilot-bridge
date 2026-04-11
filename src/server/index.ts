@@ -32,7 +32,6 @@ import { createApiRouter } from "./api-router.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(express.json({ limit: "20mb" }));
 
 // Register Express app with staging tools so they can mount/unmount staged routers
 registerExpressApp(app);
