@@ -341,6 +341,11 @@ function startTunnel(): Promise<string> {
       reject(new Error("Tunnel failed to start within 30s"));
     }, 30_000);
 
+    tunnelProcess.stderr?.on("data", (data: Buffer) => {
+      const line = data.toString().trim();
+      if (line) log(`[tunnel] ${line}`);
+    });
+
     tunnelProcess.stdout?.on("data", (data: Buffer) => {
       stdout += data.toString();
       // Look for the URL: "Connect via browser: https://xxx-3333.usw2.devtunnels.ms"
