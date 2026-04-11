@@ -36,6 +36,25 @@ describe("telemetry-store", () => {
     expect(spans[0].metadata).toEqual({ context: "doWork", cacheHit: false });
   });
 
+  it("records spans in bulk", () => {
+    store.recordSpans([
+      { name: "api.tasks", duration: 20, source: "client" },
+      { name: "api.task-groups", duration: 30, sessionId: "s-1", source: "client" },
+    ]);
+    const spans = store.querySpans({ source: "client", limit: 10 });
+    expect(spans).toHaveLength(2);
+    expect(spans.map((span) => span.name).sort()).toEqual(["api.task-groups", "api.tasks"]);
+  });
+
+  it("deduplicates spans with the same ingest key", () => {
+    store.recordSpans([
+      { name: "api.tasks", duration: 20, source: "client", ingestKey: "dup-1" },
+      { name: "api.tasks", duration: 20, source: "client", ingestKey: "dup-1" },
+    ]);
+    const spans = store.querySpans({ source: "client", limit: 10 });
+    expect(spans).toHaveLength(1);
+  });
+
   it("filters by source", () => {
     store.recordSpan({ name: "api.sessions", duration: 50, source: "client" });
     store.recordSpan({ name: "session.create", duration: 200, source: "server" });

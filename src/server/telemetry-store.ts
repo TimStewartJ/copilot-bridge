@@ -12,25 +12,55 @@ export interface TelemetrySpan {
   createdAt: string;
 }
 
+export interface RecordableTelemetrySpan {
+  name: string;
+  sessionId?: string;
+  duration: number;
+  metadata?: Record<string, unknown>;
+  source: "server" | "client";
+  ingestKey?: string;
+}
+
 export function createTelemetryStore(db: DatabaseSync) {
-  function recordSpan(span: {
-    name: string;
-    sessionId?: string;
-    duration: number;
-    metadata?: Record<string, unknown>;
-    source: "server" | "client";
-  }): void {
-    db.prepare(`
+  const insertSpan = db.prepare(`
       INSERT INTO telemetry_spans (name, sessionId, duration, metadata, source, createdAt)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      span.name,
-      span.sessionId ?? null,
-      span.duration,
-      span.metadata ? JSON.stringify(span.metadata) : null,
-      span.source,
-      new Date().toISOString(),
-    );
+    `);
+  const insertIngestKey = db.prepare(`
+      INSERT OR IGNORE INTO telemetry_ingest_keys (id, createdAt)
+      VALUES (?, ?)
+    `);
+  const pruneIngestKeys = db.prepare("DELETE FROM telemetry_ingest_keys WHERE createdAt < ?");
+
+  function recordSpan(span: RecordableTelemetrySpan): void {
+    recordSpans([span]);
+  }
+
+  function recordSpans(spans: RecordableTelemetrySpan[]): void {
+    if (spans.length === 0) return;
+
+    db.exec("BEGIN");
+    try {
+      for (const span of spans) {
+        const createdAt = new Date().toISOString();
+        if (span.ingestKey) {
+          const result = insertIngestKey.run(span.ingestKey, createdAt) as { changes?: number };
+          if ((result.changes ?? 0) === 0) continue;
+        }
+        insertSpan.run(
+          span.name,
+          span.sessionId ?? null,
+          span.duration,
+          span.metadata ? JSON.stringify(span.metadata) : null,
+          span.source,
+          createdAt,
+        );
+      }
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   function querySpans(opts: {
@@ -113,6 +143,7 @@ export function createTelemetryStore(db: DatabaseSync) {
   function pruneOldSpans(days: number = 7): number {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const result = db.prepare("DELETE FROM telemetry_spans WHERE createdAt < ?").run(cutoff);
+    pruneIngestKeys.run(cutoff);
     return (result as any).changes ?? 0;
   }
 
@@ -128,7 +159,7 @@ export function createTelemetryStore(db: DatabaseSync) {
     };
   }
 
-  return { recordSpan, querySpans, getStats, pruneOldSpans };
+  return { recordSpan, recordSpans, querySpans, getStats, pruneOldSpans };
 }
 
 export type TelemetryStore = ReturnType<typeof createTelemetryStore>;

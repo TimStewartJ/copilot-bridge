@@ -17,6 +17,60 @@ afterEach(() => {
   clearRestartPending();
 });
 
+describe("Telemetry routes", () => {
+  it("POST /api/telemetry records a single client span", async () => {
+    const res = await request(app)
+      .post("/api/telemetry")
+      .send({ name: "page.load", duration: 42, metadata: { page: "dashboard" } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(ctx.telemetryStore!.querySpans({ name: "page.load", source: "client" })).toHaveLength(1);
+  });
+
+  it("POST /api/telemetry/batch records multiple client spans", async () => {
+    const res = await request(app)
+      .post("/api/telemetry/batch")
+      .send({
+        spans: [
+          { id: "span-1", name: "api.tasks", duration: 12 },
+          { id: "span-2", name: "api.task-groups", duration: 18, sessionId: "sess-1", metadata: { count: 3 } },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, accepted: 2 });
+    const spans = ctx.telemetryStore!.querySpans({ source: "client", limit: 10 });
+    expect(spans).toHaveLength(2);
+  });
+
+  it("POST /api/telemetry/batch ignores duplicate span ids", async () => {
+    const payload = {
+      spans: [
+        { id: "span-1", name: "api.tasks", duration: 12 },
+        { id: "span-2", name: "api.task-groups", duration: 18 },
+      ],
+    };
+
+    const first = await request(app).post("/api/telemetry/batch").send(payload);
+    const second = await request(app).post("/api/telemetry/batch").send(payload);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(ctx.telemetryStore!.querySpans({ source: "client", limit: 10 })).toHaveLength(2);
+  });
+
+  it("POST /api/telemetry/batch rejects invalid spans", async () => {
+    const res = await request(app)
+      .post("/api/telemetry/batch")
+      .send({ spans: [{ name: "ok", duration: 10 }, { name: 123, duration: 5 }] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("index 1");
+    expect(ctx.telemetryStore!.querySpans({ source: "client" })).toHaveLength(0);
+  });
+});
+
 // ── Task CRUD ────────────────────────────────────────────────────
 
 describe("Task routes", () => {
