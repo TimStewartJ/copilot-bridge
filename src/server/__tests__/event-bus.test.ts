@@ -45,6 +45,17 @@ describe("event-bus", () => {
       expect(bus.getIntentText()).toBe("Exploring codebase");
     });
 
+    it("can clear pendingPrompt after the user message is persisted", () => {
+      const bus = getOrCreateBus("test-pending-prompt-1");
+      bus.setPendingPrompt("recover me");
+
+      expect(bus.getSnapshot().pendingPrompt).toBe("recover me");
+
+      bus.clearPendingPrompt();
+
+      expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
+    });
+
     it("tracks tool lifecycle", () => {
       const bus = getOrCreateBus("test-tool-1");
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
@@ -156,6 +167,7 @@ describe("event-bus", () => {
       bus.emit({ type: "delta", content: "text" });
       bus.emit({ type: "intent", intent: "doing stuff" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
+      bus.setPendingPrompt("prompt");
 
       bus.reset();
       const snap = bus.getSnapshot();
@@ -165,6 +177,7 @@ describe("event-bus", () => {
       expect(snap.complete).toBe(false);
       expect(snap.finalContent).toBeUndefined();
       expect(snap.errorMessage).toBeUndefined();
+      expect(snap.pendingPrompt).toBeUndefined();
     });
   });
 });
