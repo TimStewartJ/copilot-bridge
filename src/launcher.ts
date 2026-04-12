@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 
@@ -20,6 +21,7 @@ const HEALTH_URL = `http://localhost:${PORT}/api/sessions`;
 const MAX_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 30_000;
+const MANAGED_ENV_KEYS = new Set(loadBridgeEnv());
 
 // Notification config
 const TUNNEL_NAME = process.env.BRIDGE_TUNNEL_NAME || "copilot-bridge";
@@ -166,7 +168,7 @@ async function healthCheck(): Promise<boolean> {
 
 function startServer(): ChildProcess {
   log("Starting server...");
-  const env = { ...process.env };
+  const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS);
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const child = spawn(NODE_PATH, [TSX_CLI, SERVER_ENTRY], {
     cwd: ROOT,
