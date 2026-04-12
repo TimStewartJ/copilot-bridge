@@ -1,6 +1,7 @@
 // Copilot Web Bridge — Express server
 
 import "./log-timestamps.js";
+import "./load-bridge-env.js";
 import express from "express";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";

@@ -53,6 +53,8 @@ npm install
 cp .env.example .env   # Edit .env with your settings (optional)
 ```
 
+The launcher and direct server entrypoint load `.env` automatically at startup. Existing exported environment variables still win over values from the file.
+
 ### Run (Development)
 
 ```bash
