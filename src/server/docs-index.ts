@@ -17,67 +17,107 @@ export interface ResolvedLink {
   title: string;
 }
 
+const DOCS_SNIPPET_SQL = `
+  SELECT
+    docs_pages.path,
+    docs_pages.title,
+    docs_pages.folder,
+    docs_pages.tags,
+    snippet(docs_fts, 3, '<mark>', '</mark>', '...', 40) as snippet,
+    rank as score
+  FROM docs_fts
+  JOIN docs_pages ON docs_pages.rowid = docs_fts.rowid
+  WHERE docs_fts MATCH ?
+  ORDER BY rank
+  LIMIT ? OFFSET ?
+`;
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
+  function runInTransaction<T>(operation: () => T): T {
+    db.exec("BEGIN");
+    try {
+      const result = operation();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  function rebuildFtsFromContent(): void {
+    db.exec("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')");
+  }
+
+  function isRecoverableFtsError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return message.includes("database disk image is malformed")
+      || (message.includes("database") && message.includes("malformed"))
+      || message.includes("database corruption");
+  }
+
+  function withFtsRepair<T>(operation: () => T): T {
+    try {
+      return operation();
+    } catch (error) {
+      if (!isRecoverableFtsError(error)) throw error;
+      rebuildFtsFromContent();
+      return operation();
+    }
+  }
 
   // ── Index management ──────────────────────────────────────────
 
   /** Rebuild the entire index from files on disk */
   function reindex(): { indexed: number } {
-    // Clear existing data
-    db.exec("DELETE FROM docs_pages");
-    // Rebuild FTS — delete triggers don't fire for content tables, so rebuild manually
-    db.exec("DELETE FROM docs_fts");
-
     const pages = docsStore.scanAllPages();
-    const insert = db.prepare(`
-      INSERT OR REPLACE INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertFts = db.prepare(`
-      INSERT INTO docs_fts (rowid, path, title, tags, body)
-      VALUES (?, ?, ?, ?, ?)
-    `);
+    runInTransaction(() => {
+      db.exec("DELETE FROM docs_pages");
+      const insert = db.prepare(`
+        INSERT OR REPLACE INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
-    for (const page of pages) {
-      const tagsStr = page.tags.join(", ");
-      const fmJson = JSON.stringify(page.frontmatter);
-      const result = insert.run(
-        page.path, page.title, tagsStr, page.body,
-        fmJson, page.folder, page.created, page.modified,
-      ) as any;
-      // Get the rowid for FTS insertion
-      const row = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
-      if (row) {
-        insertFts.run(row.rowid, page.path, page.title, tagsStr, page.body);
+      for (const page of pages) {
+        const tagsStr = page.tags.join(", ");
+        const fmJson = JSON.stringify(page.frontmatter);
+        insert.run(
+          page.path, page.title, tagsStr, page.body,
+          fmJson, page.folder, page.created, page.modified,
+        );
       }
-    }
+      rebuildFtsFromContent();
+    });
 
     return { indexed: pages.length };
   }
 
   /** Index a single page (after create or update) */
   function indexPage(page: DocPage): void {
-    const tagsStr = page.tags.join(", ");
-    const fmJson = JSON.stringify(page.frontmatter);
+    withFtsRepair(() => {
+      const tagsStr = page.tags.join(", ");
+      const fmJson = JSON.stringify(page.frontmatter);
 
-    // Upsert into docs_pages
-    const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
-    if (existing) {
-      // With external-content FTS, remove the old indexed row before mutating docs_pages.
-      // Otherwise SQLite can fail when the content table body/title has already changed.
-      db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
-      db.prepare(`
-        UPDATE docs_pages SET title=?, tags=?, body=?, frontmatter_json=?, folder=?, created=?, modified=?
-        WHERE path=?
-      `).run(page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified, page.path);
-      db.prepare("INSERT INTO docs_fts (rowid, path, title, tags, body) VALUES (?, ?, ?, ?, ?)").run(
-        existing.rowid, page.path, page.title, tagsStr, page.body,
-      );
-    } else {
-      insert(page, tagsStr, fmJson);
-    }
+      runInTransaction(() => {
+        const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
+        if (existing) {
+          // With external-content FTS, remove the old indexed row before mutating docs_pages.
+          // Otherwise SQLite can fail when the content table body/title has already changed.
+          db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
+          db.prepare(`
+            UPDATE docs_pages SET title=?, tags=?, body=?, frontmatter_json=?, folder=?, created=?, modified=?
+            WHERE path=?
+          `).run(page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified, page.path);
+          db.prepare("INSERT INTO docs_fts (rowid, path, title, tags, body) VALUES (?, ?, ?, ?, ?)").run(
+            existing.rowid, page.path, page.title, tagsStr, page.body,
+          );
+        } else {
+          insert(page, tagsStr, fmJson);
+        }
+      });
+    });
   }
 
   function insert(page: DocPage, tagsStr: string, fmJson: string): void {
@@ -95,20 +135,28 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
   /** Remove a page from the index */
   function removePage(pagePath: string): void {
-    const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(pagePath) as any;
-    if (existing) {
-      db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
-      db.prepare("DELETE FROM docs_pages WHERE path = ?").run(pagePath);
-    }
+    withFtsRepair(() => {
+      runInTransaction(() => {
+        const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(pagePath) as any;
+        if (existing) {
+          db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
+          db.prepare("DELETE FROM docs_pages WHERE path = ?").run(pagePath);
+        }
+      });
+    });
   }
 
   /** Remove all pages under a folder from the index */
   function removeFolder(folder: string): void {
-    const rows = db.prepare("SELECT rowid FROM docs_pages WHERE path LIKE ? || '%'").all(folder) as any[];
-    for (const row of rows) {
-      db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(row.rowid);
-    }
-    db.prepare("DELETE FROM docs_pages WHERE path LIKE ? || '%'").run(folder);
+    withFtsRepair(() => {
+      runInTransaction(() => {
+        const rows = db.prepare("SELECT rowid FROM docs_pages WHERE path LIKE ? || '%'").all(folder) as any[];
+        for (const row of rows) {
+          db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(row.rowid);
+        }
+        db.prepare("DELETE FROM docs_pages WHERE path LIKE ? || '%'").run(folder);
+      });
+    });
   }
 
   // ── Search ────────────────────────────────────────────────────
@@ -126,39 +174,26 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
     if (!sanitized) return { results: [], total: 0 };
 
-    // Count total matches
-    const countRow = db.prepare(`
-      SELECT count(*) as total FROM docs_fts WHERE docs_fts MATCH ?
-    `).get(sanitized) as any;
-    const total = countRow?.total || 0;
+    return withFtsRepair(() => {
+      const countRow = db.prepare(`
+        SELECT count(*) as total FROM docs_fts WHERE docs_fts MATCH ?
+      `).get(sanitized) as any;
+      const total = countRow?.total || 0;
 
-    // Fetch results with BM25 ranking and snippets
-    const rows = db.prepare(`
-      SELECT
-        docs_pages.path,
-        docs_pages.title,
-        docs_pages.folder,
-        docs_pages.tags,
-        snippet(docs_fts, 3, '<mark>', '</mark>', '...', 40) as snippet,
-        rank as score
-      FROM docs_fts
-      JOIN docs_pages ON docs_pages.rowid = docs_fts.rowid
-      WHERE docs_fts MATCH ?
-      ORDER BY rank
-      LIMIT ? OFFSET ?
-    `).all(sanitized, limit, offset) as any[];
+      const rows = db.prepare(DOCS_SNIPPET_SQL).all(sanitized, limit, offset) as any[];
 
-    return {
-      total,
-      results: rows.map((r) => ({
-        path: r.path,
-        title: r.title || r.path,
-        snippet: r.snippet || "",
-        score: r.score,
-        folder: r.folder || "",
-        tags: r.tags ? r.tags.split(", ").filter(Boolean) : [],
-      })),
-    };
+      return {
+        total,
+        results: rows.map((r) => ({
+          path: r.path,
+          title: r.title || r.path,
+          snippet: r.snippet || "",
+          score: r.score,
+          folder: r.folder || "",
+          tags: r.tags ? r.tags.split(", ").filter(Boolean) : [],
+        })),
+      };
+    });
   }
 
   // ── Structured queries (for DB collections) ───────────────────
