@@ -24,6 +24,7 @@ import * as globalBus from "./global-bus.js";
 import { STAGING_TOOLS } from "./staging-tools.js";
 import { createWebSearchTools } from "./web-search-tools.js";
 import { createBrowserFetchTools } from "./browser-fetch-tools.js";
+import { createBrowserExecTools } from "./browser-exec-tools.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -91,7 +92,7 @@ If web_fetch returns any of these signals, the site likely blocks automated acce
 - Content is very short or clearly incomplete compared to what the page should have
 - The site is a known SPA or JS-heavy app (React, Angular, Vue dashboards, etc.)
 
-Escalation path: web_fetch (fast, simple) → browser_fetch (real browser, single page) → browser skill (multi-step interactive flows)
+Escalation path: web_fetch (fast, simple) → browser_fetch (real browser, single page) → browser_exec (hardened freeform browser steps) → browser skill (raw multi-step escape hatch)
 </browser_escalation>
 `.trim();
 
@@ -102,6 +103,7 @@ When a question depends on current facts, third-party behavior, online documenta
 - Prefer web_search for source discovery and narrow fact-finding checks.
 - Split independent claims into separate checks, and run those checks in parallel when practical.
 - Use browser_fetch to confirm rendered or canonical pages after search fan-out, especially for JS-heavy or bot-protected sites.
+- Use browser_exec when verification or extraction needs multiple browser steps but should stay on the bridge-managed browser lane.
 - For important claims, compare more than one source when reasonable before making a strong assertion.
 - Skip unnecessary browsing for purely local codebase work or when the answer is already fully grounded in the files/context you have.
 </research_behavior>
@@ -772,6 +774,8 @@ export function createBridgeTools(ctx: AppContext) {
     ...createWebSearchTools(ctx),
 
     ...createBrowserFetchTools(ctx),
+
+    ...createBrowserExecTools(ctx),
   ];
 }
 

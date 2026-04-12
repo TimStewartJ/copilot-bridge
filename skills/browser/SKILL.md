@@ -23,23 +23,24 @@ Use this skill when you need browser control beyond a single page read:
 - **Stateful browsing**: flows that benefit from the bridge's persistent browser state
 - **JavaScript evaluation**: running custom JS on the page
 
-For **simple reads of one URL**, prefer `browser_fetch` first. For raw HTML/API calls or simple static pages, prefer `web_fetch`.
+For **simple reads of one URL**, prefer `browser_fetch` first. For hardened multi-step automation that should stay on the bridge-managed browser session/profile, prefer `browser_exec`. For raw HTML/API calls or simple static pages, prefer `web_fetch`.
 
 For **online research or truth-checking**, prefer the built-in tools before escalating to this skill:
 - use `web_search` for source discovery and narrow, independent fact checks
 - use `browser_fetch` to confirm rendered or canonical pages after search
+- use `browser_exec` when you need several browser steps but do not need raw bash-level control
 - keep separate claims as separate checks when practical instead of collapsing everything into one broad search
 - use this skill only when verification requires a multi-step or stateful browser flow
 
 ## Bridge Browser Rules
 
-The bridge's built-in browser tools (`browser_fetch`, `web_search`) use a hardened, bridge-owned session/profile internally.
+The bridge's built-in browser tools (`browser_fetch`, `web_search`, `browser_exec`) use a hardened, bridge-owned session/profile internally.
 This skill runs raw `agent-browser` commands through bash, so **do not assume those commands automatically share the same session/profile as the built-in tools**.
 
 Follow these rules unless the user explicitly asks otherwise:
 
 1. **Do not assume shared browser state with the built-in tools.**
-   - Plain `agent-browser ...` commands from this skill may use a different session than `browser_fetch` / `web_search`.
+   - Plain `agent-browser ...` commands from this skill may use a different session than `browser_fetch` / `web_search` / `browser_exec`.
    - If a task depends on continuity with those tools, prefer those tools first or explicitly explain the limitation.
 
 2. **Do not create ad hoc profiles or named sessions by default.**
@@ -169,7 +170,7 @@ For this skill, browser state depends on how the command is invoked:
 - if you introduce `--profile` or named sessions, you are intentionally creating separate state
 
 So:
-- do **not** promise that cookies/login state from `browser_fetch` or `web_search` will be present here
+- do **not** promise that cookies/login state from `browser_fetch`, `web_search`, or `browser_exec` will be present here
 - do **not** create ad hoc profiles/sessions unless the task explicitly needs isolation or persistence inside this skill flow
 - do **not** close the browser just to "save" state unless you intentionally created that separate session
 
