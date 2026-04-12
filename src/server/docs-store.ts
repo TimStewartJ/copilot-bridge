@@ -251,6 +251,7 @@ export function createDocsStore(docsDir: string) {
     const isIndexPage = basename(resolved.filePath) === "index.md";
     const parentFolder = folderOf(resolved.canonicalPath);
     const isDbCollectionIndex = isIndexPage && (isDbFolder(resolved.canonicalPath) || isDbFolder(parentFolder));
+    const isExplicitIndexAlias = resolved.canonicalPath === "index" || resolved.canonicalPath.endsWith("/index");
     const isCanonicalFolderIndex = resolved.usedFolderIndexFallback
       && !isDbCollectionIndex;
     const pageFolder = isCanonicalFolderIndex ? resolved.canonicalPath : parentFolder;
@@ -262,7 +263,7 @@ export function createDocsStore(docsDir: string) {
       body: content.trim(),
       folder: pageFolder,
       isDbItem: !isDbCollectionIndex && isDbFolder(pageFolder),
-      isFolderIndex: resolved.usedFolderIndexFallback,
+      isFolderIndex: resolved.usedFolderIndexFallback || isExplicitIndexAlias,
       created: String(data.created || ""),
       modified: String(data.modified || ""),
     };
