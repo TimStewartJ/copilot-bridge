@@ -293,6 +293,50 @@ describe("agent-browser wrapper", () => {
     expect(cpMock.mock.calls[1][1].replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-clones/profile-");
   });
 
+  it("starts a persistent clone from an empty profile when no primary profile exists yet", async () => {
+    statMock.mockImplementation(async (path: string) => {
+      if (path.includes("browser-profile")) {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      return { mtimeMs: Date.now() };
+    });
+
+    const mod = await import("../agent-browser.js");
+    const clone = await mod.createPersistentCloneBrowserTarget("/tmp/test-copilot", undefined, {});
+
+    expect(clone.browserTarget.sessionName).toContain("-clone-");
+    expect(cpMock).not.toHaveBeenCalled();
+    expect(mkdirMock).toHaveBeenCalledWith(expect.stringContaining("/tmp/test-copilot/browser-clones/profile-"), {
+      recursive: true,
+    });
+  });
+
+  it("does not delete registered persistent clone profiles during stale cleanup", async () => {
+    statMock.mockImplementation(async (path: string) => {
+      if (path.includes("browser-profile")) {
+        return { mtimeMs: Date.now() };
+      }
+      return { mtimeMs: Date.now() - (7 * 60 * 60 * 1000) };
+    });
+    readdirMock.mockResolvedValueOnce([]);
+
+    const mod = await import("../agent-browser.js");
+    const activeClone = await mod.createPersistentCloneBrowserTarget("/tmp/test-copilot", undefined, {});
+    const activeCloneDir = activeClone.browserTarget.profileDir.replaceAll("\\", "/").split("/").at(-1)!;
+
+    readdirMock.mockResolvedValueOnce([
+      { name: activeCloneDir, isDirectory: () => true },
+      { name: "profile-stale", isDirectory: () => true },
+    ]);
+
+    await mod.createPersistentCloneBrowserTarget("/tmp/test-copilot", undefined, {});
+
+    const removedPaths = rmMock.mock.calls.map(([path]) => String(path).replaceAll("\\", "/"));
+    const activePath = activeClone.browserTarget.profileDir.replaceAll("\\", "/");
+    expect(removedPaths).toContain("/tmp/test-copilot/browser-clones/profile-stale");
+    expect(removedPaths.filter((path) => path === activePath)).toHaveLength(1);
+  });
+
   it("does not let queue telemetry break primary-lane progress", async () => {
     const telemetryStore = {
       recordSpan: vi.fn((span: { name: string }) => {

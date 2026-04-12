@@ -25,6 +25,7 @@ import { STAGING_TOOLS } from "./staging-tools.js";
 import { createWebSearchTools } from "./web-search-tools.js";
 import { createBrowserFetchTools } from "./browser-fetch-tools.js";
 import { createBrowserExecTools } from "./browser-exec-tools.js";
+import { createBrowserSessionTools } from "./browser-session-tools.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -37,6 +38,8 @@ import type { TagStore } from "./tag-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
+import type { BrowserSessionStore } from "./browser-session-store.js";
+import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -92,7 +95,7 @@ If web_fetch returns any of these signals, the site likely blocks automated acce
 - Content is very short or clearly incomplete compared to what the page should have
 - The site is a known SPA or JS-heavy app (React, Angular, Vue dashboards, etc.)
 
-Escalation path: web_fetch (fast, simple) → browser_fetch (real browser, single page) → browser_exec (hardened freeform browser steps) → browser skill (raw multi-step escape hatch)
+Escalation path: web_fetch (fast, simple) → browser_fetch (real browser, single page) → browser_exec (hardened freeform browser steps) → browser_session_* (explicit multi-turn browser continuity) → browser skill (raw multi-step escape hatch)
 </browser_escalation>
 `.trim();
 
@@ -104,6 +107,7 @@ When a question depends on current facts, third-party behavior, online documenta
 - Split independent claims into separate checks, and run those checks in parallel when practical.
 - Use browser_fetch to confirm rendered or canonical pages after search fan-out, especially for JS-heavy or bot-protected sites.
 - Use browser_exec when verification or extraction needs multiple browser steps but should stay on the bridge-managed browser lane.
+- Use browser_session_* tools when browser work must persist explicitly across turns.
 - For important claims, compare more than one source when reasonable before making a strong assertion.
 - Skip unnecessary browsing for purely local codebase work or when the answer is already fully grounded in the files/context you have.
 </research_behavior>
@@ -776,6 +780,8 @@ export function createBridgeTools(ctx: AppContext) {
     ...createBrowserFetchTools(ctx),
 
     ...createBrowserExecTools(ctx),
+
+    ...createBrowserSessionTools(ctx),
   ];
 }
 
@@ -799,6 +805,7 @@ export interface SessionManagerDeps {
   tagStore?: TagStore;
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
+  browserSessionStore?: BrowserSessionStore;
   config: { sessionMcpServers: Record<string, any>; model?: string };
   telemetryStore?: TelemetryStore;
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
@@ -836,6 +843,10 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     tagStore: ctx.tagStore,
     docsIndex: ctx.docsIndex,
     docsStore: ctx.docsStore,
+    browserSessionStore: getOrCreateBrowserSessionStore(ctx, {
+      copilotHome: opts.copilotHome ?? ctx.copilotHome,
+      telemetryStore: ctx.telemetryStore,
+    }),
     telemetryStore: ctx.telemetryStore,
     config: opts.config,
     clientEnv: opts.clientEnv,
@@ -2161,6 +2172,10 @@ export class SessionManager {
       } else {
         console.log("[sdk] All sessions drained cleanly");
       }
+    }
+
+    if (this.deps.browserSessionStore) {
+      await this.deps.browserSessionStore.closeAll();
     }
 
     // Stop the SDK client
