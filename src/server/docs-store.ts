@@ -13,6 +13,7 @@ export interface DocPage {
   body: string;
   folder: string;
   isDbItem: boolean;
+  isFolderIndex: boolean;
   created: string;
   modified: string;
 }
@@ -231,13 +232,13 @@ export function createDocsStore(docsDir: string) {
   // ── Page CRUD ─────────────────────────────────────────────────
 
   /** Resolve a page path, falling back to folder/index.md if path.md doesn't exist */
-  function resolveFilePath(pagePath: string): { filePath: string; canonicalPath: string } | null {
+  function resolveFilePath(pagePath: string): { filePath: string; canonicalPath: string; usedFolderIndexFallback: boolean } | null {
     const filePath = toFilePath(pagePath);
-    if (existsSync(filePath)) return { filePath, canonicalPath: pagePath };
+    if (existsSync(filePath)) return { filePath, canonicalPath: pagePath, usedFolderIndexFallback: false };
 
     // Fall back: if pagePath is a folder with an index.md, use that
     const indexPath = join(docsDir, ...pagePath.replace(/\\/g, "/").split("/"), "index.md");
-    if (existsSync(indexPath)) return { filePath: indexPath, canonicalPath: pagePath };
+    if (existsSync(indexPath)) return { filePath: indexPath, canonicalPath: pagePath, usedFolderIndexFallback: true };
 
     return null;
   }
@@ -247,14 +248,21 @@ export function createDocsStore(docsDir: string) {
     if (!resolved) return null;
 
     const { data, content } = matter(readFileSync(resolved.filePath, "utf-8"));
+    const isIndexPage = basename(resolved.filePath) === "index.md";
+    const parentFolder = folderOf(resolved.canonicalPath);
+    const isDbCollectionIndex = isIndexPage && (isDbFolder(resolved.canonicalPath) || isDbFolder(parentFolder));
+    const isCanonicalFolderIndex = resolved.usedFolderIndexFallback
+      && !isDbCollectionIndex;
+    const pageFolder = isCanonicalFolderIndex ? resolved.canonicalPath : parentFolder;
     return {
       path: resolved.canonicalPath,
       title: data.title || basename(resolved.canonicalPath),
       tags: Array.isArray(data.tags) ? data.tags : data.tags ? [data.tags] : [],
       frontmatter: data,
       body: content.trim(),
-      folder: folderOf(resolved.canonicalPath),
-      isDbItem: isDbFolder(folderOf(resolved.canonicalPath)),
+      folder: pageFolder,
+      isDbItem: !isDbCollectionIndex && isDbFolder(pageFolder),
+      isFolderIndex: resolved.usedFolderIndexFallback,
       created: String(data.created || ""),
       modified: String(data.modified || ""),
     };

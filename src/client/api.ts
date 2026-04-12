@@ -918,6 +918,7 @@ export interface DocPage {
   body: string;
   folder: string;
   isDbItem: boolean;
+  isFolderIndex: boolean;
   created: string;
   modified: string;
 }
