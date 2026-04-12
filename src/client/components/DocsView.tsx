@@ -292,6 +292,12 @@ function collectFilePaths(nodes: DocTreeNode[]): Set<string> {
   return paths;
 }
 
+function getFolderIndexAliasPath(path: string): string | null {
+  if (path === "index") return "";
+  if (path.endsWith("/index")) return path.slice(0, -"/index".length);
+  return null;
+}
+
 function collectNavigablePaths(nodes: DocTreeNode[]): string[] {
   const paths: string[] = [];
   const walk = (node: DocTreeNode) => {
@@ -877,14 +883,19 @@ export default function DocsView() {
   const navigablePaths = useMemo(() => new Set(collectNavigablePaths(tree)), [tree]);
   const folderIndexPaths = useMemo(() => collectFolderIndexPaths(tree), [tree]);
   const filePaths = useMemo(() => collectFilePaths(tree), [tree]);
-  const selectedPathIsDirectory = useMemo(
-    () => {
-      if (!selectedPath) return false;
-      if (page?.path === selectedPath) return page.isFolderIndex;
-      return folderIndexPaths.has(selectedPath);
-    },
-    [folderIndexPaths, selectedPath, page],
-  );
+  const selectedDirectoryPath = useMemo(() => {
+    if (!selectedPath) return null;
+    if (page?.path === selectedPath && page.isFolderIndex) {
+      return getFolderIndexAliasPath(selectedPath) ?? selectedPath;
+    }
+    if (folderIndexPaths.has(selectedPath)) return selectedPath;
+    const folderIndexAliasPath = getFolderIndexAliasPath(selectedPath);
+    if (folderIndexAliasPath !== null && folderIndexPaths.has(folderIndexAliasPath)) {
+      return folderIndexAliasPath;
+    }
+    return null;
+  }, [folderIndexPaths, selectedPath, page]);
+  const selectedPathIsDirectory = selectedDirectoryPath !== null;
   const normalizeResolvedDocPath = useCallback((docPath: string) => {
     if (!docPath.endsWith("/index")) return docPath;
     const folderPath = docPath.slice(0, -"/index".length);
@@ -1055,7 +1066,7 @@ export default function DocsView() {
         }
 
         if (selectedPath) {
-          const resolvedPath = resolveRelativePath(selectedPath, href, selectedPathIsDirectory);
+          const resolvedPath = resolveRelativePath(selectedDirectoryPath ?? selectedPath, href, selectedPathIsDirectory);
           const fragmentIndex = resolvedPath.indexOf("#");
           const rawResolvedDocPath = fragmentIndex >= 0 ? resolvedPath.slice(0, fragmentIndex) : resolvedPath;
           const resolvedFragment = fragmentIndex >= 0 ? resolvedPath.slice(fragmentIndex) : "";
@@ -1080,7 +1091,7 @@ export default function DocsView() {
         return <a {...props} href={href}>{children}</a>;
       },
     };
-  }, [pageHeadings, resolvedLinks, selectedPath, selectedPathIsDirectory, navigate, scrollToHeading, updateHash]);
+  }, [pageHeadings, resolvedLinks, selectedDirectoryPath, selectedPath, selectedPathIsDirectory, navigate, scrollToHeading, updateHash]);
 
   const handleBreadcrumbSelect = useCallback((crumbPath: string) => {
     if (!page) {
@@ -1440,6 +1451,7 @@ export default function DocsView() {
 
   const dbCollectionView = dbFolder && dbSchema ? (() => {
     const visibleFields = dbSchema.fields.filter((f) => f.name !== "title");
+    const isWrappingField = (field: { type: string }) => field.type === "text";
     const handleSort = (field: string) => {
       setDbSort((prev) => {
         const next = prev.field === field
@@ -1474,24 +1486,24 @@ export default function DocsView() {
             </div>
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto px-3 py-4 sm:px-6">
-          <div className="overflow-hidden rounded-2xl border border-border bg-bg-primary">
-            <table className="w-full min-w-[720px] text-sm">
+        <div className="min-h-0 flex-1 px-3 py-4 sm:px-6">
+          <div className="h-full overflow-auto rounded-2xl border border-border bg-bg-primary">
+            <table className="min-w-max w-full text-sm">
               <thead className="sticky top-0 z-10 bg-bg-secondary text-text-muted">
                 <tr className="border-b border-border">
-                  <th className="px-4 py-3 text-left font-medium">
+                  <th className="min-w-[280px] px-4 py-3 text-left font-medium">
                     <button onClick={() => handleSort("title")} className="transition-colors hover:text-text-primary">
                       Title<SortIcon field="title" />
                     </button>
                   </th>
                   {visibleFields.map((field) => (
-                    <th key={field.name} className={`px-4 py-3 font-medium ${field.type === "number" ? "text-right" : "text-left"}`}>
+                    <th key={field.name} className={`whitespace-nowrap px-4 py-3 font-medium ${field.type === "number" ? "text-right" : "text-left"}`}>
                       <button onClick={() => handleSort(field.name)} className="transition-colors hover:text-text-primary">
                         {field.name}<SortIcon field={field.name} />
                       </button>
                     </th>
                   ))}
-                  <th className="px-4 py-3 text-left font-medium">
+                  <th className="whitespace-nowrap px-4 py-3 text-left font-medium">
                     <button onClick={() => handleSort("modified")} className="transition-colors hover:text-text-primary">
                       Modified<SortIcon field="modified" />
                     </button>
@@ -1505,10 +1517,23 @@ export default function DocsView() {
                     onClick={() => handleSelectNode(entry.path)}
                     className="cursor-pointer border-b border-border transition-colors hover:bg-bg-hover"
                   >
-                    <td className="px-4 py-3 font-medium text-text-primary">{entry.title}</td>
+                    <td className="min-w-[280px] px-4 py-3 align-top font-medium text-text-primary">
+                      <div className="max-w-[22rem] whitespace-normal break-words leading-5 line-clamp-3">
+                        {entry.title}
+                      </div>
+                    </td>
                     {visibleFields.map((field) => (
-                      <td key={field.name} className={`px-4 py-3 text-text-muted ${field.type === "number" ? "text-right" : ""}`}>
-                        <DbCell field={field} value={entry.fields[field.name]} />
+                      <td
+                        key={field.name}
+                        className={`${isWrappingField(field) ? "min-w-[220px] align-top" : "whitespace-nowrap"} px-4 py-3 text-text-muted ${field.type === "number" ? "text-right" : ""}`}
+                      >
+                        {isWrappingField(field) ? (
+                          <div className="max-w-[18rem] whitespace-normal break-words leading-5 line-clamp-2">
+                            <DbCell field={field} value={entry.fields[field.name]} />
+                          </div>
+                        ) : (
+                          <DbCell field={field} value={entry.fields[field.name]} />
+                        )}
                       </td>
                     ))}
                     <td className="whitespace-nowrap px-4 py-3 text-text-faint">{formatDocDate(entry.modified)}</td>
@@ -1678,7 +1703,7 @@ export default function DocsView() {
             {page ? page.path : dbFolder ?? "Knowledge base"}
           </div>
         </div>
-        {!page && (
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => setNavigatorOpen(true)}
             className="rounded-full p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
@@ -1686,7 +1711,16 @@ export default function DocsView() {
           >
             <BookOpen size={16} />
           </button>
-        )}
+          {page && !showDesktopInspector && (
+            <button
+              onClick={() => setInspectorOpen(true)}
+              className="rounded-full p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+              aria-label="Open contents and details"
+            >
+              <List size={16} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1">
