@@ -26,6 +26,7 @@ const MAX_CLONE_LANES = 5;
 const laneQueues = new Map<string, Promise<void>>();
 const laneDepths = new Map<string, number>();
 const clonePoolStates = new Map<string, { available: number; waiters: Array<() => void> }>();
+const persistentCloneProfiles = new Set<string>();
 
 export interface BrowserTarget {
   sessionName: string;
@@ -275,6 +276,7 @@ async function cleanupStaleBrowserClones(copilotHome: string): Promise<void> {
     await Promise.all(entries.map(async (entry) => {
       if (!entry.isDirectory()) return;
       const fullPath = join(root, entry.name);
+      if (persistentCloneProfiles.has(fullPath)) return;
       try {
         const stats = await stat(fullPath);
         if ((now - stats.mtimeMs) > STALE_CLONE_MAX_AGE_MS) {
@@ -341,6 +343,18 @@ async function resolvePrimaryBrowserTarget(
   return { browserTarget: primaryTarget, sourceKind: "missing-primary" };
 }
 
+export async function createPersistentCloneBrowserTarget(
+  copilotHome: string | undefined,
+  telemetryStore: TelemetryStore | undefined,
+  metadata: Record<string, unknown>,
+): Promise<{ cloneId: string; browserTarget: BrowserTarget }> {
+  const resolvedHome = copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
+  const primaryTarget = getBridgeBrowserTarget(resolvedHome);
+  const clone = await createBrowserClone(primaryTarget, resolvedHome, telemetryStore, metadata);
+  persistentCloneProfiles.add(clone.browserTarget.profileDir);
+  return clone;
+}
+
 async function createBrowserClone(
   primaryTarget: BrowserTarget,
   copilotHome: string,
@@ -360,7 +374,11 @@ async function createBrowserClone(
   const startedAt = Date.now();
   try {
     await mkdir(root, { recursive: true });
-    await copySanitizedProfile(source.profileDir, profileDir);
+    if (source.sourceKind === "missing-primary") {
+      await mkdir(profileDir, { recursive: true });
+    } else {
+      await copySanitizedProfile(source.profileDir, profileDir);
+    }
     safeRecordBrowserSpan(telemetryStore, "browser.clone.create", Date.now() - startedAt, {
       ...metadata,
       cloneId,
@@ -383,6 +401,15 @@ async function createBrowserClone(
     });
     throw err;
   }
+}
+
+export async function destroyPersistentCloneBrowserTarget(
+  browserTarget: BrowserTarget,
+  telemetryStore: TelemetryStore | undefined,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  persistentCloneProfiles.delete(browserTarget.profileDir);
+  await destroyBrowserClone(browserTarget, telemetryStore, metadata);
 }
 
 async function destroyBrowserClone(
