@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
-import { getTunnelUrl } from "./tunnel.js";
+import { buildPublicUrl } from "./tunnel.js";
 import type { AppContext } from "./app-context.js";
 import type express from "express";
 
@@ -610,8 +610,7 @@ export const STAGING_TOOLS = [
         log("Express app not registered — frontend-only preview");
       }
 
-      const tunnelUrl = getTunnelUrl();
-      const fullUrl = tunnelUrl ? `${tunnelUrl.replace(/\/+$/, "")}${basePath}` : null;
+      const fullUrl = buildPublicUrl(basePath) ?? null;
 
       const backendNote = backendReady
         ? " Backend API is live at the same path (/api routes)."
@@ -628,7 +627,7 @@ export const STAGING_TOOLS = [
         backendError,
         message: (fullUrl
           ? `Staging preview is live at ${fullUrl} — share this link with the user and wait for confirmation before deploying.`
-          : `Staging preview is live at ${basePath} (no tunnel URL available — share the relative path with the user).`) + backendNote,
+          : `Staging preview is live at ${basePath} (no public URL available — share the relative path with the user).`) + backendNote,
       };
     },
   }),

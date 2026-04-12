@@ -9,7 +9,7 @@ Today, with agentic AI, code is easy to produce. I think the future is people bu
 - **SSE streaming** — Real-time streamed responses with tool call indicators
 - **Session persistence** — All sessions survive restarts, navigating away, closing the browser
 - **Self-iteration** — The agent can edit its own source code and restart the server safely
-- **Remote access** — Dev tunnel for remote access, optional webhook notification on startup
+- **Remote access** — Dev tunnel or your own public ingress, optional webhook notification on startup
 
 ## Architecture
 
@@ -68,6 +68,22 @@ npm run build        # Build client + server
 npm run build:client # Vite build only
 npm run build:server # TypeScript compile only
 ```
+
+### Public URL Configuration
+
+If you expose the bridge through something other than dev tunnels (for example Cloudflare Tunnel, ngrok, or a reverse proxy), set a canonical public base URL so staging previews can return shareable absolute links:
+
+```bash
+BRIDGE_PUBLIC_BASE_URL=https://bridge.example.com
+```
+
+If the bridge sits behind a trusted proxy that terminates TLS, also set:
+
+```bash
+BRIDGE_TRUST_PROXY=true
+```
+
+That allows the server to learn the externally visible origin from incoming requests and use it for staging preview links when no explicit public base URL is configured.
 
 ### Auto-Start on Login (Windows, optional)
 

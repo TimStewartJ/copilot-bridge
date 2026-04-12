@@ -23,7 +23,7 @@ import { createTagStore } from "./tag-store.js";
 import { createTelemetryStore } from "./telemetry-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
-import { notifyWebhook, gitHash, getTunnelUrl, discoverTunnelUrl } from "./tunnel.js";
+import { notifyWebhook, gitHash, getPublicBaseUrl, discoverTunnelUrl, rememberRequestOrigin, shouldTrustProxyHeaders } from "./tunnel.js";
 import { defaultGlobalBus } from "./global-bus.js";
 import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerExpressApp } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
@@ -32,6 +32,14 @@ import { createApiRouter } from "./api-router.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
+
+if (shouldTrustProxyHeaders()) {
+  app.set("trust proxy", true);
+  app.use((req, _res, next) => {
+    rememberRequestOrigin(req);
+    next();
+  });
+}
 
 // Register Express app with staging tools so they can mount/unmount staged routers
 registerExpressApp(app);
@@ -176,16 +184,16 @@ async function main(): Promise<void> {
   // Webhook 1: server is up
   await notifyWebhook(`🤖 Copilot Bridge is online! (${gitHash()}, PID ${process.pid})`);
 
-  // Webhook 2: tunnel URL (may take a moment to be available)
-  const tunnelUrl = getTunnelUrl();
-  if (tunnelUrl) {
-    await notifyWebhook(`🔗 Tunnel ready`, tunnelUrl);
+  // Webhook 2: public URL (explicit config, learned origin, or tunnel URL)
+  const publicUrl = getPublicBaseUrl();
+  if (publicUrl) {
+    await notifyWebhook(`🔗 Public URL ready`, publicUrl);
   } else {
-    // Retry after a short delay — tunnel PM2 process may still be starting
+    // Retry after a short delay — a tunnel process may still be starting
     setTimeout(async () => {
       const url = discoverTunnelUrl();
       if (url) {
-        await notifyWebhook(`🔗 Tunnel ready`, url);
+        await notifyWebhook(`🔗 Public URL ready`, url);
       }
     }, 15_000);
   }
