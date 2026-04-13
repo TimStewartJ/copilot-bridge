@@ -1,9 +1,9 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText, RotateCw } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText, RotateCw, ListTodo } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -31,7 +31,6 @@ interface TaskRailProps {
   activeTaskId: string | null;
   onSelectTask: (id: string) => void;
   onNewTask: (groupId?: string) => void;
-  onSelectQuickChats: () => void;
   isQuickChatsActive: boolean;
   onGoHome: () => void;
   onOpenSettings: () => void;
@@ -58,8 +57,6 @@ interface TaskRailProps {
   activeSessionId?: string | null;
   onSelectSession?: (sessionId: string) => void;
   onNewQuickChat?: () => void;
-  quickChatsExpanded?: boolean;
-  onToggleQuickChats?: () => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
@@ -102,7 +99,6 @@ export default function TaskRail({
   activeTaskId,
   onSelectTask,
   onNewTask,
-  onSelectQuickChats,
   isQuickChatsActive,
   onGoHome,
   onOpenSettings,
@@ -128,8 +124,6 @@ export default function TaskRail({
   activeSessionId,
   onSelectSession,
   onNewQuickChat,
-  quickChatsExpanded,
-  onToggleQuickChats,
   onArchiveSession,
   onDeleteSession,
   onDuplicateSession,
@@ -234,6 +228,39 @@ export default function TaskRail({
   }, [hasGroups, sortedTasks, taskGroups]);
 
   const [showArchived, setShowArchived] = useState(false);
+
+  // Tab state for expanded rail
+  const [railTab, setRailTab] = useState<"tasks" | "chats">("tasks");
+
+  // Sync tab with route: if a quick chat is active → chats tab; if a task is active → tasks tab
+  useEffect(() => {
+    if (isQuickChatsActive || (activeSessionId && !activeTaskId)) {
+      setRailTab("chats");
+    } else if (activeTaskId) {
+      setRailTab("tasks");
+    }
+  }, [isQuickChatsActive, activeSessionId, activeTaskId]);
+
+  // Reset bulk-select when leaving chats tab
+  useEffect(() => {
+    if (railTab !== "chats") {
+      setQcSelectMode(false);
+      setQcSelectedIds(new Set());
+    }
+  }, [railTab]);
+
+  // Badge counts for tabs (unread only — busy resolves to unread naturally)
+  const taskTabUnread = useMemo(() => {
+    let unread = 0;
+    for (const task of tasks) {
+      if (task.status === "archived") continue;
+      const ind = taskIndicators.get(task.id);
+      if (ind?.unread) unread++;
+    }
+    return unread;
+  }, [tasks, taskIndicators]);
+
+  const chatTabUnread = useMemo(() => orphanIndicators.totalUnread, [orphanIndicators]);
 
   // Context menu state (tasks)
   const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
@@ -478,365 +505,385 @@ export default function TaskRail({
         </button>
       </div>
 
-      {/* New Task button */}
-      <div className="px-2 pt-2">
+      {/* ── Tab bar ─────────────────────────────────────────── */}
+      <div className="flex items-center border-b border-border">
         <button
-          onClick={() => onNewTask()}
-          className="w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
+          onClick={() => setRailTab("tasks")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative ${
+            railTab === "tasks"
+              ? "text-text-primary"
+              : "text-text-muted hover:text-text-primary"
+          }`}
         >
-          + New Task
+          <ListTodo size={13} />
+          Tasks
+          {taskTabUnread > 0 && (
+            <span className="min-w-[16px] h-4 px-1 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center">
+              {taskTabUnread}
+            </span>
+          )}
+          {railTab === "tasks" && (
+            <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent rounded-full" />
+          )}
+        </button>
+        <button
+          onClick={() => setRailTab("chats")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative ${
+            railTab === "chats"
+              ? "text-text-primary"
+              : "text-text-muted hover:text-text-primary"
+          }`}
+        >
+          <MessageSquare size={13} />
+          Chats
+          {chatTabUnread > 0 && (
+            <span className="min-w-[16px] h-4 px-1 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center">
+              {chatTabUnread}
+            </span>
+          )}
+          {railTab === "chats" && (
+            <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent rounded-full" />
+          )}
         </button>
       </div>
 
-      {/* Task list */}
+      {/* ── Tab content (scrollable) ────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
-          {hasGroups && displaySections ? (
-            // ── Grouped mode ──────────────────────────────────
-            <>
-              {displaySections.map((section) => {
-                const group = section.group;
-                const isCollapsed = group?.collapsed ?? false;
-                const groupId = group?.id ?? "__ungrouped__";
-                const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
-
-                return (
-                  <DroppableGroup key={groupId} id={groupId}>
-                    <div className={`mb-1 ${colorBg ? `${colorBg} rounded-lg` : ""}`}>
-                      {/* Group header */}
-                      <div className="flex items-center group/header">
-                      <button
-                        onClick={() => {
-                          if (group && onUpdateGroup) {
-                            onUpdateGroup(group.id, { collapsed: !isCollapsed });
-                          }
-                        }}
-                        onContextMenu={(e) => {
-                          if (group) {
-                            e.preventDefault();
-                            setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
-                          }
-                        }}
-                        className="flex-1 min-w-0 flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
-                      >
-                        {group ? (
-                          isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
-                        ) : null}
-                        <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
-                      </button>
-                      {group && (
-                        <>
-                        {group.notes && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setGroupNotesId(group.id);
-                              setGroupNotesStartEdit(false);
-                            }}
-                            title="Group notes"
-                            className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
-                          >
-                            <FileText size={11} />
-                          </button>
-                        )}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onNewTask(group.id);
-                          }}
-                          title={`New task in ${group.name}`}
-                          className="p-1 mr-1.5 rounded text-text-faint opacity-0 group-hover/header:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
-                        >
-                          <Plus size={12} />
-                        </button>
-                        </>
-                      )}
-                      </div>
-
-                      {/* Group tasks */}
-                      {!isCollapsed && (
-                        <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                          {section.tasks.map((task) => (
-                            <SortableRailItem
-                              key={task.id}
-                              task={task}
-                              isActive={task.id === activeTaskId}
-                              indicator={taskIndicators.get(task.id)}
-                              isCtxTarget={ctxMenu?.id === task.id}
-                              isLongPressTarget={isTarget(task.id)}
-                              bindLongPress={bindLongPress}
-                              onSelectTask={onSelectTask}
-                            />
-                          ))}
-                        </SortableContext>
-                      )}
-                    </div>
-                  </DroppableGroup>
-                );
-              })}
-            </>
-          ) : (
-            // ── Flat mode (no groups) ──────────────────────────
-            <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-              {sortedTasks.map((task) => (
-                <SortableRailItem
-                  key={task.id}
-                  task={task}
-                  isActive={task.id === activeTaskId}
-                  indicator={taskIndicators.get(task.id)}
-                  isCtxTarget={ctxMenu?.id === task.id}
-                  isLongPressTarget={isTarget(task.id)}
-                  bindLongPress={bindLongPress}
-                  onSelectTask={onSelectTask}
-                />
-              ))}
-            </SortableContext>
-          )}
-          <DragOverlay dropAnimation={null}>
-            {activeDragTask ? (
-              <div className="bg-bg-secondary rounded-md shadow-lg border border-border px-3 py-2 text-sm w-48 opacity-90">
-                <div className="font-medium truncate">{activeDragTask.title}</div>
-                <div className="text-xs text-text-muted mt-0.5">{timeAgo(activeDragTask.updatedAt)}</div>
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
-        {sortedTasks.length === 0 && (
-          <EmptyState
-            message="No tasks yet"
-            sub="Create a task to organize your work"
-          />
-        )}
-        {archivedTasks.length > 0 && (
+        {railTab === "tasks" ? (
           <>
+            {/* New Task button */}
             <button
-              onClick={() => setShowArchived((v) => !v)}
-              className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+              onClick={() => onNewTask()}
+              className="w-full px-3 py-2 mb-1 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
             >
-              {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <Archive size={12} />
-              Archived ({archivedTasks.length})
+              + New Task
             </button>
-            {showArchived && archivedTasks.map((task) => {
-              const isActive = task.id === activeTaskId;
 
-              return (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+              {hasGroups && displaySections ? (
+                // ── Grouped mode ──────────────────────────────────
+                <>
+                  {displaySections.map((section) => {
+                    const group = section.group;
+                    const isCollapsed = group?.collapsed ?? false;
+                    const groupId = group?.id ?? "__ungrouped__";
+                    const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
+
+                    return (
+                      <DroppableGroup key={groupId} id={groupId}>
+                        <div className={`mb-1 ${colorBg ? `${colorBg} rounded-lg` : ""}`}>
+                          {/* Group header */}
+                          <div className="flex items-center group/header">
+                          <button
+                            onClick={() => {
+                              if (group && onUpdateGroup) {
+                                onUpdateGroup(group.id, { collapsed: !isCollapsed });
+                              }
+                            }}
+                            onContextMenu={(e) => {
+                              if (group) {
+                                e.preventDefault();
+                                setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
+                              }
+                            }}
+                            className="flex-1 min-w-0 flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                          >
+                            {group ? (
+                              isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
+                            ) : null}
+                            <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
+                          </button>
+                          {group && (
+                            <>
+                            {group.notes && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setGroupNotesId(group.id);
+                                  setGroupNotesStartEdit(false);
+                                }}
+                                title="Group notes"
+                                className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
+                              >
+                                <FileText size={11} />
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onNewTask(group.id);
+                              }}
+                              title={`New task in ${group.name}`}
+                              className="p-1 mr-1.5 rounded text-text-faint opacity-0 group-hover/header:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
+                            >
+                              <Plus size={12} />
+                            </button>
+                            </>
+                          )}
+                          </div>
+
+                          {/* Group tasks */}
+                          {!isCollapsed && (
+                            <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                              {section.tasks.map((task) => (
+                                <SortableRailItem
+                                  key={task.id}
+                                  task={task}
+                                  isActive={task.id === activeTaskId}
+                                  indicator={taskIndicators.get(task.id)}
+                                  isCtxTarget={ctxMenu?.id === task.id}
+                                  isLongPressTarget={isTarget(task.id)}
+                                  bindLongPress={bindLongPress}
+                                  onSelectTask={onSelectTask}
+                                />
+                              ))}
+                            </SortableContext>
+                          )}
+                        </div>
+                      </DroppableGroup>
+                    );
+                  })}
+                </>
+              ) : (
+                // ── Flat mode (no groups) ──────────────────────────
+                <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                  {sortedTasks.map((task) => (
+                    <SortableRailItem
+                      key={task.id}
+                      task={task}
+                      isActive={task.id === activeTaskId}
+                      indicator={taskIndicators.get(task.id)}
+                      isCtxTarget={ctxMenu?.id === task.id}
+                      isLongPressTarget={isTarget(task.id)}
+                      bindLongPress={bindLongPress}
+                      onSelectTask={onSelectTask}
+                    />
+                  ))}
+                </SortableContext>
+              )}
+              <DragOverlay dropAnimation={null}>
+                {activeDragTask ? (
+                  <div className="bg-bg-secondary rounded-md shadow-lg border border-border px-3 py-2 text-sm w-48 opacity-90">
+                    <div className="font-medium truncate">{activeDragTask.title}</div>
+                    <div className="text-xs text-text-muted mt-0.5">{timeAgo(activeDragTask.updatedAt)}</div>
+                  </div>
+                ) : null}
+              </DragOverlay>
+            </DndContext>
+            {sortedTasks.length === 0 && (
+              <EmptyState
+                message="No tasks yet"
+                sub="Create a task to organize your work"
+              />
+            )}
+            {archivedTasks.length > 0 && (
+              <>
                 <button
-                  key={task.id}
-                  {...bindLongPress(task.id, () => onSelectTask(task.id))}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
-                    ctxMenu?.id === task.id
-                      ? "bg-bg-hover ring-1 ring-border"
-                      : isActive
-                        ? "bg-bg-hover"
-                        : "hover:bg-bg-hover"
-                  } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
+                  onClick={() => setShowArchived((v) => !v)}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium truncate flex-1">
-                      {task.title}
-                    </span>
-                    <span className="text-[10px] text-text-faint">archived</span>
-                  </div>
-                  <div className="text-xs text-text-muted mt-0.5">
-                    {timeAgo(task.updatedAt)}
-                  </div>
+                  {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <Archive size={12} />
+                  Archived ({archivedTasks.length})
                 </button>
-              );
-            })}
+                {showArchived && archivedTasks.map((task) => {
+                  const isActive = task.id === activeTaskId;
+
+                  return (
+                    <button
+                      key={task.id}
+                      {...bindLongPress(task.id, () => onSelectTask(task.id))}
+                      className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
+                        ctxMenu?.id === task.id
+                          ? "bg-bg-hover ring-1 ring-border"
+                          : isActive
+                            ? "bg-bg-hover"
+                            : "hover:bg-bg-hover"
+                      } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium truncate flex-1">
+                          {task.title}
+                        </span>
+                        <span className="text-[10px] text-text-faint">archived</span>
+                      </div>
+                      <div className="text-xs text-text-muted mt-0.5">
+                        {timeAgo(task.updatedAt)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </>
-        )}
-        {/* Quick Chats — collapsible inline section */}
-        <div className="mt-2">
-          <div className="flex items-center">
-            <button
-              onClick={onToggleQuickChats}
-              className={`flex-1 flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors cursor-pointer ${
-                isQuickChatsActive
-                  ? "text-text-primary"
-                  : "text-text-muted hover:text-text-primary"
-              }`}
-            >
-              {quickChatsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <MessageSquare size={12} />
-              <span className="font-medium">Quick Chats</span>
-              {orphanIndicators.hasActivity && !qcSelectMode && (
-                <span className="ml-auto flex items-center gap-1">
-                  {orphanIndicators.totalBusy > 0 && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse" />
-                  )}
-                  {orphanIndicators.totalUnread > 0 && (
-                    <span className="text-[10px] text-text-faint">{orphanIndicators.totalUnread}</span>
-                  )}
-                </span>
-              )}
-              {!orphanIndicators.hasActivity && !qcSelectMode && sortedOrphanSessions.length > 0 && (
-                <span className="text-text-faint ml-auto text-[10px]">{sortedOrphanSessions.length}</span>
-              )}
-            </button>
-            {quickChatsExpanded && !qcSelectMode && orphanIndicators.totalUnread > 0 && onMarkAllQuickChatsRead && (
-              <button
-                onClick={onMarkAllQuickChatsRead}
-                className="p-1 mr-2 rounded text-text-muted hover:text-accent hover:bg-bg-hover transition-colors"
-                title="Mark all as read"
-              >
-                <CheckCheck size={14} />
-              </button>
-            )}
-            {quickChatsExpanded && qcSelectMode && (
-              <button
-                onClick={qcExitSelectMode}
-                className="text-xs px-2 py-0.5 mr-2 rounded text-accent bg-accent/10 transition-colors"
-              >
-                Done
-              </button>
-            )}
-          </div>
-          {quickChatsExpanded && (
-            <div className="space-y-0.5 mt-0.5">
-              {/* Bulk action bar */}
-              {qcSelectMode && onBulkAction && (
-                <div className="flex items-center gap-1 flex-wrap text-[11px] px-2 py-1">
-                  <button
-                    onClick={() => {
-                      const allIds = new Set(sortedOrphanSessions.map((s) => s.sessionId));
-                      setQcSelectedIds((prev) => prev.size === allIds.size ? new Set() : allIds);
-                    }}
-                    className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
-                  >
-                    {qcSelectedIds.size === sortedOrphanSessions.length && sortedOrphanSessions.length > 0
-                      ? <SquareCheckBig size={12} className="text-accent" />
-                      : <Square size={12} />}
-                    All
-                  </button>
-                  {qcSelectedIds.size > 0 && (
-                    <>
-                      <span className="text-text-faint">·</span>
-                      <span className="text-text-muted">{qcSelectedIds.size}</span>
-                      <span className="text-text-faint">·</span>
-                      <button
-                        onClick={() => qcHandleBulkAction("archive", [...qcSelectedIds])}
-                        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
-                      >
-                        <Archive size={12} />
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (confirm(`Delete ${qcSelectedIds.size} session${qcSelectedIds.size === 1 ? "" : "s"}? This cannot be undone.`))
-                            qcHandleBulkAction("delete", [...qcSelectedIds]);
-                        }}
-                        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-error"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
+        ) : (
+          /* ── Chats tab ───────────────────────────────────── */
+          <div className="space-y-0.5">
+            {/* Action bar: New + Mark all read + Select mode */}
+            <div className="flex items-center gap-1 mb-1">
               {!qcSelectMode && onNewQuickChat && (
                 <button
                   onClick={onNewQuickChat}
-                  className="w-full mb-1 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors"
+                  className="flex-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
                 >
                   + Quick Chat
                 </button>
               )}
-              {sortedOrphanSessions.length === 0 && archivedOrphanSessions.length === 0 && (
-                <div className="text-center text-text-faint text-[10px] py-3">No quick chats yet</div>
+              {!qcSelectMode && orphanIndicators.totalUnread > 0 && onMarkAllQuickChatsRead && (
+                <button
+                  onClick={onMarkAllQuickChatsRead}
+                  className="p-2 rounded-md text-text-muted hover:text-accent hover:bg-bg-hover transition-colors"
+                  title="Mark all as read"
+                >
+                  <CheckCheck size={14} />
+                </button>
               )}
-              {sortedOrphanSessions.map((session) => {
-                const isActive = session.sessionId === activeSessionId;
-                const busy = session.busy;
-                const unread = !busy && isUnread?.(session.sessionId, getSessionActivityTime(session));
-                const isSelected = qcSelectedIds.has(session.sessionId);
-                const handleClick = qcSelectMode
-                  ? () => qcToggleSelect(session.sessionId)
-                  : undefined;
-                return (
-                  <button
-                    key={session.sessionId}
-                    {...(qcSelectMode ? { onClick: handleClick } : bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId)))}
-                    className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-                      qcSelectMode && isSelected
-                        ? "bg-accent/10"
-                        : qcCtxMenu?.id === session.sessionId
-                          ? "bg-bg-hover ring-1 ring-border"
-                          : isActive && unread
-                            ? "bg-bg-hover border-l-2 border-text-primary"
-                            : isActive
-                              ? "bg-bg-hover"
-                              : unread
-                                ? "border-l-2 border-text-primary hover:bg-bg-hover"
-                                : "hover:bg-bg-hover"
-                    } ${!qcSelectMode && isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
-                  >
-                    <div className="flex items-center">
-                      {qcSelectMode ? (
-                        isSelected
-                          ? <SquareCheckBig size={13} className="text-accent shrink-0 mr-1.5" />
-                          : <Square size={13} className="text-text-muted shrink-0 mr-1.5" />
-                      ) : busy ? (
-                        <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
-                      ) : unread ? (
-                        <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
-                      ) : null}
-                      <span className={`truncate flex-1 text-xs ${unread ? "font-semibold" : "font-medium"}`}>
-                        {session.summary || "New chat"}
-                      </span>
-                    </div>
-                    <div className="text-[10px] text-text-muted mt-0.5">
-                      {timeAgo(getSessionActivityTime(session))}
-                      {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
-                    </div>
-                  </button>
-                );
-              })}
-              {/* Archived quick chats */}
-              {!qcSelectMode && (archivedOrphanSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
-                <>
-                  <button
-                    onClick={() => {
-                      const willExpand = !showArchivedQc;
-                      setShowArchivedQc(willExpand);
-                      if (willExpand && !archivedLoaded && onRequestArchived) onRequestArchived();
-                    }}
-                    className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-1 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
-                  >
-                    {showArchivedQc ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-                    <Archive size={10} />
-                    Archived{archivedLoaded ? ` (${archivedOrphanSessions.length})` : "…"}
-                  </button>
-                  {showArchivedQc && archivedOrphanSessions.map((session) => {
-                    const isActive = session.sessionId === activeSessionId;
-                    return (
-                      <button
-                        key={session.sessionId}
-                        {...bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId))}
-                        className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
-                          qcCtxMenu?.id === session.sessionId
-                            ? "bg-bg-hover ring-1 ring-border"
-                            : isActive
-                              ? "bg-bg-hover"
-                              : "hover:bg-bg-hover"
-                        } ${isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="truncate flex-1 text-xs font-medium">
-                            {session.summary || "New chat"}
-                          </span>
-                          <span className="text-[10px] text-text-faint">archived</span>
-                        </div>
-                        <div className="text-[10px] text-text-muted mt-0.5">
-                          {timeAgo(getSessionActivityTime(session))}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </>
+              {qcSelectMode && (
+                <button
+                  onClick={qcExitSelectMode}
+                  className="text-xs px-2 py-0.5 rounded text-accent bg-accent/10 transition-colors"
+                >
+                  Done
+                </button>
               )}
             </div>
-          )}
-        </div>
+            {/* Bulk action bar */}
+            {qcSelectMode && onBulkAction && (
+              <div className="flex items-center gap-1 flex-wrap text-[11px] px-2 py-1">
+                <button
+                  onClick={() => {
+                    const allIds = new Set(sortedOrphanSessions.map((s) => s.sessionId));
+                    setQcSelectedIds((prev) => prev.size === allIds.size ? new Set() : allIds);
+                  }}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+                >
+                  {qcSelectedIds.size === sortedOrphanSessions.length && sortedOrphanSessions.length > 0
+                    ? <SquareCheckBig size={12} className="text-accent" />
+                    : <Square size={12} />}
+                  All
+                </button>
+                {qcSelectedIds.size > 0 && (
+                  <>
+                    <span className="text-text-faint">·</span>
+                    <span className="text-text-muted">{qcSelectedIds.size}</span>
+                    <span className="text-text-faint">·</span>
+                    <button
+                      onClick={() => qcHandleBulkAction("archive", [...qcSelectedIds])}
+                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
+                    >
+                      <Archive size={12} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm(`Delete ${qcSelectedIds.size} session${qcSelectedIds.size === 1 ? "" : "s"}? This cannot be undone.`))
+                          qcHandleBulkAction("delete", [...qcSelectedIds]);
+                      }}
+                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-error"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            {sortedOrphanSessions.length === 0 && archivedOrphanSessions.length === 0 && (
+              <EmptyState
+                message="No quick chats yet"
+                sub="Start a chat without a task"
+              />
+            )}
+            {sortedOrphanSessions.map((session) => {
+              const isActive = session.sessionId === activeSessionId;
+              const busy = session.busy;
+              const unread = !busy && isUnread?.(session.sessionId, getSessionActivityTime(session));
+              const isSelected = qcSelectedIds.has(session.sessionId);
+              const handleClick = qcSelectMode
+                ? () => qcToggleSelect(session.sessionId)
+                : undefined;
+              return (
+                <button
+                  key={session.sessionId}
+                  {...(qcSelectMode ? { onClick: handleClick } : bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId)))}
+                  className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
+                    qcSelectMode && isSelected
+                      ? "bg-accent/10"
+                      : qcCtxMenu?.id === session.sessionId
+                        ? "bg-bg-hover ring-1 ring-border"
+                        : isActive && unread
+                          ? "bg-bg-hover border-l-2 border-text-primary"
+                          : isActive
+                            ? "bg-bg-hover"
+                            : unread
+                              ? "border-l-2 border-text-primary hover:bg-bg-hover"
+                              : "hover:bg-bg-hover"
+                  } ${!qcSelectMode && isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
+                >
+                  <div className="flex items-center">
+                    {qcSelectMode ? (
+                      isSelected
+                        ? <SquareCheckBig size={13} className="text-accent shrink-0 mr-1.5" />
+                        : <Square size={13} className="text-text-muted shrink-0 mr-1.5" />
+                    ) : busy ? (
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
+                    ) : unread ? (
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
+                    ) : null}
+                    <span className={`truncate flex-1 text-xs ${unread ? "font-semibold" : "font-medium"}`}>
+                      {session.summary || "New chat"}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-text-muted mt-0.5">
+                    {timeAgo(getSessionActivityTime(session))}
+                    {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
+                  </div>
+                </button>
+              );
+            })}
+            {/* Archived quick chats */}
+            {!qcSelectMode && (archivedOrphanSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
+              <>
+                <button
+                  onClick={() => {
+                    const willExpand = !showArchivedQc;
+                    setShowArchivedQc(willExpand);
+                    if (willExpand && !archivedLoaded && onRequestArchived) onRequestArchived();
+                  }}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-1 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+                >
+                  {showArchivedQc ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                  <Archive size={10} />
+                  Archived{archivedLoaded ? ` (${archivedOrphanSessions.length})` : "…"}
+                </button>
+                {showArchivedQc && archivedOrphanSessions.map((session) => {
+                  const isActive = session.sessionId === activeSessionId;
+                  return (
+                    <button
+                      key={session.sessionId}
+                      {...bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId))}
+                      className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
+                        qcCtxMenu?.id === session.sessionId
+                          ? "bg-bg-hover ring-1 ring-border"
+                          : isActive
+                            ? "bg-bg-hover"
+                            : "hover:bg-bg-hover"
+                      } ${isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="truncate flex-1 text-xs font-medium">
+                          {session.summary || "New chat"}
+                        </span>
+                        <span className="text-[10px] text-text-faint">archived</span>
+                      </div>
+                      <div className="text-[10px] text-text-muted mt-0.5">
+                        {timeAgo(getSessionActivityTime(session))}
+                      </div>
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Dashboard */}
