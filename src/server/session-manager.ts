@@ -4,7 +4,7 @@
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
 import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -2079,7 +2079,18 @@ export class SessionManager {
         throw err;
       }
     }
+    this.visibleActivityCache.delete(sessionId);
     this.invalidateSessionListCache();
+
+    // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const sessionDir = join(copilotHome, "session-state", sessionId);
+    try {
+      await rm(sessionDir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
+    }
+
     console.log(`[sdk] Deleted session ${sessionId}`);
   }
 
