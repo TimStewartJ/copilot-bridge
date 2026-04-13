@@ -833,7 +833,6 @@ export default function App() {
         activeTaskId={activeTaskId}
         onSelectTask={handleSelectTask}
         onNewTask={handleNewTask}
-        onSelectQuickChats={handleSelectQuickChats}
         isQuickChatsActive={quickChatsMode && !activeTaskId}
         onGoHome={handleGoHome}
         onOpenSettings={handleOpenSettings}
@@ -859,8 +858,6 @@ export default function App() {
         activeSessionId={activeSessionId}
         onSelectSession={(id) => navigate(`/sessions/${id}`)}
         onNewQuickChat={handleNewQuickChat}
-        quickChatsExpanded={quickChatsExpanded}
-        onToggleQuickChats={() => persistQuickChatsExpanded((v) => !v)}
         onArchiveSession={handleArchiveSession}
         onDeleteSession={handleDeleteSession}
         onDuplicateSession={handleDuplicateSession}
