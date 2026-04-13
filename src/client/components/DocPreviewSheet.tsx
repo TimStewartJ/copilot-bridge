@@ -72,7 +72,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
             <div className="text-center py-8 text-text-faint text-sm">Loading…</div>
           )}
           {error && (
-            <div className="text-center py-8 text-red-400 text-sm">{error}</div>
+            <div className="text-center py-8 text-error text-sm">{error}</div>
           )}
           {doc && !loading && (
             <div className={`max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}
