@@ -1,16 +1,6 @@
 # Start Copilot Bridge as hidden background process (via launcher supervisor)
 $workDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
-# Find Node.js — override with BRIDGE_NODE_PATH env var if needed
-if ($env:BRIDGE_NODE_PATH) {
-  $nodePath = $env:BRIDGE_NODE_PATH
-} elseif (Get-Command node -ErrorAction SilentlyContinue) {
-  $nodePath = (Get-Command node).Source
-} else {
-  Write-Error "Node.js not found in PATH. Install Node 22+ or set BRIDGE_NODE_PATH."
-  exit 1
-}
-
 # Stop any existing bridge processes first
 & "$workDir\scripts\stop-bridge.ps1"
 Start-Sleep 3
@@ -25,6 +15,16 @@ if (Test-Path $envFile) {
       Set-Item -Path "Env:$env" -Value $val
     }
   }
+}
+
+# Find Node.js — override with BRIDGE_NODE_PATH env var (from .env or environment)
+if ($env:BRIDGE_NODE_PATH) {
+  $nodePath = $env:BRIDGE_NODE_PATH
+} elseif (Get-Command node -ErrorAction SilentlyContinue) {
+  $nodePath = (Get-Command node).Source
+} else {
+  Write-Error "Node.js not found in PATH. Install Node 22+ or set BRIDGE_NODE_PATH."
+  exit 1
 }
 
 # Ensure data directory exists
