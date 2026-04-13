@@ -1361,11 +1361,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
       // If MCP servers or model changed, evict cached sessions so they re-resume with new config
       const configChanged =
         JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers) ||
-        prev.model !== updated.model;
+        prev.model !== updated.model ||
+        prev.reasoningEffort !== updated.reasoningEffort;
       if (configChanged) {
         const reasons = [];
         if (JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers)) reasons.push("MCP servers");
         if (prev.model !== updated.model) reasons.push("model");
+        if (prev.reasoningEffort !== updated.reasoningEffort) reasons.push("reasoning effort");
         console.log(`[settings] ${reasons.join(" & ")} changed — evicting cached sessions for re-resume`);
         ctx.sessionManager.evictAllCachedSessions();
       }

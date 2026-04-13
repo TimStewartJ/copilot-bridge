@@ -708,6 +708,7 @@ export interface ProvidersConfig {
 }
 
 export type ThemePreference = "light" | "dark" | "system";
+export type ReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";
 
 export interface AppSettings {
   providers?: ProvidersConfig;
@@ -717,6 +718,7 @@ export interface AppSettings {
   identity?: string;
   customInstructions?: string;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
@@ -762,6 +764,8 @@ export interface ModelInfo {
   name: string;
   policy?: { state: "enabled" | "disabled" | "unconfigured" };
   billing?: { multiplier: number };
+  supportedReasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {

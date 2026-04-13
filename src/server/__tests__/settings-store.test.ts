@@ -47,4 +47,22 @@ describe("settings-store", () => {
     // Default 'ado' should be gone since mcpServers was replaced
     expect(servers.ado).toBeUndefined();
   });
+
+  it("updateSettings persists and clears reasoningEffort", () => {
+    // Set a value
+    const updated = store.updateSettings({ reasoningEffort: "high" });
+    expect(updated.reasoningEffort).toBe("high");
+
+    // Verify persistence
+    const reloaded = store.getSettings();
+    expect(reloaded.reasoningEffort).toBe("high");
+
+    // Clear by setting empty string
+    const cleared = store.updateSettings({ reasoningEffort: "" as any });
+    expect(cleared.reasoningEffort).toBeUndefined();
+
+    // Verify cleared
+    const reloadedAgain = store.getSettings();
+    expect(reloadedAgain.reasoningEffort).toBeUndefined();
+  });
 });

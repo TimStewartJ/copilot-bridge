@@ -1009,6 +1009,10 @@ export class SessionManager {
     const model = this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
     if (model) cfg.model = model;
 
+    // Reasoning effort: settings store > SDK default
+    const reasoningEffort = this.deps.settingsStore?.getSettings().reasoningEffort;
+    if (reasoningEffort) cfg.reasoningEffort = reasoningEffort;
+
     if (task?.cwd) {
       cfg.workingDirectory = task.cwd;
     }
