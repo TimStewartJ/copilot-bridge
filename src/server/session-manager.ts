@@ -2028,7 +2028,7 @@ export class SessionManager {
         `Assistant: ${assistantResponse}`,
       ].join("\n");
 
-      const result = await titleSession.sendAndWait({ prompt }, 15_000);
+      const result = await titleSession.sendAndWait({ prompt }, 20_000);
       const title = result?.data?.content?.trim().replace(/^["']|["']$/g, "");
 
       // Reject titles that look like the prompt was echoed back
