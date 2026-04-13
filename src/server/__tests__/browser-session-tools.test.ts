@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { testCopilotHome } from "./test-paths.js";
+
+const COPILOT_HOME = testCopilotHome();
 
 const execMock = vi.fn();
 const execFileMock = vi.fn();
@@ -55,7 +58,7 @@ describe("browser session tools", () => {
     rmMock.mockResolvedValue(undefined);
     statMock.mockResolvedValue({ mtimeMs: Date.now() });
     execMock.mockImplementation((_cmd: string, _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      cb(null, { stdout: "/usr/bin/agent-browser\n", stderr: "" });
+      cb(null, { stdout: "agent-browser\n", stderr: "" });
       return {} as any;
     });
   });
@@ -73,7 +76,7 @@ describe("browser session tools", () => {
     });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: "/tmp/test-copilot" } as any).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: COPILOT_HOME } as any).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
     const started = await tools.browser_session_start.handler({ mode: "persistent" }, invocation) as any;
@@ -109,7 +112,7 @@ describe("browser session tools", () => {
     });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: "/tmp/test-copilot" } as any).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: COPILOT_HOME } as any).map((tool: any) => [tool.name, tool]));
     const invocation = { sessionId: "copilot-a" } as any;
 
     const started = await tools.browser_session_start.handler({ mode: "isolated" }, invocation) as any;
@@ -146,7 +149,7 @@ describe("browser session tools", () => {
     });
 
     const mod = await import("../browser-session-tools.js");
-    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: "/tmp/test-copilot" } as any).map((tool: any) => [tool.name, tool]));
+    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: COPILOT_HOME } as any).map((tool: any) => [tool.name, tool]));
     const ownerInvocation = { sessionId: "copilot-a" } as any;
     const otherInvocation = { sessionId: "copilot-b" } as any;
 

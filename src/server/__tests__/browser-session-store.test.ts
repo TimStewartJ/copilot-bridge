@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { testCopilotHome } from "./test-paths.js";
+
+const COPILOT_HOME = testCopilotHome();
 
 const execMock = vi.fn();
 const execFileMock = vi.fn();
@@ -62,7 +65,7 @@ describe("browser session store", () => {
 
   it("creates isolated sessions and cleans them up on close", async () => {
     const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: "/tmp/test-copilot" });
+    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME });
 
     const session = await store.createSession("copilot-a", "isolated", "test");
     expect(session.mode).toBe("isolated");
@@ -90,7 +93,7 @@ describe("browser session store", () => {
 
   it("expires idle isolated sessions during sweep", async () => {
     const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: "/tmp/test-copilot", idleTimeoutMs: 1 });
+    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME, idleTimeoutMs: 1 });
 
     const session = await store.createSession("copilot-a", "isolated");
     const expired = await store.sweepIdleSessions(session.lastUsedAt + 10);
@@ -102,7 +105,7 @@ describe("browser session store", () => {
 
   it("does not expire a session that becomes active during the same sweep", async () => {
     const mod = await import("../browser-session-store.js");
-    const store = new mod.BrowserSessionStore({ copilotHome: "/tmp/test-copilot", idleTimeoutMs: 1 });
+    const store = new mod.BrowserSessionStore({ copilotHome: COPILOT_HOME, idleTimeoutMs: 1 });
 
     const first = await store.createSession("copilot-a", "persistent");
     const second = await store.createSession("copilot-a", "persistent");

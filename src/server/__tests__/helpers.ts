@@ -62,6 +62,9 @@ export function createMockSessionManager() {
   } as any;
 }
 
+/** True when running on Windows */
+export { isWindows, testCopilotHome, normalizePath } from "./test-paths.js";
+
 /**
  * Create a fully wired Express app for integration testing.
  * Uses in-memory SQLite, real stores (including docs), and a mock session manager.

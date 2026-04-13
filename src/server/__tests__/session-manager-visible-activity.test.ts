@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, isWindows } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 
@@ -40,7 +40,8 @@ describe("SessionManager visible activity cache", () => {
     return join(sessionDir, "events.jsonl");
   }
 
-  it("reuses cached visible activity when the log mtime is unchanged", async () => {
+  // chmod has no effect on Windows NTFS, so this test only works on Unix
+  it.skipIf(isWindows)("reuses cached visible activity when the log mtime is unchanged", async () => {
     const eventsPath = writeSession([
       { type: "assistant.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Done" } },
     ]);

@@ -1,4 +1,10 @@
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizePath, testCopilotHome } from "./test-paths.js";
+
+const COPILOT_HOME = testCopilotHome();
+const BROWSER_PROFILE = join(COPILOT_HOME, "browser-profile");
+const BROWSER_CLONES = join(COPILOT_HOME, "browser-clones");
 
 const execMock = vi.fn();
 const execFileMock = vi.fn();
@@ -62,14 +68,14 @@ describe("agent-browser wrapper", () => {
       return {} as any;
     });
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget("/tmp/test-copilot");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
 
     await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(execFileMock).toHaveBeenCalledTimes(1);
     const [, , options] = execFileMock.mock.calls[0];
     expect(options.env.AGENT_BROWSER_SESSION).toMatch(/^copilot-bridge-/);
-    expect(options.env.AGENT_BROWSER_PROFILE.replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-profile");
+    expect(normalizePath(options.env.AGENT_BROWSER_PROFILE)).toContain(normalizePath(BROWSER_PROFILE));
   });
 
   it("clears stale dead lock owners and retries once", async () => {
@@ -90,7 +96,7 @@ describe("agent-browser wrapper", () => {
     }) as any);
 
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget("/tmp/test-copilot");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
     const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(result.ok).toBe(true);
@@ -114,8 +120,9 @@ describe("agent-browser wrapper", () => {
       });
 
     readlinkSyncMock.mockReturnValue("host-123");
+    const profilePath = normalizePath(BROWSER_PROFILE);
     readFileSyncMock.mockReturnValue(
-      "chrome\0--user-data-dir=/tmp/test-copilot/browser-profile\0--profile-directory=Default\0",
+      `chrome\0--user-data-dir=${profilePath}\0--profile-directory=Default\0`,
     );
     const killed: number[] = [];
     killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
@@ -125,7 +132,7 @@ describe("agent-browser wrapper", () => {
     }) as any);
 
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget("/tmp/test-copilot");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
     const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(result.ok).toBe(true);
@@ -148,7 +155,7 @@ describe("agent-browser wrapper", () => {
     readFileSyncMock.mockReturnValue("node\0some-other-process.js\0");
 
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget("/tmp/test-copilot");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
     const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(result.ok).toBe(false);
@@ -175,7 +182,7 @@ describe("agent-browser wrapper", () => {
     }) as any);
 
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget("/tmp/test-copilot");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
     const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(result.ok).toBe(false);
@@ -185,7 +192,7 @@ describe("agent-browser wrapper", () => {
 
   it("serializes browser flows through the bridge session lock", async () => {
     const mod = await import("../agent-browser.js");
-    const target = mod.getBridgeBrowserTarget("/tmp/test-copilot");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
     const order: string[] = [];
 
     const one = mod.withBridgeBrowserSession(target, async () => {
@@ -209,10 +216,10 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    const result = await mod.withCloneBrowserLane("/tmp/test-copilot", undefined, { toolName: "web_search" }, async (lane) => {
+    const result = await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async (lane) => {
       expect(lane.laneType).toBe("clone");
       expect(lane.cloneId).toBeTruthy();
-      expect(lane.browserTarget.profileDir.replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-clones/profile-");
+      expect(normalizePath(lane.browserTarget.profileDir)).toContain(normalizePath(BROWSER_CLONES) + "/profile-");
       expect(lane.browserTarget.sessionName).toContain("-clone-");
       return lane.browserTarget.sessionName;
     });
@@ -221,8 +228,8 @@ describe("agent-browser wrapper", () => {
     expect(mkdirMock).toHaveBeenCalled();
     expect(cpMock).toHaveBeenCalledTimes(1);
     const [, , options] = cpMock.mock.calls[0];
-    expect(options.filter("/tmp/test-copilot/browser-profile/SingletonLock")).toBe(false);
-    expect(options.filter("/tmp/test-copilot/browser-profile/Default/Cookies")).toBe(true);
+    expect(options.filter(join(BROWSER_PROFILE, "SingletonLock"))).toBe(false);
+    expect(options.filter(join(BROWSER_PROFILE, "Default", "Cookies"))).toBe(true);
     expect(execFileMock).toHaveBeenCalledWith(
       "agent-browser",
       ["close"],
@@ -241,19 +248,20 @@ describe("agent-browser wrapper", () => {
   });
 
   it("keeps the primary lane pinned to the caller copilotHome", async () => {
+    const normalizedProfile = normalizePath(BROWSER_PROFILE);
     statMock.mockImplementation(async (path: string) => {
-      if (path.includes("/tmp/test-copilot/browser-profile")) {
+      if (normalizePath(path).includes(normalizedProfile)) {
         throw Object.assign(new Error("missing"), { code: "ENOENT" });
       }
       return { mtimeMs: Date.now() };
     });
 
     const mod = await import("../agent-browser.js");
-    const profileDir = await mod.withPrimaryBrowserLane("/tmp/test-copilot", undefined, {}, async (lane) => (
+    const profileDir = await mod.withPrimaryBrowserLane(COPILOT_HOME, undefined, {}, async (lane) => (
       lane.browserTarget.profileDir
     ));
 
-    expect(profileDir.replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-profile");
+    expect(normalizePath(profileDir)).toContain(normalizedProfile);
   });
 
   it("still removes clone profiles when browser close fails", async () => {
@@ -263,7 +271,7 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane("/tmp/test-copilot", undefined, { toolName: "web_search" }, async () => "ok");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async () => "ok");
 
     expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
       recursive: true,
@@ -272,8 +280,9 @@ describe("agent-browser wrapper", () => {
   });
 
   it("seeds a missing local clone source profile before cloning", async () => {
+    const normalizedProfile = normalizePath(BROWSER_PROFILE);
     statMock.mockImplementation(async (path: string) => {
-      if (path === "/tmp/test-copilot/browser-profile") {
+      if (normalizePath(path) === normalizedProfile) {
         throw Object.assign(new Error("missing"), { code: "ENOENT" });
       }
       return { mtimeMs: Date.now() };
@@ -284,36 +293,36 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane("/tmp/test-copilot", undefined, { toolName: "web_search" }, async () => "ok");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async () => "ok");
 
     expect(cpMock).toHaveBeenCalledTimes(2);
-    expect(cpMock.mock.calls[0][0].replaceAll("\\", "/")).toContain("/.copilot/browser-profile");
-    expect(cpMock.mock.calls[0][1].replaceAll("\\", "/")).toBe("/tmp/test-copilot/browser-profile");
-    expect(cpMock.mock.calls[1][0].replaceAll("\\", "/")).toBe("/tmp/test-copilot/browser-profile");
-    expect(cpMock.mock.calls[1][1].replaceAll("\\", "/")).toContain("/tmp/test-copilot/browser-clones/profile-");
+    expect(normalizePath(cpMock.mock.calls[0][0])).toContain("/.copilot/browser-profile");
+    expect(normalizePath(cpMock.mock.calls[0][1])).toBe(normalizedProfile);
+    expect(normalizePath(cpMock.mock.calls[1][0])).toBe(normalizedProfile);
+    expect(normalizePath(cpMock.mock.calls[1][1])).toContain(normalizePath(BROWSER_CLONES) + "/profile-");
   });
 
   it("starts a persistent clone from an empty profile when no primary profile exists yet", async () => {
     statMock.mockImplementation(async (path: string) => {
-      if (path.includes("browser-profile")) {
+      if (normalizePath(path).includes("browser-profile")) {
         throw Object.assign(new Error("missing"), { code: "ENOENT" });
       }
       return { mtimeMs: Date.now() };
     });
 
     const mod = await import("../agent-browser.js");
-    const clone = await mod.createPersistentCloneBrowserTarget("/tmp/test-copilot", undefined, {});
+    const clone = await mod.createPersistentCloneBrowserTarget(COPILOT_HOME, undefined, {});
 
     expect(clone.browserTarget.sessionName).toContain("-clone-");
     expect(cpMock).not.toHaveBeenCalled();
-    expect(mkdirMock).toHaveBeenCalledWith(expect.stringContaining("/tmp/test-copilot/browser-clones/profile-"), {
+    expect(mkdirMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
       recursive: true,
     });
   });
 
   it("does not delete registered persistent clone profiles during stale cleanup", async () => {
     statMock.mockImplementation(async (path: string) => {
-      if (path.includes("browser-profile")) {
+      if (normalizePath(path).includes("browser-profile")) {
         return { mtimeMs: Date.now() };
       }
       return { mtimeMs: Date.now() - (7 * 60 * 60 * 1000) };
@@ -321,20 +330,20 @@ describe("agent-browser wrapper", () => {
     readdirMock.mockResolvedValueOnce([]);
 
     const mod = await import("../agent-browser.js");
-    const activeClone = await mod.createPersistentCloneBrowserTarget("/tmp/test-copilot", undefined, {});
-    const activeCloneDir = activeClone.browserTarget.profileDir.replaceAll("\\", "/").split("/").at(-1)!;
+    const activeClone = await mod.createPersistentCloneBrowserTarget(COPILOT_HOME, undefined, {});
+    const activeCloneDir = normalizePath(activeClone.browserTarget.profileDir).split("/").at(-1)!;
 
     readdirMock.mockResolvedValueOnce([
       { name: activeCloneDir, isDirectory: () => true },
       { name: "profile-stale", isDirectory: () => true },
     ]);
 
-    await mod.createPersistentCloneBrowserTarget("/tmp/test-copilot", undefined, {});
+    await mod.createPersistentCloneBrowserTarget(COPILOT_HOME, undefined, {});
 
-    const removedPaths = rmMock.mock.calls.map(([path]) => String(path).replaceAll("\\", "/"));
-    const activePath = activeClone.browserTarget.profileDir.replaceAll("\\", "/");
-    expect(removedPaths).toContain("/tmp/test-copilot/browser-clones/profile-stale");
-    expect(removedPaths.filter((path) => path === activePath)).toHaveLength(1);
+    const removedPaths = rmMock.mock.calls.map(([path]: any[]) => normalizePath(String(path)));
+    const activePath = normalizePath(activeClone.browserTarget.profileDir);
+    expect(removedPaths).toContain(normalizePath(join(BROWSER_CLONES, "profile-stale")));
+    expect(removedPaths.filter((path: string) => path === activePath)).toHaveLength(1);
   });
 
   it("does not let queue telemetry break primary-lane progress", async () => {
@@ -346,12 +355,12 @@ describe("agent-browser wrapper", () => {
     const mod = await import("../agent-browser.js");
     const order: string[] = [];
 
-    const one = mod.withPrimaryBrowserLane("/tmp/test-copilot", telemetryStore as any, {}, async () => {
+    const one = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
       order.push("one:start");
       await new Promise((resolve) => setTimeout(resolve, 30));
       order.push("one:end");
     });
-    const two = mod.withPrimaryBrowserLane("/tmp/test-copilot", telemetryStore as any, {}, async () => {
+    const two = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
       order.push("two:start");
       order.push("two:end");
     });
@@ -378,7 +387,7 @@ describe("agent-browser wrapper", () => {
       releaseResolve = resolve;
     });
     const makeLane = (toolName: string, hold: boolean) =>
-      mod.withCloneBrowserLane("/tmp/test-copilot", telemetryStore as any, { toolName }, async (lane) => {
+      mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName }, async (lane) => {
         started.push(toolName);
         if (hold) await release;
         return lane.cloneId;
@@ -416,7 +425,7 @@ describe("agent-browser wrapper", () => {
     };
     const mod = await import("../agent-browser.js");
 
-    const result = await mod.withCloneBrowserLane("/tmp/test-copilot", telemetryStore as any, { toolName: "web_search" }, async (lane) => lane.cloneId);
+    const result = await mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName: "web_search" }, async (lane) => lane.cloneId);
 
     expect(result).toBeTruthy();
     expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
