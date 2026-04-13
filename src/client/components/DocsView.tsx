@@ -401,7 +401,7 @@ function DbCell({ field, value }: { field: { name: string; type: string; options
     }
     case "boolean":
       return value === true || value === "true"
-        ? <Check size={13} className="text-emerald-400" />
+        ? <Check size={13} className="text-success" />
         : <X size={13} className="text-text-faint" />;
     case "date":
       return <span className="whitespace-nowrap">{formatDocDate(String(value))}</span>;
@@ -1011,7 +1011,7 @@ export default function DocsView() {
                 e.preventDefault();
                 if (resolved) navigate(`/docs/${resolved.path}`);
               }}
-              className={isBroken ? "cursor-not-allowed text-red-400 opacity-70" : undefined}
+              className={isBroken ? "cursor-not-allowed text-error opacity-70" : undefined}
               title={isBroken ? `Page not found: ${target}` : resolved?.title || target}
             >
               {children}
@@ -1360,7 +1360,7 @@ export default function DocsView() {
             </button>
             <button
               onClick={handleDelete}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-red-300 transition-colors hover:bg-red-500/10 hover:text-red-200"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-error transition-colors hover:bg-error/10 hover:text-error-hover"
             >
               <Trash2 size={14} />
               Delete

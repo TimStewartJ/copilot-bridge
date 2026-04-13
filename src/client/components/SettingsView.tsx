@@ -400,7 +400,7 @@ function ModelSection({
             Loading available models…
           </div>
         ) : error ? (
-          <div className="flex items-center gap-2 text-xs text-red-400">
+          <div className="flex items-center gap-2 text-xs text-error">
             <AlertTriangle className="w-3 h-3" />
             Failed to load models
           </div>
