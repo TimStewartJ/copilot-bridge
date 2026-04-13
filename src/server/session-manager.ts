@@ -1134,6 +1134,28 @@ export class SessionManager {
           }).join("\n");
         };
         contextParts.push(`\n<docs_tree>\nKnowledge base structure (use docs_read/docs_search to access):\n${renderTree(tree)}\n</docs_tree>`);
+
+        // Collect all DB collections from the full tree and inject schema summaries
+        const dbSummaries: string[] = [];
+        const collectDbs = (nodes: DocTreeNode[]) => {
+          for (const n of nodes) {
+            if (n.type === "folder") {
+              if (n.isDb) {
+                const schema = this.deps.docsStore!.readSchema(n.path);
+                if (schema) {
+                  const entries = this.deps.docsStore!.listDbEntries(n.path);
+                  const fields = schema.fields.map((f) => `${f.name} (${f.type})`).join(", ");
+                  dbSummaries.push(`- ${n.path}/ "${schema.name}" (${entries.length} entries): ${fields}`);
+                }
+              }
+              if (n.children?.length) collectDbs(n.children);
+            }
+          }
+        };
+        collectDbs(tree);
+        if (dbSummaries.length > 0) {
+          contextParts.push(`\n<docs_databases>\nDatabase collections (use docs_db_query/docs_db_add to interact, docs_db_schema for full field options):\n${dbSummaries.join("\n")}\n</docs_databases>`);
+        }
       }
     }
 
