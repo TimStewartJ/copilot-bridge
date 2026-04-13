@@ -14,6 +14,7 @@ export interface McpServerConfig {
 }
 
 export type ThemePreference = "light" | "dark" | "system";
+export type ReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";
 
 export interface AppSettings {
   providers?: ProvidersConfig;
@@ -23,6 +24,7 @@ export interface AppSettings {
   identity?: string;
   customInstructions?: string;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 // ── Defaults (no hardcoded org — users configure their own) ───────
@@ -55,6 +57,7 @@ export function createSettingsStore(db: DatabaseSync) {
     if (updates.identity !== undefined) current.identity = updates.identity;
     if (updates.customInstructions !== undefined) current.customInstructions = updates.customInstructions;
     if (updates.model !== undefined) current.model = updates.model || undefined;
+    if (updates.reasoningEffort !== undefined) current.reasoningEffort = updates.reasoningEffort || undefined;
 
     db.prepare(
       "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
