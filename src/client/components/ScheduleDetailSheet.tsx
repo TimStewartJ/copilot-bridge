@@ -19,8 +19,7 @@ import {
   Repeat,
   MessageSquare,
 } from "lucide-react";
-
-// ── Cron presets ──────────────────────────────────────────────────
+import EmptyState from "./shared/EmptyState";
 
 const CRON_PRESETS = [
   { label: "Every weekday at 8 AM", cron: "0 8 * * 1-5" },
@@ -278,7 +277,10 @@ function ViewMode({
             Run History {totalRuns > 0 && <span className="text-text-muted">({totalRuns})</span>}
           </div>
           {sessions.length === 0 ? (
-            <div className="text-xs text-text-faint text-center py-6">No runs yet</div>
+            <EmptyState
+              message="No runs yet"
+              sub="Trigger or wait for the schedule to run"
+            />
           ) : (
             <div className="space-y-1">
               {sessions.map((session) => (

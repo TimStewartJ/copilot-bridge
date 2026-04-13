@@ -36,6 +36,7 @@ import { setLastViewedDoc } from "../last-viewed";
 import { useIsMobile } from "../useIsMobile";
 import remarkWikilink from "../lib/remark-wikilink";
 import CodeBlock from "./CodeBlock";
+import { DOCS_PROSE } from "./shared/prose-classes";
 import {
   fetchDocsTree,
   fetchDocPage,
@@ -63,29 +64,7 @@ type DocHeading = { id: string; text: string; level: number };
 type DocCrumb = { label: string; path: string | null };
 type DocsSheetProps = { title: string; onClose: () => void; children: ReactNode };
 
-const DOCS_MARKDOWN_CLASSNAME = `
-  prose prose-invert max-w-none text-text-primary
-  prose-headings:scroll-mt-28 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-text-primary
-  prose-h1:text-3xl prose-h1:mt-0 prose-h1:mb-5
-  prose-h2:text-2xl prose-h2:mt-10 prose-h2:mb-4 prose-h2:border-t prose-h2:border-border prose-h2:pt-6
-  prose-h3:text-xl prose-h3:mt-8 prose-h3:mb-3
-  prose-h4:text-lg prose-h4:mt-6 prose-h4:mb-2
-  prose-p:my-4 prose-p:leading-7 prose-p:text-text-primary/95
-  prose-li:my-1.5 prose-li:text-text-primary/95
-  prose-ul:my-4 prose-ol:my-4
-  prose-hr:border-border prose-hr:my-8
-  prose-blockquote:my-6 prose-blockquote:rounded-2xl prose-blockquote:border prose-blockquote:border-border prose-blockquote:bg-bg-secondary/70 prose-blockquote:px-5 prose-blockquote:py-4 prose-blockquote:text-text-secondary
-  prose-a:text-accent prose-a:no-underline hover:prose-a:underline
-  prose-strong:text-text-primary prose-code:text-text-primary prose-code:bg-bg-secondary prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:before:content-none prose-code:after:content-none
-  prose-pre:bg-transparent prose-pre:border-0 prose-pre:p-0
-  prose-table:my-6 prose-table:w-full
-  prose-th:border prose-th:border-border prose-th:bg-bg-secondary prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:text-text-secondary
-  prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-2
-  prose-img:rounded-2xl prose-img:border prose-img:border-border prose-img:shadow-sm
-  [&_table]:block [&_table]:overflow-x-auto [&_table]:max-w-full
-  [&_thead]:bg-bg-secondary/70
-  [&_h1+a]:mt-0 [&_h2+a]:mt-0 [&_h3+a]:mt-0
-`;
+const DOCS_MARKDOWN_CLASSNAME = DOCS_PROSE;
 
 const SELECT_BADGE_COLORS = [
   { bg: "bg-blue-500/15", text: "text-blue-400" },
@@ -1227,7 +1206,7 @@ export default function DocsView() {
 
   const pageMetaCard = page ? (
     <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-text-faint">Page info</div>
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Page info</div>
       <dl className="mt-3 space-y-3 text-sm">
         <div>
           <dt className="text-xs text-text-faint">Path</dt>
@@ -1265,7 +1244,7 @@ export default function DocsView() {
 
   const tocCard = pageHeadings.length > 0 ? (
     <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-text-faint">
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
         <List size={14} />
         Contents
       </div>
@@ -1294,7 +1273,7 @@ export default function DocsView() {
 
   const relatedDocsCard = relatedDocs.length > 0 ? (
     <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-text-faint">Related docs</div>
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Related docs</div>
       <div className="mt-3 space-y-1.5">
         {relatedDocs.map((path) => (
           <button
@@ -1422,7 +1401,7 @@ export default function DocsView() {
           {dbItemSchema?.fields.filter((field) => field.name !== "title").length ? (
             <div className="shrink-0 border-b border-border bg-bg-secondary/50">
               <div className="mx-auto max-w-4xl px-5 py-4 sm:px-8">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-text-faint">Properties</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Properties</div>
                 <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(0,160px)_minmax(0,1fr)]">
                   {dbItemSchema?.fields.filter((field) => field.name !== "title").map((field) => (
                     <div key={field.name} className="grid gap-1 sm:contents">

@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { FileText, X } from "lucide-react";
+import { APP_PROSE } from "./shared/prose-classes";
 
 interface ToolResultModalProps {
   title: string;
@@ -35,13 +36,7 @@ export default memo(function ToolResultModal({ title, content, format = "plain",
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {format === "markdown" ? (
-            <div className="prose prose-invert prose-sm max-w-none
-              prose-pre:bg-bg-secondary prose-pre:rounded-md prose-pre:p-3 prose-pre:text-xs prose-pre:overflow-x-auto prose-pre:max-w-full
-              prose-code:text-accent prose-code:text-xs prose-code:font-mono
-              prose-a:text-accent prose-a:no-underline hover:prose-a:underline
-              prose-headings:mt-3 prose-headings:mb-1
-              prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5
-              prose-li:my-0.5">
+            <div className={`max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}>
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
             </div>
           ) : (

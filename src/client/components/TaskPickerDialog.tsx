@@ -49,7 +49,7 @@ export default function TaskPickerDialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-bg-secondary border border-border rounded-md w-full max-w-[400px] mx-4 max-h-[60vh] flex flex-col">
+      <div className="bg-bg-secondary border border-border rounded-xl shadow-2xl w-full max-w-[400px] mx-4 max-h-[60vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <h3 className="font-medium text-sm">Link to Task</h3>

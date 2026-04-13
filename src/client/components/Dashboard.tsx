@@ -326,7 +326,7 @@ export default function Dashboard({
           {/* Left: To-Dos (wider) */}
           <div className="lg:col-span-2 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+              <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
                 <CheckSquare size={14} />
                 Open To-Dos
                 {localOpenTodos.length > 0 && (
@@ -499,7 +499,7 @@ export default function Dashboard({
                   <>
                     <button
                       onClick={() => setShowCompleted((v) => !v)}
-                      className="text-sm font-medium text-text-muted flex items-center gap-1.5 hover:text-text-secondary transition-colors"
+                      className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5 hover:text-text-secondary transition-colors"
                     >
                       {showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       <Check size={14} />
@@ -543,7 +543,7 @@ export default function Dashboard({
           <div className="space-y-6">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+                <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
                   <MessageSquare size={14} />
                   Recent Chats
                 </h2>
@@ -578,7 +578,7 @@ export default function Dashboard({
             {schedules.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-medium text-text-muted flex items-center gap-1.5">
+                  <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
                     <Clock size={14} />
                     Schedules
                     <span className="text-text-faint font-normal text-xs">
