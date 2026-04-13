@@ -804,20 +804,19 @@ export default function TaskRail({
                 <button
                   key={session.sessionId}
                   {...(qcSelectMode ? { onClick: handleClick } : bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId)))}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
+                  className={`relative w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
                     qcSelectMode && isSelected
                       ? "bg-accent/10"
                       : qcCtxMenu?.id === session.sessionId
                         ? "bg-bg-hover ring-1 ring-border"
-                        : isActive && unread
-                          ? "bg-bg-hover border-l-2 border-text-primary"
-                          : isActive
-                            ? "bg-bg-hover"
-                            : unread
-                              ? "border-l-2 border-text-primary hover:bg-bg-hover"
-                              : "hover:bg-bg-hover"
+                        : isActive
+                          ? "bg-bg-hover"
+                          : "hover:bg-bg-hover"
                   } ${!qcSelectMode && isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
                 >
+                  {unread && !qcSelectMode && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-3 rounded-full bg-text-primary" />
+                  )}
                   <div className="flex items-center">
                     {qcSelectMode ? (
                       isSelected
@@ -1270,18 +1269,17 @@ function SortableRailItem({
     <div ref={setNodeRef} style={style} className="group">
       <button
         {...bindLongPress(task.id, () => onSelectTask(task.id))}
-        className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
+        className={`relative w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
-            : isActive && indicator?.unread
-              ? "bg-bg-hover border-l-2 border-text-primary"
-              : isActive
-                ? "bg-bg-hover"
-                : indicator?.unread
-                  ? "border-l-2 border-text-primary hover:bg-bg-hover"
-                  : "hover:bg-bg-hover"
+            : isActive
+              ? "bg-bg-hover"
+              : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
+        {indicator?.unread && (
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-3 rounded-full bg-text-primary" />
+        )}
         <div className="flex items-center">
           <span
             {...attributes}
