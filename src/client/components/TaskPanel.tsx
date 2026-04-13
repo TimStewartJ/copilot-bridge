@@ -39,6 +39,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
+import EmptyState from "./shared/EmptyState";
 import DocPreviewSheet from "./DocPreviewSheet";
 
 // ── Compact section header for sidebar ───────────────────────────
@@ -47,7 +48,7 @@ import DocPreviewSheet from "./DocPreviewSheet";
 
 function SectionLabel({ label, count, progress }: { label: string; count?: number; progress?: string }) {
   return (
-    <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider px-3 py-1">
+    <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wider px-3 py-1">
       {label}
       {progress !== undefined && (
         <span className="text-text-faint ml-1">({progress})</span>
@@ -602,9 +603,10 @@ export default function TaskPanel({
               </div>
             );
           })() : (
-            <div className="px-3 py-2 text-[10px] text-text-faint">
-              No schedules — add one to automate recurring work
-            </div>
+            <EmptyState
+              message="No schedules"
+              sub="Add one to automate recurring work"
+            />
           )}
         </div>
 

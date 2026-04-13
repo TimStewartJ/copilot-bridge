@@ -5,6 +5,7 @@ import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, GripVertical, FolderOpen, FolderMinus, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import NotesSheet from "./NotesSheet";
+import EmptyState from "./shared/EmptyState";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import {
@@ -320,9 +321,10 @@ export default function TaskList({
         </>
       )}
       {tasks.length === 0 && (
-        <div className="text-center text-text-muted text-sm py-8">
-          No tasks yet
-        </div>
+        <EmptyState
+          message="No tasks yet"
+          sub="Create one to get started"
+        />
       )}
 
       {/* Task context menu */}

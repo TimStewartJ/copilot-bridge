@@ -7,6 +7,7 @@ import { BookOpen, ExternalLink, X } from "lucide-react";
 import { fetchDocPage } from "../api";
 import type { DocPage } from "../api";
 import CodeBlock from "./CodeBlock";
+import { APP_PROSE } from "./shared/prose-classes";
 
 interface DocPreviewSheetProps {
   docPath: string;
@@ -74,16 +75,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
             <div className="text-center py-8 text-red-400 text-sm">{error}</div>
           )}
           {doc && !loading && (
-            <div className="prose prose-invert prose-sm max-w-none
-              prose-pre:bg-bg-secondary prose-pre:rounded-md prose-pre:p-3 prose-pre:text-xs prose-pre:overflow-x-auto prose-pre:max-w-full
-              prose-code:text-accent prose-code:text-xs prose-code:font-mono
-              prose-th:border prose-th:border-border prose-th:px-3 prose-th:py-1.5 prose-th:bg-bg-secondary
-              prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-1.5
-              prose-table:block prose-table:overflow-x-auto prose-table:max-w-full
-              prose-a:text-accent prose-a:no-underline hover:prose-a:underline
-              prose-headings:mt-3 prose-headings:mb-1
-              prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5
-              prose-li:my-0.5"
+            <div className={`max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
                 {doc.body}

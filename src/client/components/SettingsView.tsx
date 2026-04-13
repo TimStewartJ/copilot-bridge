@@ -28,6 +28,7 @@ import { FAVICON_OPTIONS, DEFAULT_FAVICON, type FaviconOption } from "../favicon
 import { useTheme } from "../useTheme";
 import ThemePicker from "./ThemePicker";
 import { useAppBack } from "../hooks/useAppBack";
+import EmptyState from "./shared/EmptyState";
 
 export default function SettingsView() {
   const { goBack } = useAppBack();
@@ -213,7 +214,7 @@ export default function SettingsView() {
         <section>
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h2 className="text-sm font-medium text-text-primary">
+              <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
                 MCP Servers
               </h2>
               <p className="text-xs text-text-muted mt-0.5">
@@ -256,9 +257,10 @@ export default function SettingsView() {
             )}
 
             {serverEntries.length === 0 && !addingServer && (
-              <div className="text-center py-8 text-text-faint text-xs">
-                No MCP servers configured. Add one to enable tool access.
-              </div>
+              <EmptyState
+                message="No MCP servers"
+                sub="Add one to enable tool access"
+              />
             )}
 
             {addingServer && (
@@ -315,7 +317,7 @@ function SystemPromptSection({
   return (
     <section>
       <div className="mb-3">
-        <h2 className="text-sm font-medium text-text-primary">System Prompt</h2>
+        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">System Prompt</h2>
         <p className="text-xs text-text-muted mt-0.5">
           Customize the agent's identity and behavior. Changes apply on next session interaction.
         </p>
@@ -385,7 +387,7 @@ function ModelSection({
   return (
     <section>
       <div className="mb-3">
-        <h2 className="text-sm font-medium text-text-primary">Model</h2>
+        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Model</h2>
         <p className="text-xs text-text-muted mt-0.5">
           Choose which AI model to use for new sessions. Changes apply on next session interaction.
         </p>
@@ -461,7 +463,7 @@ function ReasoningEffortSection({
   return (
     <section>
       <div className="mb-3">
-        <h2 className="text-sm font-medium text-text-primary">Reasoning Effort</h2>
+        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Reasoning Effort</h2>
         <p className="text-xs text-text-muted mt-0.5">
           Control how much reasoning the model applies. Higher effort may produce better results but uses more tokens. Changes apply on next session interaction.
         </p>
@@ -528,7 +530,7 @@ function AppearanceSection({
   return (
     <section>
       <div className="mb-3">
-        <h2 className="text-sm font-medium text-text-primary">Appearance</h2>
+        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Appearance</h2>
         <p className="text-xs text-text-muted mt-0.5">
           Customize the look and feel of the app.
         </p>
@@ -629,7 +631,7 @@ function ProvidersSection({
   return (
     <section>
       <div className="mb-3">
-        <h2 className="text-sm font-medium text-text-primary">Providers</h2>
+        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Providers</h2>
         <p className="text-xs text-text-muted mt-0.5">
           Work tracking providers for enriching linked work items and pull
           requests.
@@ -1211,7 +1213,7 @@ function Field({
 }) {
   return (
     <div>
-      <label className="block text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1">
+      <label className="block text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-1">
         {label}
       </label>
       {children}
@@ -1322,7 +1324,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
     <section>
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h2 className="text-sm font-medium text-text-primary">Tags</h2>
+          <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Tags</h2>
           <p className="text-xs text-text-muted mt-0.5">
             Organize tasks, groups, and docs. Tags can carry custom instructions and MCP servers.
           </p>
@@ -1369,7 +1371,7 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
               {/* MCP Servers for this tag */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">MCP Servers</span>
+                  <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">MCP Servers</span>
                   <button
                     onClick={() => setAddingMcp(true)}
                     className="text-[10px] text-accent hover:text-accent-hover"
@@ -1493,9 +1495,10 @@ function TagsSection({ tags, setTags }: { tags: Tag[]; setTags: (t: Tag[]) => vo
         )}
 
         {tags.length === 0 && !adding && (
-          <div className="text-center py-8 text-text-faint text-xs">
-            No tags yet. Create one to organize your tasks and docs.
-          </div>
+          <EmptyState
+            message="No tags yet"
+            sub="Create one to organize your tasks and docs"
+          />
         )}
 
         {adding && (

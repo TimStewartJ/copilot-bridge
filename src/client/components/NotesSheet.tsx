@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { FileText, Pencil, X } from "lucide-react";
 import CodeBlock from "./CodeBlock";
+import { APP_PROSE } from "./shared/prose-classes";
+import EmptyState from "./shared/EmptyState";
 
 interface NotesSheetProps {
   notes: string;
@@ -99,29 +101,17 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
           ) : notes ? (
             <div
               onClick={() => { setDraft(notes); setEditing(true); }}
-              className="cursor-pointer prose prose-invert prose-sm max-w-none
-                prose-pre:bg-bg-secondary prose-pre:rounded-md prose-pre:p-3 prose-pre:text-xs prose-pre:overflow-x-auto prose-pre:max-w-full
-                prose-code:text-accent prose-code:text-xs prose-code:font-mono
-                prose-th:border prose-th:border-border prose-th:px-3 prose-th:py-1.5 prose-th:bg-bg-secondary
-                prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-1.5
-                prose-table:block prose-table:overflow-x-auto prose-table:max-w-full
-                prose-a:text-accent prose-a:no-underline hover:prose-a:underline
-                prose-headings:mt-3 prose-headings:mb-1
-                prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5
-                prose-li:my-0.5"
+              className={`cursor-pointer max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>{notes}</ReactMarkdown>
             </div>
           ) : (
-            <div className="text-center py-8">
-              <p className="text-text-faint text-sm mb-3">No notes yet</p>
-              <button
-                onClick={() => setEditing(true)}
-                className="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs rounded-md transition-colors"
-              >
-                Add notes
-              </button>
-            </div>
+            <EmptyState
+              message="No notes yet"
+              sub="Add notes to capture context and decisions"
+              action={() => setEditing(true)}
+              actionLabel="Add notes"
+            />
           )}
         </div>
       </div>

@@ -92,7 +92,7 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
         className="bg-bg-elevated border border-border rounded-xl shadow-2xl w-[420px] max-h-[80vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}

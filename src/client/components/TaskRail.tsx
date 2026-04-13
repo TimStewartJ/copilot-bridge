@@ -9,6 +9,7 @@ import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import NotesSheet from "./NotesSheet";
 import TaskPickerDialog from "./TaskPickerDialog";
+import EmptyState from "./shared/EmptyState";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import {
@@ -601,9 +602,10 @@ export default function TaskRail({
           </DragOverlay>
         </DndContext>
         {sortedTasks.length === 0 && (
-          <div className="text-center text-text-muted text-xs py-6">
-            No tasks yet
-          </div>
+          <EmptyState
+            message="No tasks yet"
+            sub="Create a task to organize your work"
+          />
         )}
         {archivedTasks.length > 0 && (
           <>
@@ -927,7 +929,7 @@ export default function TaskRail({
           {onMoveTaskToGroup && taskGroups.length > 0 && (
             <>
               <CtxDivider />
-              <div className="px-3 py-1 text-[10px] font-semibold text-text-faint uppercase tracking-wider">Move to Group</div>
+              <div className="px-3 py-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Move to Group</div>
               {taskGroups.map((g) => (
                 <CtxItem
                   key={g.id}

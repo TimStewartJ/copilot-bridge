@@ -685,7 +685,7 @@ function Section({
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
           {icon}
           {title}
           {count !== undefined && (
