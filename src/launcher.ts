@@ -69,8 +69,11 @@ function clearSignal() {
 }
 
 function run(cmd: string): { ok: boolean; output: string } {
+  // Prepend the launcher's Node v22 directory to PATH so npx/vitest use it
+  const nodeDir = dirname(NODE_PATH);
+  const env = { ...process.env, PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
   try {
-    const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: 120_000 });
+    const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: 120_000, env });
     return { ok: true, output };
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
