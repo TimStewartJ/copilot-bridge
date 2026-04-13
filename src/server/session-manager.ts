@@ -2064,7 +2064,17 @@ export class SessionManager {
       throw new Error("Cannot delete a busy session");
     }
     this.evictCachedSession(sessionId);
-    await this.client.deleteSession(sessionId);
+    try {
+      await this.client.deleteSession(sessionId);
+    } catch (err: unknown) {
+      // Tolerate "not found" errors — the session file may already be gone
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/not found/i.test(msg)) {
+        console.log(`[sdk] Session ${sessionId} already gone, continuing cleanup`);
+      } else {
+        throw err;
+      }
+    }
     this.invalidateSessionListCache();
     console.log(`[sdk] Deleted session ${sessionId}`);
   }
