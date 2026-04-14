@@ -4,7 +4,7 @@ import { API_BASE } from "./api";
 export interface StatusEvent {
   type: "session:busy" | "session:idle" | "session:title" | "session:intent"
       | "session:archived" | "server:restart-pending" | "server:restart-cleared"
-      | "status:connected" | "schedule:changed" | "task:changed" | "readstate:changed";
+      | "status:connected" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
   sessionId?: string;
   title?: string;
   intent?: string;

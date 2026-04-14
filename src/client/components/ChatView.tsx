@@ -26,6 +26,8 @@ interface ChatViewProps {
   onCreateAndSend?: (prompt: string, attachments?: BlobAttachment[]) => Promise<void>;
   reloadToken?: number;
   reloadMcpServers?: McpServerStatus[];
+  /** Incremented when an external source (e.g. schedule) starts work on this session */
+  busySignal?: number;
 }
 
 function renderPendingStatusCard(
@@ -87,6 +89,7 @@ export default function ChatView({
   onCreateAndSend,
   reloadToken = 0,
   reloadMcpServers,
+  busySignal = 0,
 }: ChatViewProps) {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -108,6 +111,8 @@ export default function ChatView({
   const prevScrollHeightRef = useRef<number | null>(null);
   const loadRequestIdRef = useRef(0);
   const refreshingHistoryRef = useRef(false);
+  // Exposed for external triggers (e.g. busySignal from scheduled work)
+  const loadAndReconnectRef = useRef<(opts?: { background?: boolean }) => void>(() => {});
 
   const invalidateHistoryRefresh = useCallback(() => {
     if (!refreshingHistoryRef.current) return;
@@ -262,6 +267,8 @@ export default function ChatView({
         .catch(() => {});
     };
 
+    loadAndReconnectRef.current = loadAndReconnect;
+
     firstItemIndex.current = 0;
     loadingMoreRef.current = false;
     setEntries([]);
@@ -281,9 +288,20 @@ export default function ChatView({
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       controller.abort();
+      loadAndReconnectRef.current = () => {};
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [sessionId, reconnect]);
+
+  // Reconnect when an external source (e.g. schedule) starts work on this session
+  const prevBusySignalRef = useRef(busySignal);
+  useEffect(() => {
+    const prev = prevBusySignalRef.current;
+    prevBusySignalRef.current = busySignal;
+    // Skip the initial render and only react to actual changes
+    if (busySignal === prev || !sessionId) return;
+    loadAndReconnectRef.current({ background: true });
+  }, [busySignal, sessionId]);
 
   // Detect stick-to-bottom: if user is near the bottom, keep auto-scrolling.
   const handleScroll = useCallback(() => {

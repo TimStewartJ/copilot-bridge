@@ -89,6 +89,8 @@ export default function App() {
     reconnectedSincePending: false,
   });
   const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
+  // Incremented per-session when an external source (e.g. schedule) starts work
+  const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
@@ -202,6 +204,21 @@ export default function App() {
         break;
       case "server:restart-cleared":
         setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "server:restart-cleared" }));
+        break;
+      case "schedule:triggered":
+        // Schedule started work — refresh session list, task data, and schedule run history
+        invalidateSessions();
+        invalidateTasks();
+        if (event.scheduleId) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.scheduleSessions(event.scheduleId) });
+        }
+        // Signal ChatView to reconnect if viewing the targeted session (reuse case)
+        if (event.sessionId) {
+          setSessionBusySignals((prev) => ({
+            ...prev,
+            [event.sessionId!]: (prev[event.sessionId!] ?? 0) + 1,
+          }));
+        }
         break;
       case "schedule:changed":
         queryClient.invalidateQueries({ queryKey: ["task"] });
@@ -1065,13 +1082,13 @@ export default function App() {
             <Route
               path="tasks/:taskId/sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} />
+                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} sessionBusySignals={sessionBusySignals} />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} />
+                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} sessionBusySignals={sessionBusySignals} />
               }
             />
             <Route path="docs/*" element={<DocsView />} />
@@ -1286,7 +1303,7 @@ function MobileTaskListView({
 }
 
 // Thin wrapper to extract sessionId from URL and pass hasPlan + draft props
-function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft, materializeSession, sessionReloads }: {
+function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft, materializeSession, sessionReloads, sessionBusySignals }: {
   sessions: Session[];
   onMessageSent: () => void;
   getDraft: (id: string) => import("./useDrafts").Draft | null;
@@ -1294,6 +1311,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
   clearDraft: (id: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
+  sessionBusySignals: Record<string, number>;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -1301,6 +1319,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
   const isDraft = rawSessionId === "new";
   const sessionId = isDraft ? null : (rawSessionId ?? null);
   const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
+  const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
   const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
   const draft = sessionId ? getDraft(sessionId) : null;
   const handleDraftChange = useCallback(
@@ -1345,6 +1364,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
       onCreateAndSend={isDraft ? onCreateAndSend : undefined}
       reloadToken={sessionReload?.token ?? 0}
       reloadMcpServers={sessionReload?.servers}
+      busySignal={busySignal}
     />
   );
 }
