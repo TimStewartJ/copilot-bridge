@@ -28,11 +28,14 @@ export function getTaskLastActivity(
  * Derives busy/unread indicators per task from linked sessions.
  * Busy sessions are excluded from the unread check — unread only applies
  * once a session goes idle with new content the user hasn't seen.
+ * The actively-viewed session is excluded from the unread count to avoid
+ * showing an unread dot for content the user is currently looking at.
  */
 export default function useTaskIndicators(
   tasks: Task[],
   sessions: Session[],
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
+  activeSessionId?: string | null,
 ): Map<string, TaskIndicator> {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -49,24 +52,27 @@ export default function useTaskIndicators(
         const session = sessionMap.get(sid);
         if (!session || session.archived) continue;
         if (session.busy) { busyCount++; continue; }
+        if (sid === activeSessionId) continue;
         if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
       }
       const lastActivity = getTaskLastActivity(task, sessionMap);
       result.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount, lastActivity });
     }
     return result;
-  }, [tasks, sessionMap, isUnread]);
+  }, [tasks, sessionMap, isUnread, activeSessionId]);
 
   return indicators;
 }
 
-/** Count unread sessions for a specific task (excludes archived sessions). */
+/** Count unread sessions for a specific task (excludes archived sessions and the active session). */
 export function countTaskUnread(
   task: Task,
   sessionMap: Map<string, Session>,
   isUnread: (sessionId: string, modifiedTime?: string) => boolean,
+  activeSessionId?: string | null,
 ): number {
   return task.sessionIds.filter((sid) => {
+    if (sid === activeSessionId) return false;
     const session = sessionMap.get(sid);
     return session && !session.archived && isUnread(sid, getSessionActivityTime(session));
   }).length;

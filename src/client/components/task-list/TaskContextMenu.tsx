@@ -19,6 +19,7 @@ interface TaskContextMenuProps {
   taskGroups: TaskGroup[];
   sessionMap: Map<string, Session>;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  activeSessionId?: string | null;
   actions: TaskContextMenuActions;
   onClose: () => void;
 }
@@ -29,6 +30,7 @@ export default function TaskContextMenu({
   taskGroups,
   sessionMap,
   isUnread,
+  activeSessionId,
   actions,
   onClose,
 }: TaskContextMenuProps) {
@@ -39,8 +41,8 @@ export default function TaskContextMenu({
 
   const unreadCount = useMemo(() => {
     if (!isUnread) return 0;
-    return countTaskUnread(task, sessionMap, isUnread);
-  }, [task, sessionMap, isUnread]);
+    return countTaskUnread(task, sessionMap, isUnread, activeSessionId);
+  }, [task, sessionMap, isUnread, activeSessionId]);
 
   return (
     <ContextMenu position={position} onClose={closeMenu}>
