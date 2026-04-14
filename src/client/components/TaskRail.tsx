@@ -1,9 +1,8 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
-import { TAG_COLOR_DOT as TAG_DOT } from "../tag-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, Eye, ChevronDown, ChevronRight, GripVertical, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText, RotateCw, ListTodo } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ArchiveRestore, Eye, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText, RotateCw, ListTodo, Trash2 } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -11,19 +10,12 @@ import NotesSheet from "./NotesSheet";
 import TaskPickerDialog from "./TaskPickerDialog";
 import EmptyState from "./shared/EmptyState";
 import useLongPressMenu from "../hooks/useLongPressMenu";
+import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
-import {
-  DndContext,
-  DragOverlay,
-  closestCenter,
-  useDroppable,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  useSortable,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
+import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu } from "./task-list";
+import { DndContext, closestCenter } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
 interface TaskRailProps {
   tasks: Task[];
@@ -71,25 +63,11 @@ interface TaskRailProps {
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
 }
 
-const STATUS_ORDER: Record<Task["status"], number> = {
-  active: 0,
-  paused: 1,
-  done: 2,
-  archived: 3,
-};
-
 const STATUS_BG: Record<Task["status"], string> = {
   active: "bg-accent/15",
   paused: "bg-warning/15",
   done: "bg-success/15",
   archived: "bg-text-faint/10",
-};
-
-const STATUS_TEXT: Record<Task["status"], string> = {
-  active: "text-success",
-  paused: "text-warning",
-  done: "text-text-muted",
-  archived: "text-text-faint",
 };
 
 
@@ -146,22 +124,7 @@ export default function TaskRail({
     return map;
   }, [sessions]);
 
-  // Busy sessions excluded from unread — unread only fires after idle
-  const taskIndicators = useMemo(() => {
-    const indicators = new Map<string, { busy: boolean; unread: boolean; busyCount: number; unreadCount: number }>();
-    for (const task of tasks) {
-      let busyCount = 0;
-      let unreadCount = 0;
-      for (const sid of task.sessionIds) {
-        const session = sessionMap.get(sid);
-        if (!session || session.archived) continue;
-        if (session.busy) { busyCount++; continue; }
-        if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
-      }
-      indicators.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount });
-    }
-    return indicators;
-  }, [tasks, sessionMap, isUnread]);
+  const taskIndicators = useTaskIndicators(tasks, sessions, isUnread);
 
   // Quick chat (orphan session) indicators
   const orphanIndicators = useMemo(() => {
@@ -182,23 +145,8 @@ export default function TaskRail({
     [orphanSessions, archivingIds, exitingIds],
   );
 
-  const sortedTasks = useMemo(
-    () =>
-      [...tasks]
-        .filter((t) => t.status !== "archived")
-        .sort((a, b) => {
-          const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-          if (statusDiff !== 0) return statusDiff;
-          return a.order - b.order;
-        }),
-    [tasks],
-  );
-
-  const archivedTasks = useMemo(
-    () =>
-      [...tasks]
-        .filter((t) => t.status === "archived")
-        .sort((a, b) => a.order - b.order),
+  const { nonArchived: sortedTasks, archived: archivedTasks } = useMemo(
+    () => splitArchivedTasks(tasks),
     [tasks],
   );
 
@@ -207,24 +155,7 @@ export default function TaskRail({
 
   const groupedSections = useMemo(() => {
     if (!hasGroups) return null;
-    const nonArchived = sortedTasks;
-    const sections: { group: TaskGroup | null; tasks: Task[] }[] = [];
-
-    // One section per group (in group order)
-    for (const group of taskGroups) {
-      sections.push({
-        group,
-        tasks: nonArchived.filter((t) => t.groupId === group.id),
-      });
-    }
-
-    // Ungrouped section
-    const ungrouped = nonArchived.filter((t) => !t.groupId || !taskGroups.some((g) => g.id === t.groupId));
-    if (ungrouped.length > 0) {
-      sections.push({ group: null, tasks: ungrouped });
-    }
-
-    return sections;
+    return buildGroupSections(sortedTasks, taskGroups);
   }, [hasGroups, sortedTasks, taskGroups]);
 
   const [showArchived, setShowArchived] = useState(false);
@@ -263,10 +194,7 @@ export default function TaskRail({
   const chatTabUnread = useMemo(() => orphanIndicators.totalUnread, [orphanIndicators]);
 
   // Context menu state (tasks)
-  const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
-  const [copied, setCopied] = useState(false);
-  const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
-
+  const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
   // Context menu state (quick chats)
@@ -326,14 +254,6 @@ export default function TaskRail({
     onMoveTaskToGroup,
     onMoveAndReorder,
   });
-
-  const ctxUnreadCount = useMemo(() => {
-    if (!ctxTask || !isUnread) return 0;
-    return ctxTask.sessionIds.filter((sid) => {
-      const session = sessionMap.get(sid);
-      return session && !session.archived && isUnread(sid, getSessionActivityTime(session));
-    }).length;
-  }, [ctxTask, sessionMap, isUnread]);
 
   // ── Collapsed (icon-only) mode ─────────────────────────────────
   if (!expanded) {
@@ -620,7 +540,7 @@ export default function TaskRail({
                           {!isCollapsed && (
                             <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                               {section.tasks.map((task) => (
-                                <SortableRailItem
+                                <SortableTaskItem
                                   key={task.id}
                                   task={task}
                                   isActive={task.id === activeTaskId}
@@ -629,6 +549,7 @@ export default function TaskRail({
                                   isLongPressTarget={isTarget(task.id)}
                                   bindLongPress={bindLongPress}
                                   onSelectTask={onSelectTask}
+                                  variant="rail"
                                 />
                               ))}
                             </SortableContext>
@@ -642,7 +563,7 @@ export default function TaskRail({
                 // ── Flat mode (no groups) ──────────────────────────
                 <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                   {sortedTasks.map((task) => (
-                    <SortableRailItem
+                    <SortableTaskItem
                       key={task.id}
                       task={task}
                       isActive={task.id === activeTaskId}
@@ -651,18 +572,12 @@ export default function TaskRail({
                       isLongPressTarget={isTarget(task.id)}
                       bindLongPress={bindLongPress}
                       onSelectTask={onSelectTask}
+                      variant="rail"
                     />
                   ))}
                 </SortableContext>
               )}
-              <DragOverlay dropAnimation={null}>
-                {activeDragTask ? (
-                  <div className="bg-bg-secondary rounded-md shadow-lg border border-border px-3 py-2 text-sm w-48 opacity-90">
-                    <div className="font-medium truncate">{activeDragTask.title}</div>
-                    <div className="text-xs text-text-muted mt-0.5">{timeAgo(activeDragTask.updatedAt)}</div>
-                  </div>
-                ) : null}
-              </DragOverlay>
+              <TaskDragOverlay task={activeDragTask} />
             </DndContext>
             {sortedTasks.length === 0 && (
               <EmptyState
@@ -914,108 +829,15 @@ export default function TaskRail({
 
       {/* Task context menu */}
       {ctxMenu && ctxTask && (
-        <ContextMenu position={ctxMenu} onClose={closeMenu}>
-          {markRead && (
-            <CtxItem
-              icon={<Eye size={14} />}
-              label={`Mark all as read${ctxUnreadCount > 0 ? ` (${ctxUnreadCount})` : ""}`}
-              disabled={ctxUnreadCount === 0}
-              onClick={() => {
-                for (const sid of ctxTask.sessionIds) {
-                  const session = sessionMap.get(sid);
-                  if (session && isUnread?.(sid, getSessionActivityTime(session))) {
-                    markRead(sid);
-                  }
-                }
-                closeMenu();
-              }}
-            />
-          )}
-          <button
-            className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
-            onClick={() => {
-              navigator.clipboard.writeText(ctxTask.id);
-              setCopied(true);
-              setTimeout(closeMenu, 600);
-            }}
-          >
-            {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
-            {copied ? "Copied!" : "Copy Task ID"}
-          </button>
-          <CtxDivider />
-          {onUpdateTask && ctxTask.status !== "active" && (
-            <CtxItem icon={<Play size={14} />} label="Set Active"
-              onClick={() => { onUpdateTask(ctxTask.id, { status: "active" }); closeMenu(); }} />
-          )}
-          {onUpdateTask && ctxTask.status !== "paused" && ctxTask.status !== "archived" && (
-            <CtxItem icon={<Pause size={14} />} label="Set Paused"
-              onClick={() => { onUpdateTask(ctxTask.id, { status: "paused" }); closeMenu(); }} />
-          )}
-          {onUpdateTask && ctxTask.status !== "done" && ctxTask.status !== "archived" && (
-            <CtxItem icon={<CheckCircle size={14} />} label="Set Done"
-              onClick={() => { onUpdateTask(ctxTask.id, { status: "done" }); closeMenu(); }} />
-          )}
-          {onUpdateTask && (
-            <CtxItem
-              icon={ctxTask.status === "archived" ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-              label={ctxTask.status === "archived" ? "Unarchive" : "Archive"}
-              onClick={() => {
-                onUpdateTask(ctxTask.id, { status: ctxTask.status === "archived" ? "active" : "archived" });
-                closeMenu();
-              }}
-            />
-          )}
-          {/* Move to Group */}
-          {onMoveTaskToGroup && taskGroups.length > 0 && (
-            <>
-              <CtxDivider />
-              <div className="px-3 py-1 text-[11px] font-semibold text-text-muted uppercase tracking-wider">Move to Group</div>
-              {taskGroups.map((g) => (
-                <CtxItem
-                  key={g.id}
-                  icon={<span className={`w-2.5 h-2.5 rounded-full ${GROUP_COLOR_DOT[g.color] ?? "bg-slate-500"}`} />}
-                  label={g.name}
-                  className={ctxTask.groupId === g.id ? "text-accent font-medium" : ""}
-                  onClick={() => {
-                    if (ctxTask.groupId !== g.id) onMoveTaskToGroup(ctxTask.id, g.id);
-                    closeMenu();
-                  }}
-                />
-              ))}
-              {ctxTask.groupId && (
-                <CtxItem
-                  icon={<FolderMinus size={14} />}
-                  label="Remove from group"
-                  onClick={() => { onMoveTaskToGroup(ctxTask.id, undefined); closeMenu(); }}
-                />
-              )}
-            </>
-          )}
-          {onMoveTaskToGroup && onCreateGroup && (
-            <>
-              {taskGroups.length === 0 && <CtxDivider />}
-              <CtxItem
-                icon={<FolderOpen size={14} />}
-                label="New Group..."
-                onClick={async () => {
-                  closeMenu();
-                  const name = window.prompt("Group name:");
-                  if (name?.trim()) {
-                    const group = await onCreateGroup(name.trim());
-                    if (group) onMoveTaskToGroup(ctxTask.id, group.id);
-                  }
-                }}
-              />
-            </>
-          )}
-          {onDeleteTask && (
-            <>
-              <CtxDivider />
-              <CtxItem icon={<Trash2 size={14} />} label="Delete" className="text-error"
-                onClick={() => { onDeleteTask(ctxTask.id); closeMenu(); }} />
-            </>
-          )}
-        </ContextMenu>
+        <TaskContextMenu
+          task={ctxTask}
+          position={ctxMenu}
+          taskGroups={taskGroups}
+          sessionMap={sessionMap}
+          isUnread={isUnread}
+          actions={{ markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup }}
+          onClose={closeMenu}
+        />
       )}
 
       {/* Group context menu */}
@@ -1232,90 +1054,3 @@ export default function TaskRail({
   );
 }
 
-// ── Sortable task item for expanded rail ──────────────────────────
-
-function SortableRailItem({
-  task,
-  isActive,
-  indicator,
-  isCtxTarget,
-  isLongPressTarget,
-  bindLongPress,
-  onSelectTask,
-}: {
-  task: Task;
-  isActive: boolean;
-  indicator: { busy: boolean; unread: boolean; busyCount: number; unreadCount: number } | undefined;
-  isCtxTarget: boolean;
-  isLongPressTarget: boolean;
-  bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
-  onSelectTask: (id: string) => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0 : 1,
-    zIndex: isDragging ? 10 : undefined,
-  };
-
-  return (
-    <div ref={setNodeRef} style={style} className="group">
-      <button
-        {...bindLongPress(task.id, () => onSelectTask(task.id))}
-        className={`relative w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-          isCtxTarget
-            ? "bg-bg-hover ring-1 ring-border"
-            : isActive
-              ? "bg-bg-hover"
-              : "hover:bg-bg-hover"
-        } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
-      >
-        {indicator?.unread && (
-          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-3 rounded-full bg-text-primary" />
-        )}
-        <div className="flex items-center">
-          <span
-            {...attributes}
-            {...listeners}
-            className="w-0 overflow-hidden group-hover:w-4 text-text-faint hover:text-text-muted cursor-grab active:cursor-grabbing touch-none transition-all duration-150"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <GripVertical size={12} />
-          </span>
-          {indicator?.busy ? (
-            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-info animate-pulse" />
-          ) : indicator?.unread ? (
-            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-success" />
-          ) : null}
-          <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
-            {task.title}
-          </span>
-          {/* Tag dots */}
-          {(task.tags?.length ?? 0) > 0 && (
-            <span className="flex gap-0.5 shrink-0 ml-1">
-              {task.tags!.slice(0, 3).map((tag) => (
-                <span key={tag.id} className={`w-1.5 h-1.5 rounded-full ${TAG_DOT[tag.color] ?? "bg-slate-500"}`} title={tag.name} />
-              ))}
-            </span>
-          )}
-          <span className={`text-[10px] ml-1 ${STATUS_TEXT[task.status]}`}>
-            {task.status !== "active" ? task.status : ""}
-          </span>
-        </div>
-        <div className="text-xs text-text-muted mt-0.5 transition-all duration-150 pl-0 group-hover:pl-4">
-          {timeAgo(task.updatedAt)}
-          {(indicator?.busyCount ?? 0) > 0 && ` · ${indicator!.busyCount} in flight`}
-          {(indicator?.unreadCount ?? 0) > 0 && ` · ${indicator!.unreadCount} unread`}
-        </div>
-      </button>
-    </div>
-  );
-}
-
-// ── Droppable group container ────────────────────────────────────
-
-function DroppableGroup({ id, children }: { id: string; children: React.ReactNode }) {
-  const { setNodeRef } = useDroppable({ id });
-  return <div ref={setNodeRef}>{children}</div>;
-}
