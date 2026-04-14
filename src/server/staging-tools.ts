@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
+import { config } from "./config.js";
 import type { AppContext } from "./app-context.js";
 import type express from "express";
 
@@ -611,6 +612,7 @@ export const STAGING_TOOLS = [
       }
 
       const fullUrl = buildPublicUrl(basePath) ?? null;
+      const localUrl = `http://localhost:${config.web.port}${basePath}`;
 
       const backendNote = backendReady
         ? " Backend API is live at the same path (/api routes)."
@@ -618,16 +620,17 @@ export const STAGING_TOOLS = [
           ? ` Backend failed to start: ${backendError}. Frontend-only preview.`
           : " Frontend-only preview (no Express app registered).";
 
-      log(`Staging preview ready at ${fullUrl || basePath}`);
+      log(`Staging preview ready at ${fullUrl || localUrl}`);
       return {
         success: true,
         previewPath: basePath,
         previewUrl: fullUrl,
+        localUrl,
         backendReady,
         backendError,
         message: (fullUrl
-          ? `Staging preview is live at ${fullUrl} — share this link with the user and wait for confirmation before deploying.`
-          : `Staging preview is live at ${basePath} (no public URL available — share the relative path with the user).`) + backendNote,
+          ? `Staging preview is live at ${fullUrl} (also available locally at ${localUrl}) — share this link with the user and wait for confirmation before deploying.`
+          : `Staging preview is live locally at ${localUrl} — share this link with the user and wait for confirmation before deploying.`) + backendNote,
       };
     },
   }),
