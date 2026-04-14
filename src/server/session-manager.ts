@@ -6,7 +6,7 @@ import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
-import { join, dirname, resolve, basename } from "node:path";
+import { join, dirname, resolve, basename, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
@@ -1522,7 +1522,7 @@ export class SessionManager {
         // File already on disk from multipart upload
         const safeName = basename(att.displayName).replace(/\.\./g, "_") || "attachment";
         const filePath = join(filesDir, safeName);
-        if (!resolve(filePath).startsWith(resolve(filesDir) + "/")) {
+        if (!resolve(filePath).startsWith(resolve(filesDir) + sep)) {
           console.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping uploaded attachment with unsafe name: ${att.displayName}`);
           continue;
         }
@@ -1542,7 +1542,7 @@ export class SessionManager {
         // Legacy blob path: decode base64 and save to disk
         const safeName = this.deduplicateFilename(filesDir, att.displayName ?? "attachment");
         const filePath = join(filesDir, safeName);
-        if (!resolve(filePath).startsWith(resolve(filesDir) + "/")) {
+        if (!resolve(filePath).startsWith(resolve(filesDir) + sep)) {
           console.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping attachment with unsafe name: ${att.displayName}`);
           continue;
         }
