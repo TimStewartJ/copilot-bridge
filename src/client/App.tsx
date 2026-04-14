@@ -251,20 +251,37 @@ export default function App() {
 
   // Mark session as read after 2s dwell, and again on departure to capture
   // any messages that arrived after the initial mark.
+  const hasDwelledRef = useRef(false);
   useEffect(() => {
     if (!activeSessionId) return;
     // Track last-viewed session for this task immediately
     if (activeTaskId) setLastViewedSession(activeTaskId, activeSessionId);
-    let dwelled = false;
+    hasDwelledRef.current = false;
     const timer = setTimeout(() => {
-      dwelled = true;
+      hasDwelledRef.current = true;
       markRead(activeSessionId);
     }, 2000);
     return () => {
       clearTimeout(timer);
-      if (dwelled) markRead(activeSessionId);
+      if (hasDwelledRef.current) markRead(activeSessionId);
     };
   }, [activeSessionId, activeTaskId, markRead]);
+
+  // Re-mark the active session as read when its activity timestamp advances
+  // (e.g., busy→idle transition) while the user is still viewing it.
+  const activeSessionActivity = useMemo(() => {
+    if (!activeSessionId) return undefined;
+    const session = sessions.find((s) => s.sessionId === activeSessionId);
+    if (!session || session.busy) return undefined;
+    return getSessionActivityTime(session);
+  }, [activeSessionId, sessions]);
+
+  useEffect(() => {
+    if (!activeSessionId || !activeSessionActivity || !hasDwelledRef.current) return;
+    if (isUnread(activeSessionId, activeSessionActivity)) {
+      markRead(activeSessionId);
+    }
+  }, [activeSessionId, activeSessionActivity, isUnread, markRead]);
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
@@ -1279,6 +1296,7 @@ function MobileTaskListView({
             tasks={tasks}
             taskGroups={taskGroups}
             activeTaskId={activeTaskId}
+            activeSessionId={activeSessionId}
             onSelectTask={onSelectTask}
             onNewTask={onNewTask}
             sessions={sessions}

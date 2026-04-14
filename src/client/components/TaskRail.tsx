@@ -124,7 +124,7 @@ export default function TaskRail({
     return map;
   }, [sessions]);
 
-  const taskIndicators = useTaskIndicators(tasks, sessions, isUnread);
+  const taskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
 
   // Quick chat (orphan session) indicators
   const orphanIndicators = useMemo(() => {
@@ -841,6 +841,7 @@ export default function TaskRail({
           taskGroups={taskGroups}
           sessionMap={sessionMap}
           isUnread={isUnread}
+          activeSessionId={activeSessionId}
           actions={{ markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup }}
           onClose={closeMenu}
         />

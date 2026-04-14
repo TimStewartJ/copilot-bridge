@@ -18,6 +18,7 @@ interface TaskListProps {
   tasks: Task[];
   taskGroups?: TaskGroup[];
   activeTaskId: string | null;
+  activeSessionId?: string | null;
   onSelectTask: (id: string) => void;
   onNewTask: (groupId?: string) => void;
   sessions?: Session[];
@@ -39,6 +40,7 @@ export default function TaskList({
   tasks,
   taskGroups = [],
   activeTaskId,
+  activeSessionId,
   onSelectTask,
   onNewTask,
   sessions = [],
@@ -61,7 +63,7 @@ export default function TaskList({
     return map;
   }, [sessions]);
 
-  const taskIndicators = useTaskIndicators(tasks, sessions, isUnread);
+  const taskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
 
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
@@ -263,6 +265,7 @@ export default function TaskList({
           taskGroups={taskGroups}
           sessionMap={sessionMap}
           isUnread={isUnread}
+          activeSessionId={activeSessionId}
           actions={{ markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup }}
           onClose={closeMenu}
         />
