@@ -294,7 +294,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
       scheduleId,
       scheduleName: schedule.name,
       sessionId,
-    } as any);
+    });
 
     // Notify UI that schedule metadata changed (runCount, lastRunAt, nextRunAt)
     bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
