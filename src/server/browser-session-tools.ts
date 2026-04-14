@@ -90,6 +90,9 @@ export function createBrowserSessionTools(ctx: AppContext) {
                 args: {
                   type: "array",
                   items: { type: "string" },
+                  description:
+                    "String arguments for the command. Element-targeting commands (click, fill, type, select, check) use refs from snapshot output — " +
+                    "pass the ref with @ prefix (e.g. @e42 for an element shown as [ref=e42] in the snapshot).",
                 },
                 timeoutMs: { type: "number" },
               },

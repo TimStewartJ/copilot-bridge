@@ -72,7 +72,8 @@ export function createBrowserExecTools(ctx: AppContext) {
             type: "string",
             enum: ["auto", "primary", "clone"],
             description:
-              "Lane selection. auto uses clone for read-only flows that establish their own page with open, and primary for stateful interactions or flows that rely on existing browser state.",
+              "Lane selection. auto uses clone for read-only flows that establish their own page with open, and primary for stateful interactions or flows that rely on existing browser state. " +
+              "Clone lanes are isolated — element refs and page state from one clone call are invalid in another. Use primary or browser_session_* for multi-step flows that need to reference elements across calls.",
           },
           commands: {
             type: "array",
@@ -88,7 +89,9 @@ export function createBrowserExecTools(ctx: AppContext) {
                 args: {
                   type: "array",
                   items: { type: "string" },
-                  description: "String arguments for the command",
+                  description:
+                    "String arguments for the command. Element-targeting commands (click, fill, type, select, check) use refs from snapshot output — " +
+                    "pass the ref with @ prefix (e.g. @e42 for an element shown as [ref=e42] in the snapshot). CSS selectors are not supported for element targeting.",
                 },
                 timeoutMs: {
                   type: "number",
