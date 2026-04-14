@@ -20,6 +20,8 @@ interface UseLongPressMenuReturn<T> {
   bind: (id: T, onClick: () => void) => LongPressBindings;
   /** Current context menu state, or null when closed */
   menu: MenuState<T> | null;
+  /** Programmatically open the context menu at a given position */
+  openMenu: (x: number, y: number, id: T) => void;
   /** Close the context menu */
   closeMenu: () => void;
   /** Whether this id is currently being long-pressed (for visual feedback) */
@@ -50,6 +52,7 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
   }, []);
 
   const closeMenu = useCallback(() => setMenu(null), []);
+  const openMenu = useCallback((x: number, y: number, id: T) => setMenu({ x, y, id }), []);
 
   const bind = useCallback(
     (id: T, onClick: () => void): LongPressBindings => ({
@@ -93,5 +96,5 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
     [longPressTarget],
   );
 
-  return { bind, menu, closeMenu, isTarget };
+  return { bind, menu, openMenu, closeMenu, isTarget };
 }

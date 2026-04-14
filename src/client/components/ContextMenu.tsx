@@ -89,18 +89,17 @@ export function CtxItem({
   disabled?: boolean;
 }) {
   const [tapped, setTapped] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => () => clearTimeout(timer.current), []);
 
   const handleClick = () => {
     setTapped(true);
-    timer.current = setTimeout(onClick, 120);
+    // Call synchronously to preserve user-gesture context (required for
+    // showPicker() / date inputs on mobile browsers).
+    onClick();
   };
 
   return (
     <button
-      className={`w-full px-3 py-1.5 text-left hover:bg-bg-hover active:bg-bg-hover flex items-center gap-2 transition-colors ${
+      className={`w-full min-h-[44px] px-3 py-2 text-left hover:bg-bg-hover active:bg-bg-hover flex items-center gap-2 transition-colors ${
         tapped ? "bg-bg-hover" : ""
       } ${disabled ? "opacity-40 pointer-events-none" : ""} ${className}`}
       onClick={handleClick}
