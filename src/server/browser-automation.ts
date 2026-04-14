@@ -46,6 +46,23 @@ function isRef(value: string): boolean {
   return /^@[\w:-]+$/.test(value);
 }
 
+/**
+ * Try to fix common ref format mistakes:
+ *   "e42"        → "@e42"
+ *   "[ref=e42]"  → "@e42"
+ * Returns the original string if it doesn't look like a misformatted ref.
+ */
+function autoCorrectRef(value: string): string {
+  // Already valid
+  if (isRef(value)) return value;
+  // Missing @ prefix: "e42" → "@e42" (must start with a letter to distinguish from durations like "5000")
+  if (/^[a-zA-Z][\w:-]*$/.test(value) && /\d/.test(value)) return `@${value}`;
+  // Snapshot display format: "[ref=e42]" → "@e42"
+  const bracketMatch = value.match(/^\[ref=([\w:-]+)\]$/);
+  if (bracketMatch) return `@${bracketMatch[1]}`;
+  return value;
+}
+
 function isPositiveTimeout(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
@@ -77,13 +94,13 @@ function validateCommand(command: BrowserAutomationCommandInput, index: number):
     case "check":
       return args.length === 1 && isRef(args[0])
         ? null
-        : `commands[${index}] ${command.command} requires exactly 1 element ref argument`;
+        : `commands[${index}] ${command.command} requires exactly 1 element ref like @e42 (matching [ref=e42] from snapshot output). CSS selectors are not supported.`;
     case "fill":
     case "type":
     case "select":
       return args.length === 2 && isRef(args[0])
         ? null
-        : `commands[${index}] ${command.command} requires an element ref and value`;
+        : `commands[${index}] ${command.command} requires an element ref (e.g. @e42) and a value`;
     case "press":
       return args.length === 1 ? null : `commands[${index}] press requires exactly 1 key argument`;
     case "scroll":
@@ -91,11 +108,25 @@ function validateCommand(command: BrowserAutomationCommandInput, index: number):
     case "get":
       if (args.length === 1 && (args[0] === "url" || args[0] === "title")) return null;
       if (args.length === 2 && args[0] === "text" && isRef(args[1])) return null;
-      return `commands[${index}] get supports ['url'], ['title'], or ['text', ref]`;
+      return `commands[${index}] get supports ['url'], ['title'], or ['text', ref] where ref is like @e42`;
     default:
       return `commands[${index}] uses unsupported command "${String(command.command)}"`;
   }
 }
+
+/** Commands whose first arg is an element ref that should be auto-corrected. */
+const REF_FIRST_ARG_COMMANDS = new Set<BrowserAutomationCommandName>([
+  "click", "check", "fill", "type", "select",
+]);
+
+/** Commands where a later arg is an element ref (get text <ref>). */
+const REF_SECOND_ARG_COMMANDS = new Set<BrowserAutomationCommandName>(["get"]);
+
+/**
+ * Commands where the first arg *may* be a ref (wait can take a selector, a
+ * duration, or a ref). Only auto-correct when the arg looks ref-shaped.
+ */
+const REF_FIRST_ARG_OPTIONAL_COMMANDS = new Set<BrowserAutomationCommandName>(["wait"]);
 
 export function normalizeBrowserAutomationCommands(rawCommands: unknown): BrowserAutomationCommand[] | { error: string } {
   if (!Array.isArray(rawCommands) || rawCommands.length === 0) {
@@ -111,12 +142,27 @@ export function normalizeBrowserAutomationCommands(rawCommands: unknown): Browse
     if (typeof command.command !== "string") {
       return { error: `commands[${index}].command must be a string` };
     }
-    const validationError = validateCommand(command, index);
+
+    // Auto-correct ref arguments before validation (only for string args)
+    const args = [...(command.args ?? [])];
+    if (REF_FIRST_ARG_COMMANDS.has(command.command) && args.length >= 1 && typeof args[0] === "string") {
+      args[0] = autoCorrectRef(args[0]);
+    }
+    if (REF_FIRST_ARG_OPTIONAL_COMMANDS.has(command.command) && args.length === 1 && typeof args[0] === "string") {
+      const corrected = autoCorrectRef(args[0]);
+      if (isRef(corrected)) args[0] = corrected;
+    }
+    if (REF_SECOND_ARG_COMMANDS.has(command.command) && args.length >= 2 && args[0] === "text" && typeof args[1] === "string") {
+      args[1] = autoCorrectRef(args[1]);
+    }
+
+    const corrected = { ...command, args };
+    const validationError = validateCommand(corrected, index);
     if (validationError) return { error: validationError };
     commands.push({
-      command: command.command,
-      args: command.args ?? [],
-      timeoutMs: command.timeoutMs,
+      command: corrected.command,
+      args: corrected.args,
+      timeoutMs: corrected.timeoutMs,
     });
   }
   return commands;
