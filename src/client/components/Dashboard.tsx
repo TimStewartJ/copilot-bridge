@@ -22,10 +22,9 @@ import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause } from "lucide-react";
 
-type TodoSort = "newest" | "deadline" | "task";
+type TodoSort = "deadline" | "task";
 
 const SORT_LABELS: Record<TodoSort, string> = {
-  newest: "Newest",
   deadline: "Deadline",
   task: "By task",
 };
@@ -35,9 +34,9 @@ const SORT_STORAGE_KEY = "dashboard-todo-sort";
 function getSavedSort(): TodoSort {
   try {
     const val = localStorage.getItem(SORT_STORAGE_KEY);
-    if (val === "newest" || val === "deadline" || val === "task") return val;
+    if (val === "deadline" || val === "task") return val;
   } catch {}
-  return "newest";
+  return "deadline";
 }
 
 function deadlineSortKey(deadline: string | undefined): number {
@@ -48,8 +47,6 @@ function deadlineSortKey(deadline: string | undefined): number {
 function sortTodos(todos: DashboardTodo[], sort: TodoSort): DashboardTodo[] {
   const copy = [...todos];
   switch (sort) {
-    case "newest":
-      return copy.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     case "deadline":
       return copy.sort((a, b) => deadlineSortKey(a.deadline) - deadlineSortKey(b.deadline) || b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     case "task":
