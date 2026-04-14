@@ -416,11 +416,11 @@ export default function App() {
     }
   };
 
-  const handleUpdateTask = async (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => {
+  const handleUpdateTask = async (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => {
     try {
       const updated = await patchTask(taskId, updates);
-      if (updates.status) {
-        // When status changes, refetch all tasks since order values shift
+      if (updates.status || updates.pinned !== undefined) {
+        // When status or pinned changes, refetch all tasks since order values shift
         await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
       } else {
         queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
@@ -1142,7 +1142,7 @@ function MobileTaskListView({
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;
-  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
+  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
   quickChatsMode: boolean;

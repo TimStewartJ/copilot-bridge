@@ -37,6 +37,7 @@ import {
   ListChecks,
   LayoutDashboard,
   BookOpen,
+  Pin,
 } from "lucide-react";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 import EmptyState from "./shared/EmptyState";
@@ -72,7 +73,7 @@ interface TaskPanelProps {
   onNewSession: (taskId: string) => void;
   onUpdateTask: (
     taskId: string,
-    updates: Partial<Pick<Task, "title" | "status">>,
+    updates: Partial<Pick<Task, "title" | "status" | "pinned">>,
   ) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
@@ -277,6 +278,19 @@ export default function TaskPanel({
               </button>
             )}
           </div>
+
+          {/* Pin toggle */}
+          <button
+            onClick={() => onUpdateTask(task.id, { pinned: !task.pinned })}
+            className={`p-1 rounded transition-colors shrink-0 ${
+              task.pinned
+                ? "text-accent hover:text-accent-hover"
+                : "text-text-faint hover:text-text-muted"
+            }`}
+            title={task.pinned ? "Unpin task" : "Pin task"}
+          >
+            <Pin size={12} className={task.pinned ? "rotate-45" : ""} />
+          </button>
 
           {/* Group badge */}
           {(() => {

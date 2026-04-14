@@ -43,6 +43,7 @@ function initSchema(db: DatabaseSync): void {
       cwd TEXT,
       notes TEXT NOT NULL DEFAULT '',
       priority INTEGER NOT NULL DEFAULT 0,
+      pinned INTEGER NOT NULL DEFAULT 0,
       "order" INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
@@ -259,6 +260,12 @@ function initSchema(db: DatabaseSync): void {
   const groupCols = db.prepare("PRAGMA table_info(task_groups)").all() as any[];
   if (!groupCols.some((c: any) => c.name === "notes")) {
     db.exec("ALTER TABLE task_groups ADD COLUMN notes TEXT NOT NULL DEFAULT ''");
+  }
+
+  // Add pinned column to tasks
+  const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+  if (!taskCols.some((c: any) => c.name === "pinned")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)

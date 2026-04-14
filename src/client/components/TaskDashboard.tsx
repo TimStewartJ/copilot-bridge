@@ -22,6 +22,7 @@ import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import {
+  Pin,
   MessageSquare,
   Plus,
   GitPullRequest,
@@ -49,7 +50,7 @@ interface TaskDashboardProps {
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
-  onUpdateTask: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
+  onUpdateTask: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
@@ -174,6 +175,17 @@ export default function TaskDashboard({
                 }`}>
                   {task.status}
                 </span>
+                <button
+                  onClick={() => onUpdateTask(task.id, { pinned: !task.pinned })}
+                  className={`p-0.5 rounded transition-colors ${
+                    task.pinned
+                      ? "text-accent hover:text-accent-hover"
+                      : "text-text-faint hover:text-text-muted"
+                  }`}
+                  title={task.pinned ? "Unpin task" : "Pin task"}
+                >
+                  <Pin size={12} className={task.pinned ? "rotate-45" : ""} />
+                </button>
               </div>
               <h1 className="text-xl font-semibold text-text-primary leading-tight">
                 {task.title}
