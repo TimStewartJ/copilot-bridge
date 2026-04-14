@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
-import { patchTask, unlinkResource, fetchRelatedDocs } from "../api";
+import { patchTask, unlinkResource, fetchRelatedDocs, getSessionActivityTime } from "../api";
 import TodoRow from "./TodoRow";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
@@ -122,6 +122,14 @@ export default function TaskDashboard({
   const linkedSessions = sessions.filter((s) =>
     task.sessionIds.includes(s.sessionId)
   );
+  const lastActivity = useMemo(() => {
+    let latest = task.updatedAt;
+    for (const s of linkedSessions) {
+      const t = getSessionActivityTime(s);
+      if (t && t > latest) latest = t;
+    }
+    return latest;
+  }, [task.updatedAt, linkedSessions]);
   const group = taskGroups.find((g) => g.id === task.groupId);
   const taskOwnTags = task.tags ?? [];
   const groupTags = group?.tags ?? [];
@@ -198,7 +206,7 @@ export default function TaskDashboard({
                 </div>
               )}
               <div className="text-xs text-text-faint mt-1">
-                Updated {timeAgo(task.updatedAt)} · Created {timeAgo(task.createdAt)}
+                Last activity {timeAgo(lastActivity)} · Created {timeAgo(task.createdAt)}
               </div>
             </div>
             <button
