@@ -602,6 +602,7 @@ export default function TaskPanel({
                 </div>
                 <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
                   {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+                  {schedule.type === "cron" && schedule.timezone && ` (${schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})`}
                   {schedule.lastRunAt && ` · Last: ${timeAgo(schedule.lastRunAt)}`}
                   {schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
                   {schedule.runCount > 0 && ` · ${schedule.runCount} run${schedule.runCount !== 1 ? "s" : ""}`}

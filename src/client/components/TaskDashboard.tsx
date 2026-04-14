@@ -527,6 +527,9 @@ export default function TaskDashboard({
                     </div>
                     <div className="text-xs text-text-muted mt-1 ml-6">
                       {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+                      {schedule.type === "cron" && schedule.timezone && (
+                        <span className="ml-1 opacity-60" title={schedule.timezone}>({schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})</span>
+                      )}
                     </div>
                     <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
                       {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}

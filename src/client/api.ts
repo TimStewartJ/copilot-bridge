@@ -774,6 +774,13 @@ export async function fetchModels(): Promise<ModelInfo[]> {
   return result.models;
 }
 
+// ── Server Info ───────────────────────────────────────────────────
+
+export async function fetchServerTimezone(): Promise<string> {
+  const result = await apiFetch<{ timezone: string }>("/api/server/timezone");
+  return result.timezone;
+}
+
 // ── Schedule API ──────────────────────────────────────────────────
 
 export interface Schedule {

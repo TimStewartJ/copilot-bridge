@@ -1225,21 +1225,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(404).json({ error: "Task not found" });
       }
 
+      if (timezone && !scheduler.isValidTimezone(timezone)) {
+        return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
+      }
+
       const schedule = ctx.scheduleStore.createSchedule({ taskId, name, prompt, type, cron: cronExpr, runAt, timezone, reuseSession, maxRuns, expiresAt });
 
-      // Register cron job if applicable
+      // Register cron job or arm one-shot timer
       if (schedule.type === "cron") {
         scheduler.registerSchedule(schedule.id);
       } else if (schedule.type === "once" && schedule.runAt) {
-        // For one-shot schedules, set up a setTimeout
-        const delay = new Date(schedule.runAt).getTime() - Date.now();
-        if (delay > 0) {
-          setTimeout(() => {
-            scheduler.triggerSchedule(schedule.id).catch((err) => {
-              console.error(`[scheduler] One-shot trigger failed for "${schedule.name}":`, err);
-            });
-          }, delay);
-        }
+        scheduler.armOneShot(schedule.id, schedule.runAt);
       }
 
       console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
@@ -1252,6 +1248,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.patch("/schedules/:id", (req, res) => {
     try {
+      if (req.body.timezone && !scheduler.isValidTimezone(req.body.timezone)) {
+        return res.status(400).json({ error: `Invalid timezone: ${req.body.timezone}` });
+      }
       const schedule = ctx.scheduleStore.updateSchedule(req.params.id, req.body);
 
       // Re-register cron job if timing or enabled state changed
@@ -1261,6 +1260,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         } else {
           scheduler.unregisterSchedule(schedule.id);
         }
+      } else if (schedule.type === "once" && req.body.runAt && schedule.enabled) {
+        scheduler.armOneShot(schedule.id, schedule.runAt!);
       }
 
       console.log(`[schedules] Updated schedule "${schedule.name}"`);
@@ -1351,6 +1352,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const { paused } = req.body;
     scheduler.setGlobalPause(paused !== false);
     res.json({ globalPause: scheduler.isGlobalPaused() });
+  });
+
+  // ── Server info ─────────────────────────────────────────────────
+
+  router.get("/server/timezone", (_req, res) => {
+    res.json({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
   });
 
   // ── Settings routes ───────────────────────────────────────────────

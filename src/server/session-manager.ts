@@ -535,16 +535,19 @@ export function createBridgeTools(ctx: AppContext) {
         name: { type: "string", description: "Human-readable name (e.g. 'Daily standup prep')" },
         prompt: { type: "string", description: "The message to send when the schedule fires" },
         type: { type: "string", enum: ["cron", "once"], description: "Schedule type: 'cron' for recurring, 'once' for one-shot" },
-        cron: { type: "string", description: "Cron expression (e.g. '0 8 * * 1-5' for weekdays at 8am). Required for type=cron" },
-        runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once" },
+        cron: { type: "string", description: "Cron expression (e.g. '0 8 * * 1-5' for weekdays at 8am). Required for type=cron. Interpreted in the schedule's timezone (server-local by default)." },
+        runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once. Always interpreted as UTC." },
+        timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
         reuseSession: { type: "boolean", description: "If true, reuse the last session instead of creating a new one each run. Default: false" },
         maxRuns: { type: "number", description: "Auto-disable after N runs (optional)" },
+        expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
       },
       required: ["taskId", "name", "prompt", "type"],
     },
     handler: async (args: any) => {
       if (args.type === "cron" && !args.cron) return { error: "cron expression is required for cron schedules" };
       if (args.type === "once" && !args.runAt) return { error: "runAt is required for one-shot schedules" };
+      if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return { error: `Invalid timezone: ${args.timezone}` };
       if (!ctx.taskStore.getTask(args.taskId)) return { error: "Task not found" };
 
       const schedule = ctx.scheduleStore.createSchedule({
@@ -554,23 +557,20 @@ export function createBridgeTools(ctx: AppContext) {
         type: args.type,
         cron: args.cron,
         runAt: args.runAt,
+        timezone: args.timezone,
         reuseSession: args.reuseSession,
         maxRuns: args.maxRuns,
+        expiresAt: args.expiresAt,
       });
 
       if (schedule.type === "cron") {
         schedulerModule.registerSchedule(schedule.id);
       } else if (schedule.type === "once" && schedule.runAt) {
-        const delay = new Date(schedule.runAt).getTime() - Date.now();
-        if (delay > 0) {
-          setTimeout(() => {
-            schedulerModule.triggerSchedule(schedule.id).catch(() => {});
-          }, delay);
-        }
+        schedulerModule.armOneShot(schedule.id, schedule.runAt);
       }
 
       ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      return { success: true, message: `Schedule "${schedule.name}" created (${schedule.type})`, scheduleId: schedule.id, nextRunAt: schedule.nextRunAt };
+      return { success: true, message: `Schedule "${schedule.name}" created (${schedule.type})`, scheduleId: schedule.id, timezone: schedule.timezone, nextRunAt: schedule.nextRunAt };
     },
   }),
   defineTool("schedule_update", {
@@ -583,19 +583,25 @@ export function createBridgeTools(ctx: AppContext) {
         prompt: { type: "string", description: "New prompt text" },
         cron: { type: "string", description: "New cron expression" },
         runAt: { type: "string", description: "New one-shot run time (ISO timestamp)" },
+        timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/Los_Angeles')" },
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
         reuseSession: { type: "boolean", description: "Change session reuse strategy" },
+        maxRuns: { type: "number", description: "Auto-disable after N runs" },
+        expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables" },
       },
       required: ["scheduleId"],
     },
     handler: async (args: any) => {
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return { error: "No fields to update" };
+      if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return { error: `Invalid timezone: ${args.timezone}` };
       const schedule = ctx.scheduleStore.updateSchedule(scheduleId, updates);
 
       if (schedule.type === "cron") {
         if (schedule.enabled) schedulerModule.registerSchedule(schedule.id);
         else schedulerModule.unregisterSchedule(schedule.id);
+      } else if (schedule.type === "once" && args.runAt && schedule.enabled) {
+        schedulerModule.armOneShot(schedule.id, schedule.runAt!);
       }
 
       ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
@@ -638,11 +644,15 @@ export function createBridgeTools(ctx: AppContext) {
           type: s.type,
           cron: s.cron,
           runAt: s.runAt,
+          timezone: s.timezone,
           enabled: s.enabled,
           reuseSession: s.reuseSession,
           lastRunAt: s.lastRunAt,
           nextRunAt: s.nextRunAt,
           runCount: s.runCount,
+          prompt: s.prompt,
+          maxRuns: s.maxRuns,
+          expiresAt: s.expiresAt,
         })),
       };
     },

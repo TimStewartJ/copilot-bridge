@@ -12,6 +12,7 @@ import { isRestartImminent, isRestartPendingError, RESTART_PENDING_MESSAGE } fro
 // ── State ─────────────────────────────────────────────────────────
 
 const cronJobs = new Map<string, ScheduledTask>();
+const oneShotTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let sessionMgr: SessionManager | null = null;
 
 // Injected stores (set via initialize)
@@ -55,6 +56,10 @@ export function shutdown(): void {
   for (const [id, job] of cronJobs) {
     job.stop();
     cronJobs.delete(id);
+  }
+  for (const [id, timer] of oneShotTimers) {
+    clearTimeout(timer);
+    oneShotTimers.delete(id);
   }
   console.log("[scheduler] Shut down — all jobs stopped");
 }
@@ -118,6 +123,44 @@ export function unregisterSchedule(scheduleId: string): void {
   if (existing) {
     existing.stop();
     cronJobs.delete(scheduleId);
+  }
+  const timer = oneShotTimers.get(scheduleId);
+  if (timer) {
+    clearTimeout(timer);
+    oneShotTimers.delete(scheduleId);
+  }
+}
+
+/**
+ * Arm (or re-arm) a one-shot schedule's setTimeout.
+ * Clears any existing timer for this schedule first.
+ */
+export function armOneShot(scheduleId: string, runAt: string): void {
+  // Clear existing timer
+  const existing = oneShotTimers.get(scheduleId);
+  if (existing) clearTimeout(existing);
+
+  const delay = new Date(runAt).getTime() - Date.now();
+  if (delay <= 0) return;
+
+  const timer = setTimeout(() => {
+    oneShotTimers.delete(scheduleId);
+    triggerSchedule(scheduleId).catch((err) => {
+      console.error(`[scheduler] One-shot trigger failed for ${scheduleId}:`, err);
+    });
+  }, delay);
+  oneShotTimers.set(scheduleId, timer);
+}
+
+/**
+ * Validate an IANA timezone string. Returns true if valid.
+ */
+export function isValidTimezone(tz: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -278,7 +321,11 @@ function registerAllSchedules(): void {
   const enabled = scheduleStore.getEnabledSchedules();
   for (const schedule of enabled) {
     if (schedule.type === "cron" && schedule.cron) {
-      registerSchedule(schedule.id);
+      try {
+        registerSchedule(schedule.id);
+      } catch (err) {
+        console.error(`[scheduler] Failed to register schedule "${schedule.name}" (${schedule.id}):`, err);
+      }
     }
   }
   console.log(`[scheduler] Registered ${cronJobs.size} cron job(s)`);
@@ -309,22 +356,39 @@ function checkMissedRuns(): void {
 }
 
 /**
- * Compute the next run time for a cron expression.
+ * Get date components in a specific timezone (or local if not provided).
+ */
+function getDatePartsInTz(date: Date, timezone?: string): { minute: number; hour: number; day: number; month: number; weekday: number } {
+  if (!timezone) {
+    return { minute: date.getMinutes(), hour: date.getHours(), day: date.getDate(), month: date.getMonth() + 1, weekday: date.getDay() };
+  }
+  // Use en-US with numeric parts to get reliable integer extraction
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone, hour12: false,
+    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric",
+  });
+  const parts = fmt.formatToParts(date);
+  const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? "0", 10);
+  // For weekday, construct a date string in the target TZ and get day-of-week
+  const tzDateStr = date.toLocaleDateString("en-US", { timeZone: timezone });
+  const weekday = new Date(tzDateStr).getDay();
+  return { minute: get("minute"), hour: get("hour") % 24, day: get("day"), month: get("month"), weekday };
+}
+
+/**
+ * Compute the next run time for a cron expression, respecting timezone.
  * Uses a simple approach: check each minute for the next 48 hours.
  */
-function computeNextRunAt(cronExpr: string, timezone?: string, after?: Date): string | undefined {
+export function computeNextRunAt(cronExpr: string, timezone?: string, after?: Date): string | undefined {
   try {
-    // node-cron doesn't expose a "next run" API, so we parse manually
-    // For display purposes, a rough calculation is fine
     const now = after ?? new Date();
     const check = new Date(now.getTime() + 60_000); // start checking from next minute
     check.setSeconds(0, 0);
 
-    // Check each minute for the next 48 hours
     const maxChecks = 48 * 60;
     for (let i = 0; i < maxChecks; i++) {
       const testDate = new Date(check.getTime() + i * 60_000);
-      if (matchesCron(cronExpr, testDate)) {
+      if (matchesCron(cronExpr, testDate, timezone)) {
         return testDate.toISOString();
       }
     }
@@ -334,24 +398,25 @@ function computeNextRunAt(cronExpr: string, timezone?: string, after?: Date): st
 
 /**
  * Simple cron matcher for 5-field cron expressions.
- * Fields: minute hour day-of-month month day-of-week
+ * Respects timezone when extracting date components.
  */
-function matchesCron(cronExpr: string, date: Date): boolean {
+export function matchesCron(cronExpr: string, date: Date, timezone?: string): boolean {
   const fields = cronExpr.trim().split(/\s+/);
   if (fields.length < 5) return false;
 
+  const { minute, hour, day, month, weekday } = getDatePartsInTz(date, timezone);
   const checks = [
-    { value: date.getMinutes(), field: fields[0] },
-    { value: date.getHours(), field: fields[1] },
-    { value: date.getDate(), field: fields[2] },
-    { value: date.getMonth() + 1, field: fields[3] },
-    { value: date.getDay(), field: fields[4] },
+    { value: minute, field: fields[0] },
+    { value: hour, field: fields[1] },
+    { value: day, field: fields[2] },
+    { value: month, field: fields[3] },
+    { value: weekday, field: fields[4] },
   ];
 
   return checks.every(({ value, field }) => matchesField(value, field));
 }
 
-function matchesField(value: number, field: string): boolean {
+export function matchesField(value: number, field: string): boolean {
   if (field === "*") return true;
 
   // Handle step values: */N or N-M/S
