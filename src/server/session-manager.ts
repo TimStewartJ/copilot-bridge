@@ -1508,7 +1508,7 @@ export class SessionManager {
    */
   private persistAndRouteAttachments(
     sessionId: string,
-    attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>,
+    attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>,
   ): Array<{ type: string; [k: string]: any }> | undefined {
     if (!attachments?.length) return undefined;
 
@@ -1518,23 +1518,43 @@ export class SessionManager {
 
     const result: Array<{ type: string; [k: string]: any }> = [];
     for (const att of attachments) {
-      const safeName = this.deduplicateFilename(filesDir, att.displayName ?? "attachment");
-      const filePath = join(filesDir, safeName);
-      // Guard against path traversal — verify resolved path stays under filesDir
-      if (!resolve(filePath).startsWith(resolve(filesDir) + "/")) {
-        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping attachment with unsafe name: ${att.displayName}`);
-        continue;
-      }
-      writeFileSync(filePath, Buffer.from(att.data, "base64"));
-
-      if (att.mimeType.startsWith("image/")) {
-        // Images: keep as blob so the model sees them visually
-        result.push(att);
+      if (att.type === "uploaded") {
+        // File already on disk from multipart upload
+        const safeName = basename(att.displayName).replace(/\.\./g, "_") || "attachment";
+        const filePath = join(filesDir, safeName);
+        if (!resolve(filePath).startsWith(resolve(filesDir) + "/")) {
+          console.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping uploaded attachment with unsafe name: ${att.displayName}`);
+          continue;
+        }
+        if (!existsSync(filePath)) {
+          console.warn(`[sdk] [${sessionId.slice(0, 8)}] Uploaded file not found: ${safeName}`);
+          continue;
+        }
+        if (att.mimeType.startsWith("image/")) {
+          // Images: read and convert to blob so the model sees them visually
+          const data = readFileSync(filePath).toString("base64");
+          result.push({ type: "blob", data, mimeType: att.mimeType, displayName: safeName });
+        } else {
+          result.push({ type: "file", path: filePath, displayName: safeName });
+        }
+        console.log(`[sdk] [${sessionId.slice(0, 8)}] Resolved uploaded attachment: ${safeName} (${att.mimeType})`);
       } else {
-        // Non-images: reference the saved file so the agent can use tools on it
-        result.push({ type: "file", path: filePath, displayName: safeName });
+        // Legacy blob path: decode base64 and save to disk
+        const safeName = this.deduplicateFilename(filesDir, att.displayName ?? "attachment");
+        const filePath = join(filesDir, safeName);
+        if (!resolve(filePath).startsWith(resolve(filesDir) + "/")) {
+          console.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping attachment with unsafe name: ${att.displayName}`);
+          continue;
+        }
+        writeFileSync(filePath, Buffer.from(att.data, "base64"));
+
+        if (att.mimeType.startsWith("image/")) {
+          result.push(att);
+        } else {
+          result.push({ type: "file", path: filePath, displayName: safeName });
+        }
+        console.log(`[sdk] [${sessionId.slice(0, 8)}] Saved attachment: ${safeName} (${att.mimeType})`);
       }
-      console.log(`[sdk] [${sessionId.slice(0, 8)}] Saved attachment: ${safeName} (${att.mimeType})`);
     }
     return result;
   }
@@ -1553,7 +1573,7 @@ export class SessionManager {
   }
 
   // Fire and forget — starts work and emits events to the session's EventBus
-  startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): void {
+  startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): void {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (isRestartImminent()) {
       throw new Error(RESTART_PENDING_MESSAGE);
@@ -1588,7 +1608,7 @@ export class SessionManager {
     });
   }
 
-  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): Promise<void> {
+  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): Promise<void> {
     const sid = sessionId.slice(0, 8);
 
     // Persist attachments to session files dir and route to appropriate SDK type

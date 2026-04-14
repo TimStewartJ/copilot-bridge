@@ -58,13 +58,31 @@ export interface BlobAttachment {
   displayName?: string;
 }
 
+export interface UploadedAttachment {
+  type: "uploaded";
+  displayName: string;
+  mimeType: string;
+  size: number;
+  /** Client-only: object URL for preview (not persisted) */
+  previewUrl?: string;
+}
+
+/** A file attachment as recorded by the CLI in events.jsonl */
+export interface FileRefAttachment {
+  type: "file";
+  path: string;
+  displayName?: string;
+}
+
+export type Attachment = BlobAttachment | UploadedAttachment | FileRefAttachment;
+
 export interface ChatMessage {
   id?: string;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
   toolCalls?: ToolCall[];
-  attachments?: BlobAttachment[];
+  attachments?: Attachment[];
 }
 
 /** A tool call rendered as its own entry in the chronological chat list */
@@ -186,6 +204,24 @@ export interface EnrichedTaskData {
 const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
 export { API_BASE };
 const telemetryBatcher = createTelemetryBatcher({ apiBase: API_BASE });
+
+export async function uploadFile(sessionId: string, file: File): Promise<UploadedAttachment> {
+  const form = new FormData();
+  form.append("sessionId", sessionId);
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Upload failed" }));
+    throw new Error(err.error || "Upload failed");
+  }
+  const data = await res.json();
+  return {
+    type: "uploaded",
+    displayName: data.displayName,
+    mimeType: data.mimeType,
+    size: data.size,
+  };
+}
 
 async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
   const t0 = performance.now();

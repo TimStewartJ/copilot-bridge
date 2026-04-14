@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
-import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type BlobAttachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
+import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
@@ -21,9 +21,9 @@ interface ChatViewProps {
   hasPlan?: boolean;
   onMessageSent: () => void;
   draft?: Draft | null;
-  onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
+  onDraftChange?: (text: string, attachments?: Attachment[]) => void;
   onDraftClear?: () => void;
-  onCreateAndSend?: (prompt: string, attachments?: BlobAttachment[]) => Promise<void>;
+  onCreateAndSend?: (prompt: string, attachments?: Attachment[]) => Promise<void>;
   reloadToken?: number;
   reloadMcpServers?: McpServerStatus[];
   /** Incremented when an external source (e.g. schedule) starts work on this session */
@@ -403,7 +403,7 @@ export default function ChatView({
     return () => observer.disconnect();
   }, [loadOlderMessages]);
 
-  const handleSend = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
+  const handleSend = useCallback(async (prompt: string, attachments?: Attachment[]) => {
     if (isStreaming || creating) return;
 
     // Draft mode: create session on first message

@@ -63,7 +63,7 @@ export default memo(function MessageBubble({ message }: MessageBubbleProps) {
           {hasAttachments && (
             <div className="flex gap-2 flex-wrap mb-2">
               {message.attachments!.map((att, i) =>
-                att.mimeType.startsWith("image/") ? (
+                att.type === "blob" && att.mimeType.startsWith("image/") ? (
                   <a
                     key={i}
                     href={`data:${att.mimeType};base64,${att.data}`}

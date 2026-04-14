@@ -107,13 +107,17 @@ export function transformEventsToMessages(events: any[]): TransformedEntry[] {
       const blobAttachments = data.attachments
         ?.filter((a: any) => a.type === "blob" && a.mimeType)
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
+      const fileAttachments = data.attachments
+        ?.filter((a: any) => a.type === "file" && a.path)
+        ?.map((a: any) => ({ type: "file" as const, path: a.path, displayName: a.displayName ?? a.path.split("/").pop() }));
+      const allAttachments = [...(blobAttachments ?? []), ...(fileAttachments ?? [])];
       entries.push({
         id: `entry-${idx++}`,
         type: "message",
         role: "user",
         content,
         timestamp: data.timestamp ?? (event as any).timestamp,
-        ...(blobAttachments?.length ? { attachments: blobAttachments } : {}),
+        ...(allAttachments.length ? { attachments: allAttachments } : {}),
       });
     } else if (event.type === "assistant.message") {
       if (data?.parentToolCallId) continue; // sub-agent response text, not a top-level message
