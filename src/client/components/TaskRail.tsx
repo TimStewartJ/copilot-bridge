@@ -572,29 +572,24 @@ export default function TaskRail({
                     return (
                       <DroppableGroup key={groupId} id={groupId}>
                         <div className={`mb-1 ${colorBg ? `${colorBg} rounded-lg` : ""}`}>
-                          {/* Group header */}
+                          {/* Group header (skip for ungrouped tasks) */}
+                          {group && (
                           <div className="flex items-center group/header">
                           <button
                             onClick={() => {
-                              if (group && onUpdateGroup) {
+                              if (onUpdateGroup) {
                                 onUpdateGroup(group.id, { collapsed: !isCollapsed });
                               }
                             }}
                             onContextMenu={(e) => {
-                              if (group) {
-                                e.preventDefault();
-                                setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
-                              }
+                              e.preventDefault();
+                              setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
                             }}
                             className="flex-1 min-w-0 flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                           >
-                            {group ? (
-                              isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />
-                            ) : null}
-                            <span className="font-medium truncate">{group?.name ?? "Ungrouped"}</span>
+                            {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                            <span className="font-medium truncate">{group.name}</span>
                           </button>
-                          {group && (
-                            <>
                             {group.notes && (
                               <button
                                 onClick={(e) => {
@@ -618,9 +613,8 @@ export default function TaskRail({
                             >
                               <Plus size={12} />
                             </button>
-                            </>
-                          )}
                           </div>
+                          )}
 
                           {/* Group tasks */}
                           {!isCollapsed && (
