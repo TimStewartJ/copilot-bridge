@@ -1,23 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Square, Paperclip, FileText, X } from "lucide-react";
-import type { BlobAttachment } from "../api";
+import { Square, Paperclip, FileText, X, Loader2 } from "lucide-react";
+import type { BlobAttachment, UploadedAttachment, Attachment } from "../api";
+import { uploadFile } from "../api";
 import type { Draft } from "../useDrafts";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 
-interface ChatInputProps {
-  onSend: (text: string, attachments?: BlobAttachment[]) => void;
-  onAbort?: () => void;
-  sessionId?: string | null;
-  isDraft?: boolean;
-  draft?: Draft | null;
-  onDraftChange?: (text: string, attachments?: BlobAttachment[]) => void;
-  /** When true, input is visible but send is disabled (e.g., session warming up) */
-  disabled?: boolean;
-  disabledHint?: string;
-}
-
-/** Read a File as base64 (no data-URI prefix) */
+/** Read a File as base64 (fallback for draft mode without sessionId) */
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -31,9 +20,22 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
+interface ChatInputProps {
+  onSend: (text: string, attachments?: Attachment[]) => void;
+  onAbort?: () => void;
+  sessionId?: string | null;
+  isDraft?: boolean;
+  draft?: Draft | null;
+  onDraftChange?: (text: string, attachments?: Attachment[]) => void;
+  /** When true, input is visible but send is disabled (e.g., session warming up) */
+  disabled?: boolean;
+  disabledHint?: string;
+}
+
 export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, onDraftChange, disabled, disabledHint }: ChatInputProps) {
   const [input, setInput] = useState("");
-  const [attachments, setAttachments] = useState<BlobAttachment[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
@@ -74,31 +76,54 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
   const addFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
 
-    const newAttachments: BlobAttachment[] = [];
     for (const file of files) {
       if (file.size > MAX_ATTACHMENT_SIZE) {
         console.warn(`Skipping ${file.name}: exceeds 10 MB limit`);
         continue;
       }
-      const data = await readFileAsBase64(file);
-      newAttachments.push({
-        type: "blob",
-        data,
-        mimeType: file.type || "application/octet-stream",
-        displayName: file.name,
-      });
+
+      if (sessionId) {
+        // Multipart upload path
+        setUploading(n => n + 1);
+        try {
+          const uploaded = await uploadFile(sessionId, file);
+          if (file.type.startsWith("image/")) {
+            uploaded.previewUrl = URL.createObjectURL(file);
+          }
+          setAttachments(prev => {
+            const next = [...prev, uploaded];
+            onDraftChange?.(input, next);
+            return next;
+          });
+        } catch (err) {
+          console.error(`Failed to upload ${file.name}:`, err);
+        } finally {
+          setUploading(n => n - 1);
+        }
+      } else {
+        // Fallback: base64 for draft mode (no session yet)
+        const data = await readFileAsBase64(file);
+        const blob: BlobAttachment = {
+          type: "blob",
+          data,
+          mimeType: file.type || "application/octet-stream",
+          displayName: file.name,
+        };
+        setAttachments(prev => {
+          const next = [...prev, blob];
+          onDraftChange?.(input, next);
+          return next;
+        });
+      }
     }
-    if (newAttachments.length > 0) {
-      setAttachments((prev) => {
-        const next = [...prev, ...newAttachments];
-        onDraftChange?.(input, next);
-        return next;
-      });
-    }
-  }, [input, onDraftChange]);
+  }, [sessionId, input, onDraftChange]);
 
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => {
+      const removed = prev[index];
+      if (removed?.type === "uploaded" && removed.previewUrl) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
       const next = prev.filter((_, i) => i !== index);
       onDraftChange?.(input, next);
       return next;
@@ -152,9 +177,20 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
   );
 
   const handleSend = useCallback(() => {
+    if (uploading > 0) return; // Block send while uploads pending
     const text = input.trim();
     if (!text && attachments.length === 0) return;
-    onSend(text || "(attachment)", attachments.length > 0 ? attachments : undefined);
+    // Revoke preview URLs
+    for (const att of attachments) {
+      if (att.type === "uploaded" && att.previewUrl) {
+        URL.revokeObjectURL(att.previewUrl);
+      }
+    }
+    // Strip previewUrl before sending (not serializable/needed)
+    const cleanAttachments: Attachment[] = attachments.map(att =>
+      att.type === "uploaded" ? { type: att.type, displayName: att.displayName, mimeType: att.mimeType, size: att.size } : att
+    );
+    onSend(text || "(attachment)", cleanAttachments.length > 0 ? cleanAttachments : undefined);
     setInput("");
     setAttachments([]);
     lastHeightRef.current = 0;
@@ -165,7 +201,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
         textareaRef.current.blur();
       }
     }
-  }, [input, attachments, onSend]);
+  }, [input, attachments, uploading, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -178,17 +214,31 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
   );
 
   const hasContent = input.trim().length > 0 || attachments.length > 0;
+  const canSend = hasContent && uploading === 0;
 
   return (
     <div className="p-3 md:p-4 border-t border-border bg-bg-secondary">
+      {/* Upload indicator */}
+      {uploading > 0 && (
+        <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
+          <Loader2 size={12} className="animate-spin" />
+          Uploading…
+        </div>
+      )}
       {/* Attachment preview strip */}
       {attachments.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {attachments.map((att, i) => (
             <div key={i} className="relative group">
-              {att.mimeType.startsWith("image/") ? (
+              {att.type === "blob" && att.mimeType.startsWith("image/") ? (
                 <img
                   src={`data:${att.mimeType};base64,${att.data}`}
+                  alt={att.displayName ?? "attachment"}
+                  className="h-16 w-16 object-cover rounded-md border border-border"
+                />
+              ) : att.type === "uploaded" && att.previewUrl ? (
+                <img
+                  src={att.previewUrl}
                   alt={att.displayName ?? "attachment"}
                   className="h-16 w-16 object-cover rounded-md border border-border"
                 />
@@ -254,7 +304,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
         ) : (
           <button
             onClick={handleSend}
-            disabled={!hasContent || disabled}
+            disabled={!canSend || disabled}
             className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
             title={disabled ? disabledHint : undefined}
           >

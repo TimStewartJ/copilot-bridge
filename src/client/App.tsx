@@ -1325,7 +1325,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
   sessions: Session[];
   onMessageSent: () => void;
   getDraft: (id: string) => import("./useDrafts").Draft | null;
-  setDraft: (id: string, text: string, attachments?: import("./api").BlobAttachment[]) => void;
+  setDraft: (id: string, text: string, attachments?: import("./api").Attachment[]) => void;
   clearDraft: (id: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
@@ -1341,7 +1341,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
   const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
   const draft = sessionId ? getDraft(sessionId) : null;
   const handleDraftChange = useCallback(
-    (text: string, attachments?: import("./api").BlobAttachment[]) => {
+    (text: string, attachments?: import("./api").Attachment[]) => {
       if (sessionId) setDraft(sessionId, text, attachments);
     },
     [sessionId, setDraft],
@@ -1351,7 +1351,7 @@ function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft,
   }, [sessionId, clearDraft]);
 
   // Create session on first message, then redirect to real URL
-  const onCreateAndSend = useCallback(async (prompt: string, attachments?: import("./api").BlobAttachment[]) => {
+  const onCreateAndSend = useCallback(async (prompt: string, attachments?: import("./api").Attachment[]) => {
     const newSessionId = await materializeSession(taskId);
     // Send the message BEFORE navigating so the session is busy when
     // ChatView's effect reconnects the stream (avoids idle-close race).

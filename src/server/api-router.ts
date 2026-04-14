@@ -1,9 +1,10 @@
 // API route handlers — extracted from index.ts for modularity
 
 import express from "express";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import multer from "multer";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { stat as statAsync } from "node:fs/promises";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
@@ -35,6 +36,52 @@ function getCopilotHome(ctx: AppContext): string {
 export function createApiRouter(ctx: AppContext): express.Router {
   const router = express.Router();
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
+
+  // ── File upload (multipart) — must be before JSON body parser ──
+  const uploadStorage = multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const sessionId = req.body?.sessionId;
+      if (!sessionId || !/^[a-f0-9-]{36}$/i.test(sessionId)) {
+        return cb(new Error("Valid sessionId is required"), "");
+      }
+      const filesDir = join(getCopilotHome(ctx), "session-state", sessionId, "files");
+      mkdirSync(filesDir, { recursive: true });
+      (req as any)._uploadDir = filesDir;
+      cb(null, filesDir);
+    },
+    filename: (req, file, cb) => {
+      const dir = (req as any)._uploadDir as string;
+      const safe = basename(file.originalname).replace(/\.\./g, "_") || "attachment";
+      if (!existsSync(join(dir, safe))) return cb(null, safe);
+      const dot = safe.lastIndexOf(".");
+      const stem = dot > 0 ? safe.slice(0, dot) : safe;
+      const ext = dot > 0 ? safe.slice(dot) : "";
+      let i = 1;
+      while (existsSync(join(dir, `${stem} (${i})${ext}`))) i++;
+      cb(null, `${stem} (${i})${ext}`);
+    },
+  });
+  const upload = multer({ storage: uploadStorage, limits: { fileSize: 10 * 1024 * 1024 } });
+
+  router.post("/upload", (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(400).json({ error: msg });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: "No file provided" });
+      }
+      console.log(`[web] [${(req.body?.sessionId ?? "").slice(0, 8)}] Uploaded: ${req.file.filename} (${req.file.mimetype}, ${req.file.size} bytes)`);
+      res.json({
+        displayName: req.file.filename,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+      });
+    });
+  });
+
+  // JSON body parser — after upload route so multipart isn't rejected
   router.use(express.json({ limit: "20mb" }));
   router.use(createApiJsonErrorHandler());
 

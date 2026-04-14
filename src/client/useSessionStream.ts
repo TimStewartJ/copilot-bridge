@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { BlobAttachment, ChatEntry, McpServerStatus, ToolArgs, ToolCall } from "./api";
+import type { Attachment, ChatEntry, McpServerStatus, ToolArgs, ToolCall } from "./api";
 import { API_BASE } from "./api";
 
 export interface PendingTool {
@@ -268,7 +268,7 @@ export function useSessionStream(
     return () => { abortRef.current?.abort(); };
   }, [sessionId]);
 
-  const sendMessage = useCallback(async (prompt: string, attachments?: BlobAttachment[]) => {
+  const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[]) => {
     if (!sessionId) return;
     setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers }));
     try {

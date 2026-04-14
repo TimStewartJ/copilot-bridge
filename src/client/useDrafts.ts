@@ -1,12 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { Session, BlobAttachment } from "./api";
+import type { Session, Attachment } from "./api";
 
 const STORAGE_KEY = "copilot-bridge:session-drafts";
 const DEBOUNCE_MS = 500;
 
 export interface Draft {
   text: string;
-  attachments?: BlobAttachment[];
+  attachments?: Attachment[];
 }
 
 type DraftState = Record<string, Draft>; // sessionId → Draft
@@ -66,7 +66,7 @@ export function useDrafts(sessions: Session[]) {
   }, []);
 
   const setDraft = useCallback(
-    (sessionId: string, text: string, attachments?: BlobAttachment[]) => {
+    (sessionId: string, text: string, attachments?: Attachment[]) => {
       setState((prev) => {
         const trimmed = text.trim();
         const hasContent = trimmed.length > 0 || (attachments && attachments.length > 0);
