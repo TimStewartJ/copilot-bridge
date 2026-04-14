@@ -571,7 +571,7 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/chat rejects new work while restart is pending", async () => {
+  it("POST /api/chat rejects new work when restart is imminent (no active sessions)", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
     ({ app, ctx } = createTestApp({ sessionManager }));
