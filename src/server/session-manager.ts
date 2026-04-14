@@ -6,7 +6,7 @@ import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
@@ -1501,6 +1501,57 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * Save blob attachments to the session's files/ directory and convert
+   * non-image attachments to SDK `file` type (path-based) so the agent
+   * can access them with its tools. Images stay as `blob` for inline viewing.
+   */
+  private persistAndRouteAttachments(
+    sessionId: string,
+    attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>,
+  ): Array<{ type: string; [k: string]: any }> | undefined {
+    if (!attachments?.length) return undefined;
+
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const filesDir = join(copilotHome, "session-state", sessionId, "files");
+    mkdirSync(filesDir, { recursive: true });
+
+    const result: Array<{ type: string; [k: string]: any }> = [];
+    for (const att of attachments) {
+      const safeName = this.deduplicateFilename(filesDir, att.displayName ?? "attachment");
+      const filePath = join(filesDir, safeName);
+      // Guard against path traversal — verify resolved path stays under filesDir
+      if (!resolve(filePath).startsWith(resolve(filesDir) + "/")) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping attachment with unsafe name: ${att.displayName}`);
+        continue;
+      }
+      writeFileSync(filePath, Buffer.from(att.data, "base64"));
+
+      if (att.mimeType.startsWith("image/")) {
+        // Images: keep as blob so the model sees them visually
+        result.push(att);
+      } else {
+        // Non-images: reference the saved file so the agent can use tools on it
+        result.push({ type: "file", path: filePath, displayName: safeName });
+      }
+      console.log(`[sdk] [${sessionId.slice(0, 8)}] Saved attachment: ${safeName} (${att.mimeType})`);
+    }
+    return result;
+  }
+
+  /** Generate a unique filename in dir, appending (1), (2) etc. if needed */
+  private deduplicateFilename(dir: string, name: string): string {
+    // Sanitize: use basename to strip directory components, then remove any remaining traversal
+    const safe = basename(name).replace(/\.\./g, "_") || "attachment";
+    if (!existsSync(join(dir, safe))) return safe;
+    const dot = safe.lastIndexOf(".");
+    const stem = dot > 0 ? safe.slice(0, dot) : safe;
+    const ext = dot > 0 ? safe.slice(dot) : "";
+    let i = 1;
+    while (existsSync(join(dir, `${stem} (${i})${ext}`))) i++;
+    return `${stem} (${i})${ext}`;
+  }
+
   // Fire and forget — starts work and emits events to the session's EventBus
   startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): void {
     if (!this.client) throw new Error("SessionManager not initialized");
@@ -1539,6 +1590,9 @@ export class SessionManager {
 
   private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): Promise<void> {
     const sid = sessionId.slice(0, 8);
+
+    // Persist attachments to session files dir and route to appropriate SDK type
+    const sdkAttachments = this.persistAndRouteAttachments(sessionId, attachments);
 
     // Build resume config with optional task context
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
@@ -1817,11 +1871,11 @@ export class SessionManager {
     let lastAssistantContent: string | undefined;
 
     try {
-      const attachCount = attachments?.length ?? 0;
+      const attachCount = sdkAttachments?.length ?? 0;
       console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
 
       try {
-        await session.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
+        await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
       } catch (sendErr) {
         // If the agent evicted this session, the cached object is stale — re-resume and retry once
         if (sendErr instanceof Error && sendErr.message.includes("Session not found") && usedCache) {
@@ -1830,7 +1884,7 @@ export class SessionManager {
           this.sessionObjects.delete(sessionId);
           session = await resumeSession();
           unsub = session.on(handleEvent);
-          await session.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
+          await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
         } else {
           throw sendErr;
         }

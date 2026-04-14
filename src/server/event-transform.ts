@@ -105,7 +105,7 @@ export function transformEventsToMessages(events: any[]): TransformedEntry[] {
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
       const blobAttachments = data.attachments
-        ?.filter((a: any) => a.type === "blob" && a.mimeType?.startsWith("image/"))
+        ?.filter((a: any) => a.type === "blob" && a.mimeType)
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
       entries.push({
         id: `entry-${idx++}`,

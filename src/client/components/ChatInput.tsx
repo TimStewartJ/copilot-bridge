@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Square, Paperclip, X } from "lucide-react";
+import { Square, Paperclip, FileText, X } from "lucide-react";
 import type { BlobAttachment } from "../api";
 import type { Draft } from "../useDrafts";
 
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 
 interface ChatInputProps {
   onSend: (text: string, attachments?: BlobAttachment[]) => void;
@@ -71,13 +71,12 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
     }
   }, [sessionId, isDraft]);
 
-  const addImageFiles = useCallback(async (files: File[]) => {
-    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
+  const addFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
 
     const newAttachments: BlobAttachment[] = [];
-    for (const file of imageFiles) {
-      if (file.size > MAX_IMAGE_SIZE) {
+    for (const file of files) {
+      if (file.size > MAX_ATTACHMENT_SIZE) {
         console.warn(`Skipping ${file.name}: exceeds 10 MB limit`);
         continue;
       }
@@ -85,7 +84,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
       newAttachments.push({
         type: "blob",
         data,
-        mimeType: file.type,
+        mimeType: file.type || "application/octet-stream",
         displayName: file.name,
       });
     }
@@ -108,28 +107,26 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
-      const imageFiles: File[] = [];
+      const pastedFiles: File[] = [];
       for (const item of Array.from(e.clipboardData.items)) {
-        if (item.type.startsWith("image/")) {
-          const file = item.getAsFile();
-          if (file) imageFiles.push(file);
-        }
+        const file = item.getAsFile();
+        if (file) pastedFiles.push(file);
       }
-      if (imageFiles.length > 0) {
+      if (pastedFiles.length > 0) {
         e.preventDefault();
-        addImageFiles(imageFiles);
+        addFiles(pastedFiles);
       }
     },
-    [addImageFiles],
+    [addFiles],
   );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
-      if (files.length > 0) addImageFiles(files);
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) addFiles(files);
     },
-    [addImageFiles],
+    [addFiles],
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -157,7 +154,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
   const handleSend = useCallback(() => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
-    onSend(text || "(image)", attachments.length > 0 ? attachments : undefined);
+    onSend(text || "(attachment)", attachments.length > 0 ? attachments : undefined);
     setInput("");
     setAttachments([]);
     lastHeightRef.current = 0;
@@ -189,11 +186,18 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
         <div className="flex gap-2 mb-2 flex-wrap">
           {attachments.map((att, i) => (
             <div key={i} className="relative group">
-              <img
-                src={`data:${att.mimeType};base64,${att.data}`}
-                alt={att.displayName ?? "attachment"}
-                className="h-16 w-16 object-cover rounded-md border border-border"
-              />
+              {att.mimeType.startsWith("image/") ? (
+                <img
+                  src={`data:${att.mimeType};base64,${att.data}`}
+                  alt={att.displayName ?? "attachment"}
+                  className="h-16 w-16 object-cover rounded-md border border-border"
+                />
+              ) : (
+                <div className="h-16 px-3 flex items-center gap-2 rounded-md border border-border bg-bg-elevated text-text-secondary text-xs max-w-[180px]">
+                  <FileText size={16} className="flex-shrink-0 text-text-faint" />
+                  <span className="truncate">{att.displayName ?? "file"}</span>
+                </div>
+              )}
               <button
                 onClick={() => removeAttachment(i)}
                 className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-text-secondary hover:text-error"
@@ -213,7 +217,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
           <button
             onClick={() => fileInputRef.current?.click()}
             className="p-3 text-text-faint hover:text-text-secondary transition-colors flex-shrink-0"
-            title="Attach image"
+            title="Attach file"
             type="button"
           >
             <Paperclip size={18} />
@@ -221,11 +225,10 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
             multiple
             className="hidden"
             onChange={(e) => {
-              if (e.target.files) addImageFiles(Array.from(e.target.files));
+              if (e.target.files) addFiles(Array.from(e.target.files));
               e.target.value = "";
             }}
           />
@@ -235,7 +238,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
             onChange={handleInput}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Type a message or paste an image..."
+            placeholder="Type a message or attach a file..."
             rows={1}
             className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
           />
