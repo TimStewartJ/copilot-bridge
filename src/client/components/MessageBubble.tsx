@@ -2,6 +2,7 @@ import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { FileText } from "lucide-react";
 import type { ChatMessage, ToolCall } from "../api";
 import ToolCallBlock from "./ToolCallBlock";
 import SubAgentGroup from "./SubAgentGroup";
@@ -61,24 +62,31 @@ export default memo(function MessageBubble({ message }: MessageBubbleProps) {
         <div className="max-w-[85%] px-4 py-3 bg-accent text-white rounded-2xl rounded-br-sm text-sm leading-relaxed whitespace-pre-wrap break-words">
           {hasAttachments && (
             <div className="flex gap-2 flex-wrap mb-2">
-              {message.attachments!.map((att, i) => (
-                <a
-                  key={i}
-                  href={`data:${att.mimeType};base64,${att.data}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={att.displayName ?? "Click to view full size"}
-                >
-                  <img
-                    src={`data:${att.mimeType};base64,${att.data}`}
-                    alt={att.displayName ?? "attachment"}
-                    className="max-w-[200px] max-h-[200px] rounded-md border border-white/20 cursor-pointer hover:opacity-90 transition-opacity"
-                  />
-                </a>
-              ))}
+              {message.attachments!.map((att, i) =>
+                att.mimeType.startsWith("image/") ? (
+                  <a
+                    key={i}
+                    href={`data:${att.mimeType};base64,${att.data}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={att.displayName ?? "Click to view full size"}
+                  >
+                    <img
+                      src={`data:${att.mimeType};base64,${att.data}`}
+                      alt={att.displayName ?? "attachment"}
+                      className="max-w-[200px] max-h-[200px] rounded-md border border-white/20 cursor-pointer hover:opacity-90 transition-opacity"
+                    />
+                  </a>
+                ) : (
+                  <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-md bg-white/10 text-white/90 text-xs max-w-[200px]">
+                    <FileText size={14} className="flex-shrink-0 text-white/60" />
+                    <span className="truncate">{att.displayName ?? "file"}</span>
+                  </div>
+                ),
+              )}
             </div>
           )}
-          {message.content !== "(image)" && message.content}
+          {message.content !== "(image)" && message.content !== "(attachment)" && message.content}
         </div>
       </div>
     );
