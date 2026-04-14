@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Schedule, ScheduleCreateInput, Session } from "../api";
-import { createSchedule, getSessionActivityTime, patchSchedule } from "../api";
+import { createSchedule, getSessionActivityTime, patchSchedule, fetchServerTimezone } from "../api";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
@@ -18,6 +18,7 @@ import {
   Calendar,
   Repeat,
   MessageSquare,
+  Globe,
 } from "lucide-react";
 import EmptyState from "./shared/EmptyState";
 
@@ -215,17 +216,22 @@ function ViewMode({
                     ? new Date(schedule.runAt).toLocaleString()
                     : "—"}
               </span>
+              {schedule.timezone && (
+                <span className="text-[10px] text-text-faint ml-1.5" title={schedule.timezone}>
+                  <Globe size={9} className="inline -mt-px mr-0.5" />{schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")}
+                </span>
+              )}
             </div>
             {schedule.nextRunAt && (
               <div>
                 <span className="text-text-faint block mb-0.5">Next run</span>
-                <span className="text-text-secondary">{timeAgo(schedule.nextRunAt)}</span>
+                <span className="text-text-secondary" title={new Date(schedule.nextRunAt).toLocaleString()}>{timeAgo(schedule.nextRunAt)}</span>
               </div>
             )}
             {schedule.lastRunAt && (
               <div>
                 <span className="text-text-faint block mb-0.5">Last run</span>
-                <span className="text-text-secondary">{timeAgo(schedule.lastRunAt)}</span>
+                <span className="text-text-secondary" title={new Date(schedule.lastRunAt).toLocaleString()}>{timeAgo(schedule.lastRunAt)}</span>
               </div>
             )}
             <div>
@@ -359,10 +365,18 @@ function EditMode({
   const [type, setType] = useState<"cron" | "once">(schedule?.type ?? "cron");
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
+  const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
   const [reuseSession, setReuseSession] = useState(schedule?.reuseSession ?? false);
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch server timezone as default for new schedules
+  useEffect(() => {
+    if (isCreating && !timezone) {
+      fetchServerTimezone().then((tz) => setTimezone(tz)).catch(() => {});
+    }
+  }, [isCreating]);
 
   const currentPreset = CRON_PRESETS.find((p) => p.cron === cronExpr);
   const [selectedPreset, setSelectedPreset] = useState(currentPreset ? currentPreset.label : "Custom");
@@ -374,6 +388,7 @@ function EditMode({
     setType(schedule?.type ?? "cron");
     setCronExpr(schedule?.cron ?? "0 8 * * 1-5");
     setRunAt(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
+    setTimezone(schedule?.timezone ?? "");
     setReuseSession(schedule?.reuseSession ?? false);
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
   }, [schedule]);
@@ -393,6 +408,7 @@ function EditMode({
           prompt: prompt.trim(),
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
+          ...(timezone ? { timezone } : {}),
           reuseSession,
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
         };
@@ -403,6 +419,7 @@ function EditMode({
           prompt: prompt.trim(),
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
+          ...(timezone ? { timezone } : {}),
           reuseSession,
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
         });
@@ -498,6 +515,17 @@ function EditMode({
                   value={runAt}
                   onChange={(e) => setRunAt(e.target.value)}
                 />
+              )}
+              {type === "cron" && (
+                <div className="mt-2">
+                  <span className="text-text-faint block mb-1">Timezone</span>
+                  <input
+                    className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                    placeholder="e.g. America/New_York"
+                    value={timezone}
+                    onChange={(e) => setTimezone(e.target.value)}
+                  />
+                </div>
               )}
             </div>
 

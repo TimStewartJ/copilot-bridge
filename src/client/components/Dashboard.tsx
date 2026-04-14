@@ -789,6 +789,7 @@ function DashboardScheduleRow({
         )}
         <span className="text-text-faint">
           {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
+          {schedule.type === "cron" && schedule.timezone && ` (${schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})`}
         </span>
       </div>
       <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">

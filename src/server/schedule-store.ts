@@ -4,6 +4,11 @@ import type { DatabaseSync } from "./db.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
+/** Get server's IANA timezone. Shared across schedule creation paths. */
+export function getServerTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
 export interface Schedule {
   id: string;
   taskId: string;
@@ -88,7 +93,7 @@ export function createScheduleStore(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
-      input.cron ?? null, input.runAt ?? null, input.timezone ?? null,
+      input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
       input.reuseSession ? 1 : 0, now, now,
       input.maxRuns ?? null, input.expiresAt ?? null,
     );
