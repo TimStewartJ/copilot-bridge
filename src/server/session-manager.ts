@@ -154,6 +154,11 @@ export function getRestartWaitingCount(): number {
   return _instance ? _instance.getActiveSessions().length : 0;
 }
 
+/** Restart is imminent — pending AND no active sessions blocking it. */
+export function isRestartImminent(): boolean {
+  return isRestartPending() && getRestartWaitingCount() === 0;
+}
+
 export function isRestartPendingError(err: unknown): boolean {
   return err instanceof Error && err.message === RESTART_PENDING_MESSAGE;
 }
@@ -1488,7 +1493,7 @@ export class SessionManager {
   // Fire and forget — starts work and emits events to the session's EventBus
   startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>): void {
     if (!this.client) throw new Error("SessionManager not initialized");
-    if (isRestartPending()) {
+    if (isRestartImminent()) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 

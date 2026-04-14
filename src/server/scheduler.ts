@@ -7,7 +7,7 @@ import type { TaskStore } from "./task-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
-import { isRestartPending, isRestartPendingError, RESTART_PENDING_MESSAGE } from "./session-manager.js";
+import { isRestartImminent, isRestartPendingError, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
@@ -133,7 +133,7 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
   // Check global pause
   if (_globalPause) return { skipped: "Scheduling is globally paused" };
 
-  if (isRestartPending()) {
+  if (isRestartImminent()) {
     return { skipped: RESTART_PENDING_MESSAGE };
   }
 

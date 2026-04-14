@@ -6,7 +6,7 @@ import { stat as statAsync } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AppContext } from "./app-context.js";
-import { isRestartPending, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
+import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
@@ -271,6 +271,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/sessions", async (req, res) => {
+    if (isRestartImminent()) {
+      res.set("Retry-After", "5");
+      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+    }
     try {
       const { name } = req.body ?? {};
       const result = await ctx.sessionManager.createSession();
@@ -285,6 +289,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.post("/sessions/:id/duplicate", async (req, res) => {
     const sourceId = req.params.id;
     try {
+      if (isRestartImminent()) {
+        res.set("Retry-After", "5");
+        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+      }
       if (ctx.sessionManager.isSessionBusy(sourceId)) {
         return res.status(409).json({ error: "Cannot duplicate a busy session" });
       }
@@ -317,7 +325,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(400).json({ error: "sessionId and prompt are required" });
     }
 
-    if (isRestartPending()) {
+    if (isRestartImminent()) {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -875,6 +883,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!task) return res.status(404).json({ error: "Task not found" });
 
     try {
+      if (isRestartImminent()) {
+        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+      }
       const prDescriptions = task.pullRequests.map(
         (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
       );
