@@ -577,7 +577,7 @@ export default function TaskRail({
                   ))}
                 </SortableContext>
               )}
-              <TaskDragOverlay task={activeDragTask} />
+              <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
             </DndContext>
             {sortedTasks.length === 0 && (
               <EmptyState
@@ -617,7 +617,7 @@ export default function TaskRail({
                         <span className="text-[10px] text-text-faint">archived</span>
                       </div>
                       <div className="text-xs text-text-muted mt-0.5">
-                        {timeAgo(task.updatedAt)}
+                        {timeAgo(taskIndicators.get(task.id)?.lastActivity ?? task.updatedAt)}
                       </div>
                     </button>
                   );

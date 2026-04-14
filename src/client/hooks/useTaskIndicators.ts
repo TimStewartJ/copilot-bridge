@@ -6,6 +6,22 @@ export interface TaskIndicator {
   unread: boolean;
   busyCount: number;
   unreadCount: number;
+  lastActivity: string;
+}
+
+/** Max of task.updatedAt and the latest session activity across all linked sessions (including archived). */
+export function getTaskLastActivity(
+  task: Task,
+  sessionMap: Map<string, Session>,
+): string {
+  let latest = task.updatedAt;
+  for (const sid of task.sessionIds) {
+    const session = sessionMap.get(sid);
+    if (!session) continue;
+    const t = getSessionActivityTime(session);
+    if (t && t > latest) latest = t;
+  }
+  return latest;
 }
 
 /**
@@ -35,7 +51,8 @@ export default function useTaskIndicators(
         if (session.busy) { busyCount++; continue; }
         if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
       }
-      result.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount });
+      const lastActivity = getTaskLastActivity(task, sessionMap);
+      result.set(task.id, { busy: busyCount > 0, unread: unreadCount > 0, busyCount, unreadCount, lastActivity });
     }
     return result;
   }, [tasks, sessionMap, isUnread]);

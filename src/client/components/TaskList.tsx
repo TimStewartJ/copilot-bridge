@@ -235,7 +235,7 @@ export default function TaskList({
             {renderGroup("Done", grouped.done)}
           </>
         )}
-        <TaskDragOverlay task={activeDragTask} />
+        <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
       </DndContext>
       {grouped.archived.length > 0 && (
         <>

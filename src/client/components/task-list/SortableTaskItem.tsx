@@ -92,7 +92,7 @@ export default function SortableTaskItem({
           )}
         </div>
         <div className="text-xs text-text-muted mt-0.5 transition-all duration-150 pl-0 group-hover:pl-4">
-          {timeAgo(task.updatedAt)}
+          {timeAgo(indicator?.lastActivity ?? task.updatedAt)}
           {(indicator?.busyCount ?? 0) > 0 && ` · ${indicator!.busyCount} in flight`}
           {(indicator?.unreadCount ?? 0) > 0 && ` · ${indicator!.unreadCount} unread`}
         </div>
