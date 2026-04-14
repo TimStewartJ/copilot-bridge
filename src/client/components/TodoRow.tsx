@@ -73,7 +73,8 @@ export default function TodoRow(props: TodoRowProps) {
   const [editText, setEditText] = useState(todo.text);
 
   // Context menu
-  const { bind, menu, closeMenu } = useLongPressMenu<string>();
+  const { bind, menu, closeMenu, isTarget } = useLongPressMenu<string>();
+  const pressing = isTarget(todo.id);
 
   // Scroll into view on highlight
   useEffect(() => {
@@ -130,7 +131,10 @@ export default function TodoRow(props: TodoRowProps) {
   }, [todo.id, onDelete]);
 
   const handleSetDeadline = useCallback(() => {
-    try { dateRef.current?.showPicker(); } catch { dateRef.current?.click(); }
+    const el = dateRef.current;
+    if (!el) return;
+    el.focus();
+    try { el.showPicker(); } catch { /* focus alone opens picker on mobile */ }
   }, []);
 
   const handleClearDeadline = useCallback(async () => {
@@ -187,10 +191,10 @@ export default function TodoRow(props: TodoRowProps) {
   const isCard = variant === "card";
 
   const rowClass = isPanel
-    ? `flex items-start gap-1.5 px-3 py-1 group hover:bg-bg-hover rounded-md transition-colors ${highlight ? "animate-todo-highlight" : ""}`
+    ? `flex items-start gap-1.5 px-3 py-1 group select-none hover:bg-bg-hover rounded-md transition-colors ${highlight ? "animate-todo-highlight" : ""} ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
     : isDashboard
-      ? "flex items-start gap-2.5 px-4 py-2.5 hover:bg-bg-hover transition-colors first:rounded-t-lg last:rounded-b-lg group"
-      : "flex items-start gap-2 px-3 py-2 rounded-md bg-bg-surface group";
+      ? `flex items-center gap-2 px-3 py-1 select-none hover:bg-bg-hover transition-all first:rounded-t-lg last:rounded-b-lg group ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
+      : `flex items-start gap-2 px-3 py-2 select-none rounded-md bg-bg-surface group ${pressing ? "scale-[0.98]" : ""}`;
 
   const textClass = isPanel
     ? `text-xs break-words ${todo.done ? "text-text-faint line-through" : "text-text-secondary"}`
@@ -208,6 +212,7 @@ export default function TodoRow(props: TodoRowProps) {
         ref={rowRef}
         data-todo-id={todo.id}
         className={rowClass}
+        style={{ WebkitTouchCallout: "none" }}
         {...bind(todo.id, () => rowClick?.())}
       >
         {/* Checkbox */}
@@ -216,14 +221,20 @@ export default function TodoRow(props: TodoRowProps) {
             e.stopPropagation();
             await handleToggle();
           }}
-          className={`mt-0.5 ${checkboxSize} rounded border flex items-center justify-center shrink-0 transition-colors ${
+          className={`shrink-0 flex items-center justify-center ${
+            isDashboard
+              ? "w-10 h-10 rounded-lg active:bg-bg-hover"
+              : "mt-0.5"
+          }`}
+          aria-label={todo.done ? "Mark incomplete" : "Mark complete"}
+        >
+          <span className={`${checkboxSize} rounded border flex items-center justify-center transition-colors ${
             todo.done
               ? "bg-success/80 border-success/80 text-white hover:bg-success/60"
               : CHECKBOX_URGENCY[urgency]
-          }`}
-          title={todo.done ? "Mark incomplete" : "Mark complete"}
-        >
-          {todo.done && <Check size={checkIconSize} strokeWidth={3} />}
+          }`}>
+            {todo.done && <Check size={checkIconSize} strokeWidth={3} />}
+          </span>
         </button>
 
         {/* Content */}
@@ -300,11 +311,12 @@ export default function TodoRow(props: TodoRowProps) {
           )}
         </div>
 
-        {/* Hidden date input */}
+        {/* Hidden date input — uses opacity-0 instead of sr-only so
+             showPicker() works on mobile (clip: rect(0,0,0,0) blocks it) */}
         <input
           ref={dateRef}
           type="date"
-          className="sr-only"
+          className="absolute opacity-0 pointer-events-none w-0 h-0 overflow-hidden"
           tabIndex={-1}
           value={todo.deadline ?? ""}
           onChange={async (e) => {
