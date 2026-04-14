@@ -99,6 +99,7 @@ export interface Task {
   cwd?: string;
   notes: string;
   priority: number;
+  pinned: boolean;
   order: number;
   createdAt: string;
   updatedAt: string;
@@ -348,7 +349,7 @@ export async function fetchTask(id: string): Promise<Task> {
 
 export async function updateTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd">>,
+  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "pinned">>,
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
     ...updates,
@@ -359,7 +360,7 @@ export async function updateTask(
 
 export async function patchTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId">>,
+  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId" | "pinned">>,
 ): Promise<Task> {
   const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
     method: "PATCH",

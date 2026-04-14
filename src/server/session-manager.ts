@@ -1447,6 +1447,7 @@ export class SessionManager {
       cwd,
       notes: notes || "",
       priority: 0,
+      pinned: fullTask?.pinned ?? false,
       order: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

@@ -25,6 +25,7 @@ export interface Task {
   cwd?: string;
   notes: string;
   priority: number;
+  pinned: boolean;
   order: number;
   createdAt: string;
   updatedAt: string;
@@ -33,7 +34,7 @@ export interface Task {
   pullRequests: PRRef[];
 }
 
-type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId">>;
+type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId" | "pinned">>;
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
@@ -59,6 +60,7 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
       cwd: row.cwd ?? undefined,
       notes: row.notes,
       priority: row.priority,
+      pinned: row.pinned === 1,
       order: row.order,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -85,6 +87,8 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
     return tasks.sort((a, b) => {
       const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
       if (statusDiff !== 0) return statusDiff;
+      // Pinned tasks float to top within their status group
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       return a.order - b.order;
     });
   }
@@ -125,6 +129,7 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
     if (updates.status !== undefined) { fields.push("status = ?"); values.push(updates.status); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
     if (updates.priority !== undefined) { fields.push("priority = ?"); values.push(updates.priority); }
+    if (updates.pinned !== undefined) { fields.push("pinned = ?"); values.push(updates.pinned ? 1 : 0); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
     if (updates.groupId !== undefined) { fields.push("groupId = ?"); values.push(updates.groupId || null); }
 

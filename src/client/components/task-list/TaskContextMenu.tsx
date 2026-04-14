@@ -1,13 +1,13 @@
 import { useState, useCallback, useMemo } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
-import { Eye, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus } from "lucide-react";
+import { Eye, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, Pin } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 
 interface TaskContextMenuActions {
   markRead?: (sessionId: string) => void;
-  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status">>) => void;
+  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
   onDeleteTask?: (taskId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
@@ -76,6 +76,15 @@ export default function TaskContextMenu({
       </button>
 
       <CtxDivider />
+
+      {/* Pin / Unpin */}
+      {onUpdateTask && (
+        <CtxItem
+          icon={<Pin size={14} className={task.pinned ? "rotate-45" : ""} />}
+          label={task.pinned ? "Unpin" : "Pin"}
+          onClick={() => { onUpdateTask(task.id, { pinned: !task.pinned }); closeMenu(); }}
+        />
+      )}
 
       {/* Status changes */}
       {onUpdateTask && task.status !== "active" && (
