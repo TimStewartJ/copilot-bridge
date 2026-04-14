@@ -1,47 +1,34 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
+import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
-import { unlinkResource, patchTask, fetchRelatedDocs } from "../api";
-import TodoRow from "./TodoRow";
-import { timeAgo } from "../time";
-import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
-import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
-import { useTaskSchedules } from "../hooks/useTaskSchedules";
-import { useNotesSheet } from "../hooks/useNotesSheet";
-import { useScheduleDetail } from "../hooks/useScheduleDetail";
+import { unlinkResource, patchTask } from "../api";
 import { useTagsQuery } from "../hooks/queries/useTags";
-import { useTaskTodosQuery, useCreateTodoMutation, useTodoCacheUpdaters } from "../hooks/queries/useTodos";
+import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import {
-  MoreHorizontal,
-  GitPullRequest,
-  ClipboardList,
-  Clock,
-  Play,
-  Pause,
-  Plus,
-  Trash2,
   FolderOpen,
   Copy,
   Check,
   Pencil,
-  ListChecks,
   LayoutDashboard,
   BookOpen,
   Pin,
 } from "lucide-react";
-import CollapsibleCompleted from "./shared/CollapsibleCompleted";
-import EmptyState from "./shared/EmptyState";
 import DocPreviewSheet from "./DocPreviewSheet";
+import {
+  WorkItemList,
+  PullRequestList,
+  TaskTodoSection,
+  TaskNotesSection,
+  RelatedDocsSection,
+  ScheduleSection,
+} from "./task-sections";
 
 // ── Compact section header for sidebar ───────────────────────────
 
@@ -138,32 +125,20 @@ export default function TaskPanel({
 }: TaskPanelProps) {
   const { data: allTags = [] } = useTagsQuery();
 
+  // ── Consolidated workspace hook ─────────────────────────────
+  const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
+
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-
-  // ── Notes sheet (shared hook) ────────────────────────────────
-  const notes = useNotesSheet(task?.id);
 
   // ── CWD editing state ──────────────────────────────────────
   const [editingCwd, setEditingCwd] = useState(false);
   const [cwdDraft, setCwdDraft] = useState("");
   const [cwdCopied, setCwdCopied] = useState(false);
 
-  // ── Enrichment (shared hook) ─────────────────────────────────
-  const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
-    task?.id, task?.workItems.length ?? 0, task?.pullRequests.length ?? 0,
-  );
-
-  // ── Schedules (shared hook) ─────────────────────────────────
-  const sched = useTaskSchedules(task?.id);
-  const schedDetail = useScheduleDetail();
-
-  // ── Todos ──────────────────────────────────────────────────
-  const { data: todos = [] } = useTaskTodosQuery(task?.id);
-  const createTodoMutation = useCreateTodoMutation(task?.id);
-  const { onUpdate: onTodoUpdate, onDelete: onTodoDelete } = useTodoCacheUpdaters(task?.id);
-  const [newTodoText, setNewTodoText] = useState("");
+  // ── Doc preview (panel-specific) ──────────────────────────
+  const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
 
   // ── Todo highlight (from dashboard navigation) ──────────────
   const [searchParams, setSearchParams] = useSearchParams();
@@ -179,38 +154,11 @@ export default function TaskPanel({
     }
   }, [searchParams]);
 
-  // ── Effective tags (lifted for reuse) ─────────────────────────
-  const taskOwnTags = task?.tags ?? [];
-  const taskGroup = taskGroups.find((g) => g.id === task?.groupId);
-  const groupTags = taskGroup?.tags ?? [];
-  const inheritedTagIds = new Set(groupTags.map((t) => t.id));
-  const effectiveTags = [
-    ...taskOwnTags,
-    ...groupTags.filter((gt) => !taskOwnTags.some((tt) => tt.id === gt.id)),
-  ];
-
-  // ── Related docs ────────────────────────────────────────────
-  const [relatedDocs, setRelatedDocs] = useState<RelatedDoc[]>([]);
-  const [docsExpanded, setDocsExpanded] = useState(false);
-  const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
-  const effectiveTagKey = effectiveTags.map((t) => t.id).join(",");
-
-  useEffect(() => {
-    const tagIds = effectiveTags.map((t) => t.id);
-    if (tagIds.length === 0) { setRelatedDocs([]); return; }
-    fetchRelatedDocs(tagIds).then(setRelatedDocs).catch(() => setRelatedDocs([]));
-  }, [effectiveTagKey]);
-
-  // Reset expanded state when task changes
-  useEffect(() => {
-    setDocsExpanded(false);
-    setPreviewDocPath(null);
-  }, [task?.id]);
-
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
     setEditingCwd(false);
+    setPreviewDocPath(null);
   }, [task?.id]);
 
   // ── No task selected (empty state) ───────────────────────────
@@ -224,9 +172,17 @@ export default function TaskPanel({
 
   // ── Task mode ────────────────────────────────────────────────
 
-  const linkedSessions = sessions.filter((s) =>
-    task.sessionIds.includes(s.sessionId),
-  );
+  const {
+    enrichedWIs, enrichedPRs, reloadEnriched,
+    sched, schedDetail,
+    notes,
+    todos, createTodoMutation, onTodoUpdate, onTodoDelete,
+    newTodoText, setNewTodoText,
+    linkedSessions,
+    taskOwnTags, inheritedTagIds, effectiveTags,
+    relatedDocs,
+    refresh,
+  } = ws;
 
   const commitTitle = () => {
     const trimmed = titleDraft.trim();
@@ -331,7 +287,7 @@ export default function TaskPanel({
 
       {/* Scrollable content */}
       <div className="flex-1 min-h-0 relative">
-      <PullToRefresh onRefresh={async () => { await Promise.all([reloadEnriched(), onRefresh?.()]); }} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
+      <PullToRefresh onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
         {/* Sessions */}
         <div>
           <SectionLabel label="Sessions" count={linkedSessions.length} />
@@ -375,110 +331,27 @@ export default function TaskPanel({
             count={todos.length > 0 ? undefined : 0}
             progress={todos.length > 0 ? `${todos.filter((t) => t.done).length}/${todos.length}` : undefined}
           />
-          {(() => {
-            const openTodos = todos.filter((t) => !t.done);
-            const doneTodos = todos.filter((t) => t.done);
-            return (
-              <>
-                {openTodos.length > 0 && (
-                  <div className="space-y-0">
-                    {openTodos.map((todo) => (
-                      <TodoRow
-                        key={todo.id}
-                        variant="panel"
-                        todo={todo}
-                        highlight={todo.id === highlightTodoId}
-                        onUpdate={onTodoUpdate}
-                        onDelete={() => onTodoDelete(todo.id)}
-                      />
-                    ))}
-                  </div>
-                )}
-                {doneTodos.length > 0 && (
-                  <CollapsibleCompleted count={doneTodos.length}>
-                    <div className="space-y-0">
-                      {doneTodos.map((todo) => (
-                        <TodoRow
-                          key={todo.id}
-                          variant="panel"
-                          todo={todo}
-                          highlight={todo.id === highlightTodoId}
-                          onUpdate={onTodoUpdate}
-                          onDelete={() => onTodoDelete(todo.id)}
-                        />
-                      ))}
-                    </div>
-                  </CollapsibleCompleted>
-                )}
-              </>
-            );
-          })()}
-          <div className="px-3 py-1">
-            <input
-              className="w-full text-xs bg-transparent border-none outline-none text-text-secondary placeholder:text-text-faint"
-              placeholder="+ Add item…"
-              value={newTodoText}
-              onChange={(e) => setNewTodoText(e.target.value)}
-              onKeyDown={async (e) => {
-                if (e.key === "Enter" && newTodoText.trim()) {
-                  setNewTodoText("");
-                  await createTodoMutation.mutateAsync({ text: newTodoText.trim() });
-                }
-              }}
-            />
-          </div>
+          <TaskTodoSection
+            todos={todos}
+            newTodoText={newTodoText}
+            onNewTodoTextChange={setNewTodoText}
+            onCreateTodo={async (text) => { await createTodoMutation.mutateAsync({ text }); }}
+            onTodoUpdate={onTodoUpdate}
+            onTodoDelete={(id) => onTodoDelete(id)}
+            variant="panel"
+            highlightId={highlightTodoId}
+          />
         </div>
 
         {/* Work Items */}
         {task.workItems.length > 0 && (
           <div>
             <SectionLabel label="Work Items" count={task.workItems.length} />
-            <div className="space-y-0.5">
-              {(enrichedWIs.length > 0
-                ? enrichedWIs
-                : task.workItems.map((w) => ({
-                    id: w.id,
-                    provider: w.provider,
-                    title: null,
-                    state: null,
-                    type: null,
-                    assignedTo: null,
-                    areaPath: null,
-                    url: "#",
-                  }))
-              ).map((wi) => (
-                <a
-                  key={`${wi.provider}-${wi.id}`}
-                  href={wi.url}
-                  target="_blank"
-                  rel="noopener"
-                  className="block px-3 py-1.5 text-xs text-accent hover:text-accent-hover hover:bg-bg-hover rounded-md transition-colors"
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span>
-                      {WI_TYPE_ICONS[wi.type ?? ""]?.icon ?? (
-                        <ClipboardList size={12} />
-                      )}
-                    </span>
-                    <span className="font-medium">#{wi.id}</span>
-                    {wi.title && (
-                      <span className="text-text-muted truncate">
-                        {wi.title}
-                      </span>
-                    )}
-                  </div>
-                  {wi.state && (
-                    <div className="mt-0.5 ml-5">
-                      <span
-                        className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}
-                      >
-                        {wi.state}
-                      </span>
-                    </div>
-                  )}
-                </a>
-              ))}
-            </div>
+            <WorkItemList
+              enrichedWIs={enrichedWIs}
+              rawWIs={task.workItems}
+              variant="compact"
+            />
           </div>
         )}
 
@@ -489,141 +362,26 @@ export default function TaskPanel({
               label="Pull Requests"
               count={task.pullRequests.length}
             />
-            <div className="space-y-0.5">
-              {(enrichedPRs.length > 0
-                ? enrichedPRs
-                : task.pullRequests.map((pr) => ({
-                    repoId: pr.repoId,
-                    repoName: pr.repoName ?? null,
-                    prId: pr.prId,
-                    provider: pr.provider,
-                    title: null,
-                    status: null as any,
-                    createdBy: null,
-                    reviewerCount: 0,
-                    url: "#",
-                  }))
-              ).map((pr) => (
-                <a
-                  key={`${pr.repoId}-${pr.prId}`}
-                  href={pr.url}
-                  target="_blank"
-                  rel="noopener"
-                  className="block px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
-                >
-                  <div className="flex items-center gap-1.5">
-                    {pr.status && (
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${PR_STATUS_STYLES[pr.status]?.dot ?? "bg-text-muted"}`}
-                      />
-                    )}
-                    {!pr.status && (
-                      <GitPullRequest size={12} className="text-text-muted" />
-                    )}
-                    <span className="text-accent font-medium">
-                      #{pr.prId}
-                    </span>
-                    {pr.title && (
-                      <span className="text-text-muted truncate">
-                        {pr.title}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
-                    {pr.repoName || pr.repoId}
-                    {pr.status &&
-                      ` · ${pr.status.charAt(0).toUpperCase() + pr.status.slice(1)}`}
-                  </div>
-                </a>
-              ))}
-            </div>
+            <PullRequestList
+              enrichedPRs={enrichedPRs}
+              rawPRs={task.pullRequests}
+              variant="compact"
+            />
           </div>
         )}
 
         {/* Schedules */}
-        <div>
-          <div className="flex items-center justify-between px-3 py-1">
-            <SectionLabel label="Schedules" count={sched.schedules.length} />
-            <button
-              onClick={() => schedDetail.openForCreate(task.id)}
-              className="text-[10px] text-accent hover:text-accent-hover transition-colors flex items-center gap-0.5"
-              title="Add schedule"
-            >
-              <Plus size={10} />
-              <span>Add</span>
-            </button>
-          </div>
-          {sched.schedules.length > 0 ? (() => {
-            const activeSchedules = sched.schedules.filter((s) => s.enabled);
-            const disabledSchedules = sched.schedules.filter((s) => !s.enabled);
-            const renderScheduleRow = (schedule: typeof sched.schedules[0]) => (
-              <div
-                key={schedule.id}
-                className="px-3 py-1.5 text-xs hover:bg-bg-hover rounded-md transition-colors group"
-              >
-                <div className="flex items-center gap-1.5">
-                  <Clock size={12} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
-                  <button
-                    onClick={() => schedDetail.openSheet(schedule)}
-                    className={`font-medium truncate flex-1 text-left hover:text-accent transition-colors ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}
-                  >
-                    {schedule.name}
-                  </button>
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      onClick={() => sched.trigger(schedule.id)}
-                      className="p-0.5 text-text-muted hover:text-success transition-colors"
-                      title="Run now"
-                    >
-                      <Play size={10} />
-                    </button>
-                    <button
-                      onClick={() => sched.toggle(schedule)}
-                      className="p-0.5 text-text-muted hover:text-warning transition-colors"
-                      title={schedule.enabled ? "Pause" : "Resume"}
-                    >
-                      <Pause size={10} />
-                    </button>
-                    <button
-                      onClick={() => schedDetail.openSheet(schedule, "edit")}
-                      className="p-0.5 text-text-muted hover:text-text-primary transition-colors hidden group-hover:block"
-                      title="Edit"
-                    >
-                      <MoreHorizontal size={10} />
-                    </button>
-                    <button
-                      onClick={() => sched.remove(schedule.id)}
-                      className="p-0.5 text-text-muted hover:text-error transition-colors hidden group-hover:block"
-                      title="Delete"
-                    >
-                      <Trash2 size={10} />
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-0.5 ml-5 text-[10px] text-text-faint">
-                  {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
-                  {schedule.type === "cron" && schedule.timezone && ` (${schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})`}
-                  {schedule.lastRunAt && ` · Last: ${timeAgo(schedule.lastRunAt)}`}
-                  {schedule.nextRunAt && ` · Next: ${timeAgo(schedule.nextRunAt)}`}
-                  {schedule.runCount > 0 && ` · ${schedule.runCount} run${schedule.runCount !== 1 ? "s" : ""}`}
-                </div>
-              </div>
-            );
-            return (
-              <div className="space-y-0.5">
-                {activeSchedules.map(renderScheduleRow)}
-                <CollapsibleCompleted count={disabledSchedules.length} label="disabled">
-                  {disabledSchedules.map(renderScheduleRow)}
-                </CollapsibleCompleted>
-              </div>
-            );
-          })() : (
-            <EmptyState
-              message="No schedules"
-              sub="Add one to automate recurring work"
-            />
-          )}
-        </div>
+        <ScheduleSection
+          schedules={sched.schedules}
+          variant="compact"
+          label={<SectionLabel label="Schedules" count={sched.schedules.length} />}
+          onAdd={() => schedDetail.openForCreate(task.id)}
+          onOpen={(s) => schedDetail.openSheet(s)}
+          onTrigger={(id) => sched.trigger(id)}
+          onToggle={(s) => sched.toggle(s)}
+          onEdit={(s) => schedDetail.openSheet(s, "edit")}
+          onDelete={(id) => sched.remove(id)}
+        />
 
         {/* Schedule Detail Sheet (unified view/edit/create) */}
         {schedDetail.isOpen && (
@@ -711,72 +469,26 @@ export default function TaskPanel({
         {/* Notes */}
         <div>
           <SectionLabel label="Notes" />
-          {task.notes ? (
-            <div
-              onClick={notes.openToView}
-              className="px-3 py-1.5 cursor-pointer hover:bg-bg-hover rounded-md transition-colors relative"
-              title="Click to view notes"
-            >
-              <div className="max-h-16 overflow-hidden">
-                <div className="prose prose-invert prose-xs max-w-none text-text-muted
-                  prose-p:my-0.5 prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs
-                  prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0
-                  prose-pre:hidden prose-table:hidden
-                  prose-code:text-accent prose-code:text-[10px]
-                  prose-a:text-accent prose-a:no-underline">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{task.notes}</ReactMarkdown>
-                </div>
-              </div>
-              <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-bg-secondary to-transparent pointer-events-none rounded-b-md" />
-            </div>
-          ) : (
-            <div className="px-3 py-1">
-              <button
-                onClick={notes.openToEdit}
-                className="text-[10px] text-text-faint hover:text-accent transition-colors"
-              >
-                Add notes…
-              </button>
-            </div>
-          )}
+          <TaskNotesSection
+            notes={task.notes || undefined}
+            onView={notes.openToView}
+            onEdit={notes.openToEdit}
+            truncate
+          />
         </div>
 
         {/* Related Docs */}
-        {relatedDocs.length > 0 && (() => {
-          const COLLAPSED_MAX = 5;
-          const visibleDocs = docsExpanded ? relatedDocs : relatedDocs.slice(0, COLLAPSED_MAX);
-          const hiddenCount = relatedDocs.length - COLLAPSED_MAX;
-          return (
-            <div>
-              <SectionLabel label="Docs" count={relatedDocs.length} />
-              <div className="space-y-0.5">
-                {visibleDocs.map((doc) => (
-                  <button
-                    key={doc.path}
-                    onClick={() => setPreviewDocPath(doc.path)}
-                    className="block w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <BookOpen size={12} className="text-text-faint shrink-0" />
-                      <span className="text-text-primary truncate">{doc.title}</span>
-                    </div>
-                    <div className="text-[10px] text-text-faint mt-0.5 ml-5 font-mono truncate">
-                      {doc.path}
-                    </div>
-                  </button>
-                ))}
-              </div>
-              {hiddenCount > 0 && (
-                <button
-                  onClick={() => setDocsExpanded(!docsExpanded)}
-                  className="px-3 py-1 text-[10px] text-accent hover:text-accent-hover transition-colors"
-                >
-                  {docsExpanded ? "Show less" : `Show ${hiddenCount} more…`}
-                </button>
-              )}
-            </div>
-          );
-        })()}
+        {relatedDocs.length > 0 && (
+          <div>
+            <SectionLabel label="Docs" count={relatedDocs.length} />
+            <RelatedDocsSection
+              docs={relatedDocs}
+              variant="compact"
+              onPreview={(path) => setPreviewDocPath(path)}
+              resetKey={task.id}
+            />
+          </div>
+        )}
 
         {/* Doc Preview Sheet */}
         {previewDocPath && (

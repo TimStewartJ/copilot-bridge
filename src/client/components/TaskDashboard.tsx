@@ -1,26 +1,20 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
-import { patchTask, unlinkResource, fetchRelatedDocs, getSessionActivityTime } from "../api";
-import TodoRow from "./TodoRow";
+import { useState, useMemo } from "react";
+import type { Task, TaskGroup, Session } from "../api";
+import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
-import { WI_TYPE_ICONS, WI_STATE_STYLES, PR_STATUS_STYLES } from "../work-item-styles";
-import { useTaskEnrichment } from "../hooks/useTaskEnrichment";
-import { useTaskSchedules } from "../hooks/useTaskSchedules";
-import { useNotesSheet } from "../hooks/useNotesSheet";
-import { useScheduleDetail } from "../hooks/useScheduleDetail";
-import { useTaskTodosQuery, useCreateTodoMutation, useTodoCacheUpdaters } from "../hooks/queries/useTodos";
 import { useTagsQuery } from "../hooks/queries/useTags";
+import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh from "./PullToRefresh";
 import SessionList from "./SessionList";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
 import NotesSheet from "./NotesSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import {
   Pin,
   MessageSquare,
@@ -28,19 +22,22 @@ import {
   GitPullRequest,
   ClipboardList,
   Clock,
-  Play,
-  Pause,
-  Trash2,
   FolderOpen,
   Pencil,
-  MoreHorizontal,
   StickyNote,
   CheckSquare,
   LayoutDashboard,
   BookOpen,
   FileText,
 } from "lucide-react";
-import CollapsibleCompleted from "./shared/CollapsibleCompleted";
+import {
+  WorkItemList,
+  PullRequestList,
+  TaskTodoSection,
+  TaskNotesSection,
+  RelatedDocsSection,
+  ScheduleSection,
+} from "./task-sections";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -95,34 +92,26 @@ export default function TaskDashboard({
 }: TaskDashboardProps) {
   const { data: allTags = [] } = useTagsQuery();
 
-  // ── Shared hooks ─────────────────────────────────────────────
-  const { enrichedWIs, enrichedPRs, reload: reloadEnriched } = useTaskEnrichment(
-    task.id, task.workItems.length, task.pullRequests.length,
-  );
-  const sched = useTaskSchedules(task.id);
-  const schedDetail = useScheduleDetail();
-  const notes = useNotesSheet(task.id);
+  // ── Consolidated workspace hook ─────────────────────────────
+  const ws = useTaskWorkspace(task, taskGroups, sessions);
+  const {
+    enrichedWIs, enrichedPRs,
+    sched, schedDetail,
+    notes,
+    todos, createTodoMutation, onTodoUpdate, onTodoDelete,
+    newTodoText, setNewTodoText,
+    linkedSessions,
+    taskOwnTags, taskGroup: group, inheritedTagIds, effectiveTags,
+    relatedDocs,
+    refresh,
+  } = ws;
   const [groupNotesOpen, setGroupNotesOpen] = useState(false);
   const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
 
-  // ── Todos ───────────────────────────────────────────────────
-  const { data: todos = [], refetch: refetchTodos } = useTaskTodosQuery(task.id);
-  const createTodoMutation = useCreateTodoMutation(task.id);
-  const { onUpdate: onTodoUpdate, onDelete: onTodoDelete } = useTodoCacheUpdaters(task.id);
-  const [newTodoText, setNewTodoText] = useState("");
+  const handleRefresh = async () => {
+    await Promise.all([refresh(), onRefresh?.()]);
+  };
 
-  const handleRefresh = useCallback(async () => {
-    await Promise.all([
-      refetchTodos(),
-      reloadEnriched(),
-      sched.reload(),
-      onRefresh?.(),
-    ]);
-  }, [refetchTodos, reloadEnriched, sched.reload, onRefresh]);
-
-  const linkedSessions = sessions.filter((s) =>
-    task.sessionIds.includes(s.sessionId)
-  );
   const lastActivity = useMemo(() => {
     let latest = task.updatedAt;
     for (const s of linkedSessions) {
@@ -131,25 +120,9 @@ export default function TaskDashboard({
     }
     return latest;
   }, [task.updatedAt, linkedSessions]);
-  const group = taskGroups.find((g) => g.id === task.groupId);
-  const taskOwnTags = task.tags ?? [];
-  const groupTags = group?.tags ?? [];
-  const inheritedTagIds = new Set(groupTags.map((t) => t.id));
-  const effectiveTags = [
-    ...taskOwnTags,
-    ...groupTags.filter((gt) => !taskOwnTags.some((tt) => tt.id === gt.id)),
-  ];
 
   const openTodos = todos.filter((t) => !t.done);
   const doneTodos = todos.filter((t) => t.done);
-
-  // ── Related Docs ─────────────────────────────────────────────
-  const [relatedDocs, setRelatedDocs] = useState<RelatedDoc[]>([]);
-  useEffect(() => {
-    const tagIds = effectiveTags.map((t) => t.id);
-    if (tagIds.length === 0) { setRelatedDocs([]); return; }
-    fetchRelatedDocs(tagIds).then(setRelatedDocs).catch(() => setRelatedDocs([]));
-  }, [effectiveTags.map((t) => t.id).join(",")]);
 
   return (
     <div className="flex-1 min-h-0 relative">
@@ -288,55 +261,11 @@ export default function TaskDashboard({
                 title="Work Items"
                 count={task.workItems.length}
               >
-                <div className="space-y-1">
-                  {(enrichedWIs.length > 0
-                    ? enrichedWIs
-                    : task.workItems.map((w) => ({
-                        id: w.id,
-                        provider: w.provider,
-                        title: null as string | null,
-                        state: null as string | null,
-                        type: null as string | null,
-                        assignedTo: null as string | null,
-                        areaPath: null as string | null,
-                        url: "#",
-                      }))
-                  ).map((wi) => {
-                    const typeInfo = WI_TYPE_ICONS[wi.type ?? ""];
-                    return (
-                      <a
-                        key={`${wi.provider}-${wi.id}`}
-                        href={wi.url}
-                        target="_blank"
-                        rel="noopener"
-                        className="block px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={typeInfo?.color ?? "text-text-muted"}>
-                            {typeInfo?.icon ?? <ClipboardList size={14} />}
-                          </span>
-                          <span className="text-xs font-medium text-accent">#{wi.id}</span>
-                          {wi.state && (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
-                              {wi.state}
-                            </span>
-                          )}
-                        </div>
-                        {wi.title && (
-                          <div className="text-sm text-text-primary mt-1 ml-6 line-clamp-2">
-                            {wi.title}
-                          </div>
-                        )}
-                        {(wi.assignedTo || wi.areaPath) && (
-                          <div className="text-[10px] text-text-faint mt-1 ml-6 flex items-center gap-2">
-                            {wi.assignedTo && <span>{wi.assignedTo}</span>}
-                            {wi.areaPath && <span>{wi.areaPath}</span>}
-                          </div>
-                        )}
-                      </a>
-                    );
-                  })}
-                </div>
+                <WorkItemList
+                  enrichedWIs={enrichedWIs}
+                  rawWIs={task.workItems}
+                  variant="card"
+                />
               </Section>
             )}
 
@@ -347,61 +276,11 @@ export default function TaskDashboard({
                 title="Pull Requests"
                 count={task.pullRequests.length}
               >
-                <div className="space-y-1">
-                  {(enrichedPRs.length > 0
-                    ? enrichedPRs
-                    : task.pullRequests.map((pr) => ({
-                        repoId: pr.repoId,
-                        repoName: pr.repoName ?? null,
-                        prId: pr.prId,
-                        provider: pr.provider,
-                        title: null as string | null,
-                        status: null as "active" | "completed" | "abandoned" | null,
-                        createdBy: null as string | null,
-                        reviewerCount: 0,
-                        url: "#",
-                      }))
-                  ).map((pr) => {
-                    const statusInfo = PR_STATUS_STYLES[pr.status ?? ""];
-                    return (
-                      <a
-                        key={`${pr.repoId}-${pr.prId}`}
-                        href={pr.url}
-                        target="_blank"
-                        rel="noopener"
-                        className="block px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-                      >
-                        <div className="flex items-center gap-2">
-                          {statusInfo ? (
-                            <span className={`w-2 h-2 rounded-full shrink-0 ${statusInfo.dot}`} />
-                          ) : (
-                            <GitPullRequest size={14} className="text-text-muted" />
-                          )}
-                          <span className="text-xs font-medium text-accent">#{pr.prId}</span>
-                          {statusInfo && (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                              pr.status === "active" ? "bg-success/15 text-success" :
-                              pr.status === "completed" ? "bg-accent/15 text-accent" :
-                              "bg-text-muted/15 text-text-muted"
-                            }`}>
-                              {statusInfo.label}
-                            </span>
-                          )}
-                        </div>
-                        {pr.title && (
-                          <div className="text-sm text-text-primary mt-1 ml-6 line-clamp-2">
-                            {pr.title}
-                          </div>
-                        )}
-                        <div className="text-[10px] text-text-faint mt-1 ml-6 flex items-center gap-2">
-                          <span>{pr.repoName || pr.repoId}</span>
-                          {pr.createdBy && <span>by {pr.createdBy}</span>}
-                          {pr.reviewerCount > 0 && <span>{pr.reviewerCount} reviewer{pr.reviewerCount !== 1 ? "s" : ""}</span>}
-                        </div>
-                      </a>
-                    );
-                  })}
-                </div>
+                <PullRequestList
+                  enrichedPRs={enrichedPRs}
+                  rawPRs={task.pullRequests}
+                  variant="card"
+                />
               </Section>
             )}
           </div>
@@ -414,52 +293,15 @@ export default function TaskDashboard({
               title="Checklist"
               count={todos.length > 0 ? `${doneTodos.length}/${todos.length}` : undefined}
             >
-              <div className="space-y-1">
-                {openTodos.map((todo) => (
-                  <TodoRow
-                    key={todo.id}
-                    variant="card"
-                    todo={todo}
-                    onUpdate={onTodoUpdate}
-                    onDelete={() => onTodoDelete(todo.id)}
-                  />
-                ))}
-                {doneTodos.length > 0 && (
-                  <CollapsibleCompleted count={doneTodos.length}>
-                    <div className="pt-1 space-y-1">
-                      {doneTodos.map((todo) => (
-                        <TodoRow
-                          key={todo.id}
-                          variant="card"
-                          todo={todo}
-                          onUpdate={onTodoUpdate}
-                          onDelete={() => onTodoDelete(todo.id)}
-                        />
-                      ))}
-                    </div>
-                  </CollapsibleCompleted>
-                )}
-                {/* Add new todo */}
-                <form
-                  className="flex items-center gap-2 px-3 py-1.5"
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    const text = newTodoText.trim();
-                    if (!text) return;
-                    setNewTodoText("");
-                    await createTodoMutation.mutateAsync({ text });
-                  }}
-                >
-                  <Plus size={14} className="text-text-faint shrink-0" />
-                  <input
-                    type="text"
-                    value={newTodoText}
-                    onChange={(e) => setNewTodoText(e.target.value)}
-                    placeholder="Add a to-do…"
-                    className="flex-1 text-sm bg-transparent border-none outline-none text-text-primary placeholder:text-text-faint"
-                  />
-                </form>
-              </div>
+              <TaskTodoSection
+                todos={todos}
+                newTodoText={newTodoText}
+                onNewTodoTextChange={setNewTodoText}
+                onCreateTodo={async (text) => { await createTodoMutation.mutateAsync({ text }); }}
+                onTodoUpdate={onTodoUpdate}
+                onTodoDelete={(id) => onTodoDelete(id)}
+                variant="card"
+              />
             </Section>
 
             {/* Schedules */}
@@ -481,70 +323,16 @@ export default function TaskDashboard({
               ) : (() => {
                 const activeSchedules = sched.schedules.filter((s) => s.enabled);
                 const disabledSchedules = sched.schedules.filter((s) => !s.enabled);
-                const renderScheduleCard = (schedule: typeof sched.schedules[0]) => (
-                  <div
-                    key={schedule.id}
-                    className="px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors group"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Clock size={14} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
-                      <button
-                        onClick={() => schedDetail.openSheet(schedule)}
-                        className={`text-sm font-medium truncate flex-1 text-left hover:text-accent transition-colors ${schedule.enabled ? "text-text-primary" : "text-text-faint line-through"}`}
-                      >
-                        {schedule.name}
-                      </button>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => sched.trigger(schedule.id)}
-                          className="p-1 text-text-muted hover:text-success transition-colors"
-                          title="Run now"
-                        >
-                          <Play size={12} />
-                        </button>
-                        <button
-                          onClick={() => sched.toggle(schedule)}
-                          className="p-1 text-text-muted hover:text-warning transition-colors"
-                          title={schedule.enabled ? "Pause" : "Resume"}
-                        >
-                          <Pause size={12} />
-                        </button>
-                        <button
-                          onClick={() => schedDetail.openSheet(schedule, "edit")}
-                          className="p-1 text-text-muted hover:text-text-primary transition-colors hidden group-hover:block"
-                          title="Edit"
-                        >
-                          <MoreHorizontal size={12} />
-                        </button>
-                        <button
-                          onClick={() => sched.remove(schedule.id)}
-                          className="p-1 text-text-muted hover:text-error transition-colors hidden group-hover:block"
-                          title="Delete"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="text-xs text-text-muted mt-1 ml-6">
-                      {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
-                      {schedule.type === "cron" && schedule.timezone && (
-                        <span className="ml-1 opacity-60" title={schedule.timezone}>({schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})</span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
-                      {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
-                      {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
-                      {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
-                    </div>
-                  </div>
-                );
                 return (
-                  <div className="space-y-1">
-                    {activeSchedules.map(renderScheduleCard)}
-                    <CollapsibleCompleted count={disabledSchedules.length} label="disabled">
-                      {disabledSchedules.map(renderScheduleCard)}
-                    </CollapsibleCompleted>
-                  </div>
+                  <ScheduleSection
+                    schedules={sched.schedules}
+                    variant="card"
+                    onOpen={(s) => schedDetail.openSheet(s)}
+                    onTrigger={(id) => sched.trigger(id)}
+                    onToggle={(s) => sched.toggle(s)}
+                    onEdit={(s) => schedDetail.openSheet(s, "edit")}
+                    onDelete={(id) => sched.remove(id)}
+                  />
                 );
               })()}
             </Section>
@@ -596,18 +384,11 @@ export default function TaskDashboard({
               }
             >
               {task.notes ? (
-                <div
-                  onClick={notes.openToView}
-                  className="px-3 py-3 cursor-pointer rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-                >
-                  <div className="prose prose-invert prose-sm max-w-none text-text-secondary
-                    prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1
-                    prose-ul:my-1 prose-ol:my-1 prose-li:my-0
-                    prose-code:text-accent prose-code:text-xs
-                    prose-a:text-accent prose-a:no-underline">
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{task.notes}</ReactMarkdown>
-                  </div>
-                </div>
+                <TaskNotesSection
+                  notes={task.notes}
+                  onView={notes.openToView}
+                  onEdit={notes.openToEdit}
+                />
               ) : (
                 <EmptyState message="No notes" sub="Add notes to keep track of context and decisions" />
               )}
@@ -620,23 +401,11 @@ export default function TaskDashboard({
                 title="Related Docs"
                 count={relatedDocs.length}
               >
-                <div className="space-y-1">
-                  {relatedDocs.map((doc) => (
-                    <a
-                      key={doc.path}
-                      href={`/docs/${doc.path}`}
-                      className="block px-3 py-2 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-                    >
-                      <div className="text-sm text-text-primary truncate">{doc.title}</div>
-                      <div className="text-[10px] text-text-faint mt-0.5 flex items-center gap-2">
-                        <span className="font-mono">{doc.path}</span>
-                        {doc.tags.length > 0 && (
-                          <span>{doc.tags.join(", ")}</span>
-                        )}
-                      </div>
-                    </a>
-                  ))}
-                </div>
+                <RelatedDocsSection
+                  docs={relatedDocs}
+                  variant="card"
+                  resetKey={task.id}
+                />
               </Section>
             )}
           </div>

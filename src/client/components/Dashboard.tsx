@@ -21,6 +21,7 @@ import TodoRow from "./TodoRow";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause } from "lucide-react";
+import { ScheduleRow } from "./task-sections";
 
 type TodoSort = "deadline" | "task";
 
@@ -586,24 +587,26 @@ export default function Dashboard({
 
                 <div className="space-y-1.5">
                   {activeSchedules.map((schedule) => (
-                    <DashboardScheduleRow
+                    <ScheduleRow
                       key={schedule.id}
                       schedule={schedule}
-                      onOpen={() => schedDetail.openSheet(schedule)}
-                      onSelectTask={() => onSelectTask(schedule.taskId)}
-                      onTrigger={() => triggerMutation.mutate(schedule.id)}
-                      onToggle={() => toggleMutation.mutate(schedule)}
+                      variant="card"
+                      onOpen={(s) => schedDetail.openSheet(s)}
+                      onSelectTask={(taskId) => onSelectTask(taskId)}
+                      onTrigger={(id) => triggerMutation.mutate(id)}
+                      onToggle={(s) => toggleMutation.mutate(s)}
                     />
                   ))}
                   <CollapsibleCompleted count={pausedSchedules.length} label="paused">
                     {pausedSchedules.map((schedule) => (
-                      <DashboardScheduleRow
+                      <ScheduleRow
                         key={schedule.id}
                         schedule={schedule}
-                        onOpen={() => schedDetail.openSheet(schedule)}
-                        onSelectTask={() => onSelectTask(schedule.taskId)}
-                        onTrigger={() => triggerMutation.mutate(schedule.id)}
-                        onToggle={() => toggleMutation.mutate(schedule)}
+                        variant="card"
+                        onOpen={(s) => schedDetail.openSheet(s)}
+                        onSelectTask={(taskId) => onSelectTask(taskId)}
+                        onTrigger={(id) => triggerMutation.mutate(id)}
+                        onToggle={(s) => toggleMutation.mutate(s)}
                       />
                     ))}
                   </CollapsibleCompleted>
@@ -730,70 +733,5 @@ function OrphanSessionRow({
         )}
       </div>
     </button>
-  );
-}
-
-function DashboardScheduleRow({
-  schedule,
-  onOpen,
-  onSelectTask,
-  onTrigger,
-  onToggle,
-}: {
-  schedule: DashboardSchedule;
-  onOpen: () => void;
-  onSelectTask: () => void;
-  onTrigger: () => void;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors group">
-      <div className="flex items-center gap-2">
-        <Clock size={14} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
-        <button
-          onClick={onOpen}
-          className={`text-sm font-medium truncate flex-1 text-left hover:text-accent transition-colors ${
-            schedule.enabled ? "text-text-primary" : "text-text-faint line-through"
-          }`}
-        >
-          {schedule.name}
-        </button>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onTrigger}
-            className="p-1 text-text-muted hover:text-success transition-colors"
-            title="Run now"
-          >
-            <Play size={12} />
-          </button>
-          <button
-            onClick={onToggle}
-            className="p-1 text-text-muted hover:text-warning transition-colors"
-            title={schedule.enabled ? "Pause" : "Resume"}
-          >
-            <Pause size={12} />
-          </button>
-        </div>
-      </div>
-      <div className="text-xs text-text-muted mt-1 ml-6 flex items-center gap-2 flex-wrap">
-        {schedule.taskTitle && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onSelectTask(); }}
-            className="text-accent hover:text-accent-hover transition-colors truncate max-w-[150px]"
-          >
-            {schedule.taskTitle}
-          </button>
-        )}
-        <span className="text-text-faint">
-          {schedule.type === "cron" ? schedule.cron : `Once at ${schedule.runAt ? new Date(schedule.runAt).toLocaleString() : "?"}`}
-          {schedule.type === "cron" && schedule.timezone && ` (${schedule.timezone.replace(/^.*\//, "").replace(/_/g, " ")})`}
-        </span>
-      </div>
-      <div className="text-[10px] text-text-faint mt-0.5 ml-6 flex items-center gap-2">
-        {schedule.lastRunAt && <span>Last: {timeAgo(schedule.lastRunAt)}</span>}
-        {schedule.nextRunAt && <span>Next: {timeAgo(schedule.nextRunAt)}</span>}
-        {schedule.runCount > 0 && <span>{schedule.runCount} run{schedule.runCount !== 1 ? "s" : ""}</span>}
-      </div>
-    </div>
   );
 }
