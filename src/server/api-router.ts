@@ -887,7 +887,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           task = ctx.taskStore.linkSession(req.params.id, sessionId);
           break;
         case "workItem":
-          task = ctx.taskStore.linkWorkItem(req.params.id, Number(workItemId), provider ?? "ado");
+          task = ctx.taskStore.linkWorkItem(req.params.id, String(workItemId), provider ?? "ado");
           break;
         case "pr":
           task = ctx.taskStore.linkPR(req.params.id, { repoId, repoName, prId: Number(prId), provider: provider ?? "ado" });
@@ -910,7 +910,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           task = ctx.taskStore.unlinkSession(req.params.id, sessionId);
           break;
         case "workItem":
-          task = ctx.taskStore.unlinkWorkItem(req.params.id, Number(workItemId), provider);
+          task = ctx.taskStore.unlinkWorkItem(req.params.id, String(workItemId), provider);
           break;
         case "pr":
           task = ctx.taskStore.unlinkPR(req.params.id, repoId, Number(prId), provider);

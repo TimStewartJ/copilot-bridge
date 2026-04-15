@@ -6,12 +6,12 @@ import type { PRRef } from "../task-store.js";
 // Re-export for convenience
 export type { WorkItemRef, PRRef } from "../task-store.js";
 
-export type ProviderName = "ado" | "github";
+export type ProviderName = "ado" | "github" | "linear";
 
 // ── Enriched types (returned by providers) ────────────────────────
 
 export interface EnrichedWorkItem {
-  id: number;
+  id: string;
   provider: ProviderName;
   title: string | null;
   state: string | null;
@@ -38,10 +38,10 @@ export interface EnrichedPR {
 export interface WorkTrackingProvider {
   readonly name: ProviderName;
 
-  fetchWorkItems(ids: number[]): Promise<EnrichedWorkItem[]>;
+  fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]>;
   fetchPullRequests(prs: PRRef[]): Promise<EnrichedPR[]>;
 
-  getWorkItemUrl(id: number): string;
+  getWorkItemUrl(id: string): string;
   getPullRequestUrl(pr: PRRef): string;
 }
 
@@ -57,7 +57,13 @@ export interface GitHubProviderConfig {
   defaultRepo?: string;
 }
 
+export interface LinearProviderConfig {
+  apiKey: string;
+  workspace: string;
+}
+
 export interface ProvidersConfig {
   ado?: AdoProviderConfig;
   github?: GitHubProviderConfig;
+  linear?: LinearProviderConfig;
 }

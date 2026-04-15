@@ -13,7 +13,7 @@ export class GitHubProvider implements WorkTrackingProvider {
     this.defaultRepo = config.defaultRepo;
   }
 
-  getWorkItemUrl(id: number): string {
+  getWorkItemUrl(id: string): string {
     // GitHub issues need a repo — use defaultRepo or "#"
     if (this.defaultRepo) {
       return `https://github.com/${this.owner}/${this.defaultRepo}/issues/${id}`;
@@ -27,7 +27,7 @@ export class GitHubProvider implements WorkTrackingProvider {
     return `https://github.com/${repo}/pull/${pr.prId}`;
   }
 
-  async fetchWorkItems(ids: number[]): Promise<EnrichedWorkItem[]> {
+  async fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]> {
     // Stub — returns items with correct URLs but no metadata
     return ids.map((id) => ({
       id,

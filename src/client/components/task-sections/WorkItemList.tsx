@@ -51,7 +51,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact" 
                   {typeInfo?.icon ?? <ClipboardList size={14} />}
                 </span>
               )}
-              <span className={`font-medium ${isCompact ? "" : "text-xs text-accent"}`}>#{wi.id}</span>
+              <span className={`font-medium ${isCompact ? "" : "text-xs text-accent"}`}>{wi.id}</span>
               {isCompact && wi.title && (
                 <span className="text-text-muted truncate">{wi.title}</span>
               )}

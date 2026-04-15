@@ -6,7 +6,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { ProviderName } from "./providers/types.js";
 
 export interface WorkItemRef {
-  id: number;
+  id: string;
   provider: ProviderName;
 }
 
@@ -185,25 +185,34 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
     return getTask(taskId)!;
   }
 
-  function linkWorkItem(taskId: string, workItemId: number, provider: ProviderName = "ado"): Task {
+  /** Normalize numeric-looking IDs (e.g. "00123" → "123") for providers that use numeric IDs */
+  function normalizeWorkItemId(id: string): string {
+    const trimmed = id.trim();
+    if (/^\d+$/.test(trimmed)) return String(Number(trimmed));
+    return trimmed;
+  }
+
+  function linkWorkItem(taskId: string, workItemId: string, provider: ProviderName = "ado"): Task {
     const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
-    const existing = db.prepare("SELECT 1 FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").get(taskId, workItemId, provider);
+    const normalizedId = normalizeWorkItemId(workItemId);
+    const existing = db.prepare("SELECT 1 FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").get(taskId, normalizedId, provider);
     if (!existing) {
-      db.prepare("INSERT INTO task_work_items (taskId, itemId, provider) VALUES (?, ?, ?)").run(taskId, workItemId, provider);
+      db.prepare("INSERT INTO task_work_items (taskId, itemId, provider) VALUES (?, ?, ?)").run(taskId, normalizedId, provider);
       db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
       emitChange(taskId);
     }
     return getTask(taskId)!;
   }
 
-  function unlinkWorkItem(taskId: string, workItemId: number, provider?: ProviderName): Task {
+  function unlinkWorkItem(taskId: string, workItemId: string, provider?: ProviderName): Task {
     const task = getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
+    const normalizedId = normalizeWorkItemId(workItemId);
     if (provider) {
-      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").run(taskId, workItemId, provider);
+      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").run(taskId, normalizedId, provider);
     } else {
-      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ?").run(taskId, workItemId);
+      db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ?").run(taskId, normalizedId);
     }
     db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);

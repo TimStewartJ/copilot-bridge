@@ -142,10 +142,10 @@ describe("Task routes", () => {
 
     const res = await request(app)
       .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: 42, provider: "github" });
+      .send({ type: "workItem", workItemId: "42", provider: "github" });
     expect(res.status).toBe(200);
     expect(res.body.task.workItems).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 42, provider: "github" })]),
+      expect.arrayContaining([expect.objectContaining({ id: "42", provider: "github" })]),
     );
   });
 
@@ -157,11 +157,11 @@ describe("Task routes", () => {
 
     await request(app)
       .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: 99, provider: "github" });
+      .send({ type: "workItem", workItemId: "99", provider: "github" });
 
     const res = await request(app)
       .delete(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: 99, provider: "github" });
+      .send({ type: "workItem", workItemId: "99", provider: "github" });
     expect(res.status).toBe(200);
     expect(res.body.task.workItems).toEqual([]);
   });

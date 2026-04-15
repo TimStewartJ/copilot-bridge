@@ -126,30 +126,37 @@ describe("task-store", () => {
   describe("link/unlink work items", () => {
     it("linkWorkItem adds work item ref", () => {
       const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, 12345);
+      store.linkWorkItem(task.id, "12345");
       const found = store.getTask(task.id)!;
-      expect(found.workItems).toEqual([{ id: 12345, provider: "ado" }]);
+      expect(found.workItems).toEqual([{ id: "12345", provider: "ado" }]);
     });
 
     it("linkWorkItem is idempotent for same id+provider", () => {
       const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, 100);
-      store.linkWorkItem(task.id, 100);
+      store.linkWorkItem(task.id, "100");
+      store.linkWorkItem(task.id, "100");
       expect(store.getTask(task.id)!.workItems).toHaveLength(1);
     });
 
     it("linkWorkItem allows same id with different provider", () => {
       const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, 100, "ado");
-      store.linkWorkItem(task.id, 100, "github");
+      store.linkWorkItem(task.id, "100", "ado");
+      store.linkWorkItem(task.id, "100", "github");
       expect(store.getTask(task.id)!.workItems).toHaveLength(2);
     });
 
     it("unlinkWorkItem removes by id and provider", () => {
       const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, 100, "ado");
-      store.unlinkWorkItem(task.id, 100, "ado");
+      store.linkWorkItem(task.id, "100", "ado");
+      store.unlinkWorkItem(task.id, "100", "ado");
       expect(store.getTask(task.id)!.workItems).toHaveLength(0);
+    });
+
+    it("linkWorkItem supports string identifiers (Linear-style)", () => {
+      const task = store.createTask("Linear task");
+      store.linkWorkItem(task.id, "ENG-123", "linear");
+      const found = store.getTask(task.id)!;
+      expect(found.workItems).toEqual([{ id: "ENG-123", provider: "linear" }]);
     });
   });
 

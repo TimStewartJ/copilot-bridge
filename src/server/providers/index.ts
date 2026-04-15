@@ -3,6 +3,7 @@
 import type { AppSettings } from "../settings-store.js";
 import { AdoProvider } from "./ado.js";
 import { GitHubProvider } from "./github.js";
+import { LinearProvider } from "./linear.js";
 import { NullProvider } from "./null.js";
 import type { WorkTrackingProvider, EnrichedWorkItem, EnrichedPR, ProviderName } from "./types.js";
 import type { WorkItemRef, PRRef } from "../task-store.js";
@@ -42,6 +43,11 @@ export function getProvider(name: ProviderName): WorkTrackingProvider {
       provider = cfg ? new GitHubProvider(cfg) : new NullProvider("github");
       break;
     }
+    case "linear": {
+      const cfg = settings.providers?.linear;
+      provider = cfg ? new LinearProvider(cfg) : new NullProvider("linear");
+      break;
+    }
     default:
       provider = new NullProvider(name);
   }
@@ -61,7 +67,7 @@ export async function enrichWorkItems(refs: WorkItemRef[]): Promise<EnrichedWork
   if (refs.length === 0) return [];
 
   // Group by provider
-  const groups = new Map<ProviderName, number[]>();
+  const groups = new Map<ProviderName, string[]>();
   for (const ref of refs) {
     const ids = groups.get(ref.provider) ?? [];
     ids.push(ref.id);

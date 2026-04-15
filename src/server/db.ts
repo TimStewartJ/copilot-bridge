@@ -60,7 +60,7 @@ function initSchema(db: DatabaseSync): void {
     -- Task ↔ Work Item links
     CREATE TABLE IF NOT EXISTS task_work_items (
       taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      itemId INTEGER NOT NULL,
+      itemId TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'ado',
       PRIMARY KEY (taskId, itemId, provider)
     );
@@ -266,6 +266,24 @@ function initSchema(db: DatabaseSync): void {
   const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
   if (!taskCols.some((c: any) => c.name === "pinned")) {
     db.exec("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+
+  // Migrate task_work_items.itemId from INTEGER to TEXT for string-based identifiers (e.g. Linear "ENG-123")
+  const wiCols = db.prepare("PRAGMA table_info(task_work_items)").all() as any[];
+  const itemIdCol = wiCols.find((c: any) => c.name === "itemId");
+  if (itemIdCol && itemIdCol.type === "INTEGER") {
+    db.exec(`
+      CREATE TABLE task_work_items_new (
+        taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        itemId TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'ado',
+        PRIMARY KEY (taskId, itemId, provider)
+      );
+      INSERT INTO task_work_items_new (taskId, itemId, provider)
+        SELECT taskId, CAST(itemId AS TEXT), provider FROM task_work_items;
+      DROP TABLE task_work_items;
+      ALTER TABLE task_work_items_new RENAME TO task_work_items;
+    `);
   }
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)

@@ -10,7 +10,7 @@ export class NullProvider implements WorkTrackingProvider {
     this.name = name;
   }
 
-  async fetchWorkItems(ids: number[]): Promise<EnrichedWorkItem[]> {
+  async fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]> {
     return ids.map((id) => ({
       id,
       provider: this.name,
@@ -37,7 +37,7 @@ export class NullProvider implements WorkTrackingProvider {
     }));
   }
 
-  getWorkItemUrl(_id: number): string {
+  getWorkItemUrl(_id: string): string {
     return "#";
   }
 

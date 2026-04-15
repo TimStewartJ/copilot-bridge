@@ -67,7 +67,7 @@ export class AdoProvider implements WorkTrackingProvider {
     this.baseUrl = `https://dev.azure.com/${config.org}`;
   }
 
-  getWorkItemUrl(id: number): string {
+  getWorkItemUrl(id: string): string {
     return `https://${this.org}.visualstudio.com/${this.project}/_workitems/edit/${id}`;
   }
 
@@ -75,12 +75,12 @@ export class AdoProvider implements WorkTrackingProvider {
     return `https://${this.org}.visualstudio.com/${this.project}/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}`;
   }
 
-  async fetchWorkItems(ids: number[]): Promise<EnrichedWorkItem[]> {
+  async fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]> {
     if (ids.length === 0) return [];
 
     const now = Date.now();
     const results: EnrichedWorkItem[] = [];
-    const toFetch: number[] = [];
+    const toFetch: string[] = [];
 
     for (const id of ids) {
       const key = `${this.org}:${id}`;
@@ -103,14 +103,14 @@ export class AdoProvider implements WorkTrackingProvider {
         for (const item of data.value ?? []) {
           const f = item.fields ?? {};
           const enriched: EnrichedWorkItem = {
-            id: item.id,
+            id: String(item.id),
             provider: "ado",
             title: f["System.Title"] ?? null,
             state: f["System.State"] ?? null,
             type: f["System.WorkItemType"] ?? null,
             assignedTo: f["System.AssignedTo"]?.displayName ?? null,
             areaPath: f["System.AreaPath"] ?? null,
-            url: this.getWorkItemUrl(item.id),
+            url: this.getWorkItemUrl(String(item.id)),
           };
           const key = `${this.org}:${item.id}`;
           workItemCache.set(key, { data: enriched, expiresAt: now + CACHE_TTL });
