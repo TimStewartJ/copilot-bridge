@@ -95,10 +95,10 @@ export interface ChatToolEntry {
 /** Union type for chronological chat rendering — either a text message or a tool call */
 export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry;
 
-export type ProviderName = "ado" | "github";
+export type ProviderName = "ado" | "github" | "linear";
 
 export interface WorkItemRef {
-  id: number;
+  id: string;
   provider: ProviderName;
 }
 
@@ -172,7 +172,7 @@ export interface Todo {
 // ── Enriched types ────────────────────────────────────────────────
 
 export interface EnrichedWorkItem {
-  id: number;
+  id: string;
   provider: ProviderName;
   title: string | null;
   state: string | null;
@@ -431,7 +431,7 @@ export async function reorderTasks(taskIds: string[]): Promise<Task[]> {
 
 export async function linkResource(
   taskId: string,
-  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number; provider?: ProviderName } | { type: "pr"; repoId: string; repoName?: string; prId: number; provider?: ProviderName },
+  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: string; provider?: ProviderName } | { type: "pr"; repoId: string; repoName?: string; prId: number; provider?: ProviderName },
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${taskId}/link`, resource);
   return data.task;
@@ -439,7 +439,7 @@ export async function linkResource(
 
 export async function unlinkResource(
   taskId: string,
-  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: number; provider?: ProviderName } | { type: "pr"; repoId: string; prId: number; provider?: ProviderName },
+  resource: { type: "session"; sessionId: string } | { type: "workItem"; workItemId: string; provider?: ProviderName } | { type: "pr"; repoId: string; prId: number; provider?: ProviderName },
 ): Promise<Task> {
   const res = await fetch(`${API_BASE}/api/tasks/${taskId}/link`, {
     method: "DELETE",
@@ -739,9 +739,15 @@ export interface GitHubProviderConfig {
   defaultRepo?: string;
 }
 
+export interface LinearProviderConfig {
+  apiKey: string;
+  workspace: string;
+}
+
 export interface ProvidersConfig {
   ado?: AdoProviderConfig;
   github?: GitHubProviderConfig;
+  linear?: LinearProviderConfig;
 }
 
 export type ThemePreference = "light" | "dark" | "system";

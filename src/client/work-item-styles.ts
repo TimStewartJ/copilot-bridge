@@ -24,6 +24,14 @@ export const WI_STATE_STYLES: Record<string, string> = {
   Resolved: "bg-success/15 text-success",
   Closed: "bg-text-faint/15 text-text-faint",
   Done: "bg-success/15 text-success",
+  // Linear states
+  Triage: "bg-warning/15 text-warning",
+  Backlog: "bg-text-muted/15 text-text-muted",
+  Todo: "bg-text-muted/15 text-text-muted",
+  Started: "bg-accent/15 text-accent",
+  Completed: "bg-success/15 text-success",
+  Cancelled: "bg-text-faint/15 text-text-faint",
+  Duplicate: "bg-text-faint/15 text-text-faint",
 };
 
 /** CSS dot class + label for PR statuses */
@@ -36,13 +44,13 @@ export const PR_STATUS_STYLES: Record<string, { dot: string; label: string }> = 
 /** Map a work item state string to a Tailwind color class (for Dashboard cards) */
 export function stateColor(state: string): string {
   const s = state.toLowerCase();
-  if (s === "active" || s === "in progress" || s === "committed")
+  if (s === "active" || s === "in progress" || s === "committed" || s === "started")
     return "bg-info/15 text-info";
-  if (s === "new" || s === "to do" || s === "proposed")
+  if (s === "new" || s === "to do" || s === "proposed" || s === "backlog" || s === "todo" || s === "triage")
     return "bg-text-muted/15 text-text-muted";
   if (s === "resolved" || s === "done" || s === "closed" || s === "completed")
     return "bg-success/15 text-success";
-  if (s === "removed")
+  if (s === "removed" || s === "cancelled" || s === "duplicate")
     return "bg-danger/15 text-danger";
   return "bg-text-muted/10 text-text-muted";
 }

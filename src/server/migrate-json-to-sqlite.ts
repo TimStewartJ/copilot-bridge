@@ -67,7 +67,7 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
     const workItems = Array.isArray(t.workItems)
       ? t.workItems
       : Array.isArray(t.workItemIds)
-        ? t.workItemIds.map((id: number) => ({ id, provider: "ado" }))
+        ? t.workItemIds.map((id: number) => ({ id: String(id), provider: "ado" }))
         : [];
 
     insertTask.run(
@@ -80,7 +80,7 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
       insertSession.run(t.id, sid);
     }
     for (const wi of workItems) {
-      insertWorkItem.run(t.id, wi.id, wi.provider ?? "ado");
+      insertWorkItem.run(t.id, String(wi.id), wi.provider ?? "ado");
     }
     for (const pr of t.pullRequests ?? []) {
       insertPR.run(t.id, pr.repoId, pr.repoName ?? null, pr.prId, pr.provider ?? "ado");

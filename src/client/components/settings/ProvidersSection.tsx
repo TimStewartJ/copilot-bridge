@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
-import type { AppSettings, GitHubProviderConfig, ProvidersConfig } from "../../api";
+import type { AppSettings, GitHubProviderConfig, LinearProviderConfig, ProvidersConfig } from "../../api";
 import { SettingsSection } from "./SettingsSection";
 import { ConfigCard } from "./ConfigCard";
 import { ProviderEditor, type ProviderEditorField } from "./ProviderEditor";
@@ -15,6 +15,11 @@ const GITHUB_FIELDS: ProviderEditorField[] = [
   { key: "defaultRepo", label: "Default repository (optional)", placeholder: "e.g. vscode" },
 ];
 
+const LINEAR_FIELDS: ProviderEditorField[] = [
+  { key: "workspace", label: "Workspace slug", placeholder: "e.g. my-company", required: true },
+  { key: "apiKey", label: "Personal API key", placeholder: "lin_api_...", required: true },
+];
+
 export function ProvidersSection({
   draft,
   setDraft,
@@ -23,7 +28,7 @@ export function ProvidersSection({
   setDraft: (d: AppSettings) => void;
 }) {
   const [editingProvider, setEditingProvider] = useState<
-    "ado" | "github" | null
+    "ado" | "github" | "linear" | null
   >(null);
 
   const providers = draft.providers ?? {};
@@ -34,6 +39,8 @@ export function ProvidersSection({
     if (updated.ado?.org || updated.ado?.project) cleaned.ado = updated.ado;
     if (updated.github?.owner || updated.github?.defaultRepo)
       cleaned.github = updated.github;
+    if (updated.linear?.workspace || updated.linear?.apiKey)
+      cleaned.linear = updated.linear;
     next.providers = Object.keys(cleaned).length > 0 ? cleaned : undefined;
     setDraft(next);
     setEditingProvider(null);
@@ -160,6 +167,60 @@ export function ProvidersSection({
                     </code>
                   </div>
                 )}
+              </div>
+            )}
+          </ConfigCard>
+        )}
+
+        {/* Linear Provider */}
+        {editingProvider === "linear" ? (
+          <ProviderEditor
+            title="Linear"
+            fields={LINEAR_FIELDS}
+            initialValues={
+              providers.linear
+                ? {
+                    workspace: providers.linear.workspace,
+                    apiKey: providers.linear.apiKey,
+                  }
+                : undefined
+            }
+            onSave={(values) => {
+              const cfg: LinearProviderConfig = { workspace: values.workspace, apiKey: values.apiKey };
+              updateProvider({ ...providers, linear: cfg });
+            }}
+            onClear={() =>
+              updateProvider({ ...providers, linear: undefined })
+            }
+            onCancel={() => setEditingProvider(null)}
+            isEditing={!!providers.linear}
+          />
+        ) : (
+          <ConfigCard
+            title="Linear"
+            badge={providers.linear ? configuredBadge : notConfiguredBadge}
+            onEdit={() => setEditingProvider("linear")}
+            onRemove={
+              providers.linear
+                ? () => updateProvider({ ...providers, linear: undefined })
+                : undefined
+            }
+            removeTitle="Remove"
+          >
+            {providers.linear && (
+              <div className="mt-2 space-y-1">
+                <div className="text-xs text-text-muted">
+                  <span className="text-text-faint">workspace:</span>{" "}
+                  <code className="text-text-secondary">
+                    {providers.linear.workspace}
+                  </code>
+                </div>
+                <div className="text-xs text-text-muted">
+                  <span className="text-text-faint">api key:</span>{" "}
+                  <code className="text-text-secondary">
+                    {providers.linear.apiKey.slice(0, 8)}••••••
+                  </code>
+                </div>
               </div>
             )}
           </ConfigCard>

@@ -34,7 +34,7 @@ export default function LinkDialog({
     switch (linkType) {
       case "workItem":
         if (!workItemId) return;
-        onLink({ type: "workItem", workItemId: Number(workItemId), provider });
+        onLink({ type: "workItem", workItemId: workItemId.trim(), provider });
         break;
       case "pr":
         if (!repoName || !prId) return;
@@ -105,7 +105,7 @@ export default function LinkDialog({
                 Provider
               </label>
               <div className="flex gap-1">
-                {(["ado", "github"] as const).map((p) => (
+                {(linkType === "pr" ? ["ado", "github"] as const : ["ado", "github", "linear"] as const).map((p) => (
                   <button
                     key={p}
                     onClick={() => handleProviderChange(p)}
@@ -115,7 +115,7 @@ export default function LinkDialog({
                         : "bg-bg-primary text-text-muted border border-border hover:text-text-secondary"
                     }`}
                   >
-                    {p === "ado" ? "Azure DevOps" : "GitHub"}
+                    {p === "ado" ? "Azure DevOps" : p === "github" ? "GitHub" : "Linear"}
                   </button>
                 ))}
               </div>
@@ -125,13 +125,13 @@ export default function LinkDialog({
           {linkType === "workItem" && (
             <div>
               <label className="text-xs text-text-muted block mb-1">
-                {provider === "github" ? "Issue Number" : "Work Item ID"}
+                {provider === "github" ? "Issue Number" : provider === "linear" ? "Issue Identifier" : "Work Item ID"}
               </label>
               <input
-                type="number"
+                type="text"
                 value={workItemId}
                 onChange={(e) => setWorkItemId(e.target.value)}
-                placeholder={provider === "github" ? "e.g., 42" : "e.g., 12345"}
+                placeholder={provider === "github" ? "e.g., 42" : provider === "linear" ? "e.g., ENG-123" : "e.g., 12345"}
                 autoFocus
                 className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
               />

@@ -196,23 +196,23 @@ export function createBridgeTools(ctx: AppContext) {
   return [
   defineTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "workItemId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
-      ctx.taskStore.linkWorkItem(args.taskId, args.workItemId, args.provider ?? "ado");
-      return { success: true, message: `Work item #${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
+      ctx.taskStore.linkWorkItem(args.taskId, String(args.workItemId), args.provider ?? "ado");
+      return { success: true, message: `Work item ${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
     },
   }),
   defineTool("task_unlink_work_item", {
     description: "Remove a work item from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "number", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github)" } }, required: ["taskId", "workItemId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github)" } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
-      ctx.taskStore.unlinkWorkItem(args.taskId, args.workItemId, args.provider);
-      return { success: true, message: `Work item #${args.workItemId} unlinked from task` };
+      ctx.taskStore.unlinkWorkItem(args.taskId, String(args.workItemId), args.provider);
+      return { success: true, message: `Work item ${args.workItemId} unlinked from task` };
     },
   }),
   defineTool("task_link_pr", {
     description: "Link a pull request to a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
       ctx.taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId, provider: args.provider ?? "ado" });
       return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
@@ -220,7 +220,7 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github"], description: "The provider (ado or github)" } }, required: ["taskId", "repoName", "prId"] },
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github)" } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
       ctx.taskStore.unlinkPR(args.taskId, args.repoName, args.prId, args.provider);
       return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
