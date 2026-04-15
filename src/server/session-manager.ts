@@ -786,6 +786,47 @@ export function createBridgeTools(ctx: AppContext) {
         }
       },
     }),
+    defineTool("docs_delete", {
+      description: "Delete a knowledge base page permanently. Returns whether the page was found and deleted. Cannot delete pages inside database collections — use docs_db_delete for those.",
+      parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" } }, required: ["path"] },
+      handler: async (args: any) => {
+        try {
+          const pagePath: string = args.path;
+          // Guard: don't allow deleting DB entries via this tool
+          const page = ctx.docsStore!.readPage(pagePath);
+          if (page?.isDbItem) {
+            return { error: `"${pagePath}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.` };
+          }
+          const canonicalPath = page?.path ?? pagePath;
+          const deleted = ctx.docsStore!.deletePage(pagePath);
+          if (deleted) ctx.docsIndex!.removePage(canonicalPath);
+          return { path: canonicalPath, deleted };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
+    defineTool("docs_db_delete", {
+      description: "Delete an entry from a database collection permanently. Removes the markdown file for the entry.",
+      parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, slug: { type: "string", description: "Entry slug (filename without .md, returned by docs_db_add or docs_db_query)" } }, required: ["folder", "slug"] },
+      handler: async (args: any) => {
+        try {
+          const schema = ctx.docsStore!.readSchema(args.folder);
+          if (!schema) return { error: `No database collection found at "${args.folder}"` };
+          const pagePath = `${args.folder}/${args.slug}`;
+          // Verify it's actually a DB entry
+          const page = ctx.docsStore!.readPage(pagePath);
+          if (page && !page.isDbItem) {
+            return { error: `"${pagePath}" is not a database entry` };
+          }
+          const deleted = ctx.docsStore!.deletePage(pagePath);
+          if (deleted) ctx.docsIndex!.removePage(pagePath);
+          return { folder: args.folder, slug: args.slug, deleted };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    }),
   ] : []),
 
     ...STAGING_TOOLS,

@@ -61,10 +61,28 @@ export function createDocsStore(docsDir: string) {
 
   // ── Path helpers ──────────────────────────────────────────────
 
+  /** Validate and split a user-supplied path into safe segments (no traversal, no absolute paths) */
+  function validatePathSegments(input: string, label = "path"): string[] {
+    const normalized = input.replace(/\\/g, "/").replace(/\.md$/, "");
+    if (!normalized || normalized.startsWith("/")) {
+      throw new Error(`Invalid ${label}: must be a non-empty relative path`);
+    }
+    const segments = normalized.split("/").filter(Boolean);
+    if (segments.length === 0) {
+      throw new Error(`Invalid ${label}: path is empty`);
+    }
+    for (const seg of segments) {
+      if (seg === "." || seg === "..") {
+        throw new Error(`Invalid ${label}: directory traversal ("${seg}") is not allowed`);
+      }
+    }
+    return segments;
+  }
+
   /** Convert page path (e.g. "incidents/march-outage") to absolute file path */
   function toFilePath(pagePath: string): string {
-    const normalized = pagePath.replace(/\\/g, "/").replace(/\.md$/, "");
-    return join(docsDir, ...normalized.split("/")) + ".md";
+    const segments = validatePathSegments(pagePath, "page path");
+    return join(docsDir, ...segments) + ".md";
   }
 
   /** Extract parent folder from a page path ("incidents/march-outage" → "incidents") */
@@ -114,7 +132,8 @@ export function createDocsStore(docsDir: string) {
 
   /** Find a unique slug in a folder, appending -2, -3, etc. on collision */
   function resolveSlug(folder: string, baseSlug: string): string {
-    const folderPath = join(docsDir, ...folder.split("/"));
+    const segments = validatePathSegments(folder, "folder");
+    const folderPath = join(docsDir, ...segments);
     let slug = baseSlug;
     let counter = 2;
     while (existsSync(join(folderPath, slug + ".md"))) {
@@ -125,12 +144,14 @@ export function createDocsStore(docsDir: string) {
   }
 
   function schemaPath(folder: string): string {
-    return join(docsDir, ...folder.split("/"), "_schema.yaml");
+    const segments = validatePathSegments(folder, "folder");
+    return join(docsDir, ...segments, "_schema.yaml");
   }
 
   // ── Schema operations ─────────────────────────────────────────
 
   function isDbFolder(folder: string): boolean {
+    if (!folder) return false; // root is never a DB folder
     return existsSync(schemaPath(folder));
   }
 
@@ -151,7 +172,8 @@ export function createDocsStore(docsDir: string) {
   }
 
   function writeSchema(folder: string, schema: DbSchema): DbSchema {
-    const folderPath = join(docsDir, ...folder.split("/"));
+    const segments = validatePathSegments(folder, "folder");
+    const folderPath = join(docsDir, ...segments);
     if (!existsSync(folderPath)) mkdirSync(folderPath, { recursive: true });
 
     const yamlContent = stringifyYaml({
@@ -237,7 +259,8 @@ export function createDocsStore(docsDir: string) {
     if (existsSync(filePath)) return { filePath, canonicalPath: pagePath, usedFolderIndexFallback: false };
 
     // Fall back: if pagePath is a folder with an index.md, use that
-    const indexPath = join(docsDir, ...pagePath.replace(/\\/g, "/").split("/"), "index.md");
+    const segments = validatePathSegments(pagePath, "page path");
+    const indexPath = join(docsDir, ...segments, "index.md");
     if (existsSync(indexPath)) return { filePath: indexPath, canonicalPath: pagePath, usedFolderIndexFallback: true };
 
     return null;
@@ -331,7 +354,7 @@ export function createDocsStore(docsDir: string) {
   // ── Tree listing ──────────────────────────────────────────────
 
   function listTree(folder?: string): DocTreeNode[] {
-    const rootPath = folder ? join(docsDir, ...folder.split("/")) : docsDir;
+    const rootPath = folder ? join(docsDir, ...validatePathSegments(folder, "folder")) : docsDir;
     if (!existsSync(rootPath)) return [];
 
     const entries = readdirSync(rootPath, { withFileTypes: true });
@@ -437,7 +460,7 @@ export function createDocsStore(docsDir: string) {
     fm.created = now;
     fm.modified = now;
 
-    const filePath = join(docsDir, ...folder.split("/"), slug + ".md");
+    const filePath = join(docsDir, ...validatePathSegments(folder, "folder"), slug + ".md");
     if (!existsSync(dirname(filePath))) mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, matter.stringify(body || "", fm), "utf-8");
 
@@ -479,7 +502,8 @@ export function createDocsStore(docsDir: string) {
   }
 
   function listDbEntries(folder: string): DbEntry[] {
-    const folderPath = join(docsDir, ...folder.split("/"));
+    const segments = validatePathSegments(folder, "folder");
+    const folderPath = join(docsDir, ...segments);
     if (!existsSync(folderPath)) return [];
 
     return readdirSync(folderPath, { withFileTypes: true })
@@ -553,7 +577,8 @@ export function createDocsStore(docsDir: string) {
   // ── Folder operations ─────────────────────────────────────────
 
   function deleteFolder(folder: string): boolean {
-    const folderPath = join(docsDir, ...folder.split("/"));
+    const segments = validatePathSegments(folder, "folder");
+    const folderPath = join(docsDir, ...segments);
     if (!existsSync(folderPath)) return false;
     rmSync(folderPath, { recursive: true });
     return true;
