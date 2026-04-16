@@ -23,7 +23,7 @@
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
