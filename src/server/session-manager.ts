@@ -26,6 +26,7 @@ import { createWebSearchTools } from "./web-search-tools.js";
 import { createBrowserFetchTools } from "./browser-fetch-tools.js";
 import { createBrowserExecTools } from "./browser-exec-tools.js";
 import { createBrowserSessionTools } from "./browser-session-tools.js";
+import { createComputerUseTools } from "./computer-use-tools.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -838,6 +839,8 @@ export function createBridgeTools(ctx: AppContext) {
     ...createBrowserExecTools(ctx),
 
     ...createBrowserSessionTools(ctx),
+
+    ...createComputerUseTools(ctx),
   ];
 }
 
