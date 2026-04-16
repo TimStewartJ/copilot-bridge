@@ -2,10 +2,10 @@
 
 import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
@@ -82,17 +82,12 @@ function run(cmd: string): { ok: boolean; output: string } {
 
 const DEPS_HASH_FILE = join(ROOT, "data", "deps-hash");
 
-/** Hash package.json + package-lock.json to detect dependency changes. */
+/** Hash package files and patch-package inputs to detect dependency changes. */
 function depsHash(): string {
-  const parts: string[] = [];
-  for (const f of ["package.json", "package-lock.json"]) {
-    const p = join(ROOT, f);
-    parts.push(existsSync(p) ? readFileSync(p, "utf-8") : "");
-  }
-  return createHash("sha256").update(parts.join("\0")).digest("hex");
+  return dependencySyncHash(ROOT);
 }
 
-/** Run npm install if package.json or package-lock.json have changed since last install. */
+/** Run npm install if dependency inputs have changed since last install. */
 function ensureDeps(): boolean {
   const current = depsHash();
   try {
@@ -101,12 +96,19 @@ function ensureDeps(): boolean {
     }
   } catch {}
 
+  const prepared = preparePatchedPackagesForInstall(ROOT);
+  if (prepared.packages.length > 0) {
+    log(`Prepared patched packages for npm install: ${prepared.packages.join(", ")}`);
+  }
+
   log("Dependencies changed — running npm install...");
   const result = run("npm install --no-audit --no-fund --include=dev");
   if (!result.ok) {
+    prepared.restore();
     log(`npm install failed: ${result.output.slice(-500)}`);
     return false;
   }
+  prepared.discard();
   // Update stored hash
   const dataDir = join(ROOT, "data");
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });

@@ -9,6 +9,7 @@ import { execSync } from "node:child_process";
 import { join, dirname, resolve, basename, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
@@ -486,25 +487,22 @@ export function createBridgeTools(ctx: AppContext) {
         return { success: true, message: "Already up to date — no restart needed." };
       }
 
-      // Sync deps if package files changed
-      const depsChanged = run(`git diff "${preUpdateSha}" HEAD --name-only -- package.json package-lock.json`);
+      // Sync deps if package files or patch-package inputs changed
+      const depsChanged = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
       if (depsChanged.ok && depsChanged.output.trim()) {
-        const npmResult = run("npm install --no-audit --no-fund");
+        const prepared = preparePatchedPackagesForInstall(REPO_ROOT);
+        const npmResult = run("npm install --no-audit --no-fund --include=dev");
         if (!npmResult.ok) {
+          prepared.restore();
           return {
             success: false,
             error: `Pulled to ${newSha} but npm install failed. The launcher will retry on restart.\n\n` + npmResult.output.slice(-300),
           };
         }
+        prepared.discard();
         // Update deps hash so launcher doesn't re-install
         try {
-          const { createHash } = await import("node:crypto");
-          const parts: string[] = [];
-          for (const f of ["package.json", "package-lock.json"]) {
-            const p = join(REPO_ROOT, f);
-            parts.push(existsSync(p) ? readFileSync(p, "utf-8") : "");
-          }
-          const hash = createHash("sha256").update(parts.join("\0")).digest("hex");
+          const hash = dependencySyncHash(REPO_ROOT);
           writeFileSync(join(dataDir, "deps-hash"), hash);
         } catch {}
       }

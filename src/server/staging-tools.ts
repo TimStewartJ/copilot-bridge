@@ -9,6 +9,7 @@ import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
@@ -25,20 +26,14 @@ const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 
 /**
- * Compare package.json between staging and production.
- * If different, replace the node_modules symlink with a real npm install
- * so new/removed dependencies are available for builds.
+ * Compare dependency inputs between staging and production.
+ * If package files or patch-package files differ, replace the node_modules
+ * symlink with a real npm install so builds use the correct dependency state.
  */
 function ensureStagingDeps(stagingDir: string): void {
-  const stagingPkg = join(stagingDir, "package.json");
-  const prodPkg = join(PRODUCTION_ROOT, "package.json");
-  if (!existsSync(stagingPkg) || !existsSync(prodPkg)) return;
+  if (dependencySyncHash(stagingDir) === dependencySyncHash(PRODUCTION_ROOT)) return;
 
-  const stagingContent = readFileSync(stagingPkg, "utf-8");
-  const prodContent = readFileSync(prodPkg, "utf-8");
-  if (stagingContent === prodContent) return;
-
-  log("Staging package.json differs from production — installing dependencies in staging...");
+  log("Staging dependency inputs differ from production — installing dependencies in staging...");
 
   // If node_modules is a symlink/junction, remove it so npm can create a real directory.
   // If it's already a real directory, leave it — npm install is incremental.
@@ -57,6 +52,11 @@ function ensureStagingDeps(stagingDir: string): void {
     }
   }
 
+  const prepared = preparePatchedPackagesForInstall(stagingDir);
+  if (prepared.packages.length > 0) {
+    log(`Prepared patched packages for staging install: ${prepared.packages.join(", ")}`);
+  }
+
   // Use a longer timeout (5 min) — clean installs can be slow
   try {
     const output = execSync("npm install --no-audit --no-fund --include=dev", {
@@ -64,8 +64,10 @@ function ensureStagingDeps(stagingDir: string): void {
       encoding: "utf-8",
       timeout: 300_000,
     });
+    prepared.discard();
     log("Staging npm install succeeded");
   } catch (err: any) {
+    prepared.restore();
     const errOutput = err.stderr || err.stdout || String(err);
     log(`Warning: staging npm install failed: ${errOutput.slice(-300)}`);
     // Fall back to re-linking production node_modules so builds at least attempt to work
@@ -777,24 +779,24 @@ export const STAGING_TOOLS = [
       const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
       log(`Merged to production: ${commitSha}`);
 
-      // Install deps if package.json or package-lock.json changed
-      const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- package.json package-lock.json`, PRODUCTION_ROOT);
+      // Install deps if package files or patch-package inputs changed
+      const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
       if (pkgChanged.ok && pkgChanged.output.trim()) {
-        log("Package files changed — running npm install in production...");
+        log("Dependency inputs changed — running npm install in production...");
+        const prepared = preparePatchedPackagesForInstall(PRODUCTION_ROOT);
+        if (prepared.packages.length > 0) {
+          log(`Prepared patched packages for production install: ${prepared.packages.join(", ")}`);
+        }
         const npmResult = run("npm install --no-audit --no-fund --include=dev", PRODUCTION_ROOT);
         if (!npmResult.ok) {
+          prepared.restore();
           log(`npm install failed (non-fatal): ${npmResult.output.slice(-300)}`);
         } else {
+          prepared.discard();
           log("npm install succeeded");
           // Update launcher deps hash so it doesn't re-install on restart
           try {
-            const { createHash } = await import("node:crypto");
-            const parts: string[] = [];
-            for (const f of ["package.json", "package-lock.json"]) {
-              const p = join(PRODUCTION_ROOT, f);
-              parts.push(existsSync(p) ? readFileSync(p, "utf-8") : "");
-            }
-            const hash = createHash("sha256").update(parts.join("\0")).digest("hex");
+            const hash = dependencySyncHash(PRODUCTION_ROOT);
             const hashFile = join(PRODUCTION_ROOT, "data", "deps-hash");
             writeFileSync(hashFile, hash);
           } catch {}

@@ -7,7 +7,7 @@ index d66438c..a236d5d 100644
    changes and branch diffs. Only surfaces issues that genuinely matter - bugs, security
    issues, logic errors. Never comments on style, formatting, or trivial matters.
 -model: claude-sonnet-4.5
-+model: gpt-5.4
++model: claude-opus-4.7
  tools:
    - "*"
  promptParts:
@@ -20,7 +20,7 @@ index 1083bbb..e43331b 100644
    Manages Copilot CLI MCP server configuration. Use when the user wants to add,
    remove, or modify MCP servers.
 -model: claude-haiku-4.5
-+model: gpt-5.4
++model: claude-opus-4.7
  contexts:
    - cli
  tools:
@@ -33,7 +33,7 @@ index ba59197..78a8a81 100644
    tools in a separate context window to search files and understand code structure.
    Safe to call in parallel.
 -model: claude-haiku-4.5
-+model: gpt-5.4
++model: claude-opus-4.7
  tools:
    - grep
    - glob
@@ -46,7 +46,7 @@ index 55001c5..32715c8 100644
    meticulously researched answers about codebases, APIs, libraries, and software
    architecture using GitHub's search and exploration tools.
 -model: claude-sonnet-4.6
-+model: gpt-5.4
++model: claude-opus-4.7
  tools:
    # GitHub MCP tools (using short 'github/' prefix which maps to 'github-mcp-server/')
    - github/get_me # IMPORTANT: Use this first to understand user context and org
@@ -59,7 +59,7 @@ index 21d10cb..2465224 100644
    Returns brief summary on success, full output on failure. Keeps main context
    clean by minimizing verbose output.
 -model: claude-haiku-4.5
-+model: gpt-5.4
++model: claude-opus-4.7
  tools:
    - "*"
  promptParts:
