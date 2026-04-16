@@ -53,7 +53,7 @@ import PullToRefresh from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
-import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc } from "./last-viewed";
+import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
 import { useAppBack } from "./hooks/useAppBack";
 
 export default function App() {
@@ -267,6 +267,16 @@ export default function App() {
     };
   }, [activeSessionId, activeTaskId, markRead]);
 
+  // Track last-active task and quick chat for tab restore
+  useEffect(() => {
+    if (activeTaskId) setLastActiveTask(activeTaskId);
+  }, [activeTaskId]);
+  useEffect(() => {
+    if (activeSessionId && !activeTaskId && quickChatsMode) {
+      setLastActiveQuickChat(activeSessionId);
+    }
+  }, [activeSessionId, activeTaskId, quickChatsMode]);
+
   // Re-mark the active session as read when its activity timestamp advances
   // (e.g., busy→idle transition) while the user is still viewing it.
   const activeSessionActivity = useMemo(() => {
@@ -345,13 +355,26 @@ export default function App() {
   };
 
   const handleSelectQuickChats = () => {
+    const lastChatId = getLastActiveQuickChat();
+    // Validate the remembered chat still exists as an orphan (not linked to a task)
+    const isValidQuickChat = lastChatId &&
+      globalSessions.some((s) => s.sessionId === lastChatId && !s.archived) &&
+      !tasks.some((t) => t.sessionIds.includes(lastChatId));
+
     if (isMobile) {
       setSelectedTask(null);
-      navigate("/chats");
+      if (isValidQuickChat) {
+        navigate(`/sessions/${lastChatId}`);
+      } else {
+        navigate("/chats");
+      }
     } else {
-      // On desktop, toggle the quick chats section open in the rail
+      if (isValidQuickChat) {
+        navigate(`/sessions/${lastChatId}`);
+      } else {
+        navigate("/chats");
+      }
       if (!railExpanded) setRailExpanded(true);
-      persistQuickChatsExpanded((v) => !v);
     }
   };
 
@@ -396,15 +419,32 @@ export default function App() {
     ).length;
   }, [globalSessions, isUnread]);
 
+  const handleRailTabChange = (tab: "tasks" | "chats") => {
+    if (tab === "tasks") {
+      const lastTaskId = getLastActiveTask();
+      if (lastTaskId) {
+        const task = tasks.find((t) => t.id === lastTaskId);
+        if (task) {
+          handleSelectTask(lastTaskId);
+          return;
+        }
+      }
+      setSelectedTask(null);
+      navigate("/");
+    } else {
+      handleSelectQuickChats();
+    }
+  };
+
   const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "docs" | "settings") => {
     switch (tab) {
       case "home": navigate("/dashboard"); break;
-      case "tasks": handleGoHome(); break;
+      case "tasks": handleRailTabChange("tasks"); break;
       case "chats": handleSelectQuickChats(); break;
       case "docs": handleOpenDocs(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [navigate, handleGoHome, handleSelectQuickChats, handleOpenDocs, handleOpenSettings]);
+  }, [navigate, handleRailTabChange, handleSelectQuickChats, handleOpenDocs, handleOpenSettings]);
 
   const handleSelectSession = (sessionId: string) => {
     if (activeTaskId) {
@@ -494,6 +534,7 @@ export default function App() {
   const handleDeleteTask = async (taskId: string) => {
     try {
       await deleteTask(taskId);
+      clearLastActiveTask(taskId);
       setSelectedTask(null);
       navigate("/");
       await invalidateTasks();
@@ -666,6 +707,7 @@ export default function App() {
   const handleDeleteSession = async (sessionId: string) => {
     clearDraft(sessionId);
     clearLastViewedSession(sessionId);
+    clearLastActiveQuickChat(sessionId);
     const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
     // Animate out before removing
     setExitingIds((prev) => new Set(prev).add(sessionId));
@@ -904,6 +946,7 @@ export default function App() {
         archivingIds={archivingIds}
         exitingIds={exitingIds}
         onBulkAction={handleBulkAction}
+        onRailTabChange={handleRailTabChange}
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
