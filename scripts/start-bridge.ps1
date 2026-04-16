@@ -17,6 +17,12 @@ if (Test-Path $envFile) {
   }
 }
 
+# Ensure global npm bin dir is on PATH (may be missing when launched by Task Scheduler)
+$globalNpm = "C:\ProgramData\global-npm"
+if ((Test-Path $globalNpm) -and ($env:PATH -notlike "*$globalNpm*")) {
+  $env:PATH = "$globalNpm;$env:PATH"
+}
+
 # Find Node.js — override with BRIDGE_NODE_PATH env var (from .env or environment)
 if ($env:BRIDGE_NODE_PATH) {
   $nodePath = $env:BRIDGE_NODE_PATH
