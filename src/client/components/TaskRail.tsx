@@ -61,6 +61,7 @@ interface TaskRailProps {
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
+  onRailTabChange?: (tab: "tasks" | "chats") => void;
 }
 
 const STATUS_BG: Record<Task["status"], string> = {
@@ -114,6 +115,7 @@ export default function TaskRail({
   archivingIds,
   exitingIds,
   onBulkAction,
+  onRailTabChange,
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
@@ -434,7 +436,7 @@ export default function TaskRail({
       {/* ── Tab bar ─────────────────────────────────────────── */}
       <div className="flex items-center border-b border-border">
         <button
-          onClick={() => setRailTab("tasks")}
+          onClick={() => { setRailTab("tasks"); onRailTabChange?.("tasks"); }}
           className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative ${
             railTab === "tasks"
               ? "text-text-primary"
@@ -453,7 +455,7 @@ export default function TaskRail({
           )}
         </button>
         <button
-          onClick={() => setRailTab("chats")}
+          onClick={() => { setRailTab("chats"); onRailTabChange?.("chats"); }}
           className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative ${
             railTab === "chats"
               ? "text-text-primary"
