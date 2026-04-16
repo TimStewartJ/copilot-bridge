@@ -1,39 +1,47 @@
 # Copilot Bridge
 
-Today, with agentic AI, code is easy to produce. I think the future is people building their own AI agents. These agents are personal tools shaped to how people work, not generalized products. This is my take on that, and this project will therefore be pretty opinionated as a result.
+Copilot Bridge is a local, task-centric AI workspace built on the GitHub Copilot SDK. It combines persistent Copilot sessions, tasks, notes, docs, schedules, linked work, and tool-rich automation in one opinionated app.
+
+This repo is intentionally personal. The goal is not to build a generic SaaS product, but to shape an AI workspace around how one person actually works and then keep iterating on it.
+
+## Why It Is Interesting
+
+- **Task-centric instead of chat-centric** - sessions live next to notes, todos, schedules, docs, and linked work.
+- **Persistent local workspace** - SQLite-backed app state plus a markdown knowledge base means work survives restarts and browser refreshes.
+- **Large tool surface** - the agent can manage tasks, tags, todos, docs, schedules, browser sessions, web search, and optional desktop automation from inside the same workspace.
+- **Built to improve itself** - launcher-managed restart, update, staging preview, and rollback flows make local self-iteration practical.
 
 ## What It Does
 
-- **Task management** — Create tasks, link ADO work items / PRs / Copilot sessions, take notes
-- **Copilot chat** — Full agentic Copilot sessions with ADO, GitHub, and local tools
-- **SSE streaming** — Real-time streamed responses with tool call indicators
-- **Session persistence** — All sessions survive restarts, navigating away, closing the browser
-- **Self-iteration** — The agent can edit its own source code and restart the server safely
-- **Remote access** — Dev tunnel or your own public ingress, optional webhook notification on startup
+- **Task workspace** - tasks, task groups, tags, notes, todos, linked sessions, linked work items, linked pull requests, and task dashboards.
+- **Persistent Copilot sessions** - quick chats and task-scoped chats with SSE streaming, tool call indicators, unread state, drafts, and archive support.
+- **Knowledge base** - markdown pages, wikilinks, preview sheets, and database-style collections for structured notes.
+- **Schedules** - cron or one-shot prompts that can create a fresh session or reuse an existing one.
+- **Provider enrichment** - optional Azure DevOps, GitHub, and Linear integrations for richer work item and pull request cards.
+- **Tool-rich automation** - built-in task/doc/schedule tools, web search, browser fetch/exec/session tools, and optional computer-use tools.
+- **Workspace customization** - model, reasoning effort, agent identity, custom instructions, theme, favicon, and MCP server registry from the UI.
+- **Remote-friendly local deployment** - dev tunnels or your own ingress, optional startup webhooks, and canonical public URL support for previews.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Launcher (src/launcher.ts)                     │
-│  Starts server + dev tunnel + webhook notify     │
-│  Watches for self_restart signals               │
-│  Auto-checkpoint (git) + build + rollback       │
-├─────────────────────────────────────────────────┤
-│  Express Server (src/server/)                   │
-│  ├─ REST API: tasks, sessions, chat             │
-│  ├─ SSE streaming via EventBus                  │
-│  ├─ Copilot SDK (CopilotClient)                 │
-│  │   ├─ ADO MCP (work items, PRs, pipelines)    │
-│  │   └─ Custom tools (task mgmt, self_restart)  │
-│  └─ Task store (JSON persistence)               │
-├─────────────────────────────────────────────────┤
-│  React Frontend (src/client/)                   │
-│  ├─ Dashboard with task/session overview        │
-│  ├─ Task detail view (links, notes, chat)       │
-│  ├─ Chat with markdown + streaming              │
-│  └─ Tailwind CSS dark theme                     │
-└─────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│ Launcher (src/launcher.ts)                         │
+│ - Starts server + optional tunnel/webhook          │
+│ - Handles self_restart / self_update               │
+│ - Performs build, health checks, rollback          │
+├────────────────────────────────────────────────────┤
+│ Express server (src/server/)                       │
+│ - REST API + SSE streams                           │
+│ - Copilot SDK session manager + custom tools       │
+│ - SQLite stores (tasks, schedules, settings, etc.) │
+│ - Docs KB, browser tools, staging tools            │
+├────────────────────────────────────────────────────┤
+│ React client (src/client/)                         │
+│ - Dashboard, task rail/panel, chat, docs, settings │
+│ - React Query + streaming UI                       │
+│ - Mobile-friendly touches like pull-to-refresh     │
+└────────────────────────────────────────────────────┘
 ```
 
 ## Getting Started
@@ -43,6 +51,8 @@ Today, with agentic AI, code is easy to produce. I think the future is people bu
 - Node.js 22+ (uses `node:sqlite`)
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`npm install -g @github/copilot`)
 - [Dev Tunnel CLI](https://aka.ms/devtunnels) (optional, for remote access)
+- Optional provider config for Azure DevOps, GitHub, or Linear if you want enriched work items and pull requests
+- Optional `COMPUTER_USE=true` if you want desktop automation tools on a trusted local machine
 
 ### Install
 
@@ -50,7 +60,7 @@ Today, with agentic AI, code is easy to produce. I think the future is people bu
 git clone https://github.com/timstewartj/copilot-bridge.git
 cd copilot-bridge
 npm install
-cp .env.example .env   # Edit .env with your settings (optional)
+cp .env.example .env   # Edit .env with your settings if needed
 ```
 
 The launcher and direct server entrypoint load `.env` automatically at startup. Existing exported environment variables still win over values from the file.
@@ -58,9 +68,30 @@ The launcher and direct server entrypoint load `.env` automatically at startup. 
 ### Run (Development)
 
 ```bash
-npm run dev          # Starts launcher (server + tunnel + webhook notify)
-npm run dev:server   # Server only (no launcher/tunnel)
-npm run dev:client   # Vite dev server with HMR (port 5173)
+npm run dev          # Launcher + server + tunnel/webhook support
+npm run dev:server   # Server only
+npm run dev:client   # Vite dev server with HMR
+```
+
+### Fastest Path to Value
+
+If you are opening the bridge for the first time, keep it simple:
+
+1. Run `npm run dev` and open the bridge in your browser.
+2. Go to **Settings** and pick your model, reasoning effort, theme, and favicon.
+3. Skip Azure DevOps/GitHub/Linear setup for now if you just want a clean local demo.
+4. Create a task, add a todo and a note, then start a task session.
+5. Open **Docs** and create a page or collection entry to exercise the knowledge base.
+6. Ask the agent to do something bridge-native, like create a schedule, rename the session, or search the web.
+
+You can get a lot of value on first run without any external work-tracking provider setup: tasks, notes, tags, docs, schedules, and local Copilot sessions all work locally.
+
+### Validate
+
+```bash
+npm test
+npm run test:coverage
+npm run build
 ```
 
 ### Build
@@ -100,50 +131,59 @@ pwsh scripts\stop-bridge.ps1    # Stop
 
 ```
 src/
-├── launcher.ts                 # Parent process: server + tunnel + restart
+├── launcher.ts                    # Parent process: lifecycle, tunnel, restart/update
 ├── server/
-│   ├── index.ts                # Express routes (sessions, chat, tasks)
-│   ├── session-manager.ts      # Copilot SDK wrapper + custom tools
-│   ├── task-store.ts           # Task CRUD with JSON persistence
-│   ├── event-bus.ts            # Per-session event buffer + pub/sub
-│   └── config.ts               # Port, MCP server configs
+│   ├── index.ts                   # Express bootstrap
+│   ├── api-router.ts              # REST API surface
+│   ├── session-manager.ts         # Copilot SDK wrapper + tool registry
+│   ├── db.ts                      # SQLite schema/bootstrap
+│   ├── task-store.ts              # Tasks, links, ordering
+│   ├── todo-store.ts              # Task/global todos
+│   ├── schedule-store.ts          # Scheduled sessions
+│   ├── docs-store.ts              # Markdown knowledge base
+│   ├── settings-store.ts          # App settings + MCP registry
+│   ├── staging-tools.ts           # staging_init / preview / deploy
+│   └── browser-*.ts               # Browser and web tooling
 └── client/
-    ├── App.tsx                 # Root: sidebar + main view routing
-    ├── api.ts                  # Typed API client functions
-    ├── useSessionStream.ts     # SSE hook for streaming responses
-    └── components/
-        ├── Sidebar.tsx         # Tasks | Sessions tabs
-        ├── TaskList.tsx        # Task list grouped by status
-        ├── TaskDetailView.tsx  # Task detail with links + notes
-        ├── ChatView.tsx        # Chat with streaming + history
-        ├── ChatInput.tsx       # Auto-expanding input
-        ├── MessageBubble.tsx   # Markdown rendering (react-markdown)
-        ├── NotesEditor.tsx     # Markdown editor with preview
-        ├── LinkDialog.tsx      # Modal to link work items/PRs/sessions
-        └── Dashboard.tsx       # Home view with stats + quick actions
+    ├── App.tsx                    # Root app shell + routing
+    ├── api.ts                     # Typed client API
+    ├── components/
+    │   ├── Dashboard.tsx          # Home dashboard
+    │   ├── TaskRail.tsx           # Task list and grouping UI
+    │   ├── TaskPanel.tsx          # Task details, notes, docs, schedules
+    │   ├── ChatView.tsx           # Session history + streaming chat
+    │   ├── DocsView.tsx           # Knowledge base UI
+    │   └── SettingsView.tsx       # Models, providers, appearance, MCP
+    └── hooks/queries/             # React Query data hooks
 
 scripts/
-├── start-bridge.ps1            # Start as hidden background process
-└── stop-bridge.ps1             # Stop all bridge processes
+├── start-bridge.ps1               # Start on Windows
+└── stop-bridge.ps1                # Stop on Windows
 
-data/                               # Runtime data (git-ignored)
-└── tasks.json                  # Task persistence
+data/                              # Runtime data (git-ignored)
+├── bridge.db                      # Primary SQLite store
+├── docs/                          # Markdown knowledge base
+└── ...                            # Logs, metadata, and runtime state
 ```
 
-## Self-Iteration
+## Self-Iteration and Local Deployment
 
-The agent can modify its own source code and restart:
+The bridge includes a few different maintenance paths:
 
-1. Agent edits files in `src/`
-2. Agent calls `self_restart` tool
-3. Launcher detects signal → git commit → vite build + tsc → health check
-4. If build passes → swap processes
-5. If build fails → git reset, restart with old code
-6. Max 3 consecutive failures before stopping
+1. **`self_restart`** - restart the bridge after local code/config changes, with launcher-managed build and rollback.
+2. **`self_update`** - pull the latest repo state, sync dependencies, and restart safely.
+3. **`staging_init` -> `staging_preview` -> `staging_deploy`** - make larger changes in an isolated worktree, preview them, then deploy after approval.
+
+The launcher is responsible for checkpointing, building, health checks, and recovering from bad restarts.
 
 ## Logs
 
+```bash
+tail -n 30 data/bridge.log
+tail -n 30 data/bridge-error.log
+```
+
 ```powershell
-Get-Content data\bridge.log -Tail 30      # stdout
-Get-Content data\bridge-error.log -Tail 30 # stderr
+Get-Content data\bridge.log -Tail 30
+Get-Content data\bridge-error.log -Tail 30
 ```
