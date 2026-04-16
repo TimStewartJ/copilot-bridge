@@ -361,26 +361,22 @@ export default function App() {
       globalSessions.some((s) => s.sessionId === lastChatId && !s.archived) &&
       !tasks.some((t) => t.sessionIds.includes(lastChatId));
 
-    if (isMobile) {
-      setSelectedTask(null);
-      if (isValidQuickChat) {
-        navigate(`/sessions/${lastChatId}`);
-      } else {
-        navigate("/chats");
-      }
+    if (isValidQuickChat) {
+      navigate(`/sessions/${lastChatId}`);
     } else {
-      if (isValidQuickChat) {
-        navigate(`/sessions/${lastChatId}`);
-      } else {
-        navigate("/chats");
-      }
-      if (!railExpanded) setRailExpanded(true);
+      navigate("/chats");
     }
+    if (!railExpanded) setRailExpanded(true);
   };
 
   const handleGoHome = () => {
     setSelectedTask(null);
     navigate("/");
+  };
+
+  const handleOpenQuickChatsList = () => {
+    setSelectedTask(null);
+    navigate("/chats");
   };
 
   const handleOpenSettings = () => {
@@ -439,12 +435,12 @@ export default function App() {
   const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "docs" | "settings") => {
     switch (tab) {
       case "home": navigate("/dashboard"); break;
-      case "tasks": handleRailTabChange("tasks"); break;
-      case "chats": handleSelectQuickChats(); break;
+      case "tasks": handleGoHome(); break;
+      case "chats": handleOpenQuickChatsList(); break;
       case "docs": handleOpenDocs(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [navigate, handleRailTabChange, handleSelectQuickChats, handleOpenDocs, handleOpenSettings]);
+  }, [navigate, handleGoHome, handleOpenQuickChatsList, handleOpenDocs, handleOpenSettings]);
 
   const handleSelectSession = (sessionId: string) => {
     if (activeTaskId) {
