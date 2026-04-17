@@ -1,7 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { getSessionActivityTime, type Session, type Task, type BatchAction } from "../api";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, CheckSquare, Square, SquareCheckBig, RotateCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, Square, SquareCheckBig, RotateCw } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -142,14 +142,12 @@ interface SessionListProps {
   onReloadSession?: (sessionId: string) => void;
   // Mark unread
   onMarkUnread?: (sessionId: string) => void;
+  onMarkAllRead?: () => void;
   // Draft indicator
   hasDraft?: (sessionId: string) => boolean;
   exitingIds?: Set<string>;
   className?: string;
-  // Multi-select / bulk actions
-  selectMode?: boolean;
-  selectedIds?: Set<string>;
-  onToggleSelect?: (sessionId: string) => void;
+  // Bulk actions
   onBulkAction?: (action: BatchAction, sessionIds: string[]) => void;
   // Lazy-load archived sessions
   onRequestArchived?: () => void;
@@ -175,12 +173,10 @@ export default function SessionList({
   onDuplicateSession,
   onReloadSession,
   onMarkUnread,
+  onMarkAllRead,
   hasDraft,
   exitingIds,
   className,
-  selectMode,
-  selectedIds,
-  onToggleSelect,
   onBulkAction,
   onRequestArchived,
   archivedLoaded,
@@ -190,6 +186,9 @@ export default function SessionList({
   const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
   const [copied, setCopied] = useState(false);
   const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const anchorRef = useRef<string | null>(null);
 
   const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
 
@@ -199,9 +198,67 @@ export default function SessionList({
   const ctxLinkedTask = ctxMenu && tasks
     ? tasks.find((t) => t.sessionIds.includes(ctxMenu.id))
     : null;
+  const canSelectFromMenu = !!onBulkAction && !!ctxSession && !ctxSession.archived;
+  const canReloadFromMenu = !!onReloadSession && !!ctxSession;
+  const canDuplicateFromMenu = !!onDuplicateSession && !!ctxSession;
+  const canArchiveFromMenu = !!onArchiveSession && !!ctxSession;
+  const canMarkUnreadFromMenu = !!ctxSession
+    && !!onMarkUnread
+    && !isUnread?.(ctxSession.sessionId, getSessionActivityTime(ctxSession));
+  const canLinkToTaskFromMenu = !!ctxSession && !taskContext && !!onLinkToTask && !!tasks;
+  const canUnlinkFromTaskFromMenu = !!ctxSession && !!taskContext && !!onUnlinkFromTask;
+  const canDeleteFromMenu = !!onDeleteSession && !!ctxSession;
+  const hasEditSection =
+    canDuplicateFromMenu
+    || canArchiveFromMenu
+    || canMarkUnreadFromMenu
+    || canLinkToTaskFromMenu
+    || canUnlinkFromTaskFromMenu;
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
+  const visibleSessions = showArchived ? [...activeSessions, ...archivedSessions] : activeSessions;
+  const unreadCount = activeSessions.filter(
+    (session) => !session.archived && isUnread?.(session.sessionId, getSessionActivityTime(session)),
+  ).length;
+  const showQuickChatHeader = !!onMarkAllRead;
+
+  useEffect(() => {
+    const validSessions = selectMode ? activeSessions : sessions;
+    const validIds = new Set(validSessions.map((session) => session.sessionId));
+    if (anchorRef.current && !validIds.has(anchorRef.current)) {
+      anchorRef.current = null;
+    }
+    setSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (validIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [activeSessions, selectMode, sessions]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    anchorRef.current = null;
+  }, []);
+
+  const handleBulkAction = useCallback((action: BatchAction, ids: string[]) => {
+    onBulkAction?.(action, ids);
+    exitSelectMode();
+  }, [onBulkAction, exitSelectMode]);
 
   const renderItem = (session: Session) => {
     const id = session.sessionId;
@@ -220,15 +277,69 @@ export default function SessionList({
           : isArch
             ? "bg-text-faint"
             : "bg-text-faint";
+    const { onClick: guardedClick, ...longPressBindings } = bindLongPress(id, () => onSelectSession(id));
 
-    const handleClick = selectMode && onToggleSelect
-      ? () => onToggleSelect(id)
-      : undefined;
+    const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+      const canBulkSelect = !!onBulkAction && !session.archived;
+      const isToggleKey = canBulkSelect && (e.metaKey || e.ctrlKey);
+      const isRangeKey = canBulkSelect && e.shiftKey;
+
+      if (isRangeKey) {
+        e.preventDefault();
+        setSelectMode(true);
+        const anchorIndex = anchorRef.current
+          ? activeSessions.findIndex((activeSession) => activeSession.sessionId === anchorRef.current)
+          : -1;
+        const currentIndex = activeSessions.findIndex((activeSession) => activeSession.sessionId === id);
+        if (anchorIndex >= 0 && currentIndex >= 0) {
+          const start = Math.min(anchorIndex, currentIndex);
+          const end = Math.max(anchorIndex, currentIndex);
+          const rangeIds = activeSessions.slice(start, end + 1).map((activeSession) => activeSession.sessionId);
+          setSelectedIds((prev) => {
+            if (isToggleKey) {
+              const next = new Set(prev);
+              for (const rangeId of rangeIds) next.add(rangeId);
+              return next;
+            }
+            return new Set(rangeIds);
+          });
+          return;
+        }
+        setSelectedIds((prev) => {
+          if (isToggleKey) {
+            const next = new Set(prev);
+            next.add(id);
+            return next;
+          }
+          return new Set([id]);
+        });
+        anchorRef.current = id;
+        return;
+      }
+
+      if (isToggleKey) {
+        e.preventDefault();
+        setSelectMode(true);
+        toggleSelect(id);
+        anchorRef.current = id;
+        return;
+      }
+
+      if (selectMode && onBulkAction) {
+        toggleSelect(id);
+        anchorRef.current = id;
+        return;
+      }
+
+      guardedClick();
+      if (!session.archived) anchorRef.current = id;
+    };
 
     return (
       <div key={id} className={`group relative min-w-0${isExiting ? " animate-session-exit" : ""}`}>
         <button
-          {...(selectMode ? { onClick: handleClick } : bindLongPress(id, () => onSelectSession(id)))}
+          {...(selectMode ? {} : longPressBindings)}
+          onClick={handleClick}
           title={session.summary || id}
           className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
             selectMode && isSelected
@@ -277,17 +388,44 @@ export default function SessionList({
 
   return (
     <div className={className ?? s.wrapper}>
-      {!selectMode && (
+      {selectMode ? (
+        <div className="flex items-center gap-1 mb-1">
+          <button
+            onClick={exitSelectMode}
+            className="text-xs px-2 py-0.5 rounded text-accent bg-accent/10 transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      ) : showQuickChatHeader ? (
+        <div className="flex items-center gap-1 mb-1">
+          <button
+            onClick={onNewSession}
+            className="flex-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
+          >
+            {newButtonLabel}
+          </button>
+          {unreadCount > 0 && (
+            <button
+              onClick={onMarkAllRead}
+              className="p-2 rounded-md text-text-muted hover:text-accent hover:bg-bg-hover transition-colors"
+              title="Mark all as read"
+            >
+              <CheckCheck size={14} />
+            </button>
+          )}
+        </div>
+      ) : (
         <button onClick={onNewSession} className={s.newButton}>
           {newButtonLabel}
         </button>
       )}
-      {selectMode && onBulkAction && selectedIds && onToggleSelect && (
+      {selectMode && onBulkAction && (
         <BulkActionBar
           activeSessions={activeSessions}
           selectedIds={selectedIds}
-          onToggleSelect={onToggleSelect}
-          onBulkAction={onBulkAction}
+          onToggleSelect={toggleSelect}
+          onBulkAction={handleBulkAction}
           isUnread={isUnread}
         />
       )}
@@ -298,7 +436,7 @@ export default function SessionList({
           <div className={s.listGap}>
             {activeSessions.map(renderItem)}
           </div>
-          {(archivedSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
+          {!selectMode && (archivedSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
             <>
               <button
                 onClick={() => {
@@ -327,6 +465,18 @@ export default function SessionList({
       {/* Context menu */}
       {ctxMenu && (
         <ContextMenu position={ctxMenu} onClose={closeMenu}>
+          {canSelectFromMenu && (
+            <CtxItem
+              icon={<SquareCheckBig size={14} />}
+              label="Select"
+              onClick={() => {
+                setSelectMode(true);
+                setSelectedIds(new Set([ctxMenu.id]));
+                anchorRef.current = ctxMenu.id;
+                closeMenu();
+              }}
+            />
+          )}
           <button
             className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
             onClick={() => {
@@ -338,50 +488,51 @@ export default function SessionList({
             {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
             {copied ? "Copied!" : "Copy Session ID"}
           </button>
-          {onDuplicateSession && ctxSession && (
-            <CtxItem
-              icon={<CopyPlus size={14} />}
-              label="Duplicate"
-              disabled={ctxSession.busy}
-              onClick={() => {
-                onDuplicateSession(ctxMenu.id);
-                closeMenu();
-              }}
-            />
-          )}
-          {onArchiveSession && ctxSession && (
-            <CtxItem
-              icon={ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-              label={ctxSession.archived ? "Unarchive" : "Archive"}
-              onClick={() => {
-                onArchiveSession(ctxMenu.id, !ctxSession.archived);
-                closeMenu();
-              }}
-            />
-          )}
-          {onReloadSession && ctxSession && (
+          {canReloadFromMenu && (
             <CtxItem
               icon={<RotateCw size={14} />}
               label="Reload MCPs"
               disabled={ctxSession.busy}
               onClick={() => {
-                onReloadSession(ctxMenu.id);
+                onReloadSession(ctxSession.sessionId);
                 closeMenu();
               }}
             />
           )}
-          {onMarkUnread && ctxSession && !isUnread?.(ctxMenu.id, getSessionActivityTime(ctxSession)) && (
+          {(hasEditSection || canDeleteFromMenu) && <CtxDivider />}
+          {canDuplicateFromMenu && (
+            <CtxItem
+              icon={<CopyPlus size={14} />}
+              label="Duplicate"
+              disabled={ctxSession.busy}
+              onClick={() => {
+                onDuplicateSession(ctxSession.sessionId);
+                closeMenu();
+              }}
+            />
+          )}
+          {canArchiveFromMenu && (
+            <CtxItem
+              icon={ctxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+              label={ctxSession.archived ? "Unarchive" : "Archive"}
+              onClick={() => {
+                onArchiveSession(ctxSession.sessionId, !ctxSession.archived);
+                closeMenu();
+              }}
+            />
+          )}
+          {canMarkUnreadFromMenu && (
             <CtxItem
               icon={<EyeOff size={14} />}
               label="Mark Unread"
               onClick={() => {
-                onMarkUnread(ctxMenu.id);
+                onMarkUnread(ctxSession.sessionId);
                 closeMenu();
               }}
             />
           )}
-          {/* Global variant: Link to Task */}
-          {variant === "global" && onLinkToTask && tasks && (
+          {/* Unlinked sessions: Link or move to task */}
+          {canLinkToTaskFromMenu && (
             <>
               {ctxLinkedTask && (
                 <div className="px-3 py-1.5 text-text-faint flex items-center gap-2 text-xs">
@@ -393,36 +544,36 @@ export default function SessionList({
                 icon={<Link size={14} />}
                 label={ctxLinkedTask ? "Move to Task…" : "Link to Task…"}
                 onClick={() => {
-                  const sid = ctxMenu.id;
+                  const sid = ctxSession.sessionId;
                   closeMenu();
                   setShowTaskPicker(sid);
                 }}
               />
             </>
           )}
-          {/* Compact variant (task context): Unlink from Task */}
-          {variant === "compact" && taskContext && onUnlinkFromTask && (
+          {/* Task-linked sessions: unlink from current task */}
+          {canUnlinkFromTaskFromMenu && (
             <CtxItem
               icon={<Unlink size={14} />}
               label="Unlink from Task"
               className="text-warning"
               onClick={() => {
-                onUnlinkFromTask(ctxMenu.id, taskContext.id);
+                onUnlinkFromTask(ctxSession.sessionId, taskContext.id);
                 closeMenu();
               }}
             />
           )}
           {/* Delete session */}
-          {onDeleteSession && ctxSession && (
+          {hasEditSection && canDeleteFromMenu && <CtxDivider />}
+          {canDeleteFromMenu && (
             <>
-              <CtxDivider />
               <CtxItem
                 icon={<Trash2 size={14} />}
                 label="Delete"
                 className="text-error"
                 disabled={ctxSession.busy}
                 onClick={() => {
-                  onDeleteSession(ctxMenu.id);
+                  onDeleteSession(ctxSession.sessionId);
                   closeMenu();
                 }}
               />

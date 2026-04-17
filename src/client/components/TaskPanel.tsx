@@ -292,6 +292,7 @@ export default function TaskPanel({
         <div>
           <SectionLabel label="Sessions" count={linkedSessions.length} />
           <SessionList
+            key={task.id}
             variant="compact"
             sessions={linkedSessions}
             activeSessionId={activeSessionId}
@@ -318,6 +319,7 @@ export default function TaskPanel({
             onDuplicateSession={onDuplicateSession}
             onReloadSession={onReloadSession}
             onMarkUnread={onMarkUnread}
+            onBulkAction={onBulkAction}
             hasDraft={hasDraft}
             onRequestArchived={onRequestArchived}
             archivedLoaded={archivedLoaded}

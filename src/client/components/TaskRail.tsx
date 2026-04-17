@@ -2,13 +2,13 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ArchiveRestore, Eye, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, CheckCheck, Link, Copy as CopyIcon, SquareCheckBig, Square, Tag, FileText, RotateCw, ListTodo, Trash2, Pin } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import NotesSheet from "./NotesSheet";
-import TaskPickerDialog from "./TaskPickerDialog";
 import EmptyState from "./shared/EmptyState";
+import SessionList from "./SessionList";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
@@ -60,6 +60,7 @@ interface TaskRailProps {
   archivedLoaded?: boolean;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
+  hasDraft?: (sessionId: string) => boolean;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
   onRailTabChange?: (tab: "tasks" | "chats") => void;
 }
@@ -114,6 +115,7 @@ export default function TaskRail({
   archivedLoaded,
   archivingIds,
   exitingIds,
+  hasDraft,
   onBulkAction,
   onRailTabChange,
 }: TaskRailProps) {
@@ -139,13 +141,6 @@ export default function TaskRail({
     }
     return { totalUnread, totalBusy, hasActivity: totalUnread > 0 || totalBusy > 0 };
   }, [orphanSessions, isUnread]);
-
-  const sortedOrphanSessions = useMemo(
-    () => orphanSessions
-      .filter((s) => !s.archived && !archivingIds?.has(s.sessionId) && !exitingIds?.has(s.sessionId))
-      .sort((a, b) => new Date(getSessionActivityTime(b) ?? 0).getTime() - new Date(getSessionActivityTime(a) ?? 0).getTime()),
-    [orphanSessions, archivingIds, exitingIds],
-  );
 
   const { nonArchived: sortedTasks, archived: archivedTasks } = useMemo(
     () => splitArchivedTasks(tasks),
@@ -174,14 +169,6 @@ export default function TaskRail({
     }
   }, [isQuickChatsActive, activeSessionId, activeTaskId]);
 
-  // Reset bulk-select when leaving chats tab
-  useEffect(() => {
-    if (railTab !== "chats") {
-      setQcSelectMode(false);
-      setQcSelectedIds(new Set());
-    }
-  }, [railTab]);
-
   // Badge counts for tabs (unread only — busy resolves to unread naturally)
   const taskTabUnread = useMemo(() => {
     let unread = 0;
@@ -198,40 +185,6 @@ export default function TaskRail({
   // Context menu state (tasks)
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
-
-  // Context menu state (quick chats)
-  const { bind: bindQcLongPress, menu: qcCtxMenu, closeMenu: rawQcCloseMenu, isTarget: isQcTarget } = useLongPressMenu<string>();
-  const closeQcMenu = useCallback(() => rawQcCloseMenu(), [rawQcCloseMenu]);
-  const qcCtxSession = qcCtxMenu ? orphanSessions.find((s) => s.sessionId === qcCtxMenu.id) : null;
-  const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
-
-  // Quick chat select mode (bulk actions)
-  const [qcSelectMode, setQcSelectMode] = useState(false);
-  const [qcSelectedIds, setQcSelectedIds] = useState<Set<string>>(new Set());
-  const qcToggleSelect = useCallback((id: string) => {
-    setQcSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-  const qcExitSelectMode = useCallback(() => {
-    setQcSelectMode(false);
-    setQcSelectedIds(new Set());
-  }, []);
-  const qcHandleBulkAction = useCallback((action: import("../api").BatchAction, ids: string[]) => {
-    onBulkAction?.(action, ids);
-    qcExitSelectMode();
-  }, [onBulkAction, qcExitSelectMode]);
-
-  // Archived orphan sessions
-  const [showArchivedQc, setShowArchivedQc] = useState(false);
-  const archivedOrphanSessions = useMemo(
-    () => orphanSessions.filter((s) => s.archived).sort(
-      (a, b) => new Date(getSessionActivityTime(b) ?? 0).getTime() - new Date(getSessionActivityTime(a) ?? 0).getTime(),
-    ),
-    [orphanSessions],
-  );
 
   // Group context menu state
   const [groupCtx, setGroupCtx] = useState<{ groupId: string; x: number; y: number } | null>(null);
@@ -634,171 +587,29 @@ export default function TaskRail({
             )}
           </>
         ) : (
-          /* ── Chats tab ───────────────────────────────────── */
-          <div className="space-y-0.5">
-            {/* Action bar: New + Mark all read + Select mode */}
-            <div className="flex items-center gap-1 mb-1">
-              {!qcSelectMode && onNewQuickChat && (
-                <button
-                  onClick={onNewQuickChat}
-                  className="flex-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
-                >
-                  + Quick Chat
-                </button>
-              )}
-              {!qcSelectMode && orphanIndicators.totalUnread > 0 && onMarkAllQuickChatsRead && (
-                <button
-                  onClick={onMarkAllQuickChatsRead}
-                  className="p-2 rounded-md text-text-muted hover:text-accent hover:bg-bg-hover transition-colors"
-                  title="Mark all as read"
-                >
-                  <CheckCheck size={14} />
-                </button>
-              )}
-              {qcSelectMode && (
-                <button
-                  onClick={qcExitSelectMode}
-                  className="text-xs px-2 py-0.5 rounded text-accent bg-accent/10 transition-colors"
-                >
-                  Done
-                </button>
-              )}
-            </div>
-            {/* Bulk action bar */}
-            {qcSelectMode && onBulkAction && (
-              <div className="flex items-center gap-1 flex-wrap text-[11px] px-2 py-1">
-                <button
-                  onClick={() => {
-                    const allIds = new Set(sortedOrphanSessions.map((s) => s.sessionId));
-                    setQcSelectedIds((prev) => prev.size === allIds.size ? new Set() : allIds);
-                  }}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
-                >
-                  {qcSelectedIds.size === sortedOrphanSessions.length && sortedOrphanSessions.length > 0
-                    ? <SquareCheckBig size={12} className="text-accent" />
-                    : <Square size={12} />}
-                  All
-                </button>
-                {qcSelectedIds.size > 0 && (
-                  <>
-                    <span className="text-text-faint">·</span>
-                    <span className="text-text-muted">{qcSelectedIds.size}</span>
-                    <span className="text-text-faint">·</span>
-                    <button
-                      onClick={() => qcHandleBulkAction("archive", [...qcSelectedIds])}
-                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-text-secondary"
-                    >
-                      <Archive size={12} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Delete ${qcSelectedIds.size} session${qcSelectedIds.size === 1 ? "" : "s"}? This cannot be undone.`))
-                          qcHandleBulkAction("delete", [...qcSelectedIds]);
-                      }}
-                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-bg-hover transition-colors text-error"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-            {sortedOrphanSessions.length === 0 && archivedOrphanSessions.length === 0 && (
-              <EmptyState
-                message="No quick chats yet"
-                sub="Start a chat without a task"
-              />
-            )}
-            {sortedOrphanSessions.map((session) => {
-              const isActive = session.sessionId === activeSessionId;
-              const busy = session.busy;
-              const unread = !busy && isUnread?.(session.sessionId, getSessionActivityTime(session));
-              const isSelected = qcSelectedIds.has(session.sessionId);
-              const handleClick = qcSelectMode
-                ? () => qcToggleSelect(session.sessionId)
-                : undefined;
-              return (
-                <button
-                  key={session.sessionId}
-                  {...(qcSelectMode ? { onClick: handleClick } : bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId)))}
-                  className={`relative w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${
-                    qcSelectMode && isSelected
-                      ? "bg-accent/10"
-                      : qcCtxMenu?.id === session.sessionId
-                        ? "bg-bg-hover ring-1 ring-border"
-                        : isActive
-                          ? "bg-bg-hover"
-                          : "hover:bg-bg-hover"
-                  } ${!qcSelectMode && isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
-                >
-                  {unread && !qcSelectMode && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-3 rounded-full bg-text-primary" />
-                  )}
-                  <div className="flex items-center">
-                    {qcSelectMode ? (
-                      isSelected
-                        ? <SquareCheckBig size={13} className="text-accent shrink-0 mr-1.5" />
-                        : <Square size={13} className="text-text-muted shrink-0 mr-1.5" />
-                    ) : busy ? (
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-info animate-pulse" />
-                    ) : unread ? (
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0 mr-1 bg-success" />
-                    ) : null}
-                    <span className={`truncate flex-1 text-xs ${unread ? "font-semibold" : "font-medium"}`}>
-                      {session.summary || "New chat"}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-text-muted mt-0.5">
-                    {timeAgo(getSessionActivityTime(session))}
-                    {session.diskSizeBytes > 0 && ` · ${(session.diskSizeBytes / 1024).toFixed(0)}K`}
-                  </div>
-                </button>
-              );
-            })}
-            {/* Archived quick chats */}
-            {!qcSelectMode && (archivedOrphanSessions.length > 0 || (onRequestArchived && !archivedLoaded)) && (
-              <>
-                <button
-                  onClick={() => {
-                    const willExpand = !showArchivedQc;
-                    setShowArchivedQc(willExpand);
-                    if (willExpand && !archivedLoaded && onRequestArchived) onRequestArchived();
-                  }}
-                  className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-1 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
-                >
-                  {showArchivedQc ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-                  <Archive size={10} />
-                  Archived{archivedLoaded ? ` (${archivedOrphanSessions.length})` : "…"}
-                </button>
-                {showArchivedQc && archivedOrphanSessions.map((session) => {
-                  const isActive = session.sessionId === activeSessionId;
-                  return (
-                    <button
-                      key={session.sessionId}
-                      {...bindQcLongPress(session.sessionId, () => onSelectSession?.(session.sessionId))}
-                      className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
-                        qcCtxMenu?.id === session.sessionId
-                          ? "bg-bg-hover ring-1 ring-border"
-                          : isActive
-                            ? "bg-bg-hover"
-                            : "hover:bg-bg-hover"
-                      } ${isQcTarget(session.sessionId) ? "scale-[0.97] bg-bg-hover" : ""}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="truncate flex-1 text-xs font-medium">
-                          {session.summary || "New chat"}
-                        </span>
-                        <span className="text-[10px] text-text-faint">archived</span>
-                      </div>
-                      <div className="text-[10px] text-text-muted mt-0.5">
-                        {timeAgo(getSessionActivityTime(session))}
-                      </div>
-                    </button>
-                  );
-                })}
-              </>
-            )}
-          </div>
+          <SessionList
+            variant="compact"
+            sessions={orphanSessions}
+            activeSessionId={activeSessionId ?? null}
+            onSelectSession={(sessionId) => onSelectSession?.(sessionId)}
+            onNewSession={() => onNewQuickChat?.()}
+            newButtonLabel="+ Quick Chat"
+            isUnread={isUnread}
+            onArchiveSession={onArchiveSession}
+            archivingIds={archivingIds}
+            exitingIds={exitingIds}
+            tasks={tasks}
+            onLinkToTask={onLinkToTask}
+            onDeleteSession={onDeleteSession}
+            onDuplicateSession={onDuplicateSession}
+            onReloadSession={onReloadSession}
+            onMarkUnread={onMarkUnread}
+            onMarkAllRead={onMarkAllQuickChatsRead}
+            hasDraft={hasDraft}
+            onBulkAction={onBulkAction}
+            onRequestArchived={onRequestArchived}
+            archivedLoaded={archivedLoaded}
+          />
         )}
       </div>
 
@@ -981,84 +792,6 @@ export default function TaskRail({
         );
       })()}
 
-      {/* Quick chat context menu */}
-      {qcCtxMenu && qcCtxSession && (
-        <ContextMenu position={qcCtxMenu} onClose={closeQcMenu}>
-          {onMarkUnread && (
-            <CtxItem
-              icon={<Eye size={14} />}
-              label="Mark unread"
-              onClick={() => { onMarkUnread(qcCtxSession.sessionId); closeQcMenu(); }}
-            />
-          )}
-          {onArchiveSession && (
-            <CtxItem
-              icon={qcCtxSession.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-              label={qcCtxSession.archived ? "Unarchive" : "Archive"}
-              onClick={() => { onArchiveSession(qcCtxSession.sessionId, !qcCtxSession.archived); closeQcMenu(); }}
-            />
-          )}
-          {onLinkToTask && (
-            <CtxItem
-              icon={<Link size={14} />}
-              label="Link to Task…"
-              onClick={() => { setShowTaskPicker(qcCtxSession.sessionId); closeQcMenu(); }}
-            />
-          )}
-          {onDuplicateSession && (
-            <CtxItem
-              icon={<CopyIcon size={14} />}
-              label="Duplicate"
-              onClick={() => { onDuplicateSession(qcCtxSession.sessionId); closeQcMenu(); }}
-            />
-          )}
-          {onReloadSession && (
-            <CtxItem
-              icon={<RotateCw size={14} />}
-              label="Reload MCPs"
-              disabled={qcCtxSession.busy}
-              onClick={() => { onReloadSession(qcCtxSession.sessionId); closeQcMenu(); }}
-            />
-          )}
-          {onBulkAction && (
-            <>
-              <CtxDivider />
-              <CtxItem
-                icon={<SquareCheckBig size={14} />}
-                label="Select"
-                onClick={() => {
-                  setQcSelectMode(true);
-                  setQcSelectedIds(new Set([qcCtxSession.sessionId]));
-                  closeQcMenu();
-                }}
-              />
-            </>
-          )}
-          {onDeleteSession && (
-            <>
-              <CtxDivider />
-              <CtxItem
-                icon={<Trash2 size={14} />}
-                label="Delete"
-                className="text-error"
-                onClick={() => { onDeleteSession(qcCtxSession.sessionId); closeQcMenu(); }}
-              />
-            </>
-          )}
-        </ContextMenu>
-      )}
-
-      {/* Task picker for linking quick chats */}
-      {showTaskPicker && onLinkToTask && (
-        <TaskPickerDialog
-          tasks={tasks}
-          onSelect={(taskId) => {
-            onLinkToTask(showTaskPicker, taskId);
-            setShowTaskPicker(null);
-          }}
-          onClose={() => setShowTaskPicker(null)}
-        />
-      )}
     </div>
   );
 }
