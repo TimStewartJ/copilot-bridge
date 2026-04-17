@@ -38,6 +38,13 @@ describe("SessionManager session config", () => {
     expect(cfg.systemMessage.content).toContain("Split independent claims into separate checks");
     expect(cfg.systemMessage.content).toContain("run those checks in parallel when practical");
     expect(cfg.systemMessage.content).toContain("Skip unnecessary browsing for purely local codebase work");
+    expect(cfg.systemMessage.sections.environment_context).toMatchObject({
+      action: "append",
+    });
+    expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
+    expect(cfg.systemMessage.sections.environment_context.content).toContain(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
     expect(cfg.systemMessage.sections.web_fetch).toMatchObject({
       action: "append",
     });

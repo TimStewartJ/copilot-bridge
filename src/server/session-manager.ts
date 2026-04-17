@@ -2,7 +2,7 @@
 // Universal tools — taskId is a parameter, same tools for every session
 
 import { CopilotClient, approveAll, defineTool } from "@github/copilot-sdk";
-import type { SectionOverride, SectionOverrideAction } from "@github/copilot-sdk";
+import type { SectionOverride } from "@github/copilot-sdk";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
@@ -1292,13 +1292,10 @@ export class SessionManager {
       }
     }
 
-    // Inject server-local time into environment context (dynamic per turn via transform)
+    // Upstream current_datetime now carries a local offset, but we still expose the
+    // server's IANA zone name for scheduling and timezone-specific prompts.
     const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    sections.environment_context = {
-      action: ((current: string) =>
-        `${current}\n* Server local time: ${new Date().toLocaleString("en-US", { timeZone: serverTz })} (${serverTz})`
-      ) as SectionOverrideAction,
-    };
+    sections.environment_context = { action: "append", content: `\n* Server timezone: ${serverTz}` };
 
     // Browser escalation guidance — teach the model to recognize web_fetch failures
     sections.web_fetch = { action: "append", content: BROWSER_GUIDANCE };
