@@ -43,6 +43,7 @@ import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
+import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -2354,6 +2355,12 @@ export class SessionManager {
 
     if (this.deps.browserSessionStore) {
       await this.deps.browserSessionStore.closeAll();
+    }
+
+    try {
+      await shutdownBridgeBrowser(getBridgeBrowserTarget(this.deps.copilotHome), this.deps.telemetryStore);
+    } catch (err) {
+      console.error("[browser] Primary browser shutdown failed:", err);
     }
 
     // Stop the SDK client

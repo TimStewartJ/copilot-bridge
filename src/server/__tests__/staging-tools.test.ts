@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const execSyncMock = vi.hoisted(() => vi.fn(() => ""));
 const triggerRestartPendingMock = vi.fn();
 const dependencySyncHashMock = vi.fn(() => "same-hash");
 const preparePatchedPackagesForInstallMock = vi.fn(() => ({
@@ -18,6 +19,14 @@ const buildPublicUrlMock = vi.fn(() => undefined);
 vi.mock("@github/copilot-sdk", () => ({
   defineTool: (name: string, config: Record<string, unknown>) => ({ name, ...config }),
 }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execSync: execSyncMock,
+  };
+});
 
 vi.mock("../session-manager.js", () => ({
   triggerRestartPending: triggerRestartPendingMock,
@@ -93,6 +102,8 @@ afterEach(() => {
   removeDirectoryLinkMock.mockReturnValue({ ok: true, output: "" });
   buildPublicUrlMock.mockReset();
   buildPublicUrlMock.mockReturnValue(undefined);
+  execSyncMock.mockReset();
+  execSyncMock.mockReturnValue("");
   vi.resetModules();
 });
 
@@ -167,6 +178,56 @@ describe("staging tools", () => {
     expect(log).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(
       "Failed to restore staged backend for preview-123 on attempt 1/2: still broken",
+    );
+  });
+
+  it("treats a failed staging branch snapshot as unavailable instead of empty", async () => {
+    execSyncMock.mockImplementation(() => {
+      throw new Error("git failed");
+    });
+    const mod = await loadStagingToolsModule();
+
+    expect(mod.__testing.listStagingBranchPrefixes()).toBeNull();
+  });
+
+  it("preserves staging worktrees and preview dirs when the branch snapshot fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDistParent = createTempDir("bridge-stage-dist-");
+    const prefix = "preview-123";
+    const stagingDir = join(stagingParent, prefix);
+    const distDir = join(stagingDistParent, prefix);
+    const previewMap = new Map<string, string>();
+    const removeWorktree = vi.fn();
+    const restoreBackend = vi.fn();
+    const pruneGitWorktrees = vi.fn();
+    const log = vi.fn();
+
+    mkdirSync(stagingDir, { recursive: true });
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(stagingDir, "keep.txt"), "keep");
+    writeFileSync(join(distDir, "index.html"), "ok");
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingDistParent,
+      activePreviewMap: previewMap,
+      expressApp: null,
+      listBranchPrefixes: () => null,
+      removeWorktree,
+      restoreBackend,
+      pruneGitWorktrees,
+      log,
+    });
+
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(pruneGitWorktrees).not.toHaveBeenCalled();
+    expect(restoreBackend).not.toHaveBeenCalled();
+    expect(existsSync(stagingDir)).toBe(true);
+    expect(existsSync(distDir)).toBe(true);
+    expect(previewMap.get(prefix)).toBe(distDir);
+    expect(log).toHaveBeenCalledWith(
+      "Skipping orphan staging prune because the staging branch snapshot is unavailable",
     );
   });
 });

@@ -594,6 +594,12 @@ describe("Session routes (mocked)", () => {
     expect(Array.isArray(res.body.sessions)).toBe(true);
   });
 
+  it("GET /api/health returns ok", async () => {
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+
   it("GET /api/dashboard includes schedules array", async () => {
     const res = await request(app).get("/api/dashboard");
     expect(res.status).toBe(200);
