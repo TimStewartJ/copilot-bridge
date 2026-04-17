@@ -32,6 +32,7 @@ describe("SessionManager session config", () => {
 
     const cfg = manager.buildSessionConfig();
 
+    expect(cfg.excludedTools).toContain("session_store_sql");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
     expect(cfg.systemMessage.content).toContain("verify it online before answering confidently");
     expect(cfg.systemMessage.content).toContain("Split independent claims into separate checks");
