@@ -28,6 +28,7 @@ import { createBrowserFetchTools } from "./browser-fetch-tools.js";
 import { createBrowserExecTools } from "./browser-exec-tools.js";
 import { createBrowserSessionTools } from "./browser-session-tools.js";
 import { createComputerUseTools } from "./computer-use-tools.js";
+import { SESSION_TITLE_WORD_RE, looksLikePromptEchoTitle, normalizeSessionTitle } from "./session-title-utils.js";
 import type { AppContext } from "./app-context.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -47,11 +48,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(REPO_ROOT, "data", "pre-deploy-sha");
-const TITLE_GENERATION_MODEL_BY_FAMILY = {
-  gpt: "gpt-5-mini",
-  claude: "claude-haiku-4.5",
-} as const;
-
 function run(cmd: string): { ok: boolean; output: string } {
   try {
     const output = execSync(cmd, { cwd: REPO_ROOT, encoding: "utf-8", timeout: 120_000 });
@@ -59,6 +55,88 @@ function run(cmd: string): { ok: boolean; output: string } {
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
   }
+}
+
+function deriveFallbackSessionTitle(sourceText: string): string | undefined {
+  const normalized = normalizeSessionTitle(sourceText);
+  if (!normalized) return undefined;
+
+  const trimmedLeadIn = normalized
+    .replace(/^(please\s+)?(can|could|would|will)\s+you\s+/i, "")
+    .replace(/^let'?s\s+/i, "")
+    .replace(/^help\s+me\s+/i, "")
+    .replace(/^i\s+(need|want)\s+to\s+/i, "")
+    .replace(/^we\s+need\s+to\s+/i, "")
+    .trim();
+
+  const words = (trimmedLeadIn || normalized).match(SESSION_TITLE_WORD_RE) ?? [];
+  if (words.length === 0) return undefined;
+
+  const fallbackTitle = normalizeSessionTitle(words.slice(0, 6).join(" "));
+  if (!fallbackTitle || fallbackTitle.length > 80 || looksLikePromptEchoTitle(fallbackTitle)) {
+    return undefined;
+  }
+
+  return fallbackTitle[0]?.toUpperCase() + fallbackTitle.slice(1);
+}
+
+function parseWorkspaceSummary(content: string): string | undefined {
+  let summary: string | undefined;
+  let inSummary = false;
+  const summaryLines: string[] = [];
+
+  for (const line of content.split(/\r?\n/)) {
+    if (inSummary) {
+      if (line.startsWith("  ")) {
+        summaryLines.push(line.slice(2));
+        continue;
+      }
+      if (line.trim() === "") {
+        summaryLines.push("");
+        continue;
+      }
+      inSummary = false;
+    }
+    if (line.startsWith("summary: |-")) {
+      inSummary = true;
+    } else if (line.startsWith("summary:")) {
+      summary = line.slice(9).trim();
+    }
+  }
+
+  return summary ?? (summaryLines.length > 0 ? summaryLines.join("\n") : undefined);
+}
+
+function looksLikeExistingSessionTitle(summary: string): boolean {
+  const normalized = normalizeSessionTitle(summary);
+  if (!normalized) return false;
+  const wordCount = normalized.match(SESSION_TITLE_WORD_RE)?.length ?? 0;
+  return normalized.length <= 80 && wordCount <= 8;
+}
+
+function isPromptEchoSummary(summary: string, firstUserPrompt?: string): boolean {
+  const normalizedSummary = normalizeSessionTitle(summary);
+  const normalizedPrompt = normalizeSessionTitle(firstUserPrompt);
+  if (!normalizedSummary || !normalizedPrompt) return false;
+  if (normalizedSummary === normalizedPrompt) return true;
+  if (!normalizedPrompt.startsWith(normalizedSummary)) return false;
+
+  const summaryWords = normalizedSummary.match(SESSION_TITLE_WORD_RE)?.length ?? 0;
+  const promptWords = normalizedPrompt.match(SESSION_TITLE_WORD_RE)?.length ?? 0;
+  return normalizedPrompt.length - normalizedSummary.length >= 20
+    || promptWords - summaryWords >= 3;
+}
+
+function storeSessionTitle(
+  sessionTitles: SessionTitlesStore,
+  eventBusRegistry: EventBusRegistry,
+  globalBus: GlobalBus,
+  sessionId: string,
+  title: string,
+): void {
+  sessionTitles.setTitle(sessionId, title);
+  eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title });
+  globalBus.emit({ type: "session:title", sessionId, title });
 }
 
 const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.`;
@@ -125,6 +203,7 @@ interface ScheduleContext {
 }
 
 interface SessionConfigOptions {
+  sessionId?: string;
   task?: Task | null;
   isNewTask?: boolean;
   prDescriptions?: string[];
@@ -411,10 +490,18 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("session_rename", {
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
-    parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["sessionId", "title"] },
-    handler: async (args: any) => {
-      ctx.sessionTitles.setTitle(args.sessionId, args.title);
-      return { success: true, message: `Session renamed to "${args.title}"` };
+    parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["title"] },
+    handler: async (args: any, invocation: any) => {
+      const sessionId = normalizeSessionTitle(args.sessionId) || invocation.sessionId;
+      const title = normalizeSessionTitle(args.title);
+
+      if (!sessionId) return { error: "sessionId is required" };
+      if (!title) return { error: "Title is required" };
+      if (looksLikePromptEchoTitle(title)) return { error: "Title looks like echoed prompt text" };
+      if (title.length > 80) return { error: "Title is too long" };
+
+      storeSessionTitle(ctx.sessionTitles, ctx.eventBusRegistry, ctx.globalBus, sessionId, title);
+      return { success: true, sessionId, message: `Session renamed to "${title}"` };
     },
   }),
   defineTool("self_restart", {
@@ -871,8 +958,6 @@ export interface SessionManagerDeps {
   copilotHome?: string;
 }
 
-type TitleGenerationOutcome = "success" | "invalid" | "failed";
-
 /** Options that don't come from AppContext — caller provides these directly. */
 export interface CreateSessionManagerOpts {
   tools: ReturnType<typeof defineTool>[];
@@ -924,11 +1009,8 @@ export class SessionManager {
   private activeSessions = new Set<string>();
   private resumingSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
-  private titleGenerationInFlight = new Set<string>(); // prevent duplicate title generation
-  private disposableSessionIds = new Set<string>(); // temporary sessions (title gen) to hide from listings
   private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
-  private titleModelCache: { key: string; value?: string; checkedAt: number } | null = null;
   private visibleActivityCache = new Map<string, { eventsMtimeMs: number; lastVisibleActivityAt?: string }>();
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
@@ -943,24 +1025,6 @@ export class SessionManager {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
-  }
-
-  private recordTitleGenerationAttempt(
-    sessionId: string,
-    duration: number,
-    metadata: {
-      outcome: TitleGenerationOutcome;
-      model: string;
-      userChars: number;
-      assistantChars: number;
-      rawTitle?: string;
-      returnedChars?: number;
-      storedTitle?: string;
-      invalidReason?: "empty" | "too_long" | "prompt_echo";
-      error?: string;
-    },
-  ): void {
-    this.recordSpan("session.title_generation", duration, sessionId, metadata);
   }
 
   private async getCachedLastVisibleActivityAt(
@@ -982,7 +1046,7 @@ export class SessionManager {
     }
 
     const events: any[] = [];
-    for (const line of raw.split("\n")) {
+    for (const line of raw.split(/\r?\n/)) {
       if (!line.trim()) continue;
       try {
         events.push(JSON.parse(line));
@@ -991,55 +1055,57 @@ export class SessionManager {
       }
     }
 
-    const lastVisibleActivityAt = getLastVisibleActivityAt(events);
+    const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
     this.visibleActivityCache.set(sessionId, { eventsMtimeMs, lastVisibleActivityAt });
     return lastVisibleActivityAt;
   }
 
-  private getConfiguredModel(): string | undefined {
-    return this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
+  private getWorkspaceSummary(sessionId: string): string | undefined {
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const yamlPath = join(copilotHome, "session-state", sessionId, "workspace.yaml");
+    try {
+      return parseWorkspaceSummary(readFileSync(yamlPath, "utf-8"));
+    } catch {
+      return undefined;
+    }
   }
 
-  private getModelFamily(model?: string): keyof typeof TITLE_GENERATION_MODEL_BY_FAMILY | undefined {
-    if (!model) return undefined;
-    if (model.startsWith("gpt-")) return "gpt";
-    if (model.startsWith("claude-")) return "claude";
+  private getFirstUserPrompt(sessionId: string): string | undefined {
+    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    try {
+      const raw = readFileSync(eventsPath, "utf-8");
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          if (event?.type !== "user.message") continue;
+          const content = event?.data?.content ?? event?.data?.prompt;
+          if (typeof content === "string" && content.trim()) return content;
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      return undefined;
+    }
     return undefined;
   }
 
-  private async resolveTitleGenerationModel(): Promise<string | undefined> {
-    const now = Date.now();
-    const fallbackModel = this.getConfiguredModel();
-    const cacheKey = fallbackModel ?? "__sdk_default__";
-    if (this.titleModelCache && this.titleModelCache.key === cacheKey && now - this.titleModelCache.checkedAt < 5 * 60_000) {
-      return this.titleModelCache.value;
-    }
+  private hasStoredSessionTitle(sessionId: string): boolean {
+    return this.deps.sessionTitles.hasTitle(sessionId);
+  }
 
-    if (!this.client) {
-      this.titleModelCache = { key: cacheKey, value: fallbackModel, checkedAt: now };
-      return fallbackModel;
-    }
+  private hasExistingSessionTitle(sessionId: string): boolean {
+    const summary = this.getWorkspaceSummary(sessionId);
+    if (!summary || !looksLikeExistingSessionTitle(summary)) return false;
+    const firstUserPrompt = this.getFirstUserPrompt(sessionId);
+    return !isPromptEchoSummary(summary, firstUserPrompt);
+  }
 
-    try {
-      const models = await this.client.listModels() as any[];
-      const enabledIds = new Set(
-        models
-          .filter((m) => !m.policy || m.policy.state !== "disabled")
-          .map((m) => m.id as string),
-      );
-      const configuredFamily = this.getModelFamily(fallbackModel);
-      const preferred = configuredFamily
-        ? TITLE_GENERATION_MODEL_BY_FAMILY[configuredFamily]
-        : undefined;
-      const resolved = (preferred && enabledIds.has(preferred))
-        ? preferred
-        : (fallbackModel && enabledIds.has(fallbackModel) ? fallbackModel : undefined);
-      this.titleModelCache = { key: cacheKey, value: resolved, checkedAt: now };
-      return resolved;
-    } catch {
-      this.titleModelCache = { key: cacheKey, value: fallbackModel, checkedAt: now };
-      return fallbackModel;
-    }
+  private shouldInjectSelfRenameGuidance(sessionId?: string): boolean {
+    if (!sessionId) return true;
+    return !this.hasStoredSessionTitle(sessionId) && !this.hasExistingSessionTitle(sessionId);
   }
 
   private lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null {
@@ -1050,7 +1116,7 @@ export class SessionManager {
   }
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
-    const { task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
+    const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
 
     const cfg: any = {
       onPermissionRequest: approveAll,
@@ -1144,6 +1210,12 @@ export class SessionManager {
     // Custom instructions — append user-defined instructions to context
     if (settings?.customInstructions?.trim()) {
       contextParts.push(settings.customInstructions.trim());
+    }
+
+    if (this.shouldInjectSelfRenameGuidance(sessionId)) {
+      contextParts.push(
+        "If this session does not already have a concise title, after your first substantive response call `session_rename` with a concise 3-6 word title for the current session. Do this silently without mentioning it to the user.",
+      );
     }
 
     contextParts.push(RESEARCH_GUIDANCE);
@@ -1254,14 +1326,14 @@ export class SessionManager {
 
     const now = Date.now();
     if (this.sessionListCache && (now - this.sessionListCache.timestamp) < SessionManager.SESSION_LIST_TTL) {
-      return this.sessionListCache.data.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
+      return this.sessionListCache.data;
     }
 
     const t0 = Date.now();
     const sessions = await this.client.listSessions();
     this.recordSpan("session.listSessions", Date.now() - t0);
     this.sessionListCache = { data: sessions, timestamp: Date.now() };
-    return sessions.filter((s: any) => !this.disposableSessionIds.has(s.sessionId));
+    return sessions;
   }
 
   /** List available models from the Copilot SDK */
@@ -1292,34 +1364,19 @@ export class SessionManager {
     const dirs = entries.filter((d: any) => d.isDirectory()).map((d: any) => d.name);
 
     const sessionPromises = dirs.map(async (dirName) => {
-      if (this.disposableSessionIds.has(dirName)) return null;
       const yamlPath = join(sessionStateDir, dirName, "workspace.yaml");
       try {
         const content = await readFile(yamlPath, "utf-8");
         const session: any = { sessionId: dirName };
-        let inSummary = false;
-        const summaryLines: string[] = [];
+        const summary = parseWorkspaceSummary(content);
+        if (summary) session.summary = summary;
 
-        for (const line of content.split("\n")) {
-          if (inSummary) {
-            if (line.startsWith("  ")) {
-              summaryLines.push(line.slice(2));
-              continue;
-            }
-            inSummary = false;
-          }
+        for (const line of content.split(/\r?\n/)) {
           if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
           else if (line.startsWith("cwd:")) {
             const cwd = line.slice(5).trim();
             if (cwd) session.context = { cwd };
-          } else if (line.startsWith("summary: |-")) {
-            inSummary = true;
-          } else if (line.startsWith("summary:")) {
-            session.summary = line.slice(9).trim();
           }
-        }
-        if (summaryLines.length > 0 && !session.summary) {
-          session.summary = summaryLines.join("\n");
         }
         // Track session recency from the last visible event, not raw log-file mtime.
         const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
@@ -1354,7 +1411,6 @@ export class SessionManager {
 
   async getSessionMetadata(sessionId: string) {
     if (!this.client) throw new Error("SessionManager not initialized");
-    if (this.disposableSessionIds.has(sessionId)) return undefined;
     return this.client.getSessionMetadata(sessionId);
   }
 
@@ -1658,7 +1714,7 @@ export class SessionManager {
 
     // Build resume config with optional task context
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
-    const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -1700,9 +1756,27 @@ export class SessionManager {
     const subAgentMap = new Map<string, string>();
     // Capture sub-agent response text: parentToolCallId → last response content
     const subAgentResponseMap = new Map<string, string>();
+    let resolveWork: (() => void) | undefined;
+    let completedBeforeWait = false;
+    let lastAssistantContent: string | undefined;
+    let lastEventTime = Date.now();
+    let sendStart = lastEventTime;
+    let acceptingSessionEvents = false;
+    const finishWork = () => {
+      if (resolveWork) resolveWork();
+      else completedBeforeWait = true;
+    };
+    const beginSend = () => {
+      sendStart = Date.now();
+      lastEventTime = sendStart;
+      completedBeforeWait = false;
+      lastAssistantContent = undefined;
+      acceptingSessionEvents = true;
+    };
 
     // Event handler extracted so it can be re-registered on session retry
     const handleEvent = (event: any) => {
+      if (!acceptingSessionEvents) return;
       const data = (event as any).data;
       switch (event.type) {
         case "user.message":
@@ -1826,14 +1900,14 @@ export class SessionManager {
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
           bus.emit({ type: "error", message: data?.message ?? "unknown" });
-          resolveWork();
+          finishWork();
           break;
         case "abort": {
           const reason = data?.reason ?? "user initiated";
           console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);
           const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
           bus.emit({ type: "aborted", content: partialContent });
-          resolveWork();
+          finishWork();
           break;
         }
         case "session.title_changed":
@@ -1845,14 +1919,17 @@ export class SessionManager {
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
           this.recordSpan("session.sendToIdle", Date.now() - sendStart, sessionId, { chars: content.length });
-          bus.emit({ type: "done", content });
-
-          // Fire-and-forget title generation for sessions without a title
-          if (!this.deps.sessionTitles.hasTitle(sessionId) && lastAssistantContent) {
-            this.generateSessionTitle(sessionId, prompt, lastAssistantContent).catch(() => {});
+          if (!this.hasStoredSessionTitle(sessionId) && !this.hasExistingSessionTitle(sessionId)) {
+            const fallbackTitle = deriveFallbackSessionTitle(prompt);
+            if (fallbackTitle) {
+              storeSessionTitle(this.deps.sessionTitles, this.deps.eventBusRegistry, this.deps.globalBus, sessionId, fallbackTitle);
+              console.log(`[titles] [${sid}] Fallback title: "${fallbackTitle}"`);
+            }
           }
 
-          resolveWork();
+          bus.emit({ type: "done", content });
+
+          finishWork();
           break;
         }
         case "session.mcp_servers_loaded": {
@@ -1892,7 +1969,12 @@ export class SessionManager {
       }
     };
 
-    let unsub = session.on(handleEvent);
+    const subscribeToSession = (activeSession: typeof session) => {
+      acceptingSessionEvents = false;
+      return activeSession.on(handleEvent);
+    };
+
+    let unsub = subscribeToSession(session);
 
     // Emit cached MCP status to the bus — the mcp_servers_loaded event fires during
     // create/resume before our handler is attached, so replay from the stored map
@@ -1902,7 +1984,6 @@ export class SessionManager {
     }
 
     // Periodic heartbeat log so silence = genuinely hung
-    const sendStart = Date.now();
     const heartbeatLog = setInterval(() => {
       const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
       console.log(`[sdk] [${sid}] ⏳ Still working... (${elapsed}s)`);
@@ -1910,13 +1991,12 @@ export class SessionManager {
 
     // Watchdog — if no events for 5 minutes, assume hung and clean up
     const WATCHDOG_TIMEOUT = 300_000;
-    let lastEventTime = Date.now();
     const watchdog = setInterval(() => {
       if (Date.now() - lastEventTime > WATCHDOG_TIMEOUT) {
         const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
         console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — aborting (${elapsed}s total)`);
         bus.emit({ type: "error", message: "Session timed out — no activity for 5 minutes" });
-        resolveWork();
+        finishWork();
       }
     }, 30_000);
 
@@ -1929,14 +2009,12 @@ export class SessionManager {
       return originalEmit(event);
     };
 
-    let resolveWork: () => void;
-    let lastAssistantContent: string | undefined;
-
     try {
       const attachCount = sdkAttachments?.length ?? 0;
       console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
 
       try {
+        beginSend();
         await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
       } catch (sendErr) {
         // If the agent evicted this session, the cached object is stale — re-resume and retry once
@@ -1945,7 +2023,8 @@ export class SessionManager {
           unsub();
           this.sessionObjects.delete(sessionId);
           session = await resumeSession();
-          unsub = session.on(handleEvent);
+          unsub = subscribeToSession(session);
+          beginSend();
           await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
         } else {
           throw sendErr;
@@ -1955,6 +2034,7 @@ export class SessionManager {
       // Wait for session.idle or session.error (resolved from event handler)
       await new Promise<void>((resolve) => {
         resolveWork = resolve;
+        if (completedBeforeWait) resolve();
       });
     } finally {
       clearInterval(heartbeatLog);
@@ -1969,7 +2049,7 @@ export class SessionManager {
     const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
-    const msgResumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const msgResumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
     const tConfig = Date.now();
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
@@ -2024,7 +2104,7 @@ export class SessionManager {
     }
 
     const tTransform = Date.now();
-    const messages = transformEventsToMessages(events);
+    const messages = transformEventsToMessages(events, sessionId);
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     const transformMs = Date.now() - tTransform;
@@ -2069,14 +2149,14 @@ export class SessionManager {
     }
 
     const events: any[] = [];
-    for (const line of raw.split("\n")) {
+    for (const line of raw.split(/\r?\n/)) {
       if (!line.trim()) continue;
       try {
         events.push(JSON.parse(line));
       } catch { /* skip malformed lines */ }
     }
 
-    const messages = transformEventsToMessages(events);
+    const messages = transformEventsToMessages(events, sessionId);
     const duration = Date.now() - t0;
     this.recordSpan("session.readFromDisk", duration, sessionId, {
       eventCount: events.length,
@@ -2107,7 +2187,7 @@ export class SessionManager {
     console.log(`[sdk] [${sid}] Warming session...`);
 
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
-    const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     this.resumingSessions.add(sessionId);
     try {
@@ -2131,89 +2211,6 @@ export class SessionManager {
   /** Check if a session object is cached and ready for interaction */
   isSessionWarm(sessionId: string): boolean {
     return this.sessionObjects.has(sessionId);
-  }
-
-  // Generate a concise session title via a lightweight LLM call
-  private async generateSessionTitle(sessionId: string, userMessage: string, assistantResponse: string): Promise<void> {
-    if (!this.client || this.deps.sessionTitles.hasTitle(sessionId) || this.titleGenerationInFlight.has(sessionId)) return;
-    this.titleGenerationInFlight.add(sessionId);
-
-    const sid = sessionId.slice(0, 8);
-    console.log(`[titles] [${sid}] Generating session title...`);
-    const startedAt = Date.now();
-    const titleModel = await this.resolveTitleGenerationModel();
-
-    let titleSessionId: string | undefined;
-    try {
-      const titleSession = await this.client.createSession({
-        onPermissionRequest: approveAll,
-        ...(titleModel ? { model: titleModel } : {}),
-      });
-      titleSessionId = titleSession.sessionId;
-      this.disposableSessionIds.add(titleSessionId);
-
-      const prompt = [
-        "Generate a concise 3-6 word title for this conversation.",
-        "Reply with ONLY the title text — no quotes, no punctuation unless it's part of a name.",
-        "",
-        `User: ${userMessage}`,
-        `Assistant: ${assistantResponse}`,
-      ].join("\n");
-
-      const result = await titleSession.sendAndWait({ prompt }, 20_000);
-      const title = result?.data?.content?.trim().replace(/^["']|["']$/g, "");
-
-      // Reject titles that look like the prompt was echoed back
-      const looksLikePrompt = title && /generate|concise|3-6 word|title for this/i.test(title);
-      const invalidReason =
-        !title ? "empty"
-          : looksLikePrompt ? "prompt_echo"
-            : title.length > 80 ? "too_long"
-              : undefined;
-
-      if (!invalidReason && title) {
-        this.deps.sessionTitles.setTitle(sessionId, title);
-        const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
-        bus.emit({ type: "title_changed", title });
-        this.deps.globalBus.emit({ type: "session:title", sessionId, title });
-        console.log(`[titles] [${sid}] Title: "${title}"`);
-        this.recordTitleGenerationAttempt(sessionId, Date.now() - startedAt, {
-          outcome: "success",
-          model: titleModel ?? "sdk-default",
-          userChars: userMessage.length,
-          assistantChars: assistantResponse.length,
-          rawTitle: title,
-          storedTitle: title,
-        });
-      } else {
-        console.log(`[titles] [${sid}] Title generation returned invalid result: "${title}"`);
-        this.recordTitleGenerationAttempt(sessionId, Date.now() - startedAt, {
-          outcome: "invalid",
-          model: titleModel ?? "sdk-default",
-          invalidReason,
-          userChars: userMessage.length,
-          assistantChars: assistantResponse.length,
-          returnedChars: title?.length ?? 0,
-        });
-      }
-    } catch (err) {
-      console.error(`[titles] [${sid}] Title generation failed:`, err);
-      this.recordTitleGenerationAttempt(sessionId, Date.now() - startedAt, {
-        outcome: "failed",
-        model: titleModel ?? "sdk-default",
-        userChars: userMessage.length,
-        assistantChars: assistantResponse.length,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      this.titleGenerationInFlight.delete(sessionId);
-      // Always clean up the disposable title session
-      if (titleSessionId) {
-        this.client!.deleteSession(titleSessionId).catch((err) =>
-          console.error(`[titles] [${sid}] Failed to delete title session:`, err),
-        );
-      }
-    }
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -2256,7 +2253,7 @@ export class SessionManager {
 
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
-    const resumeConfig = this.buildSessionConfig({ task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     this.resumingSessions.add(sessionId);
     try {
@@ -2302,7 +2299,6 @@ export class SessionManager {
   evictAllCachedSessions(): void {
     const busy = new Set(this.activeSessions);
     let evicted = 0;
-    this.titleModelCache = null;
     for (const [id] of this.sessionObjects) {
       if (busy.has(id)) continue; // don't disrupt active turns
       if (this.evictCachedSession(id)) evicted++;

@@ -1,293 +1,461 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionManager } from "../session-manager.js";
+import { createBridgeTools, SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { createTelemetryStore } from "../telemetry-store.js";
 
-describe("SessionManager title generation telemetry", () => {
+describe("SessionManager self-renaming", () => {
   let db: ReturnType<typeof setupTestDb>;
   let eventBusRegistry: ReturnType<typeof createEventBusRegistry>;
   let sessionTitles: ReturnType<typeof createSessionTitlesStore>;
-  let telemetryStore: ReturnType<typeof createTelemetryStore>;
+  let globalBus: ReturnType<typeof createTestBus>;
 
   beforeEach(() => {
     db = setupTestDb();
     eventBusRegistry = createEventBusRegistry();
     sessionTitles = createSessionTitlesStore(db);
-    telemetryStore = createTelemetryStore(db);
+    globalBus = createTestBus();
   });
 
-  function createManager(config: { model?: string } = {}) {
+  function createManager(opts: { copilotHome?: string } = {}) {
     return new SessionManager({
       tools: [],
-      globalBus: createTestBus(),
+      globalBus,
       eventBusRegistry,
       sessionTitles,
-      taskStore: {} as any,
-      telemetryStore,
-      config: { sessionMcpServers: {}, model: config.model },
+      taskStore: { findTaskBySessionId: () => undefined } as any,
+      config: { sessionMcpServers: {} },
+      copilotHome: opts.copilotHome,
     });
   }
 
-  it("records a successful title generation attempt", async () => {
-    const manager = createManager({ model: "gpt-5.4" }) as any;
-    const sendAndWait = vi.fn().mockResolvedValue({ data: { content: "Project sync follow-up" } });
-    const deleteSession = vi.fn().mockResolvedValue(undefined);
-    const createSession = vi.fn().mockResolvedValue({ sessionId: "temp-title-session", sendAndWait });
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "gpt-5-mini", policy: { state: "enabled" } }]),
-      createSession,
-      deleteSession,
-    };
+  function getRenameTool() {
+    const tool = createBridgeTools({
+      taskStore: { findTaskBySessionId: () => undefined } as any,
+      taskGroupStore: {} as any,
+      scheduleStore: {} as any,
+      settingsStore: undefined,
+      sessionMetaStore: {} as any,
+      sessionTitles,
+      readStateStore: {} as any,
+      todoStore: {} as any,
+      tagStore: undefined,
+      telemetryStore: undefined,
+      docsStore: undefined,
+      docsIndex: undefined,
+      globalBus,
+      eventBusRegistry,
+      sessionManager: { evictAllCachedSessions() {} } as any,
+    } as any).find((candidate) => candidate.name === "session_rename");
 
-    await manager.generateSessionTitle("session-1", "User message", "Assistant reply");
+    if (!tool) throw new Error("session_rename tool not found");
+    return tool;
+  }
 
-    expect(createSession).toHaveBeenCalledWith({
-      onPermissionRequest: expect.any(Function),
-      model: "gpt-5-mini",
+  it("defaults session_rename to the invoking session and emits title updates", async () => {
+    const renameTool = getRenameTool();
+    const sessionBus = eventBusRegistry.getOrCreateBus("session-1");
+    const busEvents: any[] = [];
+    const globalEvents: any[] = [];
+
+    sessionBus.subscribe((event) => {
+      if (event.type !== "snapshot") busEvents.push(event);
     });
-    const spans = telemetryStore.querySpans({ name: "session.title_generation" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].sessionId).toBe("session-1");
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "success",
-      model: "gpt-5-mini",
-      rawTitle: "Project sync follow-up",
-      storedTitle: "Project sync follow-up",
-      userChars: 12,
-      assistantChars: 15,
+    globalBus.subscribe((event) => globalEvents.push(event));
+
+    const result = await renameTool.handler(
+      { title: "Project sync follow-up" },
+      { sessionId: "session-1", toolCallId: "tool-1", toolName: "session_rename", arguments: { title: "Project sync follow-up" } },
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      sessionId: "session-1",
+      message: 'Session renamed to "Project sync follow-up"',
     });
-    expect(typeof spans[0].duration).toBe("number");
-    expect(spans[0].duration).toBeGreaterThanOrEqual(0);
     expect(sessionTitles.getTitle("session-1")).toBe("Project sync follow-up");
-    expect(deleteSession).toHaveBeenCalledWith("temp-title-session");
-  });
-
-  it("sends the full user and assistant text to title generation", async () => {
-    const manager = createManager({ model: "gpt-5.4" }) as any;
-    const userMessage = `${"user ".repeat(150)}tail-user`;
-    const assistantResponse = `${"assistant ".repeat(150)}tail-assistant`;
-    const sendAndWait = vi.fn().mockResolvedValue({ data: { content: "Long conversation title" } });
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "gpt-5-mini", policy: { state: "enabled" } }]),
-      createSession: vi.fn().mockResolvedValue({ sessionId: "temp-title-session", sendAndWait }),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    };
-
-    await manager.generateSessionTitle("session-full", userMessage, assistantResponse);
-
-    expect(sendAndWait).toHaveBeenCalledTimes(1);
-    const prompt = sendAndWait.mock.calls[0][0].prompt as string;
-    expect(prompt).toContain(`User: ${userMessage}`);
-    expect(prompt).toContain(`Assistant: ${assistantResponse}`);
-    expect(prompt).toContain("tail-user");
-    expect(prompt).toContain("tail-assistant");
-
-    const spans = telemetryStore.querySpans({ name: "session.title_generation", sessionId: "session-full" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "success",
-      model: "gpt-5-mini",
-      userChars: userMessage.length,
-      assistantChars: assistantResponse.length,
+    expect(busEvents).toContainEqual({ type: "title_changed", title: "Project sync follow-up" });
+    expect(globalEvents).toContainEqual({
+      type: "session:title",
+      sessionId: "session-1",
+      title: "Project sync follow-up",
     });
   });
 
-  it("records invalid title responses with the rejection reason", async () => {
-    const manager = createManager({ model: "gpt-5.4" }) as any;
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "gpt-5-mini", policy: { state: "enabled" } }]),
-      createSession: vi.fn().mockResolvedValue({
-        sessionId: "temp-title-session",
-        sendAndWait: vi.fn().mockResolvedValue({ data: { content: "Generate a concise 3-6 word title for this conversation." } }),
-      }),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    };
+  it("respects an explicit target session id", async () => {
+    const renameTool = getRenameTool();
+    const callerBus = eventBusRegistry.getOrCreateBus("caller-session");
+    const targetBus = eventBusRegistry.getOrCreateBus("target-session");
+    const callerEvents: any[] = [];
+    const targetEvents: any[] = [];
 
-    await manager.generateSessionTitle("session-2", "User message", "Assistant reply");
-
-    const spans = telemetryStore.querySpans({ name: "session.title_generation" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "invalid",
-      model: "gpt-5-mini",
-      invalidReason: "prompt_echo",
-      returnedChars: "Generate a concise 3-6 word title for this conversation.".length,
+    callerBus.subscribe((event) => {
+      if (event.type !== "snapshot") callerEvents.push(event);
     });
-    expect(spans[0].metadata).not.toHaveProperty("rawTitle");
-    expect(sessionTitles.getTitle("session-2")).toBeUndefined();
+    targetBus.subscribe((event) => {
+      if (event.type !== "snapshot") targetEvents.push(event);
+    });
+
+    await renameTool.handler(
+      { sessionId: "target-session", title: "Renamed elsewhere" },
+      { sessionId: "caller-session", toolCallId: "tool-2", toolName: "session_rename", arguments: { sessionId: "target-session", title: "Renamed elsewhere" } },
+    );
+
+    expect(sessionTitles.getTitle("caller-session")).toBeUndefined();
+    expect(sessionTitles.getTitle("target-session")).toBe("Renamed elsewhere");
+    expect(callerEvents).toEqual([]);
+    expect(targetEvents).toContainEqual({ type: "title_changed", title: "Renamed elsewhere" });
   });
 
-  it("classifies prompt echoes ahead of the length guard", async () => {
-    const manager = createManager({ model: "gpt-5.4" }) as any;
-    const echoedPrompt = [
+  it("rejects prompt-like rename attempts", async () => {
+    const renameTool = getRenameTool();
+
+    for (const title of [
       "Generate a concise 3-6 word title for this conversation.",
       "Reply with ONLY the title text — no quotes, no punctuation unless it's part of a name.",
-      "",
-      "User: A very long message that pushes the echoed output over the title length limit.",
-      "Assistant: Another long reply that keeps the echoed output obviously prompt-shaped.",
-    ].join("\n");
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "gpt-5-mini", policy: { state: "enabled" } }]),
-      createSession: vi.fn().mockResolvedValue({
-        sessionId: "temp-title-session",
-        sendAndWait: vi.fn().mockResolvedValue({ data: { content: echoedPrompt } }),
+      "If this session does not already have a concise title, after your first substantive response call `session_rename` with a concise 3-6 word title for the current session. Do this silently without mentioning it to the user.",
+    ]) {
+      const result = await renameTool.handler(
+        { title },
+        { sessionId: "session-echo", toolCallId: "tool-3", toolName: "session_rename", arguments: {} },
+      );
+
+      expect(result).toEqual({ error: "Title looks like echoed prompt text" });
+    }
+    expect(sessionTitles.getTitle("session-echo")).toBeUndefined();
+  });
+
+  it("allows ordinary titles that happen to include prompt-adjacent words", async () => {
+    const renameTool = getRenameTool();
+
+    const result = await renameTool.handler(
+      { title: "Generate a concise changelog for release" },
+      { sessionId: "session-real", toolCallId: "tool-4", toolName: "session_rename", arguments: {} },
+    );
+
+    expect(result).toMatchObject({ success: true, sessionId: "session-real" });
+    expect(sessionTitles.getTitle("session-real")).toBe("Generate a concise changelog for release");
+  });
+
+  it("adds self-rename guidance only for sessions without a stored title", () => {
+    const manager = createManager() as any;
+
+    const newSessionConfig = manager.buildSessionConfig();
+    const untitledResumeConfig = manager.buildSessionConfig({ sessionId: "untitled-session" });
+    sessionTitles.setTitle("titled-session", "Already named");
+    const titledResumeConfig = manager.buildSessionConfig({ sessionId: "titled-session" });
+
+    expect(newSessionConfig.systemMessage.content).toContain("call `session_rename`");
+    expect(untitledResumeConfig.systemMessage.content).toContain("call `session_rename`");
+    expect(titledResumeConfig.systemMessage.content ?? "").not.toContain("call `session_rename`");
+  });
+
+  it("does not prompt or overwrite a concise existing workspace summary", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-title-home-"));
+    const sessionDir = join(copilotHome, "session-state", "session-existing");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "workspace.yaml"),
+      "created_at: 2026-04-16T21:00:00.000Z\nsummary: Existing concise title\n",
+    );
+
+    const manager = createManager({ copilotHome }) as any;
+    const config = manager.buildSessionConfig({ sessionId: "session-existing" });
+
+    expect(config.systemMessage.content ?? "").not.toContain("call `session_rename`");
+
+    const bus = eventBusRegistry.getOrCreateBus("session-existing");
+    const busEvents: any[] = [];
+    const globalEvents: any[] = [];
+    const handlers: Array<(event: any) => void> = [];
+
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") busEvents.push(event);
+    });
+    globalBus.subscribe((event) => globalEvents.push(event));
+
+    const session = {
+      on(handler: (event: any) => void) {
+        handlers.push(handler);
+        return () => {};
+      },
+      send: vi.fn(async () => {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "Done." } });
+            handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+          }
+        }, 0);
       }),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
     };
 
-    await manager.generateSessionTitle("session-echo", "User message", "Assistant reply");
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-existing", session);
 
-    const spans = telemetryStore.querySpans({ name: "session.title_generation" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "invalid",
-      model: "gpt-5-mini",
-      invalidReason: "prompt_echo",
-      returnedChars: echoedPrompt.length,
-    });
-    expect(spans[0].metadata).not.toHaveProperty("rawTitle");
+    await manager._doWork("session-existing", "help me improve session titles", bus);
+
+    expect(sessionTitles.getTitle("session-existing")).toBeUndefined();
+    expect(busEvents).not.toContainEqual({ type: "title_changed", title: "Existing concise title" });
+    expect(globalEvents).not.toContainEqual(
+      expect.objectContaining({ type: "session:title", sessionId: "session-existing" }),
+    );
   });
 
-  it("records failed title generation attempts", async () => {
-    const manager = createManager({ model: "gpt-5.4" }) as any;
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "gpt-5-mini", policy: { state: "enabled" } }]),
-      createSession: vi.fn().mockResolvedValue({
-        sessionId: "temp-title-session",
-        sendAndWait: vi.fn().mockRejectedValue(new Error("model offline")),
+  it("does not mistake the raw first prompt summary for an existing title", async () => {
+    const prompt = "請不要使用任何工具，用兩句話說明為什麼要先檢查 staging preview 再部署。";
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-title-home-"));
+    const sessionDir = join(copilotHome, "session-state", "session-prompt-summary");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "workspace.yaml"),
+      `created_at: 2026-04-16T21:00:00.000Z\nsummary: ${prompt}\n`,
+    );
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      `${JSON.stringify({ type: "user.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: prompt } })}\n`,
+    );
+
+    const manager = createManager({ copilotHome }) as any;
+    const config = manager.buildSessionConfig({ sessionId: "session-prompt-summary" });
+    expect(config.systemMessage.content ?? "").toContain("call `session_rename`");
+
+    const bus = eventBusRegistry.getOrCreateBus("session-prompt-summary");
+    const handlers: Array<(event: any) => void> = [];
+    const session = {
+      on(handler: (event: any) => void) {
+        handlers.push(handler);
+        return () => {};
+      },
+      send: vi.fn(async () => {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "已完成。" } });
+            handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+          }
+        }, 0);
       }),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
     };
 
-    await manager.generateSessionTitle("session-3", "User message", "Assistant reply");
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-prompt-summary", session);
 
-    const spans = telemetryStore.querySpans({ name: "session.title_generation" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "failed",
-      model: "gpt-5-mini",
-      error: "model offline",
-      userChars: 12,
-      assistantChars: 15,
-    });
-    expect(sessionTitles.getTitle("session-3")).toBeUndefined();
+    await manager._doWork("session-prompt-summary", prompt, bus);
+
+    expect(sessionTitles.getTitle("session-prompt-summary")).toBe(
+      "請不要使用任何工具 用兩句話說明為什麼要先檢查 staging preview 再部署",
+    );
   });
 
-  it("falls back to the configured model when preferred small models are unavailable", async () => {
-    const manager = createManager({ model: "claude-sonnet-4.6" }) as any;
-    const createSession = vi.fn().mockResolvedValue({
-      sessionId: "temp-title-session",
-      sendAndWait: vi.fn().mockResolvedValue({ data: { content: "Fallback title" } }),
-    });
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "claude-sonnet-4.6", policy: { state: "enabled" } }]),
-      createSession,
-      deleteSession: vi.fn().mockResolvedValue(undefined),
+  it("does not mistake a truncated first prompt summary for an existing title", async () => {
+    const summary = "Copilot Bridge Post Incident Report Fix Brief";
+    const prompt = `${summary} with owner updates, impact, mitigations, and rollback notes for each issue.`;
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-title-home-"));
+    const sessionDir = join(copilotHome, "session-state", "session-prompt-prefix");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "workspace.yaml"),
+      `created_at: 2026-04-16T21:00:00.000Z\nsummary: ${summary}\n`,
+    );
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      `${JSON.stringify({ type: "user.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: prompt } })}\n`,
+    );
+
+    const manager = createManager({ copilotHome }) as any;
+    const config = manager.buildSessionConfig({ sessionId: "session-prompt-prefix" });
+    expect(config.systemMessage.content ?? "").toContain("call `session_rename`");
+
+    const bus = eventBusRegistry.getOrCreateBus("session-prompt-prefix");
+    const handlers: Array<(event: any) => void> = [];
+    const session = {
+      on(handler: (event: any) => void) {
+        handlers.push(handler);
+        return () => {};
+      },
+      send: vi.fn(async () => {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "Done." } });
+            handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+          }
+        }, 0);
+      }),
     };
 
-    await manager.generateSessionTitle("session-fallback", "User message", "Assistant reply");
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-prompt-prefix", session);
 
-    expect(createSession).toHaveBeenCalledWith({
-      onPermissionRequest: expect.any(Function),
-      model: "claude-sonnet-4.6",
+    await manager._doWork("session-prompt-prefix", prompt, bus);
+
+    expect(sessionTitles.getTitle("session-prompt-prefix")).toBe(
+      "Copilot Bridge Post Incident Report Fix",
+    );
+  });
+
+  it("does not mistake a block-summary prompt echo for an existing title", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-title-home-"));
+    const sessionDir = join(copilotHome, "session-state", "session-block-summary");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "workspace.yaml"),
+      [
+        "created_at: 2026-04-16T21:00:00.000Z",
+        "summary: |-",
+        "  Provide a morning briefing with:",
+        "",
+        "  - weather",
+        "  - top tasks",
+        "  - blockers",
+        "",
+      ].join("\n"),
+    );
+
+    const manager = createManager({ copilotHome }) as any;
+    const config = manager.buildSessionConfig({ sessionId: "session-block-summary" });
+
+    expect(config.systemMessage.content ?? "").toContain("call `session_rename`");
+  });
+
+  it("ignores terminal events emitted during subscription until send begins", async () => {
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-sync-subscribe");
+    const busEvents: any[] = [];
+    const handlers: Array<(event: any) => void> = [];
+    const send = vi.fn(async () => {
+      setTimeout(() => {
+        for (const handler of handlers) {
+          handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "Done." } });
+          handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+        }
+      }, 0);
     });
-    const spans = telemetryStore.querySpans({ name: "session.title_generation", sessionId: "session-fallback" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "success",
-      model: "claude-sonnet-4.6",
+
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") busEvents.push(event);
+    });
+
+    const session = {
+      on(handler: (event: any) => void) {
+        handler({ type: "session.idle", timestamp: "2026-04-16T20:59:59.000Z", data: {} });
+        handlers.push(handler);
+        return () => {};
+      },
+      send,
+    };
+
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-sync-subscribe", session);
+
+    await expect(manager._doWork("session-sync-subscribe", "help me improve session titles", bus)).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(busEvents.filter((event) => event.type === "done")).toEqual([{ type: "done", content: "Done." }]);
+    expect(sessionTitles.getTitle("session-sync-subscribe")).toBe("Improve session titles");
+  });
+
+  it("stores a prompt-derived fallback title when the session does not rename itself", async () => {
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-fallback");
+    const sessionBusEvents: any[] = [];
+    const globalEvents: any[] = [];
+    const handlers: Array<(event: any) => void> = [];
+
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") sessionBusEvents.push(event);
+    });
+    globalBus.subscribe((event) => globalEvents.push(event));
+
+    const session = {
+      on(handler: (event: any) => void) {
+        handlers.push(handler);
+        return () => {};
+      },
+      send: vi.fn(async () => {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "Done." } });
+            handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+          }
+        }, 0);
+      }),
+    };
+
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-fallback", session);
+
+    await manager._doWork("session-fallback", "help me improve session titles", bus);
+
+    expect(sessionTitles.getTitle("session-fallback")).toBe("Improve session titles");
+    expect(sessionBusEvents).toContainEqual({ type: "title_changed", title: "Improve session titles" });
+    expect(globalEvents).toContainEqual({
+      type: "session:title",
+      sessionId: "session-fallback",
+      title: "Improve session titles",
     });
   });
 
-  it("uses a same-family small model when available", async () => {
-    const manager = createManager({ model: "claude-sonnet-4.6" }) as any;
-    const createSession = vi.fn().mockResolvedValue({
-      sessionId: "temp-title-session",
-      sendAndWait: vi.fn().mockResolvedValue({ data: { content: "Claude title" } }),
-    });
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([
-        { id: "claude-sonnet-4.6", policy: { state: "enabled" } },
-        { id: "claude-haiku-4.5", policy: { state: "enabled" } },
-        { id: "gpt-5-mini", policy: { state: "enabled" } },
-      ]),
-      createSession,
-      deleteSession: vi.fn().mockResolvedValue(undefined),
+  it("keeps legitimate fallback titles that start with generate a concise", async () => {
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-fallback-generate-concise");
+    const handlers: Array<(event: any) => void> = [];
+
+    const session = {
+      on(handler: (event: any) => void) {
+        handlers.push(handler);
+        return () => {};
+      },
+      send: vi.fn(async () => {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "Done." } });
+            handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+          }
+        }, 0);
+      }),
     };
 
-    await manager.generateSessionTitle("session-claude-small", "User message", "Assistant reply");
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-fallback-generate-concise", session);
 
-    expect(createSession).toHaveBeenCalledWith({
-      onPermissionRequest: expect.any(Function),
-      model: "claude-haiku-4.5",
-    });
-    const spans = telemetryStore.querySpans({ name: "session.title_generation", sessionId: "session-claude-small" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "success",
-      model: "claude-haiku-4.5",
-    });
+    await manager._doWork(
+      "session-fallback-generate-concise",
+      "Generate a concise changelog for release notes and deployment steps",
+      bus,
+    );
+
+    expect(sessionTitles.getTitle("session-fallback-generate-concise")).toBe(
+      "Generate a concise changelog for release",
+    );
   });
 
-  it("falls back to SDK default when the configured model is unavailable", async () => {
-    const manager = createManager({ model: "claude-sonnet-4.6" }) as any;
-    const createSession = vi.fn().mockResolvedValue({
-      sessionId: "temp-title-session",
-      sendAndWait: vi.fn().mockResolvedValue({ data: { content: "Default title" } }),
-    });
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([{ id: "gpt-4.1", policy: { state: "enabled" } }]),
-      createSession,
-      deleteSession: vi.fn().mockResolvedValue(undefined),
+  it("stores a prompt-derived fallback title for non-English prompts", async () => {
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-fallback-i18n");
+    const handlers: Array<(event: any) => void> = [];
+
+    const session = {
+      on(handler: (event: any) => void) {
+        handlers.push(handler);
+        return () => {};
+      },
+      send: vi.fn(async () => {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", timestamp: "2026-04-16T21:00:00.000Z", data: { content: "Готово." } });
+            handler({ type: "session.idle", timestamp: "2026-04-16T21:00:01.000Z", data: {} });
+          }
+        }, 0);
+      }),
     };
 
-    await manager.generateSessionTitle("session-sdk-default", "User message", "Assistant reply");
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-fallback-i18n", session);
 
-    expect(createSession).toHaveBeenCalledWith({
-      onPermissionRequest: expect.any(Function),
-    });
-    const spans = telemetryStore.querySpans({ name: "session.title_generation", sessionId: "session-sdk-default" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      outcome: "success",
-      model: "sdk-default",
-    });
-  });
+    await manager._doWork("session-fallback-i18n", "исправь падение при запуске", bus);
 
-  it("recomputes the small model after the configured model changes", async () => {
-    const manager = createManager({ model: "gpt-5.4" }) as any;
-    const createSession = vi.fn()
-      .mockResolvedValueOnce({
-        sessionId: "temp-title-session-1",
-        sendAndWait: vi.fn().mockResolvedValue({ data: { content: "GPT title" } }),
-      })
-      .mockResolvedValueOnce({
-        sessionId: "temp-title-session-2",
-        sendAndWait: vi.fn().mockResolvedValue({ data: { content: "Claude title" } }),
-      });
-    manager.client = {
-      listModels: vi.fn().mockResolvedValue([
-        { id: "gpt-5-mini", policy: { state: "enabled" } },
-        { id: "claude-haiku-4.5", policy: { state: "enabled" } },
-      ]),
-      createSession,
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    };
-
-    await manager.generateSessionTitle("session-gpt", "User message", "Assistant reply");
-    manager.deps.config.model = "claude-sonnet-4.6";
-    manager.evictAllCachedSessions();
-    await manager.generateSessionTitle("session-claude", "User message", "Assistant reply");
-
-    expect(createSession).toHaveBeenNthCalledWith(1, {
-      onPermissionRequest: expect.any(Function),
-      model: "gpt-5-mini",
-    });
-    expect(createSession).toHaveBeenNthCalledWith(2, {
-      onPermissionRequest: expect.any(Function),
-      model: "claude-haiku-4.5",
-    });
+    expect(sessionTitles.getTitle("session-fallback-i18n")).toBe("Исправь падение при запуске");
   });
 });

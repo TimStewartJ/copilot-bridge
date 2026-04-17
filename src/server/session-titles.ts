@@ -3,19 +3,18 @@
 // We generate better titles and store them here.
 
 import type { DatabaseSync } from "./db.js";
+import { looksLikePromptEchoTitle } from "./session-title-utils.js";
 
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createSessionTitlesStore(db: DatabaseSync) {
   function loadTitles(): void {
     // Purge any titles that are actually echoed prompt text from a bug
-    const leaked = db.prepare(
-      "SELECT sessionId FROM session_titles WHERE title LIKE '%generate a concise%' OR title LIKE '%3-6 word title%'",
-    ).all() as any[];
+    const rows = db.prepare("SELECT sessionId, title FROM session_titles").all() as any[];
+    const leaked = rows.filter((row) => looksLikePromptEchoTitle(row.title));
     if (leaked.length > 0) {
-      db.prepare(
-        "DELETE FROM session_titles WHERE title LIKE '%generate a concise%' OR title LIKE '%3-6 word title%'",
-      ).run();
+      const remove = db.prepare("DELETE FROM session_titles WHERE sessionId = ?");
+      for (const row of leaked) remove.run(row.sessionId);
       console.log(`[titles] Purged ${leaked.length} leaked prompt-text titles`);
     }
   }

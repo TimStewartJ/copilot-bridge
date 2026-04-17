@@ -23,6 +23,21 @@ export interface StreamState {
   mcpServers: McpServerStatus[];
 }
 
+function getRenameTargetSessionId(args: ToolArgs | undefined): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const value = (args as Record<string, unknown>).sessionId;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: string): boolean {
+  if (name === "report_intent") return true;
+  if (name !== "session_rename") return false;
+  const targetSessionId = getRenameTargetSessionId(args);
+  return targetSessionId === undefined || targetSessionId === sessionId;
+}
+
 export function useSessionStream(
   sessionId: string | null,
   onEntriesAppended: (entries: ChatEntry[]) => void,
@@ -99,7 +114,7 @@ export function useSessionStream(
                   }
                   accumulatedContent = event.accumulatedContent ?? "";
                   const tools: PendingTool[] = (event.activeTools ?? [])
-                    .filter((t: any) => t.name !== "report_intent")
+                    .filter((t: any) => !isHiddenTool(t.name ?? "unknown", t.args, sid))
                     .map((t: any) => ({
                       toolCallId: t.toolCallId ?? "",
                       name: t.name ?? "unknown",
@@ -152,7 +167,7 @@ export function useSessionStream(
                     isSubAgent: event.isSubAgent,
                     startedAt: event.timestamp,
                   };
-                  if (tool.name === "report_intent") break;
+                  if (isHiddenTool(tool.name, tool.args, sid)) break;
                   activeToolMeta.set(tool.toolCallId, tool);
                   setStreamState((s) => ({
                     ...s,
@@ -186,12 +201,14 @@ export function useSessionStream(
                   break;
                 }
                 case "tool_done": {
-                  if (event.name === "report_intent") break;
                   const meta = activeToolMeta.get(event.toolCallId);
+                  const toolName = meta?.name ?? event.name ?? "unknown";
+                  const toolArgs = meta?.args;
+                  if (isHiddenTool(toolName, toolArgs, sid)) break;
                   activeToolMeta.delete(event.toolCallId);
                   const tc: ToolCall = {
                     toolCallId: event.toolCallId ?? "",
-                    name: meta?.name ?? event.name ?? "unknown",
+                    name: toolName,
                     args: meta?.args,
                     result: event.result,
                     success: event.success,
