@@ -27,7 +27,22 @@ export interface TransformedEntry {
 // Keep backward compat alias — server API consumers still reference this
 export type TransformedMessage = TransformedEntry;
 
-function isVisibleMessageEvent(event: any): boolean {
+function getRenameTargetSessionId(args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const value = (args as Record<string, unknown>).sessionId;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function isHiddenTool(toolName: string, args: unknown, sessionId?: string): boolean {
+  if (toolName === "report_intent") return true;
+  if (toolName !== "session_rename") return false;
+  const targetSessionId = getRenameTargetSessionId(args);
+  return targetSessionId === undefined || (sessionId !== undefined && targetSessionId === sessionId);
+}
+
+function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   const data = event?.data;
 
   if (event.type === "user.message") {
@@ -40,23 +55,23 @@ function isVisibleMessageEvent(event: any): boolean {
 
   if (event.type === "tool.execution_start") {
     const toolName = data?.toolName ?? data?.name ?? "unknown";
-    return Boolean(data?.toolCallId) && toolName !== "report_intent";
+    return Boolean(data?.toolCallId) && !isHiddenTool(toolName, data?.arguments, sessionId);
   }
 
   return false;
 }
 
-export function getVisibleEventTimestamp(event: any): string | undefined {
-  if (!isVisibleMessageEvent(event)) return undefined;
+export function getVisibleEventTimestamp(event: any, sessionId?: string): string | undefined {
+  if (!isVisibleMessageEvent(event, sessionId)) return undefined;
   return event?.data?.timestamp ?? event?.timestamp;
 }
 
-export function getLastVisibleActivityAt(events: any[]): string | undefined {
+export function getLastVisibleActivityAt(events: any[], sessionId?: string): string | undefined {
   const visibleToolCallIds = new Set<string>();
   let lastVisibleActivityAt: string | undefined;
 
   for (const event of events) {
-    const timestamp = getVisibleEventTimestamp(event);
+    const timestamp = getVisibleEventTimestamp(event, sessionId);
     if (timestamp) {
       lastVisibleActivityAt = timestamp;
       if (event.type === "tool.execution_start" && event?.data?.toolCallId) {
@@ -77,7 +92,7 @@ export function getLastVisibleActivityAt(events: any[]): string | undefined {
  * Transform raw SDK/JSONL events into a chronological list of entries.
  * Pass 1 indexes tool completion results, pass 2 emits entries in event order.
  */
-export function transformEventsToMessages(events: any[]): TransformedEntry[] {
+export function transformEventsToMessages(events: any[], sessionId?: string): TransformedEntry[] {
   const entries: TransformedEntry[] = [];
   let idx = 0;
 
@@ -134,7 +149,7 @@ export function transformEventsToMessages(events: any[]): TransformedEntry[] {
     } else if (event.type === "tool.execution_start") {
       if (!data?.toolCallId) continue;
       const toolName = data.toolName ?? data.name ?? "unknown";
-      if (toolName === "report_intent") continue;
+      if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
       const subAgent = subAgentStarts.get(data.toolCallId);
       const complete = toolCompletes.get(data.toolCallId);
       const isSubAgent = !!subAgent;

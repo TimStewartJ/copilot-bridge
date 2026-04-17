@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "./db.js";
+import { looksLikePromptEchoTitle } from "./session-title-utils.js";
 
 export function migrateJsonToSqlite(db: DatabaseSync, dataDir: string): void {
   // Check if migration is needed: if tasks table already has rows, skip
@@ -152,7 +153,7 @@ function migrateSessionTitles(db: DatabaseSync, dataDir: string): void {
   let count = 0;
   for (const [sessionId, title] of Object.entries(titles)) {
     // Skip leaked prompt-text titles (cleanup during migration)
-    if (typeof title === "string" && /generate a concise|3-6 word title/i.test(title)) continue;
+    if (typeof title === "string" && looksLikePromptEchoTitle(title)) continue;
     insert.run(sessionId, title as string);
     count++;
   }
