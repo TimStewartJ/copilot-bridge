@@ -9,6 +9,32 @@ export interface TaskIndicator {
   lastActivity: string;
 }
 
+/** Count non-archived tasks whose linked sessions currently show unread activity. */
+export function countTaskTabUnread(
+  tasks: Task[],
+  taskIndicators: Map<string, TaskIndicator>,
+): number {
+  let unread = 0;
+  for (const task of tasks) {
+    if (task.status === "archived") continue;
+    if (taskIndicators.get(task.id)?.unread) unread++;
+  }
+  return unread;
+}
+
+/** Count unread orphan chats using the same nav-tab semantics as the task rail. */
+export function countChatTabUnread(
+  orphanSessions: Session[],
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
+): number {
+  let unread = 0;
+  for (const session of orphanSessions) {
+    if (session.archived || session.busy) continue;
+    if (isUnread?.(session.sessionId, getSessionActivityTime(session))) unread++;
+  }
+  return unread;
+}
+
 /** Max of task.updatedAt and the latest session activity across all linked sessions (including archived). */
 export function getTaskLastActivity(
   task: Task,
