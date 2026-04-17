@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../api";
+import { type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin } from "lucide-react";
@@ -10,7 +10,7 @@ import NotesSheet from "./NotesSheet";
 import EmptyState from "./shared/EmptyState";
 import SessionList from "./SessionList";
 import useLongPressMenu from "../hooks/useLongPressMenu";
-import useTaskIndicators from "../hooks/useTaskIndicators";
+import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu } from "./task-list";
@@ -130,18 +130,6 @@ export default function TaskRail({
 
   const taskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
 
-  // Quick chat (orphan session) indicators
-  const orphanIndicators = useMemo(() => {
-    let totalUnread = 0;
-    let totalBusy = 0;
-    for (const s of orphanSessions) {
-      if (s.archived) continue;
-      if (s.busy) { totalBusy++; continue; }
-      if (isUnread?.(s.sessionId, getSessionActivityTime(s))) totalUnread++;
-    }
-    return { totalUnread, totalBusy, hasActivity: totalUnread > 0 || totalBusy > 0 };
-  }, [orphanSessions, isUnread]);
-
   const { nonArchived: sortedTasks, archived: archivedTasks } = useMemo(
     () => splitArchivedTasks(tasks),
     [tasks],
@@ -171,16 +159,10 @@ export default function TaskRail({
 
   // Badge counts for tabs (unread only — busy resolves to unread naturally)
   const taskTabUnread = useMemo(() => {
-    let unread = 0;
-    for (const task of tasks) {
-      if (task.status === "archived") continue;
-      const ind = taskIndicators.get(task.id);
-      if (ind?.unread) unread++;
-    }
-    return unread;
+    return countTaskTabUnread(tasks, taskIndicators);
   }, [tasks, taskIndicators]);
 
-  const chatTabUnread = useMemo(() => orphanIndicators.totalUnread, [orphanIndicators]);
+  const chatTabUnread = useMemo(() => countChatTabUnread(orphanSessions, isUnread), [orphanSessions, isUnread]);
 
   // Context menu state (tasks)
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();

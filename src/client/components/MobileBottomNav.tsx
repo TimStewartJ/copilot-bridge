@@ -6,7 +6,8 @@ type Tab = "home" | "tasks" | "chats" | "docs" | "settings";
 interface MobileBottomNavProps {
   activeTab: Tab;
   onSelectTab: (tab: Tab) => void;
-  unreadCount?: number;
+  taskUnreadCount?: number;
+  chatUnreadCount?: number;
   showDocs?: boolean;
 }
 
@@ -17,7 +18,8 @@ const isStandalone = typeof window !== "undefined" &&
 export function MobileBottomNav({
   activeTab,
   onSelectTab,
-  unreadCount = 0,
+  taskUnreadCount = 0,
+  chatUnreadCount = 0,
   showDocs = true,
 }: MobileBottomNavProps) {
   const tabs: { id: Tab; label: string; icon: typeof ListTodo }[] = useMemo(() => [
@@ -36,6 +38,11 @@ export function MobileBottomNav({
       <div className="flex items-center justify-around h-14">
         {tabs.map(({ id, label, icon: Icon }) => {
           const active = activeTab === id;
+          const unreadCount = id === "tasks"
+            ? taskUnreadCount
+            : id === "chats"
+              ? chatUnreadCount
+              : 0;
           return (
             <button
               key={id}
@@ -45,7 +52,7 @@ export function MobileBottomNav({
             >
               <span className="relative">
                 <Icon size={20} strokeWidth={active ? 2.2 : 1.8} />
-                {id === "chats" && unreadCount > 0 && (
+                {unreadCount > 0 && (
                   <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-accent text-white text-[10px] font-semibold leading-none">
                     {unreadCount > 99 ? "99+" : unreadCount}
                   </span>

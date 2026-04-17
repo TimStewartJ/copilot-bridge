@@ -39,6 +39,7 @@ import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { useSessionsQuery } from "./hooks/queries/useSessions";
+import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
 import TaskDashboard from "./components/TaskDashboard";
@@ -313,6 +314,13 @@ export default function App() {
     const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
     return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
   }, [sessions, tasks]);
+  const navTaskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
+  const mobileTaskUnreadCount = useMemo(() => {
+    return countTaskTabUnread(tasks, navTaskIndicators);
+  }, [tasks, navTaskIndicators]);
+  const mobileChatUnreadCount = useMemo(() => {
+    return countChatTabUnread(globalSessions, isUnread);
+  }, [globalSessions, isUnread]);
 
   const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
@@ -408,12 +416,6 @@ export default function App() {
         : quickChatsMode
           ? "chats" as const
           : "tasks" as const;
-
-  const mobileUnreadCount = useMemo(() => {
-    return globalSessions.filter(
-      (s) => !s.archived && isUnread(s.sessionId, getSessionActivityTime(s)),
-    ).length;
-  }, [globalSessions, isUnread]);
 
   const handleRailTabChange = (tab: "tasks" | "chats") => {
     if (tab === "tasks") {
@@ -1163,7 +1165,8 @@ export default function App() {
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
-          unreadCount={mobileUnreadCount}
+          taskUnreadCount={mobileTaskUnreadCount}
+          chatUnreadCount={mobileChatUnreadCount}
         />
       )}
     </div>
