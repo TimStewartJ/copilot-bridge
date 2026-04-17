@@ -4,7 +4,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, copyFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, cpSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -120,65 +120,69 @@ function removeStagingData(stagingDir: string): void {
   }
 }
 
-/** Seed a staging data directory from production data, with schedules disabled.
- *  Uses the worktree's own data/ directory (already gitignored). */
-function seedStagingData(stagingDir: string): string {
-  const dataDir = join(stagingDir, "data");
-  mkdirSync(dataDir, { recursive: true });
+interface SeedStagingDataOptions {
+  productionDataDir?: string;
+}
 
-  // Copy production SQLite database if it exists
-  const dbSrc = join(PRODUCTION_DATA_DIR, "bridge.db");
-  if (existsSync(dbSrc)) {
-    // Copy production DB via VACUUM INTO for a clean, WAL-inclusive snapshot
-    try {
-      const prodDb = new DatabaseSync(dbSrc, { readOnly: true });
-      const destPath = join(dataDir, "bridge.db").replaceAll("\\", "/");
-      prodDb.exec(`VACUUM INTO '${destPath}'`);
-      prodDb.close();
-    } catch (err) {
-      log(`Warning: SQLite VACUUM INTO failed, falling back to file copy: ${err}`);
-      copyFileSync(dbSrc, join(dataDir, "bridge.db"));
-    }
+interface RestoreStagingBackendWithRetryOptions {
+  attempts?: number;
+  initializeBackend?: (prefix: string, stagingDir: string) => Promise<void>;
+  log?: (msg: string) => void;
+}
 
-    // Disable all schedules in the staging copy
-    try {
-      const stagingDb = new DatabaseSync(join(dataDir, "bridge.db"));
-      stagingDb.exec("PRAGMA journal_mode = WAL");
-      stagingDb.exec("UPDATE schedules SET enabled = 0");
-      stagingDb.close();
-    } catch (err) {
-      log(`Warning: could not disable schedules in staging DB: ${err}`);
-    }
-  } else {
-    // Fallback: copy JSON files for migration (pre-migration scenario)
-    const filesToCopy = [
-      "tasks.json", "task-groups.json", "settings.json",
-      "sessions-meta.json", "session-titles.json", "read-state.json",
-    ];
-    for (const file of filesToCopy) {
-      const src = join(PRODUCTION_DATA_DIR, file);
-      if (existsSync(src)) {
-        copyFileSync(src, join(dataDir, file));
-      }
-    }
+function clearSeededSqliteFiles(dataDir: string): void {
+  for (const filename of ["bridge.db", "bridge.db-wal", "bridge.db-shm"]) {
+    rmSync(join(dataDir, filename), { force: true });
+  }
+}
 
-    // Copy schedules but disable all of them
-    const schedSrc = join(PRODUCTION_DATA_DIR, "schedules.json");
-    if (existsSync(schedSrc)) {
+function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
+  clearSeededSqliteFiles(dataDir);
+  const prodDb = new DatabaseSync(dbSrc, { readOnly: true });
+  try {
+    const destPath = join(dataDir, "bridge.db").replaceAll("\\", "/").replaceAll("'", "''");
+    prodDb.exec(`VACUUM INTO '${destPath}'`);
+  } finally {
+    prodDb.close();
+  }
+}
+
+function disableSchedulesInStagingDb(dbPath: string): void {
+  let stagingDb: DatabaseSync | null = null;
+  try {
+    stagingDb = new DatabaseSync(dbPath);
+    stagingDb.exec("PRAGMA journal_mode = WAL");
+    stagingDb.exec("UPDATE schedules SET enabled = 0");
+  } catch (err) {
+    log(`Warning: could not disable schedules in staging DB: ${err}`);
+  } finally {
+    if (stagingDb) {
       try {
-        const schedules = JSON.parse(readFileSync(schedSrc, "utf-8"));
-        if (Array.isArray(schedules)) {
-          for (const s of schedules) s.enabled = false;
-        }
-        writeFileSync(join(dataDir, "schedules.json"), JSON.stringify(schedules, null, 2));
-      } catch {
-        writeFileSync(join(dataDir, "schedules.json"), "[]");
+        stagingDb.close();
+      } catch (closeErr) {
+        log(`Warning: could not close staging DB after schedule disable: ${closeErr}`);
       }
     }
   }
+}
+
+/** Seed a staging data directory from production data, with schedules disabled.
+ *  Uses the worktree's own data/ directory (already gitignored). */
+function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): string {
+  const dataDir = join(stagingDir, "data");
+  mkdirSync(dataDir, { recursive: true });
+
+  const productionDataDir = options.productionDataDir ?? PRODUCTION_DATA_DIR;
+  const dbSrc = join(productionDataDir, "bridge.db");
+  if (!existsSync(dbSrc)) {
+    throw new Error(`Production SQLite database not found at ${dbSrc}`);
+  }
+
+  snapshotProductionDatabase(dbSrc, dataDir);
+  disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
 
   // Copy docs directory (source of truth is filesystem, not SQLite)
-  const docsSrc = join(PRODUCTION_DATA_DIR, "docs");
+  const docsSrc = join(productionDataDir, "docs");
   if (existsSync(docsSrc)) {
     cpSync(docsSrc, join(dataDir, "docs"), { recursive: true });
   }
@@ -223,61 +227,70 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
 
   // Open isolated staging database
   const db = dbMod.openDatabase(dataDir);
-  migrateMod.migrateJsonToSqlite(db, dataDir);
+  try {
+    migrateMod.migrateJsonToSqlite(db, dataDir);
 
-  // Create isolated instances
-  const globalBus = globalBusMod.createGlobalBus();
-  const eventBusRegistry = eventBusMod.createEventBusRegistry();
-  const taskStore = taskStoreMod.createTaskStore(db, globalBus);
-  const taskGroupStore = taskGroupStoreMod.createTaskGroupStore(db);
-  const scheduleStore = scheduleStoreMod.createScheduleStore(db);
-  const settingsStore = settingsStoreMod.createSettingsStore(db);
-  const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(db);
-  const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
-  const readStateStore = readStateStoreMod.createReadStateStore(db);
-  const todoStore = todoStoreMod.createTodoStore(db, globalBus);
-  const tagStore = tagStoreMod?.createTagStore(db);
-  const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
-  const docsStore = docsStoreMod?.createDocsStore(join(dataDir, "docs"));
-  const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
-  if (docsIndex) docsIndex.reindex();
+    // Create isolated instances
+    const globalBus = globalBusMod.createGlobalBus();
+    const eventBusRegistry = eventBusMod.createEventBusRegistry();
+    const taskStore = taskStoreMod.createTaskStore(db, globalBus);
+    const taskGroupStore = taskGroupStoreMod.createTaskGroupStore(db);
+    const scheduleStore = scheduleStoreMod.createScheduleStore(db);
+    const settingsStore = settingsStoreMod.createSettingsStore(db);
+    const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(db);
+    const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
+    const readStateStore = readStateStoreMod.createReadStateStore(db);
+    const todoStore = todoStoreMod.createTodoStore(db, globalBus);
+    const tagStore = tagStoreMod?.createTagStore(db);
+    const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
+    const docsStore = docsStoreMod?.createDocsStore(join(dataDir, "docs"));
+    const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
+    if (docsIndex) docsIndex.reindex();
 
-  // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
-  const copilotHome = join(dataDir, ".copilot");
-  mkdirSync(copilotHome, { recursive: true });
+    // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
+    const copilotHome = join(dataDir, ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
 
-  const ctx: AppContext = {
-    taskStore, taskGroupStore, scheduleStore, settingsStore,
-    sessionMetaStore, sessionTitles, readStateStore, todoStore,
-    ...(docsStore && { docsStore }),
-    ...(docsIndex && { docsIndex }),
-    ...(tagStore && { tagStore }),
-    ...(telemetryStore && { telemetryStore }),
-    globalBus, eventBusRegistry,
-    sessionManager: null as any,
-    copilotHome,
-    isStaging: true,
-  };
+    const ctx: AppContext = {
+      taskStore, taskGroupStore, scheduleStore, settingsStore,
+      sessionMetaStore, sessionTitles, readStateStore, todoStore,
+      ...(docsStore && { docsStore }),
+      ...(docsIndex && { docsIndex }),
+      ...(tagStore && { tagStore }),
+      ...(telemetryStore && { telemetryStore }),
+      globalBus, eventBusRegistry,
+      sessionManager: null as any,
+      copilotHome,
+      isStaging: true,
+    };
 
-  // Create bridge tools for staging (exclude dangerous tools)
-  const allTools = sessionManagerMod.createBridgeTools(ctx);
-  const excludeTools = new Set(["self_restart", "staging_init", "staging_preview", "staging_deploy", "staging_cleanup"]);
-  const stagingTools = allTools.filter((t: any) => !excludeTools.has(t.name));
+    // Create bridge tools for staging (exclude dangerous tools)
+    const allTools = sessionManagerMod.createBridgeTools(ctx);
+    const excludeTools = new Set(["self_restart", "staging_init", "staging_preview", "staging_deploy", "staging_cleanup"]);
+    const stagingTools = allTools.filter((t: any) => !excludeTools.has(t.name));
 
-  // Create a real SessionManager via the worktree's factory — new deps are picked up
-  // automatically without updating this file (see createSessionManager in session-manager.ts)
-  const sm = sessionManagerMod.createSessionManager(ctx, {
-    tools: stagingTools,
-    config: { sessionMcpServers: settingsStore.getMcpServers(), model: "claude-haiku-4.5" },
-    clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
-    copilotHome,
-  });
-  ctx.sessionManager = sm;
+    // Create a real SessionManager via the worktree's factory — new deps are picked up
+    // automatically without updating this file (see createSessionManager in session-manager.ts)
+    const sm = sessionManagerMod.createSessionManager(ctx, {
+      tools: stagingTools,
+      config: { sessionMcpServers: settingsStore.getMcpServers(), model: "claude-haiku-4.5" },
+      clientEnv: { ...process.env, COPILOT_HOME: copilotHome },
+      copilotHome,
+    });
+    ctx.sessionManager = sm;
 
-  // Store the apiRouter factory for mounting
-  (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;
+    // Store the apiRouter factory for mounting
+    (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;
 
-  return { ctx, db };
+    return { ctx, db };
+  } catch (err) {
+    try {
+      db.close();
+    } catch (closeErr) {
+      log(`Warning: staging DB close error: ${closeErr}`);
+    }
+    throw err;
+  }
 }
 
 /** Tear down a staging backend: shutdown SDK, close DB, remove data */
@@ -300,6 +313,95 @@ async function teardownStagingBackend(prefix: string): Promise<void> {
   const stagingDir = join(STAGING_PARENT, prefix);
   removeStagingData(stagingDir);
   log(`Staging backend torn down: ${prefix}`);
+}
+
+function createStagingBackendCleanup(ctx: AppContext): () => Promise<void> {
+  return async () => {
+    try {
+      await ctx.sessionManager.gracefulShutdown();
+    } catch (err) {
+      log(`Warning: staging SDK shutdown error: ${err}`);
+    }
+  };
+}
+
+async function initializeStagingBackend(prefix: string, stagingDir: string): Promise<void> {
+  await teardownStagingBackend(prefix);
+  removeStagingData(stagingDir);
+
+  let ctx: AppContext | null = null;
+  let stagingDb: DatabaseSync | undefined;
+
+  try {
+    const dataDir = seedStagingData(stagingDir);
+
+    log(`Creating staging backend context from ${stagingDir}...`);
+    const created = await createStagingContext(stagingDir, dataDir);
+    ctx = created.ctx;
+    stagingDb = created.db;
+
+    log("Initializing staging Copilot SDK...");
+    await ctx.sessionManager.initialize();
+
+    const createRouter = (ctx as any)._createApiRouter;
+    const stagedRouter = createRouter(ctx);
+    activeStagingRouters.set(prefix, stagedRouter);
+    activeStagingBackends.set(prefix, {
+      ctx,
+      router: stagedRouter,
+      db: stagingDb,
+      cleanup: createStagingBackendCleanup(ctx),
+    });
+
+    log(`Staged API registered for prefix ${prefix}`);
+    log("Staging backend ready");
+  } catch (err) {
+    activeStagingRouters.delete(prefix);
+    activeStagingBackends.delete(prefix);
+    if (ctx) {
+      try {
+        await createStagingBackendCleanup(ctx)();
+      } catch {
+        // createStagingBackendCleanup already logs concrete shutdown failures
+      }
+    }
+    if (stagingDb) {
+      try {
+        stagingDb.close();
+      } catch (dbErr) {
+        log(`Warning: staging DB close error: ${dbErr}`);
+      }
+    }
+    removeStagingData(stagingDir);
+    throw err;
+  }
+}
+
+async function restoreStagingBackendWithRetry(
+  prefix: string,
+  stagingDir: string,
+  options: RestoreStagingBackendWithRetryOptions = {},
+): Promise<{ restored: boolean; attempts: number; error?: string }> {
+  const maxAttempts = options.attempts ?? 2;
+  const initializeBackend = options.initializeBackend ?? initializeStagingBackend;
+  const writeLog = options.log ?? log;
+
+  let lastError: string | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await initializeBackend(prefix, stagingDir);
+      return { restored: true, attempts: attempt };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      if (attempt < maxAttempts) {
+        writeLog(
+          `Failed to restore staged backend for ${prefix} on attempt ${attempt}/${maxAttempts}: ${lastError}`,
+        );
+      }
+    }
+  }
+
+  return { restored: false, attempts: maxAttempts, error: lastError };
 }
 
 function log(msg: string) {
@@ -411,40 +513,24 @@ export async function pruneOrphanedWorktrees(): Promise<void> {
     for (const prefix of activeWorktrees) {
       if (!activePreviews.has(prefix)) continue; // no dist to serve — skip
       const stagingDir = join(STAGING_PARENT, prefix);
-      try {
-        log(`Restoring staged backend for preview: ${prefix}`);
-        const dataDir = seedStagingData(stagingDir);
-        const { ctx, db: stagingDb } = await createStagingContext(stagingDir, dataDir);
-
-        await ctx.sessionManager.initialize();
-
-        const createRouter = (ctx as any)._createApiRouter;
-        const stagedRouter = createRouter(ctx);
-        activeStagingRouters.set(prefix, stagedRouter);
-
-        activeStagingBackends.set(prefix, {
-          ctx,
-          router: stagedRouter,
-          db: stagingDb,
-          cleanup: async () => {
-            try {
-              await ctx.sessionManager.gracefulShutdown();
-            } catch (err) {
-              log(`Warning: staging SDK shutdown error: ${err}`);
-            }
-          },
-        });
-
+      log(`Restoring staged backend for preview: ${prefix}`);
+      const restoreResult = await restoreStagingBackendWithRetry(prefix, stagingDir);
+      if (restoreResult.restored) {
         log(`Restored staged backend for preview: ${prefix}`);
-      } catch (err) {
-        log(`Failed to restore staged backend for ${prefix}, cleaning up preview: ${err}`);
-        // Clean up the broken preview entirely rather than leaving a half-working shell
-        removeStagingDist(prefix);
-        removeWorktree(stagingDir, `staging/${prefix}`);
+      } else {
+        log(
+          `Failed to restore staged backend for ${prefix} after ${restoreResult.attempts} attempts: ` +
+            `${restoreResult.error}. Keeping frontend-only preview.`,
+        );
       }
     }
   }
 }
+
+export const __testing = {
+  seedStagingData,
+  restoreStagingBackendWithRetry,
+};
 
 export const STAGING_TOOLS = [
   defineTool("staging_init", {
@@ -569,42 +655,8 @@ export const STAGING_TOOLS = [
 
       if (_expressApp) {
         try {
-          // Tear down any existing staging backend for this prefix
-          await teardownStagingBackend(prefix);
-
-          // Seed isolated data directory
-          const dataDir = seedStagingData(stagingDir);
-
-          // Create staging AppContext from worktree code
-          log(`Creating staging backend context from ${stagingDir}...`);
-          const { ctx, db: stagingDb } = await createStagingContext(stagingDir, dataDir);
-
-          // Initialize the staging SessionManager (spawns its own CLI process)
-          log("Initializing staging Copilot SDK...");
-          await ctx.sessionManager.initialize();
-
-          // Mount staged API router
-          const createRouter = (ctx as any)._createApiRouter;
-          const stagedRouter = createRouter(ctx);
-          activeStagingRouters.set(prefix, stagedRouter);
-          log(`Staged API registered for prefix ${prefix}`);
-
-          // Store for cleanup
-          activeStagingBackends.set(prefix, {
-            ctx,
-            router: stagedRouter,
-            db: stagingDb,
-            cleanup: async () => {
-              try {
-                await ctx.sessionManager.gracefulShutdown();
-              } catch (err) {
-                log(`Warning: staging SDK shutdown error: ${err}`);
-              }
-            },
-          });
-
+          await initializeStagingBackend(prefix, stagingDir);
           backendReady = true;
-          log("Staging backend ready");
         } catch (err) {
           backendError = err instanceof Error ? err.message : String(err);
           log(`Staging backend failed (frontend-only preview): ${backendError}`);
