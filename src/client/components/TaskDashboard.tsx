@@ -58,6 +58,9 @@ interface TaskDashboardProps {
   onDuplicateSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
+  archivingIds?: Set<string>;
+  exitingIds?: Set<string>;
+  onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   hasDraft?: (sessionId: string) => boolean;
@@ -84,6 +87,9 @@ export default function TaskDashboard({
   onDuplicateSession,
   onReloadSession,
   onArchiveSession,
+  archivingIds,
+  exitingIds,
+  onBulkAction,
   onUnlinkFromTask,
   onMarkUnread,
   hasDraft,
@@ -226,6 +232,7 @@ export default function TaskDashboard({
                 <EmptyState message="No sessions yet" sub="Start a chat to begin working" />
               ) : (
                 <SessionList
+                  key={task.id}
                   variant="compact"
                   sessions={linkedSessions}
                   activeSessionId={null}
@@ -234,6 +241,8 @@ export default function TaskDashboard({
                   showEmptyState={false}
                   isUnread={isUnread}
                   onArchiveSession={onArchiveSession}
+                  archivingIds={archivingIds}
+                  exitingIds={exitingIds}
                   taskContext={task}
                   onUnlinkFromTask={
                     onUnlinkFromTask
@@ -246,6 +255,7 @@ export default function TaskDashboard({
                   onDuplicateSession={onDuplicateSession}
                   onReloadSession={onReloadSession}
                   onMarkUnread={onMarkUnread}
+                  onBulkAction={onBulkAction}
                   hasDraft={hasDraft}
                   onRequestArchived={onRequestArchived}
                   archivedLoaded={archivedLoaded}

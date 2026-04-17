@@ -941,6 +941,7 @@ export default function App() {
         archivedLoaded={archivedLoaded}
         archivingIds={archivingIds}
         exitingIds={exitingIds}
+        hasDraft={hasDraft}
         onBulkAction={handleBulkAction}
         onRailTabChange={handleRailTabChange}
       />
@@ -1113,6 +1114,9 @@ export default function App() {
                     onDuplicateSession={handleDuplicateSession}
                     onReloadSession={handleReloadSession}
                     onArchiveSession={handleArchiveSession}
+                    archivingIds={archivingIds}
+                    exitingIds={exitingIds}
+                    onBulkAction={handleBulkAction}
                     onMarkUnread={markUnread}
                     hasDraft={hasDraft}
                     onRequestArchived={requestArchivedSessions}
@@ -1246,30 +1250,6 @@ function MobileTaskListView({
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
 }){
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const handleMobileBulkAction = useCallback((action: import("./api").BatchAction, ids: string[]) => {
-    onBulkAction?.(action, ids);
-    setSelectedIds(new Set());
-    setSelectMode(false);
-  }, [onBulkAction]);
-
-  const unreadCount = orphanSessions.filter(
-    (s) => !s.archived && isUnread?.(s.sessionId, getSessionActivityTime(s)),
-  ).length;
-
-  const activeCount = orphanSessions.filter((s) => !s.archived).length;
-
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
       {/* Header */}
@@ -1277,27 +1257,6 @@ function MobileTaskListView({
         <span className="text-sm font-semibold text-text-primary">
           {quickChatsMode ? "Quick Chats" : "Tasks"}
         </span>
-        <div className="flex items-center gap-2">
-          {quickChatsMode && !selectMode && unreadCount > 0 && onMarkAllRead && (
-            <button
-              onClick={onMarkAllRead}
-              className="text-text-muted hover:text-accent transition-colors text-xs"
-            >
-              Read all
-            </button>
-          )}
-          {quickChatsMode && onBulkAction && activeCount > 0 && (
-            <button
-              onClick={() => {
-                setSelectMode(!selectMode);
-                if (selectMode) setSelectedIds(new Set());
-              }}
-              className={`text-xs transition-colors ${selectMode ? "text-accent font-medium" : "text-text-muted hover:text-text-secondary"}`}
-            >
-              {selectMode ? "Done" : "Select"}
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Content — pull-to-refresh wraps both tabs */}
@@ -1305,7 +1264,7 @@ function MobileTaskListView({
       <PullToRefresh onRefresh={onRefresh} className="absolute inset-0 overflow-x-hidden min-w-0" scrollKey={quickChatsMode ? "chats" : "tasks"}>
         {quickChatsMode ? (
           <SessionList
-            variant="global"
+            variant="compact"
             sessions={orphanSessions}
             activeSessionId={activeSessionId}
             onSelectSession={onSelectSession}
@@ -1321,14 +1280,12 @@ function MobileTaskListView({
             onDuplicateSession={onDuplicateSession}
             onReloadSession={onReloadSession}
             onMarkUnread={markUnread}
+            onMarkAllRead={onMarkAllRead}
             hasDraft={hasDraft}
-            selectMode={selectMode}
-            selectedIds={selectedIds}
-            onToggleSelect={toggleSelect}
-            onBulkAction={handleMobileBulkAction}
+            onBulkAction={onBulkAction}
             onRequestArchived={onRequestArchived}
             archivedLoaded={archivedLoaded}
-            className="min-w-0 overflow-x-hidden p-2 space-y-1"
+            className="min-w-0 overflow-x-hidden p-2 space-y-0.5"
           />
         ) : (
           <TaskList
