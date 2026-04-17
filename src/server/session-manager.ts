@@ -221,6 +221,7 @@ let _restartPending = false;
 let _restartPendingSince = 0;
 const RESTART_TIMEOUT = 15 * 60 * 1000; // 15 min — if server is still alive, restart failed
 export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect.";
+const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
 export function isRestartPending(): boolean {
   if (_restartPending && _restartPendingSince && Date.now() - _restartPendingSince > RESTART_TIMEOUT) {
@@ -1064,13 +1065,28 @@ export class SessionManager {
   }
 
   private getWorkspaceSummary(sessionId: string): string | undefined {
-    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
-    const yamlPath = join(copilotHome, "session-state", sessionId, "workspace.yaml");
+    const yamlPath = join(this.getSessionStateDir(sessionId), "workspace.yaml");
     try {
       return parseWorkspaceSummary(readFileSync(yamlPath, "utf-8"));
     } catch {
       return undefined;
     }
+  }
+
+  private getCopilotHome(): string {
+    return this.deps.copilotHome ?? join(homedir(), ".copilot");
+  }
+
+  private getSessionStateDir(sessionId: string): string {
+    return join(this.getCopilotHome(), "session-state", sessionId);
+  }
+
+  private getSessionPlanPath(sessionId: string): string {
+    return join(this.getSessionStateDir(sessionId), "plan.md");
+  }
+
+  hasPlan(sessionId: string): boolean {
+    return existsSync(this.getSessionPlanPath(sessionId));
   }
 
   private getFirstUserPrompt(sessionId: string): string | undefined {
@@ -1685,6 +1701,32 @@ export class SessionManager {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
     bus.setPendingPrompt(prompt);
+    this.startBackgroundRun(sessionId, bus, () => this._doWork(sessionId, prompt, bus, attachments));
+  }
+
+  startFleet(sessionId: string, prompt?: string): void {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (!this.hasPlan(sessionId)) {
+      throw new Error("Session has no plan to run with Fleet");
+    }
+    if (isRestartImminent()) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
+    if (this.isSessionBusy(sessionId)) {
+      throw new Error("Session is busy processing another request");
+    }
+
+    const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
+    bus.reset();
+    const fleetPrompt = prompt?.trim() || DEFAULT_FLEET_PROMPT;
+    this.startBackgroundRun(sessionId, bus, () => this._doFleet(sessionId, fleetPrompt, bus));
+  }
+
+  private startBackgroundRun(
+    sessionId: string,
+    bus: ReturnType<typeof getOrCreateBus>,
+    runner: () => Promise<void>,
+  ): void {
     this.activeSessions.add(sessionId);
     const now = Date.now();
     this.sessionActivity.set(sessionId, { startedAt: now, lastEventAt: now });
@@ -1693,8 +1735,7 @@ export class SessionManager {
       this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
     }
 
-    // Run in background — not awaited
-    this._doWork(sessionId, prompt, bus, attachments).catch((err) => {
+    runner().catch((err) => {
       console.error(`[sdk] Unhandled error in session ${sessionId}:`, err);
       bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
     }).finally(() => {
@@ -1709,9 +1750,47 @@ export class SessionManager {
 
   private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): Promise<void> {
     const sid = sessionId.slice(0, 8);
-
-    // Persist attachments to session files dir and route to appropriate SDK type
     const sdkAttachments = this.persistAndRouteAttachments(sessionId, attachments);
+    const attachCount = sdkAttachments?.length ?? 0;
+
+    await this.runSessionOperation(sessionId, bus, {
+      resumeContext: "message",
+      fallbackTitleSource: prompt,
+      idleSpanName: "session.sendToIdle",
+      startLog: `[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
+      execute: async (session) => {
+        await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
+      },
+    });
+  }
+
+  private async _doFleet(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>): Promise<void> {
+    const sid = sessionId.slice(0, 8);
+    await this.runSessionOperation(sessionId, bus, {
+      resumeContext: "fleet",
+      idleSpanName: "session.fleetToIdle",
+      startLog: `[sdk] [${sid}] Starting Fleet (${prompt.length} chars)...`,
+      execute: async (session) => {
+        if (typeof session.rpc?.fleet?.start !== "function") {
+          throw new Error("Fleet mode is not available in this Copilot SDK build");
+        }
+        await session.rpc.fleet.start({ prompt });
+      },
+    });
+  }
+
+  private async runSessionOperation(
+    sessionId: string,
+    bus: ReturnType<typeof getOrCreateBus>,
+    opts: {
+      resumeContext: string;
+      idleSpanName: string;
+      startLog: string;
+      execute: (session: any) => Promise<void>;
+      fallbackTitleSource?: string;
+    },
+  ): Promise<void> {
+    const sid = sessionId.slice(0, 8);
 
     // Build resume config with optional task context
     const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
@@ -1741,7 +1820,7 @@ export class SessionManager {
         this.sessionObjects.set(sessionId, s);
         this.probeMcpStatus(sessionId, s);
         const resumeDuration = Date.now() - resumeStart;
-        this.recordSpan("session.resume", resumeDuration, sessionId, { context: "doWork" });
+        this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
         console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
       }
       return s;
@@ -1919,9 +1998,9 @@ export class SessionManager {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
-          this.recordSpan("session.sendToIdle", Date.now() - sendStart, sessionId, { chars: content.length });
-          if (!this.hasStoredSessionTitle(sessionId) && !this.hasExistingSessionTitle(sessionId)) {
-            const fallbackTitle = deriveFallbackSessionTitle(prompt);
+          this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
+          if (opts.fallbackTitleSource && !this.hasStoredSessionTitle(sessionId) && !this.hasExistingSessionTitle(sessionId)) {
+            const fallbackTitle = deriveFallbackSessionTitle(opts.fallbackTitleSource);
             if (fallbackTitle) {
               storeSessionTitle(this.deps.sessionTitles, this.deps.eventBusRegistry, this.deps.globalBus, sessionId, fallbackTitle);
               console.log(`[titles] [${sid}] Fallback title: "${fallbackTitle}"`);
@@ -2011,24 +2090,23 @@ export class SessionManager {
     };
 
     try {
-      const attachCount = sdkAttachments?.length ?? 0;
-      console.log(`[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
+      console.log(opts.startLog);
 
       try {
         beginSend();
-        await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
-      } catch (sendErr) {
+        await opts.execute(session);
+      } catch (operationErr) {
         // If the agent evicted this session, the cached object is stale — re-resume and retry once
-        if (sendErr instanceof Error && sendErr.message.includes("Session not found") && usedCache) {
+        if (operationErr instanceof Error && operationErr.message.includes("Session not found") && usedCache) {
           console.warn(`[sdk] [${sid}] Stale cached session — evicting and re-resuming...`);
           unsub();
           this.sessionObjects.delete(sessionId);
           session = await resumeSession();
           unsub = subscribeToSession(session);
           beginSend();
-          await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
+          await opts.execute(session);
         } else {
-          throw sendErr;
+          throw operationErr;
         }
       }
 

@@ -630,6 +630,10 @@ export async function fetchPlan(sessionId: string): Promise<PlanData> {
   return apiFetch<PlanData>(`/api/sessions/${sessionId}/plan`);
 }
 
+export async function startFleetRun(sessionId: string, prompt?: string): Promise<void> {
+  await apiFetch<{ status: string }>(`/api/sessions/${sessionId}/fleet`, prompt?.trim() ? { prompt } : {});
+}
+
 // ── Enriched Task API ─────────────────────────────────────────────
 
 export async function fetchEnrichedTask(id: string): Promise<EnrichedTaskData> {

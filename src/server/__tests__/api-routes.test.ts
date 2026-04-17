@@ -17,6 +17,89 @@ afterEach(() => {
   clearRestartPending();
 });
 
+describe("Fleet route", () => {
+  it("POST /api/sessions/:id/fleet starts Fleet for sessions with a plan", async () => {
+    const startFleet = vi.fn();
+    ctx.sessionManager.hasPlan = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.startFleet = startFleet;
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/fleet")
+      .send({});
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted" });
+    expect(startFleet).toHaveBeenCalledWith("session-123", undefined);
+  });
+
+  it("POST /api/sessions/:id/fleet rejects sessions without a plan", async () => {
+    ctx.sessionManager.hasPlan = vi.fn().mockReturnValue(false);
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/fleet")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("no plan");
+  });
+
+  it("POST /api/sessions/:id/fleet rejects invalid prompts", async () => {
+    ctx.sessionManager.hasPlan = vi.fn().mockReturnValue(true);
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/fleet")
+      .send({ prompt: 42 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("prompt must be a string");
+  });
+
+  it("POST /api/sessions/:id/fleet rejects busy sessions", async () => {
+    ctx.sessionManager.hasPlan = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/fleet")
+      .send({});
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toContain("busy");
+  });
+
+  it("GET /api/sessions/:id/stream replays completed Fleet runs as terminal SSE events", async () => {
+    const bus = ctx.eventBusRegistry.getOrCreateBus("session-123");
+    bus.emit({ type: "done", content: "Fleet finished" });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('data: {"type":"done","content":"Fleet finished"}');
+    expect(res.text).not.toContain('"type":"snapshot"');
+  });
+
+  it("GET /api/sessions/:id/stream normalizes completed snapshots emitted during subscribe", async () => {
+    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
+      subscribe(listener: (event: unknown) => void) {
+        listener({
+          type: "snapshot",
+          complete: true,
+          terminalType: "done",
+          finalContent: "Fleet finished",
+        });
+        return () => {};
+      },
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('data: {"type":"done","content":"Fleet finished"}');
+    expect(res.text).not.toContain('"type":"snapshot"');
+  });
+});
+
 describe("Telemetry routes", () => {
   it("POST /api/telemetry records a single client span", async () => {
     const res = await request(app)
