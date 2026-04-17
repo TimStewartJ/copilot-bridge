@@ -145,8 +145,10 @@ export default function ChatView({
     toolProgress,
     isStreaming,
     streamStatus,
+    pendingOrigin,
     mcpServers: streamMcpServers,
     sendMessage,
+    startFleet,
     abortSession,
     reconnect,
   } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
@@ -438,6 +440,16 @@ export default function ChatView({
     }
   }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh]);
 
+  const handleRunFleet = useCallback(async () => {
+    if (!sessionId) throw new Error("Session not available");
+    if (isStreaming) throw new Error("Session is busy, please wait");
+    if (creating) throw new Error("Session is still being created");
+    if (warming) throw new Error("Session is reconnecting, please wait");
+    invalidateHistoryRefresh();
+    stickToBottomRef.current = true;
+    await startFleet();
+  }, [sessionId, isStreaming, creating, warming, invalidateHistoryRefresh, startFleet]);
+
   // Build pending indicator content (streaming bubble + active tools + status text).
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
@@ -488,12 +500,20 @@ export default function ChatView({
     if (isStreaming && !streamingContent && activeTools.length === 0) {
       const sending = streamStatus === "sending";
       const title = sending
-        ? "Handing off your message"
+        ? pendingOrigin === "fleet"
+          ? "Launching Fleet run"
+          : pendingOrigin === "reconnect"
+            ? "Reconnecting to active session"
+            : "Handing off your message"
         : intentText
           ? `${intentText}...`
           : "Waiting for the first response";
       const detail = sending
-        ? "The session has your prompt and is opening the response stream."
+        ? pendingOrigin === "fleet"
+          ? "The session is starting a parallel plan run and opening the response stream."
+          : pendingOrigin === "reconnect"
+            ? "The session is already busy; reopening the live response stream."
+            : "The session has your prompt and is opening the response stream."
         : "The assistant is working before any text or tool activity is visible.";
 
       parts.push(renderPendingStatusCard("thinking", sending ? "sending" : "thinking", title, detail));
@@ -510,9 +530,21 @@ export default function ChatView({
 
     if (parts.length === 0) return null;
     return <div className="space-y-4 pb-4">{parts}</div>;
-  }, [streamingContent, activeTools, toolProgress, isStreaming, streamStatus, intentText, creating]);
+  }, [streamingContent, activeTools, toolProgress, isStreaming, streamStatus, intentText, creating, pendingOrigin]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
+  const runFleetDisabledReason = !hasPlan
+    ? "This session does not have a plan yet."
+    : loading
+      ? "Wait for the current session history to finish loading."
+      : creating
+        ? "Finish creating the session before launching Fleet."
+        : warming
+          ? "Wait for the session to reconnect before launching Fleet."
+          : isStreaming
+            ? "Wait for the current run to finish before launching Fleet."
+            : null;
+  const isLaunchingFleet = isStreaming && pendingOrigin === "fleet";
 
   if (!sessionId && !isDraft) {
     return (
@@ -631,7 +663,13 @@ export default function ChatView({
       <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} disabled={warming} disabledHint="Reconnecting…" />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
-        <PlanSheet sessionId={sessionId} onClose={planOverlay.close} />
+        <PlanSheet
+          sessionId={sessionId}
+          onClose={planOverlay.close}
+          onRunFleet={handleRunFleet}
+          runFleetDisabledReason={runFleetDisabledReason}
+          isRunningFleet={isLaunchingFleet}
+        />
       )}
     </div>
   );

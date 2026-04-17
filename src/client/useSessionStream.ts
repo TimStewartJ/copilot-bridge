@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Attachment, ChatEntry, McpServerStatus, ToolArgs, ToolCall } from "./api";
-import { API_BASE } from "./api";
+import { API_BASE, startFleetRun } from "./api";
 
 export interface PendingTool {
   toolCallId: string;
@@ -12,6 +12,7 @@ export interface PendingTool {
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
+export type PendingOrigin = "message" | "fleet" | "reconnect" | null;
 
 export interface StreamState {
   streamingContent: string;
@@ -21,6 +22,7 @@ export interface StreamState {
   streamStatus: StreamStatus;
   isStreaming: boolean;
   mcpServers: McpServerStatus[];
+  pendingOrigin: PendingOrigin;
 }
 
 function getRenameTargetSessionId(args: ToolArgs | undefined): string | undefined {
@@ -46,10 +48,10 @@ export function useSessionStream(
   const mkState = (status: StreamStatus, partial?: Partial<StreamState>): StreamState => ({
     streamingContent: "",
     activeTools: [],
-    completedStreamTools: [],
     intentText: "",
     toolProgress: "",
     mcpServers: [],
+    pendingOrigin: null,
     ...partial,
     streamStatus: status,
     isStreaming: status !== "idle",
@@ -67,17 +69,17 @@ export function useSessionStream(
 
   const retryCountRef = useRef(0);
 
-  const connectStream = useCallback((sid: string) => {
+  const connectStream = useCallback((sid: string, pendingOrigin: PendingOrigin = "reconnect") => {
     abortRef.current?.abort();
     const abort = new AbortController();
     abortRef.current = abort;
 
-    setStreamState(mkState("sending"));
+    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin }));
 
     fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
       .then(async (res) => {
         if (!res.ok || !res.body) {
-          setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
+          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
           return;
         }
 
@@ -106,7 +108,16 @@ export function useSessionStream(
               switch (event.type) {
                 case "snapshot": {
                   if (event.complete) {
-                    setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
+                    if (event.errorMessage) {
+                      onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.errorMessage}` }]);
+                    } else if (typeof event.finalContent === "string" && event.finalContent.length > 0) {
+                      const text = event.terminalType === "aborted"
+                        ? `${event.finalContent}\n\n*(stopped)*`
+                        : event.finalContent;
+                      onEntriesRef.current([{ role: "assistant", content: text }]);
+                    }
+                    setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                    onTitleChangedRef.current();
                     break;
                   }
                   if (event.pendingPrompt) {
@@ -255,7 +266,7 @@ export function useSessionStream(
                   setStreamState((s) => ({ ...s, mcpServers: event.servers ?? [] }));
                   break;
                 case "idle":
-                  setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   break;
               }
             } catch { /* skip malformed */ }
@@ -272,7 +283,7 @@ export function useSessionStream(
             if (sid === sessionRef.current) connectStream(sid);
           }, 1000);
         } else {
-          setStreamState((s) => ({ ...s, streamStatus: "idle", isStreaming: false }));
+          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
         }
       });
   }, []); // stable — callbacks accessed via refs
@@ -287,7 +298,7 @@ export function useSessionStream(
 
   const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[]) => {
     if (!sessionId) return;
-    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers }));
+    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin: "message" }));
     try {
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
@@ -300,7 +311,20 @@ export function useSessionStream(
         throw new Error(err.error);
       }
       retryCountRef.current = 0;
-      connectStream(sessionId);
+      connectStream(sessionId, "message");
+    } catch (err) {
+      setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+      throw err;
+    }
+  }, [sessionId, connectStream]);
+
+  const startFleet = useCallback(async (prompt?: string) => {
+    if (!sessionId) return;
+    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin: "fleet" }));
+    try {
+      await startFleetRun(sessionId, prompt);
+      retryCountRef.current = 0;
+      connectStream(sessionId, "fleet");
     } catch (err) {
       setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
       throw err;
@@ -317,8 +341,8 @@ export function useSessionStream(
   }, [sessionId]);
 
   const reconnect = useCallback((sid: string) => {
-    connectStream(sid);
+    connectStream(sid, "reconnect");
   }, [connectStream]);
 
-  return { ...streamState, sendMessage, abortSession, reconnect };
+  return { ...streamState, sendMessage, startFleet, abortSession, reconnect };
 }

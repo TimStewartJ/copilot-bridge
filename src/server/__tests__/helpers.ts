@@ -47,6 +47,7 @@ export function createMockSessionManager() {
     createSession: async () => ({ sessionId: "test-session" }),
     duplicateSession: async () => ({ sessionId: "dup-session" }),
     startWork: () => {},
+    startFleet: () => {},
     abortSession: async () => true,
     getSessionMessages: async () => ({ messages: [], total: 0, hasMore: false }),
     readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false }),
@@ -57,6 +58,7 @@ export function createMockSessionManager() {
     evictAllCachedSessions: () => {},
     getMcpStatus: async () => [],
     getLatestMcpStatus: () => [],
+    hasPlan: () => true,
     createTaskSession: async () => ({ sessionId: "task-session" }),
     invalidateSessionListCache: () => {},
   } as any;

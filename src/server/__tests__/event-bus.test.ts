@@ -82,6 +82,7 @@ describe("event-bus", () => {
 
       const snap = bus.getSnapshot();
       expect(snap.complete).toBe(true);
+      expect(snap.terminalType).toBe("done");
       expect(snap.finalContent).toBe("Final answer");
       expect(snap.accumulatedContent).toBe("");
       expect(snap.activeTools).toEqual([]);
@@ -94,7 +95,18 @@ describe("event-bus", () => {
 
       const snap = bus.getSnapshot();
       expect(snap.complete).toBe(true);
+      expect(snap.terminalType).toBe("error");
       expect(snap.errorMessage).toBe("Something broke");
+    });
+
+    it("aborted marks complete with terminal type", () => {
+      const bus = getOrCreateBus("test-aborted-1");
+      bus.emit({ type: "aborted", content: "Partial answer" });
+
+      const snap = bus.getSnapshot();
+      expect(snap.complete).toBe(true);
+      expect(snap.terminalType).toBe("aborted");
+      expect(snap.finalContent).toBe("Partial answer");
     });
   });
 
@@ -175,6 +187,7 @@ describe("event-bus", () => {
       expect(snap.intentText).toBe("");
       expect(snap.activeTools).toEqual([]);
       expect(snap.complete).toBe(false);
+      expect(snap.terminalType).toBeUndefined();
       expect(snap.finalContent).toBeUndefined();
       expect(snap.errorMessage).toBeUndefined();
       expect(snap.pendingPrompt).toBeUndefined();

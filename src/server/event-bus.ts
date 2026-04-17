@@ -24,6 +24,7 @@ export interface BusSnapshot {
   activeTools: ActiveTool[];
   intentText: string;
   complete: boolean;
+  terminalType?: "done" | "error" | "aborted";
   finalContent?: string;
   errorMessage?: string;
   /** The user prompt that initiated this turn (for reconnect recovery) */
@@ -46,6 +47,7 @@ export class SessionEventBus {
   private intentText = "";
   private finalContent?: string;
   private errorMessage?: string;
+  private terminalType?: "done" | "error" | "aborted";
   private mcpServers: unknown[] = [];
   /** The user prompt that initiated this turn (for reconnect recovery) */
   private pendingPrompt?: string;
@@ -105,6 +107,7 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         break;
       case "done":
+        this.terminalType = "done";
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
@@ -112,6 +115,7 @@ export class SessionEventBus {
         this.scheduleCleanup();
         break;
       case "aborted":
+        this.terminalType = "aborted";
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
@@ -119,6 +123,7 @@ export class SessionEventBus {
         this.scheduleCleanup();
         break;
       case "error":
+        this.terminalType = "error";
         this.errorMessage = event.message;
         this._complete = true;
         this.accumulatedContent = "";
@@ -145,6 +150,7 @@ export class SessionEventBus {
       activeTools: [...this.activeTools],
       intentText: this.intentText,
       complete: this._complete,
+      terminalType: this.terminalType,
       finalContent: this.finalContent,
       errorMessage: this.errorMessage,
       mcpServers: [...this.mcpServers],
@@ -183,6 +189,7 @@ export class SessionEventBus {
     this.accumulatedContent = "";
     this.activeTools = [];
     this.intentText = "";
+    this.terminalType = undefined;
     this.finalContent = undefined;
     this.errorMessage = undefined;
     this.pendingPrompt = undefined;
