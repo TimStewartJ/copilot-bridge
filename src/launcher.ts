@@ -9,6 +9,14 @@ import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/d
 import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
+import { canUseDevtunnelCli, getDevtunnelCliStatus } from "./server/tunnel.js";
+import {
+  evaluateHealthPoll,
+  evaluatePostRecoveryState,
+  evaluateUnexpectedExit,
+  shouldIgnoreHealthPollResult,
+} from "./launcher-health.js";
+import { isChildProcessActive, waitForChildExit } from "./launcher-process.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -17,10 +25,13 @@ const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
 const PORT = 3333;
-const HEALTH_URL = `http://localhost:${PORT}/api/sessions`;
+const HEALTH_URL = `http://localhost:${PORT}/api/health`;
 const MAX_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 30_000;
+const HEALTH_POLL_INTERVAL = 30_000;
+const HEALTH_POLL_TIMEOUT = 5_000;
+const HEALTH_FAILURE_THRESHOLD = 2;
 const MANAGED_ENV_KEYS = new Set(loadBridgeEnv());
 
 // Notification config
@@ -31,6 +42,8 @@ const BUSY_CHECK_INTERVAL = 3_000;
 const BUSY_WAIT_TIMEOUT = 3_600_000; // 60 minutes max wait
 const STALE_THRESHOLD = 300_000; // 5 minutes — session with no events is "stuck"
 const GRACEFUL_EXIT_WAIT = 15_000; // wait for clean exit after POST /api/shutdown
+const GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT = 5_000; // bound shutdown POST so force-kill fallback is reachable
+const FORCED_EXIT_WAIT = 5_000; // wait for SIGKILLed child to actually exit before restarting
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
@@ -51,6 +64,10 @@ let crashRestarts = 0;
 let lastCrashTime = 0;
 let tunnelCrashRestarts = 0;
 let tunnelStartedAt = 0;
+let steadyHealthFailures = 0;
+let healthPollInFlight = false;
+let recoveringServer = false;
+let tunnelStatusLogged = false;
 
 function log(msg: string) {
   console.log(`[launcher] ${msg}`);
@@ -159,14 +176,169 @@ function rollback() {
   log("Rollback complete");
 }
 
-async function healthCheck(): Promise<boolean> {
+async function healthCheck(expectedChild: ChildProcess | null = serverProcess): Promise<boolean> {
+  const checkHealthOnce = async (timeoutMs: number): Promise<boolean> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(HEALTH_URL, { signal: controller.signal });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   const start = Date.now();
   while (Date.now() - start < HEALTH_TIMEOUT) {
-    try {
-      const res = await fetch(HEALTH_URL);
-      if (res.ok) return true;
-    } catch {}
+    if (expectedChild && !isChildProcessActive(expectedChild, serverProcess)) {
+      return false;
+    }
+    if (await checkHealthOnce(HEALTH_POLL_TIMEOUT)) {
+      return expectedChild ? isChildProcessActive(expectedChild, serverProcess) : true;
+    }
+    if (expectedChild && !isChildProcessActive(expectedChild, serverProcess)) {
+      return false;
+    }
     await new Promise((r) => setTimeout(r, 1_000));
+  }
+  return false;
+}
+
+function reserveRecoveryAttempt(): number | null {
+  const now = Date.now();
+  if (now - lastCrashTime > CRASH_WINDOW) {
+    crashRestarts = 0;
+  }
+  lastCrashTime = now;
+  crashRestarts++;
+
+  if (crashRestarts > MAX_CRASH_RESTARTS) {
+    log(`❌ ${crashRestarts} crashes in quick succession — not restarting. Manual intervention needed.`);
+    return null;
+  }
+
+  return crashRestarts;
+}
+
+function recoverServer(reason: string, options: { killExisting?: boolean; delayMs?: number } = {}): void {
+  const attempt = reserveRecoveryAttempt();
+  if (!attempt) return;
+
+  const delayMs = options.delayMs ?? 0;
+  log(
+    `⚡ ${reason}. Auto-restarting${delayMs > 0 ? ` in ${delayMs / 1000}s` : ""}... ` +
+      `(attempt ${attempt}/${MAX_CRASH_RESTARTS})`,
+  );
+
+  const runRecovery = async () => {
+    if (restarting || shuttingDown || recoveringServer) return;
+    recoveringServer = true;
+    try {
+      if (options.killExisting) {
+        const stopped = await forceKillServerAndWait("Stopping unhealthy server...");
+        if (!stopped) {
+          return;
+        }
+      } else if (serverProcess) {
+        return;
+      }
+      const replacementServer = startServer();
+      serverProcess = replacementServer;
+      const healthy = await healthCheck(replacementServer);
+      if (healthy) {
+        steadyHealthFailures = 0;
+        log(`✅ Auto-restart succeeded after ${reason}`);
+        await notifyWebhook(
+          `⚡ Copilot Bridge auto-restarted after ${reason} (attempt ${attempt}/${MAX_CRASH_RESTARTS}, ${tag()})`,
+          currentTunnelUrl ?? undefined,
+        );
+      } else {
+        log(`❌ Auto-restart failed health check after ${reason}`);
+        await forceKillServerAndWait("Stopping failed auto-restart...");
+      }
+    } finally {
+      recoveringServer = false;
+      const followUpRecovery = evaluatePostRecoveryState({
+        hasServerProcess: serverProcess !== null,
+        restarting,
+        recoveringServer,
+        shuttingDown,
+      });
+      if (followUpRecovery) {
+        recoverServer(followUpRecovery.reason, followUpRecovery.options);
+      }
+    }
+  };
+
+  if (delayMs > 0) {
+    setTimeout(() => {
+      void runRecovery();
+    }, delayMs);
+  } else {
+    void runRecovery();
+  }
+}
+
+async function pollServerHealth(): Promise<void> {
+  if (healthPollInFlight || restarting || shuttingDown || recoveringServer) return;
+
+  const polledServer = serverProcess;
+  healthPollInFlight = true;
+  try {
+    let healthy = false;
+    if (polledServer) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), HEALTH_POLL_TIMEOUT);
+      try {
+        const res = await fetch(HEALTH_URL, { signal: controller.signal });
+        healthy = res.ok;
+      } catch {
+        healthy = false;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    if (
+      shouldIgnoreHealthPollResult({
+        pollTargetChanged: serverProcess !== polledServer,
+        restarting,
+        shuttingDown,
+        recoveringServer,
+      })
+    ) {
+      return;
+    }
+
+    const decision = evaluateHealthPoll({
+      healthy,
+      hasServerProcess: polledServer !== null,
+      consecutiveFailures: steadyHealthFailures,
+      failureThreshold: HEALTH_FAILURE_THRESHOLD,
+    });
+    steadyHealthFailures = decision.nextFailures;
+
+    if (!decision.logMessage) {
+      return;
+    }
+
+    log(decision.logMessage);
+    if (decision.recover) {
+      recoverServer(decision.recover.reason, { killExisting: decision.recover.killExisting });
+    }
+  } finally {
+    healthPollInFlight = false;
+  }
+}
+
+function shouldUseDevtunnel(): boolean {
+  const status = getDevtunnelCliStatus();
+  if (status.enabled && status.available) return true;
+  if (!tunnelStatusLogged) {
+    log(`[tunnel] ${status.reason ?? "Dev tunnel unavailable"}`);
+    tunnelStatusLogged = true;
   }
   return false;
 }
@@ -180,40 +352,24 @@ function startServer(): ChildProcess {
     stdio: ["ignore", "inherit", "inherit"],
     env,
   });
+  steadyHealthFailures = 0;
 
-  child.on("exit", (code) => {
-    log(`Server exited with code ${code}`);
+  child.on("exit", (code, signal) => {
+    log(`Server exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
     if (serverProcess === child) {
       serverProcess = null;
     }
 
-    // Auto-restart on unexpected crash (non-zero exit, not during intentional restart/shutdown)
-    if (code !== 0 && code !== null && !restarting && !shuttingDown) {
-      const now = Date.now();
-      if (now - lastCrashTime > CRASH_WINDOW) {
-        crashRestarts = 0; // stable long enough, reset counter
-      }
-      lastCrashTime = now;
-      crashRestarts++;
-
-      if (crashRestarts > MAX_CRASH_RESTARTS) {
-        log(`❌ ${crashRestarts} crashes in quick succession — not restarting. Manual intervention needed.`);
-        return;
-      }
-
-      log(`⚡ Crash detected (exit code ${code}). Auto-restarting in ${CRASH_RESTART_DELAY / 1000}s... (attempt ${crashRestarts}/${MAX_CRASH_RESTARTS})`);
-      setTimeout(async () => {
-        if (serverProcess || restarting) return; // something else already started it
-        serverProcess = startServer();
-        const healthy = await healthCheck();
-        if (healthy) {
-          log(`✅ Auto-restart succeeded after crash`);
-          await notifyWebhook(`⚡ Copilot Bridge auto-restarted after crash (exit code ${code}, attempt ${crashRestarts}/${MAX_CRASH_RESTARTS}, ${tag()})`, currentTunnelUrl ?? undefined);
-        } else {
-          log(`❌ Auto-restart failed health check`);
-          killServer();
-        }
-      }, CRASH_RESTART_DELAY);
+    const recovery = evaluateUnexpectedExit({
+      code,
+      signal,
+      restarting,
+      shuttingDown,
+      recoveringServer,
+      crashRestartDelay: CRASH_RESTART_DELAY,
+    });
+    if (recovery) {
+      recoverServer(recovery.reason, recovery.options);
     }
   });
 
@@ -232,6 +388,21 @@ function killServer() {
     killProcessTree(serverProcess);
     serverProcess = null;
   }
+}
+
+async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WAIT): Promise<boolean> {
+  const existingServer = serverProcess;
+  if (!existingServer) {
+    return true;
+  }
+
+  log(reason);
+  killProcessTree(existingServer);
+  const exited = await waitForChildExit(existingServer, timeoutMs);
+  if (!exited) {
+    log(`❌ Server did not exit within ${timeoutMs}ms after force kill`);
+  }
+  return exited;
 }
 
 async function waitForIdleSessions(): Promise<boolean> {
@@ -255,11 +426,16 @@ async function gracefulStopServer(): Promise<boolean> {
   const shutdownUrl = `http://localhost:${PORT}/api/shutdown`;
   try {
     log("Requesting graceful shutdown...");
-    await fetch(shutdownUrl, { method: "POST" });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT);
+    try {
+      await fetch(shutdownUrl, { method: "POST", signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch {
-    log("Server not reachable for graceful shutdown — falling back to force kill");
-    killServer();
-    return true;
+    log("Server not reachable or did not respond for graceful shutdown — falling back to force kill");
+    return await forceKillServerAndWait("Stopping unreachable server...");
   }
 
   // Wait for process to exit on its own
@@ -269,8 +445,7 @@ async function gracefulStopServer(): Promise<boolean> {
   }
 
   if (serverProcess) {
-    log("Server did not exit in time — force killing");
-    killServer();
+    return await forceKillServerAndWait("Server did not exit in time — force killing");
   } else {
     log("Server exited cleanly");
   }
@@ -298,27 +473,49 @@ async function restart() {
   }
 
   await waitForIdleSessions();
-  await gracefulStopServer();
-  serverProcess = startServer();
+  const stopped = await gracefulStopServer();
+  if (!stopped) {
+    log("❌ Existing server did not exit after force kill — aborting restart");
+    consecutiveFailures++;
+    if (consecutiveFailures >= MAX_FAILURES) {
+      log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+      process.exit(1);
+    }
+    return;
+  }
+  const replacementServer = startServer();
+  serverProcess = replacementServer;
 
-  const healthy = await healthCheck();
+  const healthy = await healthCheck(replacementServer);
   if (healthy) {
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
 
     // Cycle the tunnel so it gets a fresh connection
-    try {
-      tunnelCrashRestarts = 0; // reset since this is intentional
-      const url = await startTunnel();
-      await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, url);
-    } catch (err) {
-      log(`Tunnel restart failed (non-fatal): ${err}`);
+    if (shouldUseDevtunnel()) {
+      try {
+        tunnelCrashRestarts = 0; // reset since this is intentional
+        const url = await startTunnel();
+        await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, url);
+      } catch (err) {
+        log(`Tunnel restart failed (non-fatal): ${err}`);
+        await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
+      }
+    } else {
       await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
     }
   } else {
     log("❌ Health check failed — rolling back");
     await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
-    killServer();
+    const stoppedAfterFailure = await forceKillServerAndWait("Stopping failed restart before rollback...");
+    if (!stoppedAfterFailure) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_FAILURES) {
+        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+        process.exit(1);
+      }
+      return;
+    }
     rollback();
     serverProcess = startServer();
     consecutiveFailures++;
@@ -332,6 +529,11 @@ async function restart() {
 // ── Dev Tunnel ────────────────────────────────────────────────────
 
 function startTunnel(): Promise<string> {
+  if (!canUseDevtunnelCli()) {
+    const status = getDevtunnelCliStatus();
+    return Promise.reject(new Error(status.reason ?? "Dev tunnel unavailable"));
+  }
+
   // Kill any existing tunnel first (idempotent)
   killTunnel();
 
@@ -464,25 +666,40 @@ async function main() {
   serverProcess = startServer();
 
   // Start dev tunnel
-  try {
-    const url = await startTunnel();
-    await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
-  } catch (err) {
-    log(`Tunnel/notification setup failed (non-fatal): ${err}`);
+  if (shouldUseDevtunnel()) {
+    try {
+      const url = await startTunnel();
+      await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
+    } catch (err) {
+      log(`Tunnel/notification setup failed (non-fatal): ${err}`);
+    }
   }
 
   // Poll for restart signal
   setInterval(async () => {
-    if (!restarting && existsSync(SIGNAL_FILE)) {
+    if (!restarting && !recoveringServer && existsSync(SIGNAL_FILE)) {
       restarting = true;
       try {
         await restart();
       } finally {
         clearSignal();
         restarting = false;
+        const followUpRecovery = evaluatePostRecoveryState({
+          hasServerProcess: serverProcess !== null,
+          restarting,
+          recoveringServer,
+          shuttingDown,
+        });
+        if (followUpRecovery) {
+          recoverServer(followUpRecovery.reason, followUpRecovery.options);
+        }
       }
     }
   }, POLL_INTERVAL);
+
+  setInterval(() => {
+    void pollServerHealth();
+  }, HEALTH_POLL_INTERVAL);
 
   log("Watching for restart signals...");
 }

@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const execSyncMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  execSync: execSyncMock,
+}));
+
 const ENV_KEYS = [
   "BRIDGE_PUBLIC_BASE_URL",
   "BRIDGE_TUNNEL_URL",
   "BRIDGE_TRUST_PROXY",
+  "BRIDGE_ENABLE_TUNNEL",
 ] as const;
 
 const originalEnv = new Map<string, string | undefined>(
@@ -32,6 +39,7 @@ afterEach(() => {
       process.env[key] = value;
     }
   }
+  execSyncMock.mockReset();
   vi.resetModules();
 });
 
@@ -138,5 +146,63 @@ describe("public URL helpers", () => {
 
     expect(tunnel.getTunnelUrl()).toBeUndefined();
     expect(tunnel.buildPublicUrl("/staging/preview-123/")).toBeUndefined();
+  });
+
+  it("disables devtunnel CLI usage via BRIDGE_ENABLE_TUNNEL", async () => {
+    const tunnel = await loadTunnelModule({
+      BRIDGE_ENABLE_TUNNEL: "false",
+    });
+
+    expect(tunnel.getDevtunnelCliStatus()).toEqual({
+      enabled: false,
+      available: false,
+      reason: "Dev tunnel disabled by BRIDGE_ENABLE_TUNNEL",
+    });
+    expect(tunnel.canUseDevtunnelCli()).toBe(false);
+    expect(tunnel.discoverTunnelUrl()).toBeUndefined();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale tunnel URLs when BRIDGE_ENABLE_TUNNEL is false", async () => {
+    const tunnel = await loadTunnelModule({
+      BRIDGE_ENABLE_TUNNEL: "false",
+      BRIDGE_TUNNEL_URL: "https://stale.devtunnels.ms",
+    });
+
+    expect(tunnel.getTunnelUrl()).toBeUndefined();
+    expect(tunnel.getPublicBaseUrl()).toBeUndefined();
+    expect(tunnel.buildPublicUrl("/staging/preview-123/")).toBeUndefined();
+  });
+
+  it("reads BRIDGE_ENABLE_TUNNEL dynamically after import", async () => {
+    execSyncMock.mockReturnValue("/usr/bin/devtunnel");
+    const tunnel = await loadTunnelModule();
+
+    process.env.BRIDGE_ENABLE_TUNNEL = "false";
+
+    expect(tunnel.getDevtunnelCliStatus()).toEqual({
+      enabled: false,
+      available: false,
+      reason: "Dev tunnel disabled by BRIDGE_ENABLE_TUNNEL",
+    });
+    expect(tunnel.canUseDevtunnelCli()).toBe(false);
+    expect(tunnel.discoverTunnelUrl()).toBeUndefined();
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("reports missing devtunnel binary as unavailable", async () => {
+    execSyncMock.mockImplementation(() => {
+      throw new Error("not found");
+    });
+
+    const tunnel = await loadTunnelModule();
+
+    expect(tunnel.getDevtunnelCliStatus()).toEqual({
+      enabled: true,
+      available: false,
+      reason: "Dev tunnel unavailable: devtunnel not installed or not in PATH",
+    });
+    expect(tunnel.canUseDevtunnelCli()).toBe(false);
+    expect(tunnel.discoverTunnelUrl()).toBeUndefined();
   });
 });

@@ -417,6 +417,21 @@ function run(cmd: string, cwd: string): { ok: boolean; output: string } {
   }
 }
 
+function listStagingBranchPrefixes(): Set<string> | null {
+  const branchList = run('git branch --format="%(refname:short)" --list "staging/*"', PRODUCTION_ROOT);
+  if (!branchList.ok) {
+    log(`Warning: could not list staging branches: ${branchList.output.slice(-200)}`);
+    return null;
+  }
+  return new Set(
+    branchList.output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((name) => name.replace(/^staging\//, "")),
+  );
+}
+
 /** Ensure node_modules is properly ignored (covers both directories and symlinks). */
 function ensureNodeModulesIgnored(stagingDir: string): void {
   const gitignorePath = join(stagingDir, ".gitignore");
@@ -453,72 +468,119 @@ function removeWorktree(stagingDir: string, branch: string): void {
   run("git worktree prune", PRODUCTION_ROOT);
 }
 
+type PruneOrphanedWorktreesOptions = {
+  stagingParent?: string;
+  stagingDistParent?: string;
+  activePreviewMap?: Map<string, string>;
+  expressApp?: express.Application | null;
+  listBranchPrefixes?: () => Set<string> | null;
+  removeWorktree?: (stagingDir: string, branch: string) => void;
+  restoreBackend?: (prefix: string, stagingDir: string) => Promise<{ restored: boolean; attempts: number; error?: string }>;
+  log?: (msg: string) => void;
+  pruneGitWorktrees?: () => void;
+};
+
 /**
  * Prune orphaned staging worktrees on server startup and restore surviving previews.
  * Called from server initialization — removes worktrees whose branches
  * no longer exist, and fully restores (frontend + backend) previews that survived a restart.
  */
-export async function pruneOrphanedWorktrees(): Promise<void> {
+async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions = {}): Promise<void> {
+  const stagingParent = options.stagingParent ?? STAGING_PARENT;
+  const stagingDistParent = options.stagingDistParent ?? STAGING_DIST_PARENT;
+  const previewMap = options.activePreviewMap ?? activePreviews;
+  const expressApp = options.expressApp ?? _expressApp;
+  const getBranchPrefixes = options.listBranchPrefixes ?? listStagingBranchPrefixes;
+  const removeOrphanedWorktree = options.removeWorktree ?? removeWorktree;
+  const restoreBackend = options.restoreBackend ?? restoreStagingBackendWithRetry;
+  const writeLog = options.log ?? log;
+  const pruneGitWorktrees = options.pruneGitWorktrees ?? (() => {
+    run("git worktree prune", PRODUCTION_ROOT);
+  });
+
   // Collect active staging prefixes (worktrees with valid branches)
   const activeWorktrees = new Set<string>();
+  const activeBranchPrefixes = getBranchPrefixes();
+  const skipOrphanPrune = activeBranchPrefixes === null;
+  let orphanedWorktreeDirs = 0;
+  let restoredPreviewDirs = 0;
+  let orphanedPreviewDirs = 0;
 
-  if (existsSync(STAGING_PARENT)) {
+  if (existsSync(stagingParent)) {
     try {
-      const entries = readdirSync(STAGING_PARENT, { withFileTypes: true });
+      const entries = readdirSync(stagingParent, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        const stagingDir = join(STAGING_PARENT, entry.name);
+        const stagingDir = join(stagingParent, entry.name);
         const branch = `staging/${entry.name}`;
 
-        const branchCheck = run(`git rev-parse --verify "${branch}"`, PRODUCTION_ROOT);
-        if (!branchCheck.ok) {
-          log(`Pruning orphaned staging directory (no branch): ${stagingDir}`);
-          removeWorktree(stagingDir, branch);
+        if (skipOrphanPrune) {
+          activeWorktrees.add(entry.name);
+          continue;
+        }
+
+        if (!activeBranchPrefixes.has(entry.name)) {
+          removeOrphanedWorktree(stagingDir, branch);
+          orphanedWorktreeDirs++;
           continue;
         }
 
         activeWorktrees.add(entry.name);
-        log(`Found active staging worktree: ${stagingDir} (branch: ${branch})`);
       }
 
-      run("git worktree prune", PRODUCTION_ROOT);
+      if (!skipOrphanPrune) {
+        pruneGitWorktrees();
+      }
     } catch (err) {
-      log(`Warning: orphan pruning failed: ${err}`);
+      writeLog(`Warning: orphan pruning failed: ${err}`);
     }
   }
 
   // Clean up orphaned staging dist directories, but keep ones with active worktrees
-  if (existsSync(STAGING_DIST_PARENT)) {
+  if (existsSync(stagingDistParent)) {
     try {
-      const distEntries = readdirSync(STAGING_DIST_PARENT, { withFileTypes: true });
+      const distEntries = readdirSync(stagingDistParent, { withFileTypes: true });
       for (const entry of distEntries) {
         if (!entry.isDirectory()) continue;
         if (activeWorktrees.has(entry.name)) {
           // Re-register the preview so Express can serve it after restart
-          const distDir = join(STAGING_DIST_PARENT, entry.name);
-          activePreviews.set(entry.name, distDir);
-          log(`Restored staging preview: ${entry.name}`);
-        } else {
-          log(`Pruning orphaned staging dist: ${entry.name}`);
-          rmSync(join(STAGING_DIST_PARENT, entry.name), { recursive: true, force: true });
+          const distDir = join(stagingDistParent, entry.name);
+          previewMap.set(entry.name, distDir);
+          restoredPreviewDirs++;
+        } else if (!skipOrphanPrune) {
+          rmSync(join(stagingDistParent, entry.name), { recursive: true, force: true });
+          orphanedPreviewDirs++;
         }
       }
     } catch (err) {
-      log(`Warning: staging dist pruning failed: ${err}`);
+      writeLog(`Warning: staging dist pruning failed: ${err}`);
     }
   }
 
+  if (orphanedWorktreeDirs > 0 || restoredPreviewDirs > 0 || orphanedPreviewDirs > 0) {
+    writeLog(
+      `Staging prune summary: ${activeWorktrees.size} active worktree(s), ` +
+        `${restoredPreviewDirs} preview dir(s) restored, ` +
+        `${orphanedWorktreeDirs} orphan worktree dir(s) removed, ` +
+        `${orphanedPreviewDirs} orphan preview dir(s) removed`,
+    );
+  }
+
+  if (skipOrphanPrune) {
+    writeLog("Skipping orphan staging prune because the staging branch snapshot is unavailable");
+  }
+
   // Restore staged backends for surviving previews
-  if (_expressApp) {
+  if (expressApp) {
     for (const prefix of activeWorktrees) {
-      if (!activePreviews.has(prefix)) continue; // no dist to serve — skip
-      const stagingDir = join(STAGING_PARENT, prefix);
-      log(`Restoring staged backend for preview: ${prefix}`);
-      const restoreResult = await restoreStagingBackendWithRetry(prefix, stagingDir);
+      if (!previewMap.has(prefix)) continue; // no dist to serve — skip
+      const stagingDir = join(stagingParent, prefix);
+      writeLog(`Restoring staged backend for preview: ${prefix}`);
+      const restoreResult = await restoreBackend(prefix, stagingDir);
       if (restoreResult.restored) {
-        log(`Restored staged backend for preview: ${prefix}`);
+        writeLog(`Restored staged backend for preview: ${prefix}`);
       } else {
-        log(
+        writeLog(
           `Failed to restore staged backend for ${prefix} after ${restoreResult.attempts} attempts: ` +
             `${restoreResult.error}. Keeping frontend-only preview.`,
         );
@@ -527,9 +589,15 @@ export async function pruneOrphanedWorktrees(): Promise<void> {
   }
 }
 
+export async function pruneOrphanedWorktrees(): Promise<void> {
+  await pruneOrphanedWorktreesImpl();
+}
+
 export const __testing = {
   seedStagingData,
   restoreStagingBackendWithRetry,
+  listStagingBranchPrefixes,
+  pruneOrphanedWorktreesImpl,
 };
 
 export const STAGING_TOOLS = [

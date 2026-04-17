@@ -196,6 +196,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
     });
   });
 
+  router.get("/health", (_req, res) => {
+    res.json({ ok: true });
+  });
+
   // POST /shutdown — graceful shutdown: abort active sessions, stop SDK, exit
   router.post("/shutdown", async (_req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });

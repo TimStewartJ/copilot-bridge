@@ -16,6 +16,11 @@ const TRUST_PROXY = /^(1|true|yes|on)$/i.test(process.env.BRIDGE_TRUST_PROXY || 
 
 let cachedTunnelUrl: string | undefined;
 let cachedObservedPublicOrigin: string | undefined;
+let cachedDevtunnelAvailable: boolean | undefined;
+
+function isTunnelEnabled(): boolean {
+  return !/^(0|false|no|off)$/i.test(process.env.BRIDGE_ENABLE_TUNNEL || "");
+}
 
 function firstForwardedValue(value: string | string[] | undefined): string | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -45,6 +50,7 @@ function isPublicOrigin(url: string | undefined): boolean {
 }
 
 export function discoverTunnelUrl(): string | undefined {
+  if (!canUseDevtunnelCli()) return undefined;
   try {
     const output = execSync(`devtunnel show ${TUNNEL_NAME}`, { encoding: "utf-8", timeout: 10_000 });
     const match = output.match(/(https:\/\/\S+)/);
@@ -55,6 +61,7 @@ export function discoverTunnelUrl(): string | undefined {
 }
 
 export function getTunnelUrl(): string | undefined {
+  if (!isTunnelEnabled()) return undefined;
   return cachedTunnelUrl ?? ENV_TUNNEL_URL;
 }
 
@@ -63,6 +70,33 @@ export function setTunnelUrl(url: string): void {
   if (normalized) {
     cachedTunnelUrl = normalized;
   }
+}
+
+function isDevtunnelAvailable(): boolean {
+  if (cachedDevtunnelAvailable !== undefined) return cachedDevtunnelAvailable;
+  const checkCmd = process.platform === "win32" ? "where.exe devtunnel" : "which devtunnel";
+  try {
+    execSync(checkCmd, { stdio: "ignore", timeout: 5_000 });
+    cachedDevtunnelAvailable = true;
+  } catch {
+    cachedDevtunnelAvailable = false;
+  }
+  return cachedDevtunnelAvailable;
+}
+
+export function getDevtunnelCliStatus(): { enabled: boolean; available: boolean; reason?: string } {
+  if (!isTunnelEnabled()) {
+    return { enabled: false, available: false, reason: "Dev tunnel disabled by BRIDGE_ENABLE_TUNNEL" };
+  }
+  if (!isDevtunnelAvailable()) {
+    return { enabled: true, available: false, reason: "Dev tunnel unavailable: devtunnel not installed or not in PATH" };
+  }
+  return { enabled: true, available: true };
+}
+
+export function canUseDevtunnelCli(): boolean {
+  const status = getDevtunnelCliStatus();
+  return status.enabled && status.available;
 }
 
 export function shouldTrustProxyHeaders(): boolean {
