@@ -514,7 +514,7 @@ export function createBridgeTools(ctx: AppContext) {
 
       const otherBusy = triggerRestartPending();
       const waitNote = otherBusy > 0
-        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish before rebuilding (up to 5 min).`
+        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";
       return {
         success: true,
@@ -598,7 +598,7 @@ export function createBridgeTools(ctx: AppContext) {
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
       const otherBusy = triggerRestartPending();
       const waitNote = otherBusy > 0
-        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish.`
+        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";
 
       return {
