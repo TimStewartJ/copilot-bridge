@@ -48,6 +48,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(REPO_ROOT, "data", "pre-deploy-sha");
+// Keep the cloud-only session store tool out of bridge-managed sessions.
+const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql"];
 function run(cmd: string): { ok: boolean; output: string } {
   try {
     const output = execSync(cmd, { cwd: REPO_ROOT, encoding: "utf-8", timeout: 120_000 });
@@ -1121,6 +1123,7 @@ export class SessionManager {
     const cfg: any = {
       onPermissionRequest: approveAll,
       tools: this.deps.tools,
+      excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
       mcpServers: this.deps.settingsStore?.getMcpServers() ?? this.deps.config.sessionMcpServers,
       skillDirectories: [
         join(REPO_ROOT, "skills"),                                          // built-in (ships with bridge)
