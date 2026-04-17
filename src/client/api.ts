@@ -646,6 +646,22 @@ export async function markSessionRead(sessionId: string): Promise<void> {
   await apiFetch<{ ok: boolean }>(`/api/read-state/${sessionId}`, {});
 }
 
+export function markSessionReadOnPageHide(
+  sessionId: string,
+  options: {
+    navigator?: Pick<Navigator, "sendBeacon">;
+    fetchFn?: typeof fetch;
+  } = {},
+): void {
+  const endpoint = `${API_BASE}/api/read-state/${sessionId}`;
+  const nav = options.navigator ?? (typeof navigator !== "undefined" ? navigator : undefined);
+  if (nav?.sendBeacon?.(endpoint)) return;
+
+  const fetchFn = options.fetchFn ?? (typeof fetch !== "undefined" ? fetch.bind(globalThis) : undefined);
+  if (!fetchFn) return;
+  void fetchFn(endpoint, { method: "POST", keepalive: true }).catch(() => {});
+}
+
 export async function markSessionUnread(sessionId: string): Promise<void> {
   await fetch(`${API_BASE}/api/read-state/${sessionId}`, { method: "DELETE" });
 }

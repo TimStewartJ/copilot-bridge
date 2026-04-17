@@ -25,6 +25,7 @@ import {
   setTaskTags,
   setGroupTags,
   getSessionActivityTime,
+  markSessionReadOnPageHide,
   API_BASE,
   type Session,
   type Task,
@@ -32,6 +33,7 @@ import {
   type McpServerStatus,
   } from "./api";
 import { useReadState } from "./useReadState";
+import { usePageAttention } from "./usePageAttention";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
@@ -61,6 +63,7 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const { hasAttention: pageHasAttention, hasAttentionRef: pageHasAttentionRef } = usePageAttention();
   const { goBack } = useAppBack();
   const queryClient = useQueryClient();
 
@@ -250,23 +253,60 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [restartBanner.shouldReload]);
 
-  // Mark session as read after 2s dwell, and again on departure to capture
-  // any messages that arrived after the initial mark.
-  const hasDwelledRef = useRef(false);
+  const previousActiveSessionIdRef = useRef<string | null>(null);
+  const dwelledSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeSessionId) return;
-    // Track last-viewed session for this task immediately
-    if (activeTaskId) setLastViewedSession(activeTaskId, activeSessionId);
-    hasDwelledRef.current = false;
-    const timer = setTimeout(() => {
-      hasDwelledRef.current = true;
+    if (!activeSessionId || !activeTaskId) return;
+    setLastViewedSession(activeTaskId, activeSessionId);
+  }, [activeSessionId, activeTaskId]);
+
+  // Background tabs should not clear unread state just because they still
+  // have the session selected.
+  useEffect(() => {
+    const previousSessionId = previousActiveSessionIdRef.current;
+    if (
+      pageHasAttention &&
+      previousSessionId &&
+      previousSessionId !== activeSessionId &&
+      dwelledSessionIdRef.current === previousSessionId
+    ) {
+      markRead(previousSessionId);
+    }
+    previousActiveSessionIdRef.current = activeSessionId;
+  }, [activeSessionId, pageHasAttention, markRead]);
+
+  useEffect(() => {
+    if (!activeSessionId || !pageHasAttention) {
+      dwelledSessionIdRef.current = null;
+      return;
+    }
+
+    dwelledSessionIdRef.current = null;
+    const timer = window.setTimeout(() => {
+      if (!pageHasAttentionRef.current) return;
+      dwelledSessionIdRef.current = activeSessionId;
       markRead(activeSessionId);
     }, 2000);
+
     return () => {
-      clearTimeout(timer);
-      if (hasDwelledRef.current) markRead(activeSessionId);
+      window.clearTimeout(timer);
     };
-  }, [activeSessionId, activeTaskId, markRead]);
+  }, [activeSessionId, pageHasAttention, markRead]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    const onPageHide = () => {
+      if (!pageHasAttentionRef.current) return;
+      if (dwelledSessionIdRef.current !== activeSessionId) return;
+      markSessionReadOnPageHide(activeSessionId);
+    };
+
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [activeSessionId]);
 
   // Track last-active task and quick chat for tab restore
   useEffect(() => {
@@ -288,11 +328,18 @@ export default function App() {
   }, [activeSessionId, sessions]);
 
   useEffect(() => {
-    if (!activeSessionId || !activeSessionActivity || !hasDwelledRef.current) return;
+    if (
+      !pageHasAttention ||
+      !activeSessionId ||
+      !activeSessionActivity ||
+      dwelledSessionIdRef.current !== activeSessionId
+    ) {
+      return;
+    }
     if (isUnread(activeSessionId, activeSessionActivity)) {
       markRead(activeSessionId);
     }
-  }, [activeSessionId, activeSessionActivity, isUnread, markRead]);
+  }, [activeSessionId, activeSessionActivity, isUnread, markRead, pageHasAttention]);
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
