@@ -34,7 +34,9 @@ function isMissingOptionalStagingModule(error: unknown, specifier: string): bool
   const rawSpecifier = specifier.replace(/\?.*$/, "");
   const resolvedSpecifier = rawSpecifier.startsWith("file:") ? fileURLToPath(rawSpecifier) : rawSpecifier;
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes(rawSpecifier) || message.includes(resolvedSpecifier);
+  const missingTarget = message.match(/Cannot find (?:module|package) ['"]([^'"]+)['"]/)?.[1];
+  if (!missingTarget) return false;
+  return missingTarget === rawSpecifier || missingTarget === resolvedSpecifier;
 }
 
 async function importOptionalStagingModule(specifier: string) {
