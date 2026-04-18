@@ -9,7 +9,35 @@ export interface Draft {
   attachments?: Attachment[];
 }
 
-type DraftState = Record<string, Draft>; // sessionId → Draft
+type DraftState = Record<string, Draft>; // composerKey → Draft
+
+function isRouteDraftKey(key: string): boolean {
+  return key.startsWith("draft:");
+}
+
+function buildNextDraftState(
+  prev: DraftState,
+  sessionId: string,
+  text: string,
+  attachments?: Attachment[],
+): DraftState {
+  const trimmed = text.trim();
+  const hasContent = trimmed.length > 0 || (attachments && attachments.length > 0);
+
+  if (!hasContent) {
+    if (!(sessionId in prev)) return prev;
+    const next = { ...prev };
+    delete next[sessionId];
+    return next;
+  }
+
+  return {
+    ...prev,
+    [sessionId]: attachments?.length
+      ? { text, attachments }
+      : { text },
+  };
+}
 
 function load(): DraftState {
   try {
@@ -39,7 +67,12 @@ function save(state: DraftState): void {
 
 export function useDrafts(sessions: Session[]) {
   const [state, setState] = useState<DraftState>(load);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stateRef = useRef(state);
+  const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // GC: prune drafts for sessions that no longer exist
   useEffect(() => {
@@ -49,7 +82,7 @@ export function useDrafts(sessions: Session[]) {
       let changed = false;
       const pruned: DraftState = {};
       for (const [id, draft] of Object.entries(prev)) {
-        if (validIds.has(id)) {
+        if (validIds.has(id) || isRouteDraftKey(id)) {
           pruned[id] = draft;
         } else {
           changed = true;
@@ -61,53 +94,69 @@ export function useDrafts(sessions: Session[]) {
     });
   }, [sessions]);
 
-  const flushNow = useCallback((next: DraftState) => {
-    save(next);
+  const scheduleSave = useCallback((composerKey: string) => {
+    const existingTimer = timersRef.current[composerKey];
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    timersRef.current[composerKey] = setTimeout(() => {
+      delete timersRef.current[composerKey];
+      save(stateRef.current);
+    }, DEBOUNCE_MS);
+  }, []);
+
+  const clearDraftTimer = useCallback((composerKey: string) => {
+    const existingTimer = timersRef.current[composerKey];
+    if (!existingTimer) return;
+    clearTimeout(existingTimer);
+    delete timersRef.current[composerKey];
   }, []);
 
   const setDraft = useCallback(
     (sessionId: string, text: string, attachments?: Attachment[]) => {
       setState((prev) => {
-        const trimmed = text.trim();
-        const hasContent = trimmed.length > 0 || (attachments && attachments.length > 0);
-
-        let next: DraftState;
-        if (!hasContent) {
-          if (!(sessionId in prev)) return prev; // no-op
-          next = { ...prev };
-          delete next[sessionId];
-        } else {
-          next = {
-            ...prev,
-            [sessionId]: attachments?.length
-              ? { text, attachments }
-              : { text },
-          };
+        const next = buildNextDraftState(prev, sessionId, text, attachments);
+        if (next === prev) {
+          clearDraftTimer(sessionId);
+          return prev;
         }
 
-        // Debounced save
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => flushNow(next), DEBOUNCE_MS);
+        stateRef.current = next;
+        scheduleSave(sessionId);
 
         return next;
       });
     },
-    [flushNow],
+    [clearDraftTimer, scheduleSave],
   );
 
+  const setDraftImmediate = useCallback((sessionId: string, text: string, attachments?: Attachment[]) => {
+    clearDraftTimer(sessionId);
+    const next = buildNextDraftState(stateRef.current, sessionId, text, attachments);
+    if (next === stateRef.current) return;
+    stateRef.current = next;
+    setState(next);
+    save(next);
+  }, [clearDraftTimer]);
+
   const clearDraft = useCallback((sessionId: string) => {
-    // Cancel any pending debounced save to prevent it from re-persisting the draft
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+    clearDraftTimer(sessionId);
     setState((prev) => {
       if (!(sessionId in prev)) return prev;
       const next = { ...prev };
       delete next[sessionId];
+      stateRef.current = next;
       save(next);
       return next;
     });
+  }, [clearDraftTimer]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(timersRef.current).forEach((timer) => clearTimeout(timer));
+      timersRef.current = {};
+    };
   }, []);
 
   const getDraft = useCallback(
@@ -124,5 +173,5 @@ export function useDrafts(sessions: Session[]) {
     [state],
   );
 
-  return { getDraft, setDraft, clearDraft, hasDraft };
+  return { getDraft, setDraft, setDraftImmediate, clearDraft, hasDraft };
 }

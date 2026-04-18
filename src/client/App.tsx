@@ -27,15 +27,18 @@ import {
   getSessionActivityTime,
   markSessionReadOnPageHide,
   API_BASE,
+  sendChatMessage,
   type Session,
   type Task,
   type TaskGroup,
   type McpServerStatus,
-  } from "./api";
+} from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
+import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type VoiceBackgroundJob } from "./hooks/useBackgroundVoiceJobs";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
+import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
@@ -58,6 +61,8 @@ import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
 import { useAppBack } from "./hooks/useAppBack";
+
+const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 
 export default function App() {
   const navigate = useNavigate();
@@ -95,6 +100,7 @@ export default function App() {
   const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
   // Incremented per-session when an external source (e.g. schedule) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
+  const sessionBusyHintExpiresAtRef = useRef<Record<string, number>>({});
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
@@ -113,6 +119,7 @@ export default function App() {
     location.pathname.match(/^\/sessions\/(.+)/)?.[1] ??
     null;
   const activeTaskId = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
+  const activeComposerKey = getComposerKeyFromPathname(location.pathname);
   const quickChatsRoute = location.pathname === "/chats";
   // Also treat as quick-chats mode when viewing a session not linked to any task
   const quickChatsMode = quickChatsRoute || (
@@ -158,7 +165,46 @@ export default function App() {
   // Ref for read-state SSE handler (avoids stale closure in useCallback)
   const applyServerStateRef = useRef(applyServerState);
   applyServerStateRef.current = applyServerState;
-  const { getDraft, setDraft, clearDraft, hasDraft } = useDrafts(sessions);
+  const { getDraft, setDraft, setDraftImmediate, clearDraft, hasDraft } = useDrafts(sessions);
+  const [draftSessionMap, setDraftSessionMap] = useState<Record<string, string>>({});
+
+  const getDraftSession = useCallback((composerKey: string) => {
+    return draftSessionMap[composerKey] ?? null;
+  }, [draftSessionMap]);
+
+  const rememberDraftSession = useCallback((composerKey: string, sessionId: string) => {
+    setDraftSessionMap((prev) => (
+      prev[composerKey] === sessionId
+        ? prev
+        : { ...prev, [composerKey]: sessionId }
+    ));
+  }, []);
+
+  const clearDraftSession = useCallback((composerKey: string) => {
+    setDraftSessionMap((prev) => {
+      if (!(composerKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[composerKey];
+      return next;
+    });
+  }, []);
+
+  const clearDraftSessionBySessionId = useCallback((sessionId: string) => {
+    setDraftSessionMap((prev) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+
+      for (const [composerKey, mappedSessionId] of Object.entries(prev)) {
+        if (mappedSessionId === sessionId) {
+          changed = true;
+          continue;
+        }
+        next[composerKey] = mappedSessionId;
+      }
+
+      return changed ? next : prev;
+    });
+  }, []);
 
   // Helper to invalidate session/task/group queries
   const invalidateSessions = useCallback(() =>
@@ -218,6 +264,7 @@ export default function App() {
         }
         // Signal ChatView to reconnect if viewing the targeted session (reuse case)
         if (event.sessionId) {
+          sessionBusyHintExpiresAtRef.current[event.sessionId] = Date.now() + SESSION_BUSY_SIGNAL_GRACE_MS;
           setSessionBusySignals((prev) => ({
             ...prev,
             [event.sessionId!]: (prev[event.sessionId!] ?? 0) + 1,
@@ -507,6 +554,13 @@ export default function App() {
     navigate(`/sessions/new`);
   };
 
+  const navigateToSession = useCallback((sessionId: string, taskId?: string, replace = false) => {
+    const path = taskId
+      ? `/tasks/${taskId}/sessions/${sessionId}`
+      : `/sessions/${sessionId}`;
+    navigate(path, { replace });
+  }, [navigate]);
+
   // Actually create a session on the server (called on first message send)
   const materializeSession = useCallback(async (taskId?: string): Promise<string> => {
     if (taskId) {
@@ -523,6 +577,41 @@ export default function App() {
       return sessionId;
     }
   }, [addOptimisticSession, queryClient]);
+
+  const isSessionBusy = useCallback((sessionId: string) => {
+    const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
+    if (busyHintExpiresAt && busyHintExpiresAt > Date.now()) {
+      return true;
+    }
+    if (busyHintExpiresAt) {
+      delete sessionBusyHintExpiresAtRef.current[sessionId];
+    }
+    return sessions.some((session) => session.sessionId === sessionId && session.busy);
+  }, [sessions]);
+
+  const {
+    getJobForComposer,
+    startBackgroundVoiceJob,
+    reviewInstead,
+    clearVoiceJobError,
+  } = useBackgroundVoiceJobs({
+    activeComposerKey,
+    getDraft,
+    setDraft,
+    setDraftImmediate,
+    clearDraft,
+    rememberDraftSession,
+    clearDraftSession,
+    materializeSession,
+    isSessionBusy,
+    navigateToSession,
+    refreshSessions: () => {
+      void invalidateSessions();
+    },
+    refreshTasks: () => {
+      void invalidateTasks();
+    },
+  });
 
   const handleNewTask = async (groupId?: string) => {
     try {
@@ -751,6 +840,7 @@ export default function App() {
 
   const handleDeleteSession = async (sessionId: string) => {
     clearDraft(sessionId);
+    clearDraftSessionBySessionId(sessionId);
     clearLastViewedSession(sessionId);
     clearLastActiveQuickChat(sessionId);
     const nextId = activeSessionId === sessionId ? getNextSessionId(sessionId) : null;
@@ -895,6 +985,7 @@ export default function App() {
     if (action === "delete") {
       for (const id of sessionIds) {
         clearDraft(id);
+        clearDraftSessionBySessionId(id);
         clearLastViewedSession(id);
       }
       setExitingIds((prev) => {
@@ -922,7 +1013,7 @@ export default function App() {
         return next;
       });
     }
-  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, invalidateSessions, invalidateTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, clearDraftSessionBySessionId, invalidateSessions, invalidateTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
@@ -1191,13 +1282,45 @@ export default function App() {
             <Route
               path="tasks/:taskId/sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} sessionBusySignals={sessionBusySignals} />
+                <SessionRoute
+                  sessions={sessions}
+                  onMessageSent={invalidateSessions}
+                  getDraft={getDraft}
+                  getDraftSession={getDraftSession}
+                  setDraft={setDraft}
+                  clearDraft={clearDraft}
+                  clearDraftSession={clearDraftSession}
+                  clearDraftSessionBySessionId={clearDraftSessionBySessionId}
+                  materializeSession={materializeSession}
+                  getVoiceJob={getJobForComposer}
+                  startBackgroundVoiceJob={startBackgroundVoiceJob}
+                  reviewVoiceJob={reviewInstead}
+                  clearVoiceJobError={clearVoiceJobError}
+                  sessionReloads={sessionReloads}
+                  sessionBusySignals={sessionBusySignals}
+                />
               }
             />
             <Route
               path="sessions/:sessionId"
               element={
-                <SessionRoute sessions={sessions} onMessageSent={invalidateSessions} getDraft={getDraft} setDraft={setDraft} clearDraft={clearDraft} materializeSession={materializeSession} sessionReloads={sessionReloads} sessionBusySignals={sessionBusySignals} />
+                <SessionRoute
+                  sessions={sessions}
+                  onMessageSent={invalidateSessions}
+                  getDraft={getDraft}
+                  getDraftSession={getDraftSession}
+                  setDraft={setDraft}
+                  clearDraft={clearDraft}
+                  clearDraftSession={clearDraftSession}
+                  clearDraftSessionBySessionId={clearDraftSessionBySessionId}
+                  materializeSession={materializeSession}
+                  getVoiceJob={getJobForComposer}
+                  startBackgroundVoiceJob={startBackgroundVoiceJob}
+                  reviewVoiceJob={reviewInstead}
+                  clearVoiceJobError={clearVoiceJobError}
+                  sessionReloads={sessionReloads}
+                  sessionBusySignals={sessionBusySignals}
+                />
               }
             />
             <Route path="docs/*" element={<DocsView />} />
@@ -1367,65 +1490,117 @@ function MobileTaskListView({
 }
 
 // Thin wrapper to extract sessionId from URL and pass hasPlan + draft props
-function SessionRoute({ sessions, onMessageSent, getDraft, setDraft, clearDraft, materializeSession, sessionReloads, sessionBusySignals }: {
+function SessionRoute({
+  sessions,
+  onMessageSent,
+  getDraft,
+  getDraftSession,
+  setDraft,
+  clearDraft,
+  clearDraftSession,
+  clearDraftSessionBySessionId,
+  materializeSession,
+  getVoiceJob,
+  startBackgroundVoiceJob,
+  reviewVoiceJob,
+  clearVoiceJobError,
+  sessionReloads,
+  sessionBusySignals,
+}: {
   sessions: Session[];
   onMessageSent: () => void;
-  getDraft: (id: string) => import("./useDrafts").Draft | null;
-  setDraft: (id: string, text: string, attachments?: import("./api").Attachment[]) => void;
-  clearDraft: (id: string) => void;
+  getDraft: (composerKey: string) => import("./useDrafts").Draft | null;
+  getDraftSession: (composerKey: string) => string | null;
+  setDraft: (composerKey: string, text: string, attachments?: import("./api").Attachment[]) => void;
+  clearDraft: (composerKey: string) => void;
+  clearDraftSession: (composerKey: string) => void;
+  clearDraftSessionBySessionId: (sessionId: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
+  getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
+  startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
+  reviewVoiceJob: (composerKey: string) => void;
+  clearVoiceJobError: (composerKey: string) => void;
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
   sessionBusySignals: Record<string, number>;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
 
-  const isDraft = rawSessionId === "new";
-  const sessionId = isDraft ? null : (rawSessionId ?? null);
+  const draftRouteKey = getDraftComposerKey(taskId);
+  const isDraftRoute = rawSessionId === "new";
+  const mappedDraftSessionId = getDraftSession(draftRouteKey);
+  const validMappedDraftSessionId = mappedDraftSessionId && sessions.some((session) => session.sessionId === mappedDraftSessionId)
+    ? mappedDraftSessionId
+    : null;
+  const sessionId = isDraftRoute ? validMappedDraftSessionId : (rawSessionId ?? null);
+  const composerKey = sessionId ?? draftRouteKey;
+  const isDraft = sessionId === null;
   const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
   const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
-  const draft = sessionId ? getDraft(sessionId) : null;
+  const draft = getDraft(composerKey);
+  const voiceJob = getVoiceJob(composerKey);
+
+  useEffect(() => {
+    if (!isDraftRoute || !validMappedDraftSessionId) return;
+    const path = taskId
+      ? `/tasks/${taskId}/sessions/${validMappedDraftSessionId}`
+      : `/sessions/${validMappedDraftSessionId}`;
+    navigate(path, { replace: true });
+  }, [isDraftRoute, navigate, taskId, validMappedDraftSessionId]);
+
   const handleDraftChange = useCallback(
     (text: string, attachments?: import("./api").Attachment[]) => {
-      if (sessionId) setDraft(sessionId, text, attachments);
+      setDraft(composerKey, text, attachments);
     },
-    [sessionId, setDraft],
+    [composerKey, setDraft],
   );
   const handleDraftClear = useCallback(() => {
-    if (sessionId) clearDraft(sessionId);
-  }, [sessionId, clearDraft]);
+    clearDraft(composerKey);
+    if (sessionId) {
+      clearDraftSessionBySessionId(sessionId);
+    }
+  }, [clearDraft, clearDraftSessionBySessionId, composerKey, sessionId]);
+
+  const handleMessageSent = useCallback(() => {
+    if (sessionId) {
+      clearDraftSessionBySessionId(sessionId);
+    }
+    onMessageSent();
+  }, [clearDraftSessionBySessionId, onMessageSent, sessionId]);
 
   // Create session on first message, then redirect to real URL
   const onCreateAndSend = useCallback(async (prompt: string, attachments?: import("./api").Attachment[]) => {
     const newSessionId = await materializeSession(taskId);
     // Send the message BEFORE navigating so the session is busy when
     // ChatView's effect reconnects the stream (avoids idle-close race).
-    await fetch(`${API_BASE}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: newSessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
-    });
+    await sendChatMessage(newSessionId, prompt, attachments);
+    clearDraft(composerKey);
     // Navigate to real session URL (replace draft URL in history)
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
     navigate(path, { replace: true });
-  }, [materializeSession, taskId, navigate]);
+  }, [clearDraft, composerKey, materializeSession, navigate, taskId]);
 
   return (
     <ChatView
       // No `key` here — the component must survive draft→real session transitions
       // so the optimistic user message is preserved and the wasDraft recovery path
-      // in ChatView fires correctly.  Session-switch resets are handled by the
-      // useEffect on sessionId inside ChatView.
+      // in ChatView fires correctly. Session/draft-composer resets are handled
+      // inside ChatView so draft→real transitions can still stay mounted.
+      composerKey={composerKey}
       sessionId={sessionId}
       hasPlan={hasPlan}
-      onMessageSent={onMessageSent}
+        onMessageSent={handleMessageSent}
       draft={draft}
       onDraftChange={handleDraftChange}
       onDraftClear={handleDraftClear}
       onCreateAndSend={isDraft ? onCreateAndSend : undefined}
+      voiceJob={voiceJob}
+      onSubmitVoiceCapture={startBackgroundVoiceJob}
+      onReviewVoiceJob={reviewVoiceJob}
+      onClearVoiceJobError={clearVoiceJobError}
       reloadToken={sessionReload?.token ?? 0}
       reloadMcpServers={sessionReload?.servers}
       busySignal={busySignal}

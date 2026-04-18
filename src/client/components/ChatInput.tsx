@@ -1,7 +1,16 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Square, Paperclip, FileText, X, Loader2 } from "lucide-react";
-import type { BlobAttachment, UploadedAttachment, Attachment } from "../api";
+import { Square, Paperclip, FileText, X, Loader2, Mic } from "lucide-react";
+import type { BlobAttachment, Attachment } from "../api";
 import { uploadFile } from "../api";
+import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import { useVoiceInput } from "../hooks/useVoiceInput";
+import {
+  canAutoSendVoiceTranscript,
+  resolveVoiceSubmitMode,
+  resolveVoiceSubmitModeAfterRecording,
+  type VoiceSubmitMode,
+} from "../lib/voice-submit-mode";
+import { isDraftComposerKey } from "../lib/composer-key";
 import type { Draft } from "../useDrafts";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -20,58 +29,186 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
+function revokePreviewUrls(items: Attachment[]): void {
+  for (const item of items) {
+    if (item.type === "uploaded" && item.previewUrl) {
+      URL.revokeObjectURL(item.previewUrl);
+    }
+  }
+}
+
 interface ChatInputProps {
   onSend: (text: string, attachments?: Attachment[]) => void;
   onAbort?: () => void;
+  composerKey: string;
   sessionId?: string | null;
   isDraft?: boolean;
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
+  voiceJob?: VoiceBackgroundJob | null;
+  onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
+  onReviewVoiceJob?: (composerKey: string) => void;
+  onClearVoiceJobError?: (composerKey: string) => void;
   /** When true, input is visible but send is disabled (e.g., session warming up) */
   disabled?: boolean;
   disabledHint?: string;
 }
 
-export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, onDraftChange, disabled, disabledHint }: ChatInputProps) {
+export default function ChatInput({
+  onSend,
+  onAbort,
+  composerKey,
+  sessionId,
+  isDraft,
+  draft,
+  onDraftChange,
+  voiceJob,
+  onSubmitVoiceCapture,
+  onReviewVoiceJob,
+  onClearVoiceJobError,
+  disabled,
+  disabledHint,
+}: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
-  // Track which session's draft we've already restored to avoid re-applying on every render
+  const inputRef = useRef(input);
+  const attachmentsRef = useRef<Attachment[]>(attachments);
+  const uploadingRef = useRef(uploading);
+  const sendBlockedRef = useRef(Boolean(disabled || onAbort));
   const restoredForRef = useRef<string | null>(null);
+  const recordingStartModeRef = useRef<VoiceSubmitMode | null>(null);
+  const pendingCaptureSubmitModeRef = useRef<VoiceSubmitMode | null>(null);
+  const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
 
-  // Restore draft when session changes
   useEffect(() => {
-    if (!sessionId) return;
-    if (restoredForRef.current === sessionId) return;
-    restoredForRef.current = sessionId;
+    inputRef.current = input;
+  }, [input]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  useEffect(() => {
+    uploadingRef.current = uploading;
+  }, [uploading]);
+
+  useEffect(() => {
+    sendBlockedRef.current = Boolean(disabled || onAbort);
+  }, [disabled, onAbort]);
+
+  useEffect(() => {
+    return () => {
+      revokePreviewUrls(attachmentsRef.current);
+    };
+  }, []);
+
+  const adjustTextareaHeight = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 200);
+    lastHeightRef.current = next;
+    el.style.height = `${next}px`;
+  }, []);
+
+  const updateDraft = useCallback((value: string, nextAttachments = attachmentsRef.current) => {
+    onDraftChange?.(value, nextAttachments);
+  }, [onDraftChange]);
+
+  const clearComposer = useCallback(() => {
+    revokePreviewUrls(attachmentsRef.current);
+    inputRef.current = "";
+    attachmentsRef.current = [];
+    setInput("");
+    setAttachments([]);
+    lastHeightRef.current = 0;
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+  }, []);
+
+  const updateRecordingStartMode = useCallback((next: VoiceSubmitMode | null) => {
+    recordingStartModeRef.current = next;
+    setRecordingStartMode(next);
+  }, []);
+
+  const activeVoiceJob = voiceJob && (
+    voiceJob.status === "uploading"
+    || voiceJob.status === "accepted"
+    || voiceJob.status === "transcribing"
+    || voiceJob.status === "sending"
+  )
+    ? voiceJob
+    : null;
+  const voiceJobError = voiceJob?.status === "error" ? voiceJob.error ?? null : null;
+
+  const voice = useVoiceInput({
+    contextKey: composerKey,
+    onAudioCaptured: async ({ audio, contextKey }) => {
+      const submitMode = contextKey === composerKey
+        ? (pendingCaptureSubmitModeRef.current ?? "insert")
+        : "insert";
+      pendingCaptureSubmitModeRef.current = null;
+      await onSubmitVoiceCapture({ composerKey: contextKey, audio, submitMode });
+    },
+  });
+
+  useEffect(() => {
+    if (!voice.isRecording && !voice.isTranscribing && !activeVoiceJob) {
+      updateRecordingStartMode(null);
+      pendingCaptureSubmitModeRef.current = null;
+    }
+  }, [activeVoiceJob, updateRecordingStartMode, voice.isRecording, voice.isTranscribing]);
+
+  useEffect(() => {
+    if (activeVoiceJob?.serverOwned) return;
+    if (activeVoiceJob?.status !== "transcribing" || activeVoiceJob.submitMode !== "autosend") return;
+    if (!canAutoSendVoiceTranscript({
+      text: input,
+      attachmentCount: attachments.length,
+      sendBlocked: Boolean(disabled || onAbort),
+      uploadingCount: uploading,
+    })) {
+      onReviewVoiceJob?.(composerKey);
+    }
+  }, [activeVoiceJob, attachments, composerKey, disabled, input, onAbort, onReviewVoiceJob, uploading]);
+
+  // Restore draft when the active composer target changes.
+  useEffect(() => {
+    if (restoredForRef.current === composerKey) return;
+    restoredForRef.current = composerKey;
+
     if (draft) {
+      revokePreviewUrls(attachmentsRef.current);
+      inputRef.current = draft.text;
+      attachmentsRef.current = draft.attachments ?? [];
       setInput(draft.text);
       setAttachments(draft.attachments ?? []);
-      // Adjust textarea height for restored content
-      requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (el) {
-          el.style.height = "auto";
-          el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-        }
-      });
+      requestAnimationFrame(() => adjustTextareaHeight());
     } else {
-      setInput("");
-      setAttachments([]);
-      lastHeightRef.current = 0;
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      clearComposer();
     }
-  }, [sessionId]); // intentionally only depends on sessionId — draft at switch time
+  }, [composerKey, draft, adjustTextareaHeight, clearComposer]);
+
+  useEffect(() => {
+    if (restoredForRef.current !== composerKey) return;
+    const nextText = draft?.text ?? "";
+    if (nextText === inputRef.current) return;
+    inputRef.current = nextText;
+    setInput(nextText);
+    requestAnimationFrame(() => adjustTextareaHeight());
+  }, [adjustTextareaHeight, composerKey, draft?.text]);
 
   // Auto-focus on session change (desktop only — avoids keyboard popup on mobile)
   useEffect(() => {
-    if ((sessionId || isDraft) && window.matchMedia("(pointer: fine)").matches) {
+    if (composerKey && window.matchMedia("(pointer: fine)").matches) {
       textareaRef.current?.focus();
     }
-  }, [sessionId, isDraft]);
+  }, [composerKey]);
 
   const addFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
@@ -83,25 +220,24 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
       }
 
       if (sessionId) {
-        // Multipart upload path
-        setUploading(n => n + 1);
+        setUploading((count) => count + 1);
         try {
           const uploaded = await uploadFile(sessionId, file);
           if (file.type.startsWith("image/")) {
             uploaded.previewUrl = URL.createObjectURL(file);
           }
-          setAttachments(prev => {
+          setAttachments((prev) => {
             const next = [...prev, uploaded];
-            onDraftChange?.(input, next);
+            attachmentsRef.current = next;
+            updateDraft(inputRef.current, next);
             return next;
           });
         } catch (err) {
           console.error(`Failed to upload ${file.name}:`, err);
         } finally {
-          setUploading(n => n - 1);
+          setUploading((count) => count - 1);
         }
       } else {
-        // Fallback: base64 for draft mode (no session yet)
         const data = await readFileAsBase64(file);
         const blob: BlobAttachment = {
           type: "blob",
@@ -109,14 +245,15 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
           mimeType: file.type || "application/octet-stream",
           displayName: file.name,
         };
-        setAttachments(prev => {
+        setAttachments((prev) => {
           const next = [...prev, blob];
-          onDraftChange?.(input, next);
+          attachmentsRef.current = next;
+          updateDraft(inputRef.current, next);
           return next;
         });
       }
     }
-  }, [sessionId, input, onDraftChange]);
+  }, [sessionId, updateDraft]);
 
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => {
@@ -125,107 +262,185 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
         URL.revokeObjectURL(removed.previewUrl);
       }
       const next = prev.filter((_, i) => i !== index);
-      onDraftChange?.(input, next);
+      attachmentsRef.current = next;
+      updateDraft(inputRef.current, next);
       return next;
     });
-  }, [input, onDraftChange]);
+  }, [updateDraft]);
 
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      const pastedFiles: File[] = [];
-      for (const item of Array.from(e.clipboardData.items)) {
-        const file = item.getAsFile();
-        if (file) pastedFiles.push(file);
-      }
-      if (pastedFiles.length > 0) {
-        e.preventDefault();
-        addFiles(pastedFiles);
-      }
-    },
-    [addFiles],
-  );
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const pastedFiles: File[] = [];
+    for (const item of Array.from(e.clipboardData.items)) {
+      const file = item.getAsFile();
+      if (file) pastedFiles.push(file);
+    }
+    if (pastedFiles.length > 0) {
       e.preventDefault();
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) addFiles(files);
-    },
-    [addFiles],
-  );
+      void addFiles(pastedFiles);
+    }
+  }, [addFiles]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      void addFiles(files);
+    }
+  }, [addFiles]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
   }, []);
 
-  const handleInput = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const value = e.target.value;
-      setInput(value);
-      onDraftChange?.(value, attachments);
-      const el = e.target;
-      el.style.height = "auto";
-      const next = Math.min(el.scrollHeight, 200);
-      if (next !== lastHeightRef.current) {
-        lastHeightRef.current = next;
-        el.style.height = `${next}px`;
-      } else {
-        el.style.height = `${next}px`;
-      }
-    },
-    [attachments, onDraftChange],
-  );
+  const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    inputRef.current = value;
+    setInput(value);
+    updateDraft(value);
+    const el = e.target;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 200);
+    lastHeightRef.current = next;
+    el.style.height = `${next}px`;
+  }, [updateDraft]);
+
+  const manualSendBlockedByVoiceJob = !!activeVoiceJob?.serverOwned && isDraftComposerKey(composerKey);
 
   const handleSend = useCallback(() => {
-    if (uploading > 0) return; // Block send while uploads pending
-    const text = input.trim();
-    if (!text && attachments.length === 0) return;
-    // Revoke preview URLs
-    for (const att of attachments) {
+    if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
+
+    const text = inputRef.current.trim();
+    const currentAttachments = attachmentsRef.current;
+    if (!text && currentAttachments.length === 0) return;
+
+    for (const att of currentAttachments) {
       if (att.type === "uploaded" && att.previewUrl) {
         URL.revokeObjectURL(att.previewUrl);
       }
     }
-    // Strip previewUrl before sending (not serializable/needed)
-    const cleanAttachments: Attachment[] = attachments.map(att =>
-      att.type === "uploaded" ? { type: att.type, displayName: att.displayName, mimeType: att.mimeType, size: att.size } : att
-    );
-    onSend(text || "(attachment)", cleanAttachments.length > 0 ? cleanAttachments : undefined);
-    setInput("");
-    setAttachments([]);
-    lastHeightRef.current = 0;
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      // Dismiss keyboard on touch devices; keep focus on desktop for rapid typing
-      if (!window.matchMedia("(pointer: fine)").matches) {
-        textareaRef.current.blur();
-      }
-    }
-  }, [input, attachments, uploading, onSend]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend],
-  );
+    const cleanAttachments: Attachment[] = currentAttachments.map((att) =>
+      att.type === "uploaded"
+        ? { type: att.type, displayName: att.displayName, mimeType: att.mimeType, size: att.size }
+        : att,
+    );
+
+    onClearVoiceJobError?.(composerKey);
+    onSend(text || "(attachment)", cleanAttachments.length > 0 ? cleanAttachments : undefined);
+    clearComposer();
+
+    if (textareaRef.current && !window.matchMedia("(pointer: fine)").matches) {
+      textareaRef.current.blur();
+    }
+  }, [clearComposer, composerKey, disabled, manualSendBlockedByVoiceJob, onClearVoiceJobError, onSend, uploading]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
 
   const hasContent = input.trim().length > 0 || attachments.length > 0;
-  const canSend = hasContent && uploading === 0;
+  const canSend = hasContent && uploading === 0 && !disabled && !manualSendBlockedByVoiceJob;
+  const canAutoSendNewVoiceTranscript = canAutoSendVoiceTranscript({
+    text: input,
+    attachmentCount: attachments.length,
+    sendBlocked: Boolean(disabled || onAbort),
+    uploadingCount: uploading,
+  });
+  const canAutoSendStoppedRecording =
+    recordingStartMode === "autosend" && canAutoSendNewVoiceTranscript;
+  const isVoiceProcessing = voice.isTranscribing || !!activeVoiceJob;
+  const processingSubmitMode = activeVoiceJob?.submitMode ?? pendingCaptureSubmitModeRef.current;
+  const showVoiceButton =
+    voice.browserSupported &&
+    (voice.status?.available === true || voice.isRecording || isVoiceProcessing || !!voice.statusError || !!voice.error || !!voiceJobError);
+  const voiceButtonDisabled =
+    !showVoiceButton ||
+    isVoiceProcessing ||
+    (voice.isCheckingStatus && !voice.isRecording);
+
+  const voiceMessage = voiceJobError
+    ?? voice.error
+    ?? (activeVoiceJob?.status === "uploading"
+      ? (
+        <>
+          Uploading audio… keep this open until it says it is safe to leave.
+        </>
+      )
+      : activeVoiceJob?.serverOwned && activeVoiceJob.status === "accepted"
+        ? "Audio accepted. Safe to leave — it will transcribe and send in the background."
+      : activeVoiceJob?.serverOwned && activeVoiceJob.status === "transcribing"
+        ? "Audio accepted. Safe to leave — transcribing on the server."
+      : activeVoiceJob?.serverOwned && activeVoiceJob.status === "sending"
+        ? "Audio accepted. Safe to leave — sending transcribed message…"
+      : activeVoiceJob?.status === "sending"
+        ? "Sending transcribed message…"
+      : isVoiceProcessing
+        ? processingSubmitMode === "autosend"
+        ? (
+          <>
+            Transcribing audio… it will send automatically.
+            {" "}
+            <button
+              type="button"
+              className="font-medium underline underline-offset-2 hover:text-text-primary transition-colors"
+              onClick={() => onReviewVoiceJob?.(composerKey)}
+            >
+              Review instead
+            </button>
+          </>
+        )
+        : "Transcribing audio… it will appear in the composer."
+      : voice.isRecording
+        ? canAutoSendStoppedRecording
+          ? "Recording… click stop to transcribe and send."
+          : "Recording… click stop to transcribe."
+        : voice.statusError
+          ? `Voice status check failed. Click the mic to retry. (${voice.statusError})`
+          : null);
+
+  const voiceMessageClassName =
+    voiceJobError || voice.error || voice.statusError
+      ? "text-error"
+      : voice.isRecording || isVoiceProcessing
+        ? "text-accent"
+        : "text-text-faint";
+
+  const voiceButtonTitle = !voice.browserSupported
+    ? "Voice input is not supported in this browser"
+    : activeVoiceJob?.status === "uploading"
+      ? "Uploading voice audio"
+    : activeVoiceJob?.serverOwned
+      ? "Voice message processing on the server"
+    : activeVoiceJob?.status === "sending"
+      ? "Sending transcribed message"
+      : isVoiceProcessing
+        ? "Voice transcription in progress"
+    : voice.isRecording
+      ? canAutoSendStoppedRecording
+        ? "Stop recording, transcribe, and send automatically"
+        : "Stop recording and transcribe"
+      : voice.statusError
+        ? "Retry voice input status"
+        : "Record voice input";
 
   return (
     <div className="p-3 md:p-4 border-t border-border bg-bg-secondary">
-      {/* Upload indicator */}
       {uploading > 0 && (
         <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
           <Loader2 size={12} className="animate-spin" />
           Uploading…
         </div>
       )}
-      {/* Attachment preview strip */}
+
+      {voiceMessage && (
+        <div className={`mb-2 text-xs ${voiceMessageClassName}`}>
+          {voiceMessage}
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {attachments.map((att, i) => (
@@ -251,6 +466,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
               <button
                 onClick={() => removeAttachment(i)}
                 className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-text-secondary hover:text-error"
+                type="button"
               >
                 <X size={12} />
               </button>
@@ -258,6 +474,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
           ))}
         </div>
       )}
+
       <div className="flex gap-2 md:gap-3">
         <div
           className="flex-1 flex items-end gap-1 bg-bg-primary border border-border rounded-md focus-within:border-accent"
@@ -272,13 +489,54 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
           >
             <Paperclip size={18} />
           </button>
+          {showVoiceButton && (
+            <button
+              onClick={() => {
+                if (voice.isRecording) {
+                  pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
+                    text: inputRef.current,
+                    attachmentCount: attachmentsRef.current.length,
+                    sendBlocked: sendBlockedRef.current,
+                    uploadingCount: uploadingRef.current,
+                  });
+                  void voice.stopRecording();
+                } else {
+                  onClearVoiceJobError?.(composerKey);
+                  updateRecordingStartMode(resolveVoiceSubmitMode({
+                    text: inputRef.current,
+                    attachmentCount: attachmentsRef.current.length,
+                    sendBlocked: sendBlockedRef.current,
+                    uploadingCount: uploadingRef.current,
+                  }));
+                  pendingCaptureSubmitModeRef.current = null;
+                  void voice.startRecording();
+                }
+              }}
+              disabled={voiceButtonDisabled}
+              className={`p-3 transition-colors flex-shrink-0 ${
+                voice.isRecording
+                  ? "text-error hover:text-error-hover"
+                  : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
+              }`}
+              title={voiceButtonTitle}
+              type="button"
+            >
+              {isVoiceProcessing ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : voice.isRecording ? (
+                <Square size={16} fill="currentColor" />
+              ) : (
+                <Mic size={18} />
+              )}
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
             multiple
             className="hidden"
             onChange={(e) => {
-              if (e.target.files) addFiles(Array.from(e.target.files));
+              if (e.target.files) void addFiles(Array.from(e.target.files));
               e.target.value = "";
             }}
           />
@@ -288,7 +546,7 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
             onChange={handleInput}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Type a message or attach a file..."
+            placeholder="Type a message, use the mic, or attach a file..."
             rows={1}
             className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
           />
@@ -298,15 +556,17 @@ export default function ChatInput({ onSend, onAbort, sessionId, isDraft, draft, 
             onClick={onAbort}
             className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-end transition-colors flex items-center justify-center"
             title="Stop generating"
+            type="button"
           >
             <Square size={14} fill="currentColor" />
           </button>
         ) : (
           <button
             onClick={handleSend}
-            disabled={!canSend || disabled}
+            disabled={!canSend}
             className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
             title={disabled ? disabledHint : undefined}
+            type="button"
           >
             {disabled ? (disabledHint ?? "Warming up…") : "Send"}
           </button>

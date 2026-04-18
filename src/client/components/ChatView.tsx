@@ -1,5 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
+import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
@@ -17,6 +19,7 @@ const PAGE_SIZE = 50;
 type PendingStatusTone = "sending" | "thinking" | "creating";
 
 interface ChatViewProps {
+  composerKey: string;
   sessionId: string | null;
   hasPlan?: boolean;
   onMessageSent: () => void;
@@ -24,6 +27,10 @@ interface ChatViewProps {
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
   onDraftClear?: () => void;
   onCreateAndSend?: (prompt: string, attachments?: Attachment[]) => Promise<void>;
+  voiceJob?: VoiceBackgroundJob | null;
+  onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
+  onReviewVoiceJob?: (composerKey: string) => void;
+  onClearVoiceJobError?: (composerKey: string) => void;
   reloadToken?: number;
   reloadMcpServers?: McpServerStatus[];
   /** Incremented when an external source (e.g. schedule) starts work on this session */
@@ -80,6 +87,7 @@ function renderPendingStatusCard(
 }
 
 export default function ChatView({
+  composerKey,
   sessionId,
   hasPlan,
   onMessageSent,
@@ -87,6 +95,10 @@ export default function ChatView({
   onDraftChange,
   onDraftClear,
   onCreateAndSend,
+  voiceJob,
+  onSubmitVoiceCapture,
+  onReviewVoiceJob,
+  onClearVoiceJobError,
   reloadToken = 0,
   reloadMcpServers,
   busySignal = 0,
@@ -158,15 +170,24 @@ export default function ChatView({
 
   // Load history + MCP status when session changes.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
+  const prevComposerKeyRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const prevSession = prevSessionRef.current;
+    const prevComposerKey = prevComposerKeyRef.current;
     const wasDraft = prevSession === null && creating;
+    const draftComposerChanged = prevSession === null
+      && prevComposerKey !== undefined
+      && prevComposerKey !== composerKey;
     prevSessionRef.current = sessionId;
+    prevComposerKeyRef.current = composerKey;
 
     if (!sessionId) {
-      // Clear messages when entering draft mode from an existing session
-      // (but not on initial mount when prevSession is undefined)
-      if (prevSession !== undefined || !onCreateAndSend) setEntries([]);
+      // Clear draft-only state when entering draft mode from an existing
+      // session or when switching between distinct draft composers.
+      if (draftComposerChanged || prevSession !== undefined || !onCreateAndSend) setEntries([]);
+      setLoading(false);
+      setRefreshingHistory(false);
+      setWarming(false);
       setCreating(false);
       setLoadingMore(false);
       setHasMore(false);
@@ -293,7 +314,7 @@ export default function ChatView({
       loadAndReconnectRef.current = () => {};
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [sessionId, reconnect]);
+  }, [composerKey, reconnect, sessionId]);
 
   // Reconnect when an external source (e.g. schedule) starts work on this session
   const prevBusySignalRef = useRef(busySignal);
@@ -660,7 +681,21 @@ export default function ChatView({
           <div className="h-4" />
         </div>
       )}
-      <ChatInput onSend={handleSend} onAbort={isStreaming ? abortSession : undefined} sessionId={sessionId} isDraft={isDraft} draft={draft} onDraftChange={onDraftChange} disabled={warming} disabledHint="Reconnecting…" />
+      <ChatInput
+        onSend={handleSend}
+        onAbort={isStreaming ? abortSession : undefined}
+        composerKey={composerKey}
+        sessionId={sessionId}
+        isDraft={isDraft}
+        draft={draft}
+        onDraftChange={onDraftChange}
+        voiceJob={voiceJob}
+        onSubmitVoiceCapture={onSubmitVoiceCapture}
+        onReviewVoiceJob={onReviewVoiceJob}
+        onClearVoiceJobError={onClearVoiceJobError}
+        disabled={warming}
+        disabledHint="Reconnecting…"
+      />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
         <PlanSheet

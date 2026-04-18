@@ -24,6 +24,29 @@ const STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
 const SIGNAL_FILE= join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
+const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
+
+function isMissingOptionalStagingModule(error: unknown, specifier: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  if (!OPTIONAL_STAGING_MODULE_ERROR_CODES.has(code)) return false;
+
+  const rawSpecifier = specifier.replace(/\?.*$/, "");
+  const resolvedSpecifier = rawSpecifier.startsWith("file:") ? fileURLToPath(rawSpecifier) : rawSpecifier;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(rawSpecifier) || message.includes(resolvedSpecifier);
+}
+
+async function importOptionalStagingModule(specifier: string) {
+  try {
+    return await import(specifier);
+  } catch (error) {
+    if (isMissingOptionalStagingModule(error, specifier)) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 /**
  * Compare dependency inputs between staging and production.
@@ -204,6 +227,9 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
     telemetryStoreMod,
+    transcriptionServiceMod,
+    voiceJobStoreMod,
+    voiceJobManagerMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
@@ -217,12 +243,15 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     import(ts("session-titles.ts")),
     import(ts("read-state-store.ts")),
     import(ts("todo-store.ts")),
-    import(ts("docs-store.ts")).catch(() => null),
-    import(ts("docs-index.ts")).catch(() => null),
+    importOptionalStagingModule(ts("docs-store.ts")),
+    importOptionalStagingModule(ts("docs-index.ts")),
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
-    import(ts("tag-store.ts")).catch(() => null),
-    import(ts("telemetry-store.ts")).catch(() => null),
+    importOptionalStagingModule(ts("tag-store.ts")),
+    importOptionalStagingModule(ts("telemetry-store.ts")),
+    importOptionalStagingModule(ts("transcription-service.ts")),
+    importOptionalStagingModule(ts("voice-job-store.ts")),
+    importOptionalStagingModule(ts("voice-job-manager.ts")),
   ]);
 
   // Open isolated staging database
@@ -243,6 +272,7 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
     const todoStore = todoStoreMod.createTodoStore(db, globalBus);
     const tagStore = tagStoreMod?.createTagStore(db);
     const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
+    const transcriptionService = transcriptionServiceMod?.createTranscriptionService();
     const docsStore = docsStoreMod?.createDocsStore(join(dataDir, "docs"));
     const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
     if (docsIndex) docsIndex.reindex();
@@ -260,6 +290,19 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
       ...(telemetryStore && { telemetryStore }),
       globalBus, eventBusRegistry,
       sessionManager: null as any,
+      transcriptionService: transcriptionService ?? {
+        getStatus: () => ({
+          available: false,
+          provider: "disabled",
+          label: "Unavailable",
+          reason: "Voice input is not configured on the staging server.",
+          maxDurationSeconds: 120,
+        }),
+        transcribe: async () => {
+          throw new Error("Voice input is not configured on the staging server.");
+        },
+      },
+      voiceJobManager: null as any,
       copilotHome,
       isStaging: true,
     };
@@ -278,6 +321,25 @@ async function createStagingContext(stagingDir: string, dataDir: string): Promis
       copilotHome,
     });
     ctx.sessionManager = sm;
+    ctx.voiceJobManager = voiceJobStoreMod && voiceJobManagerMod
+      ? voiceJobManagerMod.createVoiceJobManager({
+          dataDir,
+          store: voiceJobStoreMod.createVoiceJobStore(db),
+          transcriptionService: ctx.transcriptionService,
+          sessionManager: sm,
+          taskStore,
+          taskGroupStore,
+        })
+      : {
+          acceptVoiceJob: async () => {
+            throw new Error("Voice jobs are not available in this staging worktree.");
+          },
+          getVoiceJob: () => undefined,
+          findLatestRelevantForComposer: () => undefined,
+          markRecovered: () => undefined,
+          resumePendingJobs: () => {},
+          shutdown: async () => {},
+        } as any;
 
     // Store the apiRouter factory for mounting
     (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;
@@ -318,6 +380,7 @@ async function teardownStagingBackend(prefix: string): Promise<void> {
 function createStagingBackendCleanup(ctx: AppContext): () => Promise<void> {
   return async () => {
     try {
+      await ctx.voiceJobManager.shutdown();
       await ctx.sessionManager.gracefulShutdown();
     } catch (err) {
       log(`Warning: staging SDK shutdown error: ${err}`);
@@ -342,6 +405,7 @@ async function initializeStagingBackend(prefix: string, stagingDir: string): Pro
 
     log("Initializing staging Copilot SDK...");
     await ctx.sessionManager.initialize();
+    ctx.voiceJobManager.resumePendingJobs();
 
     const createRouter = (ctx as any)._createApiRouter;
     const stagedRouter = createRouter(ctx);
