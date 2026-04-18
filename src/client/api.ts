@@ -323,6 +323,22 @@ export async function duplicateSession(id: string): Promise<string> {
   return data.sessionId;
 }
 
+export async function sendChatMessage(sessionId: string, prompt: string, attachments?: Attachment[]): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId,
+      prompt,
+      ...(attachments?.length ? { attachments } : {}),
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
 export async function fetchMessages(
   sessionId: string,
   opts?: { limit?: number; before?: number },
@@ -794,6 +810,117 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
   });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+// ── Transcription API ───────────────────────────────────────────────
+
+export interface TranscriptionStatus {
+  available: boolean;
+  provider: "disabled" | "whisper.cpp";
+  label: string;
+  reason?: string;
+  maxDurationSeconds: number;
+}
+
+export interface TranscriptionResult {
+  text: string;
+  provider: Exclude<TranscriptionStatus["provider"], "disabled">;
+}
+
+export type VoiceJobStatus = "accepted" | "transcribing" | "sending" | "done" | "error" | "recovered";
+
+export interface VoiceJobStatusResponse {
+  id: string;
+  composerKey: string;
+  taskId?: string;
+  targetSessionId?: string;
+  status: VoiceJobStatus;
+  transcript?: string;
+  error?: string;
+  safeToLeave: true;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateVoiceJobRequest {
+  composerKey: string;
+  sessionId?: string;
+  taskId?: string;
+}
+
+export async function fetchTranscriptionStatus(): Promise<TranscriptionStatus> {
+  return apiFetch<TranscriptionStatus>("/api/transcribe/status");
+}
+
+export async function transcribeAudio(audio: Blob, filename = "voice-input.wav"): Promise<TranscriptionResult> {
+  const form = new FormData();
+  form.append("audio", audio, filename);
+
+  const res = await fetch(`${API_BASE}/api/transcribe`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function createVoiceJob(
+  request: CreateVoiceJobRequest,
+  audio: Blob,
+  options?: { signal?: AbortSignal; filename?: string },
+): Promise<VoiceJobStatusResponse> {
+  const form = new FormData();
+  form.append("audio", audio, options?.filename ?? "voice-input.wav");
+  form.append("composerKey", request.composerKey);
+  if (request.sessionId) form.append("sessionId", request.sessionId);
+  if (request.taskId) form.append("taskId", request.taskId);
+
+  const res = await fetch(`${API_BASE}/api/voice-jobs`, {
+    method: "POST",
+    body: form,
+    signal: options?.signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function fetchVoiceJob(jobId: string): Promise<VoiceJobStatusResponse | null> {
+  const res = await fetch(`${API_BASE}/api/voice-jobs/${jobId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function fetchLatestVoiceJob(composerKey: string): Promise<VoiceJobStatusResponse | null> {
+  const qs = new URLSearchParams({ composerKey }).toString();
+  const res = await fetch(`${API_BASE}/api/voice-jobs/latest?${qs}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function markVoiceJobRecovered(jobId: string): Promise<VoiceJobStatusResponse | null> {
+  const res = await fetch(`${API_BASE}/api/voice-jobs/${jobId}/recovered`, {
+    method: "POST",
+  });
+  if (res.status === 404) return null;
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);

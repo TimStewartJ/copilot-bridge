@@ -21,6 +21,7 @@ import {
   ServerCard,
   ServerEditor,
   TagsSection,
+  VoiceInputSection,
 } from "./settings";
 
 export default function SettingsView() {
@@ -190,6 +191,7 @@ export default function SettingsView() {
         <ReasoningEffortSection draft={draft} setDraft={setDraft} />
         <AppearanceSection draft={draft} setDraft={setDraft} />
         <ProvidersSection draft={draft} setDraft={setDraft} />
+        <VoiceInputSection />
         <TagsSection tags={tags} setTags={setTags} />
 
         {/* MCP Servers Section */}

@@ -22,6 +22,7 @@ import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
 import { createTagStore } from "./tag-store.js";
 import { createTelemetryStore } from "./telemetry-store.js";
+import { createVoiceJobStore } from "./voice-job-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
 import { notifyWebhook, gitHash, getPublicBaseUrl, discoverTunnelUrl, rememberRequestOrigin, shouldTrustProxyHeaders } from "./tunnel.js";
@@ -30,6 +31,8 @@ import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerEx
 import { initKeepAlive } from "./keep-alive.js";
 import type { AppContext } from "./app-context.js";
 import { createApiRouter } from "./api-router.js";
+import { createTranscriptionService } from "./transcription-service.js";
+import { createVoiceJobManager } from "./voice-job-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -61,6 +64,7 @@ const readStateStore = createReadStateStore(db);
 const todoStore = createTodoStore(db, defaultGlobalBus);
 const tagStore = createTagStore(db);
 const telemetryStore = createTelemetryStore(db);
+const voiceJobStore = createVoiceJobStore(db);
 const docsDir = process.env.BRIDGE_DOCS_DIR || join(dataDir, "docs");
 const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
@@ -76,6 +80,8 @@ const defaultContext: AppContext = {
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction
+  transcriptionService: createTranscriptionService(),
+  voiceJobManager: null as any, // assigned below after construction
 };
 const tools = createBridgeTools(defaultContext);
 const sessionManager = createSessionManager(defaultContext, {
@@ -83,6 +89,14 @@ const sessionManager = createSessionManager(defaultContext, {
   config: { get sessionMcpServers() { return config.sessionMcpServers; } },
 });
 defaultContext.sessionManager = sessionManager;
+defaultContext.voiceJobManager = createVoiceJobManager({
+  dataDir,
+  store: voiceJobStore,
+  transcriptionService: defaultContext.transcriptionService,
+  sessionManager,
+  taskStore,
+  taskGroupStore,
+});
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
 app.use("/api", (_req, res, next) => {
@@ -143,6 +157,7 @@ async function main(): Promise<void> {
   console.log();
 
   await sessionManager.initialize();
+  defaultContext.voiceJobManager.resumePendingJobs();
 
   // Prune old telemetry data
   const pruned = telemetryStore.pruneOldSpans(7);

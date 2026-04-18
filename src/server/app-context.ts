@@ -16,6 +16,8 @@ import type { TelemetryStore } from "./telemetry-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionManager } from "./session-manager.js";
+import type { TranscriptionService } from "./transcription-service.js";
+import type { VoiceJobManager } from "./voice-job-manager.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -33,6 +35,8 @@ export interface AppContext {
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   sessionManager: SessionManager;
+  transcriptionService: TranscriptionService;
+  voiceJobManager: VoiceJobManager;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
   isStaging?: boolean;

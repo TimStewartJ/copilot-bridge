@@ -2,15 +2,19 @@
 
 import express from "express";
 import multer from "multer";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
-import { stat as statAsync } from "node:fs/promises";
-import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
+import { stat as statAsync, readFile, rm } from "node:fs/promises";
+import { join, basename, dirname } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
+import { openDatabase, type DatabaseSync } from "./db.js";
 import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
+import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
+import { createVoiceJobStore } from "./voice-job-store.js";
+import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -33,8 +37,68 @@ function getCopilotHome(ctx: AppContext): string {
   return ctx.copilotHome ?? join(homedir(), ".copilot");
 }
 
+type RouterCompatContext = Omit<AppContext, "voiceJobManager"> & {
+  voiceJobManager?: VoiceJobManager;
+  __voiceJobFallbackDb?: DatabaseSync;
+  __voiceJobFallbackCleanupInstalled?: boolean;
+  __voiceJobFallbackResumed?: boolean;
+};
+
+class InvalidWavError extends Error {}
+
+async function cleanupTranscriptionUpload(req: express.Request): Promise<void> {
+  const dir = (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir;
+  if (!dir) return;
+  await rm(dir, { recursive: true, force: true }).catch(() => {});
+  delete (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir;
+}
+
+async function getWavDurationSeconds(filePath: string): Promise<number> {
+  return parseWavDurationSeconds(await readFile(filePath));
+}
+
+function parseWavDurationSeconds(buffer: Buffer): number {
+  if (buffer.length < 12 || buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
+    throw new InvalidWavError("Uploaded audio must be a WAV file.");
+  }
+
+  let offset = 12;
+  let byteRate: number | undefined;
+  let dataSize: number | undefined;
+  while (offset + 8 <= buffer.length) {
+    const chunkId = buffer.toString("ascii", offset, offset + 4);
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+    const chunkStart = offset + 8;
+    if (chunkStart + chunkSize > buffer.length) {
+      throw new InvalidWavError("Uploaded WAV data is truncated.");
+    }
+    if (chunkId === "fmt ") {
+      if (chunkSize < 16) {
+        throw new InvalidWavError("Uploaded WAV format chunk is invalid.");
+      }
+      byteRate = buffer.readUInt32LE(chunkStart + 8);
+    } else if (chunkId === "data") {
+      dataSize = chunkSize;
+    }
+    offset = chunkStart + chunkSize + (chunkSize % 2);
+  }
+
+  if (byteRate === undefined || byteRate <= 0 || dataSize === undefined) {
+    throw new InvalidWavError("Uploaded WAV file is missing required audio data.");
+  }
+
+  const durationSeconds = dataSize / byteRate;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    throw new InvalidWavError("Uploaded WAV file does not contain audio samples.");
+  }
+  return durationSeconds;
+}
+
 export function createApiRouter(ctx: AppContext): express.Router {
   const router = express.Router();
+  const transcriptionService =
+    (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
+  const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
@@ -62,6 +126,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
     },
   });
   const upload = multer({ storage: uploadStorage, limits: { fileSize: 10 * 1024 * 1024 } });
+  const transcribeUpload = multer({
+    storage: multer.diskStorage({
+      destination: (req, _file, cb) => {
+        const dir = mkdtempSync(join(tmpdir(), "bridge-transcribe-"));
+        (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir = dir;
+        cb(null, dir);
+      },
+      filename: (_req, file, cb) => {
+        const safe = basename(file.originalname).replace(/\.\./g, "_") || "voice-input.wav";
+        cb(null, safe);
+      },
+    }),
+    limits: { fileSize: 25 * 1024 * 1024 },
+  });
 
   router.post("/upload", (req, res, next) => {
     upload.single("file")(req, res, (err) => {
@@ -79,6 +157,132 @@ export function createApiRouter(ctx: AppContext): express.Router {
         size: req.file.size,
       });
     });
+  });
+
+  router.post("/transcribe", (req, res) => {
+    transcribeUpload.single("audio")(req, res, async (err) => {
+      if (err) {
+        await cleanupTranscriptionUpload(req);
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(400).json({ error: msg });
+      }
+      if (!req.file) {
+        await cleanupTranscriptionUpload(req);
+        return res.status(400).json({ error: "No audio file provided" });
+      }
+
+      try {
+        const status = transcriptionService.getStatus();
+        if (!status.available) {
+          return res.status(503).json({ error: status.reason ?? "Voice input is unavailable." });
+        }
+
+        const durationSeconds = await getWavDurationSeconds(req.file.path);
+        if (durationSeconds > status.maxDurationSeconds) {
+          return res.status(400).json({ error: `Audio exceeds ${status.maxDurationSeconds} seconds.` });
+        }
+
+        const workingDir = (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir ?? dirname(req.file.path);
+        const result = await transcriptionService.transcribe({
+          filePath: req.file.path,
+          workingDir,
+        });
+        console.log(`[web] Transcribed voice input via ${result.provider}`);
+        return res.json(result);
+      } catch (error) {
+        return res.status(error instanceof InvalidWavError ? 400 : 500).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        await cleanupTranscriptionUpload(req);
+      }
+    });
+  });
+
+  router.get("/transcribe/status", (_req, res) => {
+    try {
+      res.json(transcriptionService.getStatus());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post("/voice-jobs", (req, res) => {
+    transcribeUpload.single("audio")(req, res, async (err) => {
+      if (err) {
+        await cleanupTranscriptionUpload(req);
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(400).json({ error: msg });
+      }
+      if (!req.file) {
+        await cleanupTranscriptionUpload(req);
+        return res.status(400).json({ error: "No audio file provided" });
+      }
+
+      const composerKey = String(req.body?.composerKey ?? "").trim();
+      const taskId = String(req.body?.taskId ?? "").trim() || undefined;
+      const sessionId = String(req.body?.sessionId ?? "").trim() || undefined;
+      if (!composerKey) {
+        await cleanupTranscriptionUpload(req);
+        return res.status(400).json({ error: "composerKey is required" });
+      }
+
+      try {
+        const status = transcriptionService.getStatus();
+        if (!status.available) {
+          return res.status(503).json({ error: status.reason ?? "Voice input is unavailable." });
+        }
+
+        const durationSeconds = await getWavDurationSeconds(req.file.path);
+        if (durationSeconds > status.maxDurationSeconds) {
+          return res.status(400).json({ error: `Audio exceeds ${status.maxDurationSeconds} seconds.` });
+        }
+
+        const job = await voiceJobManager.acceptVoiceJob({
+          composerKey,
+          taskId,
+          targetSessionId: sessionId,
+          sourceFilePath: req.file.path,
+          originalFilename: req.file.originalname,
+        });
+        return res.status(202).json(job);
+      } catch (error) {
+        return res.status(error instanceof InvalidWavError ? 400 : 500).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        await cleanupTranscriptionUpload(req);
+      }
+    });
+  });
+
+  router.get("/voice-jobs/latest", (req, res) => {
+    const composerKey = String(req.query.composerKey ?? "").trim();
+    if (!composerKey) {
+      return res.status(400).json({ error: "composerKey is required" });
+    }
+
+    const job = voiceJobManager.findLatestRelevantForComposer(composerKey);
+    if (!job) {
+      return res.status(404).json({ error: "Voice job not found" });
+    }
+    res.json(job);
+  });
+
+  router.get("/voice-jobs/:id", (req, res) => {
+    const job = voiceJobManager.getVoiceJob(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: "Voice job not found" });
+    }
+    res.json(job);
+  });
+
+  router.post("/voice-jobs/:id/recovered", (req, res) => {
+    const job = voiceJobManager.markRecovered(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: "Voice job not found" });
+    }
+    res.json(job);
   });
 
   // JSON body parser — after upload route so multipart isn't rejected
@@ -1781,4 +1985,48 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   return router;
+}
+
+function ensureVoiceJobManager(ctx: AppContext, transcriptionService: TranscriptionService): VoiceJobManager {
+  const compatCtx = ctx as RouterCompatContext;
+  if (compatCtx.voiceJobManager) {
+    return compatCtx.voiceJobManager;
+  }
+
+  const dataDir = dirname(getCopilotHome(ctx));
+  compatCtx.__voiceJobFallbackDb ??= openDatabase(dataDir);
+  compatCtx.voiceJobManager = createVoiceJobManager({
+    dataDir,
+    store: createVoiceJobStore(compatCtx.__voiceJobFallbackDb),
+    transcriptionService,
+    sessionManager: ctx.sessionManager,
+    taskStore: ctx.taskStore,
+    taskGroupStore: ctx.taskGroupStore,
+  });
+
+  if (!compatCtx.__voiceJobFallbackCleanupInstalled) {
+    const originalShutdown = ctx.sessionManager.gracefulShutdown.bind(ctx.sessionManager);
+    ctx.sessionManager.gracefulShutdown = async () => {
+      try {
+        await compatCtx.voiceJobManager?.shutdown();
+        await originalShutdown();
+      } finally {
+        try {
+          compatCtx.__voiceJobFallbackDb?.close();
+        } catch {
+          // Best-effort close for preview compatibility; the primary DB handle is managed elsewhere.
+        }
+        compatCtx.__voiceJobFallbackDb = undefined;
+        compatCtx.__voiceJobFallbackCleanupInstalled = false;
+      }
+    };
+    compatCtx.__voiceJobFallbackCleanupInstalled = true;
+  }
+
+  if (!compatCtx.__voiceJobFallbackResumed) {
+    compatCtx.voiceJobManager.resumePendingJobs();
+    compatCtx.__voiceJobFallbackResumed = true;
+  }
+
+  return compatCtx.voiceJobManager;
 }

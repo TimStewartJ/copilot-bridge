@@ -18,10 +18,13 @@ import { createReadStateStore } from "../read-state-store.js";
 import { createTodoStore } from "../todo-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
+import { createVoiceJobStore } from "../voice-job-store.js";
+import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createApiRouter } from "../api-router.js";
 import type { AppContext } from "../app-context.js";
+import type { TranscriptionService } from "../transcription-service.js";
 
 /**
  * Create an in-memory SQLite database with schema initialized.
@@ -63,6 +66,21 @@ export function createMockSessionManager() {
     invalidateSessionListCache: () => {},
   } as any;
 }
+export function createMockTranscriptionService(overrides?: Partial<TranscriptionService>): TranscriptionService {
+  return {
+    getStatus: () => ({
+      available: false,
+      provider: "disabled",
+      label: "Unavailable",
+      reason: "Voice input is not configured on the server.",
+      maxDurationSeconds: 120,
+    }),
+    transcribe: async () => {
+      throw new Error("Voice input is not configured on the server.");
+    },
+    ...overrides,
+  };
+}
 
 /** True when running on Windows */
 export { isWindows, testCopilotHome, normalizePath } from "./test-paths.js";
@@ -76,14 +94,19 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
+  const dataDir = mkdtempSync(join(tmpdir(), "bridge-test-data-"));
 
   const docsDir = mkdtempSync(join(tmpdir(), "bridge-test-docs-"));
   const docsStore = createDocsStore(docsDir);
   const docsIndex = createDocsIndex(db, docsStore);
+  const transcriptionService = createMockTranscriptionService();
+  const sessionManager = createMockSessionManager();
+  const taskStore = createTaskStore(db, globalBus);
+  const taskGroupStore = createTaskGroupStore(db);
 
-  const ctx: AppContext = {
-    taskStore: createTaskStore(db, globalBus),
-    taskGroupStore: createTaskGroupStore(db),
+  const baseContext: Omit<AppContext, "voiceJobManager"> = {
+    taskStore,
+    taskGroupStore,
     scheduleStore: createScheduleStore(db),
     settingsStore: createSettingsStore(db),
     sessionMetaStore: createSessionMetaStore(db),
@@ -96,9 +119,21 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     docsIndex,
     globalBus,
     eventBusRegistry,
-    sessionManager: createMockSessionManager(),
-    ...overrides,
+    sessionManager,
+    transcriptionService,
   };
+  const ctx = {
+    ...baseContext,
+    ...overrides,
+  } as AppContext;
+  ctx.voiceJobManager ??= createVoiceJobManager({
+    dataDir,
+    store: createVoiceJobStore(db),
+    transcriptionService: ctx.transcriptionService,
+    sessionManager: ctx.sessionManager,
+    taskStore: ctx.taskStore,
+    taskGroupStore: ctx.taskGroupStore,
+  });
 
   const app = express();
   app.use("/api", createApiRouter(ctx));

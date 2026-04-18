@@ -156,6 +156,24 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
     CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
 
+    -- Voice jobs
+    CREATE TABLE IF NOT EXISTS voice_jobs (
+      id TEXT PRIMARY KEY,
+      composerKey TEXT NOT NULL,
+      taskId TEXT,
+      targetSessionId TEXT,
+      status TEXT NOT NULL,
+      audioPath TEXT NOT NULL,
+      transcript TEXT,
+      error TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_voice_jobs_composer ON voice_jobs(composerKey);
+    CREATE INDEX IF NOT EXISTS idx_voice_jobs_target_session ON voice_jobs(targetSessionId);
+    CREATE INDEX IF NOT EXISTS idx_voice_jobs_status ON voice_jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_voice_jobs_updated ON voice_jobs(updatedAt);
+
     -- Docs knowledge base — structured metadata table
     CREATE TABLE IF NOT EXISTS docs_pages (
       rowid INTEGER PRIMARY KEY,
