@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
-import type { Schedule, ScheduleCreateInput, Session } from "../api";
-import { createSchedule, getSessionActivityTime, patchSchedule, fetchServerTimezone } from "../api";
+import type { Schedule, ScheduleCreateInput, ScheduleRun, ScheduleSessionMode, Session } from "../api";
+import { createSchedule, patchSchedule, fetchServerTimezone } from "../api";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
+import { useSessionsQuery } from "../hooks/queries/useSessions";
+import { useTasksQuery } from "../hooks/queries/useTasks";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
 import {
@@ -33,6 +35,69 @@ const CRON_PRESETS = [
   { label: "Every Friday at 5 PM", cron: "0 17 * * 5" },
   { label: "Custom", cron: "" },
 ];
+
+const SESSION_MODE_OPTIONS: Array<{ value: ScheduleSessionMode; label: string; description: string }> = [
+  {
+    value: "new",
+    label: "New session every run",
+    description: "Create a fresh task session each time the schedule fires.",
+  },
+  {
+    value: "reuse-last",
+    label: "Reuse last schedule session",
+    description: "Continue the most recent session previously used by this schedule.",
+  },
+  {
+    value: "reuse-target",
+    label: "Reuse target session",
+    description: "Always send work to a specific linked session on this task.",
+  },
+];
+
+function formatSessionMode(mode: ScheduleSessionMode): string {
+  switch (mode) {
+    case "reuse-last":
+      return "Reuse last schedule session";
+    case "reuse-target":
+      return "Reuse target session";
+    default:
+      return "New session every run";
+  }
+}
+
+function getSessionOptionLabel(session: Session): string {
+  const base = session.summary?.trim() || "Untitled session";
+  const shortId = session.sessionId.slice(0, 8);
+  const suffix = session.archived ? " [archived]" : session.busy ? " [busy]" : "";
+  return `${base} (${shortId})${suffix}`;
+}
+
+function useTaskSessionOptions(taskId: string, targetSessionId?: string) {
+  const { data: tasks = [] } = useTasksQuery();
+  const { data: allSessions = [] } = useSessionsQuery(true);
+  const task = tasks.find((candidate) => candidate.id === taskId);
+  const sessionById = new Map(allSessions.map((session) => [session.sessionId, session]));
+  const linkedSessions = (task?.sessionIds ?? []).map((sessionId) =>
+    sessionById.get(sessionId) ?? ({
+      sessionId,
+      summary: `Missing session (${sessionId.slice(0, 8)})`,
+      archived: true,
+    } satisfies Session),
+  );
+  const selectedTargetSession = targetSessionId
+    ? linkedSessions.find((session) => session.sessionId === targetSessionId)
+      ?? sessionById.get(targetSessionId)
+      ?? ({
+        sessionId: targetSessionId,
+        summary: `Missing session (${targetSessionId.slice(0, 8)})`,
+        archived: true,
+      } satisfies Session)
+    : undefined;
+
+  const selectedTargetSessionMissing = !!targetSessionId && !sessionById.has(targetSessionId);
+
+  return { linkedSessions, selectedTargetSession, selectedTargetSessionMissing };
+}
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -124,6 +189,7 @@ function ViewMode({
   onSelectTask?: (taskId: string) => void;
 }) {
   const { data: sessionData } = useScheduleSessionsQuery(schedule.id);
+  const { selectedTargetSession, selectedTargetSessionMissing } = useTaskSessionOptions(schedule.taskId, schedule.targetSessionId);
   const [showOverflow, setShowOverflow] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
@@ -239,11 +305,35 @@ function ViewMode({
               <span className="text-text-secondary">{schedule.runCount}</span>
             </div>
             <div>
-              <span className="text-text-faint block mb-0.5">Session reuse</span>
+              <span className="text-text-faint block mb-0.5">Session mode</span>
               <span className="text-text-secondary flex items-center gap-1">
-                {schedule.reuseSession ? <><RefreshCw size={10} /> On</> : "Off"}
+                {schedule.sessionMode === "reuse-last" && <RefreshCw size={10} />}
+                {schedule.sessionMode === "reuse-target" && <MessageSquare size={10} />}
+                {formatSessionMode(schedule.sessionMode)}
               </span>
             </div>
+            {schedule.sessionMode === "reuse-target" && (
+              <div className="col-span-2">
+                <span className="text-text-faint block mb-0.5">Target session</span>
+                {selectedTargetSession ? (
+                  selectedTargetSessionMissing ? (
+                    <span className="text-text-muted truncate block max-w-full">
+                      {selectedTargetSession.summary || selectedTargetSession.sessionId.slice(0, 8)}
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => onSelectSession?.(selectedTargetSession.sessionId)}
+                      className="text-accent hover:text-accent-hover transition-colors truncate block max-w-full text-left flex items-center gap-1"
+                    >
+                      {selectedTargetSession.summary || selectedTargetSession.sessionId.slice(0, 8)}
+                      <ExternalLink size={10} className="shrink-0" />
+                    </button>
+                  )
+                ) : (
+                  <span className="text-text-muted">Missing target session</span>
+                )}
+              </div>
+            )}
             {schedule.maxRuns && (
               <div>
                 <span className="text-text-faint block mb-0.5">Max runs</span>
@@ -290,7 +380,11 @@ function ViewMode({
           ) : (
             <div className="space-y-1">
               {sessions.map((session) => (
-                <SessionRunRow key={session.sessionId} session={session} onSelect={() => onSelectSession?.(session.sessionId)} />
+                <SessionRunRow
+                  key={session.runId}
+                  session={session}
+                  onSelect={session.missing ? undefined : () => onSelectSession?.(session.sessionId)}
+                />
               ))}
               {totalRuns > sessions.length && (
                 <div className="text-[10px] text-text-faint text-center py-2">
@@ -366,10 +460,12 @@ function EditMode({
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
-  const [reuseSession, setReuseSession] = useState(schedule?.reuseSession ?? false);
+  const [sessionMode, setSessionMode] = useState<ScheduleSessionMode>(schedule?.sessionMode ?? "new");
+  const [targetSessionId, setTargetSessionId] = useState(schedule?.targetSessionId ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { linkedSessions } = useTaskSessionOptions(taskId, targetSessionId || undefined);
 
   // Fetch server timezone as default for new schedules
   useEffect(() => {
@@ -389,7 +485,8 @@ function EditMode({
     setCronExpr(schedule?.cron ?? "0 8 * * 1-5");
     setRunAt(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
     setTimezone(schedule?.timezone ?? "");
-    setReuseSession(schedule?.reuseSession ?? false);
+    setSessionMode(schedule?.sessionMode ?? "new");
+    setTargetSessionId(schedule?.targetSessionId ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
   }, [schedule]);
 
@@ -397,6 +494,7 @@ function EditMode({
     if (!name.trim() || !prompt.trim()) { setError("Name and prompt are required"); return; }
     if (type === "cron" && !cronExpr.trim()) { setError("Cron expression is required"); return; }
     if (type === "once" && !runAt) { setError("Run time is required"); return; }
+    if (sessionMode === "reuse-target" && !targetSessionId) { setError("Target session is required"); return; }
 
     setSaving(true);
     setError(null);
@@ -409,7 +507,8 @@ function EditMode({
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
-          reuseSession,
+          sessionMode,
+          ...(sessionMode === "reuse-target" ? { targetSessionId } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
         };
         await createSchedule(input);
@@ -420,7 +519,8 @@ function EditMode({
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
-          reuseSession,
+          sessionMode,
+          ...(sessionMode === "reuse-target" ? { targetSessionId } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
         });
       }
@@ -529,14 +629,60 @@ function EditMode({
               )}
             </div>
 
-            {/* Session reuse */}
-            <div>
-              <span className="text-text-faint block mb-1">Session reuse</span>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={reuseSession} onChange={(e) => setReuseSession(e.target.checked)} className="rounded border-border" />
-                <span className="text-text-secondary">{reuseSession ? "On" : "Off"}</span>
-              </label>
+            {/* Session mode */}
+            <div className="col-span-2">
+              <span className="text-text-faint block mb-1">Session mode</span>
+              <div className="space-y-2">
+                {SESSION_MODE_OPTIONS.map((option) => (
+                  <label
+                    key={option.value}
+                    className={`flex items-start gap-2 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                      sessionMode === option.value
+                        ? "border-accent bg-accent/10"
+                        : "border-border hover:border-text-faint"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="sessionMode"
+                      checked={sessionMode === option.value}
+                      onChange={() => setSessionMode(option.value)}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-text-secondary">{option.label}</span>
+                      <span className="block text-[10px] text-text-faint mt-0.5">{option.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
+
+            {sessionMode === "reuse-target" && (
+              <div className="col-span-2">
+                <span className="text-text-faint block mb-1">Target session</span>
+                <select
+                  className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                  value={targetSessionId}
+                  onChange={(e) => setTargetSessionId(e.target.value)}
+                >
+                  <option value="">Select a linked session…</option>
+                  {linkedSessions.map((session) => (
+                    <option key={session.sessionId} value={session.sessionId}>
+                      {getSessionOptionLabel(session)}
+                    </option>
+                  ))}
+                  {targetSessionId && !linkedSessions.some((session) => session.sessionId === targetSessionId) && (
+                    <option value={targetSessionId}>Missing session ({targetSessionId.slice(0, 8)})</option>
+                  )}
+                </select>
+                {linkedSessions.length === 0 && (
+                  <div className="text-[10px] text-text-faint mt-1">
+                    No linked sessions are available on this task yet.
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Max runs */}
             <div>
@@ -590,23 +736,33 @@ function EditMode({
 
 // ── Sub-components ────────────────────────────────────────────────
 
-function SessionRunRow({ session, onSelect }: { session: Session; onSelect: () => void }) {
-  const statusDot = session.busy ? "bg-info animate-pulse" : session.archived ? "bg-text-faint" : "bg-success";
+function SessionRunRow({ session, onSelect }: { session: ScheduleRun; onSelect?: () => void }) {
+  const statusDot = session.missing
+    ? "bg-text-faint"
+    : session.busy
+      ? "bg-info animate-pulse"
+      : session.archived
+        ? "bg-text-faint"
+        : "bg-success";
 
   return (
     <button
       onClick={onSelect}
-      className={`w-full text-left px-3 py-2 rounded-md hover:bg-bg-hover transition-colors flex items-center gap-2.5 ${session.archived ? "opacity-60" : ""}`}
+      disabled={!onSelect}
+      className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center gap-2.5 ${
+        onSelect ? "hover:bg-bg-hover" : "cursor-default"
+      } ${session.archived || session.missing ? "opacity-60" : ""}`}
     >
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
       <div className="flex-1 min-w-0">
         <div className="text-xs text-text-primary truncate flex items-center gap-1.5">
           <MessageSquare size={10} className="text-text-faint shrink-0" />
-          {session.summary || "Untitled session"}
+          {session.summary || (session.missing ? session.sessionId : "Untitled session")}
+          {session.missing && <span className="text-[9px] text-text-faint bg-bg-surface px-1 py-0.5 rounded">unavailable</span>}
           {session.archived && <span className="text-[9px] text-text-faint bg-bg-surface px-1 py-0.5 rounded">archived</span>}
         </div>
         <div className="text-[10px] text-text-faint mt-0.5">
-          {timeAgo(getSessionActivityTime(session))}
+          {session.recordedAtKnown === false ? "Unknown run time" : timeAgo(session.recordedAt)}
           {session.diskSizeBytes != null && session.diskSizeBytes > 0 && <span> · {formatBytes(session.diskSizeBytes)}</span>}
         </div>
       </div>

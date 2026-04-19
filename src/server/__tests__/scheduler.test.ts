@@ -170,4 +170,79 @@ describe("scheduler restart gating", () => {
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).not.toContain("sched-session");
     expect(ctx.sessionMetaStore.getMeta("sched-session")).toBeUndefined();
   });
+
+  it("reuses the configured target session for reuse-target schedules", async () => {
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn(),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    ctx.taskStore.linkSession(task.id, "target-session");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Targeted schedule",
+      prompt: "continue work",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-target",
+      targetSessionId: "target-session",
+    });
+
+    const result = await scheduler.triggerSchedule(schedule.id);
+
+    expect(result).toEqual({ sessionId: "target-session" });
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+    expect(sessionManager.startWork).toHaveBeenCalledWith("target-session", "continue work");
+    expect(ctx.sessionMetaStore.getMeta("target-session")).toMatchObject({
+      triggeredBy: "schedule",
+      scheduleId: schedule.id,
+      scheduleName: "Targeted schedule",
+    });
+  });
+
+  it("skips reuse-target schedules when the target session is busy", async () => {
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockImplementation((sessionId: string) => sessionId === "target-session"),
+      createTaskSession: vi.fn(),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    ctx.taskStore.linkSession(task.id, "target-session");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Busy target schedule",
+      prompt: "continue work",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-target",
+      targetSessionId: "target-session",
+    });
+
+    const result = await scheduler.triggerSchedule(schedule.id);
+
+    expect(result).toEqual({ skipped: "Target session is busy" });
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+    expect(sessionManager.startWork).not.toHaveBeenCalled();
+  });
 });

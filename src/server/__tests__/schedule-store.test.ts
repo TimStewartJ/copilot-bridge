@@ -32,7 +32,8 @@ describe("schedule-store", () => {
       expect(s.name).toBe("Daily standup");
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
-      expect(s.reuseSession).toBe(false);
+      expect(s.sessionMode).toBe("new");
+      expect(s.targetSessionId).toBeUndefined();
     });
 
     it("getSchedule returns created schedule", () => {
@@ -55,9 +56,20 @@ describe("schedule-store", () => {
 
     it("updateSchedule changes fields", () => {
       const s = store.createSchedule(baseCron);
-      const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false });
+      const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false, sessionMode: "reuse-last" });
       expect(updated.name).toBe("Renamed");
       expect(updated.enabled).toBe(false);
+      expect(updated.sessionMode).toBe("reuse-last");
+    });
+
+    it("stores target sessions for reuse-target mode", () => {
+      const s = store.createSchedule({ ...baseCron, sessionMode: "reuse-target", targetSessionId: "session-123" });
+      expect(s.sessionMode).toBe("reuse-target");
+      expect(s.targetSessionId).toBe("session-123");
+
+      const updated = store.updateSchedule(s.id, { sessionMode: "new" });
+      expect(updated.sessionMode).toBe("new");
+      expect(updated.targetSessionId).toBeUndefined();
     });
 
     it("updateSchedule throws for missing id", () => {
@@ -66,9 +78,13 @@ describe("schedule-store", () => {
 
     it("deleteSchedule removes the schedule", () => {
       const s = store.createSchedule(baseCron);
+      db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
+        .run(s.id, "session-1", "2026-01-01T00:00:00.000Z");
       store.deleteSchedule(s.id);
       expect(store.getSchedule(s.id)).toBeUndefined();
       expect(store.listSchedules()).toHaveLength(0);
+      const runs = db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE scheduleId = ?").get(s.id) as { count: number };
+      expect(runs.count).toBe(0);
     });
   });
 

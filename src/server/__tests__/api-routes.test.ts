@@ -3,6 +3,7 @@ import request from "supertest";
 import type { Express } from "express";
 import type { AppContext } from "../app-context.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE, triggerRestartPending } from "../session-manager.js";
+import * as scheduler from "../scheduler.js";
 import { createMockSessionManager, createMockTranscriptionService, createTestApp } from "./helpers.js";
 
 let app: Express;
@@ -31,6 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearRestartPending();
+  scheduler.shutdown();
   for (const key of TRANSCRIPTION_ENV_KEYS) {
     const original = ORIGINAL_TRANSCRIPTION_ENV[key];
     if (original === undefined) {
@@ -910,23 +912,217 @@ describe("Schedule routes", () => {
     expect(res.body.error).toMatch(/cron/);
   });
 
+  it("POST /api/schedules accepts reuse-target mode for linked task sessions", async () => {
+    ctx.taskStore.linkSession(taskId, "linked-session");
+    ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "linked-session" }];
+    scheduler.initialize(ctx.sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Target linked session",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        sessionMode: "reuse-target",
+        targetSessionId: "linked-session",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+    expect(res.body).not.toHaveProperty("reuseSession");
+  });
+
+  it("POST /api/schedules still honors legacy reuseSession=true", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Legacy reuse",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        reuseSession: true,
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ sessionMode: "reuse-last", reuseSession: true });
+  });
+
+  it("POST /api/schedules rejects reuse-target mode for sessions outside the task", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "linked-session" }];
+
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Wrong target",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        sessionMode: "reuse-target",
+        targetSessionId: "linked-session",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/same task/i);
+  });
+
+  it("PATCH /api/schedules preserves the existing target for reuse-target schedules", async () => {
+    ctx.taskStore.linkSession(taskId, "linked-session");
+    ctx.taskStore.linkSession(taskId, "other-session");
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "linked-session" },
+      { sessionId: "other-session" },
+    ];
+    scheduler.initialize(ctx.sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Keep target",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ sessionMode: "reuse-target" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+    expect(res.body).not.toHaveProperty("reuseSession");
+  });
+
+  it("PATCH /api/schedules preserves a missing existing target for reuse-target schedules", async () => {
+    ctx.taskStore.linkSession(taskId, "linked-session");
+    ctx.sessionManager.listSessionsFromDisk = async () => [];
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Keep missing target",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ sessionMode: "reuse-target", name: "Renamed" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      name: "Renamed",
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+  });
+
+  it("PATCH /api/schedules rejects preserving a target that is no longer linked to the task", async () => {
+    ctx.taskStore.linkSession(taskId, "linked-session");
+    ctx.taskStore.unlinkSession(taskId, "linked-session");
+    ctx.sessionManager.listSessionsFromDisk = async () => [];
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Broken target",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ sessionMode: "reuse-target", name: "Renamed" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/same task/i);
+  });
+
+  it("PATCH /api/schedules ignores legacy reuseSession for existing reuse-target schedules", async () => {
+    ctx.taskStore.linkSession(taskId, "linked-session");
+    ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "linked-session" }];
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Keep target legacy",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ reuseSession: true, name: "Renamed" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      name: "Renamed",
+      sessionMode: "reuse-target",
+      targetSessionId: "linked-session",
+    });
+    expect(res.body).not.toHaveProperty("reuseSession");
+  });
+
+  it("PATCH /api/schedules still honors legacy reuseSession=false", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Legacy patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-last",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ reuseSession: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ sessionMode: "new", reuseSession: false });
+  });
+
   it("GET /api/schedules/:id/sessions returns sessions for a schedule", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId, name: "Test Sched", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
     });
 
-    ctx.sessionMetaStore.setScheduleMeta("sess-1", schedule.id, "Test Sched");
-    ctx.sessionMetaStore.setScheduleMeta("sess-2", schedule.id, "Test Sched");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-1");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-2");
 
     const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
     expect(res.status).toBe(200);
-    // Mock session manager returns no sessions on disk, so enriched list is empty
-    // but the route structure is correct
-    expect(res.body).toHaveProperty("sessions");
-    expect(Array.isArray(res.body.sessions)).toBe(true);
+    expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.total).toBe(2);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: expect.any(String),
+      runId: expect.any(Number),
+      recordedAt: expect.any(String),
+      missing: true,
+    });
     expect(res.body).toHaveProperty("offset", 0);
     expect(res.body).toHaveProperty("limit");
-    expect(typeof res.body.total).toBe("number");
   });
 
   it("GET /api/schedules/:id/sessions returns 404 for unknown schedule", async () => {
@@ -939,14 +1135,38 @@ describe("Schedule routes", () => {
       taskId, name: "Paged", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
     });
 
-    ctx.sessionMetaStore.setScheduleMeta("s1", schedule.id, "Paged");
-    ctx.sessionMetaStore.setScheduleMeta("s2", schedule.id, "Paged");
-    ctx.sessionMetaStore.setScheduleMeta("s3", schedule.id, "Paged");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s2");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s3");
 
     const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=2&offset=1`);
     expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
     expect(res.body.offset).toBe(1);
     expect(res.body.limit).toBe(2);
+    expect(res.body.sessions).toHaveLength(2);
+  });
+
+  it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Repeated target", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "shared-session", summary: "Shared session" } as any,
+    ];
+
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.sessions[0].sessionId).toBe("shared-session");
+    expect(res.body.sessions[1].sessionId).toBe("shared-session");
+    expect(res.body.sessions[0].runId).not.toBe(res.body.sessions[1].runId);
+    expect(res.body.sessions[0].recordedAt).toEqual(expect.any(String));
+    expect(res.body.sessions[1].recordedAt).toEqual(expect.any(String));
   });
 });
 

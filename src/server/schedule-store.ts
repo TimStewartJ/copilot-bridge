@@ -9,6 +9,8 @@ export function getServerTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
+export type ScheduleSessionMode = "new" | "reuse-last" | "reuse-target";
+
 export interface Schedule {
   id: string;
   taskId: string;
@@ -23,7 +25,8 @@ export interface Schedule {
 
   // Behavior
   enabled: boolean;
-  reuseSession: boolean;
+  sessionMode: ScheduleSessionMode;
+  targetSessionId?: string;
   lastSessionId?: string;
 
   // Lifecycle
@@ -39,10 +42,10 @@ export interface Schedule {
 }
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "reuseSession" | "maxRuns" | "expiresAt">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "targetSessionId" | "maxRuns" | "expiresAt">>;
 
 export type ScheduleUpdate = Partial<Pick<Schedule,
-  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "reuseSession" | "maxRuns" | "expiresAt"
+  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "targetSessionId" | "maxRuns" | "expiresAt"
 >>;
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -59,7 +62,8 @@ export function createScheduleStore(db: DatabaseSync) {
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
       enabled: row.enabled === 1,
-      reuseSession: row.reuseSession === 1,
+      sessionMode: (row.sessionMode ?? (row.reuseSession === 1 ? "reuse-last" : "new")) as ScheduleSessionMode,
+      targetSessionId: row.targetSessionId ?? undefined,
       lastSessionId: row.lastSessionId ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -86,15 +90,17 @@ export function createScheduleStore(db: DatabaseSync) {
   function createSchedule(input: ScheduleCreate): Schedule {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const sessionMode = input.sessionMode ?? "new";
+    const targetSessionId = sessionMode === "reuse-target" ? input.targetSessionId ?? null : null;
 
     db.prepare(`
       INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
-        enabled, reuseSession, createdAt, updatedAt, runCount, maxRuns, expiresAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?)
+        enabled, sessionMode, targetSessionId, createdAt, updatedAt, runCount, maxRuns, expiresAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
-      input.reuseSession ? 1 : 0, now, now,
+      sessionMode, targetSessionId, now, now,
       input.maxRuns ?? null, input.expiresAt ?? null,
     );
 
@@ -114,7 +120,18 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.runAt !== undefined) { fields.push("runAt = ?"); values.push(updates.runAt); }
     if (updates.timezone !== undefined) { fields.push("timezone = ?"); values.push(updates.timezone); }
     if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
-    if (updates.reuseSession !== undefined) { fields.push("reuseSession = ?"); values.push(updates.reuseSession ? 1 : 0); }
+    if (updates.sessionMode !== undefined) {
+      fields.push("sessionMode = ?");
+      values.push(updates.sessionMode);
+      if (updates.sessionMode !== "reuse-target") {
+        fields.push("targetSessionId = ?");
+        values.push(null);
+      }
+    }
+    if (updates.targetSessionId !== undefined && updates.sessionMode !== "new" && updates.sessionMode !== "reuse-last") {
+      fields.push("targetSessionId = ?");
+      values.push(updates.targetSessionId);
+    }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }
 
@@ -124,6 +141,7 @@ export function createScheduleStore(db: DatabaseSync) {
   }
 
   function deleteSchedule(id: string): void {
+    db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(id);
     db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
   }
 

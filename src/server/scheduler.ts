@@ -228,12 +228,26 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
   activeRuns.add(scheduleId);
 
   try {
-    // Determine session: reuse or create new
+    // Determine session: target, reuse-last, or create new
     let sessionId: string;
     let createdSession = false;
 
-    if (schedule.reuseSession && schedule.lastSessionId) {
-      // Reuse existing session — check if it's busy
+    if (schedule.sessionMode === "reuse-target") {
+      if (!schedule.targetSessionId) {
+        return { skipped: "Target session is not configured" };
+      }
+      if (!task.sessionIds.includes(schedule.targetSessionId)) {
+        return { skipped: "Target session is no longer linked to this task" };
+      }
+      if (sessionMgr.isSessionBusy(schedule.targetSessionId)) {
+        return { skipped: "Target session is busy" };
+      }
+      sessionId = schedule.targetSessionId;
+      console.log(`[scheduler] Reusing target session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
+    } else if (schedule.sessionMode === "reuse-last"
+      && schedule.lastSessionId
+      && task.sessionIds.includes(schedule.lastSessionId)
+    ) {
       if (sessionMgr.isSessionBusy(schedule.lastSessionId)) {
         return { skipped: "Reuse session is busy" };
       }
@@ -259,9 +273,6 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
       // Link session to task
       taskStore.linkSession(task.id, sessionId);
 
-      // Mark session metadata as schedule-triggered
-      sessionMetaStore.setScheduleMeta(sessionId, scheduleId, schedule.name);
-
       console.log(`[scheduler] Created session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
     }
 
@@ -281,6 +292,10 @@ export async function triggerSchedule(scheduleId: string): Promise<{ sessionId: 
       }
       throw err;
     }
+
+    // Record schedule ownership/association and append run history.
+    sessionMetaStore.setScheduleMeta(sessionId, scheduleId, schedule.name);
+    sessionMetaStore.recordScheduleRun(scheduleId, sessionId);
 
     // Record the run
     const nextRunAt = schedule.type === "cron" && schedule.cron

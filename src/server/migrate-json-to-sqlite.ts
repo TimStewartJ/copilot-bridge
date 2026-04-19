@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { DatabaseSync } from "./db.js";
 import { looksLikePromptEchoTitle } from "./session-title-utils.js";
 
+const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+
 export function migrateJsonToSqlite(db: DatabaseSync, dataDir: string): void {
   // Check if migration is needed: if tasks table already has rows, skip
   const count = (db.prepare("SELECT COUNT(*) as cnt FROM tasks").get() as any).cnt;
@@ -21,10 +23,10 @@ export function migrateJsonToSqlite(db: DatabaseSync, dataDir: string): void {
   try {
     migrateTasks(db, dataDir);
     migrateTaskGroups(db, dataDir);
+    migrateSchedules(db, dataDir);
     migrateSessionMeta(db, dataDir);
     migrateSettings(db, dataDir);
     migrateSessionTitles(db, dataDir);
-    migrateSchedules(db, dataDir);
     migrateReadState(db, dataDir);
     db.exec("COMMIT");
     console.log("[migrate] ✅ Migration complete. JSON files kept as backup.");
@@ -118,6 +120,13 @@ function migrateSessionMeta(db: DatabaseSync, dataDir: string): void {
     INSERT INTO session_meta (sessionId, archived, archivedAt, triggeredBy, scheduleId, scheduleName)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
+  const scheduleRunInsert = db.prepare(`
+    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+    SELECT ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM schedule_runs WHERE scheduleId = ? AND sessionId = ?
+    )
+  `);
 
   let count = 0;
   for (const [sessionId, m] of Object.entries(meta) as [string, any][]) {
@@ -125,6 +134,15 @@ function migrateSessionMeta(db: DatabaseSync, dataDir: string): void {
       sessionId, m.archived ? 1 : 0, m.archivedAt ?? null,
       m.triggeredBy ?? null, m.scheduleId ?? null, m.scheduleName ?? null,
     );
+    if (m.scheduleId) {
+      scheduleRunInsert.run(
+        m.scheduleId,
+        sessionId,
+        m.archivedAt || UNKNOWN_SCHEDULE_RUN_AT,
+        m.scheduleId,
+        sessionId,
+      );
+    }
     count++;
   }
 
@@ -167,19 +185,31 @@ function migrateSchedules(db: DatabaseSync, dataDir: string): void {
 
   const insert = db.prepare(`
     INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
-      enabled, reuseSession, lastSessionId, createdAt, updatedAt,
+      enabled, sessionMode, targetSessionId, lastSessionId, createdAt, updatedAt,
       lastRunAt, nextRunAt, runCount, maxRuns, expiresAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const scheduleRunInsert = db.prepare(`
+    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+    SELECT ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM schedule_runs WHERE scheduleId = ? AND sessionId = ?
+    )
   `);
 
   for (const s of schedules) {
+    const sessionMode = s.sessionMode ?? (s.reuseSession ? "reuse-last" : "new");
     insert.run(
       s.id, s.taskId, s.name, s.prompt, s.type, s.cron ?? null, s.runAt ?? null,
-      s.timezone ?? null, s.enabled ? 1 : 0, s.reuseSession ? 1 : 0,
+      s.timezone ?? null, s.enabled ? 1 : 0, sessionMode, s.targetSessionId ?? null,
       s.lastSessionId ?? null, s.createdAt, s.updatedAt,
       s.lastRunAt ?? null, s.nextRunAt ?? null, s.runCount ?? 0,
       s.maxRuns ?? null, s.expiresAt ?? null,
     );
+    if (s.lastSessionId) {
+      const recordedAt = s.lastRunAt ?? s.updatedAt ?? s.createdAt ?? new Date().toISOString();
+      scheduleRunInsert.run(s.id, s.lastSessionId, recordedAt, s.id, s.lastSessionId);
+    }
   }
 
   console.log(`[migrate]   schedules: ${schedules.length} rows`);

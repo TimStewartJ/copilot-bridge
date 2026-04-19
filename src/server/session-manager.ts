@@ -19,6 +19,7 @@ import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createScheduleStore } from "./schedule-store.js";
 import * as schedulerModule from "./scheduler.js";
+import { resolveScheduleSessionSelection } from "./schedule-targeting.js";
 import { getOrCreateBus, getBus } from "./event-bus.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
@@ -628,17 +629,37 @@ export function createBridgeTools(ctx: AppContext) {
         cron: { type: "string", description: "Cron expression (e.g. '0 8 * * 1-5' for weekdays at 8am). Required for type=cron. Interpreted in the schedule's timezone (server-local by default)." },
         runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once. Always interpreted as UTC." },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
-        reuseSession: { type: "boolean", description: "If true, reuse the last session instead of creating a new one each run. Default: false" },
+        sessionMode: {
+          type: "string",
+          enum: ["new", "reuse-last", "reuse-target"],
+          description: "How the schedule chooses its session: 'new' creates a fresh session each run, 'reuse-last' continues the last session used by this schedule, and 'reuse-target' always uses targetSessionId.",
+        },
+        targetSessionId: {
+          type: "string",
+          description: "Session to use when sessionMode='reuse-target'. If omitted during an in-session tool call, defaults to the invoking session.",
+        },
         maxRuns: { type: "number", description: "Auto-disable after N runs (optional)" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
       },
       required: ["taskId", "name", "prompt", "type"],
     },
-    handler: async (args: any) => {
+    handler: async (args: any, invocation: any) => {
       if (args.type === "cron" && !args.cron) return { error: "cron expression is required for cron schedules" };
       if (args.type === "once" && !args.runAt) return { error: "runAt is required for one-shot schedules" };
       if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return { error: `Invalid timezone: ${args.timezone}` };
       if (!ctx.taskStore.getTask(args.taskId)) return { error: "Task not found" };
+
+      const selection = await resolveScheduleSessionSelection(
+        { sessionMode: args.sessionMode, targetSessionId: args.targetSessionId },
+        {
+          taskId: args.taskId,
+          taskStore: ctx.taskStore,
+          listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
+          defaultSessionMode: "new",
+          defaultTargetSessionId: args.sessionMode === "reuse-target" ? invocation?.sessionId : undefined,
+        },
+      );
+      if ("error" in selection) return selection;
 
       const schedule = ctx.scheduleStore.createSchedule({
         taskId: args.taskId,
@@ -648,7 +669,8 @@ export function createBridgeTools(ctx: AppContext) {
         cron: args.cron,
         runAt: args.runAt,
         timezone: args.timezone,
-        reuseSession: args.reuseSession,
+        sessionMode: selection.sessionMode,
+        targetSessionId: selection.targetSessionId,
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
       });
@@ -675,17 +697,63 @@ export function createBridgeTools(ctx: AppContext) {
         runAt: { type: "string", description: "New one-shot run time (ISO timestamp)" },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/Los_Angeles')" },
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
-        reuseSession: { type: "boolean", description: "Change session reuse strategy" },
+        sessionMode: {
+          type: "string",
+          enum: ["new", "reuse-last", "reuse-target"],
+          description: "Change how the schedule chooses its session.",
+        },
+        targetSessionId: {
+          type: "string",
+          description: "Session to use when sessionMode='reuse-target'. If omitted while switching to target mode from inside a session, defaults to the invoking session.",
+        },
         maxRuns: { type: "number", description: "Auto-disable after N runs" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables" },
       },
       required: ["scheduleId"],
     },
-    handler: async (args: any) => {
+    handler: async (args: any, invocation: any) => {
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return { error: "No fields to update" };
       if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return { error: `Invalid timezone: ${args.timezone}` };
-      const schedule = ctx.scheduleStore.updateSchedule(scheduleId, updates);
+      const existing = ctx.scheduleStore.getSchedule(scheduleId);
+      if (!existing) return { error: "Schedule not found" };
+
+      const nextUpdates = { ...updates };
+      if (args.sessionMode !== undefined || args.targetSessionId !== undefined) {
+        const requestedSessionMode = args.sessionMode ?? existing.sessionMode;
+        const existingTargetStillLinked = !!existing.targetSessionId
+          && ctx.taskStore.getTask(existing.taskId)?.sessionIds.includes(existing.targetSessionId) === true;
+        const preservingExistingTarget = requestedSessionMode === "reuse-target"
+          && args.targetSessionId === undefined
+          && existing.sessionMode === "reuse-target"
+          && existingTargetStillLinked;
+        if (preservingExistingTarget) {
+          nextUpdates.sessionMode = "reuse-target";
+        } else {
+          const defaultTargetSessionId = existing.sessionMode === "reuse-target"
+            ? existing.targetSessionId
+            : args.sessionMode === "reuse-target"
+              ? invocation?.sessionId
+              : undefined;
+          const selection = await resolveScheduleSessionSelection(
+            { sessionMode: args.sessionMode, targetSessionId: args.targetSessionId },
+            {
+              taskId: existing.taskId,
+              taskStore: ctx.taskStore,
+              listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
+              defaultSessionMode: existing.sessionMode,
+              defaultTargetSessionId,
+            },
+          );
+          if ("error" in selection) return selection;
+          nextUpdates.sessionMode = selection.sessionMode;
+          if (selection.sessionMode === "reuse-target" || args.targetSessionId !== undefined) {
+            nextUpdates.targetSessionId = selection.targetSessionId;
+          }
+        }
+      }
+
+      const schedule = ctx.scheduleStore.updateSchedule(scheduleId, nextUpdates);
 
       if (schedule.type === "cron") {
         if (schedule.enabled) schedulerModule.registerSchedule(schedule.id);
@@ -736,7 +804,8 @@ export function createBridgeTools(ctx: AppContext) {
           runAt: s.runAt,
           timezone: s.timezone,
           enabled: s.enabled,
-          reuseSession: s.reuseSession,
+          sessionMode: s.sessionMode,
+          targetSessionId: s.targetSessionId,
           lastRunAt: s.lastRunAt,
           nextRunAt: s.nextRunAt,
           runCount: s.runCount,
