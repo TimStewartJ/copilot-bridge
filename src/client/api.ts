@@ -972,6 +972,8 @@ export async function fetchServerTimezone(): Promise<string> {
 
 // ── Schedule API ──────────────────────────────────────────────────
 
+export type ScheduleSessionMode = "new" | "reuse-last" | "reuse-target";
+
 export interface Schedule {
   id: string;
   taskId: string;
@@ -982,7 +984,8 @@ export interface Schedule {
   runAt?: string;
   timezone?: string;
   enabled: boolean;
-  reuseSession: boolean;
+  sessionMode: ScheduleSessionMode;
+  targetSessionId?: string;
   lastSessionId?: string;
   createdAt: string;
   updatedAt: string;
@@ -991,13 +994,14 @@ export interface Schedule {
   runCount: number;
   maxRuns?: number;
   expiresAt?: string;
+  reuseSession?: boolean;
 }
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "reuseSession" | "maxRuns" | "expiresAt">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "targetSessionId" | "maxRuns" | "expiresAt">>;
 
 export type ScheduleUpdateInput = Partial<Pick<Schedule,
-  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "reuseSession" | "maxRuns" | "expiresAt"
+  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "targetSessionId" | "maxRuns" | "expiresAt"
 >>;
 
 export async function fetchSchedules(taskId?: string): Promise<Schedule[]> {
@@ -1030,8 +1034,15 @@ export async function triggerSchedule(id: string): Promise<{ sessionId?: string;
   return apiFetch<{ sessionId?: string; skipped?: string }>(`/api/schedules/${id}/trigger`, {});
 }
 
+export interface ScheduleRun extends Session {
+  runId: number;
+  recordedAt: string;
+  recordedAtKnown?: boolean;
+  missing?: boolean;
+}
+
 export interface ScheduleSessionsResponse {
-  sessions: Session[];
+  sessions: ScheduleRun[];
   total: number;
   offset: number;
   limit: number;

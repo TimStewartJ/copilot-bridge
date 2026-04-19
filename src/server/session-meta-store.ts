@@ -10,6 +10,12 @@ export interface SessionMeta {
   scheduleName?: string;
 }
 
+export interface ScheduleRunRecord {
+  id: number;
+  sessionId: string;
+  recordedAt: string;
+}
+
 type MetaMap = Record<string, SessionMeta>;
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -68,6 +74,13 @@ export function createSessionMetaStore(db: DatabaseSync) {
     }
   }
 
+  function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {
+    db.prepare(`
+      INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+      VALUES (?, ?, ?)
+    `).run(scheduleId, sessionId, recordedAt);
+  }
+
   function listMeta(): MetaMap {
     const rows = db.prepare("SELECT * FROM session_meta").all() as any[];
     const result: MetaMap = {};
@@ -77,14 +90,35 @@ export function createSessionMetaStore(db: DatabaseSync) {
     return result;
   }
 
-  function listSessionIdsBySchedule(scheduleId: string): string[] {
+  function listScheduleRuns(scheduleId: string): ScheduleRunRecord[] {
     const rows = db.prepare(
-      "SELECT sessionId FROM session_meta WHERE scheduleId = ? ORDER BY rowid DESC",
+      `SELECT id, sessionId, COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', recordedAt), recordedAt) AS recordedAt
+       FROM schedule_runs
+       WHERE scheduleId = ?
+       ORDER BY datetime(recordedAt) DESC, id DESC`,
     ).all(scheduleId) as any[];
-    return rows.map((r) => r.sessionId);
+    return rows.map((row) => ({
+      id: Number(row.id),
+      sessionId: String(row.sessionId),
+      recordedAt: String(row.recordedAt),
+    }));
   }
 
-  return { getMeta, isArchived, setArchived, deleteMeta, setScheduleMeta, listMeta, listSessionIdsBySchedule };
+  function listSessionIdsBySchedule(scheduleId: string): string[] {
+    return listScheduleRuns(scheduleId).map((run) => run.sessionId);
+  }
+
+  return {
+    getMeta,
+    isArchived,
+    setArchived,
+    deleteMeta,
+    setScheduleMeta,
+    recordScheduleRun,
+    listMeta,
+    listScheduleRuns,
+    listSessionIdsBySchedule,
+  };
 }
 
 export type SessionMetaStore = ReturnType<typeof createSessionMetaStore>;

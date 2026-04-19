@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
+const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 
 /** Open (or create) the bridge database and initialize schema */
 export function openDatabase(dataDir: string): DatabaseSync {
@@ -97,6 +98,14 @@ function initSchema(db: DatabaseSync): void {
       scheduleName TEXT
     );
 
+    -- Per-run schedule history
+    CREATE TABLE IF NOT EXISTS schedule_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scheduleId TEXT NOT NULL,
+      sessionId TEXT NOT NULL,
+      recordedAt TEXT NOT NULL
+    );
+
     -- Settings (key-value, main entry is key='app')
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -120,7 +129,8 @@ function initSchema(db: DatabaseSync): void {
       runAt TEXT,
       timezone TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
-      reuseSession INTEGER NOT NULL DEFAULT 0,
+      sessionMode TEXT NOT NULL DEFAULT 'new',
+      targetSessionId TEXT,
       lastSessionId TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL,
@@ -154,6 +164,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(sessionId);
     CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+    CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(scheduleId, recordedAt DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
 
     -- Voice jobs
@@ -244,6 +255,40 @@ function initSchema(db: DatabaseSync): void {
   if (!cols.some((c: any) => c.name === "linkedAt")) {
     db.exec("ALTER TABLE task_sessions ADD COLUMN linkedAt TEXT NOT NULL DEFAULT '2000-01-01T00:00:00Z'");
   }
+
+  const scheduleCols = db.prepare("PRAGMA table_info(schedules)").all() as any[];
+  if (!scheduleCols.some((c: any) => c.name === "sessionMode")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN sessionMode TEXT NOT NULL DEFAULT 'new'");
+    if (scheduleCols.some((c: any) => c.name === "reuseSession")) {
+      db.exec("UPDATE schedules SET sessionMode = CASE WHEN reuseSession = 1 THEN 'reuse-last' ELSE 'new' END");
+    }
+  }
+  if (!scheduleCols.some((c: any) => c.name === "targetSessionId")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN targetSessionId TEXT");
+  }
+
+  // Backfill schedule run history from prior metadata and latest schedule state
+  db.exec(`
+    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+    SELECT s.id, s.lastSessionId, COALESCE(s.lastRunAt, s.updatedAt, s.createdAt, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    FROM schedules s
+    WHERE s.lastSessionId IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM schedule_runs sr
+        WHERE sr.scheduleId = s.id AND sr.sessionId = s.lastSessionId
+      );
+
+    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+    SELECT sm.scheduleId, sm.sessionId, COALESCE(NULLIF(sm.archivedAt, ''), '${UNKNOWN_SCHEDULE_RUN_AT}')
+    FROM session_meta sm
+    WHERE sm.scheduleId IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM schedule_runs sr
+        WHERE sr.scheduleId = sm.scheduleId AND sr.sessionId = sm.sessionId
+      );
+  `);
 
   // Add deadline column to todos
   const todoCols = db.prepare("PRAGMA table_info(todos)").all() as any[];

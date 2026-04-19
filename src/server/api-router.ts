@@ -10,6 +10,8 @@ import type { AppContext } from "./app-context.js";
 import { openDatabase, type DatabaseSync } from "./db.js";
 import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
+import type { Schedule } from "./schedule-store.js";
+import { resolveScheduleSessionSelection } from "./schedule-targeting.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
@@ -35,6 +37,15 @@ function getDirSize(dirPath: string): number {
 /** Resolve the .copilot home directory — uses ctx.copilotHome if set, otherwise homedir()/.copilot */
 function getCopilotHome(ctx: AppContext): string {
   return ctx.copilotHome ?? join(homedir(), ".copilot");
+}
+
+const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+
+function serializeSchedule(schedule: Schedule) {
+  return {
+    ...schedule,
+    ...(schedule.sessionMode !== "reuse-target" ? { reuseSession: schedule.sessionMode === "reuse-last" } : {}),
+  };
 }
 
 type RouterCompatContext = Omit<AppContext, "voiceJobManager"> & {
@@ -1483,7 +1494,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const dashboardSchedules = allSchedules.map((sched) => {
         const task = tasks.find((t) => t.id === sched.taskId);
         return {
-          ...sched,
+          ...serializeSchedule(sched),
           taskTitle: task?.title ?? null,
           taskGroupColor: task?.groupId
             ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
@@ -1511,12 +1522,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/schedules", (_req, res) => {
     const taskId = typeof _req.query.taskId === "string" ? _req.query.taskId : undefined;
-    res.json(ctx.scheduleStore.listSchedules(taskId));
+    res.json(ctx.scheduleStore.listSchedules(taskId).map(serializeSchedule));
   });
 
-  router.post("/schedules", (req, res) => {
+  router.post("/schedules", async (req, res) => {
     try {
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, reuseSession, maxRuns, expiresAt } = req.body;
+      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, sessionMode, targetSessionId, maxRuns, expiresAt } = req.body;
+      const resolvedSessionMode = sessionMode
+        ?? (typeof req.body.reuseSession === "boolean"
+          ? (req.body.reuseSession ? "reuse-last" : "new")
+          : undefined);
       if (!taskId || !name || !prompt || !type) {
         return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
       }
@@ -1534,7 +1549,32 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
       }
 
-      const schedule = ctx.scheduleStore.createSchedule({ taskId, name, prompt, type, cron: cronExpr, runAt, timezone, reuseSession, maxRuns, expiresAt });
+      const selection = await resolveScheduleSessionSelection(
+        { sessionMode: resolvedSessionMode, targetSessionId },
+        {
+          taskId,
+          taskStore: ctx.taskStore,
+          listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
+          defaultSessionMode: "new",
+        },
+      );
+      if ("error" in selection) {
+        return res.status(400).json({ error: selection.error });
+      }
+
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId,
+        name,
+        prompt,
+        type,
+        cron: cronExpr,
+        runAt,
+        timezone,
+        sessionMode: selection.sessionMode,
+        targetSessionId: selection.targetSessionId,
+        maxRuns,
+        expiresAt,
+      });
 
       // Register cron job or arm one-shot timer
       if (schedule.type === "cron") {
@@ -1545,18 +1585,59 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
       ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      res.status(201).json(schedule);
+      res.status(201).json(serializeSchedule(schedule));
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
   });
 
-  router.patch("/schedules/:id", (req, res) => {
+  router.patch("/schedules/:id", async (req, res) => {
     try {
       if (req.body.timezone && !scheduler.isValidTimezone(req.body.timezone)) {
         return res.status(400).json({ error: `Invalid timezone: ${req.body.timezone}` });
       }
-      const schedule = ctx.scheduleStore.updateSchedule(req.params.id, req.body);
+      const existing = ctx.scheduleStore.getSchedule(req.params.id);
+      if (!existing) return res.status(404).json({ error: "Schedule not found" });
+
+      const updates = { ...req.body };
+      const resolvedSessionMode = req.body.sessionMode
+        ?? (existing.sessionMode !== "reuse-target" && typeof req.body.reuseSession === "boolean"
+          ? (req.body.reuseSession ? "reuse-last" : "new")
+          : undefined);
+      if (resolvedSessionMode !== undefined || req.body.targetSessionId !== undefined) {
+        const existingTargetStillLinked = !!existing.targetSessionId
+          && ctx.taskStore.getTask(existing.taskId)?.sessionIds.includes(existing.targetSessionId) === true;
+        const preservingExistingTarget = resolvedSessionMode === "reuse-target"
+          && req.body.targetSessionId === undefined
+          && existing.sessionMode === "reuse-target"
+          && existingTargetStillLinked;
+        if (preservingExistingTarget) {
+          updates.sessionMode = "reuse-target";
+        } else {
+          const defaultTargetSessionId = existing.sessionMode === "reuse-target"
+            ? existing.targetSessionId
+            : undefined;
+          const selection = await resolveScheduleSessionSelection(
+            { sessionMode: resolvedSessionMode, targetSessionId: req.body.targetSessionId },
+            {
+              taskId: existing.taskId,
+              taskStore: ctx.taskStore,
+              listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
+              defaultSessionMode: existing.sessionMode,
+              defaultTargetSessionId,
+            },
+          );
+          if ("error" in selection) {
+            return res.status(400).json({ error: selection.error });
+          }
+          updates.sessionMode = selection.sessionMode;
+          if (selection.sessionMode === "reuse-target" || req.body.targetSessionId !== undefined) {
+            updates.targetSessionId = selection.targetSessionId;
+          }
+        }
+      }
+
+      const schedule = ctx.scheduleStore.updateSchedule(req.params.id, updates);
 
       // Re-register cron job if timing or enabled state changed
       if (schedule.type === "cron") {
@@ -1571,7 +1652,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       console.log(`[schedules] Updated schedule "${schedule.name}"`);
       ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      res.json(schedule);
+      res.json(serializeSchedule(schedule));
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -1608,8 +1689,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const limit = Math.min(Number(req.query.limit) || 20, 100);
       const offset = Number(req.query.offset) || 0;
 
-      const allSessionIds = ctx.sessionMetaStore.listSessionIdsBySchedule(req.params.id);
-      const pageIds = allSessionIds.slice(offset, offset + limit);
+      const allRuns = ctx.sessionMetaStore.listScheduleRuns(req.params.id);
+      const pageRuns = allRuns.slice(offset, offset + limit);
 
       const sessions = await ctx.sessionManager.listSessionsFromDisk();
       const sessionMap = new Map(sessions.map((s: any) => [s.sessionId, s]));
@@ -1617,26 +1698,34 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
 
       const enriched = await Promise.all(
-        pageIds.map(async (id) => {
-          const s = sessionMap.get(id);
-          if (!s) return null;
-          const archived = meta[id]?.archived === true;
-          const generatedTitle = ctx.sessionTitles.getTitle(id);
-          const summary = generatedTitle ?? s.summary;
-          const busy = ctx.sessionManager.isSessionBusy(id);
-          const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+        pageRuns.map(async (run) => {
+          const s = sessionMap.get(run.sessionId);
+          const archived = meta[run.sessionId]?.archived === true;
+          const generatedTitle = ctx.sessionTitles.getTitle(run.sessionId);
+          const summary = generatedTitle ?? s?.summary ?? run.sessionId;
+          const busy = s ? ctx.sessionManager.isSessionBusy(run.sessionId) : false;
+          const hasPlan = await statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false);
           let diskSize = 0;
-          try { diskSize = getDirSize(join(sessionStateDir, id)); } catch {}
-          return { ...s, summary, busy, hasPlan, archived, diskSizeBytes: diskSize };
+          try { diskSize = getDirSize(join(sessionStateDir, run.sessionId)); } catch {}
+          return {
+            ...s,
+            runId: run.id,
+            recordedAt: run.recordedAt,
+            recordedAtKnown: run.recordedAt !== UNKNOWN_SCHEDULE_RUN_AT,
+            sessionId: run.sessionId,
+            summary,
+            busy,
+            hasPlan,
+            archived,
+            diskSizeBytes: diskSize,
+            missing: !s,
+          };
         }),
       );
 
-      // Count how many sessions still exist (some may have been deleted)
-      const existingTotal = allSessionIds.filter((id) => sessionMap.has(id)).length;
-
       res.json({
-        sessions: enriched.filter(Boolean),
-        total: existingTotal,
+        sessions: enriched,
+        total: allRuns.length,
         offset,
         limit,
       });

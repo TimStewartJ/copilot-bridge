@@ -64,17 +64,51 @@ describe("session-meta-store", () => {
   });
 
   it("listSessionIdsBySchedule returns sessions for a schedule", () => {
-    store.setScheduleMeta("s1", "sched-a", "Schedule A");
-    store.setScheduleMeta("s2", "sched-a", "Schedule A");
-    store.setScheduleMeta("s3", "sched-b", "Schedule B");
+    store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
+    store.recordScheduleRun("sched-a", "s2", "2026-01-02T00:00:00.000Z");
+    store.recordScheduleRun("sched-b", "s3");
 
     const result = store.listSessionIdsBySchedule("sched-a");
     expect(result).toHaveLength(2);
     expect(result).toContain("s1");
     expect(result).toContain("s2");
+    expect(store.listScheduleRuns("sched-a")).toMatchObject([
+      { sessionId: "s2", recordedAt: "2026-01-02T00:00:00.000Z" },
+      { sessionId: "s1", recordedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
   });
 
   it("listSessionIdsBySchedule returns empty for unknown schedule", () => {
     expect(store.listSessionIdsBySchedule("unknown")).toEqual([]);
+  });
+
+  it("listSessionIdsBySchedule preserves repeated runs of the same session", () => {
+    store.recordScheduleRun("sched-a", "shared");
+    store.recordScheduleRun("sched-a", "shared");
+
+    expect(store.listSessionIdsBySchedule("sched-a")).toEqual(["shared", "shared"]);
+  });
+
+  it("listScheduleRuns normalizes and sorts mixed timestamp formats", () => {
+    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
+      .run("sched-a", "older", "2026-01-01T00:00:00.000Z");
+    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
+      .run("sched-a", "newer", "2026-01-01 23:00:00");
+
+    expect(store.listScheduleRuns("sched-a")).toMatchObject([
+      { sessionId: "newer", recordedAt: "2026-01-01T23:00:00.000Z" },
+      { sessionId: "older", recordedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+  });
+
+  it("run history is independent from latest session schedule metadata", () => {
+    store.recordScheduleRun("sched-a", "shared");
+    store.setScheduleMeta("shared", "sched-a", "Schedule A");
+    store.recordScheduleRun("sched-b", "shared");
+    store.setScheduleMeta("shared", "sched-b", "Schedule B");
+
+    expect(store.listSessionIdsBySchedule("sched-a")).toEqual(["shared"]);
+    expect(store.listSessionIdsBySchedule("sched-b")).toEqual(["shared"]);
+    expect(store.getMeta("shared")?.scheduleId).toBe("sched-b");
   });
 });
