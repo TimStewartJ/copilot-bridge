@@ -28,17 +28,24 @@ describe("SessionManager run state", () => {
       copilotHome: opts.copilotHome,
     }) as any;
 
-    return { manager, globalBus };
+    return { manager, globalBus, eventBusRegistry };
   }
 
-  function makeSession() {
-    let handler: ((event: any) => void) | undefined;
+  function makeSession(opts: { replayOnSubscribe?: any | (() => any) } = {}) {
+    const handlers: Array<(event: any) => void> = [];
     let releaseSend: (() => void) | undefined;
     const session = {
       on: vi.fn((cb: (event: any) => void) => {
-        handler = cb;
+        handlers.push(cb);
+        if (opts.replayOnSubscribe) {
+          const replayed = typeof opts.replayOnSubscribe === "function"
+            ? opts.replayOnSubscribe()
+            : opts.replayOnSubscribe;
+          cb(replayed);
+        }
         return vi.fn(() => {
-          if (handler === cb) handler = undefined;
+          const idx = handlers.indexOf(cb);
+          if (idx !== -1) handlers.splice(idx, 1);
         });
       }),
       send: vi.fn(async () => {
@@ -46,9 +53,17 @@ describe("SessionManager run state", () => {
           releaseSend = resolve;
         });
       }),
+      abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
     };
-    const getHandler = () => handler;
+    const getHandler = () => {
+      if (handlers.length === 0) return undefined;
+      return (event: any) => {
+        for (const handler of [...handlers]) {
+          handler(event);
+        }
+      };
+    };
     const getReleaseSend = () => releaseSend;
     return { session, getHandler, getReleaseSend };
   }
@@ -100,11 +115,12 @@ describe("SessionManager run state", () => {
         stalledAt: expect.any(Number),
       }),
     ]);
+    const recoveryEventBase = Date.now();
 
     getHandler()?.({
       type: "assistant.turn_start",
       data: {},
-      timestamp: "2026-04-20T00:00:00.000Z",
+      timestamp: new Date(recoveryEventBase + 1_000).toISOString(),
     });
     await flushMicrotasks();
 
@@ -116,7 +132,7 @@ describe("SessionManager run state", () => {
     getHandler()?.({
       type: "session.idle",
       data: {},
-      timestamp: "2026-04-20T00:00:01.000Z",
+      timestamp: new Date(recoveryEventBase + 2_000).toISOString(),
     });
     await flushMicrotasks();
 
@@ -186,6 +202,8 @@ describe("SessionManager run state", () => {
     await vi.advanceTimersByTimeAsync(300_000);
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("stalled");
+    expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
+    const recoveryEventBase = Date.now();
 
     initial.getReleaseSend()?.();
     await flushMicrotasks();
@@ -193,7 +211,7 @@ describe("SessionManager run state", () => {
     recovered.getHandler()?.({
       type: "assistant.turn_start",
       data: {},
-      timestamp: "2026-04-20T00:00:00.000Z",
+      timestamp: new Date(recoveryEventBase + 1_000).toISOString(),
     });
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("busy");
@@ -201,12 +219,54 @@ describe("SessionManager run state", () => {
     recovered.getHandler()?.({
       type: "session.idle",
       data: {},
-      timestamp: "2026-04-20T00:00:01.000Z",
+      timestamp: new Date(recoveryEventBase + 2_000).toISOString(),
     });
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(events).toEqual(["session:busy", "session:stalled", "session:busy", "session:idle"]);
+  });
+
+  it("resolves a stalled turn from persisted terminal events without waiting for a new live event", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-"));
+    try {
+      const sessionId = "session-terminal";
+      const sessionStateDir = join(tmpDir, "session-state", sessionId);
+      mkdirSync(sessionStateDir, { recursive: true });
+
+      const { manager, globalBus } = createManager({ copilotHome: tmpDir });
+      const events: string[] = [];
+      globalBus.subscribe((event) => {
+        if (event.sessionId === sessionId && ["session:busy", "session:stalled", "session:idle"].includes(event.type)) {
+          events.push(event.type);
+        }
+      });
+
+      const initial = makeSession();
+      const resumeSession = vi.fn().mockResolvedValue(initial.session);
+      manager.client = { resumeSession };
+
+      manager.startWork(sessionId, "hello");
+      await flushMicrotasks();
+      initial.getReleaseSend()?.();
+      await flushMicrotasks();
+      const baseTime = Date.now();
+
+      writeFileSync(join(sessionStateDir, "events.jsonl"), [
+        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
+        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
+        JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
+      ].join("\n") + "\n");
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      await flushMicrotasks();
+
+      expect(manager.getSessionRunState(sessionId)).toBe("idle");
+      expect(events).toEqual(["session:busy", "session:stalled", "session:idle"]);
+      expect(resumeSession).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("does not attempt a second recovery while one is already in progress", async () => {
@@ -234,6 +294,432 @@ describe("SessionManager run state", () => {
     expect(resumeSession).toHaveBeenCalledTimes(2);
 
     resolveRecovery();
+  });
+
+  it("keeps the existing session listener and abort path if recovery resume fails", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const resumeSession = vi.fn()
+      .mockResolvedValueOnce(initial.session)
+      .mockRejectedValueOnce(new Error("resume failed"));
+    manager.client = { resumeSession };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+    expect(initial.session.disconnect).not.toHaveBeenCalled();
+    expect(resumeSession).toHaveBeenCalledTimes(2);
+
+    await expect(manager.abortSession("session-1")).resolves.toBe(true);
+    expect(initial.session.abort).toHaveBeenCalledTimes(1);
+
+    initial.getHandler()?.({
+      type: "abort",
+      data: { reason: "user initiated" },
+      timestamp: "2026-04-20T00:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("does not attach a recovered listener after the original stalled turn already finished", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const recovered = makeSession();
+    let resolveRecovery!: (session: any) => void;
+    const recoveryPromise = new Promise<any>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    const resumeSession = vi.fn()
+      .mockResolvedValueOnce(initial.session)
+      .mockReturnValueOnce(recoveryPromise);
+    manager.client = { resumeSession };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    initial.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-20T00:00:02.000Z",
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+
+    resolveRecovery(recovered.session);
+    await flushMicrotasks();
+
+    expect(recovered.session.on).not.toHaveBeenCalled();
+    expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the original listener when stalled recovery wakes up after live events have resumed", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const recovered = makeSession();
+    let resolveRecovery!: (session: any) => void;
+    const recoveryPromise = new Promise<any>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockReturnValueOnce(recoveryPromise),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    initial.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+
+    resolveRecovery(recovered.session);
+    await flushMicrotasks();
+
+    expect(recovered.session.on).not.toHaveBeenCalled();
+    expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(initial.session.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("ignores replayed historical events when attaching a recovered listener", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const staleTimestamp = new Date(Date.now() - 1_000).toISOString();
+    const recovered = makeSession({
+      replayOnSubscribe: {
+        type: "session.idle",
+        data: {},
+        timestamp: staleTimestamp,
+      },
+    });
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+
+    recovered.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+
+    recovered.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 2_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("processes fresh replayed terminal events from the recovered listener", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const recovered = makeSession({
+      replayOnSubscribe: () => ({
+        type: "session.idle",
+        data: {},
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+      }),
+    });
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("ignores replayed same-turn events that were already processed before the stall", async () => {
+    const { manager } = createManager();
+    const replayedTurnStart = new Date(Date.now() + 1_000).toISOString();
+    const initial = makeSession();
+    const recovered = makeSession({
+      replayOnSubscribe: {
+        type: "assistant.turn_start",
+        data: {},
+        timestamp: replayedTurnStart,
+      },
+    });
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    initial.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: replayedTurnStart,
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+
+    recovered.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+  });
+
+  it("does not duplicate replayed same-turn delta content during recovery", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const replayedDeltaTimestamp = new Date(Date.now() + 1_000).toISOString();
+    const initial = makeSession();
+    const recovered = makeSession({
+      replayOnSubscribe: {
+        type: "assistant.message_delta",
+        data: { deltaContent: "dup" },
+        timestamp: replayedDeltaTimestamp,
+      },
+    });
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    initial.getHandler()?.({
+      type: "assistant.message_delta",
+      data: { deltaContent: "dup" },
+      timestamp: replayedDeltaTimestamp,
+    });
+    await flushMicrotasks();
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dup");
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dup");
+
+    recovered.getHandler()?.({
+      type: "assistant.message_delta",
+      data: { deltaContent: "new" },
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().accumulatedContent).toBe("dupnew");
+  });
+
+  it("processes distinct recovered events that share a timestamp with the last handled event", async () => {
+    const { manager } = createManager();
+    const sharedTimestamp = new Date(Date.now() + 1_000).toISOString();
+    const initial = makeSession();
+    const recovered = makeSession({
+      replayOnSubscribe: {
+        type: "session.idle",
+        data: {},
+        timestamp: sharedTimestamp,
+      },
+    });
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    initial.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: sharedTimestamp,
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("ignores historical recovered events emitted after subscription becomes active", async () => {
+    const { manager } = createManager();
+    const initialTurnBase = Date.now();
+    const initial = makeSession();
+    const recovered = makeSession();
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+
+    recovered.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(initialTurnBase - 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+
+    recovered.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+  });
+
+  it("resolves from persisted terminal events that land while recovery resume is still in flight", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-after-resume-"));
+    try {
+      const sessionId = "session-terminal-after-resume";
+      const sessionStateDir = join(tmpDir, "session-state", sessionId);
+      mkdirSync(sessionStateDir, { recursive: true });
+
+      const { manager } = createManager({ copilotHome: tmpDir });
+      const initial = makeSession();
+      const recovered = makeSession();
+      let resolveRecovery!: (session: any) => void;
+      const recoveryPromise = new Promise<any>((resolve) => {
+        resolveRecovery = resolve;
+      });
+      manager.client = {
+        resumeSession: vi.fn()
+          .mockResolvedValueOnce(initial.session)
+          .mockReturnValueOnce(recoveryPromise),
+      };
+
+      manager.startWork(sessionId, "hello");
+      await flushMicrotasks();
+      initial.getReleaseSend()?.();
+      await flushMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      await flushMicrotasks();
+
+      const baseTime = Date.now();
+      writeFileSync(join(sessionStateDir, "events.jsonl"), [
+        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
+        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
+        JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
+      ].join("\n") + "\n");
+
+      resolveRecovery(recovered.session);
+      await flushMicrotasks();
+
+      expect(manager.getSessionRunState(sessionId)).toBe("idle");
+      expect(recovered.session.on).not.toHaveBeenCalled();
+      expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves from persisted terminal events if recovery resume fails after the turn already finished on disk", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-terminal-after-failure-"));
+    try {
+      const sessionId = "session-terminal-after-failure";
+      const sessionStateDir = join(tmpDir, "session-state", sessionId);
+      mkdirSync(sessionStateDir, { recursive: true });
+
+      const { manager } = createManager({ copilotHome: tmpDir });
+      const initial = makeSession();
+      let rejectRecovery!: (error: Error) => void;
+      const recoveryPromise = new Promise<any>((_, reject) => {
+        rejectRecovery = reject;
+      });
+      manager.client = {
+        resumeSession: vi.fn()
+          .mockResolvedValueOnce(initial.session)
+          .mockReturnValueOnce(recoveryPromise),
+      };
+
+      manager.startWork(sessionId, "hello");
+      await flushMicrotasks();
+      initial.getReleaseSend()?.();
+      await flushMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      await flushMicrotasks();
+
+      const baseTime = Date.now();
+      writeFileSync(join(sessionStateDir, "events.jsonl"), [
+        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
+        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
+        JSON.stringify({ type: "session.idle", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
+      ].join("\n") + "\n");
+
+      rejectRecovery(new Error("resume failed"));
+      await flushMicrotasks();
+
+      expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("updates lastEventAt from events.jsonl mtime to prevent false stale reports", async () => {
@@ -314,99 +800,4 @@ describe("SessionManager run state", () => {
     }
   });
 
-  it("disconnects old session after successful recovery swap", async () => {
-    const { manager } = createManager();
-    const initial = makeSession();
-    const recovered = makeSession();
-    manager.client = {
-      resumeSession: vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-    expect(initial.session.disconnect).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(300_000);
-    await flushMicrotasks();
-
-    // Old session should have been disconnected after the swap
-    expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
-    // New session should not be disconnected
-    expect(recovered.session.disconnect).not.toHaveBeenCalled();
-  });
-
-  it("preserves abortability during recovery — session stays in sessionObjects throughout async window", async () => {
-    const { manager } = createManager();
-    let resolveRecovery!: (s: any) => void;
-    const recoveryPromise = new Promise<any>((res) => { resolveRecovery = res; });
-    const initial = makeSession();
-    const recovered = makeSession();
-    const resumeSession = vi.fn()
-      .mockResolvedValueOnce(initial.session)
-      .mockReturnValueOnce(recoveryPromise); // second call hangs until we resolve it
-    manager.client = { resumeSession };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-
-    // Trigger stall and recovery; recovery hangs awaiting the new session
-    await vi.advanceTimersByTimeAsync(300_000);
-    await flushMicrotasks();
-    // Recovery is in progress but not yet resolved
-
-    // abortSession must still find the session — sessionObjects should not be empty
-    const aborted = await manager.abortSession("session-1");
-    expect(aborted).toBe(true);
-
-    // Let recovery complete
-    resolveRecovery(recovered.session);
-    await flushMicrotasks();
-  });
-
-  it("resolves turn from persisted terminal events if live listener missed them", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-test-terminal-"));
-    try {
-      const sessionId = "session-terminal";
-      const sessionStateDir = join(tmpDir, "session-state", sessionId);
-      mkdirSync(sessionStateDir, { recursive: true });
-
-      const { manager, globalBus } = createManager({ copilotHome: tmpDir });
-      const events: string[] = [];
-      globalBus.subscribe((event: any) => {
-        if (event.sessionId === sessionId && ["session:busy", "session:stalled", "session:idle"].includes(event.type)) {
-          events.push(event.type);
-        }
-      });
-
-      const initial = makeSession();
-      const recovered = makeSession();
-      const resumeSession = vi.fn()
-        .mockResolvedValueOnce(initial.session)
-        .mockResolvedValueOnce(recovered.session);
-      manager.client = { resumeSession };
-
-      // Write events.jsonl with a terminal event so recovery detects it
-      const eventsPath = join(sessionStateDir, "events.jsonl");
-      writeFileSync(eventsPath, '{"type":"user.message"}\n{"type":"session.idle"}\n');
-
-      manager.startWork(sessionId, "hello");
-      await flushMicrotasks();
-
-      // Release send so resolveWork is wired up before the timer fires
-      initial.getReleaseSend()?.();
-      await flushMicrotasks();
-
-      // Trigger stall + recovery
-      await vi.advanceTimersByTimeAsync(300_000);
-      await flushMicrotasks();
-
-      // Recovery detected terminal state on disk → session should be idle
-      expect(manager.getSessionRunState(sessionId)).toBe("idle");
-      expect(events).toContain("session:idle");
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
 });

@@ -6,6 +6,7 @@ import type { SectionOverride } from "@github/copilot-sdk";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { join, dirname, resolve, basename, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -336,29 +337,6 @@ export function triggerRestartPending(): number {
   const waitingCount = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
   globalBus.emit({ type: "server:restart-pending", waitingSessions: waitingCount });
   return waitingCount;
-}
-
-/**
- * Inspect a raw events.jsonl string and determine whether the current turn has
- * already reached a terminal state (session.idle, session.error, or abort) with
- * no subsequent user.message. This lets stall recovery short-circuit if the CLI
- * finished while the live listener was detached.
- */
-export function isCurrentTurnTerminated(raw: string): boolean {
-  const lines = raw.trim().split("\n").filter(Boolean);
-  let lastTerminalIdx = -1;
-  let lastUserMessageIdx = -1;
-  lines.forEach((line, idx) => {
-    try {
-      const event = JSON.parse(line) as { type?: string };
-      if (event.type === "session.idle" || event.type === "session.error" || event.type === "abort") {
-        lastTerminalIdx = idx;
-      } else if (event.type === "user.message") {
-        lastUserMessageIdx = idx;
-      }
-    } catch { /* malformed line */ }
-  });
-  return lastTerminalIdx !== -1 && lastTerminalIdx > lastUserMessageIdx;
 }
 
 // Universal tools — same instance for every session
@@ -2033,6 +2011,8 @@ export class SessionManager {
     const subAgentMap = new Map<string, string>();
     // Capture sub-agent response text: parentToolCallId → last response content
     const subAgentResponseMap = new Map<string, string>();
+    const handledCurrentTurnEventKeys = new Set<string>();
+    let workCompleted = false;
     let resolveWork: (() => void) | undefined;
     let completedBeforeWait = false;
     let lastAssistantContent: string | undefined;
@@ -2040,21 +2020,57 @@ export class SessionManager {
     let sendStart = lastEventTime;
     let acceptingSessionEvents = false;
     const finishWork = () => {
+      if (workCompleted) return;
+      workCompleted = true;
       if (resolveWork) resolveWork();
       else completedBeforeWait = true;
     };
     const beginSend = () => {
       sendStart = Date.now();
       lastEventTime = sendStart;
+      handledCurrentTurnEventKeys.clear();
       completedBeforeWait = false;
       lastAssistantContent = undefined;
       acceptingSessionEvents = true;
+    };
+
+    const getEventTimestampMs = (event: any): number | undefined => {
+      const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
+      if (typeof rawTimestamp !== "string") return undefined;
+      const eventTime = Date.parse(rawTimestamp);
+      return Number.isFinite(eventTime) ? eventTime : undefined;
+    };
+
+    const getEventReplayKey = (event: any): string | undefined => {
+      const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
+      const timestampPart = typeof rawTimestamp === "string" ? rawTimestamp : "";
+      try {
+        return createHash("sha1")
+          .update(JSON.stringify([event?.type ?? "", timestampPart, event?.data ?? null]))
+          .digest("hex");
+      } catch {
+        return undefined;
+      }
+    };
+
+    const resolvePersistedTerminalEvent = (
+      persistedTerminal: { event: any; assistantContent?: string } | null,
+      reason: string,
+    ): boolean => {
+      if (!persistedTerminal) return false;
+      if (workCompleted) return true;
+      lastAssistantContent = persistedTerminal.assistantContent ?? lastAssistantContent;
+      console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
+      handleEvent(persistedTerminal.event);
+      return true;
     };
 
     // Event handler extracted so it can be re-registered on session retry
     const handleEvent = (event: any) => {
       if (!acceptingSessionEvents) return;
       const eventAt = Date.now();
+      const replayKey = getEventReplayKey(event);
+      if (replayKey) handledCurrentTurnEventKeys.add(replayKey);
       if (event.type !== "session.idle" && event.type !== "session.error" && event.type !== "abort") {
         lastEventTime = eventAt;
         this.touchSessionRun(sessionId, eventAt);
@@ -2278,63 +2294,153 @@ export class SessionManager {
     let recoveryInProgress = false;
     let lastRecoveryAttempt = 0;
 
+    const readPersistedTerminalEvent = (): { event: any; assistantContent?: string } | null => {
+      let raw: string;
+      try {
+        raw = readFileSync(eventsJsonlPath, "utf-8");
+      } catch {
+        return null;
+      }
+
+      let assistantContentFromDisk = lastAssistantContent;
+      let latestRelevantState: "active" | "terminal" | undefined;
+      let terminalEvent: any | null = null;
+
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
+        const eventTime = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
+        if (!Number.isFinite(eventTime) || eventTime < sendStart) continue;
+
+        const data = event?.data;
+        switch (event?.type) {
+          case "assistant.message":
+            if (data?.parentToolCallId) break;
+            if (typeof data?.content === "string") {
+              assistantContentFromDisk = data.content;
+            }
+            latestRelevantState = "active";
+            terminalEvent = null;
+            break;
+          case "user.message":
+          case "assistant.turn_start":
+          case "assistant.message_delta":
+          case "assistant.streaming_delta":
+          case "assistant.intent":
+          case "tool.execution_start":
+          case "tool.execution_progress":
+          case "tool.execution_partial_result":
+          case "tool.execution_complete":
+          case "subagent.started":
+          case "subagent.completed":
+          case "subagent.failed":
+            latestRelevantState = "active";
+            terminalEvent = null;
+            break;
+          case "session.idle":
+          case "session.error":
+          case "abort":
+            latestRelevantState = "terminal";
+            terminalEvent = event;
+            break;
+          default:
+            break;
+        }
+      }
+
+      if (latestRelevantState !== "terminal" || !terminalEvent) return null;
+      return { event: terminalEvent, assistantContent: assistantContentFromDisk };
+    };
+
+    const resumeFreshRecoverySession = async (): Promise<any> => {
+      const resumeStart = Date.now();
+      console.log(`[sdk] [${sid}] Re-resuming session for stalled recovery...`);
+      const recoveredSession = await Promise.race([
+        this.client!.resumeSession(sessionId, resumeConfig),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+        ),
+      ]);
+      const resumeDuration = Date.now() - resumeStart;
+      this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
+      console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
+      return recoveredSession;
+    };
+
     const attemptStalledRecovery = async () => {
       if (recoveryInProgress) return;
       recoveryInProgress = true;
       lastRecoveryAttempt = Date.now();
       try {
+        if (resolvePersistedTerminalEvent(readPersistedTerminalEvent(), "before resume")) return;
+
         const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
         console.warn(`[sdk] [${sid}] 🔄 Stall recovery: re-subscribing (${elapsed}s total)...`);
+        const previousSession = session;
+        const previousUnsub = unsub;
+        const recoveredSession = await resumeFreshRecoverySession();
 
-        // Resume a fresh SDK connection directly — bypass the sessionObjects cache so we
-        // always get a new connection. Crucially, we do NOT evict the old session from
-        // sessionObjects during the async window: this keeps abortSession() functional
-        // throughout the await, since it finds sessions via sessionObjects.get(sessionId).
-        const resumeStart = Date.now();
-        console.log(`[sdk] [${sid}] Resuming session...`);
-        const newSession = await Promise.race([
-          this.client!.resumeSession(sessionId, resumeConfig),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-          ),
-        ]);
-        // Atomically replace old session in map; on failure old session remains (never evicted).
-        this.sessionObjects.set(sessionId, newSession);
-        this.probeMcpStatus(sessionId, newSession);
-        const resumeDuration = Date.now() - resumeStart;
-        this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
-        console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
+        if (workCompleted || this.getSessionRunState(sessionId) !== "stalled") {
+          try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
+          return;
+        }
 
-        // Swap listener: detach old first so the old unsub doesn't clear the new handler
-        // (test mock quirk: both callbacks are the same fn, so order matters).
-        const prevUnsub = unsub;
-        const prevSession = session;
-        prevUnsub();
-        unsub = subscribeToSession(newSession);
-        session = newSession;
-        // Re-enable event acceptance — subscribeToSession gates it off until beginSend(),
-        // but here the turn is already in progress, so open it immediately.
-        acceptingSessionEvents = true;
-        // Disconnect old SDK object now that we're fully switched over.
-        try { prevSession.disconnect?.(); } catch { /* best-effort */ }
+        const persistedTerminalAfterResume = readPersistedTerminalEvent();
+        if (persistedTerminalAfterResume) {
+          try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
+          resolvePersistedTerminalEvent(persistedTerminalAfterResume, "after resume");
+          return;
+        }
 
-        // Detect whether the turn already reached a terminal state while the listener was dead.
-        // If so, finalize the turn immediately rather than waiting indefinitely.
-        try {
-          const raw = readFileSync(eventsJsonlPath, "utf-8");
-          if (isCurrentTurnTerminated(raw)) {
-            console.log(`[sdk] [${sid}] 📖 Persisted events show turn already complete — resolving`);
-            this.setSessionRunState(sessionId, "idle");
-            bus.emit({ type: "done", content: lastAssistantContent ?? "(no response)" });
-            finishWork();
+        const shouldIgnoreRecoveredEvent = (event: any) => {
+          const eventTimestampMs = getEventTimestampMs(event);
+          if (eventTimestampMs !== undefined && eventTimestampMs < sendStart) return true;
+          const replayKey = getEventReplayKey(event);
+          return replayKey !== undefined && handledCurrentTurnEventKeys.has(replayKey);
+        };
+
+        const bufferedRecoveredEvents: any[] = [];
+        let acceptingRecoveredEvents = false;
+        const recoveredUnsub = recoveredSession.on((event: any) => {
+          if (!acceptingRecoveredEvents) {
+            bufferedRecoveredEvents.push(event);
             return;
           }
-        } catch { /* events.jsonl may not exist yet */ }
+          if (shouldIgnoreRecoveredEvent(event)) return;
+          handleEvent(event);
+        });
+
+        session = recoveredSession;
+        unsub = recoveredUnsub;
+        this.sessionObjects.set(sessionId, recoveredSession);
+        this.probeMcpStatus(sessionId, recoveredSession);
+        acceptingSessionEvents = true;
+
+        try { previousUnsub(); } catch { /* best-effort */ }
+        if (previousSession !== recoveredSession) {
+          try { previousSession.disconnect?.(); } catch { /* best-effort */ }
+        }
+
+        acceptingRecoveredEvents = true;
+        for (const event of bufferedRecoveredEvents) {
+          if (shouldIgnoreRecoveredEvent(event)) continue;
+          handleEvent(event);
+          if (workCompleted) break;
+        }
 
         console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
       } catch (err) {
-        console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
-        // Old session was never evicted from sessionObjects, so abortSession() still works.
+        if (!resolvePersistedTerminalEvent(readPersistedTerminalEvent(), "after failed resume")) {
+          console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
+        }
       } finally {
         recoveryInProgress = false;
       }
