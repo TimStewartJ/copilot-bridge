@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
+import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -43,9 +44,29 @@ const STATUS_ORDER: Record<Task["status"], number> = {
   archived: 3,
 };
 
+function getDefaultTaskCwd(): string | undefined {
+  const runtimePaths = resolveRuntimePaths(process.env);
+  if (!runtimePaths.demoMode) return undefined;
+  return runtimePaths.workspaceDir;
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
-export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
+export function createTaskStore(
+  db: DatabaseSync,
+  bus: GlobalBus,
+  opts: { runtimePaths?: RuntimePaths } = {},
+) {
+  const runtimePaths = opts.runtimePaths;
+
+  function defaultTaskCwd(): string | undefined {
+    if (runtimePaths) {
+      if (!runtimePaths.demoMode) return undefined;
+      return runtimePaths.workspaceDir;
+    }
+    return getDefaultTaskCwd();
+  }
+
   function hydrate(row: any): Task {
     const id = row.id;
     const sessions = db.prepare("SELECT sessionId FROM task_sessions WHERE taskId = ? ORDER BY linkedAt ASC").all(id) as any[];
@@ -104,11 +125,12 @@ export function createTaskStore(db: DatabaseSync, bus: GlobalBus) {
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const cwd = defaultTaskCwd();
 
     db.prepare(`
-      INSERT INTO tasks (id, title, status, notes, priority, "order", groupId, createdAt, updatedAt)
-      VALUES (?, ?, 'active', '', 0, 0, ?, ?, ?)
-    `).run(id, title, groupId || null, now, now);
+      INSERT INTO tasks (id, title, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
+      VALUES (?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
+    `).run(id, title, groupId || null, cwd ?? null, now, now);
 
     const task = getTask(id)!;
     emitChange(id);

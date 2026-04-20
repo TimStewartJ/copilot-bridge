@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { join } from "node:path";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import { createTaskStore } from "../task-store.js";
 import type { TaskStore } from "../task-store.js";
 import type { DatabaseSync } from "../db.js";
+import { resolveRuntimePaths } from "../runtime-paths.js";
 
 let db: DatabaseSync;
 let store: TaskStore;
@@ -27,6 +29,16 @@ describe("task-store", () => {
       expect(task.sessionIds).toEqual([]);
       expect(task.workItems).toEqual([]);
       expect(task.pullRequests).toEqual([]);
+    });
+
+    it("defaults task cwd to the demo workspace in demo mode", () => {
+      const runtimePaths = resolveRuntimePaths({}, {
+        demoMode: true,
+        dataDir: join("demo-root"),
+      });
+      const demoStore = createTaskStore(db, createTestBus(), { runtimePaths });
+      const task = demoStore.createTask("Demo Task");
+      expect(task.cwd).toBe(runtimePaths.workspaceDir);
     });
 
     it("getTask returns created task", () => {

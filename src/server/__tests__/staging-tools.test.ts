@@ -32,6 +32,7 @@ const removeDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
 const buildPublicUrlMock = vi.fn(() => undefined);
 const STAGING_DIST_PARENT = join(process.cwd(), "dist", "staging");
 const stagingDistParentExistedAtStart = existsSync(STAGING_DIST_PARENT);
+const originalDemoMode = process.env.BRIDGE_DEMO_MODE;
 
 function isDataFilePath(path: string, filename: string): boolean {
   return basename(path) === filename && basename(dirname(path)) === "data";
@@ -185,10 +186,45 @@ afterEach(() => {
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
+  process.env.BRIDGE_DEMO_MODE = originalDemoMode;
   vi.resetModules();
 });
 
 describe("staging tools", () => {
+  it("skips staging artifact management in demo mode", async () => {
+    process.env.BRIDGE_DEMO_MODE = "true";
+    const mod = await loadStagingToolsModule();
+    expect(mod.shouldManageStagingArtifacts()).toBe(false);
+  });
+
+  it("manages staging artifacts normally outside demo mode", async () => {
+    delete process.env.BRIDGE_DEMO_MODE;
+    const mod = await loadStagingToolsModule();
+    expect(mod.shouldManageStagingArtifacts()).toBe(true);
+  });
+
+  it("builds and parses demo preview prefixes", async () => {
+    const mod = await loadStagingToolsModule();
+    expect(mod.buildPreviewPrefix("/tmp/bridge-staging/abc12345", "clone")).toBe("abc12345");
+    expect(mod.buildPreviewPrefix("/tmp/bridge-staging/abc12345", "demo")).toBe("abc12345-demo");
+    expect(mod.parsePreviewPrefix("abc12345")).toEqual({ stagingName: "abc12345", profile: "clone" });
+    expect(mod.parsePreviewPrefix("abc12345-demo")).toEqual({ stagingName: "abc12345", profile: "demo" });
+  });
+
+  it("keeps clone previews unambiguous when worktree names end with demo", async () => {
+    const mod = await loadStagingToolsModule();
+    const activeWorktrees = new Set(["foo-demo", "foo"]);
+    expect(mod.parsePreviewPrefix("foo-demo", activeWorktrees)).toEqual({ stagingName: "foo-demo", profile: "clone" });
+    expect(mod.parsePreviewPrefix("foo-demo-demo", activeWorktrees)).toEqual({ stagingName: "foo-demo", profile: "demo" });
+  });
+
+  it("returns null for orphaned preview prefixes when active worktrees are known", async () => {
+    const mod = await loadStagingToolsModule();
+    const activeWorktrees = new Set(["abc12345"]);
+    expect(mod.parsePreviewPrefix("missing-demo", activeWorktrees)).toBeNull();
+    expect(mod.parsePreviewPrefix("missing", activeWorktrees)).toBeNull();
+  });
+
   it("reseeds a staging SQLite database even when stale target files already exist", async () => {
     const mod = await loadStagingToolsModule();
     const productionDataDir = createProductionDataDir();

@@ -33,6 +33,7 @@ import type { AppContext } from "./app-context.js";
 import { createApiRouter } from "./api-router.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
+import { resolveRuntimePaths } from "./runtime-paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -49,12 +50,14 @@ if (shouldTrustProxyHeaders()) {
 registerExpressApp(app);
 
 // ── Database ──────────────────────────────────────────────────────
-const dataDir = process.env.BRIDGE_DATA_DIR || join(__dirname, "..", "..", "data");
+const runtimePaths = resolveRuntimePaths(process.env);
+Object.assign(process.env, runtimePaths.env);
+const dataDir = runtimePaths.dataDir;
 const db = openDatabase(dataDir);
 migrateJsonToSqlite(db, dataDir);
 
 // ── Stores (all backed by shared SQLite db) ───────────────────────
-const taskStore = createTaskStore(db, defaultGlobalBus);
+const taskStore = createTaskStore(db, defaultGlobalBus, { runtimePaths });
 const taskGroupStore = createTaskGroupStore(db);
 const scheduleStore = createScheduleStore(db);
 const settingsStore = createSettingsStore(db);
@@ -65,7 +68,8 @@ const todoStore = createTodoStore(db, defaultGlobalBus);
 const tagStore = createTagStore(db);
 const telemetryStore = createTelemetryStore(db);
 const voiceJobStore = createVoiceJobStore(db);
-const docsDir = process.env.BRIDGE_DOCS_DIR || join(dataDir, "docs");
+const docsDir = runtimePaths.docsDir;
+const copilotHome = runtimePaths.copilotHome;
 const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
 docsIndex.reindex();
@@ -82,12 +86,16 @@ const defaultContext: AppContext = {
   sessionManager: null as any, // assigned below after construction
   transcriptionService: createTranscriptionService(),
   voiceJobManager: null as any, // assigned below after construction
+  copilotHome,
+  runtimePaths,
   launcherLogPath: process.env.BRIDGE_LAUNCHER_LOG_PATH,
 };
 const tools = createBridgeTools(defaultContext);
 const sessionManager = createSessionManager(defaultContext, {
   tools,
   config: { get sessionMcpServers() { return config.sessionMcpServers; } },
+  ...(copilotHome ? { copilotHome } : {}),
+  runtimePaths,
 });
 defaultContext.sessionManager = sessionManager;
 defaultContext.voiceJobManager = createVoiceJobManager({

@@ -64,6 +64,11 @@ export function shutdown(): void {
   console.log("[scheduler] Shut down — all jobs stopped");
 }
 
+interface MissedRunCandidate {
+  id: string;
+  name: string;
+}
+
 export function isGlobalPaused(): boolean {
   return _globalPause;
 }
@@ -332,8 +337,11 @@ function registerAllSchedules(): void {
   // Clear existing jobs
   for (const job of cronJobs.values()) job.stop();
   cronJobs.clear();
+  for (const timer of oneShotTimers.values()) clearTimeout(timer);
+  oneShotTimers.clear();
 
   const enabled = scheduleStore.getEnabledSchedules();
+  let oneShotCount = 0;
   for (const schedule of enabled) {
     if (schedule.type === "cron" && schedule.cron) {
       try {
@@ -341,31 +349,56 @@ function registerAllSchedules(): void {
       } catch (err) {
         console.error(`[scheduler] Failed to register schedule "${schedule.name}" (${schedule.id}):`, err);
       }
+    } else if (schedule.type === "once" && schedule.runAt) {
+      armOneShot(schedule.id, schedule.runAt);
+      scheduleStore.updateNextRunAt(schedule.id, schedule.runAt);
+      oneShotCount += 1;
     }
   }
-  console.log(`[scheduler] Registered ${cronJobs.size} cron job(s)`);
+  console.log(`[scheduler] Registered ${cronJobs.size} cron job(s) and ${oneShotCount} one-shot timer(s)`);
 }
 
 function checkMissedRuns(): void {
+  void catchUpMissedRuns();
+}
+
+async function catchUpMissedRuns(): Promise<void> {
   const enabled = scheduleStore.getEnabledSchedules();
   const now = Date.now();
+  const missedRuns: MissedRunCandidate[] = [];
 
   for (const schedule of enabled) {
-    if (schedule.type !== "cron" || !schedule.cron) continue;
-    if (!schedule.lastRunAt) continue; // never ran — don't catch up on first boot
+    if (schedule.type === "once") {
+      if (!schedule.runAt) continue;
+      const runAtTime = new Date(schedule.runAt).getTime();
+      if (runAtTime >= now) continue;
+      if ((now - runAtTime) < MISSED_RUN_GRACE_WINDOW_MS) {
+        missedRuns.push({ id: schedule.id, name: schedule.name });
+      } else {
+        console.log(`[scheduler] One-shot "${schedule.name}" is stale — disabling without replay`);
+        scheduleStore.updateSchedule(schedule.id, { enabled: false });
+        unregisterSchedule(schedule.id);
+      }
+      continue;
+    }
 
-    const lastRun = new Date(schedule.lastRunAt).getTime();
+    if (!schedule.cron || !schedule.lastRunAt) continue; // never ran — don't catch up on first boot
     const nextExpected = computeNextRunAt(schedule.cron, schedule.timezone, new Date(schedule.lastRunAt));
     if (!nextExpected) continue;
 
     const nextExpectedTime = new Date(nextExpected).getTime();
 
-    // If the next expected run was in the past and within grace window, trigger catch-up
     if (nextExpectedTime < now && (now - nextExpectedTime) < MISSED_RUN_GRACE_WINDOW_MS) {
-      console.log(`[scheduler] Missed run detected for "${schedule.name}" — catching up`);
-      triggerSchedule(schedule.id).catch((err) => {
-        console.error(`[scheduler] Catch-up trigger failed for "${schedule.name}":`, err);
-      });
+      missedRuns.push({ id: schedule.id, name: schedule.name });
+    }
+  }
+
+  for (const schedule of missedRuns) {
+    console.log(`[scheduler] Missed run detected for "${schedule.name}" — catching up`);
+    try {
+      await triggerSchedule(schedule.id);
+    } catch (err) {
+      console.error(`[scheduler] Catch-up trigger failed for "${schedule.name}":`, err);
     }
   }
 }

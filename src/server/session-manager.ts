@@ -48,6 +48,7 @@ import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.j
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { err, getToolExecutionDisplayText, ok, toolFailure, type Result } from "./tool-results.js";
+import type { RuntimePaths } from "./runtime-paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -55,6 +56,27 @@ const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(REPO_ROOT, "data", "pre-deploy-sha");
 // Keep the cloud-only session store tool out of bridge-managed sessions.
 const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql"];
+
+function isDemoMode(runtimePaths?: RuntimePaths): boolean {
+  return runtimePaths?.demoMode ?? false;
+}
+
+function resolveDemoWorkspaceDir(runtimePaths?: RuntimePaths): string | undefined {
+  if (!isDemoMode(runtimePaths)) return undefined;
+  return runtimePaths?.workspaceDir ?? (runtimePaths ? join(resolve(runtimePaths.dataDir), "workspace") : undefined);
+}
+
+const DEMO_MODE_INSTRUCTIONS = `
+<demo_mode>
+You are running inside a seeded demo workspace for Copilot Bridge.
+
+- Treat the main repository checkout and the user's normal .copilot home as read-only.
+- Keep any file edits inside the demo sandbox workspace unless the user explicitly asks to abandon the demo.
+- Do not suggest or rely on restart, self-update, or staging workflows in demo mode.
+- If a task has no working directory, default to the demo sandbox workspace instead of the live repository.
+</demo_mode>
+`.trim();
+
 function run(cmd: string): { ok: boolean; output: string } {
   try {
     const output = execSync(cmd, { cwd: REPO_ROOT, encoding: "utf-8", timeout: 120_000 });
@@ -345,6 +367,7 @@ export function triggerRestartPending(): number {
 
 // Universal tools — same instance for every session
 export function createBridgeTools(ctx: AppContext) {
+  const demoMode = isDemoMode(ctx.runtimePaths);
   const ensureTask = (taskId: string): Result<Task> => {
     const task = ctx.taskStore.getTask(taskId);
     return task ? ok(task) : err(`Task ${taskId} not found`);
@@ -375,7 +398,7 @@ export function createBridgeTools(ctx: AppContext) {
 
   const normalizeDocsToolFailure = (error: unknown) => toolFailure(error instanceof Error ? error.message : String(error));
 
-  return [
+  const tools = [
   defineTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "workItemId"] },
@@ -1122,7 +1145,7 @@ export function createBridgeTools(ctx: AppContext) {
     }),
   ] : []),
 
-    ...STAGING_TOOLS,
+    ...(demoMode ? [] : STAGING_TOOLS),
 
     ...createWebSearchTools(ctx),
 
@@ -1134,6 +1157,15 @@ export function createBridgeTools(ctx: AppContext) {
 
     ...createComputerUseTools(ctx),
   ];
+
+  if (!demoMode) return tools;
+
+  const hiddenTools = new Set<string>([
+    "self_restart",
+    "self_update",
+    ...STAGING_TOOLS.map((tool) => tool.name),
+  ]);
+  return tools.filter((tool) => !hiddenTools.has(tool.name));
 }
 
 export type SessionRunState = "busy" | "stalled" | "idle";
@@ -1212,6 +1244,7 @@ export interface SessionManagerDeps {
   clientEnv?: Record<string, string | undefined>;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
   copilotHome?: string;
+  runtimePaths?: RuntimePaths;
 }
 
 /** Options that don't come from AppContext — caller provides these directly. */
@@ -1220,6 +1253,7 @@ export interface CreateSessionManagerOpts {
   config: SessionManagerDeps["config"];
   clientEnv?: SessionManagerDeps["clientEnv"];
   copilotHome?: string;
+  runtimePaths?: RuntimePaths;
 }
 
 /**
@@ -1229,6 +1263,11 @@ export interface CreateSessionManagerOpts {
  * picked up automatically without touching staging-tools.ts.
  */
 export function createSessionManager(ctx: AppContext, opts: CreateSessionManagerOpts): SessionManager {
+  const runtimePaths = opts.runtimePaths ?? ctx.runtimePaths;
+  const copilotHome = opts.copilotHome ?? ctx.copilotHome ?? runtimePaths?.copilotHome;
+  const clientEnv = opts.clientEnv
+    ?? runtimePaths?.env
+    ?? (copilotHome ? { ...process.env, COPILOT_HOME: copilotHome } : undefined);
   return new SessionManager({
     tools: opts.tools,
     globalBus: ctx.globalBus,
@@ -1242,13 +1281,14 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     docsIndex: ctx.docsIndex,
     docsStore: ctx.docsStore,
     browserSessionStore: getOrCreateBrowserSessionStore(ctx, {
-      copilotHome: opts.copilotHome ?? ctx.copilotHome,
+      copilotHome,
       telemetryStore: ctx.telemetryStore,
     }),
     telemetryStore: ctx.telemetryStore,
     config: opts.config,
-    clientEnv: opts.clientEnv,
-    copilotHome: opts.copilotHome,
+    clientEnv,
+    copilotHome,
+    runtimePaths,
   });
 }
 
@@ -1513,6 +1553,9 @@ export class SessionManager {
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
+    const runtimePaths = this.deps.runtimePaths;
+    const demoMode = isDemoMode(runtimePaths);
+    const workingDirectory = task?.cwd ?? resolveDemoWorkspaceDir(runtimePaths);
 
     const cfg: any = {
       onPermissionRequest: approveAll,
@@ -1521,7 +1564,7 @@ export class SessionManager {
       mcpServers: this.deps.settingsStore?.getMcpServers() ?? this.deps.config.sessionMcpServers,
       skillDirectories: [
         join(REPO_ROOT, "skills"),                                          // built-in (ships with bridge)
-        join(this.deps.copilotHome ?? join(homedir(), ".copilot"), "skills"), // user-level
+        join(this.getCopilotHome(), "skills"), // user-level
       ],
     };
 
@@ -1533,8 +1576,8 @@ export class SessionManager {
     const reasoningEffort = this.deps.settingsStore?.getSettings().reasoningEffort;
     if (reasoningEffort) cfg.reasoningEffort = reasoningEffort;
 
-    if (task?.cwd) {
-      cfg.workingDirectory = task.cwd;
+    if (workingDirectory) {
+      cfg.workingDirectory = workingDirectory;
     }
 
     const contextParts: string[] = [];
@@ -1592,10 +1635,14 @@ export class SessionManager {
       );
     }
 
+    if (demoMode) {
+      contextParts.push(DEMO_MODE_INSTRUCTIONS);
+    }
+
     // Staging rules — only when working on the bridge repo itself
-    const isSelfRepo = !task?.cwd || resolve(task.cwd) === resolve(REPO_ROOT);
+    const isSelfRepo = !workingDirectory || resolve(workingDirectory) === resolve(REPO_ROOT);
     const sections: Partial<Record<string, SectionOverride>> = {};
-    if (isSelfRepo) {
+    if (isSelfRepo && !demoMode) {
       sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
     }
 

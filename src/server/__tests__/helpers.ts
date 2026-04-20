@@ -103,14 +103,15 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
-  const dataDir = mkdtempSync(join(tmpdir(), "bridge-test-data-"));
+  const runtimePaths = overrides?.runtimePaths;
+  const dataDir = runtimePaths?.dataDir ?? mkdtempSync(join(tmpdir(), "bridge-test-data-"));
 
-  const docsDir = mkdtempSync(join(tmpdir(), "bridge-test-docs-"));
+  const docsDir = runtimePaths?.docsDir ?? mkdtempSync(join(tmpdir(), "bridge-test-docs-"));
   const docsStore = createDocsStore(docsDir);
   const docsIndex = createDocsIndex(db, docsStore);
   const transcriptionService = createMockTranscriptionService();
   const sessionManager = createMockSessionManager();
-  const taskStore = createTaskStore(db, globalBus);
+  const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, runtimePaths ? { runtimePaths } : undefined);
   const taskGroupStore = createTaskGroupStore(db);
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
@@ -130,6 +131,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     eventBusRegistry,
     sessionManager,
     transcriptionService,
+    ...(runtimePaths ? { runtimePaths } : {}),
     launcherLogPath: undefined,
   };
   const ctx = {
