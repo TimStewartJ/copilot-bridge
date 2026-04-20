@@ -18,6 +18,7 @@ import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionManager } from "./session-manager.js";
 import type { TranscriptionService } from "./transcription-service.js";
 import type { VoiceJobManager } from "./voice-job-manager.js";
+import type { RuntimePaths } from "./runtime-paths.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -39,6 +40,7 @@ export interface AppContext {
   voiceJobManager: VoiceJobManager;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
+  runtimePaths?: RuntimePaths;
   /** Shared launcher log file path when this server was started by the launcher */
   launcherLogPath?: string;
   isStaging?: boolean;

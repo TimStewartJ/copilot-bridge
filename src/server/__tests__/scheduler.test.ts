@@ -4,6 +4,12 @@ import * as scheduler from "../scheduler.js";
 import { computeNextRunAt, matchesCron, matchesField } from "../scheduler.js";
 import { createTestApp } from "./helpers.js";
 
+afterEach(() => {
+  clearRestartPending();
+  scheduler.shutdown();
+  vi.useRealTimers();
+});
+
 // ── Cron math tests ──────────────────────────────────────────────
 
 describe("matchesField", () => {
@@ -244,5 +250,149 @@ describe("scheduler restart gating", () => {
     expect(result).toEqual({ skipped: "Target session is busy" });
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
     expect(sessionManager.startWork).not.toHaveBeenCalled();
+  });
+});
+
+describe("scheduler startup recovery", () => {
+  it("re-arms enabled one-shot schedules on initialize", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "one-shot-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Future one-shot",
+      prompt: "run later",
+      type: "once",
+      runAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+    expect(sessionManager.startWork).toHaveBeenCalledWith("one-shot-session", "run later");
+  });
+
+  it("catches up missed one-shot schedules within the grace window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "catch-up-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Missed one-shot",
+      prompt: "catch up",
+      type: "once",
+      runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+    });
+
+    const updated = ctx.scheduleStore.getSchedule(schedule.id)!;
+    expect(updated.runCount).toBe(1);
+    expect(updated.enabled).toBe(false);
+  });
+
+  it("disables stale one-shot schedules instead of replaying them", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn(),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Stale one-shot",
+      prompt: "should stay stale",
+      type: "once",
+      runAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+    });
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    await Promise.resolve();
+
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(false);
+  });
+
+  it("processes missed startup catch-up sequentially so all schedules run", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const { ctx } = createTestApp();
+    let nextId = 0;
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockImplementation(async () => ({ sessionId: `catch-up-${nextId++}` })),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    for (let index = 0; index < 4; index += 1) {
+      ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: `Missed schedule ${index + 1}`,
+        prompt: `catch up ${index + 1}`,
+        type: "once",
+        runAt: new Date(Date.now() - (index + 1) * 60_000).toISOString(),
+      });
+    }
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(4);
+    });
+    expect(sessionManager.startWork).toHaveBeenCalledTimes(4);
   });
 });

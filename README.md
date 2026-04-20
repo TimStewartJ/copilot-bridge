@@ -65,6 +65,27 @@ cp .env.example .env   # Edit .env with your settings if needed
 
 The launcher and direct server entrypoint load `.env` automatically at startup. Existing exported environment variables still win over values from the file.
 
+### Demo Workspace
+
+If you want a guided showcase instead of a blank local workspace, use the seeded demo:
+
+```bash
+npm run demo:start   # seed demo-data/, build the client, and start the demo workspace
+npm run demo:reset   # recreate the demo workspace from scratch
+```
+
+The demo uses an isolated `demo-data/` directory, its own `.copilot` state, and a sandbox task workspace, so it does not touch your normal `data/` workspace or everyday bridge sessions.
+
+It is intentionally scoped to the guided workspace experience. If you want the full launcher-driven restart/update flow, use `npm run dev` instead.
+
+When it starts:
+
+1. Open the pinned **Start Here - Copilot Bridge Tour** task.
+2. Read the task note and related docs.
+3. Start a task chat and try one of the suggested prompts.
+4. Trigger the sample schedule.
+5. Add an item to the **Coworker Feedback** docs collection.
+
 ### Run (Development)
 
 ```bash
@@ -77,7 +98,7 @@ npm run dev:client   # Vite dev server with HMR
 
 If you are opening the bridge for the first time, keep it simple:
 
-1. Run `npm run dev` and open the bridge in your browser.
+1. Run `npm run demo:start` if you want the guided showcase, or `npm run dev` if you want a blank workspace.
 2. Go to **Settings** and pick your model, reasoning effort, theme, and favicon.
 3. Skip Azure DevOps/GitHub/Linear setup for now if you just want a clean local demo.
 4. Create a task, add a todo and a note, then start a task session.
