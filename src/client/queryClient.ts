@@ -1,5 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 
+const CHAT_CACHE_GC_TIME = 15 * 60 * 1000;
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -8,6 +10,13 @@ export const queryClient = new QueryClient({
       refetchOnWindowFocus: true,
     },
   },
+});
+
+queryClient.setQueryDefaults(["chat"], {
+  staleTime: 30_000,
+  retry: 1,
+  refetchOnWindowFocus: true,
+  gcTime: CHAT_CACHE_GC_TIME,
 });
 
 export const queryKeys = {

@@ -1,5 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
+import { getCachedChatSnapshot, hasClientGeneratedEntries, mergeTailMessages, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
@@ -103,6 +105,7 @@ export default function ChatView({
   reloadMcpServers,
   busySignal = 0,
 }: ChatViewProps) {
+  const queryClient = useQueryClient();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
@@ -118,6 +121,8 @@ export default function ChatView({
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
+  const totalEntriesRef = useRef(0);
+  const entriesRef = useRef<ChatEntry[]>([]);
   const sessionIdRef = useRef<string | null>(sessionId);
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
@@ -125,6 +130,39 @@ export default function ChatView({
   const refreshingHistoryRef = useRef(false);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<(opts?: { background?: boolean }) => void>(() => {});
+
+  const applyHistory = useCallback((
+    nextEntries: ChatEntry[],
+    opts: {
+      ownerSessionId?: string | null;
+      firstItemIndex?: number;
+      total?: number;
+      hasMore?: boolean;
+      isCanonical?: boolean;
+    } = {},
+  ) => {
+    const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
+    const nextFirstItemIndex = opts.firstItemIndex ?? firstItemIndex.current;
+    const nextTotal = opts.total ?? Math.max(totalEntriesRef.current, nextFirstItemIndex + nextEntries.length);
+    const nextHasMore = opts.hasMore ?? nextFirstItemIndex > 0;
+
+    firstItemIndex.current = nextFirstItemIndex;
+    totalEntriesRef.current = nextTotal;
+    entriesRef.current = nextEntries;
+    setEntries(nextEntries);
+    setHasMore(nextHasMore);
+
+    if (!ownerSessionId) return;
+    setCachedChatSnapshot(queryClient, {
+      sessionId: ownerSessionId,
+      entries: nextEntries,
+      firstItemIndex: nextFirstItemIndex,
+      total: nextTotal,
+      hasMore: nextHasMore,
+      fetchedAt: Date.now(),
+      isCanonical: opts.isCanonical ?? false,
+    });
+  }, [queryClient]);
 
   const invalidateHistoryRefresh = useCallback(() => {
     if (!refreshingHistoryRef.current) return;
@@ -138,17 +176,21 @@ export default function ChatView({
       ...e,
       id: e.id ?? `stream-${Date.now()}-${i}`,
     }));
-    setEntries((prev) => {
-      // Deduplicate user messages (e.g. pendingPrompt recovery)
-      const filtered = withIds.filter((entry) => {
-        if (entry.type === "tool") return true;
-        const msg = entry as ChatMessage;
-        if (msg.role !== "user") return true;
-        return !prev.some((p) => p.type !== "tool" && (p as ChatMessage).role === "user" && (p as ChatMessage).content === msg.content);
-      });
-      return filtered.length > 0 ? [...prev, ...filtered] : prev;
+    const previousEntries = entriesRef.current;
+    const filtered = withIds.filter((entry) => {
+      if (entry.type === "tool") return true;
+      const msg = entry as ChatMessage;
+      if (msg.role !== "user") return true;
+      return !previousEntries.some((p) => p.type !== "tool" && (p as ChatMessage).role === "user" && (p as ChatMessage).content === msg.content);
     });
-  }, []);
+    if (filtered.length === 0) return;
+    const nextEntries = [...previousEntries, ...filtered];
+    applyHistory(nextEntries, {
+      total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntries.length),
+      hasMore: firstItemIndex.current > 0,
+      isCanonical: false,
+    });
+  }, [applyHistory, invalidateHistoryRefresh]);
 
   const {
     streamingContent,
@@ -184,7 +226,15 @@ export default function ChatView({
     if (!sessionId) {
       // Clear draft-only state when entering draft mode from an existing
       // session or when switching between distinct draft composers.
-      if (draftComposerChanged || prevSession !== undefined || !onCreateAndSend) setEntries([]);
+      if (draftComposerChanged || prevSession !== undefined || !onCreateAndSend) {
+        applyHistory([], {
+          ownerSessionId: null,
+          firstItemIndex: 0,
+          total: 0,
+          hasMore: false,
+          isCanonical: false,
+        });
+      }
       setLoading(false);
       setRefreshingHistory(false);
       setWarming(false);
@@ -194,12 +244,21 @@ export default function ChatView({
       setMcpStatus([]);
       setManualMcpOverride(null);
       firstItemIndex.current = 0;
+      totalEntriesRef.current = 0;
+      entriesRef.current = [];
       loadingMoreRef.current = false;
       return;
     }
 
     // Transitioning from draft → real session: keep messages, just connect stream
     if (wasDraft) {
+      applyHistory(entriesRef.current, {
+        ownerSessionId: sessionId,
+        firstItemIndex: 0,
+        total: entriesRef.current.length,
+        hasMore: false,
+        isCanonical: false,
+      });
       setCreating(false);
       reconnect(sessionId);
       return;
@@ -226,22 +285,25 @@ export default function ChatView({
       fetchMessagesFast(sessionId, { limit: PAGE_SIZE })
         .then(({ messages: msgs, busy, total, warm }) => {
           if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
-          setEntries((prev) => {
-            if (!background) {
-              firstItemIndex.current = total - msgs.length;
-              return msgs;
-            }
-
-            const latestWindowStart = Math.max(0, total - msgs.length);
-            const currentFirstIndex = firstItemIndex.current;
-            const currentLoadedEnd = currentFirstIndex + prev.length;
-            const preserveCount = latestWindowStart <= currentLoadedEnd
-              ? Math.max(0, Math.min(prev.length, latestWindowStart - currentFirstIndex))
-              : 0;
-
-            firstItemIndex.current = preserveCount > 0 ? currentFirstIndex : latestWindowStart;
-            return preserveCount > 0 ? [...prev.slice(0, preserveCount), ...msgs] : msgs;
-          });
+          if (!background) {
+            const nextFirstItemIndex = Math.max(0, total - msgs.length);
+            applyHistory(msgs, {
+              ownerSessionId: sessionId,
+              firstItemIndex: nextFirstItemIndex,
+              total,
+              hasMore: nextFirstItemIndex > 0,
+              isCanonical: true,
+            });
+          } else {
+            const merged = mergeTailMessages(entriesRef.current, firstItemIndex.current, total, msgs);
+            applyHistory(merged.entries, {
+              ownerSessionId: sessionId,
+              firstItemIndex: merged.firstItemIndex,
+              total: merged.total,
+              hasMore: merged.firstItemIndex > 0,
+              isCanonical: !merged.hasClientGeneratedEntries,
+            });
+          }
           setLoading(false);
           setRefreshingHistory(false);
 
@@ -272,9 +334,15 @@ export default function ChatView({
         .catch((err) => {
           if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
           if (!background) {
-            setEntries([
+            applyHistory([
               { role: "assistant", content: `Error loading history: ${err.message}` },
-            ]);
+            ], {
+              ownerSessionId: null,
+              firstItemIndex: 0,
+              total: 0,
+              hasMore: false,
+              isCanonical: false,
+            });
           }
           setLoading(false);
           setRefreshingHistory(false);
@@ -292,12 +360,31 @@ export default function ChatView({
 
     loadAndReconnectRef.current = loadAndReconnect;
 
-    firstItemIndex.current = 0;
     loadingMoreRef.current = false;
-    setEntries([]);
     setLoadingMore(false);
-    setHasMore(false);
-    loadAndReconnect();
+    const cachedSnapshot = getCachedChatSnapshot(queryClient, sessionId);
+    if (cachedSnapshot?.isCanonical) {
+      applyHistory(cachedSnapshot.entries, {
+        ownerSessionId: sessionId,
+        firstItemIndex: cachedSnapshot.firstItemIndex,
+        total: cachedSnapshot.total,
+        hasMore: cachedSnapshot.hasMore,
+        isCanonical: cachedSnapshot.isCanonical,
+      });
+      setLoading(false);
+      setRefreshingHistory(false);
+      setWarming(false);
+      loadAndReconnect({ background: true });
+    } else {
+      applyHistory([], {
+        ownerSessionId: null,
+        firstItemIndex: 0,
+        total: 0,
+        hasMore: false,
+        isCanonical: false,
+      });
+      loadAndReconnect();
+    }
 
     // Close plan sheet when switching sessions (close is a stable callback)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -314,7 +401,7 @@ export default function ChatView({
       loadAndReconnectRef.current = () => {};
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [composerKey, reconnect, sessionId]);
+  }, [composerKey, reconnect, sessionId, applyHistory, queryClient]);
 
   // Reconnect when an external source (e.g. schedule) starts work on this session
   const prevBusySignalRef = useRef(busySignal);
@@ -338,12 +425,12 @@ export default function ChatView({
   }, [sessionId]);
 
   useEffect(() => {
-    refreshingHistoryRef.current = refreshingHistory;
-  }, [refreshingHistory]);
+    entriesRef.current = entries;
+  }, [entries]);
 
   useEffect(() => {
-    setHasMore(sessionId ? firstItemIndex.current > 0 : false);
-  }, [entries, sessionId]);
+    refreshingHistoryRef.current = refreshingHistory;
+  }, [refreshingHistory]);
 
   useEffect(() => {
     if (!sessionId || reloadMcpServers === undefined) return;
@@ -391,19 +478,30 @@ export default function ChatView({
     const beforeIndex = firstItemIndex.current;
     const requestSessionId = sessionId;
     fetchMessages(sessionId, { limit: PAGE_SIZE, before: beforeIndex })
-      .then(({ messages: older, hasMore: more }) => {
+      .then(({ messages: older, hasMore: more, total }) => {
         if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
+        const currentEntries = entriesRef.current;
         if (older.length > 0) {
           invalidateHistoryRefresh();
           // Save scroll height before prepending so the layout effect can preserve position.
           prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
-          setEntries((prev) => {
-            firstItemIndex.current = beforeIndex - older.length;
-            return [...older, ...prev];
+          const nextEntries = [...older, ...currentEntries];
+          const nextFirstItemIndex = beforeIndex - older.length;
+          applyHistory(nextEntries, {
+            ownerSessionId: requestSessionId,
+            firstItemIndex: nextFirstItemIndex,
+            total: Math.max(total, nextFirstItemIndex + nextEntries.length),
+            hasMore: more,
+            isCanonical: !hasClientGeneratedEntries(nextEntries),
           });
         } else if (!more) {
-          firstItemIndex.current = 0;
-          setHasMore(false);
+          applyHistory(currentEntries, {
+            ownerSessionId: requestSessionId,
+            firstItemIndex: 0,
+            total: Math.max(total, currentEntries.length),
+            hasMore: false,
+            isCanonical: !hasClientGeneratedEntries(currentEntries),
+          });
         }
       })
       .catch(() => {})
@@ -411,7 +509,7 @@ export default function ChatView({
         loadingMoreRef.current = false;
         setLoadingMore(false);
       });
-  }, [sessionId, hasMore, invalidateHistoryRefresh]);
+  }, [sessionId, hasMore, invalidateHistoryRefresh, applyHistory]);
 
   // Load older messages when the top sentinel scrolls into view.
   useEffect(() => {
@@ -432,14 +530,27 @@ export default function ChatView({
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
       setCreating(true);
-      setEntries([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }]);
+      applyHistory([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }], {
+        ownerSessionId: null,
+        firstItemIndex: 0,
+        total: 1,
+        hasMore: false,
+        isCanonical: false,
+      });
       try {
         await onCreateAndSend(prompt, attachments);
       } catch (err: any) {
-        setEntries((prev) => [
-          ...prev,
-          { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `draft-err-0` },
-        ]);
+        const nextEntries = [
+          ...entriesRef.current,
+          { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `draft-err-0` } satisfies ChatEntry,
+        ];
+        applyHistory(nextEntries, {
+          ownerSessionId: null,
+          firstItemIndex: 0,
+          total: nextEntries.length,
+          hasMore: false,
+          isCanonical: false,
+        });
         setCreating(false);
       }
       return;
@@ -448,18 +559,27 @@ export default function ChatView({
     if (!sessionId) return;
     onDraftClear?.();
     invalidateHistoryRefresh();
-    setEntries((prev) => [...prev, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) }]);
+    const nextEntries = [...entriesRef.current, { role: "user", content: prompt, id: `local-${Date.now()}`, ...(attachments?.length ? { attachments } : {}) } satisfies ChatEntry];
+    applyHistory(nextEntries, {
+      ownerSessionId: sessionId,
+      total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntries.length),
+      hasMore: firstItemIndex.current > 0,
+      isCanonical: false,
+    });
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
     try {
       await sendMessage(prompt, attachments);
     } catch (err: any) {
-      setEntries((prev) => [
-        ...prev,
-        { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` },
-      ]);
+      const nextEntriesWithError = [...entriesRef.current, { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` } satisfies ChatEntry];
+      applyHistory(nextEntriesWithError, {
+        ownerSessionId: sessionId,
+        total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntriesWithError.length),
+        hasMore: firstItemIndex.current > 0,
+        isCanonical: false,
+      });
     }
-  }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh]);
+  }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, applyHistory]);
 
   const handleRunFleet = useCallback(async () => {
     if (!sessionId) throw new Error("Session not available");

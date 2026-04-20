@@ -1,0 +1,136 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import type { ChatEntry } from "./api";
+import {
+  getCachedChatSnapshot,
+  hasClientGeneratedEntries,
+  hasOptimisticTail,
+  mergeTailMessages,
+  resetCachedChatSnapshotState,
+  setCachedChatSnapshot,
+  type ChatHistorySnapshot,
+} from "./chat-cache";
+
+function createMessage(id: string): ChatEntry {
+  return {
+    id,
+    role: "assistant",
+    content: id,
+  };
+}
+
+function createSnapshot(sessionId: string, entryIds: string[]): ChatHistorySnapshot {
+  return {
+    sessionId,
+    entries: entryIds.map((entryId) => createMessage(entryId)),
+    firstItemIndex: 0,
+    total: entryIds.length,
+    hasMore: false,
+    fetchedAt: Date.now(),
+    isCanonical: true,
+  };
+}
+
+describe("chat cache", () => {
+  beforeEach(() => {
+    resetCachedChatSnapshotState();
+  });
+
+  it("returns cloned snapshots and evicts the least recently used session", () => {
+    const queryClient = new QueryClient();
+
+    for (let index = 1; index <= 5; index += 1) {
+      setCachedChatSnapshot(queryClient, createSnapshot(`session-${index}`, [`entry-${index}`]));
+    }
+
+    // Touch session-1 so session-2 becomes the oldest.
+    expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("entry-1");
+
+    setCachedChatSnapshot(queryClient, createSnapshot("session-6", ["entry-6"]));
+
+    expect(getCachedChatSnapshot(queryClient, "session-2")).toBeUndefined();
+    expect(getCachedChatSnapshot(queryClient, "session-1")).toBeDefined();
+    expect(getCachedChatSnapshot(queryClient, "session-6")).toBeDefined();
+
+    const mutated = getCachedChatSnapshot(queryClient, "session-1");
+    expect(mutated).toBeDefined();
+    mutated!.entries[0] = { id: "mutated", role: "assistant", content: "mutated" };
+
+    expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("entry-1");
+  });
+
+  it("does not replace a canonical snapshot with optimistic state", () => {
+    const queryClient = new QueryClient();
+
+    setCachedChatSnapshot(queryClient, createSnapshot("session-1", ["canonical-entry"]));
+    setCachedChatSnapshot(queryClient, {
+      ...createSnapshot("session-1", ["optimistic-entry"]),
+      isCanonical: false,
+    });
+
+    expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("canonical-entry");
+  });
+});
+
+describe("mergeTailMessages", () => {
+  it("detects when loaded entries extend past the canonical server total", () => {
+    expect(hasOptimisticTail(50, 51, 100)).toBe(true);
+    expect(hasOptimisticTail(50, 50, 100)).toBe(false);
+  });
+
+  it("detects client-generated entries by their local cache ids", () => {
+    expect(hasClientGeneratedEntries([createMessage("entry-1"), createMessage("local-2")])).toBe(true);
+    expect(hasClientGeneratedEntries([createMessage("entry-1"), createMessage("entry-2")])).toBe(false);
+  });
+
+  it("preserves older loaded messages when the refreshed tail overlaps", () => {
+    const previousEntries = Array.from({ length: 50 }, (_, index) => createMessage(`old-${index + 51}`));
+    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`new-${index + 71}`));
+
+    const merged = mergeTailMessages(previousEntries, 50, 120, nextWindow);
+
+    expect(merged.firstItemIndex).toBe(50);
+    expect(merged.total).toBe(120);
+    expect(merged.hasOptimisticTail).toBe(false);
+    expect(merged.hasClientGeneratedEntries).toBe(false);
+    expect(merged.entries).toHaveLength(70);
+    expect(merged.entries.slice(0, 20).map((entry) => entry.content)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `old-${index + 51}`),
+    );
+    expect(merged.entries.slice(20).map((entry) => entry.content)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `new-${index + 71}`),
+    );
+  });
+
+  it("replaces the window when the refreshed tail no longer overlaps", () => {
+    const previousEntries = Array.from({ length: 50 }, (_, index) => createMessage(`old-${index + 1}`));
+    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`new-${index + 151}`));
+
+    const merged = mergeTailMessages(previousEntries, 0, 200, nextWindow);
+
+    expect(merged.firstItemIndex).toBe(150);
+    expect(merged.total).toBe(200);
+    expect(merged.hasOptimisticTail).toBe(false);
+    expect(merged.hasClientGeneratedEntries).toBe(false);
+    expect(merged.entries.map((entry) => entry.content)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `new-${index + 151}`),
+    );
+  });
+
+  it("preserves optimistic tail entries during a stale background refresh", () => {
+    const previousEntries = [
+      ...Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 51}`)),
+      createMessage("local-101"),
+    ];
+    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 51}`));
+
+    const merged = mergeTailMessages(previousEntries, 50, 100, nextWindow);
+
+    expect(merged.firstItemIndex).toBe(50);
+    expect(merged.total).toBe(101);
+    expect(merged.hasOptimisticTail).toBe(true);
+    expect(merged.hasClientGeneratedEntries).toBe(true);
+    expect(merged.entries).toHaveLength(51);
+    expect(merged.entries.at(-1)?.content).toBe("local-101");
+  });
+});
