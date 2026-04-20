@@ -10,7 +10,6 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve, basename, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore } from "./task-store.js";
@@ -46,6 +45,8 @@ import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.js";
+import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
+import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -591,9 +592,9 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("self_update", {
     description:
-      "Pull the latest code from the remote repository, sync dependencies, and restart the server. " +
+      "Pull the latest code from the remote repository and restart the server. " +
       "Use this to update the Copilot Bridge to the latest version without the full staging workflow. " +
-      "Saves a rollback checkpoint before pulling so the launcher can revert if the build or health check fails. " +
+      "Saves a rollback checkpoint before pulling so the launcher can sync dependencies, rebuild, health-check, and roll back if needed. " +
       "IMPORTANT: Do not make further tool calls after invoking this — the server will restart. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
@@ -612,16 +613,14 @@ export function createBridgeTools(ctx: AppContext) {
       // Save pre-update checkpoint so the launcher can roll back
       const headResult = run("git rev-parse HEAD");
       const preUpdateSha = headResult.ok ? headResult.output.trim() : "";
-      if (preUpdateSha) {
-        writeFileSync(PRE_DEPLOY_SHA_FILE, preUpdateSha);
-      }
+      const rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(PRE_DEPLOY_SHA_FILE, preUpdateSha);
 
       // Pull latest
       const pullResult = run(`git pull --rebase origin ${branch}`);
       if (!pullResult.ok) {
         // Abort rebase if it left us in a conflicted state
         run("git rebase --abort");
-        try { if (preUpdateSha) writeFileSync(PRE_DEPLOY_SHA_FILE, preUpdateSha); } catch {}
+        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
         return {
           success: false,
           error:
@@ -637,31 +636,16 @@ export function createBridgeTools(ctx: AppContext) {
 
       if (!changed) {
         // Clean up checkpoint — nothing changed
-        try { const { unlinkSync } = await import("node:fs"); unlinkSync(PRE_DEPLOY_SHA_FILE); } catch {}
+        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
         return { success: true, message: "Already up to date — no restart needed." };
       }
 
-      // Sync deps if package files or patch-package inputs changed
-      const depsChanged = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
-      if (depsChanged.ok && depsChanged.output.trim()) {
-        const prepared = preparePatchedPackagesForInstall(REPO_ROOT);
-        const npmResult = run("npm install --no-audit --no-fund --include=dev");
-        if (!npmResult.ok) {
-          prepared.restore();
-          return {
-            success: false,
-            error: `Pulled to ${newSha} but npm install failed. The launcher will retry on restart.\n\n` + npmResult.output.slice(-300),
-          };
-        }
-        prepared.discard();
-        // Update deps hash so launcher doesn't re-install
-        try {
-          const hash = dependencySyncHash(REPO_ROOT);
-          writeFileSync(join(dataDir, "deps-hash"), hash);
-        } catch {}
-      }
-
-      // Signal restart — launcher will build, health-check, and rollback if needed
+      // Signal restart — launcher will sync dependencies, build, health-check, and roll back if needed
+      const dependencyInputsChanged = !!preUpdateSha
+        && (() => {
+          const diffResult = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
+          return diffResult.ok && !!diffResult.output.trim();
+        })();
       writeFileSync(SIGNAL_FILE, new Date().toISOString());
       const otherBusy = triggerRestartPending();
       const waitNote = otherBusy > 0
@@ -673,7 +657,9 @@ export function createBridgeTools(ctx: AppContext) {
         previousSha: preUpdateSha.slice(0, 8),
         newSha,
         message:
-          `Updated ${preUpdateSha.slice(0, 8)} → ${newSha}. Restart signal sent.${waitNote} ` +
+          `Updated ${preUpdateSha.slice(0, 8)} → ${newSha}. Restart queued; the launcher will sync dependencies, rebuild, and roll back automatically if needed.` +
+          (dependencyInputsChanged ? " Dependency inputs changed — production dependency sync will happen during restart only." : "") +
+          `${waitNote} ` +
           `Do NOT make any more tool calls — this session will block the restart until idle.`,
       };
     },

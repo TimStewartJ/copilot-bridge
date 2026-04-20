@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
+import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
@@ -953,11 +954,16 @@ export const STAGING_TOOLS = [
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
       const headResult = run("git rev-parse HEAD", PRODUCTION_ROOT);
       const preDeploySha = headResult.ok ? headResult.output.trim() : "";
+      let rollbackCheckpoint = { sha: "", createdByCurrentOperation: false };
       if (preDeploySha) {
         const dataDir = join(PRODUCTION_ROOT, "data");
         if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-        writeFileSync(PRE_DEPLOY_SHA_FILE, preDeploySha);
-        log(`Pre-deploy SHA saved: ${preDeploySha}`);
+        rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(PRE_DEPLOY_SHA_FILE, preDeploySha);
+        log(
+          rollbackCheckpoint.createdByCurrentOperation
+            ? `Pre-deploy SHA saved: ${rollbackCheckpoint.sha}`
+            : `Using preserved pre-deploy SHA: ${rollbackCheckpoint.sha}`,
+        );
       }
 
       // Merge into production (should be fast-forward after rebase)
@@ -965,7 +971,7 @@ export const STAGING_TOOLS = [
       if (!mergeResult.ok) {
         run("git merge --abort", PRODUCTION_ROOT);
         unstashProduction();
-        try { unlinkSync(PRE_DEPLOY_SHA_FILE); } catch {}
+        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
         return {
           success: false,
           error:
@@ -980,28 +986,10 @@ export const STAGING_TOOLS = [
       const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
       log(`Merged to production: ${commitSha}`);
 
-      // Install deps if package files or patch-package inputs changed
+      // Let the launcher own production dependency sync during restart.
       const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
       if (pkgChanged.ok && pkgChanged.output.trim()) {
-        log("Dependency inputs changed — running npm install in production...");
-        const prepared = preparePatchedPackagesForInstall(PRODUCTION_ROOT);
-        if (prepared.packages.length > 0) {
-          log(`Prepared patched packages for production install: ${prepared.packages.join(", ")}`);
-        }
-        const npmResult = run("npm install --no-audit --no-fund --include=dev", PRODUCTION_ROOT);
-        if (!npmResult.ok) {
-          prepared.restore();
-          log(`npm install failed (non-fatal): ${npmResult.output.slice(-300)}`);
-        } else {
-          prepared.discard();
-          log("npm install succeeded");
-          // Update launcher deps hash so it doesn't re-install on restart
-          try {
-            const hash = dependencySyncHash(PRODUCTION_ROOT);
-            const hashFile = join(PRODUCTION_ROOT, "data", "deps-hash");
-            writeFileSync(hashFile, hash);
-          } catch {}
-        }
+        log("Dependency inputs changed — launcher will sync production dependencies during restart");
       }
 
       // Push to origin so other deployments can pick up the change

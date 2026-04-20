@@ -8,14 +8,33 @@ import { fileURLToPath } from "node:url";
 import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
+import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import { canUseDevtunnelCli, getDevtunnelCliStatus } from "./server/tunnel.js";
+import {
+  clearPersistentRollbackFailureState,
+  hasPersistentRollbackFailureState,
+  markPersistentRollbackFailureState,
+} from "./launcher-rollback-state.js";
+import {
+  didRestartRecover,
+  resolveRollbackRecoveryOutcome,
+  rollbackRecoveryRequiresServerStart,
+  type RestartOutcome,
+} from "./launcher-restart.js";
 import {
   evaluateHealthPoll,
   evaluatePostRecoveryState,
   evaluateUnexpectedExit,
   shouldIgnoreHealthPollResult,
 } from "./launcher-health.js";
+import { runLauncherBuild, runLauncherRollbackWithCheckpointHandling, verifyLauncherStartup } from "./launcher-build.js";
+import {
+  decideLauncherStartup,
+  decideRecoveryExecution,
+  shouldCheckFollowUpRecovery,
+  shouldClearRollbackCheckpointAfterHealthyState,
+} from "./launcher-recovery.js";
 import { isChildProcessActive, waitForChildExit } from "./launcher-process.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +42,8 @@ const ROOT = join(__dirname, "..");
 const NODE_PATH = process.execPath; // use the same node binary that's running the launcher
 const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
+const PRE_DEPLOY_SHA_FILE = join(ROOT, "data", "pre-deploy-sha");
+const FAILED_ROLLBACK_STATE_FILE = join(ROOT, "data", "rollback-required");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
 const PORT = 3333;
 const HEALTH_URL = `http://localhost:${PORT}/api/health`;
@@ -68,6 +89,7 @@ let steadyHealthFailures = 0;
 let healthPollInFlight = false;
 let recoveringServer = false;
 let tunnelStatusLogged = false;
+let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
 
 function log(msg: string) {
   console.log(`[launcher] ${msg}`);
@@ -135,45 +157,90 @@ function ensureDeps(): boolean {
 }
 
 function build(): boolean {
-  log("Building...");
-  ensureDeps();
-  const client = run("npx vite build");
-  if (!client.ok) {
-    log(`Client build failed:\n${client.output.slice(-500)}`);
-    return false;
-  }
-  const server = run("npx tsc --noEmit");
-  if (!server.ok) {
-    log(`Server type check failed:\n${server.output.slice(-500)}`);
-    return false;
-  }
-  const tests = run("npx vitest run --coverage");
-  if (!tests.ok) {
-    log(`Tests failed:\n${tests.output.slice(-500)}`);
-    return false;
-  }
-  log("Build succeeded");
-  return true;
+  return runLauncherBuild({ ensureDeps, run, log });
 }
 
-function rollback() {
+function rollback(): boolean {
   log("Rolling back to last checkpoint...");
-  const preDeployFile = join(ROOT, "data", "pre-deploy-sha");
+  const preDeployFile = PRE_DEPLOY_SHA_FILE;
   let rollbackTarget = "HEAD";
+  let checkpointContents: string | null = null;
   try {
     if (existsSync(preDeployFile)) {
-      const sha = readFileSync(preDeployFile, "utf-8").trim();
+      checkpointContents = readFileSync(preDeployFile, "utf-8");
+      const sha = checkpointContents.trim();
       if (sha) {
         rollbackTarget = sha;
         log(`Rolling back to pre-deploy state: ${sha}`);
       }
-      unlinkSync(preDeployFile);
     }
   } catch {}
-  run(`git reset --hard ${rollbackTarget}`);
-  ensureDeps();
-  run("npx vite build");
-  log("Rollback complete");
+  return runLauncherRollbackWithCheckpointHandling({
+    rollbackTarget,
+    ensureDeps,
+    run,
+    log,
+    clearCheckpoint: () => {
+      if (checkpointContents === null) return;
+      try {
+        unlinkSync(preDeployFile);
+      } catch {}
+    },
+    restoreCheckpoint: () => {
+      if (checkpointContents === null) return;
+      try {
+        writeFileSync(preDeployFile, checkpointContents);
+      } catch {}
+    },
+  });
+}
+
+function enterStoppedStateAfterFailedRollback() {
+  suppressAutoRecovery = true;
+  markPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+}
+
+function clearFailedRollbackState() {
+  suppressAutoRecovery = false;
+  clearPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+}
+
+function clearRollbackCheckpointAfterHealthyState() {
+  if (!shouldClearRollbackCheckpointAfterHealthyState({
+    restartSignalPresent: existsSync(SIGNAL_FILE),
+    autoRecoverySuppressed: suppressAutoRecovery,
+  })) {
+    return;
+  }
+  clearRollbackCheckpoint(PRE_DEPLOY_SHA_FILE);
+}
+
+async function processRestartSignal(): Promise<void> {
+  if (restarting || shuttingDown) return;
+  restarting = true;
+  let restartOutcome: RestartOutcome = "failed";
+  try {
+    restartOutcome = await restart();
+  } finally {
+    clearSignal();
+    restarting = false;
+    if (didRestartRecover(restartOutcome)) {
+      clearFailedRollbackState();
+      clearRollbackCheckpointAfterHealthyState();
+    }
+    if (!shouldCheckFollowUpRecovery({ autoRecoverySuppressed: suppressAutoRecovery })) {
+      return;
+    }
+    const followUpRecovery = evaluatePostRecoveryState({
+      hasServerProcess: serverProcess !== null,
+      restarting,
+      recoveringServer,
+      shuttingDown,
+    });
+    if (followUpRecovery) {
+      recoverServer(followUpRecovery.reason, followUpRecovery.options);
+    }
+  }
 }
 
 async function healthCheck(expectedChild: ChildProcess | null = serverProcess): Promise<boolean> {
@@ -223,6 +290,19 @@ function reserveRecoveryAttempt(): number | null {
 }
 
 function recoverServer(reason: string, options: { killExisting?: boolean; delayMs?: number } = {}): void {
+  const recoveryExecution = decideRecoveryExecution({
+    restartSignalPresent: existsSync(SIGNAL_FILE),
+    autoRecoverySuppressed: suppressAutoRecovery,
+  });
+  if (recoveryExecution.type === "restart") {
+    void processRestartSignal();
+    return;
+  }
+  if (recoveryExecution.type === "skip") {
+    log(recoveryExecution.logMessage);
+    return;
+  }
+
   const attempt = reserveRecoveryAttempt();
   if (!attempt) return;
 
@@ -249,6 +329,7 @@ function recoverServer(reason: string, options: { killExisting?: boolean; delayM
       const healthy = await healthCheck(replacementServer);
       if (healthy) {
         steadyHealthFailures = 0;
+        clearRollbackCheckpointAfterHealthyState();
         log(`✅ Auto-restart succeeded after ${reason}`);
         await notifyWebhook(
           `⚡ Copilot Bridge auto-restarted after ${reason} (attempt ${attempt}/${MAX_CRASH_RESTARTS}, ${tag()})`,
@@ -260,14 +341,16 @@ function recoverServer(reason: string, options: { killExisting?: boolean; delayM
       }
     } finally {
       recoveringServer = false;
-      const followUpRecovery = evaluatePostRecoveryState({
-        hasServerProcess: serverProcess !== null,
-        restarting,
-        recoveringServer,
-        shuttingDown,
-      });
-      if (followUpRecovery) {
-        recoverServer(followUpRecovery.reason, followUpRecovery.options);
+      if (shouldCheckFollowUpRecovery({ autoRecoverySuppressed: suppressAutoRecovery })) {
+        const followUpRecovery = evaluatePostRecoveryState({
+          hasServerProcess: serverProcess !== null,
+          restarting,
+          recoveringServer,
+          shuttingDown,
+        });
+        if (followUpRecovery) {
+          recoverServer(followUpRecovery.reason, followUpRecovery.options);
+        }
       }
     }
   };
@@ -319,6 +402,10 @@ async function pollServerHealth(): Promise<void> {
       failureThreshold: HEALTH_FAILURE_THRESHOLD,
     });
     steadyHealthFailures = decision.nextFailures;
+
+    if (healthy) {
+      clearRollbackCheckpointAfterHealthyState();
+    }
 
     if (!decision.logMessage) {
       return;
@@ -452,24 +539,61 @@ async function gracefulStopServer(): Promise<boolean> {
   return true;
 }
 
-async function restart() {
+async function restart(): Promise<RestartOutcome> {
   log("═══ Restart requested ═══");
+  const hadRunningServerAtStart = serverProcess !== null;
 
   await waitForIdleSessions();
 
   if (!build()) {
     log("Build failed — rolling back");
     await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
-    rollback();
+    const rollbackSucceeded = rollback();
+    if (!rollbackSucceeded) {
+      log("Rollback did not complete successfully");
+      enterStoppedStateAfterFailedRollback();
+      try { await fetch(`http://localhost:${PORT}/api/restart-clear`, { method: "POST" }); }
+      catch { /* server may be unreachable */ }
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_FAILURES) {
+        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+        process.exit(1);
+      }
+      return "failed";
+    }
+
+    let rolledBackServerHealthy = false;
+    if (rollbackRecoveryRequiresServerStart({ hadRunningServerAtStart })) {
+      const rolledBackServer = startServer();
+      serverProcess = rolledBackServer;
+      rolledBackServerHealthy = await healthCheck(rolledBackServer);
+      if (!rolledBackServerHealthy) {
+        log("❌ Rolled-back server failed health check");
+        await forceKillServerAndWait("Stopping failed rolled-back server...");
+        enterStoppedStateAfterFailedRollback();
+      }
+    }
+
     // Old server is still running with restart banner — dismiss it immediately
     try { await fetch(`http://localhost:${PORT}/api/restart-clear`, { method: "POST" }); }
     catch { /* server may be unreachable */ }
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_FAILURES) {
-      log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-      process.exit(1);
+
+    const outcome = resolveRollbackRecoveryOutcome({
+      rollbackSucceeded,
+      hadRunningServerAtStart,
+      rolledBackServerHealthy,
+    });
+    if (outcome === "failed") {
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_FAILURES) {
+        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+        process.exit(1);
+      }
+      return "failed";
     }
-    return;
+    consecutiveFailures = 0;
+    log("✅ Recovery completed via rollback");
+    return "recovered-via-rollback";
   }
 
   await waitForIdleSessions();
@@ -481,7 +605,7 @@ async function restart() {
       log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
       process.exit(1);
     }
-    return;
+    return "failed";
   }
   const replacementServer = startServer();
   serverProcess = replacementServer;
@@ -504,6 +628,7 @@ async function restart() {
     } else {
       await notifyWebhook(`🔄 Copilot Bridge restarted successfully (${tag()})`, currentTunnelUrl ?? undefined);
     }
+    return "restarted";
   } else {
     log("❌ Health check failed — rolling back");
     await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
@@ -514,15 +639,41 @@ async function restart() {
         log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
         process.exit(1);
       }
-      return;
+      return "failed";
     }
-    rollback();
-    serverProcess = startServer();
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_FAILURES) {
-      log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-      process.exit(1);
+    const rollbackSucceeded = rollback();
+    if (!rollbackSucceeded) {
+      log("❌ Rollback failed — leaving server stopped");
+      enterStoppedStateAfterFailedRollback();
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_FAILURES) {
+        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+        process.exit(1);
+      }
+      return "failed";
     }
+    const rolledBackServer = startServer();
+    serverProcess = rolledBackServer;
+    const rolledBackServerHealthy = await healthCheck(rolledBackServer);
+    const outcome = resolveRollbackRecoveryOutcome({
+      rollbackSucceeded,
+      hadRunningServerAtStart,
+      rolledBackServerHealthy,
+    });
+    if (outcome === "failed") {
+      log("❌ Rolled-back server failed health check");
+      await forceKillServerAndWait("Stopping failed rolled-back server...");
+      enterStoppedStateAfterFailedRollback();
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_FAILURES) {
+        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+        process.exit(1);
+      }
+      return "failed";
+    }
+    consecutiveFailures = 0;
+    log("✅ Recovery completed via rollback");
+    return "recovered-via-rollback";
   }
 }
 
@@ -647,53 +798,50 @@ async function main() {
   console.log("╚════════════════════════════════════════╝");
   console.log();
 
-  clearSignal();
-
-  // Pull latest from origin on startup
-  const currentBranch = run("git rev-parse --abbrev-ref HEAD");
-  const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
-  const pullResult = run(`git pull --rebase origin ${branchName}`);
-  if (pullResult.ok) {
-    log("Pulled latest from origin");
+  const startupDecision = decideLauncherStartup({
+    restartSignalPresent: existsSync(SIGNAL_FILE),
+    autoRecoverySuppressed: suppressAutoRecovery,
+  });
+  if (startupDecision.clearRestartSignal) {
+    clearSignal();
   } else {
-    log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+    log(startupDecision.logMessage);
   }
 
-  // Ensure dependencies are in sync after pull
-  ensureDeps();
+  if (startupDecision.startServer) {
+    // Pull latest from origin on startup
+    const currentBranch = run("git rev-parse --abbrev-ref HEAD");
+    const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
+    const pullResult = run(`git pull --rebase origin ${branchName}`);
+    if (pullResult.ok) {
+      log("Pulled latest from origin");
+    } else {
+      log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+    }
 
-  // Start server
-  serverProcess = startServer();
+    // Ensure dependencies are in sync after pull
+    if (!verifyLauncherStartup({ ensureDeps, log })) {
+      throw new Error("Dependency sync failed during startup");
+    }
 
-  // Start dev tunnel
-  if (shouldUseDevtunnel()) {
-    try {
-      const url = await startTunnel();
-      await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
-    } catch (err) {
-      log(`Tunnel/notification setup failed (non-fatal): ${err}`);
+    // Start server
+    serverProcess = startServer();
+
+    // Start dev tunnel
+    if (shouldUseDevtunnel()) {
+      try {
+        const url = await startTunnel();
+        await notifyWebhook(`🤖 Copilot Bridge is online! (${tag()})`, url);
+      } catch (err) {
+        log(`Tunnel/notification setup failed (non-fatal): ${err}`);
+      }
     }
   }
 
   // Poll for restart signal
   setInterval(async () => {
     if (!restarting && !recoveringServer && existsSync(SIGNAL_FILE)) {
-      restarting = true;
-      try {
-        await restart();
-      } finally {
-        clearSignal();
-        restarting = false;
-        const followUpRecovery = evaluatePostRecoveryState({
-          hasServerProcess: serverProcess !== null,
-          restarting,
-          recoveringServer,
-          shuttingDown,
-        });
-        if (followUpRecovery) {
-          recoverServer(followUpRecovery.reason, followUpRecovery.options);
-        }
-      }
+      await processRestartSignal();
     }
   }, POLL_INTERVAL);
 
