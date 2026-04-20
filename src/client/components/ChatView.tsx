@@ -18,6 +18,8 @@ import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 
 const INITIAL_PAGE_SIZE = 50;
 const MANUAL_LOAD_PAGE_SIZE = 200;
+const AUTO_LOAD_TOP_THRESHOLD = 24;
+const AUTO_LOAD_DELAY_MS = 250;
 
 type PendingStatusTone = "sending" | "thinking" | "creating";
 
@@ -128,6 +130,12 @@ export default function ChatView({
   const prevScrollHeightRef = useRef<number | null>(null);
   const loadRequestIdRef = useRef(0);
   const refreshingHistoryRef = useRef(false);
+  const autoLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoLoadArmedRef = useRef(false);
+  const suppressAutoLoadRef = useRef(false);
+  const topAutoFillConsumedRef = useRef(false);
+  const suppressNextLoadMoreClickRef = useRef(false);
+  const suppressNextLoadMoreClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedSendRef = useRef<{
     sessionId: string | null;
     composerKey: string;
@@ -175,6 +183,29 @@ export default function ChatView({
     loadRequestIdRef.current += 1;
     setRefreshingHistory(false);
   }, []);
+
+  const clearPendingAutoLoad = useCallback(() => {
+    if (autoLoadTimeoutRef.current == null) return;
+    clearTimeout(autoLoadTimeoutRef.current);
+    autoLoadTimeoutRef.current = null;
+  }, []);
+
+  const clearSuppressedLoadMoreClick = useCallback(() => {
+    if (suppressNextLoadMoreClickTimeoutRef.current != null) {
+      clearTimeout(suppressNextLoadMoreClickTimeoutRef.current);
+      suppressNextLoadMoreClickTimeoutRef.current = null;
+    }
+    suppressNextLoadMoreClickRef.current = false;
+  }, []);
+
+  const suppressUpcomingLoadMoreClick = useCallback(() => {
+    clearSuppressedLoadMoreClick();
+    suppressNextLoadMoreClickRef.current = true;
+    suppressNextLoadMoreClickTimeoutRef.current = setTimeout(() => {
+      suppressNextLoadMoreClickRef.current = false;
+      suppressNextLoadMoreClickTimeoutRef.current = null;
+    }, 0);
+  }, [clearSuppressedLoadMoreClick]);
 
   const handleNewEntries = useCallback((newEntries: ChatEntry[]) => {
     invalidateHistoryRefresh();
@@ -253,6 +284,11 @@ export default function ChatView({
       totalEntriesRef.current = 0;
       entriesRef.current = [];
       loadingMoreRef.current = false;
+      autoLoadArmedRef.current = false;
+      suppressAutoLoadRef.current = false;
+      topAutoFillConsumedRef.current = false;
+      clearPendingAutoLoad();
+      clearSuppressedLoadMoreClick();
       return;
     }
 
@@ -368,6 +404,11 @@ export default function ChatView({
 
     loadingMoreRef.current = false;
     setLoadingMore(false);
+    autoLoadArmedRef.current = false;
+    suppressAutoLoadRef.current = false;
+    topAutoFillConsumedRef.current = false;
+    clearPendingAutoLoad();
+    clearSuppressedLoadMoreClick();
     const cachedSnapshot = getCachedChatSnapshot(queryClient, sessionId);
     if (cachedSnapshot?.isCanonical) {
       applyHistory(cachedSnapshot.entries, {
@@ -405,9 +446,11 @@ export default function ChatView({
     return () => {
       controller.abort();
       loadAndReconnectRef.current = () => {};
+      clearPendingAutoLoad();
+      clearSuppressedLoadMoreClick();
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [composerKey, reconnect, sessionId, applyHistory, queryClient]);
+  }, [composerKey, reconnect, sessionId, applyHistory, queryClient, clearPendingAutoLoad, clearSuppressedLoadMoreClick]);
 
   // Reconnect when an external source (e.g. schedule) starts work on this session
   const prevBusySignalRef = useRef(busySignal);
@@ -418,13 +461,6 @@ export default function ChatView({
     if (busySignal === prev || !sessionId) return;
     loadAndReconnectRef.current({ background: true });
   }, [busySignal, sessionId]);
-
-  // Detect stick-to-bottom: if user is near the bottom, keep auto-scrolling.
-  const handleScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  }, [invalidateHistoryRefresh]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -529,9 +565,116 @@ export default function ChatView({
       });
   }, [sessionId, hasMore, invalidateHistoryRefresh, applyHistory]);
 
+  const handleLoadMoreIntent = useCallback(() => {
+    clearPendingAutoLoad();
+    autoLoadArmedRef.current = false;
+  }, [clearPendingAutoLoad]);
+
+  const handleLoadMoreKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      clearSuppressedLoadMoreClick();
+      handleLoadMoreIntent();
+    }
+  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntent]);
+
+  const handleLoadMorePointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    clearSuppressedLoadMoreClick();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    handleLoadMoreIntent();
+  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntent]);
+
   const handleLoadMoreClick = useCallback(() => {
+    if (suppressNextLoadMoreClickRef.current) {
+      clearSuppressedLoadMoreClick();
+      return;
+    }
+    suppressAutoLoadRef.current = true;
+    handleLoadMoreIntent();
     loadOlderMessages({ limit: MANUAL_LOAD_PAGE_SIZE, preserveScrollPosition: false });
-  }, [loadOlderMessages]);
+  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntent, loadOlderMessages]);
+
+  const scheduleAutoLoad = useCallback((opts: { consumeTopAutoFill?: boolean } = {}) => {
+    if (!sessionId || !hasMore || loadingMoreRef.current || autoLoadTimeoutRef.current != null) return;
+    autoLoadTimeoutRef.current = setTimeout(() => {
+      autoLoadTimeoutRef.current = null;
+      if (!loadingMoreRef.current) {
+        if (opts.consumeTopAutoFill) {
+          topAutoFillConsumedRef.current = true;
+        }
+        autoLoadArmedRef.current = false;
+        loadOlderMessages();
+      }
+    }, AUTO_LOAD_DELAY_MS);
+  }, [hasMore, loadOlderMessages, sessionId]);
+
+  const handleLoadMoreIntentEnd = useCallback(() => {
+    if (suppressAutoLoadRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el || !sessionId || !hasMore || loadingMoreRef.current || topAutoFillConsumedRef.current) return;
+    const nearTop = el.scrollTop <= AUTO_LOAD_TOP_THRESHOLD;
+    const overflowing = el.scrollHeight > el.clientHeight + AUTO_LOAD_TOP_THRESHOLD;
+    if (!nearTop || overflowing) return;
+    scheduleAutoLoad({ consumeTopAutoFill: true });
+  }, [hasMore, scheduleAutoLoad, sessionId]);
+
+  const handleLoadMoreKeyUp = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      handleLoadMoreIntentEnd();
+    }
+  }, [handleLoadMoreIntentEnd]);
+
+  const handleLoadMorePointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const releasedInside = event.clientX >= rect.left
+      && event.clientX <= rect.right
+      && event.clientY >= rect.top
+      && event.clientY <= rect.bottom;
+    if (releasedInside) {
+      clearSuppressedLoadMoreClick();
+    } else {
+      suppressUpcomingLoadMoreClick();
+    }
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!releasedInside) return;
+    handleLoadMoreIntentEnd();
+  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntentEnd, suppressUpcomingLoadMoreClick]);
+
+  const handleLoadMorePointerCancel = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    suppressUpcomingLoadMoreClick();
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [suppressUpcomingLoadMoreClick]);
+
+  // Detect stick-to-bottom and schedule an auto-load after the user reaches the top.
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const nearTop = el.scrollTop <= AUTO_LOAD_TOP_THRESHOLD;
+    if (!nearTop) {
+      autoLoadArmedRef.current = true;
+      suppressAutoLoadRef.current = false;
+      topAutoFillConsumedRef.current = false;
+      clearPendingAutoLoad();
+      return;
+    }
+    if (!autoLoadArmedRef.current) return;
+    scheduleAutoLoad();
+  }, [clearPendingAutoLoad, scheduleAutoLoad]);
+
+  // If the first page doesn't overflow, schedule the same delayed auto-load from the top.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !sessionId || !hasMore || loading || loadingMore) return;
+    if (suppressAutoLoadRef.current || topAutoFillConsumedRef.current) return;
+    const nearTop = el.scrollTop <= AUTO_LOAD_TOP_THRESHOLD;
+    const overflowing = el.scrollHeight > el.clientHeight + AUTO_LOAD_TOP_THRESHOLD;
+    if (!nearTop || overflowing) return;
+    scheduleAutoLoad({ consumeTopAutoFill: true });
+  }, [entries, hasMore, loading, loadingMore, scheduleAutoLoad, sessionId]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: Attachment[]) => {
     if (loading) {
@@ -820,6 +963,11 @@ export default function ChatView({
             <div className="text-center py-2 text-xs">
               <button
                 type="button"
+                onPointerDown={handleLoadMorePointerDown}
+                onPointerUp={handleLoadMorePointerUp}
+                onPointerCancel={handleLoadMorePointerCancel}
+                onKeyDown={handleLoadMoreKeyDown}
+                onKeyUp={handleLoadMoreKeyUp}
                 onClick={handleLoadMoreClick}
                 className="inline-flex flex-col items-center gap-0.5 font-medium text-text-muted transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:text-text-primary"
                 aria-label={`Load ${MANUAL_LOAD_PAGE_SIZE} older messages`}
