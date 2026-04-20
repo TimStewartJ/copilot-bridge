@@ -1307,6 +1307,27 @@ describe("Session metadata routes", () => {
     expect(res.body.ok).toBe(true);
   });
 
+  it("POST /api/sessions/batch invalidates the cached session list after archiving", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
+      { sessionId: "s2", summary: "Session two", startTime: "2026-04-19T00:00:00.000Z" } as any,
+    ];
+
+    const before = await request(app).get("/api/sessions");
+    expect(before.status).toBe(200);
+    expect(before.body.sessions.map((session: { sessionId: string }) => session.sessionId)).toEqual(["s1", "s2"]);
+
+    const archive = await request(app)
+      .post("/api/sessions/batch")
+      .send({ sessionIds: ["s1"], action: "archive" });
+    expect(archive.status).toBe(200);
+    expect(archive.body.ok).toBe(true);
+
+    const after = await request(app).get("/api/sessions");
+    expect(after.status).toBe(200);
+    expect(after.body.sessions.map((session: { sessionId: string }) => session.sessionId)).toEqual(["s2"]);
+  });
+
   it("POST /api/sessions/batch requires sessionIds", async () => {
     const res = await request(app)
       .post("/api/sessions/batch")

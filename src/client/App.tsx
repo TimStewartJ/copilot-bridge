@@ -64,6 +64,11 @@ import { useAppBack } from "./hooks/useAppBack";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 
+function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<string, string>): string[] {
+  const failedIds = new Set(Object.keys(errors));
+  return sessionIds.filter((sessionId) => !failedIds.has(sessionId));
+}
+
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -220,11 +225,16 @@ export default function App() {
   }, [archivedLoaded]);
 
   // Real-time status updates via SSE
-  const patchSessionInCache = useCallback((sessionId: string, patch: Partial<Session>) => {
+  const patchSessionsInCache = useCallback((sessionIds: string[], patch: Partial<Session>) => {
+    if (sessionIds.length === 0) return;
+    const targetIds = new Set(sessionIds);
     queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) =>
-      prev?.map((s) => s.sessionId === sessionId ? { ...s, ...patch } : s),
+      prev?.map((s) => targetIds.has(s.sessionId) ? { ...s, ...patch } : s),
     );
   }, [queryClient]);
+  const patchSessionInCache = useCallback((sessionId: string, patch: Partial<Session>) => {
+    patchSessionsInCache([sessionId], patch);
+  }, [patchSessionsInCache]);
 
   useStatusStream(useCallback((event) => {
     switch (event.type) {
@@ -821,6 +831,10 @@ export default function App() {
     setArchivingIds((prev) => new Set(prev).add(sessionId));
     try {
       await patchSession(sessionId, { archived });
+      patchSessionInCache(sessionId, {
+        archived,
+        archivedAt: archived ? new Date().toISOString() : undefined,
+      });
       await invalidateSessions();
     } catch (err) {
       console.error("Failed to archive session:", err);
@@ -974,7 +988,7 @@ export default function App() {
         for (const id of sessionIds) next.add(id);
         return next;
       });
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, EXIT_ANIM_MS));
       setArchivingIds((prev) => {
         const next = new Set(prev);
         for (const id of sessionIds) next.add(id);
@@ -987,17 +1001,28 @@ export default function App() {
         clearDraft(id);
         clearDraftSessionBySessionId(id);
         clearLastViewedSession(id);
+        clearLastActiveQuickChat(id);
       }
       setExitingIds((prev) => {
         const next = new Set(prev);
         for (const id of sessionIds) next.add(id);
         return next;
       });
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, EXIT_ANIM_MS));
     }
 
     try {
-      await batchSessionAction(action, sessionIds);
+      const result = await batchSessionAction(action, sessionIds);
+      if (action === "archive" || action === "unarchive") {
+        const successfulIds = getSuccessfulBatchSessionIds(sessionIds, result.errors);
+        patchSessionsInCache(successfulIds, {
+          archived: action === "archive",
+          archivedAt: action === "archive" ? new Date().toISOString() : undefined,
+        });
+      }
+      if (Object.keys(result.errors).length > 0) {
+        console.error(`Bulk ${action} partially failed:`, result.errors);
+      }
       await Promise.all([invalidateSessions(), invalidateTasks()]);
     } catch (err) {
       console.error(`Bulk ${action} failed:`, err);
@@ -1013,7 +1038,7 @@ export default function App() {
         return next;
       });
     }
-  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, clearDraftSessionBySessionId, invalidateSessions, invalidateTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, clearDraftSessionBySessionId, clearLastViewedSession, clearLastActiveQuickChat, patchSessionsInCache, invalidateSessions, invalidateTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
