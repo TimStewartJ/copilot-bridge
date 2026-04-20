@@ -457,7 +457,6 @@ async function preparePreviewRuntime(
     ? seedDemoPreviewData(stagingDir)
     : Promise.resolve(seedStagingData(stagingDir));
 }
-
 /** Dynamically import staged backend modules and create an isolated AppContext */
 async function createStagingContext(stagingDir: string, runtimePaths: RuntimePaths): Promise<{ ctx: AppContext; db: DatabaseSync }> {
   const base = pathToFileURL(join(stagingDir, "src", "server")).href;
@@ -497,7 +496,6 @@ async function createStagingContext(stagingDir: string, runtimePaths: RuntimePat
     importOptionalStagingModule(ts("voice-job-store.ts")),
     importOptionalStagingModule(ts("voice-job-manager.ts")),
   ]);
-
   // Open isolated staging database
   const db = dbMod.openDatabase(runtimePaths.dataDir);
   try {
@@ -600,7 +598,6 @@ async function createStagingContext(stagingDir: string, runtimePaths: RuntimePat
     throw err;
   }
 }
-
 function createActiveStagingBackendRecord(
   ctx: AppContext,
   stagingDir: string,
@@ -1040,8 +1037,9 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
       } else {
         writeLog(
           `Failed to restore staged backend for ${target.prefix} after ${restoreResult.attempts} attempts: ` +
-            `${restoreResult.error}. Keeping frontend-only preview.`,
+            `${restoreResult.error}. Cleaning up preview.`,
         );
+        await cleanupPreviewTarget(target.stagingDir, target.profile);
       }
     }
   }
@@ -1231,6 +1229,9 @@ export const STAGING_TOOLS = [
           await cleanupPreviewResources(prefix, { removeDist: false });
           log(`Staging backend failed (frontend-only preview): ${backendError}`);
         }
+      } else {
+        log("Express app not registered — frontend-only preview");
+      }
       } else {
         log("Express app not registered — frontend-only preview");
       }
