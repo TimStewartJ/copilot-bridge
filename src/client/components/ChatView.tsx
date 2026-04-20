@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
-import { getCachedChatSnapshot, hasClientGeneratedEntries, mergeTailMessages, setCachedChatSnapshot } from "../chat-cache";
+import { getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
@@ -128,6 +128,12 @@ export default function ChatView({
   const prevScrollHeightRef = useRef<number | null>(null);
   const loadRequestIdRef = useRef(0);
   const refreshingHistoryRef = useRef(false);
+  const queuedSendRef = useRef<{
+    sessionId: string | null;
+    composerKey: string;
+    prompt: string;
+    attachments?: Attachment[];
+  } | null>(null);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<(opts?: { background?: boolean }) => void>(() => {});
 
@@ -485,22 +491,29 @@ export default function ChatView({
           invalidateHistoryRefresh();
           // Save scroll height before prepending so the layout effect can preserve position.
           prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
-          const nextEntries = [...older, ...currentEntries];
           const nextFirstItemIndex = beforeIndex - older.length;
+          const nextEntries = normalizeCommittedClientEntries(
+            [...older, ...currentEntries],
+            nextFirstItemIndex,
+            total,
+          );
           applyHistory(nextEntries, {
             ownerSessionId: requestSessionId,
             firstItemIndex: nextFirstItemIndex,
             total: Math.max(total, nextFirstItemIndex + nextEntries.length),
             hasMore: more,
-            isCanonical: !hasClientGeneratedEntries(nextEntries),
+            isCanonical: !hasOptimisticTail(nextFirstItemIndex, nextEntries.length, total)
+              && !hasClientGeneratedEntries(nextEntries),
           });
         } else if (!more) {
-          applyHistory(currentEntries, {
+          const nextEntries = normalizeCommittedClientEntries(currentEntries, 0, total);
+          applyHistory(nextEntries, {
             ownerSessionId: requestSessionId,
             firstItemIndex: 0,
-            total: Math.max(total, currentEntries.length),
+            total: Math.max(total, nextEntries.length),
             hasMore: false,
-            isCanonical: !hasClientGeneratedEntries(currentEntries),
+            isCanonical: !hasOptimisticTail(0, nextEntries.length, total)
+              && !hasClientGeneratedEntries(nextEntries),
           });
         }
       })
@@ -525,6 +538,10 @@ export default function ChatView({
   }, [loadOlderMessages]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: Attachment[]) => {
+    if (loading) {
+      queuedSendRef.current = { sessionId, composerKey, prompt, attachments };
+      return;
+    }
     if (isStreaming || creating) return;
 
     // Draft mode: create session on first message
@@ -579,7 +596,19 @@ export default function ChatView({
         isCanonical: false,
       });
     }
-  }, [sessionId, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, applyHistory]);
+  }, [sessionId, composerKey, loading, isStreaming, creating, sendMessage, onDraftClear, onCreateAndSend, invalidateHistoryRefresh, applyHistory]);
+
+  useEffect(() => {
+    const queuedSend = queuedSendRef.current;
+    if (!queuedSend) return;
+    if (loading || isStreaming || creating) return;
+    if (queuedSend.sessionId !== sessionId || queuedSend.composerKey !== composerKey) {
+      queuedSendRef.current = null;
+      return;
+    }
+    queuedSendRef.current = null;
+    void handleSend(queuedSend.prompt, queuedSend.attachments);
+  }, [composerKey, creating, handleSend, isStreaming, loading, sessionId]);
 
   const handleRunFleet = useCallback(async () => {
     if (!sessionId) throw new Error("Session not available");
@@ -686,6 +715,8 @@ export default function ChatView({
             ? "Wait for the current run to finish before launching Fleet."
             : null;
   const isLaunchingFleet = isStreaming && pendingOrigin === "fleet";
+  const composerDisabled = warming || loading;
+  const composerDisabledHint = loading ? "Loading history…" : warming ? "Reconnecting…" : undefined;
 
   if (!sessionId && !isDraft) {
     return (
@@ -813,8 +844,8 @@ export default function ChatView({
         onSubmitVoiceCapture={onSubmitVoiceCapture}
         onReviewVoiceJob={onReviewVoiceJob}
         onClearVoiceJobError={onClearVoiceJobError}
-        disabled={warming}
-        disabledHint="Reconnecting…"
+        disabled={composerDisabled}
+        disabledHint={composerDisabledHint}
       />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (
