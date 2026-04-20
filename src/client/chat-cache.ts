@@ -101,6 +101,25 @@ export function hasClientGeneratedEntries(entries: ChatEntry[]): boolean {
   return entries.some((entry) => isClientGeneratedEntry(entry));
 }
 
+function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
+  if (!isClientGeneratedEntry(entry)) return false;
+  if (entry.type === "tool") return false;
+  if (entry.role === "user") return false;
+  return entry.content.startsWith("⚠️ Error:") || entry.content.includes("*(stopped)*");
+}
+
+export function normalizeCommittedClientEntries(
+  entries: ChatEntry[],
+  firstItemIndex: number,
+  total: number,
+): ChatEntry[] {
+  return entries.map((entry, index) => {
+    if (firstItemIndex + index >= total) return entry;
+    if (!isClientGeneratedEntry(entry) || isUnsafeCommittedClientEntry(entry)) return entry;
+    return { ...entry, id: undefined };
+  });
+}
+
 export function mergeTailMessages(
   previousEntries: ChatEntry[],
   currentFirstItemIndex: number,
@@ -122,12 +141,13 @@ export function mergeTailMessages(
   const entries = preserveCount > 0
     ? [...previousEntries.slice(0, preserveCount), ...nextWindow, ...optimisticTail]
     : [...nextWindow, ...optimisticTail];
+  const normalizedEntries = normalizeCommittedClientEntries(entries, firstItemIndex, total);
 
   return {
     firstItemIndex,
-    entries,
-    total: Math.max(total, firstItemIndex + entries.length),
+    entries: normalizedEntries,
+    total: Math.max(total, firstItemIndex + normalizedEntries.length),
     hasOptimisticTail: optimisticTailCount > 0,
-    hasClientGeneratedEntries: hasClientGeneratedEntries(entries),
+    hasClientGeneratedEntries: hasClientGeneratedEntries(normalizedEntries),
   };
 }

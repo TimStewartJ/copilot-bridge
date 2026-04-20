@@ -6,6 +6,7 @@ import {
   hasClientGeneratedEntries,
   hasOptimisticTail,
   mergeTailMessages,
+  normalizeCommittedClientEntries,
   resetCachedChatSnapshotState,
   setCachedChatSnapshot,
   type ChatHistorySnapshot,
@@ -83,6 +84,21 @@ describe("mergeTailMessages", () => {
     expect(hasClientGeneratedEntries([createMessage("entry-1"), createMessage("entry-2")])).toBe(false);
   });
 
+  it("normalizes committed local user entries once they are inside the canonical range", () => {
+    const normalized = normalizeCommittedClientEntries(
+      [
+        { id: "entry-1", role: "assistant", content: "entry-1" },
+        { id: "local-2", role: "user", content: "prompt" },
+      ],
+      0,
+      2,
+    );
+
+    expect(normalized[0]?.id).toBe("entry-1");
+    expect(normalized[1]?.id).toBeUndefined();
+    expect(hasClientGeneratedEntries(normalized)).toBe(false);
+  });
+
   it("preserves older loaded messages when the refreshed tail overlaps", () => {
     const previousEntries = Array.from({ length: 50 }, (_, index) => createMessage(`old-${index + 51}`));
     const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`new-${index + 71}`));
@@ -132,5 +148,22 @@ describe("mergeTailMessages", () => {
     expect(merged.hasClientGeneratedEntries).toBe(true);
     expect(merged.entries).toHaveLength(51);
     expect(merged.entries.at(-1)?.content).toBe("local-101");
+  });
+
+  it("drops committed local ids once the refreshed window makes them canonical", () => {
+    const previousEntries = [
+      ...Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 51}`)),
+      { id: "local-101", role: "user", content: "prompt" } satisfies ChatEntry,
+    ];
+    const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`canonical-${index + 102}`));
+
+    const merged = mergeTailMessages(previousEntries, 50, 151, nextWindow);
+
+    expect(merged.firstItemIndex).toBe(50);
+    expect(merged.total).toBe(151);
+    expect(merged.hasOptimisticTail).toBe(false);
+    expect(merged.hasClientGeneratedEntries).toBe(false);
+    expect(merged.entries[50]?.content).toBe("prompt");
+    expect(merged.entries[50]?.id).toBeUndefined();
   });
 });
