@@ -315,6 +315,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     enrichedSessionCache = null;
   }
 
+  function setSessionArchived(sessionId: string, archived: boolean) {
+    ctx.sessionMetaStore.setArchived(sessionId, archived);
+    invalidateEnrichedCache();
+    ctx.globalBus.emit({ type: "session:archived", sessionId, archived });
+  }
+
   // Invalidate on session lifecycle events
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
@@ -603,8 +609,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     // Auto-unarchive if user sends a message to an archived session
     const meta = ctx.sessionMetaStore.getMeta(sessionId);
     if (meta?.archived) {
-      ctx.sessionMetaStore.setArchived(sessionId, false);
-      ctx.globalBus.emit({ type: "session:archived", sessionId, archived: false });
+      setSessionArchived(sessionId, false);
       console.log(`[web] [${sessionId.slice(0, 8)}] auto-unarchived (user sent message)`);
     }
 
@@ -643,8 +648,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     const meta = ctx.sessionMetaStore.getMeta(sessionId);
     if (meta?.archived) {
-      ctx.sessionMetaStore.setArchived(sessionId, false);
-      ctx.globalBus.emit({ type: "session:archived", sessionId, archived: false });
+      setSessionArchived(sessionId, false);
       console.log(`[web] [${sessionId.slice(0, 8)}] auto-unarchived (fleet run)`);
     }
 
@@ -811,8 +815,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(400).json({ error: "archived (boolean) is required" });
     }
     try {
-      ctx.sessionMetaStore.setArchived(req.params.id, archived);
-      ctx.globalBus.emit({ type: "session:archived", sessionId: req.params.id, archived });
+      setSessionArchived(req.params.id, archived);
       res.json({ ok: true, archived });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -855,10 +858,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
       try {
         switch (action) {
           case "archive":
-            ctx.sessionMetaStore.setArchived(sid, true);
+            setSessionArchived(sid, true);
             break;
           case "unarchive":
-            ctx.sessionMetaStore.setArchived(sid, false);
+            setSessionArchived(sid, false);
             break;
           case "delete": {
             await ctx.sessionManager.deleteSession(sid);
