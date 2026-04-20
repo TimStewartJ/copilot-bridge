@@ -83,11 +83,18 @@ function ensureStagingDeps(stagingDir: string): void {
   }
 
   // Use a longer timeout (5 min) — clean installs can be slow
+  // Also pin PATH to the running Node binary's directory so npm uses v22+.
+  const nodeDir = dirname(process.execPath);
+  const installEnv = {
+    ...process.env,
+    PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+  };
   try {
     const output = execSync("npm install --no-audit --no-fund --include=dev", {
       cwd: stagingDir,
       encoding: "utf-8",
       timeout: 300_000,
+      env: installEnv,
     });
     prepared.discard();
     log("Staging npm install succeeded");
@@ -475,8 +482,16 @@ function log(msg: string) {
 }
 
 function run(cmd: string, cwd: string): { ok: boolean; output: string } {
+  // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
+  // resolve the correct Node binary (v22+ required for node:sqlite) instead of
+  // whatever older `node` happens to be first on the system PATH.
+  const nodeDir = dirname(process.execPath);
+  const env = {
+    ...process.env,
+    PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+  };
   try {
-    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: 120_000 });
+    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: 120_000, env });
     return { ok: true, output };
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
