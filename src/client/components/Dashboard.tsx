@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
   getSessionActivityTime,
+  getSessionRunState,
   patchTodo,
   createGlobalTodo,
   type DashboardData,
@@ -245,6 +246,8 @@ export default function Dashboard({
   }
 
   const { busySessions, unreadSessions, lastActiveTask, orphanSessions, schedules = [] } = data;
+  const workingSessions = busySessions.filter((s) => s.runState !== "stalled");
+  const stalledSessions = busySessions.filter((s) => s.runState === "stalled");
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
   const activeSchedules = schedules.filter((s) => s.enabled);
   const pausedSchedules = schedules.filter((s) => !s.enabled);
@@ -256,7 +259,7 @@ export default function Dashboard({
       {hasAttention && (
         <div className="border-b border-border bg-bg-secondary">
           <div className="max-w-5xl mx-auto px-4 md:px-8 py-3 space-y-2">
-            {busySessions.length > 0 && (
+            {workingSessions.length > 0 && (
               <div className="flex items-start gap-3">
                 <div className="mt-0.5">
                   <span className="flex h-2 w-2">
@@ -266,14 +269,40 @@ export default function Dashboard({
                 </div>
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium text-info">
-                    {busySessions.length} agent{busySessions.length > 1 ? "s" : ""} working
+                    {workingSessions.length} agent{workingSessions.length > 1 ? "s" : ""} working
                   </span>
                   <div className="flex flex-wrap gap-2 mt-1">
-                    {busySessions.map((s) => (
+                    {workingSessions.map((s) => (
                       <button
                         key={s.sessionId}
                         onClick={() => onSelectSession(s.sessionId)}
                         className="text-xs px-2 py-1 rounded bg-info/10 text-info hover:bg-info/20 transition-colors truncate max-w-[200px]"
+                      >
+                        {s.intentText || s.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            {stalledSessions.length > 0 && (
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5">
+                  <span className="flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-warning opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-warning" />
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-warning">
+                    {stalledSessions.length} agent{stalledSessions.length > 1 ? "s" : ""} stalled
+                  </span>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {stalledSessions.map((s) => (
+                      <button
+                        key={s.sessionId}
+                        onClick={() => onSelectSession(s.sessionId)}
+                        className="text-xs px-2 py-1 rounded bg-warning/10 text-warning hover:bg-warning/20 transition-colors truncate max-w-[200px]"
                       >
                         {s.intentText || s.title}
                       </button>
@@ -718,7 +747,11 @@ function OrphanSessionRow({
         {(session.busy || session.unread) && (
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              session.busy ? "bg-info animate-pulse" : "bg-success"
+              getSessionRunState(session) === "stalled"
+                ? "bg-warning animate-pulse"
+                : session.busy
+                  ? "bg-info animate-pulse"
+                  : "bg-success"
             }`}
           />
         )}

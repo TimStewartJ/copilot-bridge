@@ -46,6 +46,7 @@ export function createMockSessionManager() {
     listSessionsFromDisk: () => [],
     getSessionActivity: () => [],
     isSessionBusy: () => false,
+    getSessionRunState: () => "idle",
     isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),
     duplicateSession: async () => ({ sessionId: "dup-session" }),

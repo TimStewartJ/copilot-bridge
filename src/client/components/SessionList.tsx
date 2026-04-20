@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getSessionActivityTime, type Session, type Task, type BatchAction } from "../api";
+import { getSessionActivityTime, getSessionRunState, type Session, type Task, type BatchAction } from "../api";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, Square, SquareCheckBig, RotateCw } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
@@ -270,13 +270,15 @@ export default function SessionList({
     const isSelected = selectedIds?.has(id);
     const dotColor = isArchiving
       ? ""
-      : session.busy
-        ? "bg-info animate-pulse"
-        : unread
-          ? "bg-success"
-          : isArch
-            ? "bg-text-faint"
-            : "bg-text-faint";
+      : getSessionRunState(session) === "stalled"
+        ? "bg-warning animate-pulse"
+        : session.busy
+          ? "bg-info animate-pulse"
+          : unread
+            ? "bg-success"
+            : isArch
+              ? "bg-text-faint"
+              : "bg-text-faint";
     const { onClick: guardedClick, ...longPressBindings } = bindLongPress(id, () => onSelectSession(id));
 
     const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {

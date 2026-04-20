@@ -1,8 +1,8 @@
 // Global event bus for cross-session status changes
-// Pushes busy/idle/title/intent events to all connected SSE clients
+// Pushes run-state/title/intent events to all connected SSE clients
 
 export interface StatusEvent {
-  type: "session:busy" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
   sessionId?: string;
   title?: string;
   intent?: string;

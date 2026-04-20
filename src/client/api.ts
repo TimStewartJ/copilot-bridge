@@ -7,6 +7,7 @@ export interface Session {
   modifiedTime?: string;
   lastVisibleActivityAt?: string;
   diskSizeBytes?: number;
+  runState?: SessionRunState;
   busy?: boolean;
   hasPlan?: boolean;
   archived?: boolean;
@@ -20,6 +21,17 @@ export interface Session {
     gitRoot?: string;
     branch?: string;
   };
+}
+
+export type SessionRunState = "busy" | "stalled" | "idle";
+
+export function getSessionRunState(session: Pick<Session, "runState" | "busy">): SessionRunState {
+  if (session.runState) return session.runState;
+  return session.busy ? "busy" : "idle";
+}
+
+export function isSessionActive(session: Pick<Session, "runState" | "busy">): boolean {
+  return getSessionRunState(session) !== "idle";
 }
 
 export function getSessionActivityTime(session: Pick<Session, "lastVisibleActivityAt" | "modifiedTime" | "startTime">): string | undefined {
@@ -342,12 +354,12 @@ export async function sendChatMessage(sessionId: string, prompt: string, attachm
 export async function fetchMessages(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean }> {
+): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  const data = await apiFetch<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean }>(
+  const data = await apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean }>(
     `/api/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`,
   );
   return data;
@@ -357,12 +369,12 @@ export async function fetchMessages(
 export async function fetchMessagesFast(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }> {
+): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  return apiFetch<{ messages: ChatEntry[]; busy: boolean; total: number; hasMore: boolean; warm: boolean }>(
+  return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean }>(
     `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
   );
 }
@@ -693,6 +705,8 @@ export interface DashboardBusySession {
   title: string;
   taskId: string | null;
   intentText: string | null;
+  runState: SessionRunState;
+  busy: boolean;
 }
 
 export interface DashboardUnreadSession {
@@ -717,6 +731,7 @@ export interface DashboardOrphanSession {
   title: string;
   lastVisibleActivityAt?: string;
   branch: string | null;
+  runState: SessionRunState;
   busy: boolean;
   unread: boolean;
 }

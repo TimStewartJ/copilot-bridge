@@ -235,7 +235,7 @@ export default function TaskRail({
                           <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                         )}
                         {indicator?.busy && (
-                          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
+                          <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full animate-pulse ring-2 ring-bg-secondary ${indicator.stalled ? "bg-warning" : "bg-info"}`} />
                         )}
                         {indicator?.unread && !indicator?.busy && (
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
@@ -265,7 +265,7 @@ export default function TaskRail({
                     <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                   )}
                   {indicator?.busy && (
-                    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-info animate-pulse ring-2 ring-bg-secondary" />
+                    <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full animate-pulse ring-2 ring-bg-secondary ${indicator.stalled ? "bg-warning" : "bg-info"}`} />
                   )}
                   {indicator?.unread && !indicator?.busy && (
                     <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />

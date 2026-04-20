@@ -65,9 +65,27 @@ describe("SessionManager reloadSession", () => {
   it("rejects busy sessions", async () => {
     const manager = createManager();
     manager.client = { resumeSession: vi.fn() };
-    manager.activeSessions.add("busy-session");
+    manager.sessionRuns.set("busy-session", {
+      state: "busy",
+      startedAt: Date.now(),
+      lastEventAt: Date.now(),
+    });
 
     await expect(manager.reloadSession("busy-session")).rejects.toThrow("Cannot reload a busy session");
+    expect(manager.client.resumeSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects stalled sessions", async () => {
+    const manager = createManager();
+    manager.client = { resumeSession: vi.fn() };
+    manager.sessionRuns.set("stalled-session", {
+      state: "stalled",
+      startedAt: Date.now() - 5_000,
+      lastEventAt: Date.now() - 5_000,
+      stalledAt: Date.now() - 1_000,
+    });
+
+    await expect(manager.reloadSession("stalled-session")).rejects.toThrow("Cannot reload a busy session");
     expect(manager.client.resumeSession).not.toHaveBeenCalled();
   });
 });
