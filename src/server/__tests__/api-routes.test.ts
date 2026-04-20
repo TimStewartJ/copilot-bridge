@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { get } from "node:http";
 import request from "supertest";
 import type { Express } from "express";
 import type { AppContext } from "../app-context.js";
@@ -123,6 +124,42 @@ describe("Fleet route", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('data: {"type":"done","content":"Fleet finished"}');
     expect(res.text).not.toContain('"type":"snapshot"');
+  });
+});
+
+describe("Status stream", () => {
+  it("GET /api/status-stream forwards stalled session events", async () => {
+    const server = app.listen(0);
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Unable to determine test server port");
+
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = get(`http://127.0.0.1:${address.port}/api/status-stream`, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            text += chunk;
+            if (text.includes('"type":"session:stalled","sessionId":"session-123"')) {
+              req.destroy();
+              resolve(text);
+            }
+          });
+          res.on("error", reject);
+        });
+        req.on("error", (error: NodeJS.ErrnoException) => {
+          if (error.code === "ECONNRESET") return;
+          reject(error);
+        });
+        setTimeout(() => {
+          ctx.globalBus.emit({ type: "session:stalled", sessionId: "session-123" });
+        }, 10);
+      });
+
+      expect(body).toContain('data: {"type":"session:stalled","sessionId":"session-123"}');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 });
 
@@ -1168,6 +1205,27 @@ describe("Schedule routes", () => {
     expect(res.body.sessions[0].recordedAt).toEqual(expect.any(String));
     expect(res.body.sessions[1].recordedAt).toEqual(expect.any(String));
   });
+
+  it("GET /api/schedules/:id/sessions includes runState while keeping busy compatibility", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Run states", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "shared-session", summary: "Shared session" } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: "shared-session",
+      runState: "stalled",
+      busy: true,
+    });
+  });
 });
 
 // ── Session routes (mock-based) ──────────────────────────────────
@@ -1177,6 +1235,19 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/sessions");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("sessions");
+  });
+
+  it("GET /api/sessions includes runState while keeping busy derived for stalled sessions", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({ sessionId: "s1", runState: "stalled", busy: true });
   });
 
   it("POST /api/sessions creates a session", async () => {
@@ -1241,6 +1312,32 @@ describe("Session routes (mocked)", () => {
     const sched = res.body.schedules.find((s: any) => s.name === "Dash Sched");
     expect(sched).toBeDefined();
     expect(sched.taskTitle).toBe("Dashboard Task");
+  });
+
+  it("GET /api/dashboard treats stalled sessions as active and suppresses unread", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      {
+        sessionId: "stall-1",
+        summary: "Stalled session",
+        lastVisibleActivityAt: "2026-04-19T01:00:00.000Z",
+        context: { branch: "main" },
+      } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockImplementation((sessionId: string) => (
+      sessionId === "stall-1" ? "stalled" : "idle"
+    ));
+    ctx.sessionManager.isSessionBusy = vi.fn().mockImplementation((sessionId: string) => sessionId === "stall-1");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.busySessions).toEqual([
+      expect.objectContaining({ sessionId: "stall-1", runState: "stalled", busy: true }),
+    ]);
+    expect(res.body.unreadSessions).toEqual([]);
+    expect(res.body.orphanSessions).toEqual([
+      expect.objectContaining({ sessionId: "stall-1", runState: "stalled", busy: true, unread: true }),
+    ]);
   });
 });
 
@@ -1352,7 +1449,18 @@ describe("Session manager routes", () => {
     expect(res.body).toHaveProperty("messages");
     expect(res.body).toHaveProperty("total");
     expect(res.body).toHaveProperty("hasMore");
+    expect(res.body).toHaveProperty("runState");
     expect(res.body).toHaveProperty("busy");
+  });
+
+  it("GET /api/sessions/:id/messages returns runState for stalled sessions", async () => {
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+
+    const res = await request(app).get("/api/sessions/test-id/messages");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ runState: "stalled", busy: true });
   });
 
   it("POST /api/sessions/:id/duplicate duplicates a session", async () => {

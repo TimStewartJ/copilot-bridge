@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Schedule, ScheduleCreateInput, ScheduleRun, ScheduleSessionMode, Session } from "../api";
-import { createSchedule, patchSchedule, fetchServerTimezone } from "../api";
+import { createSchedule, patchSchedule, fetchServerTimezone, getSessionRunState } from "../api";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import { useSessionsQuery } from "../hooks/queries/useSessions";
 import { useTasksQuery } from "../hooks/queries/useTasks";
@@ -68,7 +68,8 @@ function formatSessionMode(mode: ScheduleSessionMode): string {
 function getSessionOptionLabel(session: Session): string {
   const base = session.summary?.trim() || "Untitled session";
   const shortId = session.sessionId.slice(0, 8);
-  const suffix = session.archived ? " [archived]" : session.busy ? " [busy]" : "";
+  const runState = getSessionRunState(session);
+  const suffix = session.archived ? " [archived]" : runState === "stalled" ? " [stalled]" : runState === "busy" ? " [busy]" : "";
   return `${base} (${shortId})${suffix}`;
 }
 
@@ -739,11 +740,13 @@ function EditMode({
 function SessionRunRow({ session, onSelect }: { session: ScheduleRun; onSelect?: () => void }) {
   const statusDot = session.missing
     ? "bg-text-faint"
-    : session.busy
-      ? "bg-info animate-pulse"
-      : session.archived
-        ? "bg-text-faint"
-        : "bg-success";
+    : getSessionRunState(session) === "stalled"
+      ? "bg-warning animate-pulse"
+      : session.busy
+        ? "bg-info animate-pulse"
+        : session.archived
+          ? "bg-text-faint"
+          : "bg-success";
 
   return (
     <button

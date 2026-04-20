@@ -36,6 +36,17 @@ describe("global-bus", () => {
     unsub2();
   });
 
+  it("supports stalled session transitions", () => {
+    const events: globalBus.StatusEvent[] = [];
+    const unsub = globalBus.subscribe((e) => events.push(e));
+
+    globalBus.emit({ type: "session:stalled", sessionId: "s1" });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "session:stalled", sessionId: "s1" });
+
+    unsub();
+  });
+
   it("multiple subscribers all receive events", () => {
     const events1: globalBus.StatusEvent[] = [];
     const events2: globalBus.StatusEvent[] = [];

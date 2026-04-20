@@ -25,6 +25,7 @@ import {
   setTaskTags,
   setGroupTags,
   getSessionActivityTime,
+  isSessionActive,
   markSessionReadOnPageHide,
   API_BASE,
   sendChatMessage,
@@ -239,10 +240,13 @@ export default function App() {
   useStatusStream(useCallback((event) => {
     switch (event.type) {
       case "session:busy":
-        patchSessionInCache(event.sessionId, { busy: true });
+        patchSessionInCache(event.sessionId, { runState: "busy", busy: true });
+        break;
+      case "session:stalled":
+        patchSessionInCache(event.sessionId, { runState: "stalled", busy: true });
         break;
       case "session:idle":
-        patchSessionInCache(event.sessionId, { busy: false });
+        patchSessionInCache(event.sessionId, { runState: "idle", busy: false });
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
         invalidateSessions();
         break;
@@ -380,7 +384,7 @@ export default function App() {
   const activeSessionActivity = useMemo(() => {
     if (!activeSessionId) return undefined;
     const session = sessions.find((s) => s.sessionId === activeSessionId);
-    if (!session || session.busy) return undefined;
+    if (!session || isSessionActive(session)) return undefined;
     return getSessionActivityTime(session);
   }, [activeSessionId, sessions]);
 
@@ -408,6 +412,8 @@ export default function App() {
         summary: "New session",
         modifiedTime: new Date().toISOString(),
         lastVisibleActivityAt: new Date().toISOString(),
+        runState: "idle",
+        busy: false,
         diskSizeBytes: 0,
       }, ...prev];
     });
@@ -596,7 +602,7 @@ export default function App() {
     if (busyHintExpiresAt) {
       delete sessionBusyHintExpiresAtRef.current[sessionId];
     }
-    return sessions.some((session) => session.sessionId === sessionId && session.busy);
+    return sessions.some((session) => session.sessionId === sessionId && isSessionActive(session));
   }, [sessions]);
 
   const {

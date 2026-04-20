@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Session, Task } from "../api";
-import { countChatTabUnread, countTaskTabUnread } from "./useTaskIndicators";
+import { countChatTabUnread, countTaskTabUnread, countTaskUnread } from "./useTaskIndicators";
 
 const NOW = "2026-04-17T15:00:00.000Z";
 
@@ -56,11 +56,12 @@ describe("countChatTabUnread", () => {
     const sessions = [
       createSession({ sessionId: "chat-unread" }),
       createSession({ sessionId: "chat-busy", busy: true }),
+      createSession({ sessionId: "chat-stalled", runState: "stalled", busy: true }),
       createSession({ sessionId: "chat-archived", archived: true }),
       createSession({ sessionId: "chat-read" }),
     ];
 
-    const isUnread = (sessionId: string) => sessionId !== "chat-read";
+    const isUnread = (sessionId: string) => !["chat-read", "chat-stalled"].includes(sessionId);
 
     expect(countChatTabUnread(sessions, isUnread)).toBe(1);
   });
@@ -75,5 +76,20 @@ describe("countChatTabUnread", () => {
     expect(countChatTabUnread([session], (_sessionId, modifiedTime) => {
       return modifiedTime === "2026-04-17T16:00:00.000Z";
     })).toBe(1);
+  });
+});
+
+
+describe("countTaskUnread", () => {
+  it("excludes stalled sessions from unread counts", () => {
+    const task = createTask({ sessionIds: ["idle-1", "stalled-1"] });
+    const sessionMap = new Map<string, Session>([
+      ["idle-1", createSession({ sessionId: "idle-1" })],
+      ["stalled-1", createSession({ sessionId: "stalled-1", runState: "stalled", busy: true })],
+    ]);
+
+    const unread = countTaskUnread(task, sessionMap, (sessionId) => sessionId !== "stalled-1");
+
+    expect(unread).toBe(1);
   });
 });

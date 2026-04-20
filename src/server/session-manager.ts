@@ -331,7 +331,7 @@ export function triggerRestartPending(): number {
     }
   }, 5_000);
 
-  // The calling session is still in activeSessions; subtract 1 since it will
+  // The calling session is still counted as active; subtract 1 since it will
   // finish momentarily and should not count as "blocking" the restart.
   const waitingCount = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
   globalBus.emit({ type: "server:restart-pending", waitingSessions: waitingCount });
@@ -1063,10 +1063,21 @@ export function createBridgeTools(ctx: AppContext) {
   ];
 }
 
-export interface SessionActivity {
-  id: string;
+export type SessionRunState = "busy" | "stalled" | "idle";
+
+interface SessionRunRecord {
+  state: Exclude<SessionRunState, "idle">;
   startedAt: number;
   lastEventAt: number;
+  stalledAt?: number;
+}
+
+export interface SessionActivity {
+  id: string;
+  state: Exclude<SessionRunState, "idle">;
+  startedAt: number;
+  lastEventAt: number;
+  stalledAt?: number;
   elapsedMs: number;
   staleMs: number;
 }
@@ -1140,10 +1151,9 @@ export interface McpServerStatus {
 export class SessionManager {
   private client: CopilotClient | null = null;
   private deps: SessionManagerDeps;
-  private activeSessions = new Set<string>();
+  private sessionRuns = new Map<string, SessionRunRecord>();
   private resumingSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
-  private sessionActivity = new Map<string, { startedAt: number; lastEventAt: number }>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private visibleActivityCache = new Map<string, { eventsMtimeMs: number; lastVisibleActivityAt?: string }>();
 
@@ -1159,6 +1169,50 @@ export class SessionManager {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
+  }
+
+  private setSessionRunState(
+    sessionId: string,
+    state: SessionRunState,
+    opts: { now?: number; lastEventAt?: number } = {},
+  ): void {
+    const current = this.sessionRuns.get(sessionId);
+    const now = opts.now ?? Date.now();
+
+    if (state === "idle") {
+      if (!current) return;
+      this.sessionRuns.delete(sessionId);
+      this.deps.globalBus.emit({ type: "session:idle", sessionId });
+      if (_restartPending) {
+        this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.sessionRuns.size });
+      }
+      return;
+    }
+
+    const next: SessionRunRecord = {
+      state,
+      startedAt: current?.startedAt ?? now,
+      lastEventAt: opts.lastEventAt ?? current?.lastEventAt ?? now,
+      stalledAt: state === "stalled" ? current?.stalledAt ?? now : undefined,
+    };
+    this.sessionRuns.set(sessionId, next);
+
+    if (current?.state === state) return;
+
+    this.deps.globalBus.emit({ type: state === "stalled" ? "session:stalled" : "session:busy", sessionId });
+    if (_restartPending && !current) {
+      this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.sessionRuns.size });
+    }
+  }
+
+  private touchSessionRun(sessionId: string, at = Date.now()): void {
+    const current = this.sessionRuns.get(sessionId);
+    if (!current) return;
+    if (current.state === "stalled") {
+      this.setSessionRunState(sessionId, "busy", { now: at, lastEventAt: at });
+      return;
+    }
+    current.lastEventAt = at;
   }
 
   private async getCachedLastVisibleActivityAt(
@@ -1727,7 +1781,7 @@ export class SessionManager {
 
   // Abort an in-progress session turn
   async abortSession(sessionId: string): Promise<boolean> {
-    if (!this.activeSessions.has(sessionId)) return false;
+    if (!this.sessionRuns.has(sessionId)) return false;
 
     const session = this.sessionObjects.get(sessionId);
     if (!session) return false;
@@ -1857,24 +1911,14 @@ export class SessionManager {
     bus: ReturnType<typeof getOrCreateBus>,
     runner: () => Promise<void>,
   ): void {
-    this.activeSessions.add(sessionId);
     const now = Date.now();
-    this.sessionActivity.set(sessionId, { startedAt: now, lastEventAt: now });
-    this.deps.globalBus.emit({ type: "session:busy", sessionId });
-    if (_restartPending) {
-      this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
-    }
+    this.setSessionRunState(sessionId, "busy", { now, lastEventAt: now });
 
     runner().catch((err) => {
       console.error(`[sdk] Unhandled error in session ${sessionId}:`, err);
       bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
     }).finally(() => {
-      this.activeSessions.delete(sessionId);
-      this.sessionActivity.delete(sessionId);
-      this.deps.globalBus.emit({ type: "session:idle", sessionId });
-      if (_restartPending) {
-        this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.activeSessions.size });
-      }
+      this.setSessionRunState(sessionId, "idle");
     });
   }
 
@@ -1987,6 +2031,11 @@ export class SessionManager {
     // Event handler extracted so it can be re-registered on session retry
     const handleEvent = (event: any) => {
       if (!acceptingSessionEvents) return;
+      const eventAt = Date.now();
+      if (event.type !== "session.idle" && event.type !== "session.error" && event.type !== "abort") {
+        lastEventTime = eventAt;
+        this.touchSessionRun(sessionId, eventAt);
+      }
       const data = (event as any).data;
       switch (event.type) {
         case "user.message":
@@ -2199,25 +2248,74 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] ⏳ Still working... (${elapsed}s)`);
     }, 30_000);
 
-    // Watchdog — if no events for 5 minutes, assume hung and clean up
-    const WATCHDOG_TIMEOUT = 300_000;
-    const watchdog = setInterval(() => {
-      if (Date.now() - lastEventTime > WATCHDOG_TIMEOUT) {
-        const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
-        console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — aborting (${elapsed}s total)`);
-        bus.emit({ type: "error", message: "Session timed out — no activity for 5 minutes" });
-        finishWork();
-      }
-    }, 30_000);
+    // Path to persisted events — probed to detect progress that bypasses the live listener
+    const eventsJsonlPath = join(this.getSessionStateDir(sessionId), "events.jsonl");
 
-    // Tap into bus emissions to track last event time for watchdog + activity
-    const originalEmit = bus.emit.bind(bus);
-    bus.emit = (event) => {
-      lastEventTime = Date.now();
-      const activity = this.sessionActivity.get(sessionId);
-      if (activity) activity.lastEventAt = lastEventTime;
-      return originalEmit(event);
+    // Guards against concurrent or duplicate recovery attempts
+    let recoveryInProgress = false;
+    let lastRecoveryAttempt = 0;
+
+    const attemptStalledRecovery = async () => {
+      if (recoveryInProgress) return;
+      recoveryInProgress = true;
+      lastRecoveryAttempt = Date.now();
+      try {
+        const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
+        console.warn(`[sdk] [${sid}] 🔄 Stall recovery: re-subscribing (${elapsed}s total)...`);
+        unsub();
+        this.sessionObjects.delete(sessionId);
+        session = await resumeSession();
+        unsub = subscribeToSession(session);
+        // Re-enable event acceptance — subscribeToSession gates it off until beginSend(),
+        // but here the turn is already in progress, so open it immediately.
+        acceptingSessionEvents = true;
+        console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
+      } catch (err) {
+        console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
+      } finally {
+        recoveryInProgress = false;
+      }
     };
+
+    // Watchdog — checks every 60s; marks session stalled after 5 min of raw-event silence
+    // and attempts SDK re-subscribe immediately, then every 5 min while stalled.
+    const WATCHDOG_INTERVAL = 60_000;
+    const WATCHDOG_TIMEOUT = 300_000; // 5 min without raw SDK events → stalled
+    const RECOVERY_INTERVAL = 300_000; // retry recovery every 5 min while still stalled
+    const watchdog = setInterval(() => {
+      const now = Date.now();
+
+      // Probe events.jsonl mtime — if the CLI is still writing persisted events, update
+      // lastEventAt on the run record so the launcher doesn't see stale time falsely.
+      try {
+        const fileStat = statSync(eventsJsonlPath);
+        if (fileStat.mtimeMs > lastEventTime) {
+          // Only refresh the run record's lastEventAt for external observers (/api/busy, staleMs).
+          // Do NOT update lastEventTime — that clock must only advance on live SDK events so
+          // stall detection and recovery retries stay tied to actual listener silence.
+          const run = this.sessionRuns.get(sessionId);
+          if (run && run.lastEventAt < fileStat.mtimeMs) {
+            run.lastEventAt = fileStat.mtimeMs;
+          }
+        }
+      } catch { /* events.jsonl may not exist yet */ }
+
+      if (now - lastEventTime < WATCHDOG_TIMEOUT) return;
+
+      const currentState = this.getSessionRunState(sessionId);
+      const elapsed = ((now - sendStart) / 1000).toFixed(0);
+
+      if (currentState !== "stalled") {
+        console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — marking stalled (${elapsed}s total)`);
+        // Don't pass lastEventAt — inherit current run.lastEventAt which may already reflect
+        // disk mtime progress (updated above), giving a better staleness reading to observers.
+        this.setSessionRunState(sessionId, "stalled");
+        void attemptStalledRecovery();
+      } else if (now - lastRecoveryAttempt >= RECOVERY_INTERVAL) {
+        console.warn(`[sdk] [${sid}] ⚠️ Session still stalled — retrying recovery (${elapsed}s total)`);
+        void attemptStalledRecovery();
+      }
+    }, WATCHDOG_INTERVAL);
 
     try {
       console.log(opts.startLog);
@@ -2485,15 +2583,25 @@ export class SessionManager {
   }
 
   isSessionBusy(sessionId: string): boolean {
-    return this.activeSessions.has(sessionId) || this.resumingSessions.has(sessionId);
+    return this.getSessionRunState(sessionId) !== "idle";
+  }
+
+  getSessionRunState(sessionId: string): SessionRunState {
+    const active = this.sessionRuns.get(sessionId);
+    if (active) return active.state;
+    return this.resumingSessions.has(sessionId) ? "busy" : "idle";
+  }
+
+  isSessionStalled(sessionId: string): boolean {
+    return this.getSessionRunState(sessionId) === "stalled";
   }
 
   hasActiveTurns(): boolean {
-    return this.activeSessions.size > 0;
+    return this.sessionRuns.size > 0;
   }
 
   getActiveSessions(): string[] {
-    return Array.from(this.activeSessions);
+    return Array.from(this.sessionRuns.keys());
   }
 
   private evictCachedSession(sessionId: string): boolean {
@@ -2506,7 +2614,7 @@ export class SessionManager {
 
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
   evictAllCachedSessions(): void {
-    const busy = new Set(this.activeSessions);
+    const busy = new Set(this.sessionRuns.keys());
     let evicted = 0;
     for (const [id] of this.sessionObjects) {
       if (busy.has(id)) continue; // don't disrupt active turns
@@ -2517,10 +2625,12 @@ export class SessionManager {
 
   getSessionActivity(): SessionActivity[] {
     const now = Date.now();
-    return Array.from(this.sessionActivity.entries()).map(([id, a]) => ({
+    return Array.from(this.sessionRuns.entries()).map(([id, a]) => ({
       id,
+      state: a.state,
       startedAt: a.startedAt,
       lastEventAt: a.lastEventAt,
+      stalledAt: a.stalledAt,
       elapsedMs: now - a.startedAt,
       staleMs: now - a.lastEventAt,
     }));
@@ -2548,11 +2658,11 @@ export class SessionManager {
 
       // Wait up to 10s for sessions to drain (they clean up in their .finally())
       const deadline = Date.now() + 10_000;
-      while (this.activeSessions.size > 0 && Date.now() < deadline) {
+      while (this.sessionRuns.size > 0 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 250));
       }
-      if (this.activeSessions.size > 0) {
-        console.log(`[sdk] ${this.activeSessions.size} session(s) did not drain in time`);
+      if (this.sessionRuns.size > 0) {
+        console.log(`[sdk] ${this.sessionRuns.size} session(s) did not drain in time`);
       } else {
         console.log("[sdk] All sessions drained cleanly");
       }

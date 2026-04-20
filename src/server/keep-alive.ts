@@ -1,12 +1,12 @@
 // Keep-alive: resets the system idle timer while sessions are active.
-// Listens for session:busy/idle on globalBus. While any session is in-flight,
+// Listens for session run-state changes on globalBus. While any session is active,
 // jiggles the mouse ±1px every 60s to reset the Windows idle timer.
 
 import { execFile } from "node:child_process";
 import * as globalBus from "./global-bus.js";
 
 let jiggleInterval: ReturnType<typeof setInterval> | null = null;
-let activeSessions = 0;
+const activeSessions = new Set<string>();
 
 // PowerShell snippet: move mouse +1px then -1px (net zero movement)
 // Also calls SetThreadExecutionState to prevent the machine from sleeping
@@ -60,12 +60,15 @@ export function initKeepAlive(): void {
   }
 
   globalBus.subscribe((event) => {
-    if (event.type === "session:busy") {
-      activeSessions++;
-      if (activeSessions === 1) startJiggle();
+    if (event.type === "session:busy" || event.type === "session:stalled") {
+      if (!event.sessionId) return;
+      const wasEmpty = activeSessions.size === 0;
+      activeSessions.add(event.sessionId);
+      if (wasEmpty) startJiggle();
     } else if (event.type === "session:idle") {
-      activeSessions = Math.max(0, activeSessions - 1);
-      if (activeSessions === 0) stopJiggle();
+      if (!event.sessionId) return;
+      activeSessions.delete(event.sessionId);
+      if (activeSessions.size === 0) stopJiggle();
     }
   });
 

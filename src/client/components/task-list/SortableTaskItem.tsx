@@ -70,7 +70,7 @@ export default function SortableTaskItem({
             <GripVertical size={12} />
           </span>
           {indicator?.busy ? (
-            <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-info animate-pulse" />
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ml-1 animate-pulse ${indicator.stalled ? "bg-warning" : "bg-info"}`} />
           ) : indicator?.unread ? (
             <span className="w-1.5 h-1.5 rounded-full shrink-0 ml-1 bg-success" />
           ) : null}

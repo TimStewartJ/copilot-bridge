@@ -8,7 +8,7 @@ import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { openDatabase, type DatabaseSync } from "./db.js";
-import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE } from "./session-manager.js";
+import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE, type SessionRunState } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import type { Schedule } from "./schedule-store.js";
 import { resolveScheduleSessionSelection } from "./schedule-targeting.js";
@@ -40,6 +40,11 @@ function getCopilotHome(ctx: AppContext): string {
 }
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+
+function getSessionStatus(ctx: AppContext, sessionId: string): { runState: SessionRunState; busy: boolean } {
+  const runState = ctx.sessionManager.getSessionRunState(sessionId);
+  return { runState, busy: runState !== "idle" };
+}
 
 function serializeSchedule(schedule: Schedule) {
   return {
@@ -348,7 +353,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const cached = enrichedSessionCache!.data.map((s: any) => ({
           ...s,
           diskSizeBytes: diskSizeCache.get(s.sessionId) ?? 0,
-          busy: ctx.sessionManager.isSessionBusy(s.sessionId),
+          ...getSessionStatus(ctx, s.sessionId),
         }));
         const filtered = cached.filter((s: any) => includeArchived || !s.archived);
         return res.json({ sessions: filtered });
@@ -379,11 +384,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
             const archivedAt = meta[id]?.archivedAt ?? null;
             const generatedTitle = ctx.sessionTitles.getTitle(id);
             const summary = generatedTitle ?? s.summary;
+            const status = getSessionStatus(ctx, id);
             return {
               ...s,
               summary,
               diskSizeBytes: diskSizeCache.get(id) ?? 0,
-              busy: ctx.sessionManager.isSessionBusy(id),
+              ...status,
               hasPlan,
               archived,
               archivedAt,
@@ -492,8 +498,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         req.params.id,
         { limit, before },
       );
-      const busy = ctx.sessionManager.isSessionBusy(req.params.id);
-      res.json({ messages, busy, total, hasMore });
+      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -508,9 +513,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         req.params.id,
         { limit, before },
       );
-      const busy = ctx.sessionManager.isSessionBusy(req.params.id);
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-      res.json({ messages, busy, total, hasMore, warm });
+      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, warm });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -1324,9 +1328,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
             const archived = meta[id]?.archived === true;
             const generatedTitle = ctx.sessionTitles.getTitle(id);
             const summary = generatedTitle ?? s.summary;
-            const busy = ctx.sessionManager.isSessionBusy(id);
+            const status = getSessionStatus(ctx, id);
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
-            return { ...s, summary, busy, hasPlan, archived };
+            return { ...s, summary, ...status, hasPlan, archived };
           }),
       )).filter((s: any) => !s.archived);
 
@@ -1351,6 +1355,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
             title: s.summary,
             taskId: taskId ?? null,
             intentText: bus?.getIntentText() ?? null,
+            runState: s.runState,
+            busy: s.busy,
           };
         });
 
@@ -1466,6 +1472,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           title: s.summary,
           lastVisibleActivityAt: s.lastVisibleActivityAt,
           branch: s.context?.branch ?? null,
+          runState: s.runState ?? "idle",
           busy: s.busy ?? false,
           unread: isUnread(s.sessionId, s.lastVisibleActivityAt),
         }));
@@ -1706,7 +1713,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const archived = meta[run.sessionId]?.archived === true;
           const generatedTitle = ctx.sessionTitles.getTitle(run.sessionId);
           const summary = generatedTitle ?? s?.summary ?? run.sessionId;
-          const busy = s ? ctx.sessionManager.isSessionBusy(run.sessionId) : false;
+          const status = s ? getSessionStatus(ctx, run.sessionId) : { runState: "idle" as const, busy: false };
           const hasPlan = await statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false);
           let diskSize = 0;
           try { diskSize = getDirSize(join(sessionStateDir, run.sessionId)); } catch {}
@@ -1717,7 +1724,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             recordedAtKnown: run.recordedAt !== UNKNOWN_SCHEDULE_RUN_AT,
             sessionId: run.sessionId,
             summary,
-            busy,
+            ...status,
             hasPlan,
             archived,
             diskSizeBytes: diskSize,
