@@ -46,6 +46,7 @@ describe("SessionManager run state", () => {
           releaseSend = resolve;
         });
       }),
+      disconnect: vi.fn(),
     };
     const getHandler = () => handler;
     const getReleaseSend = () => releaseSend;
@@ -308,6 +309,102 @@ describe("SessionManager run state", () => {
 
       expect(manager.getSessionRunState(sessionId)).toBe("stalled");
       expect(resumeSession).toHaveBeenCalledTimes(3);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("disconnects old session after successful recovery swap", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const recovered = makeSession();
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    expect(initial.session.disconnect).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    // Old session should have been disconnected after the swap
+    expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
+    // New session should not be disconnected
+    expect(recovered.session.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("preserves abortability during recovery — session stays in sessionObjects throughout async window", async () => {
+    const { manager } = createManager();
+    let resolveRecovery!: (s: any) => void;
+    const recoveryPromise = new Promise<any>((res) => { resolveRecovery = res; });
+    const initial = makeSession();
+    const recovered = makeSession();
+    const resumeSession = vi.fn()
+      .mockResolvedValueOnce(initial.session)
+      .mockReturnValueOnce(recoveryPromise); // second call hangs until we resolve it
+    manager.client = { resumeSession };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    // Trigger stall and recovery; recovery hangs awaiting the new session
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    // Recovery is in progress but not yet resolved
+
+    // abortSession must still find the session — sessionObjects should not be empty
+    const aborted = await manager.abortSession("session-1");
+    expect(aborted).toBe(true);
+
+    // Let recovery complete
+    resolveRecovery(recovered.session);
+    await flushMicrotasks();
+  });
+
+  it("resolves turn from persisted terminal events if live listener missed them", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-test-terminal-"));
+    try {
+      const sessionId = "session-terminal";
+      const sessionStateDir = join(tmpDir, "session-state", sessionId);
+      mkdirSync(sessionStateDir, { recursive: true });
+
+      const { manager, globalBus } = createManager({ copilotHome: tmpDir });
+      const events: string[] = [];
+      globalBus.subscribe((event: any) => {
+        if (event.sessionId === sessionId && ["session:busy", "session:stalled", "session:idle"].includes(event.type)) {
+          events.push(event.type);
+        }
+      });
+
+      const initial = makeSession();
+      const recovered = makeSession();
+      const resumeSession = vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockResolvedValueOnce(recovered.session);
+      manager.client = { resumeSession };
+
+      // Write events.jsonl with a terminal event so recovery detects it
+      const eventsPath = join(sessionStateDir, "events.jsonl");
+      writeFileSync(eventsPath, '{"type":"user.message"}\n{"type":"session.idle"}\n');
+
+      manager.startWork(sessionId, "hello");
+      await flushMicrotasks();
+
+      // Release send so resolveWork is wired up before the timer fires
+      initial.getReleaseSend()?.();
+      await flushMicrotasks();
+
+      // Trigger stall + recovery
+      await vi.advanceTimersByTimeAsync(300_000);
+      await flushMicrotasks();
+
+      // Recovery detected terminal state on disk → session should be idle
+      expect(manager.getSessionRunState(sessionId)).toBe("idle");
+      expect(events).toContain("session:idle");
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }

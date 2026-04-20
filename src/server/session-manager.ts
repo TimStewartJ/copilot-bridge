@@ -338,6 +338,29 @@ export function triggerRestartPending(): number {
   return waitingCount;
 }
 
+/**
+ * Inspect a raw events.jsonl string and determine whether the current turn has
+ * already reached a terminal state (session.idle, session.error, or abort) with
+ * no subsequent user.message. This lets stall recovery short-circuit if the CLI
+ * finished while the live listener was detached.
+ */
+export function isCurrentTurnTerminated(raw: string): boolean {
+  const lines = raw.trim().split("\n").filter(Boolean);
+  let lastTerminalIdx = -1;
+  let lastUserMessageIdx = -1;
+  lines.forEach((line, idx) => {
+    try {
+      const event = JSON.parse(line) as { type?: string };
+      if (event.type === "session.idle" || event.type === "session.error" || event.type === "abort") {
+        lastTerminalIdx = idx;
+      } else if (event.type === "user.message") {
+        lastUserMessageIdx = idx;
+      }
+    } catch { /* malformed line */ }
+  });
+  return lastTerminalIdx !== -1 && lastTerminalIdx > lastUserMessageIdx;
+}
+
 // Universal tools — same instance for every session
 export function createBridgeTools(ctx: AppContext) {
   return [
@@ -2262,16 +2285,56 @@ export class SessionManager {
       try {
         const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
         console.warn(`[sdk] [${sid}] 🔄 Stall recovery: re-subscribing (${elapsed}s total)...`);
-        unsub();
-        this.sessionObjects.delete(sessionId);
-        session = await resumeSession();
-        unsub = subscribeToSession(session);
+
+        // Resume a fresh SDK connection directly — bypass the sessionObjects cache so we
+        // always get a new connection. Crucially, we do NOT evict the old session from
+        // sessionObjects during the async window: this keeps abortSession() functional
+        // throughout the await, since it finds sessions via sessionObjects.get(sessionId).
+        const resumeStart = Date.now();
+        console.log(`[sdk] [${sid}] Resuming session...`);
+        const newSession = await Promise.race([
+          this.client!.resumeSession(sessionId, resumeConfig),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+          ),
+        ]);
+        // Atomically replace old session in map; on failure old session remains (never evicted).
+        this.sessionObjects.set(sessionId, newSession);
+        this.probeMcpStatus(sessionId, newSession);
+        const resumeDuration = Date.now() - resumeStart;
+        this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
+        console.log(`[sdk] [${sid}] Session resumed (${resumeDuration}ms)`);
+
+        // Swap listener: detach old first so the old unsub doesn't clear the new handler
+        // (test mock quirk: both callbacks are the same fn, so order matters).
+        const prevUnsub = unsub;
+        const prevSession = session;
+        prevUnsub();
+        unsub = subscribeToSession(newSession);
+        session = newSession;
         // Re-enable event acceptance — subscribeToSession gates it off until beginSend(),
         // but here the turn is already in progress, so open it immediately.
         acceptingSessionEvents = true;
+        // Disconnect old SDK object now that we're fully switched over.
+        try { prevSession.disconnect?.(); } catch { /* best-effort */ }
+
+        // Detect whether the turn already reached a terminal state while the listener was dead.
+        // If so, finalize the turn immediately rather than waiting indefinitely.
+        try {
+          const raw = readFileSync(eventsJsonlPath, "utf-8");
+          if (isCurrentTurnTerminated(raw)) {
+            console.log(`[sdk] [${sid}] 📖 Persisted events show turn already complete — resolving`);
+            this.setSessionRunState(sessionId, "idle");
+            bus.emit({ type: "done", content: lastAssistantContent ?? "(no response)" });
+            finishWork();
+            return;
+          }
+        } catch { /* events.jsonl may not exist yet */ }
+
         console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
       } catch (err) {
         console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
+        // Old session was never evicted from sessionObjects, so abortSession() still works.
       } finally {
         recoveryInProgress = false;
       }
