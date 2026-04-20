@@ -17,6 +17,18 @@ export interface ResolvedLink {
   title: string;
 }
 
+export interface RelatedDocMatch {
+  path: string;
+  title: string;
+  tags: string[];
+  folder: string;
+  modified: string;
+  description?: string;
+  matchedTags: string[];
+}
+
+const TAG_MATCH_COLLATOR = new Intl.Collator("und", { usage: "search", sensitivity: "accent" });
+
 const DOCS_SNIPPET_SQL = `
   SELECT
     docs_pages.path,
@@ -35,6 +47,22 @@ const DOCS_SNIPPET_SQL = `
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
+  function tagsMatch(a: string, b: string): boolean {
+    if (TAG_MATCH_COLLATOR.compare(a, b) === 0) return true;
+    return a.normalize("NFC").toLocaleUpperCase("und") === b.normalize("NFC").toLocaleUpperCase("und");
+  }
+
+  function parseFrontmatter(frontmatterJson?: string): Record<string, unknown> {
+    return frontmatterJson ? JSON.parse(frontmatterJson) as Record<string, unknown> : {};
+  }
+
+  function extractDocTags(frontmatter: Record<string, unknown>, fallbackTags?: string): string[] {
+    const frontmatterTags = frontmatter.tags;
+    if (Array.isArray(frontmatterTags)) return frontmatterTags.filter((tag): tag is string => typeof tag === "string");
+    if (typeof frontmatterTags === "string") return [frontmatterTags];
+    return fallbackTags ? fallbackTags.split(", ").filter(Boolean) : [];
+  }
+
   function runInTransaction<T>(operation: () => T): T {
     db.exec("BEGIN");
     try {
@@ -293,32 +321,33 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
   }
 
   /** Find docs whose frontmatter tags match any of the given tag names (case-insensitive) */
-  function findDocsByTagNames(tagNames: string[], limit = 50): { path: string; title: string; tags: string[]; folder: string; modified: string }[] {
+  function findDocsByTagNames(tagNames: string[], limit = 50): RelatedDocMatch[] {
     if (tagNames.length === 0) return [];
 
-    // docs_pages.tags is comma-separated. Use LIKE matching for each tag name.
-    const conditions = tagNames.map(() => "LOWER(tags) LIKE ?");
-    const params = tagNames.map((n) => `%${n.toLowerCase()}%`);
-
     const rows = db.prepare(`
-      SELECT path, title, tags, folder, modified
+      SELECT path, title, tags, folder, modified, frontmatter_json
       FROM docs_pages
-      WHERE ${conditions.join(" OR ")}
+      WHERE tags IS NOT NULL AND tags != ''
       ORDER BY modified DESC
-      LIMIT ?
-    `).all(...params, limit) as any[];
+    `).all() as any[];
 
-    // Post-filter to ensure exact tag name match (not substring)
-    const tagNamesLower = new Set(tagNames.map((n) => n.toLowerCase()));
     return rows
-      .map((r) => ({
-        path: r.path as string,
-        title: (r.title || r.path) as string,
-        tags: r.tags ? (r.tags as string).split(", ").filter(Boolean) : [] as string[],
-        folder: (r.folder || "") as string,
-        modified: (r.modified || "") as string,
-      }))
-      .filter((doc) => doc.tags.some((t) => tagNamesLower.has(t.toLowerCase())));
+      .map((r) => {
+        const frontmatter = parseFrontmatter(typeof r.frontmatter_json === "string" ? r.frontmatter_json : undefined);
+        const tags = extractDocTags(frontmatter, typeof r.tags === "string" ? r.tags : undefined);
+        const matchedTags = tagNames.filter((candidate) => tags.some((tag) => tagsMatch(tag, candidate)));
+        return {
+          path: r.path as string,
+          title: (r.title || r.path) as string,
+          tags,
+          folder: (r.folder || "") as string,
+          modified: (r.modified || "") as string,
+          description: typeof frontmatter.description === "string" ? frontmatter.description : undefined,
+          matchedTags,
+        };
+      })
+      .filter((doc) => doc.matchedTags.length > 0)
+      .slice(0, limit);
   }
 
   return {
