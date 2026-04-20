@@ -118,6 +118,67 @@ function looksLikeExistingSessionTitle(summary: string): boolean {
   return normalized.length <= 80 && wordCount <= 8;
 }
 
+function normalizeInlineText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function escapePromptText(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeUnicodeLineSeparators(text: string): string {
+  return text
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function escapePromptLiteral(text: string): string {
+  return escapePromptText(
+    escapeUnicodeLineSeparators(
+      text
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n")
+        .replace(/\t/g, "\\t")
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " "),
+    ),
+  );
+}
+
+const SIMPLE_PROMPT_TAG_RE = /^[\p{L}\p{N}._:/-]+$/u;
+
+function formatPromptTag(tag: string): string {
+  return SIMPLE_PROMPT_TAG_RE.test(tag)
+    ? escapePromptText(tag)
+    : escapePromptText(escapeUnicodeLineSeparators(JSON.stringify(tag)));
+}
+
+function formatPromptTagList(tags: string[]): string {
+  return tags.map(formatPromptTag).join(", ");
+}
+
+function formatRelatedDocManifestEntry(doc: {
+  title: string;
+  path: string;
+  description?: string;
+  matchedTags: string[];
+}): string {
+  const title = escapePromptText(normalizeInlineText(doc.title));
+  const path = escapePromptLiteral(doc.path);
+  const description = doc.description ? escapePromptText(normalizeInlineText(doc.description)) : "";
+  const matchedTags = doc.matchedTags.filter(Boolean);
+
+  let line = `- ${title} (${path})`;
+  if (description) line += ` — ${description}`;
+  if (matchedTags.length > 0) {
+    const suffix = description && !/[.!?]$/.test(description) ? "." : "";
+    line += `${suffix} [matched: ${formatPromptTagList(matchedTags)}]`;
+  }
+  return line;
+}
+
 function isPromptEchoSummary(summary: string, firstUserPrompt?: string): boolean {
   const normalizedSummary = normalizeSessionTitle(summary);
   const normalizedPrompt = normalizeSessionTitle(firstUserPrompt);
@@ -1326,9 +1387,9 @@ export class SessionManager {
         const tagNames = resolved.tags.map((t) => t.name);
         const relatedDocs = this.deps.docsIndex.findDocsByTagNames(tagNames, 20);
         if (relatedDocs.length > 0) {
-          const manifest = relatedDocs.map((d) => `- ${d.title} (${d.path})`).join("\n");
+          const manifest = relatedDocs.map((d) => formatRelatedDocManifestEntry(d)).join("\n");
           contextParts.push(
-            `\n<related_docs>\nThese knowledge base docs are related to your current task's tags (${tagNames.join(", ")}). Use docs_read to access them when relevant:\n${manifest}\n</related_docs>`,
+            `\n<related_docs>\nThese knowledge base docs are related to your current task's tags (${formatPromptTagList(tagNames)}). Use docs_read to access them when relevant:\n${manifest}\n</related_docs>`,
           );
         }
       }
