@@ -16,7 +16,8 @@ import McpStatusBar from "./McpStatusBar";
 import { hasToolArgs, summarizeToolArgs } from "../lib/tool-args";
 import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 
-const PAGE_SIZE = 50;
+const INITIAL_PAGE_SIZE = 50;
+const MANUAL_LOAD_PAGE_SIZE = 200;
 
 type PendingStatusTone = "sending" | "thinking" | "creating";
 
@@ -118,7 +119,6 @@ export default function ChatView({
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const topSentinelRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const totalEntriesRef = useRef(0);
@@ -288,7 +288,7 @@ export default function ChatView({
       const pageLoadStart = performance.now();
 
       // Phase 1: Fast load messages from disk — don't wait for MCP status
-      fetchMessagesFast(sessionId, { limit: PAGE_SIZE })
+      fetchMessagesFast(sessionId, { limit: INITIAL_PAGE_SIZE })
         .then(({ messages: msgs, busy, total, warm }) => {
           if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
           if (!background) {
@@ -476,21 +476,26 @@ export default function ChatView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [streamingContent, activeTools, toolProgress, isStreaming, creating]);
 
-  // Load older messages when user scrolls to top
-  const loadOlderMessages = useCallback(() => {
+  const loadOlderMessages = useCallback((opts: {
+    limit?: number;
+    preserveScrollPosition?: boolean;
+  } = {}) => {
     if (!sessionId || !hasMore || loadingMoreRef.current) return;
+    const { limit = INITIAL_PAGE_SIZE, preserveScrollPosition = true } = opts;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const beforeIndex = firstItemIndex.current;
     const requestSessionId = sessionId;
-    fetchMessages(sessionId, { limit: PAGE_SIZE, before: beforeIndex })
+    fetchMessages(sessionId, { limit, before: beforeIndex })
       .then(({ messages: older, hasMore: more, total }) => {
         if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
         const currentEntries = entriesRef.current;
         if (older.length > 0) {
           invalidateHistoryRefresh();
-          // Save scroll height before prepending so the layout effect can preserve position.
-          prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
+          if (preserveScrollPosition) {
+            // Save scroll height before prepending so the layout effect can preserve position.
+            prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
+          }
           const nextFirstItemIndex = beforeIndex - older.length;
           const nextEntries = normalizeCommittedClientEntries(
             [...older, ...currentEntries],
@@ -524,17 +529,8 @@ export default function ChatView({
       });
   }, [sessionId, hasMore, invalidateHistoryRefresh, applyHistory]);
 
-  // Load older messages when the top sentinel scrolls into view.
-  useEffect(() => {
-    const sentinel = topSentinelRef.current;
-    const container = scrollContainerRef.current;
-    if (!sentinel || !container) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) loadOlderMessages(); },
-      { root: container, rootMargin: "100px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
+  const handleLoadMoreClick = useCallback(() => {
+    loadOlderMessages({ limit: MANUAL_LOAD_PAGE_SIZE, preserveScrollPosition: false });
   }, [loadOlderMessages]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: Attachment[]) => {
@@ -807,8 +803,6 @@ export default function ChatView({
           className="flex-1 overflow-y-auto overflow-x-hidden"
           onScroll={handleScroll}
         >
-          {/* Top sentinel for loading older messages */}
-          <div ref={topSentinelRef} className="h-px" />
           {refreshingHistory && (
             <div className="sticky top-0 z-10 flex justify-center px-3 pt-3">
               <div className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-secondary/95 px-3 py-1 text-xs text-text-muted shadow-sm backdrop-blur-sm">
@@ -823,8 +817,17 @@ export default function ChatView({
               Loading older messages...
             </div>
           ) : hasMore ? (
-            <div className="text-center py-2 text-text-muted text-xs">
-              Scroll up for more
+            <div className="text-center py-2 text-xs">
+              <button
+                type="button"
+                onClick={handleLoadMoreClick}
+                className="inline-flex flex-col items-center gap-0.5 font-medium text-text-muted transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:text-text-primary"
+                aria-label={`Load ${MANUAL_LOAD_PAGE_SIZE} older messages`}
+                title={`Load ${MANUAL_LOAD_PAGE_SIZE} older messages`}
+              >
+                <span className="underline underline-offset-2">Scroll up for more</span>
+                <span className="text-[11px] opacity-75">Click to load {MANUAL_LOAD_PAGE_SIZE} older messages</span>
+              </button>
             </div>
           ) : null}
           {renderedEntries}
