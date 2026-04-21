@@ -57,12 +57,26 @@ describe("settings-store", () => {
     const reloaded = store.getSettings();
     expect(reloaded.reasoningEffort).toBe("high");
 
-    // Clear by setting empty string
-    const cleared = store.updateSettings({ reasoningEffort: "" as any });
+    // Clear by explicitly setting undefined
+    const cleared = store.updateSettings({ reasoningEffort: undefined });
     expect(cleared.reasoningEffort).toBeUndefined();
 
     // Verify cleared
     const reloadedAgain = store.getSettings();
     expect(reloadedAgain.reasoningEffort).toBeUndefined();
+  });
+
+  it("updateSettings persists and clears model", () => {
+    const updated = store.updateSettings({ model: "gpt-5.4" });
+    expect(updated.model).toBe("gpt-5.4");
+
+    const reloaded = store.getSettings();
+    expect(reloaded.model).toBe("gpt-5.4");
+
+    const cleared = store.updateSettings({ model: undefined });
+    expect(cleared.model).toBeUndefined();
+
+    const reloadedAgain = store.getSettings();
+    expect(reloadedAgain.model).toBeUndefined();
   });
 });

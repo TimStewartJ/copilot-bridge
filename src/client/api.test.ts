@@ -1,5 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { getSessionActivityTime, getSessionRunState, isSessionActive, type Session } from "./api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  getSessionActivityTime,
+  getSessionRunState,
+  isSessionActive,
+  serializeSettingsPatch,
+  type Session,
+} from "./api";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("session run-state helpers", () => {
   it("prefers explicit runState over legacy busy flags", () => {
@@ -23,5 +33,25 @@ describe("getSessionActivityTime", () => {
       modifiedTime: "2026-04-17T14:00:00.000Z",
       lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
     })).toBe("2026-04-17T15:00:00.000Z");
+  });
+});
+
+describe("serializeSettingsPatch", () => {
+  it("preserves explicit model clears", () => {
+    expect(serializeSettingsPatch({ model: undefined })).toBe(
+      JSON.stringify({ model: "" }),
+    );
+  });
+
+  it("preserves explicit reasoning effort clears", () => {
+    expect(serializeSettingsPatch({ reasoningEffort: undefined })).toBe(
+      JSON.stringify({ reasoningEffort: "" }),
+    );
+  });
+
+  it("leaves other setting updates unchanged", () => {
+    expect(serializeSettingsPatch({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" })).toBe(
+      JSON.stringify({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" }),
+    );
   });
 });

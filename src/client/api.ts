@@ -815,6 +815,17 @@ export interface AppSettings {
   reasoningEffort?: ReasoningEffort;
 }
 
+export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
+  const normalized: Record<string, unknown> = { ...updates };
+  if ("model" in updates && updates.model === undefined) {
+    normalized.model = "";
+  }
+  if ("reasoningEffort" in updates && updates.reasoningEffort === undefined) {
+    normalized.reasoningEffort = "";
+  }
+  return JSON.stringify(normalized);
+}
+
 export async function fetchSettings(): Promise<AppSettings> {
   return apiFetch<AppSettings>("/api/settings");
 }
@@ -823,7 +834,7 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
   const res = await fetch(`${API_BASE}/api/settings`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(updates),
+    body: serializeSettingsPatch(updates),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));

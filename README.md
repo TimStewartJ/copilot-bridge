@@ -67,7 +67,7 @@ The launcher and direct server entrypoint load `.env` automatically at startup. 
 
 ### Demo Workspace
 
-If you want a guided showcase instead of a blank local workspace, use the seeded demo:
+If you want a guided sample workspace instead of a blank local workspace, use the seeded demo:
 
 ```bash
 npm run demo:start   # seed demo-data/, build the client, and start the demo workspace
@@ -80,11 +80,11 @@ It is intentionally scoped to the guided workspace experience. If you want the f
 
 When it starts:
 
-1. Open the pinned **Start Here - Copilot Bridge Tour** task.
+1. Open the pinned **Start Here - Acme Launch Workspace** task.
 2. Read the task note and related docs.
 3. Start a task chat and try one of the suggested prompts.
 4. Trigger the sample schedule.
-5. Add an item to the **Coworker Feedback** docs collection.
+5. Add an item to the **Launch Notes** docs collection.
 
 ### Run (Development)
 
@@ -98,7 +98,7 @@ npm run dev:client   # Vite dev server with HMR
 
 If you are opening the bridge for the first time, keep it simple:
 
-1. Run `npm run demo:start` if you want the guided showcase, or `npm run dev` if you want a blank workspace.
+1. Run `npm run demo:start` if you want the guided sample workspace, or `npm run dev` if you want a blank workspace.
 2. Go to **Settings** and pick your model, reasoning effort, theme, and favicon.
 3. Skip Azure DevOps/GitHub/Linear setup for now if you just want a clean local demo.
 4. Create a task, add a todo and a note, then start a task session.

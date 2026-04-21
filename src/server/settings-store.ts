@@ -56,8 +56,8 @@ export function createSettingsStore(db: DatabaseSync) {
     if (updates.theme !== undefined) current.theme = updates.theme;
     if (updates.identity !== undefined) current.identity = updates.identity;
     if (updates.customInstructions !== undefined) current.customInstructions = updates.customInstructions;
-    if (updates.model !== undefined) current.model = updates.model || undefined;
-    if (updates.reasoningEffort !== undefined) current.reasoningEffort = updates.reasoningEffort || undefined;
+    if ("model" in updates) current.model = updates.model || undefined;
+    if ("reasoningEffort" in updates) current.reasoningEffort = updates.reasoningEffort || undefined;
 
     db.prepare(
       "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = ?",

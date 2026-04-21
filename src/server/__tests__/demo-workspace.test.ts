@@ -27,7 +27,7 @@ describe("demo workspace", () => {
 
     expect(workspace.dataDir).toBe(join(repoRoot, "demo-data"));
     expect(existsSync(join(workspace.workspaceDir, "README.md"))).toBe(true);
-    expect(existsSync(join(workspace.workspaceDir, "src", "bridge-tour.ts"))).toBe(true);
+      expect(existsSync(join(workspace.workspaceDir, "src", "acme-launch.ts"))).toBe(true);
     expect(existsSync(workspace.copilotHome)).toBe(true);
 
     const db = openDatabase(workspace.dataDir);
@@ -40,29 +40,29 @@ describe("demo workspace", () => {
       expect(settingsStore.getSettings()).toMatchObject({
         theme: "dark",
         favicon: "emerald-bridge",
-        reasoningEffort: "medium",
       });
+      expect(settingsStore.getSettings().reasoningEffort).toBeUndefined();
 
-      const startHere = taskStore.listTasks().find((task) => task.title === "Start Here - Copilot Bridge Tour");
+      const startHere = taskStore.listTasks().find((task) => task.title === "Start Here - Acme Launch Workspace");
       expect(startHere).toMatchObject({
         pinned: true,
         cwd: workspace.workspaceDir,
       });
 
-      const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Demo follow-up prompt");
+      const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Launch follow-up prompt");
       expect(followUp).toBeDefined();
       expect(followUp?.type).toBe("once");
       expect(new Date(followUp!.runAt!).getTime()).toBeGreaterThan(Date.now());
 
-      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday bridge review");
+      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(reviewSchedule).toBeDefined();
       expect(reviewSchedule?.sessionMode).toBe("reuse-last");
 
-      const startHereDoc = docsStore.readPage("showcase/start-here");
+      const startHereDoc = docsStore.readPage("acme/start-here");
       expect(startHereDoc?.title).toBe("Start Here");
       expect(startHereDoc?.body).toContain("5-minute tour");
 
-      const feedbackEntries = docsStore.listDbEntries("showcase/coworker-feedback");
+      const feedbackEntries = docsStore.listDbEntries("acme/launch-notes");
       expect(feedbackEntries).toHaveLength(2);
     } finally {
       db.close();
@@ -76,9 +76,10 @@ describe("demo workspace", () => {
     const workspace = resetDemoWorkspace(repoRoot);
     const db = openDatabase(workspace.dataDir);
     try {
+      const settingsStore = createSettingsStore(db);
       const scheduleStore = createScheduleStore(db);
-      const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Demo follow-up prompt");
-      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday bridge review");
+      const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Launch follow-up prompt");
+      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(followUp).toBeDefined();
       expect(reviewSchedule).toBeDefined();
 
@@ -89,6 +90,7 @@ describe("demo workspace", () => {
       scheduleStore.updateSchedule(reviewSchedule!.id, {
         sessionMode: "new",
       });
+      settingsStore.updateSettings({ reasoningEffort: "medium" });
     } finally {
       db.close();
     }
@@ -98,12 +100,14 @@ describe("demo workspace", () => {
 
     const refreshedDb = openDatabase(ensured.dataDir);
     try {
+      const settingsStore = createSettingsStore(refreshedDb);
       const scheduleStore = createScheduleStore(refreshedDb);
-      const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Demo follow-up prompt");
-      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday bridge review");
+      const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Launch follow-up prompt");
+      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(followUp?.enabled).toBe(true);
       expect(new Date(followUp!.runAt!).getTime()).toBeGreaterThan(Date.now());
       expect(reviewSchedule?.sessionMode).toBe("reuse-last");
+      expect(settingsStore.getSettings().reasoningEffort).toBeUndefined();
     } finally {
       refreshedDb.close();
     }
