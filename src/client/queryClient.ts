@@ -29,6 +29,7 @@ export const queryKeys = {
     ["sessions", opts ?? {}] as const,
   task: (id: string) => ["task", id] as const,
   taskTodos: (id: string) => ["task", id, "todos"] as const,
+  openTodos: ["todos", "open"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
   allSchedules: ["schedules"] as const,

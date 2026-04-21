@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchTodos, createTodo, type Todo } from "../../api";
+import { fetchOpenTodos, fetchTodos, createTodo, type Todo } from "../../api";
 import { queryKeys } from "../../queryClient";
 
 export function useTaskTodosQuery(taskId: string | undefined) {
@@ -7,6 +7,14 @@ export function useTaskTodosQuery(taskId: string | undefined) {
     queryKey: queryKeys.taskTodos(taskId!),
     queryFn: () => fetchTodos(taskId!),
     enabled: !!taskId,
+  });
+}
+
+export function useOpenTodosQuery() {
+  return useQuery({
+    queryKey: queryKeys.openTodos,
+    queryFn: fetchOpenTodos,
+    refetchOnWindowFocus: true,
   });
 }
 

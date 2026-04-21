@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
+import { describeHomeTodoIndicator, type HomeTodoIndicator } from "../todo-helpers";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
@@ -29,6 +30,7 @@ interface TaskRailProps {
   onOpenDocs: () => void;
   isDocsActive: boolean;
   isDashboardActive: boolean;
+  homeTodoIndicator?: HomeTodoIndicator;
   expanded: boolean;
   onToggleExpanded: () => void;
   sessions?: Session[];
@@ -85,6 +87,7 @@ export default function TaskRail({
   onOpenDocs,
   isDocsActive,
   isDashboardActive,
+  homeTodoIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
   expanded,
   onToggleExpanded,
   sessions = [],
@@ -121,6 +124,12 @@ export default function TaskRail({
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
+  const homeIndicatorDescription = describeHomeTodoIndicator(homeTodoIndicator);
+  const homeIndicatorDotClass = homeTodoIndicator.state === "overdue"
+    ? "bg-error"
+    : homeTodoIndicator.state === "due-today"
+      ? "bg-warning"
+      : "";
 
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -305,10 +314,17 @@ export default function TaskRail({
         <div className="flex flex-col items-center gap-2 py-2">
           <button
             onClick={onGoHome}
-            title="Dashboard"
-            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
+            title={homeIndicatorDescription ? `Dashboard • ${homeIndicatorDescription}` : "Dashboard"}
+            aria-label={homeIndicatorDescription ? `Dashboard, ${homeIndicatorDescription}` : "Dashboard"}
+            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
           >
             <LayoutDashboard size={18} />
+            {homeTodoIndicator.state !== "none" && (
+              <span
+                aria-hidden="true"
+                className={`absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary ${homeIndicatorDotClass}`}
+              />
+            )}
           </button>
           <button
             onClick={onOpenDocs}
@@ -599,10 +615,18 @@ export default function TaskRail({
       <div className="px-2 pb-1">
         <button
           onClick={onGoHome}
+          title={homeIndicatorDescription ? `Dashboard • ${homeIndicatorDescription}` : "Dashboard"}
+          aria-label={homeIndicatorDescription ? `Dashboard, ${homeIndicatorDescription}` : "Dashboard"}
           className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isDashboardActive)}`}
         >
           <LayoutDashboard size={14} />
           Dashboard
+          {homeTodoIndicator.state !== "none" && (
+            <span
+              aria-hidden="true"
+              className={`ml-auto h-2.5 w-2.5 rounded-full ${homeIndicatorDotClass}`}
+            />
+          )}
         </button>
       </div>
 
