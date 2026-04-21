@@ -1,5 +1,5 @@
 diff --git a/node_modules/@github/copilot/definitions/code-review.agent.yaml b/node_modules/@github/copilot/definitions/code-review.agent.yaml
-index d66438c..a236d5d 100644
+index d66438c..14685b1 100644
 --- a/node_modules/@github/copilot/definitions/code-review.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/code-review.agent.yaml
 @@ -4,7 +4,7 @@ description: >
@@ -12,7 +12,7 @@ index d66438c..a236d5d 100644
    - "*"
  promptParts:
 diff --git a/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml b/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
-index 1083bbb..e43331b 100644
+index 1083bbb..b85e2aa 100644
 --- a/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
 @@ -3,7 +3,7 @@ displayName: Configure Copilot
@@ -25,7 +25,7 @@ index 1083bbb..e43331b 100644
    - cli
  tools:
 diff --git a/node_modules/@github/copilot/definitions/explore.agent.yaml b/node_modules/@github/copilot/definitions/explore.agent.yaml
-index ba59197..78a8a81 100644
+index ba59197..3f92b27 100644
 --- a/node_modules/@github/copilot/definitions/explore.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/explore.agent.yaml
 @@ -4,7 +4,7 @@ description: >
@@ -38,7 +38,7 @@ index ba59197..78a8a81 100644
    - grep
    - glob
 diff --git a/node_modules/@github/copilot/definitions/research.agent.yaml b/node_modules/@github/copilot/definitions/research.agent.yaml
-index 55001c5..32715c8 100644
+index 55001c5..ee345ca 100644
 --- a/node_modules/@github/copilot/definitions/research.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/research.agent.yaml
 @@ -4,7 +4,7 @@ description: >
@@ -51,7 +51,7 @@ index 55001c5..32715c8 100644
    # GitHub MCP tools (using short 'github/' prefix which maps to 'github-mcp-server/')
    - github/get_me # IMPORTANT: Use this first to understand user context and org
 diff --git a/node_modules/@github/copilot/definitions/task.agent.yaml b/node_modules/@github/copilot/definitions/task.agent.yaml
-index 21d10cb..2465224 100644
+index 21d10cb..523bf0d 100644
 --- a/node_modules/@github/copilot/definitions/task.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/task.agent.yaml
 @@ -4,7 +4,7 @@ description: >
