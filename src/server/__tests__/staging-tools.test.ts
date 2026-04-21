@@ -37,6 +37,19 @@ function isDataFilePath(path: string, filename: string): boolean {
   return basename(path) === filename && basename(dirname(path)) === "data";
 }
 
+function mockDataFilePresence(
+  { restartSignal = false, preDeploySha = false }: { restartSignal?: boolean; preDeploySha?: boolean } = {},
+) {
+  existsSyncOverrideMock.mockImplementation((path) => {
+    const normalized = String(path);
+    if (isDataFilePath(normalized, "restart.signal")) return restartSignal;
+    if (isDataFilePath(normalized, "pre-deploy-sha")) return preDeploySha;
+    return undefined;
+  });
+}
+
+mockDataFilePresence();
+
 vi.mock("@github/copilot-sdk", () => ({
   defineTool: (name: string, config: Record<string, unknown>) => ({ name, ...config }),
 }));
@@ -154,6 +167,7 @@ afterEach(() => {
   dependencySyncHashMock.mockReset();
   dependencySyncHashMock.mockReturnValue("same-hash");
   existsSyncOverrideMock.mockReset();
+  mockDataFilePresence();
   preparePatchedPackagesForInstallMock.mockReset();
   preparePatchedPackagesForInstallMock.mockReturnValue({
     packages: [],
@@ -309,12 +323,7 @@ describe("staging tools", () => {
     const stagingDir = join(stagingParent, "preview-deploy");
     mkdirSync(stagingDir, { recursive: true });
     writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
-      return undefined;
-    });
+    mockDataFilePresence();
 
     execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
       const cwd = options?.cwd;
@@ -377,12 +386,7 @@ describe("staging tools", () => {
     const stagingDir = join(stagingParent, "preview-deploy");
     mkdirSync(stagingDir, { recursive: true });
     writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return true;
-      return undefined;
-    });
+    mockDataFilePresence({ preDeploySha: true });
     readFileSyncOverrideMock.mockImplementation((path) =>
       isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
     );
@@ -432,12 +436,7 @@ describe("staging tools", () => {
     const stagingDir = join(stagingParent, "preview-deploy");
     mkdirSync(stagingDir, { recursive: true });
     writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
-      return undefined;
-    });
+    mockDataFilePresence();
 
     execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
       const cwd = options?.cwd;
@@ -471,10 +470,7 @@ describe("staging tools", () => {
 
     writeFileSyncCallMock.mockClear();
     unlinkSyncCallMock.mockClear();
-    existsSyncOverrideMock.mockImplementation((path) => {
-      if (isDataFilePath(String(path), "pre-deploy-sha")) return true;
-      return undefined;
-    });
+    mockDataFilePresence({ preDeploySha: true });
     readFileSyncOverrideMock.mockImplementation((path) =>
       isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
     );
