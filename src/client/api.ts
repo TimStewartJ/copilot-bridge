@@ -1001,10 +1001,27 @@ export interface BridgeCommitSnapshotUnavailable {
 
 export type BridgeCommitSnapshot = BridgeCommitSnapshotOk | BridgeCommitSnapshotUnavailable;
 
+export interface BridgeCommitComparisonOk {
+  status: "ok";
+  ahead: number;
+  behind: number;
+}
+
+export interface BridgeCommitComparisonUnavailable {
+  status: "unavailable";
+  error: string;
+}
+
+export type BridgeCommitComparison = BridgeCommitComparisonOk | BridgeCommitComparisonUnavailable;
+
 export interface BridgeCommitMetadata {
   local: BridgeCommitSnapshot;
   remote: BridgeCommitSnapshot;
   running: BridgeCommitSnapshot;
+  comparisons: {
+    localVsRemote: BridgeCommitComparison;
+    runningVsLocal: BridgeCommitComparison;
+  };
 }
 
 export async function fetchBridgeCommitMetadata(forceRefresh = false): Promise<BridgeCommitMetadata> {

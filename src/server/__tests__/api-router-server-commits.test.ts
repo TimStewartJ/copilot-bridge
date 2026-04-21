@@ -43,6 +43,18 @@ describe("server commit metadata route", () => {
         shortSha: "3333333",
         message: "Running bridge commit",
       },
+      comparisons: {
+        localVsRemote: {
+          status: "ok",
+          ahead: 0,
+          behind: 1,
+        },
+        runningVsLocal: {
+          status: "ok",
+          ahead: 0,
+          behind: 1,
+        },
+      },
     });
 
     const res = await request(app).get("/api/server/commits?refresh=1");
@@ -71,6 +83,18 @@ describe("server commit metadata route", () => {
         sha: "3333333333333333333333333333333333333333",
         shortSha: "3333333",
         message: "Running bridge commit",
+      },
+      comparisons: {
+        localVsRemote: {
+          status: "ok",
+          ahead: 0,
+          behind: 1,
+        },
+        runningVsLocal: {
+          status: "ok",
+          ahead: 0,
+          behind: 1,
+        },
       },
     });
   });

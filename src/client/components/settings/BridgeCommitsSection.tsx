@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitCommitHorizontal, Loader2, RotateCw } from "lucide-react";
+import { GitBranch, GitCommitHorizontal, Loader2, RotateCw } from "lucide-react";
 import {
   fetchBridgeCommitMetadata,
   fetchLauncherLogTail,
@@ -7,6 +7,13 @@ import {
   type BridgeCommitSnapshot,
   type LauncherLogTail,
 } from "../../api";
+import {
+  describeBridgeOverview,
+  describeLocalVsRemote,
+  describeRunningVsLocal,
+  type BridgeStatusDescriptor,
+  type BridgeStatusTone,
+} from "../../lib/bridge-commit-status";
 import { SettingsSection } from "./SettingsSection";
 
 const LAUNCHER_LOG_LINE_COUNT = 8;
@@ -56,7 +63,7 @@ export function BridgeCommitsSection() {
   return (
     <SettingsSection
       title="Bridge Status"
-      description="Read-only git metadata plus the latest launcher lines from the bridge that is currently serving this UI."
+      description="Compare local, tracked upstream, and running bridge commits, plus the latest launcher lines from the bridge serving this UI."
       action={(
         <button
           onClick={() => void refresh(true)}
@@ -68,25 +75,28 @@ export function BridgeCommitsSection() {
         </button>
       )}
     >
-      <div className="space-y-2">
-        <CommitCard
-          title="Latest local commit"
-          subtitle="Current worktree HEAD"
-          snapshot={commits?.local ?? null}
-          loading={loading}
-        />
-        <CommitCard
-          title="Latest remote commit"
-          subtitle="Freshly fetched from the tracked upstream branch"
-          snapshot={commits?.remote ?? null}
-          loading={loading}
-        />
-        <CommitCard
-          title="Running bridge commit"
-          subtitle="Captured when this server instance started"
-          snapshot={commits?.running ?? null}
-          loading={loading}
-        />
+      <div className="space-y-3">
+        <CommitOverviewCard commits={commits} loading={loading} />
+        <div className="grid gap-2 lg:grid-cols-3">
+          <CommitCard
+            title="Local"
+            subtitle="Current worktree HEAD"
+            snapshot={commits?.local ?? null}
+            loading={loading}
+          />
+          <CommitCard
+            title="Remote"
+            subtitle="Tracked upstream branch"
+            snapshot={commits?.remote ?? null}
+            loading={loading}
+          />
+          <CommitCard
+            title="Running"
+            subtitle="Bridge process serving this UI"
+            snapshot={commits?.running ?? null}
+            loading={loading}
+          />
+        </div>
         <LauncherLogCard
           launcherLog={launcherLog}
           loading={loading}
@@ -104,6 +114,87 @@ export function BridgeCommitsSection() {
 
 function formatRequestError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function CommitOverviewCard({
+  commits,
+  loading,
+}: {
+  commits: BridgeCommitMetadata | null;
+  loading: boolean;
+}) {
+  const overview = describeBridgeOverview(commits, loading);
+  const localSummary = describeLocalVsRemote(commits?.comparisons.localVsRemote, loading);
+  const runningSummary = describeRunningVsLocal(commits?.comparisons.runningVsLocal, loading);
+
+  return (
+    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-accent">
+            <GitBranch size={15} />
+            Sync overview
+          </div>
+          <p className="mt-1 text-xs text-text-muted">{overview.detail}</p>
+        </div>
+        <StatusPill descriptor={overview} />
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-2">
+        <ComparisonSummaryCard label="Local vs remote" descriptor={localSummary} />
+        <ComparisonSummaryCard label="Running vs local" descriptor={runningSummary} />
+      </div>
+    </div>
+  );
+}
+
+function ComparisonSummaryCard({
+  label,
+  descriptor,
+}: {
+  label: string;
+  descriptor: BridgeStatusDescriptor;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-text-faint">{label}</div>
+          <p className="mt-1 text-xs text-text-muted">{descriptor.detail}</p>
+        </div>
+        <StatusPill descriptor={descriptor} compact />
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({
+  descriptor,
+  compact = false,
+}: {
+  descriptor: BridgeStatusDescriptor;
+  compact?: boolean;
+}) {
+  return (
+    <span className={`shrink-0 rounded-full font-medium ${compact ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]"} ${statusToneClassName(descriptor.tone)}`}>
+      {descriptor.label}
+    </span>
+  );
+}
+
+function statusToneClassName(tone: BridgeStatusTone): string {
+  switch (tone) {
+    case "success":
+      return "bg-success/15 text-success";
+    case "warning":
+      return "bg-warning/15 text-warning";
+    case "error":
+      return "bg-error/10 text-error";
+    case "info":
+      return "bg-info/15 text-info";
+    default:
+      return "bg-bg-surface text-text-secondary";
+  }
 }
 
 function CommitCard({
@@ -145,19 +236,16 @@ function CommitCard({
       </div>
 
       {snapshot?.status === "ok" ? (
-        <div className="grid gap-2 text-xs text-text-muted">
-          <div>
-            <span className="text-text-faint">ref:</span>{" "}
-            <code className="text-text-secondary">{snapshot.ref}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">sha:</span>{" "}
-            <code className="text-text-secondary break-all">{snapshot.sha}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">message:</span>{" "}
-            <span className="text-text-secondary break-words">{snapshot.message}</span>
-          </div>
+        <div className="space-y-2">
+          <code className="inline-flex max-w-full rounded bg-bg-primary px-2 py-1 text-[11px] text-text-secondary">
+            {snapshot.ref}
+          </code>
+          <p className="text-sm leading-5 text-text-secondary break-words line-clamp-2">
+            {snapshot.message}
+          </p>
+          <code className="block break-all text-[11px] text-text-faint">
+            {snapshot.sha}
+          </code>
         </div>
       ) : (
         <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">

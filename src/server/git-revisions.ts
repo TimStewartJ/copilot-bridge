@@ -25,10 +25,27 @@ export interface GitCommitSnapshotUnavailable {
 
 export type GitCommitSnapshot = GitCommitSnapshotOk | GitCommitSnapshotUnavailable;
 
+export interface GitCommitComparisonOk {
+  status: "ok";
+  ahead: number;
+  behind: number;
+}
+
+export interface GitCommitComparisonUnavailable {
+  status: "unavailable";
+  error: string;
+}
+
+export type GitCommitComparison = GitCommitComparisonOk | GitCommitComparisonUnavailable;
+
 export interface BridgeGitRevisions {
   local: GitCommitSnapshot;
   remote: GitCommitSnapshot;
   running: GitCommitSnapshot;
+  comparisons: {
+    localVsRemote: GitCommitComparison;
+    runningVsLocal: GitCommitComparison;
+  };
 }
 
 export type BridgeGitRevisionReader = (options?: { forceRefresh?: boolean }) => Promise<BridgeGitRevisions>;
@@ -193,11 +210,17 @@ async function readRemoteCommit(forceRefresh = false): Promise<GitCommitSnapshot
   }
 
   const fetchResult = await runGit(
-    ["fetch", "--quiet", "--no-tags", "--depth=1", target.remoteName, `refs/heads/${target.remoteBranch}`],
+    [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      target.remoteName,
+      `+refs/heads/${target.remoteBranch}:refs/remotes/${target.ref}`,
+    ],
     REMOTE_GIT_TIMEOUT_MS,
   );
   const snapshot = fetchResult.ok
-    ? await readCommitAtRef("FETCH_HEAD", target.ref)
+    ? await readCommitAtRef(target.ref, target.ref)
     : {
         status: "unavailable" as const,
         ref: target.ref,
@@ -212,12 +235,76 @@ async function readRemoteCommit(forceRefresh = false): Promise<GitCommitSnapshot
   return snapshot;
 }
 
+function parseCommitComparison(output: string, leftRef: string, rightRef: string): GitCommitComparison {
+  const [aheadText = "", behindText = ""] = output.trim().split(/\s+/, 2);
+  const ahead = Number.parseInt(aheadText, 10);
+  const behind = Number.parseInt(behindText, 10);
+  if (!Number.isInteger(ahead) || !Number.isInteger(behind)) {
+    return {
+      status: "unavailable",
+      error: `Unable to compare git revisions for ${leftRef} and ${rightRef}.`,
+    };
+  }
+  return {
+    status: "ok",
+    ahead,
+    behind,
+  };
+}
+
+async function compareCommitSnapshots(left: GitCommitSnapshot, right: GitCommitSnapshot): Promise<GitCommitComparison> {
+  if (left.status !== "ok") {
+    return {
+      status: "unavailable",
+      error: left.error,
+    };
+  }
+  if (right.status !== "ok") {
+    return {
+      status: "unavailable",
+      error: right.error,
+    };
+  }
+  if (left.sha === right.sha) {
+    return {
+      status: "ok",
+      ahead: 0,
+      behind: 0,
+    };
+  }
+
+  const result = await runGit(["rev-list", "--left-right", "--count", `${left.sha}...${right.sha}`]);
+  if (!result.ok) {
+    return {
+      status: "unavailable",
+      error: result.error,
+    };
+  }
+
+  return parseCommitComparison(result.output, left.ref, right.ref);
+}
+
 export function createBridgeGitRevisionReader(): BridgeGitRevisionReader {
   const runningCommit = readCommitAtRefSync("HEAD", "HEAD @ server start");
 
-  return async (options = {}) => ({
-    local: await readCommitAtRef("HEAD", "HEAD"),
-    remote: await readRemoteCommit(options.forceRefresh === true),
-    running: runningCommit,
-  });
+  return async (options = {}) => {
+    const [local, remote] = await Promise.all([
+      readCommitAtRef("HEAD", "HEAD"),
+      readRemoteCommit(options.forceRefresh === true),
+    ]);
+    const [localVsRemote, runningVsLocal] = await Promise.all([
+      compareCommitSnapshots(local, remote),
+      compareCommitSnapshots(runningCommit, local),
+    ]);
+
+    return {
+      local,
+      remote,
+      running: runningCommit,
+      comparisons: {
+        localVsRemote,
+        runningVsLocal,
+      },
+    };
+  };
 }
