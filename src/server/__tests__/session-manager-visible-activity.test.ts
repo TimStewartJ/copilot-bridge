@@ -1,17 +1,32 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, isWindows } from "./helpers.js";
+import { setupTestDb, createTestBus } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+
+const readFileCallMock = vi.hoisted(() => vi.fn<(path: string) => void>());
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const { readFileSync } = await import("node:fs");
+  return {
+    ...actual,
+    readFile: async (path: Parameters<typeof actual.readFile>[0], _encoding: BufferEncoding) => {
+      readFileCallMock(String(path));
+      return readFileSync(path as string, "utf-8");
+    },
+  };
+});
 
 describe("SessionManager visible activity cache", () => {
   let copilotHome: string;
 
   beforeEach(() => {
+    readFileCallMock.mockReset();
     copilotHome = mkdtempSync(join(tmpdir(), "bridge-visible-activity-"));
   });
 
@@ -40,8 +55,7 @@ describe("SessionManager visible activity cache", () => {
     return join(sessionDir, "events.jsonl");
   }
 
-  // chmod has no effect on Windows NTFS, so this test only works on Unix
-  it.skipIf(isWindows)("reuses cached visible activity when the log mtime is unchanged", async () => {
+  it("reuses cached visible activity when the log mtime is unchanged", async () => {
     const eventsPath = writeSession([
       { type: "assistant.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Done" } },
     ]);
@@ -49,14 +63,14 @@ describe("SessionManager visible activity cache", () => {
 
     const initial = await manager.listSessionsFromDisk();
     expect(initial[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:00:00.000Z");
+    const readsAfterInitial = readFileCallMock.mock.calls.filter(([path]) => path === eventsPath).length;
+    expect(readsAfterInitial).toBeGreaterThan(0);
 
-    chmodSync(eventsPath, 0o000);
-    try {
-      const cached = await manager.listSessionsFromDisk();
-      expect(cached[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:00:00.000Z");
-    } finally {
-      chmodSync(eventsPath, 0o644);
-    }
+    const cached = await manager.listSessionsFromDisk();
+    const readsAfterCached = readFileCallMock.mock.calls.filter(([path]) => path === eventsPath).length;
+
+    expect(cached[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:00:00.000Z");
+    expect(readsAfterCached).toBe(readsAfterInitial);
   });
 
   it("refreshes visible activity when the log mtime changes", async () => {

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, testPath } from "./helpers.js";
 
 const { shutdownBridgeBrowserMock } = vi.hoisted(() => ({
   shutdownBridgeBrowserMock: vi.fn(),
@@ -39,7 +39,7 @@ describe("SessionManager graceful shutdown", () => {
   it("closes browser sessions and the primary bridge browser during graceful shutdown", async () => {
     const closeAll = vi.fn().mockResolvedValue(undefined);
     const stop = vi.fn().mockResolvedValue(undefined);
-    const copilotHome = "/tmp/bridge-shutdown-home";
+    const copilotHome = testPath("bridge-shutdown-home");
     const manager = createManager({
       browserSessionStore: { closeAll },
       copilotHome,

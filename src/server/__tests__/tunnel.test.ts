@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testExecutablePath } from "./test-paths.js";
 
 const execSyncMock = vi.hoisted(() => vi.fn());
 
@@ -175,7 +176,7 @@ describe("public URL helpers", () => {
   });
 
   it("reads BRIDGE_ENABLE_TUNNEL dynamically after import", async () => {
-    execSyncMock.mockReturnValue("/usr/bin/devtunnel");
+    execSyncMock.mockReturnValue(testExecutablePath("devtunnel"));
     const tunnel = await loadTunnelModule();
 
     process.env.BRIDGE_ENABLE_TUNNEL = "false";

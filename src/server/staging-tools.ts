@@ -740,7 +740,7 @@ export const STAGING_TOOLS = [
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
       "Returns the staging directory path where you should make all edits. " +
-      "Run quality checks (npx tsc --noEmit, npx vite build, npx vitest run) in that directory before calling staging_deploy.",
+      "Run quality checks (npx tsc --noEmit, npm run test:xplat-audit, npx vite build, npx vitest run) in that directory before calling staging_deploy.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const prefix = randomBytes(4).toString("hex");
@@ -855,13 +855,14 @@ export const STAGING_TOOLS = [
       // Install deps if staging package.json diverged from production
       ensureStagingDeps(stagingDir);
 
-      // Run tests before building
-      const testResult = run("npx vitest run --coverage", stagingDir);
+      // Run local x-plat audit + tests before building
+      const previewValidationCommand = "npm run test:xplat-audit && npx vitest run --coverage";
+      const testResult = run(previewValidationCommand, stagingDir);
       if (!testResult.ok) {
         return commandFailure(
-          "Staging preview tests failed.",
-          "The staged changes did not pass the preview test run.",
-          "npx vitest run --coverage",
+          "Staging preview validation failed.",
+          "The staged changes did not pass the preview validation run.",
+          previewValidationCommand,
           stagingDir,
           testResult.output,
           { stagingDir },

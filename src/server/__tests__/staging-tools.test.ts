@@ -217,8 +217,9 @@ describe("staging tools", () => {
       .mockRejectedValueOnce(new Error("corrupt staged db"))
       .mockResolvedValueOnce(undefined);
     const log = vi.fn();
+    const stagingDir = createTempDir("bridge-stage-preview-");
 
-    const result = await mod.__testing.restoreStagingBackendWithRetry("preview-123", "/tmp/staging-preview", {
+    const result = await mod.__testing.restoreStagingBackendWithRetry("preview-123", stagingDir, {
       initializeBackend,
       log,
     });
@@ -234,8 +235,9 @@ describe("staging tools", () => {
     const mod = await loadStagingToolsModule();
     const initializeBackend = vi.fn().mockRejectedValue(new Error("still broken"));
     const log = vi.fn();
+    const stagingDir = createTempDir("bridge-stage-preview-");
 
-    const result = await mod.__testing.restoreStagingBackendWithRetry("preview-123", "/tmp/staging-preview", {
+    const result = await mod.__testing.restoreStagingBackendWithRetry("preview-123", stagingDir, {
       initializeBackend,
       log,
     });
@@ -530,9 +532,9 @@ describe("staging tools", () => {
     expect(result).not.toHaveProperty("error");
   });
 
-  it("returns a normalized failure result when staging_preview tests fail", async () => {
+  it("returns a normalized failure result when staging_preview validation fails", async () => {
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "npx vitest run --coverage") {
+      if (cmd === "npm run test:xplat-audit && npx vitest run --coverage") {
         const error = new Error("tests failed") as Error & { stderr: string };
         error.stderr = "FAIL src/server/__tests__/staging-tools.test.ts\n1 failed\n";
         throw error;
@@ -554,15 +556,15 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       resultType: "failure",
-      sessionLog: expect.stringContaining("Command: npx vitest run --coverage"),
+      sessionLog: expect.stringContaining("Command: npm run test:xplat-audit && npx vitest run --coverage"),
       toolTelemetry: {
-        command: "npx vitest run --coverage",
+        command: "npm run test:xplat-audit && npx vitest run --coverage",
         cwd: stagingDir,
         stagingDir,
       },
     });
-    expect(result.textResultForLlm).toContain("Staging preview tests failed.");
-    expect(result.textResultForLlm).toContain("The staged changes did not pass the preview test run.");
+    expect(result.textResultForLlm).toContain("Staging preview validation failed.");
+    expect(result.textResultForLlm).toContain("The staged changes did not pass the preview validation run.");
     expect(result.textResultForLlm).toContain("1 failed");
     expect(result).not.toHaveProperty("error");
   });
