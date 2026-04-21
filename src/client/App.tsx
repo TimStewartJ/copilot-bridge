@@ -45,7 +45,9 @@ import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { useSessionsQuery } from "./hooks/queries/useSessions";
+import { useOpenTodosQuery } from "./hooks/queries/useTodos";
 import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
+import { getHomeTodoIndicator } from "./todo-helpers";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
 import TaskDashboard from "./components/TaskDashboard";
@@ -83,6 +85,7 @@ export default function App() {
   const { data: sessions = [] } = useSessionsQuery(archivedLoaded);
   const { data: tasks = [] } = useTasksQuery();
   const { data: taskGroups = [] } = useTaskGroupsQuery();
+  const { data: openTodos = [] } = useOpenTodosQuery();
 
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskNotFound, setTaskNotFound] = useState(false);
@@ -217,6 +220,10 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: ["sessions"] }), [queryClient]);
   const invalidateTasks = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
+  const invalidateDashboard = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }), [queryClient]);
+  const invalidateOpenTodos = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.openTodos }), [queryClient]);
   const invalidateTaskGroups = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.taskGroups }), [queryClient]);
 
@@ -306,6 +313,8 @@ export default function App() {
       case "task:changed":
         if (taskMutationInFlight.current === 0) {
           invalidateTasks();
+          invalidateDashboard();
+          invalidateOpenTodos();
           // Also refresh enriched WI/PR data so linked items show latest state
           queryClient.invalidateQueries({
             predicate: (q) => q.queryKey[0] === "task" && q.queryKey[2] === "enriched",
@@ -317,11 +326,12 @@ export default function App() {
         break;
       case "status:connected":
         setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "status:connected" }));
-        // Refresh sessions + read state on reconnect (covers tab sleep / network blips)
+        // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
+        invalidateOpenTodos();
         break;
     }
-  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateSessions, invalidateTasks, queryClient]));
+  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateDashboard, invalidateOpenTodos, invalidateSessions, invalidateTasks, queryClient]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
@@ -446,6 +456,9 @@ export default function App() {
   const mobileChatUnreadCount = useMemo(() => {
     return countChatTabUnread(globalSessions, isUnread);
   }, [globalSessions, isUnread]);
+  const homeTodoIndicator = useMemo(() => {
+    return getHomeTodoIndicator(openTodos);
+  }, [openTodos]);
 
   const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
@@ -1097,6 +1110,7 @@ export default function App() {
         onOpenDocs={handleOpenDocs}
         isDocsActive={isDocsActive}
         isDashboardActive={isDashboardActive}
+        homeTodoIndicator={homeTodoIndicator}
         expanded={railExpanded}
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
@@ -1381,6 +1395,7 @@ export default function App() {
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
+          homeTodoIndicator={homeTodoIndicator}
           taskUnreadCount={mobileTaskUnreadCount}
           chatUnreadCount={mobileChatUnreadCount}
         />

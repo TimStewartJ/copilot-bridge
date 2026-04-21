@@ -1,6 +1,26 @@
 // Shared deadline/todo helpers used by TaskPanel and Dashboard
 
 export type DeadlineUrgency = "none" | "soon" | "overdue";
+export type HomeTodoIndicatorState = "none" | "due-today" | "overdue";
+
+export interface HomeTodoIndicator {
+  state: HomeTodoIndicatorState;
+  dueTodayCount: number;
+  overdueCount: number;
+  urgentCount: number;
+}
+
+interface DeadlineLike {
+  deadline?: string;
+  done?: boolean;
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export function deadlineUrgency(deadline: string | undefined, done: boolean): DeadlineUrgency {
   if (!deadline || done) return "none";
@@ -16,6 +36,38 @@ export function deadlineUrgency(deadline: string | undefined, done: boolean): De
 export function deadlineLabel(deadline: string): string {
   const d = new Date(deadline + "T00:00:00");
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+export function getHomeTodoIndicator(
+  todos: readonly DeadlineLike[],
+  now = new Date(),
+): HomeTodoIndicator {
+  const today = localDateKey(now);
+  let overdueCount = 0;
+  let dueTodayCount = 0;
+
+  for (const todo of todos) {
+    if (!todo.deadline || todo.done) continue;
+    if (todo.deadline < today) overdueCount++;
+    else if (todo.deadline === today) dueTodayCount++;
+  }
+
+  return {
+    state: overdueCount > 0 ? "overdue" : dueTodayCount > 0 ? "due-today" : "none",
+    dueTodayCount,
+    overdueCount,
+    urgentCount: overdueCount + dueTodayCount,
+  };
+}
+
+export function describeHomeTodoIndicator(indicator: HomeTodoIndicator): string | null {
+  if (indicator.state === "overdue") {
+    return `${indicator.overdueCount} overdue to-do${indicator.overdueCount === 1 ? "" : "s"}`;
+  }
+  if (indicator.state === "due-today") {
+    return `${indicator.dueTodayCount} to-do${indicator.dueTodayCount === 1 ? "" : "s"} due today`;
+  }
+  return null;
 }
 
 export const DEADLINE_STYLES: Record<DeadlineUrgency, string> = {

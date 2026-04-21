@@ -1141,6 +1141,11 @@ export async function fetchTodos(taskId: string): Promise<Todo[]> {
   return data.todos;
 }
 
+export async function fetchOpenTodos(): Promise<Todo[]> {
+  const data = await apiFetch<{ todos: Todo[] }>("/api/todos/open");
+  return data.todos;
+}
+
 export async function createTodo(taskId: string, text: string, deadline?: string): Promise<Todo> {
   const data = await apiFetch<{ todo: Todo }>(`/api/tasks/${taskId}/todos`, { text, deadline });
   return data.todo;
