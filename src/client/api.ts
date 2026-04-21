@@ -985,6 +985,49 @@ export async function fetchServerTimezone(): Promise<string> {
   return result.timezone;
 }
 
+export interface BridgeCommitSnapshotOk {
+  status: "ok";
+  ref: string;
+  sha: string;
+  shortSha: string;
+  message: string;
+}
+
+export interface BridgeCommitSnapshotUnavailable {
+  status: "unavailable";
+  ref: string;
+  error: string;
+}
+
+export type BridgeCommitSnapshot = BridgeCommitSnapshotOk | BridgeCommitSnapshotUnavailable;
+
+export interface BridgeCommitMetadata {
+  local: BridgeCommitSnapshot;
+  remote: BridgeCommitSnapshot;
+  running: BridgeCommitSnapshot;
+}
+
+export async function fetchBridgeCommitMetadata(forceRefresh = false): Promise<BridgeCommitMetadata> {
+  const suffix = forceRefresh ? "?refresh=1" : "";
+  return apiFetch<BridgeCommitMetadata>(`/api/server/commits${suffix}`);
+}
+
+export interface LauncherLogTailOk {
+  status: "ok";
+  lines: string[];
+}
+
+export interface LauncherLogTailUnavailable {
+  status: "unavailable";
+  error: string;
+}
+
+export type LauncherLogTail = LauncherLogTailOk | LauncherLogTailUnavailable;
+
+export async function fetchLauncherLogTail(lines = 8): Promise<LauncherLogTail> {
+  return apiFetch<LauncherLogTail>(`/api/server/launcher-log?lines=${lines}`);
+}
+
 // ── Schedule API ──────────────────────────────────────────────────
 
 export type ScheduleSessionMode = "new" | "reuse-last" | "reuse-target";

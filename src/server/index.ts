@@ -82,6 +82,7 @@ const defaultContext: AppContext = {
   sessionManager: null as any, // assigned below after construction
   transcriptionService: createTranscriptionService(),
   voiceJobManager: null as any, // assigned below after construction
+  launcherLogPath: process.env.BRIDGE_LAUNCHER_LOG_PATH,
 };
 const tools = createBridgeTools(defaultContext);
 const sessionManager = createSessionManager(defaultContext, {

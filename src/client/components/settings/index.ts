@@ -11,3 +11,4 @@ export { ServerCard } from "./ServerCard";
 export { ServerEditor } from "./ServerEditor";
 export { TagsSection } from "./TagsSection";
 export { VoiceInputSection } from "./VoiceInputSection";
+export { BridgeCommitsSection } from "./BridgeCommitsSection";

@@ -39,5 +39,7 @@ export interface AppContext {
   voiceJobManager: VoiceJobManager;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
+  /** Shared launcher log file path when this server was started by the launcher */
+  launcherLogPath?: string;
   isStaging?: boolean;
 }

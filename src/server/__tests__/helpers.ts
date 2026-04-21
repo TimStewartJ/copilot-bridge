@@ -122,6 +122,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     eventBusRegistry,
     sessionManager,
     transcriptionService,
+    launcherLogPath: undefined,
   };
   const ctx = {
     ...baseContext,

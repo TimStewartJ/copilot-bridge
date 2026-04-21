@@ -17,6 +17,8 @@ import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./a
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
 import { createVoiceJobStore } from "./voice-job-store.js";
 import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager.js";
+import { createBridgeGitRevisionReader } from "./git-revisions.js";
+import { readLauncherLogTail } from "./launcher-log.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -115,6 +117,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   const transcriptionService =
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
+  const getBridgeGitRevisions = createBridgeGitRevisionReader();
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
@@ -455,6 +458,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
+    res.flushHeaders?.();
 
     let closed = false;
 
@@ -475,6 +479,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (closed || res.writableEnded) return;
       try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { close(); }
     });
+
+    try { res.write(`: connected\n\n`); }
+    catch { close(); }
 
     // Send authoritative restart state so clients don't have to guess
     if (isRestartPending()) {
@@ -1762,6 +1769,40 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/server/timezone", (_req, res) => {
     res.json({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  });
+
+  router.get("/server/launcher-log", (req, res) => {
+    try {
+      if (ctx.isStaging) {
+        return res.json({
+          status: "unavailable",
+          error: "Launcher log is unavailable in staging previews.",
+        });
+      }
+      if (!ctx.launcherLogPath) {
+        return res.json({
+          status: "unavailable",
+          error: "Launcher log is unavailable because this server was not started by the launcher.",
+        });
+      }
+      const rawLines = Array.isArray(req.query.lines) ? req.query.lines[0] : req.query.lines;
+      const parsedLines = Number.parseInt(String(rawLines ?? ""), 10);
+      res.json(readLauncherLogTail(ctx.launcherLogPath, {
+        lines: Number.isFinite(parsedLines) ? parsedLines : undefined,
+      }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/server/commits", async (req, res) => {
+    try {
+      const refresh = Array.isArray(req.query.refresh) ? req.query.refresh[0] : req.query.refresh;
+      const forceRefresh = /^(1|true|yes|on)$/i.test(String(refresh ?? ""));
+      res.json(await getBridgeGitRevisions({ forceRefresh }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── Settings routes ───────────────────────────────────────────────
