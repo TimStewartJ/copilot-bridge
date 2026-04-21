@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { ChatEntry } from "./api";
 import {
+  appendLiveEntries,
   getCachedChatSnapshot,
   hasClientGeneratedEntries,
   hasOptimisticTail,
@@ -17,6 +18,25 @@ function createMessage(id: string): ChatEntry {
     id,
     role: "assistant",
     content: id,
+  };
+}
+
+function createUserMessage(id: string, content = id): ChatEntry {
+  return {
+    id,
+    role: "user",
+    content,
+  };
+}
+
+function createToolEntry(toolCallId: string): ChatEntry {
+  return {
+    id: `tool-${toolCallId}`,
+    type: "tool",
+    toolCall: {
+      toolCallId,
+      name: "view",
+    },
   };
 }
 
@@ -165,5 +185,69 @@ describe("mergeTailMessages", () => {
     expect(merged.hasClientGeneratedEntries).toBe(false);
     expect(merged.entries[50]?.content).toBe("prompt");
     expect(merged.entries[50]?.id).toBeUndefined();
+  });
+});
+
+describe("appendLiveEntries", () => {
+  it("skips a reconnect assistant message when history already ends with the same text", () => {
+    const previousEntries = [{ id: "entry-1", role: "assistant", content: "All set" } satisfies ChatEntry];
+
+    const merged = appendLiveEntries(previousEntries, [{ id: "stream-1", role: "assistant", content: "All set" } satisfies ChatEntry]);
+
+    expect(merged).toEqual(previousEntries);
+  });
+
+  it("ignores trailing tool entries when deduplicating a reconnect assistant message", () => {
+    const previousEntries = [
+      { id: "entry-1", role: "assistant", content: "All set" } satisfies ChatEntry,
+      createToolEntry("tool-1"),
+    ];
+
+    const merged = appendLiveEntries(previousEntries, [{ id: "stream-1", role: "assistant", content: "All set" } satisfies ChatEntry]);
+
+    expect(merged).toEqual(previousEntries);
+  });
+
+  it("preserves repeated assistant text when a new turn intervened", () => {
+    const previousEntries = [
+      { id: "entry-1", role: "assistant", content: "All set" } satisfies ChatEntry,
+      createUserMessage("entry-2", "Say that again"),
+    ];
+
+    const merged = appendLiveEntries(previousEntries, [{ id: "stream-1", role: "assistant", content: "All set" } satisfies ChatEntry]);
+
+    expect(merged).toHaveLength(3);
+    expect(merged[2]?.content).toBe("All set");
+  });
+
+  it("skips duplicate tool completions that were already hydrated from history", () => {
+    const previousEntries = [createToolEntry("tool-1")];
+
+    const merged = appendLiveEntries(previousEntries, [
+      {
+        id: "stream-tool-1",
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-1",
+          name: "view",
+          result: "done",
+          success: true,
+          completedAt: "2026-04-21T17:00:00.000Z",
+        },
+      } satisfies ChatEntry,
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "tool-tool-1",
+      type: "tool",
+      toolCall: {
+        toolCallId: "tool-1",
+        name: "view",
+        result: "done",
+        success: true,
+        completedAt: "2026-04-21T17:00:00.000Z",
+      },
+    });
   });
 });

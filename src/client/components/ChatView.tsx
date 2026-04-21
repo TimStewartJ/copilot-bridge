@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
-import { getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
+import { appendLiveEntries, getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
@@ -197,14 +197,8 @@ export default function ChatView({
       id: e.id ?? `stream-${Date.now()}-${i}`,
     }));
     const previousEntries = entriesRef.current;
-    const filtered = withIds.filter((entry) => {
-      if (entry.type === "tool") return true;
-      const msg = entry as ChatMessage;
-      if (msg.role !== "user") return true;
-      return !previousEntries.some((p) => p.type !== "tool" && (p as ChatMessage).role === "user" && (p as ChatMessage).content === msg.content);
-    });
-    if (filtered.length === 0) return;
-    const nextEntries = [...previousEntries, ...filtered];
+    const nextEntries = appendLiveEntries(previousEntries, withIds);
+    if (nextEntries === previousEntries) return;
     applyHistory(nextEntries, {
       total: Math.max(totalEntriesRef.current, firstItemIndex.current + nextEntries.length),
       hasMore: firstItemIndex.current > 0,

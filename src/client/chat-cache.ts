@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Attachment, ChatEntry, ToolCall } from "./api";
+import type { Attachment, ChatEntry, ChatMessage, ToolCall } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
@@ -118,6 +118,70 @@ export function normalizeCommittedClientEntries(
     if (!isClientGeneratedEntry(entry) || isUnsafeCommittedClientEntry(entry)) return entry;
     return { ...entry, id: undefined };
   });
+}
+
+function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type !== "tool") return entry;
+  }
+  return undefined;
+}
+
+function findToolEntryIndex(entries: ChatEntry[], toolCallId: string): number {
+  return entries.findIndex((entry) => entry.type === "tool" && entry.toolCall?.toolCallId === toolCallId);
+}
+
+function mergeLiveToolEntry(existingEntry: Extract<ChatEntry, { type: "tool" }>, incomingEntry: Extract<ChatEntry, { type: "tool" }>): Extract<ChatEntry, { type: "tool" }> {
+  return {
+    ...existingEntry,
+    ...incomingEntry,
+    id: existingEntry.id ?? incomingEntry.id,
+    toolCall: {
+      ...existingEntry.toolCall,
+      ...incomingEntry.toolCall,
+      toolCallId: incomingEntry.toolCall.toolCallId,
+      name: incomingEntry.toolCall.name ?? existingEntry.toolCall.name,
+      args: incomingEntry.toolCall.args ?? existingEntry.toolCall.args,
+      result: incomingEntry.toolCall.result ?? existingEntry.toolCall.result,
+      success: incomingEntry.toolCall.success ?? existingEntry.toolCall.success,
+      parentToolCallId: incomingEntry.toolCall.parentToolCallId ?? existingEntry.toolCall.parentToolCallId,
+      isSubAgent: incomingEntry.toolCall.isSubAgent ?? existingEntry.toolCall.isSubAgent,
+      childToolCalls: incomingEntry.toolCall.childToolCalls ?? existingEntry.toolCall.childToolCalls,
+      startedAt: incomingEntry.toolCall.startedAt ?? existingEntry.toolCall.startedAt,
+      completedAt: incomingEntry.toolCall.completedAt ?? existingEntry.toolCall.completedAt,
+    },
+  };
+}
+
+function isDuplicateLiveMessageEntry(previousEntries: ChatEntry[], incomingEntry: ChatEntry): boolean {
+  if (incomingEntry.type === "tool") return false;
+  const lastMessage = findLastMessage(previousEntries);
+  return lastMessage?.role === incomingEntry.role && lastMessage.content === incomingEntry.content;
+}
+
+export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries: ChatEntry[]): ChatEntry[] {
+  let nextEntries = previousEntries;
+
+  for (const incomingEntry of incomingEntries) {
+    if (incomingEntry.type === "tool") {
+      const toolCallId = incomingEntry.toolCall?.toolCallId;
+      if (toolCallId) {
+        const existingToolIndex = findToolEntryIndex(nextEntries, toolCallId);
+        if (existingToolIndex >= 0) {
+          if (nextEntries === previousEntries) nextEntries = [...previousEntries];
+          const existingToolEntry = nextEntries[existingToolIndex] as Extract<ChatEntry, { type: "tool" }>;
+          nextEntries[existingToolIndex] = mergeLiveToolEntry(existingToolEntry, incomingEntry);
+          continue;
+        }
+      }
+    }
+    if (isDuplicateLiveMessageEntry(nextEntries, incomingEntry)) continue;
+    if (nextEntries === previousEntries) nextEntries = [...previousEntries];
+    nextEntries.push(incomingEntry);
+  }
+
+  return nextEntries;
 }
 
 export function mergeTailMessages(
