@@ -597,6 +597,7 @@ async function restart(): Promise<RestartOutcome> {
       return "failed";
     }
     consecutiveFailures = 0;
+    await ensureTunnelAfterRollback();
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
   }
@@ -677,12 +678,26 @@ async function restart(): Promise<RestartOutcome> {
       return "failed";
     }
     consecutiveFailures = 0;
+    await ensureTunnelAfterRollback();
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
   }
 }
 
 // ── Dev Tunnel ────────────────────────────────────────────────────
+
+async function ensureTunnelAfterRollback(): Promise<void> {
+  if (!shouldUseDevtunnel()) return;
+  // Start (or cycle) the tunnel so rollback-recovered servers stay reachable.
+  // Mirrors the tunnel cycle in the successful-restart branch.
+  try {
+    tunnelCrashRestarts = 0;
+    const url = await startTunnel();
+    log(`Tunnel restored after rollback: ${url}`);
+  } catch (err) {
+    log(`Tunnel restart after rollback failed (non-fatal): ${err}`);
+  }
+}
 
 function startTunnel(): Promise<string> {
   if (!canUseDevtunnelCli()) {
