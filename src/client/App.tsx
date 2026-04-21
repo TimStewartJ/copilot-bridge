@@ -236,6 +236,18 @@ export default function App() {
   const patchSessionInCache = useCallback((sessionId: string, patch: Partial<Session>) => {
     patchSessionsInCache([sessionId], patch);
   }, [patchSessionsInCache]);
+  const bumpSessionBusySignal = useCallback((sessionId?: string) => {
+    if (!sessionId) return;
+    sessionBusyHintExpiresAtRef.current[sessionId] = Date.now() + SESSION_BUSY_SIGNAL_GRACE_MS;
+    setSessionBusySignals((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] ?? 0) + 1,
+    }));
+  }, []);
+  const clearSessionBusyHint = useCallback((sessionId?: string) => {
+    if (!sessionId) return;
+    delete sessionBusyHintExpiresAtRef.current[sessionId];
+  }, []);
 
   useStatusStream(useCallback((event) => {
     switch (event.type) {
@@ -251,8 +263,8 @@ export default function App() {
         }
         break;
       case "session:idle":
-        clearSessionBusyHint(event.sessionId);
         if (event.sessionId) {
+          clearSessionBusyHint(event.sessionId);
           patchSessionInCache(event.sessionId, { runState: "idle", busy: false });
         }
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
