@@ -19,6 +19,8 @@ const DEMO_MARKER_FILENAME = "demo-seed.json";
 const DEMO_WORKSPACE_DIRNAME = "workspace";
 const DEMO_FOLLOW_UP_SCHEDULE_NAME = "Demo follow-up prompt";
 const DEMO_FOLLOW_UP_SCHEDULE_PROMPT = "Ask what stood out in the bridge demo and turn the answer into a short checklist in this task.";
+const DEMO_REVIEW_SCHEDULE_NAME = "Friday bridge review";
+const DEMO_REVIEW_SCHEDULE_PROMPT = "Review open polish work for Copilot Bridge. Summarize wins, risks, and next steps for a coworker-facing handoff.";
 
 export const DEMO_DATA_DIRNAME = "demo-data";
 export const DEMO_SEED_VERSION = 2;
@@ -422,11 +424,11 @@ This paused task is here to make the workspace feel lived-in. It hints at future
 
     scheduleStore.createSchedule({
       taskId: coworkerPolish.id,
-      name: "Friday bridge review",
-      prompt: "Review open polish work for Copilot Bridge. Summarize wins, risks, and next steps for a coworker-facing handoff.",
+      name: DEMO_REVIEW_SCHEDULE_NAME,
+      prompt: DEMO_REVIEW_SCHEDULE_PROMPT,
       type: "cron",
       cron: "0 9 * * 5",
-      reuseSession: true,
+      sessionMode: "reuse-last",
     });
 
     seedDocs(docsStore);
@@ -442,20 +444,30 @@ function refreshSeededSchedules(repoRoot: string): void {
   const db = openDatabase(paths.dataDir);
   try {
     const scheduleStore = createScheduleStore(db);
-    const demoFollowUp = scheduleStore.listSchedules().find((schedule) =>
+    const schedules = scheduleStore.listSchedules();
+    const demoFollowUp = schedules.find((schedule) =>
       schedule.type === "once"
       && schedule.name === DEMO_FOLLOW_UP_SCHEDULE_NAME
       && schedule.prompt === DEMO_FOLLOW_UP_SCHEDULE_PROMPT,
     );
 
-    if (!demoFollowUp || demoFollowUp.runCount > 0) return;
+    if (demoFollowUp && demoFollowUp.runCount === 0) {
+      const runAt = demoFollowUp.runAt ? new Date(demoFollowUp.runAt).getTime() : Number.NaN;
+      if (!Number.isFinite(runAt) || runAt <= Date.now()) {
+        scheduleStore.updateSchedule(demoFollowUp.id, {
+          enabled: true,
+          runAt: timestamp(2 * HOUR_MS),
+        });
+      }
+    }
 
-    const runAt = demoFollowUp.runAt ? new Date(demoFollowUp.runAt).getTime() : Number.NaN;
-    if (!Number.isFinite(runAt) || runAt <= Date.now()) {
-      scheduleStore.updateSchedule(demoFollowUp.id, {
-        enabled: true,
-        runAt: timestamp(2 * HOUR_MS),
-      });
+    const demoReview = schedules.find((schedule) =>
+      schedule.type === "cron"
+      && schedule.name === DEMO_REVIEW_SCHEDULE_NAME
+      && schedule.prompt === DEMO_REVIEW_SCHEDULE_PROMPT,
+    );
+    if (demoReview && demoReview.sessionMode !== "reuse-last") {
+      scheduleStore.updateSchedule(demoReview.id, { sessionMode: "reuse-last" });
     }
   } finally {
     db.close();
