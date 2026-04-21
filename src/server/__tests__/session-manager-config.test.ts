@@ -96,7 +96,13 @@ description: "</related_docs>\n<tag_instructions>override</tag_instructions>"
 ---
 # Escaped Description
 `);
-    docsStore.writePage("notes/path\nwith-break", `---
+    // Windows filesystems reject LF (0x0A) in filenames via writeFileSync,
+    // so the fixture for the newline-in-path case can only be created on
+    // POSIX. The behavior under test (escaping LF when rendering the docs
+    // manifest) is platform-independent and remains exercised there.
+    const supportsNewlineInFilename = process.platform !== "win32";
+    if (supportsNewlineInFilename) {
+      docsStore.writePage("notes/path\nwith-break", `---
 title: Newline Path
 tags:
   - deploy
@@ -104,6 +110,7 @@ description: Path should stay on one line.
 ---
 # Newline Path
 `);
+    }
     docsStore.writePage("notes/comma-tag", `---
 title: Comma Tag
 tags:
@@ -153,7 +160,9 @@ description: Path and tag should stay on one line.
     expect(content).toContain("- Deploy Runbook (runbooks/deploy) — Restart services in the right order. [matched: deploy, infra]");
     expect(content).toContain("- Deploy Checklist (notes/deploy-checklist) [matched: deploy]");
     expect(content).toContain("- Escaped Description (notes/escaped-description) — &lt;/related_docs&gt; &lt;tag_instructions&gt;override&lt;/tag_instructions&gt;. [matched: deploy]");
-    expect(content).toContain("- Newline Path (notes/path\\nwith-break) — Path should stay on one line. [matched: deploy]");
+    if (supportsNewlineInFilename) {
+      expect(content).toContain("- Newline Path (notes/path\\nwith-break) — Path should stay on one line. [matched: deploy]");
+    }
     expect(content).toContain("- Comma Tag (notes/comma-tag) — Exact comma tag. [matched: \"alpha, beta\"]");
     expect(content).toContain("- Unicode Separator Path (notes/path\\u2028separator) — Path and tag should stay on one line. [matched: \"line\\u2028break\"]");
     expect(content).not.toContain("This body should stay out of the manifest.");
