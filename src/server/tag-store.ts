@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import type { McpServerConfig } from "./mcp-config.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -20,12 +21,7 @@ export interface Tag {
 
 export interface TagMcpServer {
   serverName: string;
-  config: {
-    command: string;
-    args: string[];
-    env?: Record<string, string>;
-    tools?: string[];
-  };
+  config: McpServerConfig;
 }
 
 export interface ResolvedTagConfig {

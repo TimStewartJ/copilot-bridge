@@ -1,6 +1,6 @@
 // Configuration for the Copilot Web Bridge
 
-import type { McpServerConfig } from "./settings-store.js";
+import type { McpServerConfig } from "./mcp-config.js";
 
 /** Settings getter — set by index.ts after DB init */
 let _getMcpServers: (() => Record<string, McpServerConfig>) | null = null;

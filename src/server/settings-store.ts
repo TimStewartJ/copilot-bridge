@@ -2,16 +2,8 @@
 
 import type { DatabaseSync } from "./db.js";
 
-// ── Types ─────────────────────────────────────────────────────────
-
 import type { ProvidersConfig } from "./providers/types.js";
-
-export interface McpServerConfig {
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-  tools?: string[];
-}
+import type { McpServerConfig } from "./mcp-config.js";
 
 export type ThemePreference = "light" | "dark" | "system";
 export type ReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";

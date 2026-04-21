@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers.js";
+import { isLocalMcpServerConfig } from "../mcp-config.js";
 import { createSettingsStore } from "../settings-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { DatabaseSync } from "../db.js";
@@ -26,7 +27,10 @@ describe("settings-store", () => {
       },
     });
     expect(updated.mcpServers.custom).toBeDefined();
-    expect(updated.mcpServers.custom.command).toBe("test");
+    expect(isLocalMcpServerConfig(updated.mcpServers.custom)).toBe(true);
+    if (isLocalMcpServerConfig(updated.mcpServers.custom)) {
+      expect(updated.mcpServers.custom.command).toBe("test");
+    }
 
     // Verify persistence
     const reloaded = store.getSettings();
@@ -37,7 +41,25 @@ describe("settings-store", () => {
     store.updateSettings({ mcpServers: { test: { command: "echo", args: [] } } });
     const servers = store.getMcpServers();
     expect(servers.test).toBeDefined();
-    expect(servers.test.command).toBe("echo");
+    expect(isLocalMcpServerConfig(servers.test)).toBe(true);
+    if (isLocalMcpServerConfig(servers.test)) {
+      expect(servers.test.command).toBe("echo");
+    }
+  });
+
+  it("persists remote MCP server configs", () => {
+    const remoteConfig = {
+      type: "http" as const,
+      url: "https://mcp.linear.app/mcp",
+      headers: { Authorization: "Bearer test-token" },
+      tools: ["linear_search"],
+    };
+
+    store.updateSettings({ mcpServers: { linear: remoteConfig } });
+
+    const reloaded = store.getSettings();
+    expect(reloaded.mcpServers.linear).toEqual(remoteConfig);
+    expect(store.getMcpServers().linear).toEqual(remoteConfig);
   });
 
   it("updateSettings replaces mcpServers entirely", () => {

@@ -1,4 +1,5 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+export type { McpServerConfig } from "../mcp-config";
 
 export interface Session {
   sessionId: string;
@@ -772,13 +773,6 @@ export async function fetchDashboard(): Promise<DashboardData> {
 }
 
 // ── Settings API ──────────────────────────────────────────────────
-
-export interface McpServerConfig {
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-  tools?: string[];
-}
 
 export interface AdoProviderConfig {
   org: string;

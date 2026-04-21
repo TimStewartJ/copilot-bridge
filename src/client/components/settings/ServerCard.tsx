@@ -1,5 +1,6 @@
 import type { McpServerConfig, McpServerStatus } from "../../api";
 import { CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
+import { getMcpServerTransport, isLocalMcpServerConfig } from "../../../mcp-config";
 import { ConfigCard } from "./ConfigCard";
 
 export function ServerCard({
@@ -16,6 +17,7 @@ export function ServerCard({
   onRemove: () => void;
 }) {
   const st = status?.status;
+  const transport = getMcpServerTransport(config);
   const statusBadge = (() => {
     switch (st) {
       case "connected":
@@ -67,15 +69,28 @@ export function ServerCard({
       )}
       <div className="mt-2 space-y-1">
         <div className="text-xs text-text-muted">
-          <span className="text-text-faint">command:</span>{" "}
-          <code className="text-text-secondary">{config.command}</code>
+          <span className="text-text-faint">transport:</span>{" "}
+          <code className="text-text-secondary">{transport}</code>
         </div>
-        {config.args.length > 0 && (
+        {isLocalMcpServerConfig(config) ? (
+          <>
+            <div className="text-xs text-text-muted">
+              <span className="text-text-faint">command:</span>{" "}
+              <code className="text-text-secondary">{config.command}</code>
+            </div>
+            {config.args.length > 0 && (
+              <div className="text-xs text-text-muted">
+                <span className="text-text-faint">args:</span>{" "}
+                <code className="text-text-secondary break-all">
+                  {config.args.join(" ")}
+                </code>
+              </div>
+            )}
+          </>
+        ) : (
           <div className="text-xs text-text-muted">
-            <span className="text-text-faint">args:</span>{" "}
-            <code className="text-text-secondary break-all">
-              {config.args.join(" ")}
-            </code>
+            <span className="text-text-faint">url:</span>{" "}
+            <code className="text-text-secondary break-all">{config.url}</code>
           </div>
         )}
         {config.tools && config.tools.length > 0 && (
@@ -86,13 +101,24 @@ export function ServerCard({
             </code>
           </div>
         )}
-        {config.env && Object.keys(config.env).length > 0 && (
-          <div className="text-xs text-text-muted">
-            <span className="text-text-faint">env:</span>{" "}
-            <code className="text-text-secondary">
-              {Object.keys(config.env).join(", ")}
-            </code>
-          </div>
+        {isLocalMcpServerConfig(config) ? (
+          config.env && Object.keys(config.env).length > 0 && (
+            <div className="text-xs text-text-muted">
+              <span className="text-text-faint">env:</span>{" "}
+              <code className="text-text-secondary">
+                {Object.keys(config.env).join(", ")}
+              </code>
+            </div>
+          )
+        ) : (
+          config.headers && Object.keys(config.headers).length > 0 && (
+            <div className="text-xs text-text-muted">
+              <span className="text-text-faint">headers:</span>{" "}
+              <code className="text-text-secondary">
+                {Object.keys(config.headers).join(", ")}
+              </code>
+            </div>
+          )
         )}
       </div>
     </ConfigCard>
