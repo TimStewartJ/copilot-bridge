@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatToolArgsDetails, hasToolArgs, summarizeToolArgs } from "./tool-args";
+import { testPath } from "../../server/__tests__/test-paths.js";
 
 describe("tool arg helpers", () => {
   it("summarizes freeform string arguments without splitting characters", () => {
@@ -8,7 +9,7 @@ describe("tool arg helpers", () => {
 
   it("keeps object-backed summaries focused on common keys", () => {
     expect(summarizeToolArgs({ command: "npm run build -- --watch" }, { maxLength: 12 })).toBe("npm run b...");
-    expect(summarizeToolArgs({ path: "/tmp/a/b/c/file.ts" })).toBe("b/c/file.ts");
+    expect(summarizeToolArgs({ path: testPath("a", "b", "c", "file.ts") })).toBe("b/c/file.ts");
   });
 
   it("formats detail output for both strings and objects", () => {

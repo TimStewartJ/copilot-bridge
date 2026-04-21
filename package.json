@@ -22,6 +22,7 @@
     "build": "npm run build:client && npm run build:server",
     "start": "node dist/server/index.js",
     "test": "vitest run",
+    "test:xplat-audit": "tsx src/server/xplat-test-audit.ts",
     "test:coverage": "vitest run --coverage",
     "postinstall": "patch-package --error-on-fail"
   },

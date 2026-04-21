@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { normalizePath, testCopilotHome } from "./test-paths.js";
+import { normalizePath, pathBasename, testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 const BROWSER_PROFILE = join(COPILOT_HOME, "browser-profile");
@@ -331,7 +331,7 @@ describe("agent-browser wrapper", () => {
 
     const mod = await import("../agent-browser.js");
     const activeClone = await mod.createPersistentCloneBrowserTarget(COPILOT_HOME, undefined, {});
-    const activeCloneDir = normalizePath(activeClone.browserTarget.profileDir).split("/").at(-1)!;
+    const activeCloneDir = pathBasename(activeClone.browserTarget.profileDir);
 
     readdirMock.mockResolvedValueOnce([
       { name: activeCloneDir, isDirectory: () => true },

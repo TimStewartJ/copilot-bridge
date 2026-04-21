@@ -89,10 +89,20 @@ You can get a lot of value on first run without any external work-tracking provi
 ### Validate
 
 ```bash
+npx tsc --noEmit
+npm run test:xplat-audit
 npm test
 npm run test:coverage
 npm run build
 ```
+
+### Cross-Platform Test Rules
+
+- Use the shared helpers in `src/server/__tests__/test-paths.ts` for fake homes, normalized path assertions, and fake executable paths.
+- Do not hardcode Unix-only fixtures like `/tmp/...` or `/usr/bin/...` in tests.
+- Do not skip Windows with `skipIf(isWindows)` when the behavior can be tested with mocks instead.
+- Prefer mocking failure paths over Unix-only filesystem tricks like `chmod`.
+- Run `npm run test:xplat-audit` before preview/deploy; `staging_preview` also runs it automatically.
 
 ### Build
 

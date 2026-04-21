@@ -83,8 +83,16 @@ export function createMockTranscriptionService(overrides?: Partial<Transcription
   };
 }
 
-/** True when running on Windows */
-export { isWindows, testCopilotHome, normalizePath } from "./test-paths.js";
+/** Shared cross-platform test helpers */
+export {
+  isWindows,
+  normalizePath,
+  pathBasename,
+  pathSegments,
+  testCopilotHome,
+  testExecutablePath,
+  testPath,
+} from "./test-paths.js";
 
 /**
  * Create a fully wired Express app for integration testing.

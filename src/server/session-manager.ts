@@ -216,7 +216,9 @@ When modifying code in this repository (the Copilot Bridge):
 2. Make ALL code edits in the returned staging directory — never in the production directory
 3. Run quality checks in the staging directory:
    - npx tsc --noEmit (type checking)
+   - npm run test:xplat-audit (cross-platform test audit)
    - npx vite build (client build)
+   - npx vitest run (test suite)
 4. Call staging_preview to build and serve a preview of the staged frontend
 5. Share the preview URL with the user and WAIT for their confirmation before proceeding
 6. Only after the user approves, call staging_deploy with a descriptive commit message
