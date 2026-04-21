@@ -47,6 +47,7 @@ import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.js";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
+import { err, getToolExecutionDisplayText, ok, toolFailure, type Result } from "./tool-results.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -342,11 +343,43 @@ export function triggerRestartPending(): number {
 
 // Universal tools — same instance for every session
 export function createBridgeTools(ctx: AppContext) {
+  const ensureTask = (taskId: string): Result<Task> => {
+    const task = ctx.taskStore.getTask(taskId);
+    return task ? ok(task) : err(`Task ${taskId} not found`);
+  };
+
+  const ensureTaskGroup = (
+    groupId: string,
+  ): Result<NonNullable<ReturnType<TaskGroupStore["getGroup"]>>> => {
+    const group = ctx.taskGroupStore.getGroup(groupId);
+    return group ? ok(group) : err(`Group ${groupId} not found`);
+  };
+
+  const ensureTagStore = (): Result<TagStore> => {
+    return ctx.tagStore ? ok(ctx.tagStore) : err("Tags not available");
+  };
+
+  const ensureTag = (tagId: string): Result<NonNullable<ReturnType<TagStore["getTag"]>>> => {
+    const tagStore = ensureTagStore();
+    if (!tagStore.ok) return tagStore;
+    const tag = tagStore.value.getTag(tagId);
+    return tag ? ok(tag) : err(`Tag ${tagId} not found`);
+  };
+
+  const ensureTodo = (todoId: string): Result<NonNullable<ReturnType<TodoStore["getTodo"]>>> => {
+    const todo = ctx.todoStore.getTodo(todoId);
+    return todo ? ok(todo) : err(`Todo ${todoId} not found`);
+  };
+
+  const normalizeDocsToolFailure = (error: unknown) => toolFailure(error instanceof Error ? error.message : String(error));
+
   return [
   defineTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
       ctx.taskStore.linkWorkItem(args.taskId, String(args.workItemId), args.provider ?? "ado");
       return { success: true, message: `Work item ${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
     },
@@ -355,6 +388,8 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Remove a work item from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github)" } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
       ctx.taskStore.unlinkWorkItem(args.taskId, String(args.workItemId), args.provider);
       return { success: true, message: `Work item ${args.workItemId} unlinked from task` };
     },
@@ -363,6 +398,8 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Link a pull request to a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
       ctx.taskStore.linkPR(args.taskId, { repoId: args.repoName, repoName: args.repoName, prId: args.prId, provider: args.provider ?? "ado" });
       return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
     },
@@ -371,6 +408,8 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Remove a pull request from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado or github)" } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
       ctx.taskStore.unlinkPR(args.taskId, args.repoName, args.prId, args.provider);
       return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
     },
@@ -385,17 +424,25 @@ export function createBridgeTools(ctx: AppContext) {
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return { error: "No fields to update. Provide at least one of: title, notes, cwd, groupId, tags" };
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, notes, cwd, groupId, tags");
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
+      let tagStore: TagStore | undefined;
+      if (hasTags) {
+        const tagStoreResult = ensureTagStore();
+        if (!tagStoreResult.ok) return toolFailure(tagStoreResult.error);
+        tagStore = tagStoreResult.value;
+      }
       if (Object.keys(updates).length > 0) {
         ctx.taskStore.updateTask(args.taskId, updates);
       }
-      if (hasTags) {
+      if (hasTags && tagStore) {
         const tagIds = args.tags.map((name: string) => {
-          const existing = ctx.tagStore?.getTagByName(name);
+          const existing = tagStore.getTagByName(name);
           if (existing) return existing.id;
-          return ctx.tagStore?.createTag(name).id;
+          return tagStore.createTag(name).id;
         });
-        ctx.tagStore?.setEntityTags("task", args.taskId, tagIds);
+        tagStore.setEntityTags("task", args.taskId, tagIds);
       }
       const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
       return { success: true, message: `Task updated (${fields})` };
@@ -405,10 +452,10 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Get task details including title, status, linked work items, PRs, and notes",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
-      const task = ctx.taskStore.getTask(args.taskId);
-      if (!task) return { error: "Task not found" };
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
       const todos = ctx.todoStore.listTodos(args.taskId);
-      return { ...task, todos: todos.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })) };
+      return { ...task.value, todos: todos.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })) };
     },
   }),
   defineTool("task_list", {
@@ -422,14 +469,20 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Create a new task",
     parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { type: "string", description: "Optional task group ID to create the task in" } }, required: ["title"] },
     handler: async (args: any) => {
-      const task = ctx.taskStore.createTask(args.title, args.groupId);
+      let tagStore: TagStore | undefined;
       if (Array.isArray(args.tags) && args.tags.length > 0) {
+        const tagStoreResult = ensureTagStore();
+        if (!tagStoreResult.ok) return toolFailure(tagStoreResult.error);
+        tagStore = tagStoreResult.value;
+      }
+      const task = ctx.taskStore.createTask(args.title, args.groupId);
+      if (Array.isArray(args.tags) && args.tags.length > 0 && tagStore) {
         const tagIds = args.tags.map((name: string) => {
-          const existing = ctx.tagStore?.getTagByName(name);
+          const existing = tagStore.getTagByName(name);
           if (existing) return existing.id;
-          return ctx.tagStore?.createTag(name).id;
+          return tagStore.createTag(name).id;
         });
-        ctx.tagStore?.setEntityTags("task", task.id, tagIds);
+        tagStore.setEntityTags("task", task.id, tagIds);
       }
       return { success: true, message: `Task "${task.title}" created`, taskId: task.id };
     },
@@ -465,12 +518,14 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Update a task group's name, color, and/or notes. Only provided fields are changed.",
     parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." } }, required: ["groupId"] },
     handler: async (args: any) => {
+      const group = ensureTaskGroup(args.groupId);
+      if (!group.ok) return toolFailure(group.error);
       const updates: any = {};
       if (args.name !== undefined) updates.name = args.name;
       if (args.color !== undefined) updates.color = args.color;
       if (args.notes !== undefined) updates.notes = args.notes;
-      const group = ctx.taskGroupStore.updateGroup(args.groupId, updates);
-      return { success: true, message: `Group "${group.name}" updated`, groupId: group.id };
+      const updatedGroup = ctx.taskGroupStore.updateGroup(args.groupId, updates);
+      return { success: true, message: `Group "${updatedGroup.name}" updated`, groupId: updatedGroup.id };
     },
   }),
   // ── Tag tools ────────────────────────────────────────────────
@@ -485,8 +540,10 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Create a new tag for organizing tasks, groups, and docs",
     parameters: { type: "object", properties: { name: { type: "string", description: "Tag name (e.g., 'python', 'frontend', 'urgent')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate, emerald, indigo, pink" } }, required: ["name"] },
     handler: async (args: any) => {
-      if (!ctx.tagStore) return { error: "Tags not available" };
-      const tag = ctx.tagStore.createTag(args.name, args.color);
+      const tagStore = ensureTagStore();
+      if (!tagStore.ok) return toolFailure(tagStore.error);
+      if (tagStore.value.getTagByName(args.name)) return toolFailure(`Tag "${args.name}" already exists`);
+      const tag = tagStore.value.createTag(args.name, args.color);
       return { success: true, message: `Tag "${tag.name}" created`, tagId: tag.id };
     },
   }),
@@ -494,12 +551,20 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Update a tag's name, color, or instructions",
     parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID" }, name: { type: "string", description: "New name" }, color: { type: "string", description: "New color" }, instructions: { type: "string", description: "Custom instructions for sessions with this tag" } }, required: ["tagId"] },
     handler: async (args: any) => {
+      const tagStore = ensureTagStore();
+      if (!tagStore.ok) return toolFailure(tagStore.error);
+      const tag = ensureTag(args.tagId);
+      if (!tag.ok) return toolFailure(tag.error);
       const updates: Record<string, any> = {};
-      if (args.name !== undefined) updates.name = args.name;
+      if (args.name !== undefined) {
+        const existingTag = tagStore.value.getTagByName(args.name);
+        if (existingTag && existingTag.id !== args.tagId) return toolFailure(`Tag "${args.name}" already exists`);
+        updates.name = args.name;
+      }
       if (args.color !== undefined) updates.color = args.color;
       if (args.instructions !== undefined) updates.instructions = args.instructions;
-      if (Object.keys(updates).length === 0) return { error: "Provide at least one of: name, color, instructions" };
-      ctx.tagStore?.updateTag(args.tagId, updates);
+      if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: name, color, instructions");
+      tagStore.value.updateTag(args.tagId, updates);
       ctx.sessionManager.evictAllCachedSessions();
       return { success: true, message: `Tag updated` };
     },
@@ -518,6 +583,10 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Add a to-do item to a task's checklist, or create a global to-do if no taskId is provided",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID. Omit to create a global (unparented) to-do item." }, text: { type: "string", description: "The to-do text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
     handler: async (args: any) => {
+      if (args.taskId !== undefined && args.taskId !== null) {
+        const task = ensureTask(args.taskId);
+        if (!task.ok) return toolFailure(task.error);
+      }
       const todo = ctx.todoStore.createTodo(args.taskId ?? null, args.text, args.deadline);
       return { success: true, message: `Todo added: "${todo.text}"${todo.deadline ? ` (due ${todo.deadline})` : ""}`, todoId: todo.id };
     },
@@ -543,9 +612,11 @@ export function createBridgeTools(ctx: AppContext) {
       if (args.text !== undefined) updates.text = args.text;
       if (args.done !== undefined) updates.done = args.done;
       if (args.deadline !== undefined) updates.deadline = args.deadline || undefined;
-      if (Object.keys(updates).length === 0) return { error: "Provide at least one of: text, done, deadline" };
-      const todo = ctx.todoStore.updateTodo(args.todoId, updates);
-      return { success: true, message: `Todo ${args.done ? "completed" : "updated"}: "${todo.text}"` };
+      if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: text, done, deadline");
+      const todo = ensureTodo(args.todoId);
+      if (!todo.ok) return toolFailure(todo.error);
+      const updatedTodo = ctx.todoStore.updateTodo(args.todoId, updates);
+      return { success: true, message: `Todo ${args.done ? "completed" : "updated"}: "${updatedTodo.text}"` };
     },
   }),
   defineTool("todo_remove", {
@@ -563,10 +634,10 @@ export function createBridgeTools(ctx: AppContext) {
       const sessionId = normalizeSessionTitle(args.sessionId) || invocation.sessionId;
       const title = normalizeSessionTitle(args.title);
 
-      if (!sessionId) return { error: "sessionId is required" };
-      if (!title) return { error: "Title is required" };
-      if (looksLikePromptEchoTitle(title)) return { error: "Title looks like echoed prompt text" };
-      if (title.length > 80) return { error: "Title is too long" };
+      if (!sessionId) return toolFailure("sessionId is required");
+      if (!title) return toolFailure("Title is required");
+      if (looksLikePromptEchoTitle(title)) return toolFailure("Title looks like echoed prompt text");
+      if (title.length > 80) return toolFailure("Title is too long");
 
       storeSessionTitle(ctx.sessionTitles, ctx.eventBusRegistry, ctx.globalBus, sessionId, title);
       return { success: true, sessionId, message: `Session renamed to "${title}"` };
@@ -600,7 +671,7 @@ export function createBridgeTools(ctx: AppContext) {
     parameters: { type: "object", properties: {} },
     handler: async () => {
       if (existsSync(SIGNAL_FILE)) {
-        return { success: false, error: "A restart is already pending. Wait for it to complete before updating." };
+        return toolFailure("A restart is already pending. Wait for it to complete before updating.");
       }
 
       const dataDir = join(REPO_ROOT, "data");
@@ -621,13 +692,11 @@ export function createBridgeTools(ctx: AppContext) {
         // Abort rebase if it left us in a conflicted state
         run("git rebase --abort");
         removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
-        return {
-          success: false,
-          error:
-            `Git pull failed — likely due to merge conflicts or network issues. ` +
-            `The working tree has been restored to its previous state.\n\n` +
-            pullResult.output.slice(-500),
-        };
+        const message =
+          `Git pull failed — likely due to merge conflicts or network issues. ` +
+          `The working tree has been restored to its previous state.\n\n` +
+          pullResult.output.slice(-500);
+        return toolFailure(message, { sessionLog: pullResult.output.slice(-500) });
       }
 
       const newHead = run("git rev-parse --short HEAD");
@@ -692,10 +761,11 @@ export function createBridgeTools(ctx: AppContext) {
       required: ["taskId", "name", "prompt", "type"],
     },
     handler: async (args: any, invocation: any) => {
-      if (args.type === "cron" && !args.cron) return { error: "cron expression is required for cron schedules" };
-      if (args.type === "once" && !args.runAt) return { error: "runAt is required for one-shot schedules" };
-      if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return { error: `Invalid timezone: ${args.timezone}` };
-      if (!ctx.taskStore.getTask(args.taskId)) return { error: "Task not found" };
+      if (args.type === "cron" && !args.cron) return toolFailure("cron expression is required for cron schedules");
+      if (args.type === "once" && !args.runAt) return toolFailure("runAt is required for one-shot schedules");
+      if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
+      const task = ensureTask(args.taskId);
+      if (!task.ok) return toolFailure(task.error);
 
       const selection = await resolveScheduleSessionSelection(
         { sessionMode: args.sessionMode, targetSessionId: args.targetSessionId },
@@ -707,7 +777,7 @@ export function createBridgeTools(ctx: AppContext) {
           defaultTargetSessionId: args.sessionMode === "reuse-target" ? invocation?.sessionId : undefined,
         },
       );
-      if ("error" in selection) return selection;
+      if (!selection.ok) return toolFailure(selection.error);
 
       const schedule = ctx.scheduleStore.createSchedule({
         taskId: args.taskId,
@@ -717,8 +787,8 @@ export function createBridgeTools(ctx: AppContext) {
         cron: args.cron,
         runAt: args.runAt,
         timezone: args.timezone,
-        sessionMode: selection.sessionMode,
-        targetSessionId: selection.targetSessionId,
+        sessionMode: selection.value.sessionMode,
+        targetSessionId: selection.value.targetSessionId,
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
       });
@@ -761,10 +831,10 @@ export function createBridgeTools(ctx: AppContext) {
     },
     handler: async (args: any, invocation: any) => {
       const { scheduleId, ...updates } = args;
-      if (Object.keys(updates).length === 0) return { error: "No fields to update" };
-      if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return { error: `Invalid timezone: ${args.timezone}` };
+      if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
+      if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
       const existing = ctx.scheduleStore.getSchedule(scheduleId);
-      if (!existing) return { error: "Schedule not found" };
+      if (!existing) return toolFailure(`Schedule ${scheduleId} not found`);
 
       const nextUpdates = { ...updates };
       if (args.sessionMode !== undefined || args.targetSessionId !== undefined) {
@@ -793,10 +863,10 @@ export function createBridgeTools(ctx: AppContext) {
               defaultTargetSessionId,
             },
           );
-          if ("error" in selection) return selection;
-          nextUpdates.sessionMode = selection.sessionMode;
-          if (selection.sessionMode === "reuse-target" || args.targetSessionId !== undefined) {
-            nextUpdates.targetSessionId = selection.targetSessionId;
+          if (!selection.ok) return toolFailure(selection.error);
+          nextUpdates.sessionMode = selection.value.sessionMode;
+          if (selection.value.sessionMode === "reuse-target" || args.targetSessionId !== undefined) {
+            nextUpdates.targetSessionId = selection.value.targetSessionId;
           }
         }
       }
@@ -891,9 +961,13 @@ export function createBridgeTools(ctx: AppContext) {
       description: "Read a knowledge base page by its path. Returns frontmatter metadata and markdown body.",
       parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'incidents/march-outage')" } }, required: ["path"] },
       handler: async (args: any) => {
-        const page = ctx.docsStore!.readPage(args.path);
-        if (!page) return { error: `Page not found: ${args.path}` };
-        return { path: page.path, title: page.title, tags: page.tags, frontmatter: page.frontmatter, body: page.body };
+        try {
+          const page = ctx.docsStore!.readPage(args.path);
+          if (!page) return toolFailure(`Page not found: ${args.path}`);
+          return { path: page.path, title: page.title, tags: page.tags, frontmatter: page.frontmatter, body: page.body };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
+        }
       },
     }),
     defineTool("docs_write", {
@@ -904,8 +978,8 @@ export function createBridgeTools(ctx: AppContext) {
           const page = ctx.docsStore!.writePage(args.path, args.content);
           ctx.docsIndex!.indexPage(page);
           return { path: page.path, success: true };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
@@ -917,24 +991,34 @@ export function createBridgeTools(ctx: AppContext) {
           const page = ctx.docsStore!.editPage(args.path, args.old_str, args.new_str);
           ctx.docsIndex!.indexPage(page);
           return { path: page.path, success: true };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
     defineTool("docs_list", {
       description: "List pages and folders in the knowledge base. Returns a tree structure with file/folder types and database folder indicators.",
       parameters: { type: "object", properties: { folder: { type: "string", description: "Folder path to list (omit for root)" } }, required: [] },
-      handler: async (args: any) => ({ tree: ctx.docsStore!.listTree(args.folder) }),
+      handler: async (args: any) => {
+        try {
+          return { tree: ctx.docsStore!.listTree(args.folder) };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
+        }
+      },
     }),
     defineTool("docs_db_schema", {
       description: "Get the schema for a database collection folder. Returns field names, types, options, and entry count. Call this before docs_db_add to discover valid fields.",
       parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" } }, required: ["folder"] },
       handler: async (args: any) => {
-        const schema = ctx.docsStore!.readSchema(args.folder);
-        if (!schema) return { error: `No schema found for folder "${args.folder}"` };
-        const entries = ctx.docsStore!.listDbEntries(args.folder);
-        return { ...schema, entryCount: entries.length };
+        try {
+          const schema = ctx.docsStore!.readSchema(args.folder);
+          if (!schema) return toolFailure(`No schema found for folder "${args.folder}"`);
+          const entries = ctx.docsStore!.listDbEntries(args.folder);
+          return { ...schema, entryCount: entries.length };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
+        }
       },
     }),
     defineTool("docs_db_add", {
@@ -947,8 +1031,8 @@ export function createBridgeTools(ctx: AppContext) {
           const page = ctx.docsStore!.readPage(entry.path);
           if (page) ctx.docsIndex!.indexPage(page);
           return { path: entry.path, slug: entry.slug, success: true };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
@@ -962,8 +1046,8 @@ export function createBridgeTools(ctx: AppContext) {
           const page = ctx.docsStore!.readPage(entry.path);
           if (page) ctx.docsIndex!.indexPage(page);
           return { path: entry.path, success: true };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
@@ -988,8 +1072,8 @@ export function createBridgeTools(ctx: AppContext) {
         try {
           ctx.docsStore!.writeSchema(args.folder, { name: args.name, fields: args.fields });
           return { folder: args.folder, success: true };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
@@ -1002,14 +1086,14 @@ export function createBridgeTools(ctx: AppContext) {
           // Guard: don't allow deleting DB entries via this tool
           const page = ctx.docsStore!.readPage(pagePath);
           if (page?.isDbItem) {
-            return { error: `"${pagePath}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.` };
+            return toolFailure(`"${pagePath}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.`);
           }
           const canonicalPath = page?.path ?? pagePath;
           const deleted = ctx.docsStore!.deletePage(pagePath);
           if (deleted) ctx.docsIndex!.removePage(canonicalPath);
           return { path: canonicalPath, deleted };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
@@ -1019,18 +1103,18 @@ export function createBridgeTools(ctx: AppContext) {
       handler: async (args: any) => {
         try {
           const schema = ctx.docsStore!.readSchema(args.folder);
-          if (!schema) return { error: `No database collection found at "${args.folder}"` };
+          if (!schema) return toolFailure(`No database collection found at "${args.folder}"`);
           const pagePath = `${args.folder}/${args.slug}`;
           // Verify it's actually a DB entry
           const page = ctx.docsStore!.readPage(pagePath);
           if (page && !page.isDbItem) {
-            return { error: `"${pagePath}" is not a database entry` };
+            return toolFailure(`"${pagePath}" is not a database entry`);
           }
           const deleted = ctx.docsStore!.deletePage(pagePath);
           if (deleted) ctx.docsIndex!.removePage(pagePath);
           return { folder: args.folder, slug: args.slug, deleted };
-        } catch (err: any) {
-          return { error: err.message };
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
         }
       },
     }),
@@ -2137,13 +2221,9 @@ export class SessionManager {
           const ok = data?.success !== false;
           const isAgent = subAgentMap.has(data?.toolCallId);
           const agentDisplayName = subAgentMap.get(data?.toolCallId);
-          // Use captured sub-agent response text if available, fall back to raw tool result.
-          // On failure, surface the error message so the UI can display it.
-          const result = !ok && data?.error?.message
-            ? data.error.message
-            : isAgent
-              ? (subAgentResponseMap.get(data?.toolCallId) ?? data?.result?.content)
-              : data?.result?.content;
+          const result = getToolExecutionDisplayText(data, {
+            subAgentResponse: isAgent ? subAgentResponseMap.get(data?.toolCallId) : undefined,
+          });
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${isAgent ? agentDisplayName : completedToolName} (${ok ? "ok" : "failed"})`);
           const toolStart = toolStartTimes.get(data?.toolCallId);
           if (toolStart) {

@@ -1,3 +1,5 @@
+import { getToolExecutionDisplayText } from "./tool-results.js";
+
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages and tool calls.
 // Used by both getSessionMessages (SDK path) and readMessagesFromDisk (fast path)
@@ -97,14 +99,18 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
   let idx = 0;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
-  const toolCompletes = new Map<string, { success: boolean; content?: string; timestamp?: string }>();
+  const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string }>();
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
   const subAgentResponses = new Map<string, string>();
 
   for (const event of events) {
     const data = (event as any).data;
     if (event.type === "tool.execution_complete" && data?.toolCallId) {
-      toolCompletes.set(data.toolCallId, { success: data.success, content: data.result?.content, timestamp: (event as any).timestamp });
+      toolCompletes.set(data.toolCallId, {
+        success: data.success,
+        result: getToolExecutionDisplayText(data),
+        timestamp: (event as any).timestamp,
+      });
     } else if (event.type === "subagent.started" && data?.toolCallId) {
       subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
     } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
@@ -160,7 +166,9 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
           toolCallId: data.toolCallId,
           name: isSubAgent ? `🤖 ${subAgent!.agentDisplayName ?? subAgent!.agentName ?? "agent"}` : toolName,
           args: data.arguments,
-          result: isSubAgent ? (subAgentResponses.get(data.toolCallId) ?? complete?.content) : complete?.content,
+          result: isSubAgent && complete?.success !== false
+            ? (subAgentResponses.get(data.toolCallId) ?? complete?.result)
+            : complete?.result,
           success: complete?.success,
           parentToolCallId: data.parentToolCallId,
           isSubAgent: isSubAgent || undefined,

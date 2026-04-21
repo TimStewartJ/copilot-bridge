@@ -30,6 +30,8 @@ const preparePatchedPackagesForInstallMock = vi.fn(() => ({
 const createDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
 const removeDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
 const buildPublicUrlMock = vi.fn(() => undefined);
+const STAGING_DIST_PARENT = join(process.cwd(), "dist", "staging");
+const stagingDistParentExistedAtStart = existsSync(STAGING_DIST_PARENT);
 
 function isDataFilePath(path: string, filename: string): boolean {
   return basename(path) === filename && basename(dirname(path)) === "data";
@@ -136,9 +138,17 @@ async function loadStagingToolsModule() {
   return import("../staging-tools.js");
 }
 
+async function loadStagingTools() {
+  const mod = await loadStagingToolsModule();
+  return Object.fromEntries(mod.STAGING_TOOLS.map((tool: any) => [tool.name, tool])) as Record<string, any>;
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
+  }
+  if (!stagingDistParentExistedAtStart) {
+    rmSync(STAGING_DIST_PARENT, { recursive: true, force: true });
   }
   triggerRestartPendingMock.mockReset();
   dependencySyncHashMock.mockReset();
@@ -481,5 +491,128 @@ describe("staging tools", () => {
       writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
     ).toBe(false);
     expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
+  });
+
+  it("returns a normalized failure result when staging_init cannot create a branch", async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd.startsWith('git branch "staging/')) {
+        const error = new Error("branch exists") as Error & { stderr: string };
+        error.stderr = "fatal: a branch named staging/test already exists\n";
+        throw error;
+      }
+      return "";
+    });
+
+    const tools = await loadStagingTools();
+    const result = await tools.staging_init.handler(
+      {},
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_init",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      sessionLog: expect.stringContaining("Command: git branch"),
+      toolTelemetry: {
+        command: expect.stringContaining('git branch "staging/'),
+        cwd: expect.any(String),
+      },
+    });
+    expect(result.textResultForLlm).toContain("Failed to create staging branch.");
+    expect(result.textResultForLlm).toContain("Failed to create branch staging/");
+    expect(result.textResultForLlm).toContain("fatal: a branch named staging/test already exists");
+    expect(result).not.toHaveProperty("error");
+  });
+
+  it("returns a normalized failure result when staging_preview tests fail", async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "npx vitest run --coverage") {
+        const error = new Error("tests failed") as Error & { stderr: string };
+        error.stderr = "FAIL src/server/__tests__/staging-tools.test.ts\n1 failed\n";
+        throw error;
+      }
+      return "";
+    });
+
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-preview-");
+    const result = await tools.staging_preview.handler(
+      { stagingDir },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      sessionLog: expect.stringContaining("Command: npx vitest run --coverage"),
+      toolTelemetry: {
+        command: "npx vitest run --coverage",
+        cwd: stagingDir,
+        stagingDir,
+      },
+    });
+    expect(result.textResultForLlm).toContain("Staging preview tests failed.");
+    expect(result.textResultForLlm).toContain("The staged changes did not pass the preview test run.");
+    expect(result.textResultForLlm).toContain("1 failed");
+    expect(result).not.toHaveProperty("error");
+  });
+
+  it("returns a normalized failure result when staging_deploy hits a rebase conflict", async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd.startsWith("git log main..staging/") && cmd.endsWith(" --oneline")) return "abc123 staged change\n";
+      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main") {
+        const error = new Error("conflict") as Error & { stderr: string };
+        error.stderr = "CONFLICT (content): Merge conflict in src/server/staging-tools.ts\n";
+        throw error;
+      }
+      if (cmd === "git rebase --abort") return "";
+      return "";
+    });
+
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-deploy-");
+    const result = await tools.staging_deploy.handler(
+      {
+        stagingDir,
+        message: "Test deploy",
+      },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      sessionLog: expect.stringContaining("Command: git rebase main"),
+      toolTelemetry: {
+        command: "git rebase main",
+        cwd: stagingDir,
+        stagingDir,
+        prodBranch: "main",
+      },
+    });
+    expect(result.textResultForLlm).toContain("Staging branch conflicts with production.");
+    expect(result.textResultForLlm).toContain("The rebase has been aborted and your staging worktree is intact.");
+    expect(result.textResultForLlm).toContain("Call staging_deploy again");
+    expect(result.textResultForLlm).toContain("CONFLICT (content)");
+    expect(result).not.toHaveProperty("error");
   });
 });

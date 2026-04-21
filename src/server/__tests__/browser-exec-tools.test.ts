@@ -73,6 +73,7 @@ describe("browser_exec tool", () => {
     });
 
     expect(result).toEqual({
+      ok: false,
       error: "commands[0] snapshot supports [], ['-i'], or ['-i', '-s', selector]",
     });
   });
@@ -177,7 +178,12 @@ describe("browser_exec tool", () => {
       ],
     }, invocation) as any;
 
-    expect(result.error).toBe("Command 2 failed: click");
+    expect(result).toMatchObject({
+      textResultForLlm: "Command 2 failed: click\n\nclick failed",
+      resultType: "failure",
+      lane: "clone",
+    });
+    expect(result).not.toHaveProperty("error");
     expect(result.failedStep).toMatchObject({
       index: 1,
       command: "click",
@@ -186,6 +192,9 @@ describe("browser_exec tool", () => {
     });
     expect(result.steps).toHaveLength(2);
     expect(result.steps[0]).toMatchObject({ command: "open", ok: true });
+    expect(result.sessionLog).toContain("Failed step: 2 click");
+    expect(result.sessionLog).toContain("1. open ok — opened");
+    expect(result.sessionLog).toContain("2. click failed — click failed");
   });
 
   it("returns an install error when agent-browser is unavailable", async () => {
@@ -201,7 +210,9 @@ describe("browser_exec tool", () => {
     }, invocation);
 
     expect(result).toEqual({
-      error: "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
+      textResultForLlm: "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
+      resultType: "failure",
+      sessionLog: "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
     });
   });
 });

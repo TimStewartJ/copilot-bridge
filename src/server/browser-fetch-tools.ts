@@ -7,6 +7,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
 import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { joinFailureSections, toolFailure } from "./tool-results.js";
 
 const CLONE_SAFE_BROWSER_FETCH_HOSTS = new Set([
   "example.com",
@@ -23,8 +24,20 @@ function safeHost(url: string): string | undefined {
   }
 }
 
-function isToolErrorResult(value: unknown): value is { error: string } {
-  return typeof value === "object" && value !== null && "error" in value;
+const AGENT_BROWSER_INSTALL_GUIDANCE =
+  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
+
+function browserFetchFailure(
+  summary: string,
+  context: { url: string; selector?: string },
+) {
+  return toolFailure(summary, {
+    sessionLog: joinFailureSections(
+      `URL: ${context.url}`,
+      context.selector ? `Selector: ${context.selector}` : undefined,
+      summary,
+    ),
+  });
 }
 
 function isCloneSafeBrowserFetchHost(urlHost: string | undefined): boolean {
@@ -76,10 +89,10 @@ export function createBrowserFetchTools(ctx: AppContext) {
             toolName: "browser_fetch",
             browserSession: primaryTarget.sessionName,
           });
-          return {
-            error:
-              "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
-          };
+          return toolFailure("agent-browser is not installed.", {
+            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
+            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
+          });
         }
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
@@ -105,7 +118,10 @@ export function createBrowserFetchTools(ctx: AppContext) {
 
           const openResult = await ab(["open", url], undefined, commandOptions);
           if (!openResult.ok) {
-            return { error: `Failed to open URL: ${openResult.output.slice(0, 200)}` };
+            return browserFetchFailure(`Failed to open URL: ${openResult.output.slice(0, 200)}`, {
+              url,
+              selector,
+            });
           }
 
           const waitStart = Date.now();
@@ -119,7 +135,10 @@ export function createBrowserFetchTools(ctx: AppContext) {
             urlHost,
           });
           if (!waitResult.ok) {
-            return { error: `Failed waiting for page load: ${waitResult.output.slice(0, 200)}` };
+            return browserFetchFailure(`Failed waiting for page load: ${waitResult.output.slice(0, 200)}`, {
+              url,
+              selector,
+            });
           }
 
           const snapshotCommand: BrowserCommand = selector
@@ -127,7 +146,10 @@ export function createBrowserFetchTools(ctx: AppContext) {
             : ["snapshot", "-i"];
           const snapshot = await ab(snapshotCommand, undefined, commandOptions);
           if (!snapshot.ok) {
-            return { error: `Failed to capture page: ${snapshot.output.slice(0, 200)}` };
+            return browserFetchFailure(`Failed to capture page: ${snapshot.output.slice(0, 200)}`, {
+              url,
+              selector,
+            });
           }
 
           const titleResult = await ab(["get", "title"], undefined, commandOptions);
@@ -145,21 +167,11 @@ export function createBrowserFetchTools(ctx: AppContext) {
           if (isCloneSafeBrowserFetchHost(urlHost)) {
             attemptedClone = true;
             try {
-              const cloneResult = await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
+              return await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
                 browserOpId,
                 toolName: "browser_fetch",
                 urlHost,
               }, runFlow);
-              if (!isToolErrorResult(cloneResult)) {
-                return cloneResult;
-              }
-              fallbackToPrimary = true;
-              safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
-                browserOpId,
-                toolName: "browser_fetch",
-                urlHost,
-                reason: "tool_error",
-              });
             } catch (err) {
               fallbackToPrimary = true;
               safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
@@ -178,7 +190,10 @@ export function createBrowserFetchTools(ctx: AppContext) {
             urlHost,
           }, runFlow);
         } catch (err: any) {
-          return { error: `Browser fetch failed: ${String(err).slice(0, 200)}` };
+          return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 200)}`, {
+            url,
+            selector,
+          });
         } finally {
           const duration = Date.now() - toolStart;
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_fetch", duration, {

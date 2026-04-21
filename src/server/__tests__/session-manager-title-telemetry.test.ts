@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeTools, SessionManager } from "../session-manager.js";
+import { toolFailure } from "../tool-results.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -123,7 +124,7 @@ describe("SessionManager self-renaming", () => {
         { sessionId: "session-echo", toolCallId: "tool-3", toolName: "session_rename", arguments: {} },
       );
 
-      expect(result).toEqual({ error: "Title looks like echoed prompt text" });
+      expect(result).toEqual(toolFailure("Title looks like echoed prompt text"));
     }
     expect(sessionTitles.getTitle("session-echo")).toBeUndefined();
   });

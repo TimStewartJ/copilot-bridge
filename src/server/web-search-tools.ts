@@ -7,6 +7,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
 import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { joinFailureSections, toolFailure } from "./tool-results.js";
 
 async function takeSnapshot(
   selector: string | undefined,
@@ -26,8 +27,20 @@ function queryFingerprint(query: string): string {
   return createHash("sha256").update(query).digest("hex").slice(0, 12);
 }
 
-function isToolErrorResult(value: unknown): value is { error: string } {
-  return typeof value === "object" && value !== null && "error" in value;
+const AGENT_BROWSER_INSTALL_GUIDANCE =
+  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
+
+function webSearchFailure(
+  summary: string,
+  context: { query: string; source?: string },
+) {
+  return toolFailure(summary, {
+    sessionLog: joinFailureSections(
+      context.source ? `Search engine: ${context.source}` : undefined,
+      `Query: ${context.query}`,
+      summary,
+    ),
+  });
 }
 
 export function createWebSearchTools(ctx: AppContext) {
@@ -72,10 +85,10 @@ export function createWebSearchTools(ctx: AppContext) {
             browserSession: primaryTarget.sessionName,
             queryHash,
           });
-          return {
-            error:
-              "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
-          };
+          return toolFailure("agent-browser is not installed.", {
+            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
+            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
+          });
         }
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
@@ -182,7 +195,12 @@ export function createWebSearchTools(ctx: AppContext) {
               queryHash,
               failureCode: "search.ddg_failed",
             });
-            return { error: "Failed to open search engine" };
+            return webSearchFailure(
+              ddgOpen.output
+                ? `Failed to open search engine: ${ddgOpen.output.slice(0, 200)}`
+                : "Failed to open search engine",
+              { query, source: "duckduckgo" },
+            );
           }
 
           const ddgWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
@@ -195,7 +213,10 @@ export function createWebSearchTools(ctx: AppContext) {
               queryHash,
               failureCode: "navigation.wait_networkidle_timeout",
             });
-            return { error: `Failed to wait for DuckDuckGo results: ${ddgWait.output.slice(0, 200)}` };
+            return webSearchFailure(`Failed to wait for DuckDuckGo results: ${ddgWait.output.slice(0, 200)}`, {
+              query,
+              source: "duckduckgo",
+            });
           }
 
           const snapshot = await takeSnapshot(undefined, commandOptions);
@@ -218,7 +239,10 @@ export function createWebSearchTools(ctx: AppContext) {
               queryHash,
               failureCode: "extraction.snapshot_failed",
             });
-            return { error: `Failed to capture results: ${snapshot.output.slice(0, 200)}` };
+            return webSearchFailure(`Failed to capture results: ${snapshot.output.slice(0, 200)}`, {
+              query,
+              source: "duckduckgo",
+            });
           }
 
           source = "duckduckgo";
@@ -234,21 +258,11 @@ export function createWebSearchTools(ctx: AppContext) {
         try {
           attemptedClone = true;
           try {
-            const cloneResult = await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
+            return await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
               browserOpId,
               toolName: "web_search",
               queryHash,
             }, runFlow);
-            if (!isToolErrorResult(cloneResult)) {
-              return cloneResult;
-            }
-            fallbackToPrimary = true;
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
-              browserOpId,
-              toolName: "web_search",
-              queryHash,
-              reason: "tool_error",
-            });
           } catch (err) {
             fallbackToPrimary = true;
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
@@ -266,7 +280,7 @@ export function createWebSearchTools(ctx: AppContext) {
             queryHash,
           }, runFlow);
         } catch (err: any) {
-          return { error: `Search failed: ${String(err).slice(0, 200)}` };
+          return webSearchFailure(`Search failed: ${String(err).slice(0, 200)}`, { query });
         } finally {
           const duration = Date.now() - toolStart;
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search", duration, {

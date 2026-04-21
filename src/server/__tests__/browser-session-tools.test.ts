@@ -159,6 +159,53 @@ describe("browser session tools", () => {
       commands: [{ command: "get", args: ["title"] }],
     }, otherInvocation);
 
-    expect(result).toEqual({ error: "Browser session belongs to a different Copilot session" });
+    expect(result).toEqual({
+      textResultForLlm: "Browser session belongs to a different Copilot session",
+      resultType: "failure",
+      error: "Browser session belongs to a different Copilot session",
+    });
+  });
+
+  it("returns normalized browser session exec failures with step context", async () => {
+    execFileMock
+      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        cb(null, { stdout: "opened", stderr: "" });
+        return {} as any;
+      })
+      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any) => void) => {
+        cb({ stderr: "click failed" });
+        return {} as any;
+      });
+
+    const mod = await import("../browser-session-tools.js");
+    const tools = Object.fromEntries(mod.createBrowserSessionTools({ copilotHome: COPILOT_HOME } as any).map((tool: any) => [tool.name, tool]));
+    const invocation = { sessionId: "copilot-a" } as any;
+
+    const started = await tools.browser_session_start.handler({ mode: "persistent" }, invocation) as any;
+    const result = await tools.browser_session_exec.handler({
+      browserSessionId: started.browserSessionId,
+      commands: [
+        { command: "open", args: ["https://example.com"] },
+        { command: "click", args: ["@e1"] },
+      ],
+    }, invocation) as any;
+
+    expect(result).toMatchObject({
+      textResultForLlm: "Command 2 failed: click\n\nclick failed",
+      resultType: "failure",
+      browserSessionId: started.browserSessionId,
+      mode: "persistent",
+    });
+    expect(result).not.toHaveProperty("error");
+    expect(result.failedStep).toMatchObject({
+      index: 1,
+      command: "click",
+      ok: false,
+      output: "click failed",
+    });
+    expect(result.steps).toHaveLength(2);
+    expect(result.sessionLog).toContain(`Browser session: ${started.browserSessionId}`);
+    expect(result.sessionLog).toContain("Mode: persistent");
+    expect(result.sessionLog).toContain("2. click failed — click failed");
   });
 });

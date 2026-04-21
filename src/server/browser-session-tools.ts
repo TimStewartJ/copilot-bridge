@@ -2,8 +2,50 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import { safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
-import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands } from "./browser-automation.js";
+import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
+import { joinFailureSections, toolFailure, toolFailureWithContext } from "./tool-results.js";
+
+const AGENT_BROWSER_INSTALL_GUIDANCE =
+  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
+
+function truncateBrowserFailureText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  return trimmed ? trimmed.slice(0, 200) : undefined;
+}
+
+function formatBrowserStepTimeline(steps: BrowserAutomationStepResult[]): string | undefined {
+  if (steps.length === 0) return undefined;
+  return steps.map((step) => {
+    const output = truncateBrowserFailureText(step.output);
+    return `${step.index + 1}. ${step.command} ${step.ok ? "ok" : "failed"}${output ? ` — ${output}` : ""}`;
+  }).join("\n");
+}
+
+function browserSessionExecFailure(
+  failure: BrowserAutomationRunFailure,
+  context: { browserSessionId: string; mode: BrowserSessionMode },
+) {
+  const stepOutput = truncateBrowserFailureText(failure.failedStep.output);
+  const detail = joinFailureSections(
+    failure.error,
+    stepOutput && stepOutput !== failure.error ? stepOutput : undefined,
+  ) ?? failure.error;
+  return toolFailureWithContext(failure.error, {
+    browserSessionId: context.browserSessionId,
+    mode: context.mode,
+    failedStep: failure.failedStep,
+    steps: failure.steps,
+  }, {
+    detail,
+    sessionLog: joinFailureSections(
+      `Browser session: ${context.browserSessionId}`,
+      `Mode: ${context.mode}`,
+      `Failed step: ${failure.failedStep.index + 1} ${failure.failedStep.command}`,
+      formatBrowserStepTimeline(failure.steps),
+    ),
+  });
+}
 
 export function createBrowserSessionTools(ctx: AppContext) {
   const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
@@ -35,21 +77,23 @@ export function createBrowserSessionTools(ctx: AppContext) {
       handler: async (args: any, invocation) => {
         const mode = args.mode as BrowserSessionMode;
         if (mode !== "persistent" && mode !== "isolated") {
-          return { error: "mode must be one of: persistent, isolated" };
+          return toolFailure("Browser session mode must be persistent or isolated.");
         }
         const browserOpId = randomUUID();
         const check = await isAgentBrowserInstalled();
         if (!check) {
-          return {
-            error:
-              "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
-          };
+          return toolFailure("agent-browser is not installed.", {
+            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
+            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
+          });
         }
         let record;
         try {
           record = await browserSessionStore.createSession(invocation.sessionId, mode, args.purpose);
         } catch (err: any) {
-          return { error: `Failed to start browser session: ${String(err).slice(0, 200)}` };
+          return toolFailure("Failed to start browser session.", {
+            detail: `Failed to start browser session: ${String(err).slice(0, 200)}`,
+          });
         }
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_session_start", 0, {
           browserOpId,
@@ -114,9 +158,11 @@ export function createBrowserSessionTools(ctx: AppContext) {
       },
       handler: async (args: any, invocation) => {
         const commands = normalizeBrowserAutomationCommands(args.commands);
-        if ("error" in commands) return commands;
+        if (!commands.ok) return toolFailure(commands.error);
         const capture = normalizeBrowserAutomationCapture(args.capture);
-        if (capture && "error" in capture) return capture;
+        if (!capture.ok) return toolFailure(capture.error);
+        const normalizedCommands = commands.value;
+        const captureInput = capture.value;
         const browserOpId = randomUUID();
         let result;
         try {
@@ -132,32 +178,31 @@ export function createBrowserSessionTools(ctx: AppContext) {
                   browserSessionMode: record.mode,
                   ownerSessionId: record.ownerSessionId,
                   cloneId: record.cloneId,
-                  stepCount: commands.length,
+                  stepCount: normalizedCommands.length,
                 },
               };
-              const execution = await runBrowserAutomationCommands(commands, commandOptions);
-              if ("error" in execution) {
-                return {
-                  error: execution.error,
-                  mode: record.mode,
+              const execution = await runBrowserAutomationCommands(normalizedCommands, commandOptions);
+              if (!execution.ok) {
+                return browserSessionExecFailure(execution.error, {
                   browserSessionId: record.id,
-                  failedStep: execution.failedStep,
-                  steps: execution.steps,
-                };
+                  mode: record.mode,
+                });
               }
-              const finalState = await captureFinalBrowserState(capture, commandOptions);
+              const finalState = await captureFinalBrowserState(captureInput, commandOptions);
               return {
                 browserSessionId: record.id,
                 mode: record.mode,
-                steps: execution.steps,
+                steps: execution.value.steps,
                 finalState,
               };
             });
           });
         } catch (err: any) {
-          return { error: `Browser session exec failed: ${String(err).slice(0, 200)}` };
+          return toolFailure("Browser session exec failed.", {
+            detail: `Browser session exec failed: ${String(err).slice(0, 200)}`,
+          });
         }
-        if (!result.ok) return { error: result.error };
+        if (!result.ok) return toolFailure(result.error);
         return result.value;
       },
     }),
@@ -186,7 +231,8 @@ export function createBrowserSessionTools(ctx: AppContext) {
           snapshot: args.snapshot ?? false,
           selector: args.selector,
         });
-        if (capture && "error" in capture) return capture;
+        if (!capture.ok) return toolFailure(capture.error);
+        const captureInput = capture.value;
         const browserOpId = randomUUID();
         let result;
         try {
@@ -207,14 +253,16 @@ export function createBrowserSessionTools(ctx: AppContext) {
               return {
                 browserSessionId: record.id,
                 mode: record.mode,
-                state: await captureFinalBrowserState(capture, commandOptions),
+                state: await captureFinalBrowserState(captureInput, commandOptions),
               };
             });
           });
         } catch (err: any) {
-          return { error: `Failed to inspect browser session: ${String(err).slice(0, 200)}` };
+          return toolFailure("Failed to inspect browser session.", {
+            detail: `Failed to inspect browser session: ${String(err).slice(0, 200)}`,
+          });
         }
-        if (!result.ok) return { error: result.error };
+        if (!result.ok) return toolFailure(result.error);
         return result.value;
       },
     }),
@@ -232,7 +280,7 @@ export function createBrowserSessionTools(ctx: AppContext) {
       },
       handler: async (args: any, invocation) => {
         const result = await browserSessionStore.closeSession(args.browserSessionId, invocation.sessionId);
-        if (!result.ok) return { error: result.error };
+        if (!result.ok) return toolFailure(result.error);
         return { success: true, browserSessionId: args.browserSessionId };
       },
     }),
