@@ -1145,6 +1145,44 @@ interface SessionRunRecord {
   stalledAt?: number;
 }
 
+interface SessionRunController {
+  completion: Promise<void>;
+  isCompleted(): boolean;
+  completeDone(content: string): void;
+  completeError(message: string): void;
+  completeAborted(content: string): void;
+  awaitAbortConfirmation(delayMs: number, getContent: () => string): Promise<boolean>;
+  clearAbortWait(): void;
+}
+
+const ABORT_CONFIRMATION_TIMEOUT_MS = 2_000;
+const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
+
+function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function getSyncShellInitialWaitUntil(toolName: string, args: unknown, startedAt: number): number | undefined {
+  if (!SYNC_SHELL_TOOL_NAMES.has(toolName)) return undefined;
+  const argRecord = asObjectRecord(args);
+  if (!argRecord || argRecord.mode !== "sync") return undefined;
+
+  const rawInitialWait = argRecord.initial_wait;
+  const initialWaitSeconds = typeof rawInitialWait === "number"
+    ? rawInitialWait
+    : typeof rawInitialWait === "string"
+      ? Number(rawInitialWait)
+      : Number.NaN;
+  if (!Number.isFinite(initialWaitSeconds) || initialWaitSeconds <= 0) return undefined;
+  return startedAt + initialWaitSeconds * 1000;
+}
+
+function getSessionShutdownType(data: any): string | undefined {
+  return typeof data?.shutdownType === "string" ? data.shutdownType.toLowerCase() : undefined;
+}
+
 export interface SessionActivity {
   id: string;
   state: Exclude<SessionRunState, "idle">;
@@ -1225,6 +1263,7 @@ export class SessionManager {
   private client: CopilotClient | null = null;
   private deps: SessionManagerDeps;
   private sessionRuns = new Map<string, SessionRunRecord>();
+  private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
@@ -1242,6 +1281,87 @@ export class SessionManager {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
+  }
+
+  private createRunController(
+    sessionId: string,
+    bus: ReturnType<typeof getOrCreateBus>,
+  ): SessionRunController {
+    let completed = false;
+    let abortFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+    let abortFallbackPromise: Promise<boolean> | null = null;
+    let resolveCompletion!: () => void;
+    let resolveAbortFallback: ((fired: boolean) => void) | undefined;
+
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+
+    const settleAbortFallback = (fired: boolean) => {
+      const resolver = resolveAbortFallback;
+      resolveAbortFallback = undefined;
+      abortFallbackPromise = null;
+      resolver?.(fired);
+    };
+
+    const clearAbortWait = () => {
+      if (abortFallbackTimer) {
+        clearTimeout(abortFallbackTimer);
+        abortFallbackTimer = undefined;
+      }
+      settleAbortFallback(false);
+    };
+
+    const finish = (emitTerminal?: () => void): boolean => {
+      if (completed) return false;
+      completed = true;
+      clearAbortWait();
+      emitTerminal?.();
+      resolveCompletion();
+      return true;
+    };
+
+    return {
+      completion,
+      isCompleted: () => completed,
+      completeDone: (content) => {
+        finish(() => {
+          bus.emit({ type: "done", content });
+        });
+      },
+      completeError: (message) => {
+        finish(() => {
+          bus.emit({ type: "error", message });
+        });
+      },
+      completeAborted: (content) => {
+        finish(() => {
+          bus.emit({ type: "aborted", content });
+        });
+      },
+      awaitAbortConfirmation: (delayMs, getContent) => {
+        if (completed) return Promise.resolve(false);
+        if (abortFallbackPromise) return abortFallbackPromise;
+        abortFallbackPromise = new Promise<boolean>((resolve) => {
+          resolveAbortFallback = resolve;
+          abortFallbackTimer = setTimeout(() => {
+            abortFallbackTimer = undefined;
+            abortFallbackPromise = null;
+            resolveAbortFallback = undefined;
+            if (completed) {
+              resolve(false);
+              return;
+            }
+            console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
+            resolve(finish(() => {
+              bus.emit({ type: "aborted", content: getContent() });
+            }));
+          }, delayMs);
+        });
+        return abortFallbackPromise;
+      },
+      clearAbortWait,
+    };
   }
 
   private setSessionRunState(
@@ -1856,19 +1976,35 @@ export class SessionManager {
   async abortSession(sessionId: string): Promise<boolean> {
     if (!this.sessionRuns.has(sessionId)) return false;
 
+    const runController = this.activeRunControllers.get(sessionId);
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    const getAbortContent = () => {
+      const snapshot = bus?.getSnapshot();
+      return snapshot?.finalContent ?? snapshot?.accumulatedContent ?? "";
+    };
+    if (!runController) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Missing run controller during abort — resolving locally`);
+      bus?.emit({ type: "aborted", content: getAbortContent() });
+      this.setSessionRunState(sessionId, "idle");
+      return true;
+    }
+
     const session = this.sessionObjects.get(sessionId);
-    if (!session) return false;
+    if (!session) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 No session object during abort — resolving locally`);
+      runController.completeAborted(getAbortContent());
+      return true;
+    }
 
     const sid = sessionId.slice(0, 8);
     console.log(`[sdk] [${sid}] 🛑 Aborting session...`);
     try {
       await session.abort();
       console.log(`[sdk] [${sid}] 🛑 Abort sent`);
+      await runController.awaitAbortConfirmation(ABORT_CONFIRMATION_TIMEOUT_MS, getAbortContent);
     } catch (err) {
       console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);
-      // Even if abort throws, emit aborted to unblock the UI
-      const bus = this.deps.eventBusRegistry.getBus(sessionId);
-      if (bus) bus.emit({ type: "aborted", content: "" });
+      runController.completeAborted(getAbortContent());
     }
     return true;
   }
@@ -1958,7 +2094,7 @@ export class SessionManager {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
     bus.setPendingPrompt(prompt);
-    this.startBackgroundRun(sessionId, bus, () => this._doWork(sessionId, prompt, bus, attachments));
+    this.startBackgroundRun(sessionId, bus, (runController) => this._doWork(sessionId, prompt, bus, runController, attachments));
   }
 
   startFleet(sessionId: string, prompt?: string): void {
@@ -1976,31 +2112,38 @@ export class SessionManager {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset();
     const fleetPrompt = prompt?.trim() || DEFAULT_FLEET_PROMPT;
-    this.startBackgroundRun(sessionId, bus, () => this._doFleet(sessionId, fleetPrompt, bus));
+    this.startBackgroundRun(sessionId, bus, (runController) => this._doFleet(sessionId, fleetPrompt, bus, runController));
   }
 
   private startBackgroundRun(
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
-    runner: () => Promise<void>,
+    runner: (runController: SessionRunController) => Promise<void>,
   ): void {
     const now = Date.now();
+    const runController = this.createRunController(sessionId, bus);
+    this.activeRunControllers.set(sessionId, runController);
     this.setSessionRunState(sessionId, "busy", { now, lastEventAt: now });
 
-    runner().catch((err) => {
+    runner(runController).catch((err) => {
       console.error(`[sdk] Unhandled error in session ${sessionId}:`, err);
-      bus.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      runController.completeError(err instanceof Error ? err.message : String(err));
     }).finally(() => {
+      runController.clearAbortWait();
+      if (this.activeRunControllers.get(sessionId) === runController) {
+        this.activeRunControllers.delete(sessionId);
+      }
       this.setSessionRunState(sessionId, "idle");
     });
   }
 
-  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): Promise<void> {
+  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, runController?: SessionRunController, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): Promise<void> {
     const sid = sessionId.slice(0, 8);
     const sdkAttachments = this.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
+    const activeRunController = runController ?? this.createRunController(sessionId, bus);
 
-    await this.runSessionOperation(sessionId, bus, {
+    await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
       fallbackTitleSource: prompt,
       idleSpanName: "session.sendToIdle",
@@ -2011,9 +2154,10 @@ export class SessionManager {
     });
   }
 
-  private async _doFleet(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>): Promise<void> {
+  private async _doFleet(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, runController?: SessionRunController): Promise<void> {
     const sid = sessionId.slice(0, 8);
-    await this.runSessionOperation(sessionId, bus, {
+    const activeRunController = runController ?? this.createRunController(sessionId, bus);
+    await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "fleet",
       idleSpanName: "session.fleetToIdle",
       startLog: `[sdk] [${sid}] Starting Fleet (${prompt.length} chars)...`,
@@ -2029,6 +2173,7 @@ export class SessionManager {
   private async runSessionOperation(
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
+    runController: SessionRunController,
     opts: {
       resumeContext: string;
       idleSpanName: string;
@@ -2073,7 +2218,18 @@ export class SessionManager {
       return s;
     };
 
+    const abandonSession = (activeSession: any) => {
+      try { activeSession.disconnect?.(); } catch { /* best-effort */ }
+      if (this.sessionObjects.get(sessionId) === activeSession) {
+        this.sessionObjects.delete(sessionId);
+      }
+    };
+
     let session = await resumeSession();
+    if (runController.isCompleted()) {
+      abandonSession(session);
+      return;
+    }
 
     // Track tool names by toolCallId — completion events don't include the tool name
     const toolNameMap = new Map<string, string>();
@@ -2083,25 +2239,17 @@ export class SessionManager {
     const subAgentMap = new Map<string, string>();
     // Capture sub-agent response text: parentToolCallId → last response content
     const subAgentResponseMap = new Map<string, string>();
+    // Track sync shell tool calls that are still within their initial_wait grace window.
+    const syncShellWaits = new Map<string, number>();
     const handledCurrentTurnEventKeys = new Set<string>();
-    let workCompleted = false;
-    let resolveWork: (() => void) | undefined;
-    let completedBeforeWait = false;
     let lastAssistantContent: string | undefined;
     let lastEventTime = Date.now();
     let sendStart = lastEventTime;
     let acceptingSessionEvents = false;
-    const finishWork = () => {
-      if (workCompleted) return;
-      workCompleted = true;
-      if (resolveWork) resolveWork();
-      else completedBeforeWait = true;
-    };
     const beginSend = () => {
       sendStart = Date.now();
       lastEventTime = sendStart;
       handledCurrentTurnEventKeys.clear();
-      completedBeforeWait = false;
       lastAssistantContent = undefined;
       acceptingSessionEvents = true;
     };
@@ -2130,7 +2278,7 @@ export class SessionManager {
       reason: string,
     ): boolean => {
       if (!persistedTerminal) return false;
-      if (workCompleted) return true;
+      if (runController.isCompleted()) return true;
       lastAssistantContent = persistedTerminal.assistantContent ?? lastAssistantContent;
       console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
       handleEvent(persistedTerminal.event);
@@ -2139,11 +2287,15 @@ export class SessionManager {
 
     // Event handler extracted so it can be re-registered on session retry
     const handleEvent = (event: any) => {
-      if (!acceptingSessionEvents) return;
+      if (!acceptingSessionEvents || runController.isCompleted()) return;
       const eventAt = Date.now();
       const replayKey = getEventReplayKey(event);
       if (replayKey) handledCurrentTurnEventKeys.add(replayKey);
-      if (event.type !== "session.idle" && event.type !== "session.error" && event.type !== "abort") {
+      const isTerminalEvent = event.type === "session.idle"
+        || event.type === "session.error"
+        || event.type === "abort"
+        || event.type === "session.shutdown";
+      if (!isTerminalEvent) {
         lastEventTime = eventAt;
         this.touchSessionRun(sessionId, eventAt);
       }
@@ -2196,6 +2348,10 @@ export class SessionManager {
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);
             toolStartTimes.set(data.toolCallId, Date.now());
+            const toolStartAt = getEventTimestampMs(event) ?? eventAt;
+            const syncShellWaitUntil = getSyncShellInitialWaitUntil(toolName, data?.arguments, toolStartAt);
+            if (syncShellWaitUntil) syncShellWaits.set(data.toolCallId, syncShellWaitUntil);
+            else syncShellWaits.delete(data.toolCallId);
           }
           // If subagent.started already fired for this toolCallId, apply the upgrade immediately
           const pendingAgent = data?.toolCallId ? subAgentMap.get(data.toolCallId) : undefined;
@@ -2219,6 +2375,7 @@ export class SessionManager {
           bus.emit({ type: "tool_output", name: data?.toolCallId, content: data?.partialOutput ?? "" });
           break;
         case "tool.execution_complete": {
+          if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const ok = data?.success !== false;
           const isAgent = subAgentMap.has(data?.toolCallId);
@@ -2265,15 +2422,26 @@ export class SessionManager {
           break;
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
-          bus.emit({ type: "error", message: data?.message ?? "unknown" });
-          finishWork();
+          runController.completeError(data?.message ?? "unknown");
           break;
         case "abort": {
           const reason = data?.reason ?? "user initiated";
           console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);
           const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
-          bus.emit({ type: "aborted", content: partialContent });
-          finishWork();
+          runController.completeAborted(partialContent);
+          break;
+        }
+        case "session.shutdown": {
+          const shutdownType = getSessionShutdownType(data);
+          if (shutdownType === "error") {
+            const message = data?.message ?? data?.reason ?? "session shutdown";
+            console.error(`[sdk] [${sid}] ❌ Shutdown(error): ${message}`);
+            runController.completeError(message);
+          } else {
+            console.log(`[sdk] [${sid}] 🛑 Shutdown${shutdownType ? ` (${shutdownType})` : ""}`);
+            const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
+            runController.completeAborted(partialContent);
+          }
           break;
         }
         case "session.title_changed":
@@ -2293,9 +2461,7 @@ export class SessionManager {
             }
           }
 
-          bus.emit({ type: "done", content });
-
-          finishWork();
+          runController.completeDone(content);
           break;
         }
         case "session.mcp_servers_loaded": {
@@ -2416,6 +2582,7 @@ export class SessionManager {
           case "session.idle":
           case "session.error":
           case "abort":
+          case "session.shutdown":
             latestRelevantState = "terminal";
             terminalEvent = event;
             break;
@@ -2456,7 +2623,7 @@ export class SessionManager {
         const previousUnsub = unsub;
         const recoveredSession = await resumeFreshRecoverySession();
 
-        if (workCompleted || this.getSessionRunState(sessionId) !== "stalled") {
+        if (runController.isCompleted() || this.getSessionRunState(sessionId) !== "stalled") {
           try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
           return;
         }
@@ -2501,7 +2668,7 @@ export class SessionManager {
         for (const event of bufferedRecoveredEvents) {
           if (shouldIgnoreRecoveredEvent(event)) continue;
           handleEvent(event);
-          if (workCompleted) break;
+          if (runController.isCompleted()) break;
         }
 
         console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
@@ -2537,6 +2704,12 @@ export class SessionManager {
         }
       } catch { /* events.jsonl may not exist yet */ }
 
+      let syncShellWaitUntil = 0;
+      for (const waitUntil of syncShellWaits.values()) {
+        if (waitUntil > syncShellWaitUntil) syncShellWaitUntil = waitUntil;
+      }
+      if (syncShellWaitUntil > now) return;
+
       if (now - lastEventTime < WATCHDOG_TIMEOUT) return;
 
       const currentState = this.getSessionRunState(sessionId);
@@ -2558,7 +2731,9 @@ export class SessionManager {
       console.log(opts.startLog);
 
       try {
+        if (runController.isCompleted()) return;
         beginSend();
+        if (runController.isCompleted()) return;
         await opts.execute(session);
       } catch (operationErr) {
         // If the agent evicted this session, the cached object is stale — re-resume and retry once
@@ -2567,22 +2742,25 @@ export class SessionManager {
           unsub();
           this.sessionObjects.delete(sessionId);
           session = await resumeSession();
+          if (runController.isCompleted()) {
+            abandonSession(session);
+            return;
+          }
           unsub = subscribeToSession(session);
+          if (runController.isCompleted()) return;
           beginSend();
+          if (runController.isCompleted()) return;
           await opts.execute(session);
         } else {
           throw operationErr;
         }
       }
 
-      // Wait for session.idle or session.error (resolved from event handler)
-      await new Promise<void>((resolve) => {
-        resolveWork = resolve;
-        if (completedBeforeWait) resolve();
-      });
+      await runController.completion;
     } finally {
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
+      syncShellWaits.clear();
       unsub();
     }
   }
@@ -2882,9 +3060,7 @@ export class SessionManager {
         active.map(async (sessionId) => {
           const sid = sessionId.slice(0, 8);
           try {
-            const session = this.sessionObjects.get(sessionId);
-            if (session) {
-              await session.abort();
+            if (await this.abortSession(sessionId)) {
               console.log(`[sdk] [${sid}] Aborted for shutdown`);
             }
           } catch (err) {
