@@ -11,6 +11,14 @@ import {
   type VoiceSubmitMode,
 } from "../lib/voice-submit-mode";
 import { isDraftComposerKey } from "../lib/composer-key";
+import {
+  shouldClearAcceptedFlashHandoff,
+  shouldFlashAcceptedHandoff,
+  shouldFlashAcceptedStatus,
+  shouldKeepAcceptedFlash,
+  updateAcceptedFlashHandoff,
+} from "../lib/voice-accepted-flash";
+import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -82,7 +90,13 @@ export default function ChatInput({
   const restoredForRef = useRef<string | null>(null);
   const recordingStartModeRef = useRef<VoiceSubmitMode | null>(null);
   const pendingCaptureSubmitModeRef = useRef<VoiceSubmitMode | null>(null);
+  const acceptedFlashJobIdRef = useRef<string | null>(null);
+  const acceptedFlashTimerRef = useRef<number | null>(null);
+  const previousComposerKeyRef = useRef<string | null>(composerKey);
+  const pendingAcceptedHandoffRef = useRef<{ originComposerKey: string; targetComposerKey: string } | null>(null);
+  const previousVoiceJobRef = useRef<VoiceBackgroundJob | null>(null);
   const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
+  const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
 
   useEffect(() => {
     inputRef.current = input;
@@ -99,12 +113,6 @@ export default function ChatInput({
   useEffect(() => {
     sendBlockedRef.current = Boolean(disabled || onAbort);
   }, [disabled, onAbort]);
-
-  useEffect(() => {
-    return () => {
-      revokePreviewUrls(attachmentsRef.current);
-    };
-  }, []);
 
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -136,6 +144,27 @@ export default function ChatInput({
     setRecordingStartMode(next);
   }, []);
 
+  const clearAcceptedFlash = useCallback(() => {
+    acceptedFlashJobIdRef.current = null;
+    if (acceptedFlashTimerRef.current !== null) {
+      window.clearTimeout(acceptedFlashTimerRef.current);
+      acceptedFlashTimerRef.current = null;
+    }
+    setShowAcceptedConfirmation(false);
+  }, []);
+
+  const startAcceptedFlash = useCallback((jobId: string) => {
+    acceptedFlashJobIdRef.current = jobId;
+    setShowAcceptedConfirmation(true);
+    if (acceptedFlashTimerRef.current !== null) {
+      window.clearTimeout(acceptedFlashTimerRef.current);
+    }
+    acceptedFlashTimerRef.current = window.setTimeout(() => {
+      acceptedFlashTimerRef.current = null;
+      setShowAcceptedConfirmation(false);
+    }, 2_000);
+  }, []);
+
   const activeVoiceJob = voiceJob && (
     voiceJob.status === "uploading"
     || voiceJob.status === "accepted"
@@ -158,24 +187,54 @@ export default function ChatInput({
   });
 
   useEffect(() => {
-    if (!voice.isRecording && !voice.isTranscribing && !activeVoiceJob) {
+    return () => {
+      clearAcceptedFlash();
+      revokePreviewUrls(attachmentsRef.current);
+    };
+  }, [clearAcceptedFlash]);
+
+  useEffect(() => {
+    if (voice.phase === "idle" && !activeVoiceJob) {
       updateRecordingStartMode(null);
       pendingCaptureSubmitModeRef.current = null;
     }
-  }, [activeVoiceJob, updateRecordingStartMode, voice.isRecording, voice.isTranscribing]);
+  }, [activeVoiceJob, updateRecordingStartMode, voice.phase]);
 
   useEffect(() => {
-    if (activeVoiceJob?.serverOwned) return;
-    if (activeVoiceJob?.status !== "transcribing" || activeVoiceJob.submitMode !== "autosend") return;
-    if (!canAutoSendVoiceTranscript({
-      text: input,
-      attachmentCount: attachments.length,
-      sendBlocked: Boolean(disabled || onAbort),
-      uploadingCount: uploading,
-    })) {
-      onReviewVoiceJob?.(composerKey);
+    const pendingAcceptedHandoff = updateAcceptedFlashHandoff(
+      previousComposerKeyRef.current,
+      composerKey,
+      pendingAcceptedHandoffRef.current,
+    );
+    pendingAcceptedHandoffRef.current = pendingAcceptedHandoff;
+
+    if (!shouldKeepAcceptedFlash(acceptedFlashJobIdRef.current, activeVoiceJob)) {
+      clearAcceptedFlash();
     }
-  }, [activeVoiceJob, attachments, composerKey, disabled, input, onAbort, onReviewVoiceJob, uploading]);
+
+    const shouldFlashAccepted =
+      shouldFlashAcceptedStatus(previousVoiceJobRef.current, activeVoiceJob)
+      || shouldFlashAcceptedHandoff(
+        pendingAcceptedHandoff?.originComposerKey ?? null,
+        composerKey,
+        activeVoiceJob,
+      );
+
+    if (
+      shouldFlashAccepted
+      && activeVoiceJob?.serverJobId
+      && acceptedFlashJobIdRef.current !== activeVoiceJob.serverJobId
+    ) {
+      startAcceptedFlash(activeVoiceJob.serverJobId);
+    }
+
+    if (shouldClearAcceptedFlashHandoff(pendingAcceptedHandoff, composerKey, activeVoiceJob)) {
+      pendingAcceptedHandoffRef.current = null;
+    }
+
+    previousComposerKeyRef.current = composerKey;
+    previousVoiceJobRef.current = activeVoiceJob;
+  }, [activeVoiceJob, clearAcceptedFlash, composerKey, startAcceptedFlash]);
 
   // Restore draft when the active composer target changes.
   useEffect(() => {
@@ -351,80 +410,31 @@ export default function ChatInput({
   });
   const canAutoSendStoppedRecording =
     recordingStartMode === "autosend" && canAutoSendNewVoiceTranscript;
-  const isVoiceProcessing = voice.isTranscribing || !!activeVoiceJob;
-  const processingSubmitMode = activeVoiceJob?.submitMode ?? pendingCaptureSubmitModeRef.current;
-  const showVoiceButton =
-    voice.browserSupported &&
-    (voice.status?.available === true || voice.isRecording || isVoiceProcessing || !!voice.statusError || !!voice.error || !!voiceJobError);
-  const voiceButtonDisabled =
-    !showVoiceButton ||
-    isVoiceProcessing ||
-    (voice.isCheckingStatus && !voice.isRecording);
-
-  const voiceMessage = voiceJobError
-    ?? voice.error
-    ?? (activeVoiceJob?.status === "uploading"
-      ? (
-        <>
-          Uploading audio… keep this open until it says it is safe to leave.
-        </>
-      )
-      : activeVoiceJob?.serverOwned && activeVoiceJob.status === "accepted"
-        ? "Audio accepted. Safe to leave — it will transcribe and send in the background."
-      : activeVoiceJob?.serverOwned && activeVoiceJob.status === "transcribing"
-        ? "Audio accepted. Safe to leave — transcribing on the server."
-      : activeVoiceJob?.serverOwned && activeVoiceJob.status === "sending"
-        ? "Audio accepted. Safe to leave — sending transcribed message…"
-      : activeVoiceJob?.status === "sending"
-        ? "Sending transcribed message…"
-      : isVoiceProcessing
-        ? processingSubmitMode === "autosend"
-        ? (
-          <>
-            Transcribing audio… it will send automatically.
-            {" "}
-            <button
-              type="button"
-              className="font-medium underline underline-offset-2 hover:text-text-primary transition-colors"
-              onClick={() => onReviewVoiceJob?.(composerKey)}
-            >
-              Review instead
-            </button>
-          </>
-        )
-        : "Transcribing audio… it will appear in the composer."
-      : voice.isRecording
-        ? canAutoSendStoppedRecording
-          ? "Recording… click stop to transcribe and send."
-          : "Recording… click stop to transcribe."
-        : voice.statusError
-          ? `Voice status check failed. Click the mic to retry. (${voice.statusError})`
-          : null);
-
-  const voiceMessageClassName =
-    voiceJobError || voice.error || voice.statusError
-      ? "text-error"
-      : voice.isRecording || isVoiceProcessing
-        ? "text-accent"
-        : "text-text-faint";
-
-  const voiceButtonTitle = !voice.browserSupported
-    ? "Voice input is not supported in this browser"
-    : activeVoiceJob?.status === "uploading"
-      ? "Uploading voice audio"
-    : activeVoiceJob?.serverOwned
-      ? "Voice message processing on the server"
-    : activeVoiceJob?.status === "sending"
-      ? "Sending transcribed message"
-      : isVoiceProcessing
-        ? "Voice transcription in progress"
-    : voice.isRecording
-      ? canAutoSendStoppedRecording
-        ? "Stop recording, transcribe, and send automatically"
-        : "Stop recording and transcribe"
-      : voice.statusError
-        ? "Retry voice input status"
-        : "Record voice input";
+  const voiceUi = deriveVoiceUiState({
+    browserSupported: voice.browserSupported,
+    statusAvailable: voice.status?.available === true,
+    statusError: voice.statusError,
+    voiceError: voice.error,
+    voiceJobError,
+    showAcceptedConfirmation,
+    recorderPhase: voice.phase,
+    isCheckingStatus: voice.isCheckingStatus,
+    activeVoiceJob: activeVoiceJob
+      ? {
+          status: activeVoiceJob.status,
+          submitMode: activeVoiceJob.submitMode,
+          serverOwned: activeVoiceJob.serverOwned,
+        }
+      : null,
+    canAutoSendStoppedRecording,
+  });
+  const voiceMessageClassName = voiceUi.tone === "error"
+    ? "text-error"
+    : voiceUi.tone === "success"
+      ? "text-success"
+    : voiceUi.tone === "accent"
+      ? "text-accent"
+      : "text-text-faint";
 
   return (
     <div className="p-3 md:p-4 border-t border-border bg-bg-secondary">
@@ -435,9 +445,14 @@ export default function ChatInput({
         </div>
       )}
 
-      {voiceMessage && (
-        <div className={`mb-2 text-xs ${voiceMessageClassName}`}>
-          {voiceMessage}
+      {voiceUi.message && (
+        <div
+          className={`mb-2 text-xs ${voiceMessageClassName}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {voiceUi.message}
         </div>
       )}
 
@@ -489,10 +504,10 @@ export default function ChatInput({
           >
             <Paperclip size={18} />
           </button>
-          {showVoiceButton && (
+          {voiceUi.showButton && (
             <button
               onClick={() => {
-                if (voice.isRecording) {
+                if (voice.phase === "recording") {
                   pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
                     text: inputRef.current,
                     attachmentCount: attachmentsRef.current.length,
@@ -512,18 +527,18 @@ export default function ChatInput({
                   void voice.startRecording();
                 }
               }}
-              disabled={voiceButtonDisabled}
+              disabled={voiceUi.buttonDisabled}
               className={`p-3 transition-colors flex-shrink-0 ${
-                voice.isRecording
+                voice.phase === "recording"
                   ? "text-error hover:text-error-hover"
                   : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
               }`}
-              title={voiceButtonTitle}
+              title={voiceUi.buttonTitle}
               type="button"
             >
-              {isVoiceProcessing ? (
+              {voiceUi.buttonState === "spinner" ? (
                 <Loader2 size={18} className="animate-spin" />
-              ) : voice.isRecording ? (
+              ) : voiceUi.buttonState === "stop" ? (
                 <Square size={16} fill="currentColor" />
               ) : (
                 <Mic size={18} />

@@ -240,23 +240,31 @@ export default function App() {
   useStatusStream(useCallback((event) => {
     switch (event.type) {
       case "session:busy":
-        patchSessionInCache(event.sessionId, { runState: "busy", busy: true });
+        if (event.sessionId) {
+          patchSessionInCache(event.sessionId, { runState: "busy", busy: true });
+          bumpSessionBusySignal(event.sessionId);
+        }
         break;
       case "session:stalled":
-        patchSessionInCache(event.sessionId, { runState: "stalled", busy: true });
+        if (event.sessionId) {
+          patchSessionInCache(event.sessionId, { runState: "stalled", busy: true });
+        }
         break;
       case "session:idle":
-        patchSessionInCache(event.sessionId, { runState: "idle", busy: false });
+        clearSessionBusyHint(event.sessionId);
+        if (event.sessionId) {
+          patchSessionInCache(event.sessionId, { runState: "idle", busy: false });
+        }
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
         invalidateSessions();
         break;
       case "session:title":
-        if (event.title) {
+        if (event.sessionId && event.title) {
           patchSessionInCache(event.sessionId, { summary: event.title });
         }
         break;
       case "session:archived":
-        if (typeof event.archived === "boolean") {
+        if (event.sessionId && typeof event.archived === "boolean") {
           patchSessionInCache(event.sessionId, { archived: event.archived });
         }
         break;
@@ -276,13 +284,8 @@ export default function App() {
         if (event.scheduleId) {
           queryClient.invalidateQueries({ queryKey: queryKeys.scheduleSessions(event.scheduleId) });
         }
-        // Signal ChatView to reconnect if viewing the targeted session (reuse case)
         if (event.sessionId) {
-          sessionBusyHintExpiresAtRef.current[event.sessionId] = Date.now() + SESSION_BUSY_SIGNAL_GRACE_MS;
-          setSessionBusySignals((prev) => ({
-            ...prev,
-            [event.sessionId!]: (prev[event.sessionId!] ?? 0) + 1,
-          }));
+          bumpSessionBusySignal(event.sessionId);
         }
         break;
       case "schedule:changed":
@@ -306,7 +309,7 @@ export default function App() {
         invalidateSessions();
         break;
     }
-  }, [patchSessionInCache, invalidateSessions, invalidateTasks, queryClient]));
+  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateSessions, invalidateTasks, queryClient]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;

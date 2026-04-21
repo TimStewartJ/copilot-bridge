@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchTranscriptionStatus, type TranscriptionStatus } from "../api";
+import type { VoiceRecorderPhase } from "../lib/voice-ui-state";
 
 const PROCESSOR_BUFFER_SIZE = 4_096;
 
@@ -13,6 +14,7 @@ interface VoiceInputState {
   status: TranscriptionStatus | null;
   statusError: string | null;
   isCheckingStatus: boolean;
+  phase: VoiceRecorderPhase;
   isRecording: boolean;
   isTranscribing: boolean;
   error: string | null;
@@ -29,8 +31,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
   const [status, setStatus] = useState<TranscriptionStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [phase, setPhase] = useState<VoiceRecorderPhase>("idle");
   const [error, setError] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
@@ -42,12 +43,16 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const recordingRef = useRef(false);
-  const transcribingRef = useRef(false);
-  const startingRef = useRef(false);
-  const stoppingRef = useRef(false);
+  const phaseRef = useRef<VoiceRecorderPhase>("idle");
   const sampleRateRef = useRef(0);
   const chunksRef = useRef<Float32Array[]>([]);
+
+  const setRecorderPhase = useCallback((nextPhase: VoiceRecorderPhase) => {
+    phaseRef.current = nextPhase;
+    if (mountedRef.current) {
+      setPhase(nextPhase);
+    }
+  }, []);
 
   useEffect(() => {
     contextKeyRef.current = contextKey;
@@ -135,9 +140,9 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
   }, [refreshStatus]);
 
   const startRecording = useCallback(async () => {
-    if (!browserSupported || recordingRef.current || transcribingRef.current || startingRef.current || stoppingRef.current) return;
+    if (!browserSupported || phaseRef.current !== "idle") return;
 
-    startingRef.current = true;
+    setRecorderPhase("starting");
     setError(null);
     try {
       await ensureAvailable();
@@ -169,28 +174,21 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
 
       source.connect(processor);
       processor.connect(audioContext.destination);
-      recordingRef.current = true;
-      setIsRecording(true);
+      setRecorderPhase("recording");
     } catch (err) {
-      recordingRef.current = false;
       await cleanupRecorder();
+      setRecorderPhase("idle");
       if (mountedRef.current) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(describeVoiceCaptureError(err));
       }
-    } finally {
-      startingRef.current = false;
     }
-  }, [browserSupported, cleanupRecorder, ensureAvailable]);
+  }, [browserSupported, cleanupRecorder, ensureAvailable, setRecorderPhase]);
 
   const stopRecording = useCallback(async () => {
-    if (!recordingRef.current || transcribingRef.current || startingRef.current || stoppingRef.current) return;
+    if (phaseRef.current !== "recording") return;
 
-    stoppingRef.current = true;
+    setRecorderPhase("finishing");
     const startedContextKey = activeContextKeyRef.current ?? contextKeyRef.current;
-    recordingRef.current = false;
-    transcribingRef.current = true;
-    setIsRecording(false);
-    setIsTranscribing(true);
     setError(null);
 
     try {
@@ -203,21 +201,18 @@ export function useVoiceInput({ contextKey, onAudioCaptured }: UseVoiceInputOpti
       }
     } finally {
       await cleanupRecorder();
-      transcribingRef.current = false;
-      if (mountedRef.current) {
-        setIsTranscribing(false);
-      }
-      stoppingRef.current = false;
+      setRecorderPhase("idle");
     }
-  }, [cleanupRecorder, onAudioCaptured]);
+  }, [cleanupRecorder, onAudioCaptured, setRecorderPhase]);
 
   return {
     browserSupported,
     status,
     statusError,
     isCheckingStatus,
-    isRecording,
-    isTranscribing,
+    phase,
+    isRecording: phase === "recording",
+    isTranscribing: phase === "finishing",
     error,
     startRecording,
     stopRecording,
@@ -273,4 +268,43 @@ function getAudioContextCtor(): typeof AudioContext | undefined {
   if (typeof window === "undefined") return undefined;
   const browserWindow = window as WindowWithWebkitAudioContext;
   return browserWindow.AudioContext ?? browserWindow.webkitAudioContext;
+}
+
+interface ErrorLike {
+  name?: unknown;
+  message?: unknown;
+}
+
+export function describeVoiceCaptureError(error: unknown): string {
+  const errorLike = (typeof error === "object" && error !== null ? error : {}) as ErrorLike;
+  const name = typeof errorLike.name === "string" ? errorLike.name : "";
+  const message = typeof errorLike.message === "string" ? errorLike.message : (error instanceof Error ? error.message : String(error));
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    name === "NotFoundError"
+    || name === "DevicesNotFoundError"
+    || normalizedMessage.includes("object can not be found here")
+  ) {
+    return "No microphone was found. Check your browser and OS audio input settings, then try again.";
+  }
+
+  if (
+    name === "NotAllowedError"
+    || name === "PermissionDeniedError"
+    || name === "SecurityError"
+  ) {
+    return "Microphone access was denied. Allow microphone access in your browser settings and try again.";
+  }
+
+  if (
+    name === "NotReadableError"
+    || name === "TrackStartError"
+    || normalizedMessage.includes("concurrent mic process limit")
+    || normalizedMessage.includes("failed to allocate videosource")
+  ) {
+    return "The microphone is unavailable right now. Close other apps or tabs that might be using it, then try again.";
+  }
+
+  return message;
 }
