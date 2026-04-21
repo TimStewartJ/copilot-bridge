@@ -269,6 +269,127 @@ describe("SessionManager run state", () => {
     }
   });
 
+  it("treats routine session.shutdown as an aborted terminal event", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "assistant.message",
+      data: { content: "partial response" },
+      timestamp: "2026-04-20T00:00:01.000Z",
+    });
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "session.shutdown",
+      data: { shutdownType: "graceful" },
+      timestamp: "2026-04-20T00:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "aborted",
+      finalContent: "partial response",
+    });
+  });
+
+  it("treats error session.shutdown as a terminal error", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "session.shutdown",
+      data: { shutdownType: "error", message: "runtime failed" },
+      timestamp: "2026-04-20T00:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      terminalType: "error",
+      errorMessage: "runtime failed",
+    });
+  });
+
+  it("resolves abort locally when the runtime never confirms it", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    const abortPromise = manager.abortSession("session-1");
+    await flushMicrotasks();
+    expect(session.abort).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await abortPromise;
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(bus.getSnapshot().terminalType).toBe("aborted");
+  });
+
+  it("does not send the prompt after a local abort during initial resume", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    let resolveResume!: (session: any) => void;
+    const resumePromise = new Promise<any>((resolve) => {
+      resolveResume = resolve;
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const session = {
+      on: vi.fn(() => vi.fn()),
+      send,
+      abort: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn(),
+    };
+    manager.client = {
+      resumeSession: vi.fn().mockReturnValue(resumePromise),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    await expect(manager.abortSession("session-1")).resolves.toBe(true);
+    expect(bus.getSnapshot().terminalType).toBe("aborted");
+
+    resolveResume(session);
+    await flushMicrotasks();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
   it("does not attempt a second recovery while one is already in progress", async () => {
     const { manager } = createManager();
     let resolveRecovery!: () => void;
@@ -316,7 +437,8 @@ describe("SessionManager run state", () => {
     expect(initial.session.disconnect).not.toHaveBeenCalled();
     expect(resumeSession).toHaveBeenCalledTimes(2);
 
-    await expect(manager.abortSession("session-1")).resolves.toBe(true);
+    const abortPromise = manager.abortSession("session-1");
+    await flushMicrotasks();
     expect(initial.session.abort).toHaveBeenCalledTimes(1);
 
     initial.getHandler()?.({
@@ -324,6 +446,7 @@ describe("SessionManager run state", () => {
       data: { reason: "user initiated" },
       timestamp: "2026-04-20T00:00:02.000Z",
     });
+    await expect(abortPromise).resolves.toBe(true);
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
@@ -795,6 +918,79 @@ describe("SessionManager run state", () => {
 
       expect(manager.getSessionRunState(sessionId)).toBe("stalled");
       expect(resumeSession).toHaveBeenCalledTimes(3);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for sync shell initial_wait before marking a session stalled", async () => {
+    const { manager } = createManager();
+    const { session, getHandler } = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.client = { resumeSession };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "tool.execution_start",
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+      data: {
+        toolCallId: "tool-sync-shell",
+        toolName: "bash",
+        arguments: {
+          command: "npm run build",
+          mode: "sync",
+          initial_wait: 480,
+        },
+      },
+    });
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(240_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+    expect(resumeSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("resolves a stalled turn from persisted session.shutdown events", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-shutdown-terminal-"));
+    try {
+      const sessionId = "session-shutdown-terminal";
+      const sessionStateDir = join(tmpDir, "session-state", sessionId);
+      mkdirSync(sessionStateDir, { recursive: true });
+
+      const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
+      const initial = makeSession();
+      const resumeSession = vi.fn().mockResolvedValue(initial.session);
+      manager.client = { resumeSession };
+
+      const bus = eventBusRegistry.getOrCreateBus(sessionId);
+      manager.startWork(sessionId, "hello");
+      await flushMicrotasks();
+      initial.getReleaseSend()?.();
+      await flushMicrotasks();
+      const baseTime = Date.now();
+
+      writeFileSync(join(sessionStateDir, "events.jsonl"), [
+        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
+        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done" } }),
+        JSON.stringify({ type: "session.shutdown", timestamp: new Date(baseTime + 3_000).toISOString(), data: { shutdownType: "graceful" } }),
+      ].join("\n") + "\n");
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      await flushMicrotasks();
+
+      expect(manager.getSessionRunState(sessionId)).toBe("idle");
+      expect(bus.getSnapshot()).toMatchObject({
+        terminalType: "aborted",
+        finalContent: "done",
+      });
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
