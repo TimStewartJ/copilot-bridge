@@ -19,7 +19,7 @@ import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 const INITIAL_PAGE_SIZE = 50;
 const MANUAL_LOAD_PAGE_SIZE = 200;
 const AUTO_LOAD_TOP_THRESHOLD = 24;
-const AUTO_LOAD_DELAY_MS = 250;
+const AUTO_LOAD_DELAY_MS = 400;
 
 type PendingStatusTone = "sending" | "thinking" | "creating";
 
@@ -134,8 +134,6 @@ export default function ChatView({
   const autoLoadArmedRef = useRef(false);
   const suppressAutoLoadRef = useRef(false);
   const topAutoFillConsumedRef = useRef(false);
-  const suppressNextLoadMoreClickRef = useRef(false);
-  const suppressNextLoadMoreClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedSendRef = useRef<{
     sessionId: string | null;
     composerKey: string;
@@ -189,23 +187,6 @@ export default function ChatView({
     clearTimeout(autoLoadTimeoutRef.current);
     autoLoadTimeoutRef.current = null;
   }, []);
-
-  const clearSuppressedLoadMoreClick = useCallback(() => {
-    if (suppressNextLoadMoreClickTimeoutRef.current != null) {
-      clearTimeout(suppressNextLoadMoreClickTimeoutRef.current);
-      suppressNextLoadMoreClickTimeoutRef.current = null;
-    }
-    suppressNextLoadMoreClickRef.current = false;
-  }, []);
-
-  const suppressUpcomingLoadMoreClick = useCallback(() => {
-    clearSuppressedLoadMoreClick();
-    suppressNextLoadMoreClickRef.current = true;
-    suppressNextLoadMoreClickTimeoutRef.current = setTimeout(() => {
-      suppressNextLoadMoreClickRef.current = false;
-      suppressNextLoadMoreClickTimeoutRef.current = null;
-    }, 0);
-  }, [clearSuppressedLoadMoreClick]);
 
   const handleNewEntries = useCallback((newEntries: ChatEntry[]) => {
     invalidateHistoryRefresh();
@@ -288,7 +269,6 @@ export default function ChatView({
       suppressAutoLoadRef.current = false;
       topAutoFillConsumedRef.current = false;
       clearPendingAutoLoad();
-      clearSuppressedLoadMoreClick();
       return;
     }
 
@@ -408,7 +388,6 @@ export default function ChatView({
     suppressAutoLoadRef.current = false;
     topAutoFillConsumedRef.current = false;
     clearPendingAutoLoad();
-    clearSuppressedLoadMoreClick();
     const cachedSnapshot = getCachedChatSnapshot(queryClient, sessionId);
     if (cachedSnapshot?.isCanonical) {
       applyHistory(cachedSnapshot.entries, {
@@ -447,10 +426,9 @@ export default function ChatView({
       controller.abort();
       loadAndReconnectRef.current = () => {};
       clearPendingAutoLoad();
-      clearSuppressedLoadMoreClick();
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [composerKey, reconnect, sessionId, applyHistory, queryClient, clearPendingAutoLoad, clearSuppressedLoadMoreClick]);
+  }, [composerKey, reconnect, sessionId, applyHistory, queryClient, clearPendingAutoLoad]);
 
   // Reconnect when an external source (e.g. schedule) starts work on this session
   const prevBusySignalRef = useRef(busySignal);
@@ -565,33 +543,22 @@ export default function ChatView({
       });
   }, [sessionId, hasMore, invalidateHistoryRefresh, applyHistory]);
 
-  const handleLoadMoreIntent = useCallback(() => {
+  const handleLoadMoreClick = useCallback(() => {
     clearPendingAutoLoad();
+    suppressAutoLoadRef.current = true;
     autoLoadArmedRef.current = false;
+    loadOlderMessages({ limit: MANUAL_LOAD_PAGE_SIZE, preserveScrollPosition: false });
+  }, [clearPendingAutoLoad, loadOlderMessages]);
+
+  const handleLoadMorePointerDown = useCallback(() => {
+    clearPendingAutoLoad();
   }, [clearPendingAutoLoad]);
 
   const handleLoadMoreKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Enter" || event.key === " ") {
-      clearSuppressedLoadMoreClick();
-      handleLoadMoreIntent();
+      clearPendingAutoLoad();
     }
-  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntent]);
-
-  const handleLoadMorePointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    clearSuppressedLoadMoreClick();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    handleLoadMoreIntent();
-  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntent]);
-
-  const handleLoadMoreClick = useCallback(() => {
-    if (suppressNextLoadMoreClickRef.current) {
-      clearSuppressedLoadMoreClick();
-      return;
-    }
-    suppressAutoLoadRef.current = true;
-    handleLoadMoreIntent();
-    loadOlderMessages({ limit: MANUAL_LOAD_PAGE_SIZE, preserveScrollPosition: false });
-  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntent, loadOlderMessages]);
+  }, [clearPendingAutoLoad]);
 
   const scheduleAutoLoad = useCallback((opts: { consumeTopAutoFill?: boolean } = {}) => {
     if (!sessionId || !hasMore || loadingMoreRef.current || autoLoadTimeoutRef.current != null) return;
@@ -606,47 +573,6 @@ export default function ChatView({
       }
     }, AUTO_LOAD_DELAY_MS);
   }, [hasMore, loadOlderMessages, sessionId]);
-
-  const handleLoadMoreIntentEnd = useCallback(() => {
-    if (suppressAutoLoadRef.current) return;
-    const el = scrollContainerRef.current;
-    if (!el || !sessionId || !hasMore || loadingMoreRef.current || topAutoFillConsumedRef.current) return;
-    const nearTop = el.scrollTop <= AUTO_LOAD_TOP_THRESHOLD;
-    const overflowing = el.scrollHeight > el.clientHeight + AUTO_LOAD_TOP_THRESHOLD;
-    if (!nearTop || overflowing) return;
-    scheduleAutoLoad({ consumeTopAutoFill: true });
-  }, [hasMore, scheduleAutoLoad, sessionId]);
-
-  const handleLoadMoreKeyUp = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      handleLoadMoreIntentEnd();
-    }
-  }, [handleLoadMoreIntentEnd]);
-
-  const handleLoadMorePointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const releasedInside = event.clientX >= rect.left
-      && event.clientX <= rect.right
-      && event.clientY >= rect.top
-      && event.clientY <= rect.bottom;
-    if (releasedInside) {
-      clearSuppressedLoadMoreClick();
-    } else {
-      suppressUpcomingLoadMoreClick();
-    }
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    if (!releasedInside) return;
-    handleLoadMoreIntentEnd();
-  }, [clearSuppressedLoadMoreClick, handleLoadMoreIntentEnd, suppressUpcomingLoadMoreClick]);
-
-  const handleLoadMorePointerCancel = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    suppressUpcomingLoadMoreClick();
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, [suppressUpcomingLoadMoreClick]);
 
   // Detect stick-to-bottom and schedule an auto-load after the user reaches the top.
   const handleScroll = useCallback(() => {
@@ -964,10 +890,7 @@ export default function ChatView({
               <button
                 type="button"
                 onPointerDown={handleLoadMorePointerDown}
-                onPointerUp={handleLoadMorePointerUp}
-                onPointerCancel={handleLoadMorePointerCancel}
                 onKeyDown={handleLoadMoreKeyDown}
-                onKeyUp={handleLoadMoreKeyUp}
                 onClick={handleLoadMoreClick}
                 className="inline-flex flex-col items-center gap-0.5 font-medium text-text-muted transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:text-text-primary"
                 aria-label={`Load ${MANUAL_LOAD_PAGE_SIZE} older messages`}
