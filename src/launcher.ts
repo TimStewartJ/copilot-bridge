@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
+import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
 import { killProcessTree as platformKillTree } from "./server/platform.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
@@ -45,6 +46,7 @@ const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(ROOT, "data", "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(ROOT, "data", "rollback-required");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
+const LAUNCHER_LOG_PATH = getLauncherLogPath();
 const PORT = 3333;
 const HEALTH_URL = `http://localhost:${PORT}/api/health`;
 const MAX_FAILURES = 3;
@@ -92,7 +94,9 @@ let tunnelStatusLogged = false;
 let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
 
 function log(msg: string) {
-  console.log(`[launcher] ${msg}`);
+  const line = `[launcher] ${msg}`;
+  console.log(line);
+  appendLauncherLogLine(line);
 }
 
 function gitHash(): string {
@@ -433,6 +437,7 @@ function shouldUseDevtunnel(): boolean {
 function startServer(): ChildProcess {
   log("Starting server...");
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS);
+  env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const child = spawn(NODE_PATH, [TSX_CLI, SERVER_ENTRY], {
     cwd: ROOT,
@@ -793,6 +798,7 @@ async function notifyWebhook(message: string, url?: string): Promise<void> {
 // ── Main ──────────────────────────────────────────────────────────
 
 async function main() {
+  process.env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   console.log("╔════════════════════════════════════════╗");
   console.log("║      Copilot Bridge Launcher           ║");
   console.log("╚════════════════════════════════════════╝");
@@ -868,6 +874,8 @@ process.on("SIGTERM", () => {
 });
 
 main().catch((err) => {
-  console.error("[launcher] Fatal:", err);
+  const fatalMessage = `[launcher] Fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`;
+  appendLauncherLogLine(fatalMessage);
+  console.error(fatalMessage);
   process.exit(1);
 });

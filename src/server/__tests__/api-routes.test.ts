@@ -146,14 +146,14 @@ describe("Status stream", () => {
             }
           });
           res.on("error", reject);
+          setTimeout(() => {
+            ctx.globalBus.emit({ type: "session:stalled", sessionId: "session-123" });
+          }, 10);
         });
         req.on("error", (error: NodeJS.ErrnoException) => {
           if (error.code === "ECONNRESET") return;
           reject(error);
         });
-        setTimeout(() => {
-          ctx.globalBus.emit({ type: "session:stalled", sessionId: "session-123" });
-        }, 10);
       });
 
       expect(body).toContain('data: {"type":"session:stalled","sessionId":"session-123"}');

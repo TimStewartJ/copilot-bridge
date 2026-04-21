@@ -22,6 +22,7 @@ import {
   ServerEditor,
   TagsSection,
   VoiceInputSection,
+  BridgeCommitsSection,
 } from "./settings";
 
 export default function SettingsView() {
@@ -192,6 +193,7 @@ export default function SettingsView() {
         <AppearanceSection draft={draft} setDraft={setDraft} />
         <ProvidersSection draft={draft} setDraft={setDraft} />
         <VoiceInputSection />
+        <BridgeCommitsSection />
         <TagsSection tags={tags} setTags={setTags} />
 
         {/* MCP Servers Section */}
