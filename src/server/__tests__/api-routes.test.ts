@@ -869,12 +869,31 @@ describe("Settings routes", () => {
   it("PATCH /api/settings updates settings", async () => {
     const res = await request(app)
       .patch("/api/settings")
-      .send({ mcpServers: { test: { command: "echo" } } });
+      .send({ mcpServers: { test: { command: "echo", args: [] } } });
     expect(res.status).toBe(200);
     expect(res.body.mcpServers).toHaveProperty("test");
 
     const get = await request(app).get("/api/settings");
     expect(get.body.mcpServers).toHaveProperty("test");
+  });
+
+  it("PATCH /api/settings stores remote MCP server configs", async () => {
+    const remoteConfig = {
+      type: "http",
+      url: "https://mcp.linear.app/mcp",
+      headers: { Authorization: "Bearer test-token" },
+      tools: ["linear_search"],
+    };
+
+    const res = await request(app)
+      .patch("/api/settings")
+      .send({ mcpServers: { linear: remoteConfig } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mcpServers.linear).toEqual(remoteConfig);
+
+    const get = await request(app).get("/api/settings");
+    expect(get.body.mcpServers.linear).toEqual(remoteConfig);
   });
 });
 
@@ -1558,6 +1577,29 @@ describe("Tag MCP server routes", () => {
       .send({ command: "echo", args: ["hello"] });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+
+  it("PUT /api/tags/:id/mcp/:serverName stores remote MCP server configs", async () => {
+    const remoteConfig = {
+      type: "sse",
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer tag-token" },
+      tools: ["search"],
+    };
+
+    const put = await request(app)
+      .put(`/api/tags/${tagId}/mcp/remote-server`)
+      .send(remoteConfig);
+
+    expect(put.status).toBe(200);
+
+    const get = await request(app).get(`/api/tags/${tagId}/mcp`);
+    expect(get.body.servers).toEqual([
+      {
+        serverName: "remote-server",
+        config: remoteConfig,
+      },
+    ]);
   });
 
   it("DELETE /api/tags/:id/mcp/:serverName removes an MCP server", async () => {

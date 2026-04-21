@@ -13,6 +13,12 @@ import {
   useDeleteTagMutation,
   useReorderTagsMutation,
 } from "../../hooks/queries/useTags";
+import {
+  getMcpServerTransport,
+  isLocalMcpServerConfig,
+  type LocalMcpServerConfig,
+  type RemoteMcpServerConfig,
+} from "../../../mcp-config";
 import { Pencil, Trash2, ArrowUp, ArrowDown } from "lucide-react";
 import { TAG_COLORS } from "../../tag-colors";
 import { TAG_COLOR_TEXT, TAG_COLOR_DOT } from "../../tag-colors";
@@ -40,8 +46,11 @@ export function TagsSection({
   const [editMcpServers, setEditMcpServers] = useState<TagMcpServer[]>([]);
   const [addingMcp, setAddingMcp] = useState(false);
   const [mcpName, setMcpName] = useState("");
+  const [mcpTransport, setMcpTransport] = useState<"local" | "http" | "sse">("local");
   const [mcpCommand, setMcpCommand] = useState("");
   const [mcpArgs, setMcpArgs] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpHeaders, setMcpHeaders] = useState("");
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -79,17 +88,40 @@ export function TagsSection({
   };
 
   const handleAddMcp = async (tagId: string) => {
-    if (!mcpName.trim() || !mcpCommand.trim()) return;
+    if (!mcpName.trim() || (mcpTransport === "local" ? !mcpCommand.trim() : !mcpUrl.trim())) return;
     try {
-      const config: McpServerConfig = {
-        command: mcpCommand.trim(),
-        args: mcpArgs.trim() ? mcpArgs.trim().split("\n") : [],
-      };
+      let config: McpServerConfig;
+      if (mcpTransport === "local") {
+        const localConfig: LocalMcpServerConfig = {
+          command: mcpCommand.trim(),
+          args: mcpArgs.trim() ? mcpArgs.trim().split("\n") : [],
+        };
+        config = localConfig;
+      } else {
+        const remoteConfig: RemoteMcpServerConfig = {
+          type: mcpTransport,
+          url: mcpUrl.trim(),
+        };
+        if (mcpHeaders.trim()) {
+          const headers: Record<string, string> = {};
+          for (const line of mcpHeaders.split("\n")) {
+            const eq = line.indexOf("=");
+            if (eq > 0) {
+              headers[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+            }
+          }
+          if (Object.keys(headers).length > 0) remoteConfig.headers = headers;
+        }
+        config = remoteConfig;
+      }
       await setTagMcpServer(tagId, mcpName.trim(), config);
       setEditMcpServers((prev) => [...prev, { serverName: mcpName.trim(), config }]);
       setMcpName("");
+      setMcpTransport("local");
       setMcpCommand("");
       setMcpArgs("");
+      setMcpUrl("");
+      setMcpHeaders("");
       setAddingMcp(false);
     } catch (e) {
       console.error("Failed to add MCP server:", e);
@@ -179,7 +211,11 @@ export function TagsSection({
                 {editMcpServers.map((srv) => (
                   <div key={srv.serverName} className="flex items-center gap-2 bg-bg-primary rounded px-2 py-1 mb-1 text-xs">
                     <span className="font-mono text-text-primary flex-1 truncate">{srv.serverName}</span>
-                    <span className="text-text-faint truncate">{srv.config.command}</span>
+                    <span className="text-text-faint truncate">
+                      {isLocalMcpServerConfig(srv.config)
+                        ? srv.config.command
+                        : `${getMcpServerTransport(srv.config)} ${srv.config.url}`}
+                    </span>
                     <button
                       onClick={() => handleRemoveMcp(tag.id, srv.serverName)}
                       className="text-text-faint hover:text-error shrink-0"
@@ -200,24 +236,53 @@ export function TagsSection({
                       placeholder="Server name"
                       className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
                     />
-                    <input
-                      value={mcpCommand}
-                      onChange={(e) => setMcpCommand(e.target.value)}
-                      placeholder="Command (e.g. npx, uvx)"
+                    <select
+                      value={mcpTransport}
+                      onChange={(e) => setMcpTransport(e.target.value as "local" | "http" | "sse")}
                       className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
-                    />
-                    <textarea
-                      value={mcpArgs}
-                      onChange={(e) => setMcpArgs(e.target.value)}
-                      placeholder="Args (one per line)"
-                      className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent resize-none"
-                      rows={2}
-                    />
+                    >
+                      <option value="local">Local / stdio</option>
+                      <option value="http">Remote HTTP</option>
+                      <option value="sse">Remote SSE</option>
+                    </select>
+                    {mcpTransport === "local" ? (
+                      <>
+                        <input
+                          value={mcpCommand}
+                          onChange={(e) => setMcpCommand(e.target.value)}
+                          placeholder="Command (e.g. npx, uvx)"
+                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
+                        />
+                        <textarea
+                          value={mcpArgs}
+                          onChange={(e) => setMcpArgs(e.target.value)}
+                          placeholder="Args (one per line)"
+                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent resize-none"
+                          rows={2}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          value={mcpUrl}
+                          onChange={(e) => setMcpUrl(e.target.value)}
+                          placeholder="https://example.com/mcp"
+                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
+                        />
+                        <textarea
+                          value={mcpHeaders}
+                          onChange={(e) => setMcpHeaders(e.target.value)}
+                          placeholder="Headers (KEY=VALUE, one per line)"
+                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent resize-none"
+                          rows={2}
+                        />
+                      </>
+                    )}
                     <div className="flex justify-end gap-2">
                       <button onClick={() => setAddingMcp(false)} className="text-[10px] text-text-muted hover:text-text-primary px-1.5 py-0.5">Cancel</button>
                       <button
                         onClick={() => handleAddMcp(tag.id)}
-                        disabled={!mcpName.trim() || !mcpCommand.trim()}
+                        disabled={!mcpName.trim() || (mcpTransport === "local" ? !mcpCommand.trim() : !mcpUrl.trim())}
                         className="text-[10px] bg-accent text-white px-2 py-0.5 rounded hover:bg-accent-hover disabled:opacity-50"
                       >
                         Add

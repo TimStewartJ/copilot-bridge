@@ -43,6 +43,7 @@ import type { TelemetryStore } from "./telemetry-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
+import type { McpServerConfig } from "./mcp-config.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.js";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
@@ -1238,7 +1239,7 @@ export interface SessionManagerDeps {
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   browserSessionStore?: BrowserSessionStore;
-  config: { sessionMcpServers: Record<string, any>; model?: string };
+  config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   telemetryStore?: TelemetryStore;
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
