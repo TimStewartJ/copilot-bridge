@@ -17,13 +17,13 @@ const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 const DEMO_MARKER_FILENAME = "demo-seed.json";
 const DEMO_WORKSPACE_DIRNAME = "workspace";
-const DEMO_FOLLOW_UP_SCHEDULE_NAME = "Demo follow-up prompt";
-const DEMO_FOLLOW_UP_SCHEDULE_PROMPT = "Ask what stood out in the bridge demo and turn the answer into a short checklist in this task.";
-const DEMO_REVIEW_SCHEDULE_NAME = "Friday bridge review";
-const DEMO_REVIEW_SCHEDULE_PROMPT = "Review open polish work for Copilot Bridge. Summarize wins, risks, and next steps for a coworker-facing handoff.";
+const DEMO_FOLLOW_UP_SCHEDULE_NAME = "Launch follow-up prompt";
+const DEMO_FOLLOW_UP_SCHEDULE_PROMPT = "Ask what changed in the Acme launch plan today and turn the answer into a short checklist in this task.";
+const DEMO_REVIEW_SCHEDULE_NAME = "Friday launch review";
+const DEMO_REVIEW_SCHEDULE_PROMPT = "Review open Acme launch work. Summarize wins, risks, and next steps for the rollout.";
 
 export const DEMO_DATA_DIRNAME = "demo-data";
-export const DEMO_SEED_VERSION = 2;
+export const DEMO_SEED_VERSION = 3;
 
 export interface DemoPaths {
   dataDir: string;
@@ -88,21 +88,26 @@ function seedSandboxWorkspace(paths: DemoPaths): void {
   mkdirSync(join(paths.workspaceDir, "src"), { recursive: true });
   mkdirSync(paths.copilotHome, { recursive: true });
 
-  writeFileSync(join(paths.workspaceDir, "README.md"), `# Demo sandbox workspace
+  writeFileSync(join(paths.workspaceDir, "README.md"), `# Acme sample workspace
 
-This folder is a safe scratchpad for the Copilot Bridge demo.
+This folder is a safe scratchpad for the seeded Acme launch workspace.
 
 - edit files here without touching the live repository
-- draft walkthrough notes or README copy
+- draft launch notes, support snippets, or rollout copy
 - create throwaway files while exploring the task workflow
 `);
 
-  writeFileSync(join(paths.workspaceDir, "src", "bridge-tour.ts"), `export const bridgeTour = {
-  headline: "Tasks keep chat, docs, and follow-up work in one place.",
-  pillars: [
-    "persistent sessions tied to tasks",
-    "docs and todos beside the conversation",
-    "schedules and tags for follow-through",
+  writeFileSync(join(paths.workspaceDir, "src", "acme-launch.ts"), `export const acmeLaunch = {
+  product: "Acme Assist",
+  launchWindow: "Next Friday",
+  priorities: [
+    "finish the launch brief",
+    "capture a few rollout screenshots",
+    "track questions from the pilot team",
+  ],
+  risks: [
+    "support playbook still needs a final pass",
+    "weekly review notes should stay in one thread",
   ],
 };
 `);
@@ -135,73 +140,71 @@ function addSeedTodo(
 }
 
 function seedDocs(docsStore: ReturnType<typeof createDocsStore>): void {
-  docsStore.writePage("index", markdownPage("Copilot Bridge Demo Docs", ["showcase"], `
-# Copilot Bridge demo docs
+  docsStore.writePage("index", markdownPage("Acme Launch Docs", ["launch"], `
+# Acme launch docs
 
-This workspace is seeded so a coworker can understand the bridge without starting from a blank slate.
+This workspace is seeded with a fictional Acme rollout so you can explore tasks, docs, schedules, and follow-up work without starting from a blank slate.
 
 ## Open these first
 
-- [[showcase/start-here]]
-- [[showcase/architecture]]
-- [[showcase/pitch]]
+- [[acme/start-here]]
+- [[acme/launch-plan]]
+- [[acme/stakeholder-brief]]
 - [[automation/browser-ideas]]
 `));
 
-  docsStore.writePage("showcase/index", markdownPage("Showcase", ["showcase", "docs"], `
-# Showcase
+  docsStore.writePage("acme/index", markdownPage("Acme Launch", ["launch", "docs"], `
+# Acme Launch
 
-This folder is the guided tour for the demo workspace.
+This folder anchors the fictional rollout workspace used by the seeded demo.
 
 ## Suggested order
 
-1. [[showcase/start-here]]
-2. [[showcase/architecture]]
-3. [[showcase/pitch]]
-4. Browse the **Coworker Feedback** database collection
+1. [[acme/start-here]]
+2. [[acme/launch-plan]]
+3. [[acme/stakeholder-brief]]
+4. Browse the **Launch Notes** database collection
 `));
 
-  docsStore.writePage("showcase/start-here", markdownPage("Start Here", ["showcase", "docs"], `
+  docsStore.writePage("acme/start-here", markdownPage("Start Here", ["launch", "docs"], `
 # 5-minute tour
 
-1. Open the pinned **Start Here - Copilot Bridge Tour** task.
+1. Open the pinned **Start Here - Acme Launch Workspace** task.
 2. Read the task note and check off a couple todos as you explore.
 3. Start a task chat and paste one of the prompt ideas below.
 4. Trigger the sample schedule on the task.
-5. Add one entry to the **Coworker Feedback** collection in Docs.
+5. Add one entry to the **Launch Notes** collection in Docs.
 
 ## Prompt ideas
 
-- "Summarize this workspace and suggest the next three things a coworker should click."
-- "Create a docs page called \`showcase/feedback-summary\` with the questions teammates are likely to ask."
+- "Summarize the Acme launch workspace and suggest the next three things to inspect."
+- "Create a docs page called \`acme/release-qa\` with the questions the rollout team should answer before Friday."
 - "Look at this task, its todos, and its schedules, then explain how this workspace fits together."
-- "Search the web for recent Copilot SDK changes and tell me if anything here should be revisited."
+- "Turn the launch plan into a short checklist for a Friday status review."
 `));
 
-  docsStore.writePage("showcase/architecture", markdownPage("Architecture at a Glance", ["showcase", "docs"], `
-# Architecture at a glance
+  docsStore.writePage("acme/launch-plan", markdownPage("Launch Plan", ["launch", "docs"], `
+# Launch plan
 
-The bridge has three big pieces:
+Acme is preparing a fictional rollout of **Acme Assist** to a small pilot group next Friday.
 
-- A **launcher** that manages restart, rollback, and local deployment helpers
-- An **Express server** with REST endpoints, SSE, the Copilot SDK session manager, and SQLite-backed stores
-- A **React client** that brings together tasks, chats, docs, schedules, and settings
+## Current priorities
 
-The point of the app is not just "chat with AI." It is to keep the surrounding work context close to the session: notes, todos, docs, and linked work all live beside the conversation.
+- finalize the launch brief
+- capture a few screenshots for the Friday review
+- keep support handoff notes in one place
+- turn open questions into trackable follow-up work
 `));
 
-  docsStore.writePage("showcase/pitch", markdownPage("How to Explain the Bridge", ["showcase"], `
-# How I explain the bridge
+  docsStore.writePage("acme/stakeholder-brief", markdownPage("Stakeholder Brief", ["launch"], `
+# Stakeholder brief
 
-Copilot Bridge is a local AI workspace that treats **tasks** as the center of gravity instead of chats.
+Use this workspace to keep the launch thread compact:
 
-The pitch is:
-
-- sessions are persistent
-- tasks hold the working context
-- docs live in the same place
-- schedules and tags let the workspace stay organized
-- the bridge can improve and preview itself safely
+- the pinned task explains where to start
+- todos make next actions easy to see
+- schedules show how follow-up can stay attached to a task
+- docs and database entries keep written context close to the work
 `));
 
   docsStore.writePage("automation/index", markdownPage("Automation Lab", ["automation"], `
@@ -225,33 +228,33 @@ Use this area to show that the bridge can reason across multiple browser layers:
 Good prompt: "Compare browser_fetch, browser_exec, and computer_open_browser, then recommend which one fits this task best."
 `));
 
-  docsStore.writeSchema("showcase/coworker-feedback", {
-    name: "Coworker Feedback",
+  docsStore.writeSchema("acme/launch-notes", {
+    name: "Launch Notes",
     fields: [
-      { name: "category", type: "select", options: ["wow", "question", "follow-up"], required: true },
-      { name: "status", type: "select", options: ["new", "noted", "actioned"], required: true },
+      { name: "category", type: "select", options: ["risk", "question", "follow-up"], required: true },
+      { name: "status", type: "select", options: ["new", "noted", "done"], required: true },
       { name: "owner", type: "text" },
     ],
   });
 
-  docsStore.addDbEntry("showcase/coworker-feedback", {
-    title: "First-run reaction",
-    category: "wow",
+  docsStore.addDbEntry("acme/launch-notes", {
+    title: "Support playbook still needs a final review",
+    category: "risk",
     status: "noted",
-    owner: "Coworker",
-    tags: ["showcase"],
+    owner: "Support",
+    tags: ["launch"],
   }, `
-The task-centric layout makes it obvious that notes, docs, and chat belong together.
+The canned response flow is drafted, but the escalation path still needs one more pass before Friday.
 `);
 
-  docsStore.addDbEntry("showcase/coworker-feedback", {
-    title: "Question about schedules",
+  docsStore.addDbEntry("acme/launch-notes", {
+    title: "Question about the Friday review cadence",
     category: "question",
     status: "new",
-    owner: "Coworker",
-    tags: ["showcase"],
+    owner: "Product",
+    tags: ["launch"],
   }, `
-It would help to explain when a schedule reuses an existing session versus creating a new one.
+Decide whether the weekly review should reuse the same task session or start fresh each time.
 `);
 }
 
@@ -282,12 +285,11 @@ function seedWorkspace(repoRoot: string): void {
     settingsStore.updateSettings({
       theme: "dark",
       favicon: "emerald-bridge",
-      reasoningEffort: "medium",
     });
 
-    const showcaseGroup = taskGroupStore.createGroup("Showcase", "purple");
-    taskGroupStore.updateGroup(showcaseGroup.id, {
-      notes: "Guided tasks and docs for first-time coworkers seeing the bridge.",
+    const launchGroup = taskGroupStore.createGroup("Acme Launch", "purple");
+    taskGroupStore.updateGroup(launchGroup.id, {
+      notes: "Sample launch-planning work for a fictional Acme rollout.",
     });
 
     const automationGroup = taskGroupStore.createGroup("Automation Lab", "cyan");
@@ -295,11 +297,11 @@ function seedWorkspace(repoRoot: string): void {
       notes: "Experiments and prompt ideas around browser and desktop automation.",
     });
 
-    const showcaseTag = createSeedTag(
+    const launchTag = createSeedTag(
       tagStore,
-      "showcase",
+      "launch",
       "indigo",
-      "Frame responses so a coworker seeing the bridge for the first time can understand what matters quickly.",
+      "Treat this workspace like a fictional rollout plan: keep summaries concrete, prioritize risks, and suggest next steps that help the launch move forward.",
     );
     const docsTag = createSeedTag(
       tagStore,
@@ -314,7 +316,7 @@ function seedWorkspace(repoRoot: string): void {
       "Prefer web_search and browser tools before escalating to computer-use, unless the site truly needs a visible browser.",
     );
 
-    tagStore.setEntityTags("task_group", showcaseGroup.id, [showcaseTag.id]);
+    tagStore.setEntityTags("task_group", launchGroup.id, [launchTag.id]);
     tagStore.setEntityTags("task_group", automationGroup.id, [automationTag.id]);
 
     const createSeedTask = (title: string, groupId: string, updates: Parameters<typeof taskStore.updateTask>[1]) => {
@@ -322,43 +324,43 @@ function seedWorkspace(repoRoot: string): void {
       return taskStore.updateTask(task.id, updates);
     };
 
-    const startHere = createSeedTask("Start Here - Copilot Bridge Tour", showcaseGroup.id, {
+    const startHere = createSeedTask("Start Here - Acme Launch Workspace", launchGroup.id, {
       pinned: true,
       cwd: paths.workspaceDir,
       notes: `
-# Demo goal
+# Workspace goal
 
-This is the best place to start if you're seeing the bridge for the first time.
+This seeded workspace is framed as a fictional Acme launch so you can explore the bridge with realistic sample data instead of a blank slate.
 
 ## Try this in order
 
-1. Open the related docs for this task and read \`showcase/start-here\`.
+1. Open the related docs for this task and read \`acme/start-here\`.
 2. Check off a couple todos below as you explore.
 3. Start a task session and paste one of the prompt ideas from the note or docs.
-4. Trigger the **Demo follow-up prompt** schedule.
-5. Open Docs and add one item to the **Coworker Feedback** collection.
+4. Trigger the **Launch follow-up prompt** schedule.
+5. Open Docs and add one item to the **Launch Notes** collection.
 6. If you edit files, keep them inside the sandbox workspace at \`demo-data/workspace\`.
 
 ## Prompt ideas
 
-- "Summarize this workspace for a coworker and suggest the next three clicks."
-- "Turn this demo task into a quick walkthrough script I could use while screen sharing."
-- "Search the web for recent Copilot SDK changes that might matter for this repo."
+- "Summarize the Acme launch workspace and suggest the next three things to inspect."
+- "Turn this task into a short launch-readiness walkthrough I could use in a status update."
+- "Draft a short Friday update based on the current docs, todos, and schedules."
       `.trim(),
     });
 
-    const coworkerPolish = createSeedTask("Coworker demo polish", showcaseGroup.id, {
+    const launchReadiness = createSeedTask("Launch readiness sweep", launchGroup.id, {
       cwd: paths.workspaceDir,
       notes: `
 # What this task is for
 
-This task mirrors the polish work needed before sharing the repo around.
+This task mirrors the last-mile cleanup before a fictional rollout.
 Use the sandbox workspace for draft notes or sample edits so the live checkout stays untouched.
 
-- tighten the README
-- capture screenshots or a Loom
-- make the first-run experience obvious
-- turn feedback into concrete follow-up work
+- tighten the launch brief
+- capture screenshots for the Friday review
+- make the support handoff easy to scan
+- turn open questions into concrete follow-up work
       `.trim(),
     });
 
@@ -385,34 +387,34 @@ The goal is to show how the bridge can move from cheap source discovery to heavi
       notes: `
 # Why this exists
 
-This paused task is here to make the workspace feel lived-in. It hints at future ideas without crowding the main demo flow.
+This paused task is here to make the workspace feel lived-in. It hints at future ideas without crowding the core launch flow.
       `.trim(),
     });
 
-    taskStore.reorderTasks([startHere.id, coworkerPolish.id, browserIdeas.id, backlog.id]);
+    taskStore.reorderTasks([startHere.id, launchReadiness.id, browserIdeas.id, backlog.id]);
 
     tagStore.setEntityTags("task", startHere.id, [docsTag.id]);
-    tagStore.setEntityTags("task", coworkerPolish.id, [docsTag.id]);
+    tagStore.setEntityTags("task", launchReadiness.id, [docsTag.id]);
 
     addSeedTodo(todoStore, startHere.id, "Open the pinned task and read the note", { done: true });
     addSeedTodo(todoStore, startHere.id, "Start one task chat and try a guided prompt", { deadlineOffsetDays: 1 });
     addSeedTodo(todoStore, startHere.id, "Trigger the sample schedule once", { deadlineOffsetDays: 1 });
-    addSeedTodo(todoStore, startHere.id, "Add one coworker-feedback entry in Docs", { deadlineOffsetDays: 2 });
+    addSeedTodo(todoStore, startHere.id, "Add one launch-notes entry in Docs", { deadlineOffsetDays: 2 });
 
-    addSeedTodo(todoStore, coworkerPolish.id, "Record a 30-60 second Loom", { deadlineOffsetDays: 2 });
-    addSeedTodo(todoStore, coworkerPolish.id, "Capture dashboard, task, and chat screenshots", { deadlineOffsetDays: 2 });
-    addSeedTodo(todoStore, coworkerPolish.id, "Refine README onboarding copy", { done: true });
+    addSeedTodo(todoStore, launchReadiness.id, "Draft a short leadership update", { deadlineOffsetDays: 2 });
+    addSeedTodo(todoStore, launchReadiness.id, "Capture dashboard and workflow screenshots for Friday review", { deadlineOffsetDays: 2 });
+    addSeedTodo(todoStore, launchReadiness.id, "Refine the stakeholder brief", { done: true });
 
     addSeedTodo(todoStore, browserIdeas.id, "Compare browser_exec with the browser skill", { deadlineOffsetDays: 4 });
     addSeedTodo(todoStore, browserIdeas.id, "Collect one web_search/browser_fetch example flow", { deadlineOffsetDays: 4 });
     addSeedTodo(todoStore, browserIdeas.id, "Decide where computer-use actually adds value", { done: true });
 
-    addSeedTodo(todoStore, backlog.id, "Sketch provider-auth onboarding for future polish");
-    addSeedTodo(todoStore, backlog.id, "Consider a demo dataset for provider cards later");
+    addSeedTodo(todoStore, backlog.id, "Sketch vendor-auth onboarding for a future portal integration");
+    addSeedTodo(todoStore, backlog.id, "Consider a sample dataset for provider cards later");
 
-    addSeedTodo(todoStore, null, "Collect three screenshots for the README", { deadlineOffsetDays: 1 });
-    addSeedTodo(todoStore, null, "Write down coworker questions after the demo", { deadlineOffsetDays: 2 });
-    addSeedTodo(todoStore, null, "Refresh the showcase README copy", { done: true });
+    addSeedTodo(todoStore, null, "Collect three screenshots for the launch brief", { deadlineOffsetDays: 1 });
+    addSeedTodo(todoStore, null, "Write down open questions after the Friday review", { deadlineOffsetDays: 2 });
+    addSeedTodo(todoStore, null, "Refresh the stakeholder brief", { done: true });
 
     scheduleStore.createSchedule({
       taskId: startHere.id,
@@ -423,7 +425,7 @@ This paused task is here to make the workspace feel lived-in. It hints at future
     });
 
     scheduleStore.createSchedule({
-      taskId: coworkerPolish.id,
+      taskId: launchReadiness.id,
       name: DEMO_REVIEW_SCHEDULE_NAME,
       prompt: DEMO_REVIEW_SCHEDULE_PROMPT,
       type: "cron",
@@ -443,8 +445,12 @@ function refreshSeededSchedules(repoRoot: string): void {
   const paths = getDemoPaths(repoRoot);
   const db = openDatabase(paths.dataDir);
   try {
+    const settingsStore = createSettingsStore(db);
     const scheduleStore = createScheduleStore(db);
     const schedules = scheduleStore.listSchedules();
+    if (settingsStore.getSettings().reasoningEffort !== undefined) {
+      settingsStore.updateSettings({ reasoningEffort: undefined });
+    }
     const demoFollowUp = schedules.find((schedule) =>
       schedule.type === "once"
       && schedule.name === DEMO_FOLLOW_UP_SCHEDULE_NAME

@@ -122,7 +122,7 @@ async function main(): Promise<void> {
 
     const tasksRes = await request(app).get(`${result.previewPath}api/tasks`);
     assert.equal(tasksRes.status, 200, "tasks API did not return 200");
-    const startHere = tasksRes.body.tasks.find((task: any) => task.title === "Start Here - Copilot Bridge Tour");
+    const startHere = tasksRes.body.tasks.find((task: any) => task.title === "Start Here - Acme Launch Workspace");
     assert(startHere, "seeded Start Here task was not present in demo preview");
     assert.equal(startHere.pinned, true);
     assert.equal(startHere.cwd, expectedWorkspace);
@@ -137,19 +137,19 @@ async function main(): Promise<void> {
     assert.equal(settingsRes.status, 200, "settings API did not return 200");
     assert.equal(settingsRes.body.theme, "dark");
     assert.equal(settingsRes.body.favicon, "emerald-bridge");
-    assert.equal(settingsRes.body.reasoningEffort, "medium");
+    assert.equal(settingsRes.body.reasoningEffort, undefined);
 
     const schedulesRes = await request(app).get(`${result.previewPath}api/schedules`);
     assert.equal(schedulesRes.status, 200, "schedules API did not return 200");
     assert(Array.isArray(schedulesRes.body), "schedules response was not an array");
-    assert(schedulesRes.body.some((schedule: any) => schedule.name === "Demo follow-up prompt"), "seeded demo schedule was not present");
+    assert(schedulesRes.body.some((schedule: any) => schedule.name === "Launch follow-up prompt"), "seeded demo schedule was not present");
 
     const docsTreeRes = await request(app).get(`${result.previewPath}api/docs/tree`);
     assert.equal(docsTreeRes.status, 200, "docs tree API did not return 200");
     assert.equal(docsTreeRes.body.hasRootIndex, true);
-    assert(findTreeNode(docsTreeRes.body.tree, "showcase"), "showcase docs folder was not present");
+    assert(findTreeNode(docsTreeRes.body.tree, "acme"), "acme docs folder was not present");
 
-    const docRes = await request(app).get(`${result.previewPath}api/docs/pages/showcase/start-here`);
+    const docRes = await request(app).get(`${result.previewPath}api/docs/pages/acme/start-here`);
     assert.equal(docRes.status, 200, "seeded start-here doc was not readable");
     assert.equal(docRes.body.title, "Start Here");
     assert.match(docRes.body.body, /5-minute tour/i, "seeded start-here doc body was not returned");
