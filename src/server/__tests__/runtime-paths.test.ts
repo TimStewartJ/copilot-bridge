@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 
@@ -18,16 +19,19 @@ describe("runtime paths", () => {
   });
 
   it("keeps existing explicit overrides intact", () => {
+    const dataDir = join(tmpdir(), "demo-data");
+    const docsDir = join(tmpdir(), "demo-docs");
+    const copilotHome = join(tmpdir(), "demo-copilot");
     const paths = resolveRuntimePaths({
       BRIDGE_DEMO_MODE: "true",
-      BRIDGE_DATA_DIR: "/tmp/demo-data",
-      BRIDGE_DOCS_DIR: "/tmp/demo-docs",
-      COPILOT_HOME: "/tmp/demo-copilot",
+      BRIDGE_DATA_DIR: dataDir,
+      BRIDGE_DOCS_DIR: docsDir,
+      COPILOT_HOME: copilotHome,
     });
 
-    expect(paths.dataDir).toBe("/tmp/demo-data");
-    expect(paths.docsDir).toBe("/tmp/demo-docs");
-    expect(paths.copilotHome).toBe("/tmp/demo-copilot");
+    expect(paths.dataDir).toBe(dataDir);
+    expect(paths.docsDir).toBe(docsDir);
+    expect(paths.copilotHome).toBe(copilotHome);
     expect(paths.workspaceDir).toBe(join(paths.dataDir, "workspace"));
   });
 });

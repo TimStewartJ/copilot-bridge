@@ -347,41 +347,42 @@ function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {
     }
     disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
   } else {
-    let copiedAny = false;
-    const filesToCopy = [
+    clearSeededSqliteFiles(dataDir);
+    const legacyJsonFiles = [
       "tasks.json",
       "task-groups.json",
-      "settings.json",
       "sessions-meta.json",
+      "settings.json",
       "session-titles.json",
       "read-state.json",
-      "telemetry-log.json",
     ];
-    for (const file of filesToCopy) {
+    let copiedLegacyState = false;
+    for (const file of legacyJsonFiles) {
       const src = join(productionDataDir, file);
-      if (existsSync(src)) {
-        copyFileSync(src, join(dataDir, file));
-        copiedAny = true;
-      }
+      if (!existsSync(src)) continue;
+      copyFileSync(src, join(dataDir, file));
+      copiedLegacyState = true;
     }
 
-    const schedSrc = join(productionDataDir, "schedules.json");
-    if (existsSync(schedSrc)) {
+    const schedulesSrc = join(productionDataDir, "schedules.json");
+    if (existsSync(schedulesSrc)) {
+      copiedLegacyState = true;
       try {
-        const schedules = JSON.parse(readFileSync(schedSrc, "utf-8"));
+        const schedules = JSON.parse(readFileSync(schedulesSrc, "utf-8"));
         if (Array.isArray(schedules)) {
           for (const schedule of schedules) {
-            schedule.enabled = false;
+            if (schedule && typeof schedule === "object") {
+              schedule.enabled = false;
+            }
           }
         }
         writeFileSync(join(dataDir, "schedules.json"), JSON.stringify(schedules, null, 2));
       } catch {
         writeFileSync(join(dataDir, "schedules.json"), "[]");
       }
-      copiedAny = true;
     }
 
-    if (!copiedAny) {
+    if (!copiedLegacyState) {
       throw new Error(`Production SQLite database not found at ${dbSrc}`);
     }
   }
@@ -1229,9 +1230,6 @@ export const STAGING_TOOLS = [
           await cleanupPreviewResources(prefix, { removeDist: false });
           log(`Staging backend failed (frontend-only preview): ${backendError}`);
         }
-      } else {
-        log("Express app not registered — frontend-only preview");
-      }
       } else {
         log("Express app not registered — frontend-only preview");
       }

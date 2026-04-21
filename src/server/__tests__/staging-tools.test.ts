@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -205,8 +205,9 @@ describe("staging tools", () => {
 
   it("builds and parses demo preview prefixes", async () => {
     const mod = await loadStagingToolsModule();
-    expect(mod.buildPreviewPrefix("/tmp/bridge-staging/abc12345", "clone")).toBe("abc12345");
-    expect(mod.buildPreviewPrefix("/tmp/bridge-staging/abc12345", "demo")).toBe("abc12345-demo");
+    const stagingDir = join(tmpdir(), "bridge-staging", "abc12345");
+    expect(mod.buildPreviewPrefix(stagingDir, "clone")).toBe("abc12345");
+    expect(mod.buildPreviewPrefix(stagingDir, "demo")).toBe("abc12345-demo");
     expect(mod.parsePreviewPrefix("abc12345")).toEqual({ stagingName: "abc12345", profile: "clone" });
     expect(mod.parsePreviewPrefix("abc12345-demo")).toEqual({ stagingName: "abc12345", profile: "demo" });
   });
@@ -248,13 +249,35 @@ describe("staging tools", () => {
     expect(existsSync(join(seededDataDir, "docs", "note.md"))).toBe(true);
   });
 
-  it("fails explicitly when production bridge.db is missing instead of falling back to JSON", async () => {
+  it("falls back to legacy JSON state when production bridge.db is missing", async () => {
     const mod = await loadStagingToolsModule();
     const productionDataDir = createTempDir("bridge-stage-missing-db-");
     const stagingDir = createTempDir("bridge-stage-staging-");
+    const stagingDataDir = join(stagingDir, "data");
 
-    writeFileSync(join(productionDataDir, "tasks.json"), "[]");
-    writeFileSync(join(productionDataDir, "schedules.json"), "[]");
+    mkdirSync(stagingDataDir, { recursive: true });
+    writeFileSync(join(stagingDataDir, "bridge.db"), "stale");
+    writeFileSync(join(stagingDataDir, "bridge.db-wal"), "stale");
+    writeFileSync(join(stagingDataDir, "bridge.db-shm"), "stale");
+    writeFileSync(join(productionDataDir, "tasks.json"), JSON.stringify([{ id: "task-1", title: "Legacy task" }]));
+    writeFileSync(join(productionDataDir, "schedules.json"), JSON.stringify([
+      { id: "sched-1", name: "Legacy schedule", enabled: true, type: "cron", cron: "0 9 * * 1" },
+    ]));
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+    expect(existsSync(join(seededDataDir, "tasks.json"))).toBe(true);
+    expect(existsSync(join(seededDataDir, "bridge.db"))).toBe(false);
+    expect(existsSync(join(seededDataDir, "bridge.db-wal"))).toBe(false);
+    expect(existsSync(join(seededDataDir, "bridge.db-shm"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(seededDataDir, "schedules.json"), "utf-8"))).toEqual([
+      { id: "sched-1", name: "Legacy schedule", enabled: false, type: "cron", cron: "0 9 * * 1" },
+    ]);
+  });
+
+  it("fails explicitly when neither production bridge.db nor legacy JSON state exists", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createTempDir("bridge-stage-missing-db-");
+    const stagingDir = createTempDir("bridge-stage-staging-");
 
     expect(() =>
       mod.__testing.seedStagingData(stagingDir, { productionDataDir }),

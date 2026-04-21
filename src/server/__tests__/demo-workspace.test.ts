@@ -54,6 +54,10 @@ describe("demo workspace", () => {
       expect(followUp?.type).toBe("once");
       expect(new Date(followUp!.runAt!).getTime()).toBeGreaterThan(Date.now());
 
+      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday bridge review");
+      expect(reviewSchedule).toBeDefined();
+      expect(reviewSchedule?.sessionMode).toBe("reuse-last");
+
       const startHereDoc = docsStore.readPage("showcase/start-here");
       expect(startHereDoc?.title).toBe("Start Here");
       expect(startHereDoc?.body).toContain("5-minute tour");
@@ -74,11 +78,16 @@ describe("demo workspace", () => {
     try {
       const scheduleStore = createScheduleStore(db);
       const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Demo follow-up prompt");
+      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday bridge review");
       expect(followUp).toBeDefined();
+      expect(reviewSchedule).toBeDefined();
 
       scheduleStore.updateSchedule(followUp!.id, {
         enabled: true,
         runAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      });
+      scheduleStore.updateSchedule(reviewSchedule!.id, {
+        sessionMode: "new",
       });
     } finally {
       db.close();
@@ -91,8 +100,10 @@ describe("demo workspace", () => {
     try {
       const scheduleStore = createScheduleStore(refreshedDb);
       const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Demo follow-up prompt");
+      const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday bridge review");
       expect(followUp?.enabled).toBe(true);
       expect(new Date(followUp!.runAt!).getTime()).toBeGreaterThan(Date.now());
+      expect(reviewSchedule?.sessionMode).toBe("reuse-last");
     } finally {
       refreshedDb.close();
     }
