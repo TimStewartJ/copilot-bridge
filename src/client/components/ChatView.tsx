@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
 import { getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
@@ -179,6 +180,7 @@ export default function ChatView({
   const invalidateHistoryRefresh = useCallback(() => {
     if (!refreshingHistoryRef.current) return;
     loadRequestIdRef.current += 1;
+    refreshingHistoryRef.current = false;
     setRefreshingHistory(false);
   }, []);
 
@@ -254,6 +256,7 @@ export default function ChatView({
         });
       }
       setLoading(false);
+      refreshingHistoryRef.current = false;
       setRefreshingHistory(false);
       setWarming(false);
       setCreating(false);
@@ -295,8 +298,10 @@ export default function ChatView({
     const loadAndReconnect = ({ background = false }: { background?: boolean } = {}) => {
       const requestId = ++loadRequestIdRef.current;
       if (background) {
+        refreshingHistoryRef.current = true;
         setRefreshingHistory(true);
       } else {
+        refreshingHistoryRef.current = false;
         setLoading(true);
         setRefreshingHistory(false);
         setWarming(false);
@@ -327,6 +332,7 @@ export default function ChatView({
             });
           }
           setLoading(false);
+          refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
 
           // Report time from navigation to messages rendered
@@ -367,6 +373,7 @@ export default function ChatView({
             });
           }
           setLoading(false);
+          refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
         });
 
@@ -424,21 +431,39 @@ export default function ChatView({
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       controller.abort();
+      refreshingHistoryRef.current = false;
       loadAndReconnectRef.current = () => {};
       clearPendingAutoLoad();
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [composerKey, reconnect, sessionId, applyHistory, queryClient, clearPendingAutoLoad]);
 
-  // Reconnect when an external source (e.g. schedule) starts work on this session
+  // Reconnect when an external source starts work on this session
   const prevBusySignalRef = useRef(busySignal);
   useEffect(() => {
-    const prev = prevBusySignalRef.current;
     prevBusySignalRef.current = busySignal;
-    // Skip the initial render and only react to actual changes
-    if (busySignal === prev || !sessionId) return;
-    loadAndReconnectRef.current({ background: true });
-  }, [busySignal, sessionId]);
+  }, [sessionId]);
+  useEffect(() => {
+    const prev = prevBusySignalRef.current;
+    const action = resolveExternalSessionWorkAction({
+      sessionId,
+      previousBusySignal: prev,
+      nextBusySignal: busySignal,
+      isStreaming,
+      pendingOrigin,
+      isRefreshingHistory: refreshingHistory,
+      isLoadingHistory: loading,
+      isLoadingOlderMessages: loadingMore,
+      isCreatingSession: creating,
+    });
+    if (action === "defer") {
+      return;
+    }
+    prevBusySignalRef.current = busySignal;
+    if (action === "reconnect") {
+      loadAndReconnectRef.current({ background: true });
+    }
+  }, [busySignal, creating, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
