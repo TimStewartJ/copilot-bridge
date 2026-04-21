@@ -14,11 +14,15 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 const HEAD_LOG_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "HEAD"];
 const UPSTREAM_ARGS = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"];
-const FETCH_HEAD_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "FETCH_HEAD"];
-const FETCH_REMOTE_ARGS = ["fetch", "--quiet", "--no-tags", "--depth=1", "origin", "refs/heads/main"];
+const REMOTE_LOG_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "origin/main"];
+const FETCH_REMOTE_ARGS = ["fetch", "--quiet", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
 
 function commitOutput(sha: string, shortSha: string, message: string): string {
   return `${sha}\n${shortSha}\n${message}`;
+}
+
+function comparisonOutput(ahead: number, behind: number): string {
+  return `${ahead}\t${behind}`;
 }
 
 function gitArgsKey(args: readonly string[]): string {
@@ -56,21 +60,28 @@ function mockExecFileImplementation(
 
 describe("createBridgeGitRevisionReader", () => {
   it("captures the running commit at reader creation time while returning current local and remote commits", async () => {
+    const runningSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const localSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const remoteSha = "cccccccccccccccccccccccccccccccccccccccc";
     execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaa", "Running bridge commit");
+        return commitOutput(runningSha, "aaaaaaa", "Running bridge commit");
       }
       throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
     });
     mockExecFileImplementation((args) => {
       const key = gitArgsKey(args);
       if (key === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbb", "Latest local commit");
+        return commitOutput(localSha, "bbbbbbb", "Latest local commit");
       }
       if (key === gitArgsKey(UPSTREAM_ARGS)) return "origin/main";
       if (key === gitArgsKey(FETCH_REMOTE_ARGS)) return "";
-      if (key === gitArgsKey(FETCH_HEAD_ARGS)) {
-        return commitOutput("cccccccccccccccccccccccccccccccccccccccc", "ccccccc", "Latest remote commit");
+      if (key === gitArgsKey(REMOTE_LOG_ARGS)) {
+        return commitOutput(remoteSha, "ccccccc", "Latest remote commit");
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        if (args[3] === `${localSha}...${remoteSha}`) return comparisonOutput(0, 1);
+        if (args[3] === `${runningSha}...${localSha}`) return comparisonOutput(0, 1);
       }
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);
     });
@@ -83,41 +94,58 @@ describe("createBridgeGitRevisionReader", () => {
       local: {
         status: "ok",
         ref: "HEAD",
-        sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        sha: localSha,
         shortSha: "bbbbbbb",
         message: "Latest local commit",
       },
       remote: {
         status: "ok",
         ref: "origin/main",
-        sha: "cccccccccccccccccccccccccccccccccccccccc",
+        sha: remoteSha,
         shortSha: "ccccccc",
         message: "Latest remote commit",
       },
       running: {
         status: "ok",
         ref: "HEAD @ server start",
-        sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        sha: runningSha,
         shortSha: "aaaaaaa",
         message: "Running bridge commit",
+      },
+      comparisons: {
+        localVsRemote: {
+          status: "ok",
+          ahead: 0,
+          behind: 1,
+        },
+        runningVsLocal: {
+          status: "ok",
+          ahead: 0,
+          behind: 1,
+        },
       },
     });
   });
 
   it("reports missing upstream configuration explicitly", async () => {
+    const runningSha = "dddddddddddddddddddddddddddddddddddddddd";
+    const localSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     execFileSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (gitArgsKey(args) === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput("dddddddddddddddddddddddddddddddddddddddd", "ddddddd", "Running commit");
+        return commitOutput(runningSha, "ddddddd", "Running commit");
       }
       throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
     });
     mockExecFileImplementation((args) => {
       const key = gitArgsKey(args);
       if (key === gitArgsKey(HEAD_LOG_ARGS)) {
-        return commitOutput("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "eeeeeee", "Local commit");
+        return commitOutput(localSha, "eeeeeee", "Local commit");
       }
       if (key === gitArgsKey(UPSTREAM_ARGS)) {
         return new Error("fatal: no upstream configured");
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count" && args[3] === `${runningSha}...${localSha}`) {
+        return comparisonOutput(0, 1);
       }
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);
     });
@@ -139,6 +167,17 @@ describe("createBridgeGitRevisionReader", () => {
       ref: "upstream",
       error: "fatal: no upstream configured",
     });
+    expect(result.comparisons).toEqual({
+      localVsRemote: {
+        status: "unavailable",
+        error: "fatal: no upstream configured",
+      },
+      runningVsLocal: {
+        status: "ok",
+        ahead: 0,
+        behind: 1,
+      },
+    });
   });
 
   it("reuses a cached remote result until forced to refresh", async () => {
@@ -159,8 +198,11 @@ describe("createBridgeGitRevisionReader", () => {
         fetchCalls += 1;
         return "";
       }
-      if (key === gitArgsKey(FETCH_HEAD_ARGS)) {
+      if (key === gitArgsKey(REMOTE_LOG_ARGS)) {
         return commitOutput("abababababababababababababababababababab", "abababa", "Remote commit");
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return comparisonOutput(0, 1);
       }
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);
     });
