@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createBridgeTools } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
+import { toolFailure } from "../tool-results.js";
 import { createMockSessionManager, createTestApp } from "./helpers.js";
 
 describe("schedule tools", () => {
@@ -209,7 +210,7 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toEqual({ error: "Target session must already be linked to the same task" });
+    expect(result).toEqual(toolFailure("Target session must already be linked to the same task"));
   });
 
   it("rejects schedule_create reuse-target mode when the invoking session is not on the task", async () => {
@@ -244,6 +245,6 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toEqual({ error: "Target session must already be linked to the same task" });
+    expect(result).toEqual(toolFailure("Target session must already be linked to the same task"));
   });
 });

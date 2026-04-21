@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { BrowserTarget } from "./agent-browser.js";
 import { createPersistentCloneBrowserTarget, destroyPersistentCloneBrowserTarget, getBridgeBrowserTarget, safeRecordBrowserSpan } from "./agent-browser.js";
+import { err, ok, type ErrorResult, type OkResult } from "./tool-results.js";
 
 export type BrowserSessionMode = "persistent" | "isolated";
 
@@ -22,6 +23,8 @@ interface BrowserSessionStoreOptions {
   telemetryStore?: TelemetryStore;
   idleTimeoutMs?: number;
 }
+
+type BrowserSessionUseResult<T> = (OkResult<T> & { record: BrowserSessionRecord }) | ErrorResult;
 
 export class BrowserSessionStore {
   private readonly copilotHome?: string;
@@ -89,35 +92,32 @@ export class BrowserSessionStore {
     id: string,
     ownerSessionId: string,
     fn: (record: BrowserSessionRecord) => Promise<T>,
-  ): Promise<
-    | { ok: true; value: T; record: BrowserSessionRecord }
-    | { ok: false; error: string }
-  > {
+  ): Promise<BrowserSessionUseResult<T>> {
     const record = this.sessions.get(id);
-    if (!record) return { ok: false, error: `Browser session not found: ${id}` };
+    if (!record) return err(`Browser session not found: ${id}`);
     if (record.ownerSessionId !== ownerSessionId) {
-      return { ok: false, error: "Browser session belongs to a different Copilot session" };
+      return err("Browser session belongs to a different Copilot session");
     }
     record.activeCount += 1;
     record.lastUsedAt = Date.now();
     try {
       const value = await fn({ ...record });
       record.lastUsedAt = Date.now();
-      return { ok: true, value, record: { ...record } };
+      return { ...ok(value), record: { ...record } };
     } finally {
       record.activeCount = Math.max(0, record.activeCount - 1);
       record.lastUsedAt = Date.now();
     }
   }
 
-  async closeSession(id: string, ownerSessionId: string, force = false): Promise<{ ok: true } | { ok: false; error: string }> {
+  async closeSession(id: string, ownerSessionId: string, force = false): Promise<{ ok: true } | ErrorResult> {
     const record = this.sessions.get(id);
-    if (!record) return { ok: false, error: `Browser session not found: ${id}` };
+    if (!record) return err(`Browser session not found: ${id}`);
     if (record.ownerSessionId !== ownerSessionId) {
-      return { ok: false, error: "Browser session belongs to a different Copilot session" };
+      return err("Browser session belongs to a different Copilot session");
     }
     if (record.activeCount > 0 && !force) {
-      return { ok: false, error: "Browser session is busy" };
+      return err("Browser session is busy");
     }
     await this.disposeRecord(record);
     return { ok: true };

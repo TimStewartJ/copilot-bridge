@@ -4,6 +4,7 @@ import { openMemoryDatabase } from "../db.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { toolFailure } from "../tool-results.js";
 
 type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
@@ -231,12 +232,11 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation) as {
-      success: boolean;
-      error: string;
-    };
+    } satisfies ToolInvocation) as any;
 
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Git pull failed — likely due to merge conflicts or network issues.");
+    expect(result.textResultForLlm).toContain("pull failed");
     expect(
       writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
     ).toBe(true);
@@ -275,12 +275,11 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation) as {
-      success: boolean;
-      error: string;
-    };
+    } satisfies ToolInvocation) as any;
 
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Git pull failed — likely due to merge conflicts or network issues.");
+    expect(result.textResultForLlm).toContain("pull failed");
     expect(
       writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
     ).toBe(false);
@@ -364,5 +363,25 @@ describe("self_update", () => {
     expect(
       unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
     ).toBe(false);
+  });
+
+  it("normalizes direct restart-pending failures", async () => {
+    existsSyncOverrideMock.mockImplementation((path) => {
+      if (isDataFilePath(String(path), "restart.signal")) return true;
+      return undefined;
+    });
+
+    const mod = await loadSessionManagerModule();
+    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    if (!tool) throw new Error("self_update tool not found");
+
+    await expect(tool.handler({}, {
+      sessionId: "session-1",
+      toolCallId: "tool-1",
+      toolName: "self_update",
+      arguments: {},
+    } satisfies ToolInvocation)).resolves.toEqual(
+      toolFailure("A restart is already pending. Wait for it to complete before updating."),
+    );
   });
 });

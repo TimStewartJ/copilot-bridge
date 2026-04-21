@@ -15,6 +15,7 @@ import { triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
 import { config } from "./config.js";
+import { toolFailure } from "./tool-results.js";
 import type { AppContext } from "./app-context.js";
 import type express from "express";
 
@@ -26,6 +27,8 @@ const SIGNAL_FILE= join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
+const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
+const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 
 function isMissingOptionalStagingModule(error: unknown, specifier: string): boolean {
   if (!error || typeof error !== "object") return false;
@@ -499,6 +502,56 @@ function run(cmd: string, cwd: string): { ok: boolean; output: string } {
   }
 }
 
+function normalizeFailureText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function truncateFailureText(text: string | undefined, maxChars: number): string | undefined {
+  const normalized = normalizeFailureText(text);
+  if (!normalized) return undefined;
+  return normalized.length <= maxChars ? normalized : `…${normalized.slice(-maxChars)}`;
+}
+
+function joinFailureSections(...sections: Array<string | undefined>): string | undefined {
+  const present = sections
+    .map((section) => normalizeFailureText(section))
+    .filter((section): section is string => Boolean(section));
+  return present.length > 0 ? present.join("\n\n") : undefined;
+}
+
+function stagingFailure(
+  summary: string,
+  detail: string,
+  options: { sessionLog?: string; toolTelemetry?: Record<string, unknown> } = {},
+) {
+  return toolFailure(summary, {
+    detail,
+    sessionLog: options.sessionLog ?? detail,
+    toolTelemetry: options.toolTelemetry,
+  });
+}
+
+function commandFailure(
+  summary: string,
+  detail: string,
+  command: string,
+  cwd: string,
+  output: string,
+  toolTelemetry: Record<string, unknown> = {},
+) {
+  const combinedDetail = joinFailureSections(detail, truncateFailureText(output, FAILURE_DETAIL_OUTPUT_LIMIT)) ?? detail;
+  return stagingFailure(summary, combinedDetail, {
+    sessionLog: joinFailureSections(
+      detail,
+      `Command: ${command}`,
+      `Working directory: ${cwd}`,
+      truncateFailureText(output, FAILURE_SESSION_LOG_OUTPUT_LIMIT),
+    ),
+    toolTelemetry: { command, cwd, ...toolTelemetry },
+  });
+}
+
 function listStagingBranchPrefixes(): Set<string> | null {
   const branchList = run('git branch --format="%(refname:short)" --list "staging/*"', PRODUCTION_ROOT);
   if (!branchList.ok) {
@@ -713,14 +766,28 @@ export const STAGING_TOOLS = [
       // Create branch from current HEAD
       const branchResult = run(`git branch "${branch}"`, PRODUCTION_ROOT);
       if (!branchResult.ok) {
-        return { success: false, error: `Failed to create branch ${branch}: ${branchResult.output}` };
+        return commandFailure(
+          "Failed to create staging branch.",
+          `Failed to create branch ${branch} for a new staging worktree.`,
+          `git branch "${branch}"`,
+          PRODUCTION_ROOT,
+          branchResult.output,
+          { branch, stagingDir },
+        );
       }
 
       // Create worktree
       const wtResult = run(`git worktree add "${stagingDir}" "${branch}"`, PRODUCTION_ROOT);
       if (!wtResult.ok) {
         run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
-        return { success: false, error: `Failed to create worktree: ${wtResult.output}` };
+        return commandFailure(
+          "Failed to create staging worktree.",
+          `Failed to create worktree ${stagingDir} from branch ${branch}.`,
+          `git worktree add "${stagingDir}" "${branch}"`,
+          PRODUCTION_ROOT,
+          wtResult.output,
+          { branch, stagingDir },
+        );
       }
 
       // Ensure node_modules is ignored in the staging worktree (prevents accidental git add)
@@ -765,7 +832,14 @@ export const STAGING_TOOLS = [
       const { stagingDir } = args;
 
       if (!existsSync(stagingDir)) {
-        return { success: false, error: `Staging directory not found: ${stagingDir}. Call staging_init first.` };
+        return stagingFailure(
+          "Staging directory not found.",
+          `Staging directory not found: ${stagingDir}. Call staging_init first.`,
+          {
+            sessionLog: `Missing staging directory: ${stagingDir}`,
+            toolTelemetry: { stagingDir },
+          },
+        );
       }
 
       const prefix = basename(stagingDir);
@@ -784,7 +858,14 @@ export const STAGING_TOOLS = [
       // Run tests before building
       const testResult = run("npx vitest run --coverage", stagingDir);
       if (!testResult.ok) {
-        return { success: false, error: `Tests failed:\n${testResult.output.slice(-500)}` };
+        return commandFailure(
+          "Staging preview tests failed.",
+          "The staged changes did not pass the preview test run.",
+          "npx vitest run --coverage",
+          stagingDir,
+          testResult.output,
+          { stagingDir },
+        );
       }
 
       // Build the client with the staging base path
@@ -793,7 +874,14 @@ export const STAGING_TOOLS = [
         stagingDir,
       );
       if (!buildResult.ok) {
-        return { success: false, error: `Vite build failed:\n${buildResult.output.slice(-500)}` };
+        return commandFailure(
+          "Staging preview build failed.",
+          `Vite could not build the staging preview for ${basePath}.`,
+          `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
+          stagingDir,
+          buildResult.output,
+          { stagingDir, previewPath: basePath, outDir },
+        );
       }
 
       // Register the preview for Express to serve
@@ -861,11 +949,22 @@ export const STAGING_TOOLS = [
       const { stagingDir, message } = args;
 
       if (!existsSync(stagingDir)) {
-        return { success: false, error: `Staging directory not found: ${stagingDir}. Call staging_init first.` };
+        return stagingFailure(
+          "Staging directory not found.",
+          `Staging directory not found: ${stagingDir}. Call staging_init first.`,
+          {
+            sessionLog: `Missing staging directory: ${stagingDir}`,
+            toolTelemetry: { stagingDir },
+          },
+        );
       }
 
       if (existsSync(SIGNAL_FILE)) {
-        return { success: false, error: "A restart is already pending. Wait for it to complete before deploying." };
+        return stagingFailure(
+          "A restart is already pending.",
+          "A restart is already pending. Wait for it to complete before deploying.",
+          { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
+        );
       }
 
       const prefix = basename(stagingDir);
@@ -890,7 +989,14 @@ export const STAGING_TOOLS = [
           );
           const commitResult = run(`git commit -F "${msgFile}"`, stagingDir);
           if (!commitResult.ok) {
-            return { success: false, error: `Commit failed: ${commitResult.output}` };
+            return commandFailure(
+              "Failed to commit staged changes.",
+              "Failed to create the staging deploy commit. Resolve the git issue and retry.",
+              `git commit -F "${msgFile}"`,
+              stagingDir,
+              commitResult.output,
+              { stagingDir, branch },
+            );
           }
         } finally {
           try { unlinkSync(msgFile); } catch {}
@@ -903,8 +1009,30 @@ export const STAGING_TOOLS = [
 
       // Verify there are commits to merge
       const aheadCheck = run(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
-      if (!aheadCheck.ok || !aheadCheck.output.trim()) {
-        return { success: false, error: "Nothing to deploy — staging branch has no commits ahead of production." };
+      if (!aheadCheck.ok) {
+        return commandFailure(
+          "Failed to compare staging changes with production.",
+          `Failed to verify whether ${branch} is ahead of ${prodBranch}.`,
+          `git log ${prodBranch}..${branch} --oneline`,
+          PRODUCTION_ROOT,
+          aheadCheck.output,
+          { stagingDir, branch, prodBranch },
+        );
+      }
+      if (!aheadCheck.output.trim()) {
+        return stagingFailure(
+          "Nothing to deploy from this staging worktree.",
+          `Nothing to deploy — ${branch} has no commits ahead of ${prodBranch}.`,
+          {
+            sessionLog: joinFailureSections(
+              `Nothing to deploy — ${branch} has no commits ahead of ${prodBranch}.`,
+              `Command: git log ${prodBranch}..${branch} --oneline`,
+              `Working directory: ${PRODUCTION_ROOT}`,
+              "(no commits returned)",
+            ),
+            toolTelemetry: { stagingDir, branch, prodBranch },
+          },
+        );
       }
 
       // Stash any uncommitted changes so they don't block pull/push
@@ -934,10 +1062,9 @@ export const STAGING_TOOLS = [
         run("git rebase --abort", stagingDir);
         unstashProduction();
         log(`Staging rebase failed — manual conflict resolution needed`);
-        return {
-          success: false,
-          error:
-            `Staging branch has conflicts with the latest production code. ` +
+        return commandFailure(
+          "Staging branch conflicts with production.",
+          `Staging branch has conflicts with the latest production code. ` +
             `The rebase has been aborted and your staging worktree is intact.\n\n` +
             `To resolve (all commands run in the staging directory ${stagingDir}):\n` +
             `1. git rebase ${prodBranch}\n` +
@@ -945,9 +1072,12 @@ export const STAGING_TOOLS = [
             `3. git add <resolved-files>\n` +
             `4. git rebase --continue\n` +
             `5. Repeat steps 2-4 if there are more conflicts\n` +
-            `6. Call staging_deploy again — it will skip the commit and proceed to merge\n\n` +
-            rebaseResult.output.slice(-500),
-        };
+            `6. Call staging_deploy again — it will skip the commit and proceed to merge`,
+          `git rebase ${prodBranch}`,
+          stagingDir,
+          rebaseResult.output,
+          { stagingDir, branch, prodBranch },
+        );
       }
       log("Staging branch rebased onto production");
 
@@ -965,21 +1095,22 @@ export const STAGING_TOOLS = [
             : `Using preserved pre-deploy SHA: ${rollbackCheckpoint.sha}`,
         );
       }
-
       // Merge into production (should be fast-forward after rebase)
       const mergeResult = run(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
       if (!mergeResult.ok) {
         run("git merge --abort", PRODUCTION_ROOT);
         unstashProduction();
         removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
-        return {
-          success: false,
-          error:
-            `Merge failed after rebase (unexpected). The merge has been aborted.\n` +
+        return commandFailure(
+          "Merge into production failed after rebase.",
+          `Merge failed after rebase (unexpected). The merge has been aborted.\n` +
             `Your staging worktree is still intact. Try running 'git rebase ${prodBranch}' ` +
-            `in the staging directory to resolve conflicts, then call staging_deploy again.\n\n` +
-            mergeResult.output.slice(-500),
-        };
+            `in the staging directory to resolve conflicts, then call staging_deploy again.`,
+          `git merge "${branch}" --no-edit`,
+          PRODUCTION_ROOT,
+          mergeResult.output,
+          { stagingDir, branch, prodBranch },
+        );
       }
 
       const newHead = run("git rev-parse --short HEAD", PRODUCTION_ROOT);

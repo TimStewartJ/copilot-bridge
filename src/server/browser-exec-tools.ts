@@ -5,8 +5,9 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserLane } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
-import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName } from "./browser-automation.js";
+import { getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
+import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
 
 type BrowserExecLane = "auto" | "primary" | "clone";
 type BrowserExecResolvedLane = "primary" | "clone";
@@ -26,26 +27,61 @@ const MUTATING_COMMANDS = new Set<BrowserAutomationCommandName>([
   "press",
 ]);
 
-function isToolErrorResult(value: unknown): value is { error: string } {
-  return typeof value === "object" && value !== null && "error" in value;
+const AGENT_BROWSER_INSTALL_GUIDANCE =
+  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
+
+function truncateBrowserFailureText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  return trimmed ? trimmed.slice(0, 200) : undefined;
 }
 
-export function normalizeBrowserExecInput(args: any): BrowserExecNormalizedInput | { error: string } {
+function formatBrowserStepTimeline(steps: BrowserAutomationStepResult[]): string | undefined {
+  if (steps.length === 0) return undefined;
+  return steps.map((step) => {
+    const output = truncateBrowserFailureText(step.output);
+    return `${step.index + 1}. ${step.command} ${step.ok ? "ok" : "failed"}${output ? ` — ${output}` : ""}`;
+  }).join("\n");
+}
+
+function browserExecStepFailure(
+  failure: BrowserAutomationRunFailure,
+  lane: BrowserExecResolvedLane,
+) {
+  const stepOutput = truncateBrowserFailureText(failure.failedStep.output);
+  const detail = joinFailureSections(
+    failure.error,
+    stepOutput && stepOutput !== failure.error ? stepOutput : undefined,
+  ) ?? failure.error;
+  return toolFailureWithContext(failure.error, {
+    lane,
+    failedStep: failure.failedStep,
+    steps: failure.steps,
+  }, {
+    detail,
+    sessionLog: joinFailureSections(
+      `Lane: ${lane}`,
+      `Failed step: ${failure.failedStep.index + 1} ${failure.failedStep.command}`,
+      formatBrowserStepTimeline(failure.steps),
+    ),
+  });
+}
+
+export function normalizeBrowserExecInput(args: any): Result<BrowserExecNormalizedInput> {
   const lane = args.lane ?? "auto";
   if (lane !== "auto" && lane !== "primary" && lane !== "clone") {
-    return { error: "lane must be one of: auto, primary, clone" };
+    return err("lane must be one of: auto, primary, clone");
   }
 
   const commands = normalizeBrowserAutomationCommands(args.commands);
-  if ("error" in commands) return commands;
+  if (!commands.ok) return err(commands.error);
   const capture = normalizeBrowserAutomationCapture(args.capture);
-  if (capture && "error" in capture) return capture;
+  if (!capture.ok) return err(capture.error);
 
-  return {
+  return ok({
     lane,
-    commands,
-    capture,
-  };
+    commands: commands.value,
+    capture: capture.value,
+  });
 }
 
 export function resolveBrowserExecLane(
@@ -116,14 +152,15 @@ export function createBrowserExecTools(ctx: AppContext) {
       },
       handler: async (args: any) => {
         const normalized = normalizeBrowserExecInput(args);
-        if (isToolErrorResult(normalized)) return normalized;
+        if (!normalized.ok) return toolFailure(normalized.error);
+        const normalizedInput = normalized.value;
 
         const browserOpId = randomUUID();
         const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome);
         const toolStart = Date.now();
-        const requestedLane = normalized.lane;
-        const resolvedLane = resolveBrowserExecLane(normalized.lane, normalized.commands);
-        const stepNames = normalized.commands.map((command) => command.command).join(",");
+        const requestedLane = normalizedInput.lane;
+        const resolvedLane = resolveBrowserExecLane(normalizedInput.lane, normalizedInput.commands);
+        const stepNames = normalizedInput.commands.map((command) => command.command).join(",");
         let success = false;
         let laneType: BrowserExecResolvedLane = resolvedLane;
         let browserSession = primaryTarget.sessionName;
@@ -139,10 +176,10 @@ export function createBrowserExecTools(ctx: AppContext) {
             requestedLane,
             resolvedLane,
           });
-          return {
-            error:
-              "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install",
-          };
+          return toolFailure("agent-browser is not installed.", {
+            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
+            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
+          });
         }
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
@@ -165,25 +202,20 @@ export function createBrowserExecTools(ctx: AppContext) {
               resolvedLane,
               browserLane: lane.laneType,
               cloneId: lane.cloneId,
-              stepCount: normalized.commands.length,
+              stepCount: normalizedInput.commands.length,
               stepNames,
             },
           };
 
-          const execution = await runBrowserAutomationCommands(normalized.commands, commandOptions);
-          if ("error" in execution) {
-            return {
-              error: execution.error,
-              lane: lane.laneType,
-              failedStep: execution.failedStep,
-              steps: execution.steps,
-            };
+          const execution = await runBrowserAutomationCommands(normalizedInput.commands, commandOptions);
+          if (!execution.ok) {
+            return browserExecStepFailure(execution.error, lane.laneType);
           }
-          const finalState = await captureFinalBrowserState(normalized.capture, commandOptions);
+          const finalState = await captureFinalBrowserState(normalizedInput.capture, commandOptions);
           success = true;
           return {
             lane: lane.laneType,
-            steps: execution.steps,
+            steps: execution.value.steps,
             finalState,
           };
         };
@@ -197,7 +229,7 @@ export function createBrowserExecTools(ctx: AppContext) {
                 toolName: "browser_exec",
                 requestedLane,
                 resolvedLane,
-                stepCount: normalized.commands.length,
+                stepCount: normalizedInput.commands.length,
                 stepNames,
               }, runFlow);
             } catch (err) {
@@ -219,11 +251,15 @@ export function createBrowserExecTools(ctx: AppContext) {
             toolName: "browser_exec",
             requestedLane,
             resolvedLane,
-            stepCount: normalized.commands.length,
+            stepCount: normalizedInput.commands.length,
             stepNames,
           }, runFlow);
         } catch (err: any) {
-          return { error: `Browser exec failed: ${String(err).slice(0, 200)}` };
+          const detail = `Browser exec failed: ${String(err).slice(0, 200)}`;
+          return toolFailure("Browser exec failed.", {
+            detail,
+            sessionLog: detail,
+          });
         } finally {
           const duration = Date.now() - toolStart;
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_exec", duration, {
@@ -233,7 +269,7 @@ export function createBrowserExecTools(ctx: AppContext) {
             requestedLane,
             resolvedLane,
             browserLane: laneType,
-            stepCount: normalized.commands.length,
+            stepCount: normalizedInput.commands.length,
             attemptedClone,
             fallbackToPrimary,
           });
@@ -244,7 +280,7 @@ export function createBrowserExecTools(ctx: AppContext) {
               requestedLane,
               resolvedLane,
               browserLane: laneType,
-              stepCount: normalized.commands.length,
+              stepCount: normalizedInput.commands.length,
               attemptedClone,
               fallbackToPrimary,
             });

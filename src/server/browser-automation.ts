@@ -1,5 +1,6 @@
 import type { BrowserCommand } from "./agent-browser.js";
 import { ab } from "./agent-browser.js";
+import { err, ok, type Result } from "./tool-results.js";
 
 export type BrowserAutomationCommandName =
   | "open"
@@ -40,6 +41,16 @@ export interface BrowserAutomationStepResult {
   timeoutMs?: number;
   ok: boolean;
   output: string;
+}
+
+export interface BrowserAutomationRunSuccess {
+  steps: BrowserAutomationStepResult[];
+}
+
+export interface BrowserAutomationRunFailure {
+  error: string;
+  failedStep: BrowserAutomationStepResult;
+  steps: BrowserAutomationStepResult[];
 }
 
 function isRef(value: string): boolean {
@@ -128,19 +139,19 @@ const REF_SECOND_ARG_COMMANDS = new Set<BrowserAutomationCommandName>(["get"]);
  */
 const REF_FIRST_ARG_OPTIONAL_COMMANDS = new Set<BrowserAutomationCommandName>(["wait"]);
 
-export function normalizeBrowserAutomationCommands(rawCommands: unknown): BrowserAutomationCommand[] | { error: string } {
+export function normalizeBrowserAutomationCommands(rawCommands: unknown): Result<BrowserAutomationCommand[]> {
   if (!Array.isArray(rawCommands) || rawCommands.length === 0) {
-    return { error: "commands must be a non-empty array" };
+    return err("commands must be a non-empty array");
   }
 
   const commands: BrowserAutomationCommand[] = [];
   for (const [index, rawCommand] of rawCommands.entries()) {
     if (!rawCommand || typeof rawCommand !== "object") {
-      return { error: `commands[${index}] must be an object` };
+      return err(`commands[${index}] must be an object`);
     }
     const command = rawCommand as BrowserAutomationCommandInput;
     if (typeof command.command !== "string") {
-      return { error: `commands[${index}].command must be a string` };
+      return err(`commands[${index}].command must be a string`);
     }
 
     // Auto-correct ref arguments before validation (only for string args)
@@ -158,34 +169,34 @@ export function normalizeBrowserAutomationCommands(rawCommands: unknown): Browse
 
     const corrected = { ...command, args };
     const validationError = validateCommand(corrected, index);
-    if (validationError) return { error: validationError };
+    if (validationError) return err(validationError);
     commands.push({
       command: corrected.command,
       args: corrected.args,
       timeoutMs: corrected.timeoutMs,
     });
   }
-  return commands;
+  return ok(commands);
 }
 
-export function normalizeBrowserAutomationCapture(rawCapture: unknown): BrowserAutomationCaptureInput | { error: string } | undefined {
-  if (rawCapture === undefined) return undefined;
+export function normalizeBrowserAutomationCapture(rawCapture: unknown): Result<BrowserAutomationCaptureInput | undefined> {
+  if (rawCapture === undefined) return ok(undefined);
   if (!rawCapture || typeof rawCapture !== "object") {
-    return { error: "capture must be an object" };
+    return err("capture must be an object");
   }
   const capture = rawCapture as BrowserAutomationCaptureInput;
   for (const key of ["url", "title", "snapshot"] as const) {
     if (capture[key] !== undefined && typeof capture[key] !== "boolean") {
-      return { error: `capture.${key} must be a boolean` };
+      return err(`capture.${key} must be a boolean`);
     }
   }
   if (capture.selector !== undefined && typeof capture.selector !== "string") {
-    return { error: "capture.selector must be a string" };
+    return err("capture.selector must be a string");
   }
   if (capture.selector && capture.snapshot !== true) {
-    return { error: "capture.selector requires capture.snapshot to be true" };
+    return err("capture.selector requires capture.snapshot to be true");
   }
-  return capture;
+  return ok(capture);
 }
 
 export function toBrowserCommand(input: BrowserAutomationCommand): BrowserCommand {
@@ -195,10 +206,7 @@ export function toBrowserCommand(input: BrowserAutomationCommand): BrowserComman
 export async function runBrowserAutomationCommands(
   commands: BrowserAutomationCommand[],
   commandOptions: Parameters<typeof ab>[2],
-): Promise<
-  | { steps: BrowserAutomationStepResult[]; failedStep?: undefined; error?: undefined }
-  | { steps: BrowserAutomationStepResult[]; failedStep: BrowserAutomationStepResult; error: string }
-> {
+): Promise<Result<BrowserAutomationRunSuccess, BrowserAutomationRunFailure>> {
   const steps: BrowserAutomationStepResult[] = [];
   for (const [index, command] of commands.entries()) {
     const result = await ab(toBrowserCommand(command), command.timeoutMs, commandOptions);
@@ -212,14 +220,14 @@ export async function runBrowserAutomationCommands(
     };
     steps.push(stepResult);
     if (!result.ok) {
-      return {
+      return err({
         error: `Command ${index + 1} failed: ${command.command}`,
         failedStep: stepResult,
         steps,
-      };
+      });
     }
   }
-  return { steps };
+  return ok({ steps });
 }
 
 export async function captureFinalBrowserState(

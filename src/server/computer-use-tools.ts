@@ -11,6 +11,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import { ab, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
+import { toolFailure } from "./tool-results.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COMPUTER_USE_ENABLED = process.env.COMPUTER_USE?.toLowerCase() === "true";
@@ -36,6 +37,9 @@ let computerUseQueue: Promise<void> = Promise.resolve();
 
 type DesktopPermission = "accessibility" | "screen";
 
+const AGENT_BROWSER_INSTALL_GUIDANCE =
+  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
+
 function safeUrlHost(url: string): string | undefined {
   try {
     return new URL(url).host;
@@ -60,6 +64,22 @@ function getPermissionError(mod: ComputerModule, permissions: readonly DesktopPe
   if (missing.length === 0) return null;
   const labels = missing.map((permission) => permission === "screen" ? "Screen Recording" : "Accessibility");
   return `Missing desktop permissions: ${labels.join(", ")}. Grant them to the bridge process or terminal in OS settings, then try again.`;
+}
+
+function unexpectedComputerToolFailure(summary: string, err: unknown) {
+  const detail = `${summary}: ${err instanceof Error ? err.message : String(err)}`.slice(0, 240);
+  return toolFailure(summary, {
+    detail,
+    sessionLog: detail,
+  });
+}
+
+async function withComputerToolResult<T>(summary: string, fn: () => Promise<T>) {
+  try {
+    return await withComputerUseLock(fn);
+  } catch (err) {
+    return unexpectedComputerToolFailure(summary, err);
+  }
 }
 
 async function withComputerUseLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -130,15 +150,15 @@ export function createComputerUseTools(ctx: AppContext) {
         },
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Screenshot failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["screen"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           const display = mod.display();
           const cropValuesProvided = [args.x, args.y, args.width, args.height].some((value) => value !== undefined && value !== null);
           const hasCrop = args.x != null && args.y != null && args.width != null && args.height != null;
           if (cropValuesProvided && !hasCrop) {
-            return { error: "Provide all of x, y, width, and height to crop a screenshot" };
+            return toolFailure("Provide all of x, y, width, and height to crop a screenshot");
           }
           if (hasCrop) {
             if (
@@ -147,17 +167,16 @@ export function createComputerUseTools(ctx: AppContext) {
               !isNonNegativeInteger(args.width) ||
               !isNonNegativeInteger(args.height)
             ) {
-              return { error: "x, y, width, and height must be non-negative integers" };
+              return toolFailure("x, y, width, and height must be non-negative integers");
             }
             if (args.width === 0 || args.height === 0) {
-              return { error: "width and height must be greater than zero" };
+              return toolFailure("width and height must be greater than zero");
             }
             if ((args.x + args.width) > display.width || (args.y + args.height) > display.height) {
-              return {
-                error:
-                  `Crop region (${args.x}, ${args.y}, ${args.width}, ${args.height}) ` +
-                  `is outside display bounds ${display.width}x${display.height}`,
-              };
+              return toolFailure(
+                `Crop region (${args.x}, ${args.y}, ${args.width}, ${args.height}) ` +
+                `is outside display bounds ${display.width}x${display.height}`,
+              );
             }
           }
           const buf = mod.screenshot(
@@ -166,7 +185,7 @@ export function createComputerUseTools(ctx: AppContext) {
             hasCrop ? args.width : 0, hasCrop ? args.height : 0,
             -1, // PNG
           );
-          if (!buf) return { error: "Screenshot failed" };
+          if (!buf) return toolFailure("Screenshot failed");
           return {
             type: "image",
             mimeType: "image/png",
@@ -195,10 +214,10 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["x", "y"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Click failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           const button = args.button ?? "left";
           if (button === "double") {
             mod.click("", [], args.x, args.y, 0);
@@ -224,10 +243,10 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["text"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Typing failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           mod.type(args.text);
           return { success: true, message: `Typed ${args.text.length} character(s)` };
         });
@@ -247,10 +266,10 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["combo"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Key press failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           mod.key(args.combo);
           return { success: true, message: `Pressed ${args.combo}` };
         });
@@ -261,10 +280,10 @@ export function createComputerUseTools(ctx: AppContext) {
       description: "Get the current mouse cursor position on screen.",
       parameters: { type: "object" as const, properties: {} },
       handler: async () => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Failed to read cursor position", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           const pos = mod.cursorPosition("");
           return { x: pos.x, y: pos.y };
         });
@@ -287,10 +306,10 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["x", "y"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Scroll failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           const deltaX = args.scrollX ?? 0;
           const deltaY = args.scrollY ?? 3;
           mod.scroll("", [], args.x, args.y, deltaX, deltaY);
@@ -310,10 +329,10 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["x", "y"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Move failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           mod.move("", [], args.x, args.y);
           return { success: true, message: `Moved cursor to (${args.x}, ${args.y})` };
         });
@@ -333,10 +352,10 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["fromX", "fromY", "toX", "toY"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Drag failed", async () => {
           const mod = getComputerModule();
           const permissionError = getPermissionError(mod, ["accessibility"]);
-          if (permissionError) return { error: permissionError };
+          if (permissionError) return toolFailure(permissionError);
           mod.drag("", [], args.fromX, args.fromY, args.toX, args.toY);
           return { success: true, message: `Dragged from (${args.fromX}, ${args.fromY}) to (${args.toX}, ${args.toY})` };
         });
@@ -347,7 +366,7 @@ export function createComputerUseTools(ctx: AppContext) {
       description: "Read the current contents of the system clipboard.",
       parameters: { type: "object" as const, properties: {} },
       handler: async () => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Failed to read clipboard", async () => {
           const mod = getComputerModule();
           const text = mod.getClipboard();
           return { text };
@@ -365,7 +384,7 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["text"],
       },
       handler: async (args: any) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Failed to write clipboard", async () => {
           const mod = getComputerModule();
           mod.setClipboard(args.text);
           return { success: true, message: `Copied ${args.text.length} character(s) to clipboard` };
@@ -377,7 +396,7 @@ export function createComputerUseTools(ctx: AppContext) {
       description: "Get the current display dimensions and resolution.",
       parameters: { type: "object" as const, properties: {} },
       handler: async () => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Failed to read display info", async () => {
           const mod = getComputerModule();
           return mod.display();
         });
@@ -400,11 +419,14 @@ export function createComputerUseTools(ctx: AppContext) {
         required: ["url"],
       },
       handler: async (args: any, invocation) => {
-        return withComputerUseLock(async () => {
+        return withComputerToolResult("Failed to open browser", async () => {
           const browserOpId = randomUUID();
           const check = await isAgentBrowserInstalled();
           if (!check) {
-            return { error: "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install" };
+            return toolFailure("agent-browser is not installed.", {
+              detail: AGENT_BROWSER_INSTALL_GUIDANCE,
+              sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
+            });
           }
           const urlHost = safeUrlHost(args.url);
 
@@ -416,7 +438,11 @@ export function createComputerUseTools(ctx: AppContext) {
               urlHost ? `computer-use: ${urlHost}` : "computer-use",
             );
           } catch (err: any) {
-            return { error: `Failed to create browser session: ${String(err).slice(0, 200)}` };
+            const detail = `Failed to create browser session: ${String(err).slice(0, 200)}`;
+            return toolFailure("Failed to create browser session.", {
+              detail,
+              sessionLog: detail,
+            });
           }
 
           try {
@@ -431,13 +457,21 @@ export function createComputerUseTools(ctx: AppContext) {
             });
             if (!openResult.ok) {
               await browserSessionStore.closeSession(record.id, invocation.sessionId, true);
-              return { error: `Failed to open URL: ${openResult.output.slice(0, 200)}` };
+              const detail = `Failed to open URL: ${openResult.output.slice(0, 200)}`;
+              return toolFailure("Failed to open URL.", {
+                detail,
+                sessionLog: detail,
+              });
             }
           } catch (err: any) {
             try {
               await browserSessionStore.closeSession(record.id, invocation.sessionId, true);
             } catch {}
-            return { error: `Failed to open URL: ${String(err).slice(0, 200)}` };
+            const detail = `Failed to open URL: ${String(err).slice(0, 200)}`;
+            return toolFailure("Failed to open URL.", {
+              detail,
+              sessionLog: detail,
+            });
           }
 
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.computer_open_browser", 0, {

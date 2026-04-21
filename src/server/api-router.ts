@@ -1575,7 +1575,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           defaultSessionMode: "new",
         },
       );
-      if ("error" in selection) {
+      if (!selection.ok) {
         return res.status(400).json({ error: selection.error });
       }
 
@@ -1587,8 +1587,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         cron: cronExpr,
         runAt,
         timezone,
-        sessionMode: selection.sessionMode,
-        targetSessionId: selection.targetSessionId,
+        sessionMode: selection.value.sessionMode,
+        targetSessionId: selection.value.targetSessionId,
         maxRuns,
         expiresAt,
       });
@@ -1644,12 +1644,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
               defaultTargetSessionId,
             },
           );
-          if ("error" in selection) {
+          if (!selection.ok) {
             return res.status(400).json({ error: selection.error });
           }
-          updates.sessionMode = selection.sessionMode;
-          if (selection.sessionMode === "reuse-target" || req.body.targetSessionId !== undefined) {
-            updates.targetSessionId = selection.targetSessionId;
+          updates.sessionMode = selection.value.sessionMode;
+          if (selection.value.sessionMode === "reuse-target" || req.body.targetSessionId !== undefined) {
+            updates.targetSessionId = selection.value.targetSessionId;
           }
         }
       }
