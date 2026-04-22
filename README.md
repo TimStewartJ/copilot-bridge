@@ -4,6 +4,27 @@ Copilot Bridge is a local, task-centric AI workspace built on the GitHub Copilot
 
 This repo is intentionally personal. The goal is not to build a generic SaaS product, but to shape an AI workspace around how one person actually works and then keep iterating on it.
 
+## Screenshots
+
+![Copilot Bridge dashboard with the seeded Acme launch workspace](assets/readme/dashboard-overview.png)
+
+The seeded demo opens into a fictional Acme launch workspace so the first-run experience already shows the task rail, dashboard, docs, and follow-up workflow working together.
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="assets/readme/task-workspace.png" alt="Task workspace showing notes, todos, schedules, and related context" />
+    </td>
+    <td width="50%">
+      <img src="assets/readme/docs-launch-notes.png" alt="Docs collection showing the seeded launch notes database" />
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Task workspace</strong> — notes, todos, schedules, and linked context stay attached to the work.</td>
+    <td><strong>Docs collection</strong> — markdown pages and database-style collections live in the same workspace.</td>
+  </tr>
+</table>
+
 ## Why It Is Interesting
 
 - **Task-centric instead of chat-centric** - sessions live next to notes, todos, schedules, docs, and linked work.
