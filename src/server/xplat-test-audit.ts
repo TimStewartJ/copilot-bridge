@@ -193,7 +193,7 @@ export function formatCrossPlatformAuditResult(result: CrossPlatformAuditResult)
   ];
 
   for (const violation of result.violations) {
-    const displayPath = relative(result.rootDir, violation.filePath) || violation.filePath;
+    const displayPath = (relative(result.rootDir, violation.filePath) || violation.filePath).replaceAll("\\", "/");
     lines.push(`- [${violation.ruleId}] ${displayPath}:${violation.lineNumber} — ${violation.message}`);
     lines.push(`  ${violation.snippet || "<blank line>"}`);
   }
