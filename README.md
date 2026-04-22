@@ -170,6 +170,47 @@ BRIDGE_TRUST_PROXY=true
 
 That allows the server to learn the externally visible origin from incoming requests and use it for staging preview links when no explicit public base URL is configured.
 
+### Auto-Start on Login / Persistent Service (Linux, optional)
+
+You can run the launcher under a user-level `systemd` service:
+
+```ini
+# ~/.config/systemd/user/copilot-bridge.service
+[Unit]
+Description=Copilot Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/you/src/copilot-bridge
+ExecStart=/path/to/node /home/you/src/copilot-bridge/node_modules/tsx/dist/cli.mjs /home/you/src/copilot-bridge/src/launcher.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Replace `/path/to/node` with the output of `which node`. If you installed Node through `nvm`, `fnm`, or `asdf`, using the full path is usually more reliable than relying on the service `PATH`.
+
+Then enable it:
+
+```bash
+mkdir -p ~/.config/systemd/user
+$EDITOR ~/.config/systemd/user/copilot-bridge.service
+systemctl --user daemon-reload
+systemctl --user enable --now copilot-bridge
+systemctl --user status copilot-bridge
+journalctl --user -u copilot-bridge -f
+```
+
+Because `WorkingDirectory` points at the repo root, the launcher will still load `.env` automatically. If you want the user service to keep running after logout and start on boot, also run:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
 ### Auto-Start on Login (Windows, optional)
 
 You can register a Windows Task Scheduler entry to start the bridge on login:
