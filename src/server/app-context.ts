@@ -40,6 +40,8 @@ export interface AppContext {
   voiceJobManager: VoiceJobManager;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
+  /** Public API mount path used for server-generated links (e.g. "/api" or "/staging/<prefix>/api") */
+  apiBasePath?: string;
   runtimePaths?: RuntimePaths;
   /** Shared launcher log file path when this server was started by the launcher */
   launcherLogPath?: string;

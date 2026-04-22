@@ -131,6 +131,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     eventBusRegistry,
     sessionManager,
     transcriptionService,
+    apiBasePath: "/api",
     ...(runtimePaths ? { runtimePaths } : {}),
     launcherLogPath: undefined,
   };

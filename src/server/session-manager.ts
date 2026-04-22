@@ -7,7 +7,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync
 import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { join, dirname, resolve, basename, sep } from "node:path";
+import { join, dirname, resolve, basename, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
@@ -50,6 +50,7 @@ import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { err, getToolExecutionDisplayText, ok, toolFailure, type Result } from "./tool-results.js";
 import type { RuntimePaths } from "./runtime-paths.js";
+import { publishOutboundAttachment } from "./outbound-attachments.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -85,6 +86,73 @@ function run(cmd: string): { ok: boolean; output: string } {
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
   }
+}
+
+function resolvePublishableAttachmentSourcePath(pathValue: string): string {
+  if (pathValue === "~") return homedir();
+  if (pathValue.startsWith("~/")) return join(homedir(), pathValue.slice(2));
+  return isAbsolute(pathValue) ? pathValue : resolve(REPO_ROOT, pathValue);
+}
+
+function escapeAttachmentMarkdownText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+function encodeAttachmentUrlSegment(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function buildSessionAttachmentUrlPath(apiBasePath: string | undefined, sessionId: string, attachmentId: string): string {
+  const trimmed = apiBasePath?.trim();
+  const normalizedBase = !trimmed
+    ? "/api"
+    : (trimmed.startsWith("/") ? trimmed : `/${trimmed}`).replace(/\/+$/, "");
+  return `${normalizedBase}/sessions/${encodeAttachmentUrlSegment(sessionId)}/attachments/${encodeAttachmentUrlSegment(attachmentId)}`;
+}
+
+function getAttachmentApiBasePath(ctx: AppContext): string {
+  const explicitBasePath = ctx.apiBasePath?.trim();
+  if (explicitBasePath) {
+    return explicitBasePath;
+  }
+  if (ctx.isStaging) {
+    const stagingRootName = ctx.runtimePaths?.dataDir
+      ? basename(dirname(ctx.runtimePaths.dataDir))
+      : basename(REPO_ROOT);
+    const prefix = `${stagingRootName}${ctx.runtimePaths?.demoMode ? "-demo" : ""}`;
+    return `/staging/${prefix}/api`;
+  }
+  return "/api";
+}
+
+function renderPublishedAttachment(
+  apiBasePath: string,
+  sessionId: string,
+  attachment: {
+    attachmentId: string;
+    displayName: string;
+    inline: boolean;
+  },
+): {
+  urlPath: string;
+  linkMarkdown: string;
+  imageMarkdown?: string;
+  recommendedMarkdown: string;
+} {
+  const urlPath = buildSessionAttachmentUrlPath(apiBasePath, sessionId, attachment.attachmentId);
+  const escapedDisplayName = escapeAttachmentMarkdownText(attachment.displayName);
+  const linkMarkdown = `[${escapeAttachmentMarkdownText(`Download ${attachment.displayName}`)}](${urlPath})`;
+  const imageMarkdown = attachment.inline ? `![${escapedDisplayName}](${urlPath})` : undefined;
+  return {
+    urlPath,
+    linkMarkdown,
+    imageMarkdown,
+    recommendedMarkdown: imageMarkdown ?? linkMarkdown,
+  };
 }
 
 function deriveFallbackSessionTitle(sourceText: string): string | undefined {
@@ -667,6 +735,56 @@ export function createBridgeTools(ctx: AppContext) {
 
       storeSessionTitle(ctx.sessionTitles, ctx.eventBusRegistry, ctx.globalBus, sessionId, title);
       return { success: true, sessionId, message: `Session renamed to "${title}"` };
+    },
+  }),
+  defineTool("send_attachment", {
+    description:
+      "Publish a file as an attachment the user can open or download. " +
+      "Use this when the user asks you to send them a file, export, image, report, or other artifact. " +
+      "Provide exactly one of `path` or `content`. When using `path`, absolute paths work best and relative paths resolve from the bridge repository root. " +
+      "After calling this tool, include the returned `markdown` snippet verbatim in your next assistant response so the attachment appears in chat.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or repository-relative path of an existing file to publish." },
+        content: { type: "string", description: "UTF-8 text content to write into a new attachment file." },
+        displayName: { type: "string", description: "Optional filename to show the user. Required when using content." },
+      },
+    },
+    handler: async (args: any, invocation: any) => {
+      if (!invocation.sessionId) return toolFailure("sessionId is required");
+
+      const rawPath = typeof args.path === "string" ? args.path.trim() : "";
+      const content = typeof args.content === "string" ? args.content : undefined;
+      const attachmentApiBasePath = getAttachmentApiBasePath(ctx);
+      const published = publishOutboundAttachment({
+        copilotHome: ctx.copilotHome ?? join(homedir(), ".copilot"),
+        sessionId: invocation.sessionId,
+        apiBasePath: attachmentApiBasePath,
+        ...(rawPath ? { sourcePath: resolvePublishableAttachmentSourcePath(rawPath) } : {}),
+        ...(content !== undefined ? { content } : {}),
+        ...(typeof args.displayName === "string" ? { displayName: args.displayName } : {}),
+      });
+      if (!published.ok) return toolFailure(published.error);
+
+      const attachment = published.value;
+      const rendered = renderPublishedAttachment(attachmentApiBasePath, invocation.sessionId, attachment);
+      const instructions =
+        `Attachment "${attachment.displayName}" is ready. ` +
+        `In your next response, include this markdown exactly:\n\n${rendered.recommendedMarkdown}`;
+      return {
+        success: true,
+        content: instructions,
+        message: `Attachment "${attachment.displayName}" published`,
+        attachmentId: attachment.attachmentId,
+        displayName: attachment.displayName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        url: rendered.urlPath,
+        markdown: rendered.recommendedMarkdown,
+        linkMarkdown: rendered.linkMarkdown,
+        ...(rendered.imageMarkdown ? { imageMarkdown: rendered.imageMarkdown } : {}),
+      };
     },
   }),
   defineTool("self_restart", {

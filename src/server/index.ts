@@ -87,6 +87,7 @@ const defaultContext: AppContext = {
   transcriptionService: createTranscriptionService(),
   voiceJobManager: null as any, // assigned below after construction
   copilotHome,
+  apiBasePath: "/api",
   runtimePaths,
   launcherLogPath: process.env.BRIDGE_LAUNCHER_LOG_PATH,
 };
