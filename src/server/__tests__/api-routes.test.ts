@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { get } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
 import request from "supertest";
 import type { Express } from "express";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { AppContext } from "../app-context.js";
+import { publishOutboundAttachment } from "../outbound-attachments.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE, triggerRestartPending } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
 import { createMockSessionManager, createMockTranscriptionService, createTestApp } from "./helpers.js";
@@ -160,6 +164,121 @@ describe("Status stream", () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
+  });
+});
+
+describe("Attachment routes", () => {
+  const tempDirs: string[] = [];
+  const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId downloads non-inline attachments", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
+    tempDirs.push(copilotHome);
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const published = publishOutboundAttachment({
+      copilotHome,
+      sessionId,
+      content: "hello from bridge",
+      displayName: "note.md",
+    });
+    if (!published.ok) throw new Error(published.error);
+
+    const res = await request(attachmentApp)
+      .get(`/api/sessions/${sessionId}/attachments/${encodeURIComponent(published.value.attachmentId)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.text).toBe("hello from bridge");
+    expect(res.headers["content-disposition"]).toContain("attachment;");
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId serves raster images inline", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
+    tempDirs.push(copilotHome);
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const published = publishOutboundAttachment({
+      copilotHome,
+      sessionId,
+      content: "not-a-real-png",
+      displayName: "chart.png",
+    });
+    if (!published.ok) throw new Error(published.error);
+
+    const res = await request(attachmentApp)
+      .get(`/api/sessions/${sessionId}/attachments/${encodeURIComponent(published.value.attachmentId)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/^image\/png/);
+    expect(res.headers["content-disposition"]).toBeUndefined();
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId serves files from dot-directory copilot homes", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
+    tempDirs.push(parent);
+    const copilotHome = join(parent, ".copilot");
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const published = publishOutboundAttachment({
+      copilotHome,
+      sessionId,
+      content: "hello from dot copilot",
+      displayName: "note.txt",
+    });
+    if (!published.ok) throw new Error(published.error);
+
+    const res = await request(attachmentApp)
+      .get(`/api/sessions/${sessionId}/attachments/${encodeURIComponent(published.value.attachmentId)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.text).toBe("hello from dot copilot");
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId rejects invalid attachment ids", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
+    tempDirs.push(copilotHome);
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+
+    const res = await request(attachmentApp)
+      .get(`/api/sessions/${sessionId}/attachments/..secret.txt`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("invalid");
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId rejects traversal in session ids", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
+    tempDirs.push(copilotHome);
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const victimSessionId = "11111111-1111-1111-1111-111111111111";
+    const published = publishOutboundAttachment({
+      copilotHome,
+      sessionId: victimSessionId,
+      content: "leak",
+      displayName: "secret.txt",
+    });
+    if (!published.ok) throw new Error(published.error);
+
+    const res = await request(attachmentApp)
+      .get(`/api/sessions/x%2F..%2F${victimSessionId}/attachments/secret.txt`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("sessionId");
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId returns 404 for missing attachments", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
+    tempDirs.push(copilotHome);
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+
+    const res = await request(attachmentApp)
+      .get(`/api/sessions/${sessionId}/attachments/missing.txt`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("not found");
   });
 });
 

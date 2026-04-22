@@ -6,6 +6,7 @@ import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
+import { buildOutboundAttachmentUrlPath, publishOutboundAttachment, resolveOutboundAttachment } from "../outbound-attachments.js";
 
 describe("persistAndRouteAttachments", () => {
   const tempDirs: string[] = [];
@@ -215,5 +216,115 @@ describe("persistAndRouteAttachments", () => {
     expect(result![0]).toMatchObject({ type: "file", displayName: "doc.pdf" });
     expect(result![1]).toMatchObject({ type: "file", displayName: "data.csv" });
     expect(result![2]).toMatchObject({ type: "blob", mimeType: "image/jpeg" });
+  });
+});
+
+describe("outbound attachments", () => {
+  const tempDirs: string[] = [];
+  const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+  function outgoingDir(copilotHome: string) {
+    return join(copilotHome, "session-state", sessionId, "files", "outgoing");
+  }
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes an existing file and returns markdown details", () => {
+    const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
+    tempDirs.push(home);
+    const sourceDir = mkdtempSync(join(tmpdir(), "bridge-source-"));
+    tempDirs.push(sourceDir);
+    const sourcePath = join(sourceDir, "report.csv");
+    writeFileSync(sourcePath, "name,count\nalpha,2\n");
+
+    const result = publishOutboundAttachment({
+      copilotHome: home,
+      sessionId,
+      sourcePath,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toMatchObject({
+      attachmentId: "report.csv",
+      displayName: "report.csv",
+      mimeType: "text/csv",
+      urlPath: buildOutboundAttachmentUrlPath(sessionId, "report.csv"),
+      linkMarkdown: `[Download report.csv](${buildOutboundAttachmentUrlPath(sessionId, "report.csv")})`,
+      recommendedMarkdown: `[Download report.csv](${buildOutboundAttachmentUrlPath(sessionId, "report.csv")})`,
+      inline: false,
+    });
+    expect(readFileSync(join(outgoingDir(home), "report.csv"), "utf-8")).toBe("name,count\nalpha,2\n");
+  });
+
+  it("publishes generated text content with a required displayName", () => {
+    const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
+    tempDirs.push(home);
+
+    const result = publishOutboundAttachment({
+      copilotHome: home,
+      sessionId,
+      content: "# Notes\n\nHello there.\n",
+      displayName: "notes.md",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.displayName).toBe("notes.md");
+    expect(readFileSync(join(outgoingDir(home), "notes.md"), "utf-8")).toBe("# Notes\n\nHello there.\n");
+  });
+
+  it("deduplicates outgoing filenames", () => {
+    const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
+    tempDirs.push(home);
+
+    const first = publishOutboundAttachment({
+      copilotHome: home,
+      sessionId,
+      content: "first",
+      displayName: "summary.txt",
+    });
+    const second = publishOutboundAttachment({
+      copilotHome: home,
+      sessionId,
+      content: "second",
+      displayName: "summary.txt",
+    });
+
+    expect(first).toMatchObject({ ok: true });
+    expect(second).toMatchObject({ ok: true });
+    if (!second.ok) return;
+    expect(second.value.attachmentId).toBe("summary (1).txt");
+    expect(second.value.urlPath).toBe(buildOutboundAttachmentUrlPath(sessionId, "summary (1).txt"));
+    expect(second.value.linkMarkdown).toBe(`[Download summary (1).txt](${buildOutboundAttachmentUrlPath(sessionId, "summary (1).txt")})`);
+    expect(readFileSync(join(outgoingDir(home), "summary (1).txt"), "utf-8")).toBe("second");
+  });
+
+  it("resolves inline image attachments for serving", () => {
+    const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
+    tempDirs.push(home);
+
+    const published = publishOutboundAttachment({
+      copilotHome: home,
+      sessionId,
+      content: "fake image data",
+      displayName: "chart.png",
+    });
+    expect(published).toMatchObject({ ok: true });
+    if (!published.ok) return;
+
+    const resolved = resolveOutboundAttachment(home, sessionId, published.value.attachmentId);
+    expect(resolved).toMatchObject({
+      ok: true,
+      value: {
+        displayName: "chart.png",
+        mimeType: "image/png",
+        inline: true,
+      },
+    });
   });
 });

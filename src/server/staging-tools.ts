@@ -459,7 +459,11 @@ async function preparePreviewRuntime(
     : Promise.resolve(seedStagingData(stagingDir));
 }
 /** Dynamically import staged backend modules and create an isolated AppContext */
-async function createStagingContext(stagingDir: string, runtimePaths: RuntimePaths): Promise<{ ctx: AppContext; db: DatabaseSync }> {
+async function createStagingContext(
+  stagingDir: string,
+  runtimePaths: RuntimePaths,
+  apiBasePath: string,
+): Promise<{ ctx: AppContext; db: DatabaseSync }> {
   const base = pathToFileURL(join(stagingDir, "src", "server")).href;
   const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
 
@@ -547,6 +551,7 @@ async function createStagingContext(stagingDir: string, runtimePaths: RuntimePat
       },
       voiceJobManager: null as any,
       copilotHome,
+      apiBasePath,
       runtimePaths,
       isStaging: true,
     };
@@ -667,7 +672,7 @@ async function initializeStagingBackend(
     activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
 
     log(`Creating staging backend context from ${stagingDir}...`);
-    const created = await createStagingContext(stagingDir, runtimePaths);
+    const created = await createStagingContext(stagingDir, runtimePaths, `/staging/${prefix}/api`);
     ctx = created.ctx;
     stagingDb = created.db;
     const stagingBackend = createActiveStagingBackendRecord(ctx, stagingDir, runtimePaths, stagingDb);
@@ -725,7 +730,7 @@ async function restoreStagingBackend(
     activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
 
     log(`Creating staging backend context from ${stagingDir}...`);
-    const created = await createStagingContext(stagingDir, runtimePaths);
+    const created = await createStagingContext(stagingDir, runtimePaths, `/staging/${prefix}/api`);
     ctx = created.ctx;
     stagingDb = created.db;
     const stagingBackend = createActiveStagingBackendRecord(ctx, stagingDir, runtimePaths, stagingDb);

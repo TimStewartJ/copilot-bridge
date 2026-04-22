@@ -19,6 +19,7 @@ import { createVoiceJobStore } from "./voice-job-store.js";
 import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readLauncherLogTail } from "./launcher-log.js";
+import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -124,7 +125,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   const uploadStorage = multer.diskStorage({
     destination: (req, _file, cb) => {
       const sessionId = req.body?.sessionId;
-      if (!sessionId || !/^[a-f0-9-]{36}$/i.test(sessionId)) {
+      if (!sessionId || !isCanonicalSessionId(sessionId)) {
         return cb(new Error("Valid sessionId is required"), "");
       }
       const filesDir = join(getCopilotHome(ctx), "session-state", sessionId, "files");
@@ -509,6 +510,39 @@ export function createApiRouter(ctx: AppContext): express.Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  router.get("/sessions/:id/attachments/:attachmentId", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const attachmentId = String(req.params.attachmentId ?? "").trim();
+    if (!attachmentId) {
+      return res.status(400).json({ error: "attachmentId is required" });
+    }
+    if (basename(attachmentId) !== attachmentId || attachmentId.includes("..")) {
+      return res.status(400).json({ error: "attachmentId is invalid" });
+    }
+
+    const attachment = resolveOutboundAttachment(getCopilotHome(ctx), req.params.id, attachmentId);
+    if (!attachment.ok) {
+      return res.status(attachment.error === "Attachment path is unsafe" ? 403 : 404).json({ error: attachment.error });
+    }
+
+    const onSendError = (err: NodeJS.ErrnoException | null) => {
+      if (!err || res.headersSent) return;
+      const errWithStatus = err as NodeJS.ErrnoException & { statusCode?: number };
+      const statusCode = typeof errWithStatus.statusCode === "number"
+        ? errWithStatus.statusCode
+        : 500;
+      res.status(statusCode).json({ error: err.message });
+    };
+
+    res.type(attachment.value.mimeType);
+    if (attachment.value.inline) {
+      return res.sendFile(attachment.value.filePath, { dotfiles: "allow" }, onSendError);
+    }
+    return res.download(attachment.value.filePath, attachment.value.displayName, { dotfiles: "allow" }, onSendError);
   });
 
   // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
