@@ -1,25 +1,35 @@
-import { useState, memo } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { ToolCall } from "../api";
-import ToolCallBlock from "./ToolCallBlock";
+import type { ToolCallTreeNode } from "../lib/tool-call-tree";
+import ToolStatusBadge from "./ToolStatusBadge";
 import ToolResultModal from "./ToolResultModal";
-import { Bot, ChevronDown, ChevronRight, XCircle } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight } from "lucide-react";
 
 interface SubAgentGroupProps {
   agentTool: ToolCall;
-  childTools: ToolCall[];
+  childNodes?: ToolCallTreeNode[];
+  renderChildNode?: (childNode: ToolCallTreeNode) => React.ReactNode;
+  defaultExpanded?: boolean;
 }
 
-export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGroupProps) {
-  const [expanded, setExpanded] = useState(false);
+export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderChildNode, defaultExpanded = false }: SubAgentGroupProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded && childNodes.length > 0);
   const [showFullModal, setShowFullModal] = useState(false);
+  const autoExpandedRef = useRef(defaultExpanded && childNodes.length > 0);
   const agentLabel = agentTool.name.replace(/^🤖\s*/, "");
-  const childCount = childTools.length;
-  const failed = agentTool.success === false;
+  const childCount = childNodes.length;
+  const progressText = agentTool.progressText?.trim();
   const hasResult = agentTool.result && agentTool.result.trim().length > 0;
-  const hasContent = childCount > 0 || hasResult;
+  const hasContent = childCount > 0 || hasResult || !!progressText;
+
+  useEffect(() => {
+    if (!defaultExpanded || autoExpandedRef.current || childNodes.length === 0) return;
+    setExpanded(true);
+    autoExpandedRef.current = true;
+  }, [defaultExpanded, childNodes.length]);
 
   return (
     <div className="border border-border rounded-md text-xs font-mono overflow-hidden">
@@ -28,10 +38,7 @@ export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGr
         className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left ${hasContent ? "hover:bg-bg-hover cursor-pointer" : "cursor-default"} transition-colors`}
       >
         <span className="shrink-0">
-          {failed
-            ? <XCircle size={12} className="text-error" />
-            : <Bot size={12} className="text-agent" />
-          }
+          <Bot size={12} className="text-agent" />
         </span>
         <span className="text-agent shrink-0">{agentLabel}</span>
         {childCount > 0 && (
@@ -39,19 +46,31 @@ export default memo(function SubAgentGroup({ agentTool, childTools }: SubAgentGr
             {childCount} tool{childCount !== 1 ? "s" : ""}
           </span>
         )}
-        {hasContent && (
-          <span className="text-text-faint ml-auto shrink-0">
-            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </span>
+        {progressText && (
+          <span className="text-text-muted truncate">{progressText}</span>
         )}
+        <span className="ml-auto flex items-center gap-2 shrink-0">
+          <ToolStatusBadge toolCall={agentTool} />
+          {hasContent && (
+            <span className="text-text-faint">
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </span>
+          )}
+        </span>
       </button>
       {expanded && (
         <div className="border-t border-border">
-          {childTools.length > 0 && (
+          {progressText && (
+            <div className="px-2.5 py-2 border-b border-border">
+              <div className="text-text-muted mb-1 text-[11px]">Latest progress</div>
+              <pre className="text-text-muted whitespace-pre-wrap break-all text-[11px] max-h-32 overflow-auto">
+                {progressText}
+              </pre>
+            </div>
+          )}
+          {childNodes.length > 0 && renderChildNode && (
             <div className="pl-3 pr-1 py-1.5 space-y-1 border-l-2 ml-2 mr-1 mb-1" style={{ borderLeftColor: "var(--color-agent-border)" }}>
-              {childTools.map((tc) => (
-                <ToolCallBlock key={tc.toolCallId} toolCall={tc} />
-              ))}
+              {childNodes.map((childNode) => renderChildNode(childNode))}
             </div>
           )}
           {hasResult && (

@@ -18,6 +18,7 @@ export interface TransformedEntry {
     name: string;
     args?: unknown;
     result?: string;
+    progressText?: string;
     success?: boolean;
     parentToolCallId?: string;
     isSubAgent?: boolean;
@@ -28,6 +29,12 @@ export interface TransformedEntry {
 
 // Keep backward compat alias — server API consumers still reference this
 export type TransformedMessage = TransformedEntry;
+
+function isTurnTerminalEvent(event: any): boolean {
+  return event.type === "session.shutdown"
+    || event.type === "session.idle"
+    || event.type === "session.error";
+}
 
 function getRenameTargetSessionId(args: unknown): string | undefined {
   if (!args || typeof args !== "object") return undefined;
@@ -100,21 +107,42 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string }>();
+  const toolProgress = new Map<string, string>();
+  const openToolCallIds = new Set<string>();
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
   const subAgentResponses = new Map<string, string>();
 
   for (const event of events) {
     const data = (event as any).data;
-    if (event.type === "tool.execution_complete" && data?.toolCallId) {
+    if (event.type === "tool.execution_start" && data?.toolCallId) {
+      openToolCallIds.add(data.toolCallId);
+    } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
       toolCompletes.set(data.toolCallId, {
         success: data.success,
         result: getToolExecutionDisplayText(data),
         timestamp: (event as any).timestamp,
       });
+      openToolCallIds.delete(data.toolCallId);
+    } else if ((event.type === "tool.execution_progress" || event.type === "tool.execution_partial_result") && data?.toolCallId) {
+      const nextText = event.type === "tool.execution_progress"
+        ? data.progressMessage
+        : data.partialOutput;
+      if (typeof nextText === "string" && nextText.trim()) {
+        toolProgress.set(data.toolCallId, nextText);
+      }
     } else if (event.type === "subagent.started" && data?.toolCallId) {
       subAgentStarts.set(data.toolCallId, { agentName: data.agentName, agentDisplayName: data.agentDisplayName });
     } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
       subAgentResponses.set(data.parentToolCallId, data.content);
+    } else if (isTurnTerminalEvent(event)) {
+      for (const toolCallId of openToolCallIds) {
+        toolCompletes.set(toolCallId, {
+          success: false,
+          result: subAgentResponses.get(toolCallId) ?? toolProgress.get(toolCallId),
+          timestamp: (event as any).timestamp,
+        });
+      }
+      openToolCallIds.clear();
     }
   }
 
@@ -169,6 +197,7 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
           result: isSubAgent && complete?.success !== false
             ? (subAgentResponses.get(data.toolCallId) ?? complete?.result)
             : complete?.result,
+          progressText: toolProgress.get(data.toolCallId),
           success: complete?.success,
           parentToolCallId: data.parentToolCallId,
           isSubAgent: isSubAgent || undefined,

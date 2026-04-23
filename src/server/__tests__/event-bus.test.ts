@@ -45,6 +45,22 @@ describe("event-bus", () => {
       expect(bus.getIntentText()).toBe("Exploring codebase");
     });
 
+    it("clears intent on terminal events", () => {
+      const terminalEvents: StreamEvent[] = [
+        { type: "done", content: "Done" },
+        { type: "aborted", content: "Stopped" },
+        { type: "error", message: "Boom" },
+      ];
+
+      terminalEvents.forEach((event, index) => {
+        const bus = getOrCreateBus(`test-terminal-intent-${index}`);
+        bus.emit({ type: "intent", intent: "Exploring codebase" });
+        bus.emit(event);
+        expect(bus.getSnapshot().intentText).toBe("");
+        expect(bus.getIntentText()).toBe("");
+      });
+    });
+
     it("can clear pendingPrompt after the user message is persisted", () => {
       const bus = getOrCreateBus("test-pending-prompt-1");
       bus.setPendingPrompt("recover me");
@@ -58,9 +74,15 @@ describe("event-bus", () => {
 
     it("tracks tool lifecycle", () => {
       const bus = getOrCreateBus("test-tool-1");
-      bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
+      bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep", timestamp: "2026-04-22T20:00:00.000Z" });
       bus.emit({ type: "tool_start", toolCallId: "tc2", name: "view" });
+      bus.emit({ type: "tool_progress", toolCallId: "tc1", message: "Searching..." });
       expect(bus.getSnapshot().activeTools).toHaveLength(2);
+      expect(bus.getSnapshot().activeTools[0]).toMatchObject({
+        toolCallId: "tc1",
+        startedAt: "2026-04-22T20:00:00.000Z",
+        progressText: "Searching...",
+      });
 
       bus.emit({ type: "tool_done", toolCallId: "tc1" });
       expect(bus.getSnapshot().activeTools).toHaveLength(1);

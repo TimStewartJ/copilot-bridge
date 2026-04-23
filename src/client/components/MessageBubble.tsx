@@ -3,9 +3,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { FileText } from "lucide-react";
-import type { ChatMessage, ToolCall } from "../api";
-import ToolCallBlock from "./ToolCallBlock";
-import SubAgentGroup from "./SubAgentGroup";
+import type { ChatMessage } from "../api";
+import { buildToolCallForest } from "../lib/tool-call-tree";
+import ToolCallTree from "./ToolCallTree";
 import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
 
@@ -13,43 +13,11 @@ interface MessageBubbleProps {
   message: ChatMessage;
 }
 
-/** Group tool calls: sub-agent parents absorb their children, top-level stays flat */
-function groupToolCalls(toolCalls: ToolCall[]): ToolCall[] {
-  const agentIds = new Set(
-    toolCalls.filter((tc) => tc.isSubAgent).map((tc) => tc.toolCallId),
-  );
-
-  // Collect children that belong to a sub-agent (by parentToolCallId)
-  const childrenByParent = new Map<string, ToolCall[]>();
-  const childToolCallIds = new Set<string>();
-  for (const tc of toolCalls) {
-    if (tc.parentToolCallId && agentIds.has(tc.parentToolCallId)) {
-      const arr = childrenByParent.get(tc.parentToolCallId) ?? [];
-      arr.push(tc);
-      childrenByParent.set(tc.parentToolCallId, arr);
-      childToolCallIds.add(tc.toolCallId);
-    }
-  }
-
-  // Build result: top-level tools + sub-agent groups (with children attached)
-  return toolCalls
-    .filter((tc) => !childToolCallIds.has(tc.toolCallId))
-    .map((tc) =>
-      tc.isSubAgent
-        ? { ...tc, childToolCalls: childrenByParent.get(tc.toolCallId) }
-        : tc,
-    );
-}
-
-function renderToolCalls(toolCalls: ToolCall[]) {
-  const grouped = groupToolCalls(toolCalls);
-  return grouped.map((tc) =>
-    tc.isSubAgent ? (
-      <SubAgentGroup key={tc.toolCallId} agentTool={tc} childTools={tc.childToolCalls ?? []} />
-    ) : (
-      <ToolCallBlock key={tc.toolCallId} toolCall={tc} />
-    ),
-  );
+function renderToolCalls(toolCalls: NonNullable<ChatMessage["toolCalls"]>) {
+  const { roots } = buildToolCallForest(toolCalls);
+  return roots.map((node) => (
+    <ToolCallTree key={node.toolCall.toolCallId} node={node} />
+  ));
 }
 
 export default memo(function MessageBubble({ message }: MessageBubbleProps) {

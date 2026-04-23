@@ -269,7 +269,7 @@ export default function Dashboard({
                 </div>
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium text-info">
-                    {workingSessions.length} agent{workingSessions.length > 1 ? "s" : ""} working
+                    {workingSessions.length} session{workingSessions.length > 1 ? "s" : ""} working
                   </span>
                   <div className="flex flex-wrap gap-2 mt-1">
                     {workingSessions.map((s) => (
@@ -295,7 +295,7 @@ export default function Dashboard({
                 </div>
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium text-warning">
-                    {stalledSessions.length} agent{stalledSessions.length > 1 ? "s" : ""} stalled
+                    {stalledSessions.length} session{stalledSessions.length > 1 ? "s" : ""} stalled
                   </span>
                   <div className="flex flex-wrap gap-2 mt-1">
                     {stalledSessions.map((s) => (

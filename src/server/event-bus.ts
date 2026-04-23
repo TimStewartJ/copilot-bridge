@@ -14,6 +14,8 @@ export interface ActiveTool {
   toolCallId: string;
   name: string;
   args?: unknown;
+  startedAt?: string;
+  progressText?: string;
   parentToolCallId?: string;
   isSubAgent?: boolean;
 }
@@ -85,6 +87,7 @@ export class SessionEventBus {
           toolCallId: (event.toolCallId as string) ?? "",
           name: event.name ?? "unknown",
           args: event.args,
+          startedAt: event.timestamp as string | undefined,
           parentToolCallId: event.parentToolCallId as string | undefined,
           isSubAgent: event.isSubAgent as boolean | undefined,
         });
@@ -94,6 +97,20 @@ export class SessionEventBus {
         this.activeTools = this.activeTools.map((t) =>
           t.toolCallId === event.toolCallId
             ? { ...t, name: event.name ?? t.name, isSubAgent: (event.isSubAgent as boolean) ?? t.isSubAgent }
+            : t,
+        );
+        break;
+      case "tool_progress":
+        this.activeTools = this.activeTools.map((t) =>
+          t.toolCallId === event.toolCallId
+            ? { ...t, progressText: (event.message as string | undefined) ?? t.progressText }
+            : t,
+        );
+        break;
+      case "tool_output":
+        this.activeTools = this.activeTools.map((t) =>
+          t.toolCallId === event.toolCallId
+            ? { ...t, progressText: (event.content as string | undefined) ?? t.progressText }
             : t,
         );
         break;
@@ -111,6 +128,7 @@ export class SessionEventBus {
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
+        this.intentText = "";
         this.activeTools = [];
         this.scheduleCleanup();
         break;
@@ -119,6 +137,7 @@ export class SessionEventBus {
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
+        this.intentText = "";
         this.activeTools = [];
         this.scheduleCleanup();
         break;
@@ -135,6 +154,7 @@ export class SessionEventBus {
         this.errorMessage = event.message;
         this._complete = true;
         this.accumulatedContent = "";
+        this.intentText = "";
         this.activeTools = [];
         this.scheduleCleanup();
         break;
