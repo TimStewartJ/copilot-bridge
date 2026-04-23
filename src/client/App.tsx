@@ -268,24 +268,34 @@ export default function App() {
           patchSessionInCache(event.sessionId, { runState: "busy", busy: true });
           bumpSessionBusySignal(event.sessionId);
         }
+        invalidateDashboard();
         break;
       case "session:stalled":
         if (event.sessionId) {
           patchSessionInCache(event.sessionId, { runState: "stalled", busy: true });
         }
+        invalidateDashboard();
         break;
       case "session:idle":
         if (event.sessionId) {
           clearSessionBusyHint(event.sessionId);
-          patchSessionInCache(event.sessionId, { runState: "idle", busy: false });
+          patchSessionInCache(event.sessionId, { runState: "idle", busy: false, intentText: null });
         }
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
         invalidateSessions();
+        invalidateDashboard();
+        break;
+      case "session:intent":
+        if (event.sessionId) {
+          patchSessionInCache(event.sessionId, { intentText: event.intent ?? null });
+        }
+        invalidateDashboard();
         break;
       case "session:title":
         if (event.sessionId && event.title) {
           patchSessionInCache(event.sessionId, { summary: event.title });
         }
+        invalidateDashboard();
         break;
       case "session:archived":
         if (event.sessionId && typeof event.archived === "boolean") {
@@ -325,6 +335,7 @@ export default function App() {
         setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "status:connected" }));
         // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
+        invalidateDashboard();
         invalidateOpenTodos();
         break;
     }

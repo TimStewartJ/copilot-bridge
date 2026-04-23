@@ -4,6 +4,7 @@ export type { McpServerConfig } from "../mcp-config";
 export interface Session {
   sessionId: string;
   summary?: string;
+  intentText?: string | null;
   startTime?: string;
   modifiedTime?: string;
   lastVisibleActivityAt?: string;
@@ -44,6 +45,8 @@ export interface ToolCall {
   name: string;
   args?: ToolArgs;
   result?: string;
+  /** Latest non-final progress or partial output surfaced while the tool is running */
+  progressText?: string;
   success?: boolean;
   parentToolCallId?: string;
   /** Set on sub-agent pseudo-tool entries (the group header) */

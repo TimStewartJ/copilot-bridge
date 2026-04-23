@@ -263,4 +263,31 @@ describe("appendLiveEntries", () => {
       },
     });
   });
+
+  it("merges live tool progress into the existing tool entry", () => {
+    const previousEntries = [createToolEntry("tool-1")];
+
+    const merged = appendLiveEntries(previousEntries, [
+      {
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-1",
+          name: "view",
+          startedAt: "2026-04-22T20:00:00.000Z",
+          progressText: "Reading file...",
+        },
+      } satisfies ChatEntry,
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "tool-tool-1",
+      type: "tool",
+      toolCall: {
+        toolCallId: "tool-1",
+        progressText: "Reading file...",
+        startedAt: "2026-04-22T20:00:00.000Z",
+      },
+    });
+  });
 });

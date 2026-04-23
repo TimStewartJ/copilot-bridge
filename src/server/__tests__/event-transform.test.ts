@@ -282,4 +282,101 @@ describe("event-transform tool results", () => {
       },
     ]);
   });
+
+  it("keeps the latest progress text for incomplete tools", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { toolCallId: "tool-2", toolName: "bash", arguments: { command: "npm test" } },
+      },
+      {
+        type: "tool.execution_progress",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "tool-2", progressMessage: "Running tests..." },
+      },
+      {
+        type: "tool.execution_partial_result",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { toolCallId: "tool-2", partialOutput: "12 tests passed" },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-2",
+          name: "bash",
+          progressText: "12 tests passed",
+        },
+      },
+    ]);
+  });
+
+  it("marks open tools as failed when the turn terminates before completion", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { toolCallId: "tool-3", toolName: "bash", arguments: { command: "npm test" } },
+      },
+      {
+        type: "tool.execution_progress",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "tool-3", progressMessage: "Running tests..." },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { shutdownType: "graceful" },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-3",
+          name: "bash",
+          progressText: "Running tests...",
+          success: false,
+          completedAt: "2026-04-10T10:00:02.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("marks open tools as failed when the turn ends with session.error", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { toolCallId: "tool-4", toolName: "bash", arguments: { command: "npm test" } },
+      },
+      {
+        type: "tool.execution_progress",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "tool-4", progressMessage: "Running tests..." },
+      },
+      {
+        type: "session.error",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { message: "runtime failed" },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-4",
+          name: "bash",
+          progressText: "Running tests...",
+          success: false,
+          completedAt: "2026-04-10T10:00:02.000Z",
+        },
+      },
+    ]);
+  });
 });

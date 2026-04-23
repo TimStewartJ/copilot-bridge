@@ -9,6 +9,7 @@ export interface PendingTool {
   parentToolCallId?: string;
   isSubAgent?: boolean;
   startedAt?: string;
+  progressText?: string;
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
@@ -18,11 +19,30 @@ export interface StreamState {
   streamingContent: string;
   activeTools: PendingTool[];
   intentText: string;
-  toolProgress: string;
   streamStatus: StreamStatus;
   isStreaming: boolean;
+  hadVisibleOutput: boolean;
   mcpServers: McpServerStatus[];
   pendingOrigin: PendingOrigin;
+}
+
+function createToolEntry(
+  tool: Pick<PendingTool, "toolCallId" | "name" | "args" | "parentToolCallId" | "isSubAgent" | "startedAt" | "progressText">,
+  partial: Partial<ToolCall> = {},
+): ChatEntry {
+  return {
+    type: "tool",
+    toolCall: {
+      toolCallId: tool.toolCallId,
+      name: tool.name,
+      args: tool.args,
+      parentToolCallId: tool.parentToolCallId,
+      isSubAgent: tool.isSubAgent,
+      startedAt: tool.startedAt,
+      progressText: tool.progressText,
+      ...partial,
+    },
+  };
 }
 
 function getRenameTargetSessionId(args: ToolArgs | undefined): string | undefined {
@@ -55,7 +75,7 @@ export function useSessionStream(
     streamingContent: "",
     activeTools: [],
     intentText: "",
-    toolProgress: "",
+    hadVisibleOutput: false,
     mcpServers: [],
     pendingOrigin: null,
     ...partial,
@@ -93,6 +113,12 @@ export function useSessionStream(
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedContent = "";
+        const refreshTitle = (withRetries = false) => {
+          onTitleChangedRef.current();
+          if (!withRetries) return;
+          setTimeout(() => onTitleChangedRef.current(), 5_000);
+          setTimeout(() => onTitleChangedRef.current(), 12_000);
+        };
 
         // Plain Map for synchronous metadata access on tool_done
         const activeToolMeta = new Map<string, PendingTool>();
@@ -121,7 +147,7 @@ export function useSessionStream(
                       onEntriesRef.current([{ role: "assistant", content: text }]);
                     }
                     setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
-                    onTitleChangedRef.current();
+                    refreshTitle(event.terminalType === "done");
                     break;
                   }
                   if (event.pendingPrompt) {
@@ -134,20 +160,25 @@ export function useSessionStream(
                       toolCallId: t.toolCallId ?? "",
                       name: t.name ?? "unknown",
                       args: t.args,
+                      startedAt: t.startedAt,
+                      progressText: t.progressText,
                       parentToolCallId: t.parentToolCallId,
                       isSubAgent: t.isSubAgent,
                     }));
                   activeToolMeta.clear();
                   for (const t of tools) activeToolMeta.set(t.toolCallId, t);
+                  if (tools.length > 0) {
+                    onEntriesRef.current(tools.map((tool) => createToolEntry(tool)));
+                  }
                   setStreamState((prev) => ({
                     ...prev,
                     streamingContent: accumulatedContent,
                     activeTools: tools,
                     intentText: event.intentText ?? "",
-                    toolProgress: "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
                     streamStatus: accumulatedContent || tools.length > 0 ? "streaming" : "thinking",
                     isStreaming: true,
+                    hadVisibleOutput: prev.hadVisibleOutput || Boolean(accumulatedContent || tools.length > 0),
                   }));
                   break;
                 }
@@ -164,14 +195,20 @@ export function useSessionStream(
                     streamingContent: accumulatedContent,
                     streamStatus: "streaming",
                     isStreaming: true,
+                    hadVisibleOutput: true,
                   }));
                   break;
                 case "assistant_partial":
                   if (event.content) {
                     onEntriesRef.current([{ role: "assistant", content: event.content }]);
                   }
+                  const partialHadVisibleOutput = Boolean(accumulatedContent || event.content);
                   accumulatedContent = "";
-                  setStreamState((s) => ({ ...s, streamingContent: "" }));
+                  setStreamState((s) => ({
+                    ...s,
+                    streamingContent: "",
+                    hadVisibleOutput: s.hadVisibleOutput || partialHadVisibleOutput,
+                  }));
                   break;
                 case "tool_start": {
                   const tool: PendingTool = {
@@ -184,26 +221,62 @@ export function useSessionStream(
                   };
                   if (isHiddenTool(tool.name, tool.args, sid)) break;
                   activeToolMeta.set(tool.toolCallId, tool);
+                  onEntriesRef.current([createToolEntry(tool)]);
                   setStreamState((s) => ({
                     ...s,
                     activeTools: [...s.activeTools, tool],
-                    toolProgress: "",
                     streamStatus: "streaming",
                     isStreaming: true,
+                    hadVisibleOutput: true,
                   }));
                   break;
                 }
                 case "tool_progress":
-                  setStreamState((s) => ({ ...s, toolProgress: event.message ?? "" }));
+                  if (typeof event.toolCallId === "string") {
+                    const meta = activeToolMeta.get(event.toolCallId);
+                    if (meta) meta.progressText = event.message ?? meta.progressText;
+                    const nextTool = meta ?? {
+                      toolCallId: event.toolCallId,
+                      name: event.name ?? "unknown",
+                      progressText: event.message ?? "",
+                    };
+                    onEntriesRef.current([createToolEntry(nextTool, { progressText: event.message ?? nextTool.progressText })]);
+                    setStreamState((s) => ({
+                      ...s,
+                      activeTools: s.activeTools.map((tool) =>
+                        tool.toolCallId === event.toolCallId
+                          ? { ...tool, progressText: event.message ?? tool.progressText }
+                          : tool,
+                      ),
+                    }));
+                  }
                   break;
                 case "tool_output":
-                  setStreamState((s) => ({ ...s, toolProgress: event.content ?? "" }));
+                  if (typeof event.toolCallId === "string") {
+                    const meta = activeToolMeta.get(event.toolCallId);
+                    if (meta) meta.progressText = event.content ?? meta.progressText;
+                    const nextTool = meta ?? {
+                      toolCallId: event.toolCallId,
+                      name: event.name ?? "unknown",
+                      progressText: event.content ?? "",
+                    };
+                    onEntriesRef.current([createToolEntry(nextTool, { progressText: event.content ?? nextTool.progressText })]);
+                    setStreamState((s) => ({
+                      ...s,
+                      activeTools: s.activeTools.map((tool) =>
+                        tool.toolCallId === event.toolCallId
+                          ? { ...tool, progressText: event.content ?? tool.progressText }
+                          : tool,
+                      ),
+                    }));
+                  }
                   break;
                 case "tool_update": {
                   const meta = activeToolMeta.get(event.toolCallId as string);
                   if (meta) {
                     meta.name = event.name ?? meta.name;
                     meta.isSubAgent = (event.isSubAgent as boolean) ?? meta.isSubAgent;
+                    onEntriesRef.current([createToolEntry(meta)]);
                   }
                   setStreamState((s) => ({
                     ...s,
@@ -226,6 +299,7 @@ export function useSessionStream(
                     name: toolName,
                     args: meta?.args,
                     result: event.result,
+                    progressText: meta?.progressText,
                     success: event.success,
                     parentToolCallId: meta?.parentToolCallId ?? event.parentToolCallId,
                     isSubAgent: meta?.isSubAgent ?? event.isSubAgent,
@@ -236,7 +310,7 @@ export function useSessionStream(
                   setStreamState((s) => ({
                     ...s,
                     activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
-                    toolProgress: "",
+                    hadVisibleOutput: true,
                   }));
                   break;
                 }
@@ -248,9 +322,7 @@ export function useSessionStream(
                     onEntriesRef.current([{ role: "assistant", content: event.content }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
-                  onTitleChangedRef.current();
-                  setTimeout(() => onTitleChangedRef.current(), 5_000);
-                  setTimeout(() => onTitleChangedRef.current(), 12_000);
+                  refreshTitle(true);
                   accumulatedContent = "";
                   break;
                 case "aborted": {

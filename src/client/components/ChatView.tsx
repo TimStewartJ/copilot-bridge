@@ -3,18 +3,18 @@ import { useQueryClient } from "@tanstack/react-query";
 import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
 import { appendLiveEntries, getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
+import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
-import ToolCallBlock from "./ToolCallBlock";
-import SubAgentGroup from "./SubAgentGroup";
+import ToolCallTree from "./ToolCallTree";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
-import { hasToolArgs, summarizeToolArgs } from "../lib/tool-args";
 import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
 
 const INITIAL_PAGE_SIZE = 50;
@@ -46,6 +46,7 @@ interface ChatViewProps {
 function renderPendingStatusCard(
   key: string,
   tone: PendingStatusTone,
+  label: string,
   title: string,
   detail: string,
 ) {
@@ -82,7 +83,7 @@ function renderPendingStatusCard(
         )}
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.16em] opacity-80">
-            {sending ? "Sending" : creating ? "Creating" : "Thinking"}
+            {label}
           </div>
           <div className="text-sm font-medium">{title}</div>
           <div className="text-xs opacity-80">{detail}</div>
@@ -208,11 +209,11 @@ export default function ChatView({
 
   const {
     streamingContent,
-    activeTools,
     intentText,
-    toolProgress,
+    activeTools,
     isStreaming,
     streamStatus,
+    hadVisibleOutput,
     pendingOrigin,
     mcpServers: streamMcpServers,
     sendMessage,
@@ -502,13 +503,6 @@ export default function ChatView({
     }
   }, [entries]);
 
-  // Auto-scroll during streaming (content grows within the pending block).
-  useEffect(() => {
-    if (!stickToBottomRef.current) return;
-    const el = scrollContainerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [streamingContent, activeTools, toolProgress, isStreaming, creating]);
-
   const loadOlderMessages = useCallback((opts: {
     limit?: number;
     preserveScrollPosition?: boolean;
@@ -704,9 +698,58 @@ export default function ChatView({
     await startFleet();
   }, [sessionId, isStreaming, creating, warming, invalidateHistoryRefresh, startFleet]);
 
-  // Build pending indicator content (streaming bubble + active tools + status text).
+  const activeToolCalls = useMemo<ToolCall[]>(
+    () => activeTools.map((tool) => ({
+      toolCallId: tool.toolCallId,
+      name: tool.name,
+      args: tool.args,
+      parentToolCallId: tool.parentToolCallId,
+      isSubAgent: tool.isSubAgent,
+      startedAt: tool.startedAt,
+      progressText: tool.progressText,
+    })),
+    [activeTools],
+  );
+  const toolEntries = useMemo(
+    () => entries.flatMap((entry) => entry.type === "tool" && entry.toolCall ? [entry.toolCall] : []),
+    [entries],
+  );
+  const toolForest = useMemo(() => buildToolCallForest(toolEntries), [toolEntries]);
+  const activeToolForest = useMemo(() => buildToolCallForest(activeToolCalls), [activeToolCalls]);
+  const activeRootNodes = useMemo(() => getActiveToolCallRoots(activeToolForest.roots), [activeToolForest.roots]);
+  const runHeaderState = useMemo(() => deriveLiveRunHeaderState({
+    creating,
+    isStreaming,
+    streamStatus,
+    pendingOrigin,
+    streamingContent,
+    activeTrackCount: activeRootNodes.length,
+    intentText,
+    hadVisibleOutput,
+  }), [creating, isStreaming, streamStatus, pendingOrigin, streamingContent, activeRootNodes.length, intentText, hadVisibleOutput]);
+
+  // Auto-scroll during streaming (content grows within the pending block).
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [streamingContent, runHeaderState?.phase, isStreaming, creating]);
+
+  // Build pending indicator content (run header + streaming text).
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
+
+    if (runHeaderState) {
+      parts.push(
+        renderPendingStatusCard(
+          "run-header",
+          runHeaderState.tone,
+          runHeaderState.label,
+          runHeaderState.title,
+          runHeaderState.detail,
+        ),
+      );
+    }
 
     if (streamingContent) {
       parts.push(
@@ -716,75 +759,9 @@ export default function ChatView({
       );
     }
 
-    if (activeTools.length > 0) {
-      parts.push(
-        <div key="tools" className="text-xs text-accent/70 px-7 md:px-9 py-1 space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Loader2 size={12} className="animate-spin" />
-            {activeTools
-              .filter((t) => !t.parentToolCallId)
-              .map((t) => {
-                const isAgent = t.isSubAgent || t.name.startsWith("🤖");
-                const childCount = t.isSubAgent
-                  ? activeTools.filter((c) => c.parentToolCallId === t.toolCallId).length
-                  : 0;
-                return (
-                  <span
-                    key={t.toolCallId || t.name}
-                    className={`px-2 py-0.5 rounded ${isAgent ? "bg-agent-muted text-agent" : "bg-accent/10"}`}
-                  >
-                    {t.name}
-                    {childCount > 0 && (
-                      <span className="text-agent/50 ml-1">({childCount})</span>
-                    )}
-                    {!isAgent && hasToolArgs(t.args) && (
-                      <span className="text-accent/40 ml-1">{summarizeToolArgs(t.args, { maxLength: 60, separator: " " })}</span>
-                    )}
-                  </span>
-                );
-              })}
-          </div>
-          {toolProgress && (
-            <div className="text-accent/50 pl-6 truncate">{toolProgress}</div>
-          )}
-        </div>,
-      );
-    }
-
-    if (isStreaming && !streamingContent && activeTools.length === 0) {
-      const sending = streamStatus === "sending";
-      const title = sending
-        ? pendingOrigin === "fleet"
-          ? "Launching Fleet run"
-          : pendingOrigin === "reconnect"
-            ? "Reconnecting to active session"
-            : "Handing off your message"
-        : intentText
-          ? `${intentText}...`
-          : "Waiting for the first response";
-      const detail = sending
-        ? pendingOrigin === "fleet"
-          ? "The session is starting a parallel plan run and opening the response stream."
-          : pendingOrigin === "reconnect"
-            ? "The session is already busy; reopening the live response stream."
-            : "The session has your prompt and is opening the response stream."
-        : "The assistant is working before any text or tool activity is visible.";
-
-      parts.push(renderPendingStatusCard("thinking", sending ? "sending" : "thinking", title, detail));
-    }
-
-    if (creating && !isStreaming) {
-      parts.push(renderPendingStatusCard(
-        "creating",
-        "creating",
-        "Starting a new chat session",
-        "We're creating the session before the assistant can begin responding.",
-      ));
-    }
-
     if (parts.length === 0) return null;
     return <div className="space-y-4 pb-4">{parts}</div>;
-  }, [streamingContent, activeTools, toolProgress, isStreaming, streamStatus, intentText, creating, pendingOrigin]);
+  }, [runHeaderState, streamingContent]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
   const runFleetDisabledReason = !hasPlan
@@ -810,53 +787,39 @@ export default function ChatView({
     );
   }
 
-  /** Render a chronological list of entries, grouping consecutive sub-agent children */
+  /** Render messages in order, but group each contiguous tool block into real parallel root tracks. */
   const renderedEntries = useMemo(() => {
     const result: React.ReactNode[] = [];
-    let i = 0;
-    while (i < entries.length) {
-      const entry = entries[i];
-      if (entry.type === "tool") {
-        const tc = entry.toolCall!;
-        if (tc.isSubAgent) {
-          // Collect consecutive child tools belonging to this sub-agent
-          const children: ToolCall[] = [];
-          let j = i + 1;
-          while (j < entries.length && entries[j].type === "tool" && (entries[j] as any).toolCall?.parentToolCallId === tc.toolCallId) {
-            children.push((entries[j] as any).toolCall);
-            j++;
-          }
-          result.push(
-            <div key={entry.id ?? `tool-${i}`} className="px-3 md:px-5 pt-2">
-              <SubAgentGroup agentTool={tc} childTools={children} />
-            </div>,
-          );
-          i = j;
-        } else if (!tc.parentToolCallId) {
-          // Top-level tool (not a sub-agent child)
-          result.push(
-            <div key={entry.id ?? `tool-${i}`} className="px-3 md:px-5 pt-2">
-              <ToolCallBlock toolCall={tc} />
-            </div>,
-          );
-          i++;
-        } else {
-          // Orphan child tool (parent already rendered) — skip
-          i++;
-        }
-      } else {
-        // Message entry
-        const msg = entry as ChatMessage;
+    const segments = segmentChatEntries(entries);
+
+    segments.forEach((segment, index) => {
+      if (segment.type === "tool-segment") {
+        const roots = buildRenderableSegmentRoots(segment.entries, toolForest);
+        const segmentKey = segment.entries[0]?.id ?? `tool-segment-${index}`;
         result.push(
-          <div key={entry.id ?? `${msg.role}-${i}`} className="px-3 md:px-5 pt-4">
-            <MessageBubble message={msg} />
+          <div key={segmentKey} className="px-3 md:px-5 pt-2 space-y-1">
+            {roots.map((node) => (
+              <ToolCallTree
+                key={node.toolCall.toolCallId}
+                node={node}
+                defaultExpanded={node.children.length > 0}
+              />
+            ))}
           </div>,
         );
-        i++;
+        return;
       }
-    }
+
+      const msg = segment.entry as ChatMessage;
+      result.push(
+        <div key={msg.id ?? `${msg.role}-${index}`} className="px-3 md:px-5 pt-4">
+          <MessageBubble message={msg} />
+        </div>,
+      );
+    });
+
     return result;
-  }, [entries]);
+  }, [entries, toolForest]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

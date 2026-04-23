@@ -1956,6 +1956,7 @@ export class SessionManager {
             session.modifiedTime = session.startTime ?? st.mtime.toISOString();
           } catch {}
         }
+        session.intentText = this.deps.eventBusRegistry.getBus(dirName)?.getIntentText() ?? null;
         return session;
       } catch { return null; }
     });
@@ -2541,10 +2542,10 @@ export class SessionManager {
           break;
         }
         case "tool.execution_progress":
-          bus.emit({ type: "tool_progress", name: data?.toolCallId, message: data?.progressMessage ?? "" });
+          bus.emit({ type: "tool_progress", toolCallId: data?.toolCallId, name: data?.toolCallId, message: data?.progressMessage ?? "" });
           break;
         case "tool.execution_partial_result":
-          bus.emit({ type: "tool_output", name: data?.toolCallId, content: data?.partialOutput ?? "" });
+          bus.emit({ type: "tool_output", toolCallId: data?.toolCallId, name: data?.toolCallId, content: data?.partialOutput ?? "" });
           break;
         case "tool.execution_complete": {
           if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);
