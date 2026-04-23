@@ -108,6 +108,16 @@ describe("event-bus", () => {
       expect(snap.terminalType).toBe("aborted");
       expect(snap.finalContent).toBe("Partial answer");
     });
+
+    it("shutdown marks complete with terminal type", () => {
+      const bus = getOrCreateBus("test-shutdown-1");
+      bus.emit({ type: "shutdown", content: "Partial answer" });
+
+      const snap = bus.getSnapshot();
+      expect(snap.complete).toBe(true);
+      expect(snap.terminalType).toBe("shutdown");
+      expect(snap.finalContent).toBe("Partial answer");
+    });
   });
 
   describe("subscribe", () => {

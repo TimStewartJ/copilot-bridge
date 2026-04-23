@@ -269,7 +269,7 @@ describe("SessionManager run state", () => {
     }
   });
 
-  it("treats routine session.shutdown as an aborted terminal event", async () => {
+  it("treats routine session.shutdown as a shutdown terminal event", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.client = {
@@ -299,7 +299,7 @@ describe("SessionManager run state", () => {
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(bus.getSnapshot()).toMatchObject({
-      terminalType: "aborted",
+      terminalType: "shutdown",
       finalContent: "partial response",
     });
   });
@@ -988,7 +988,7 @@ describe("SessionManager run state", () => {
 
       expect(manager.getSessionRunState(sessionId)).toBe("idle");
       expect(bus.getSnapshot()).toMatchObject({
-        terminalType: "aborted",
+        terminalType: "shutdown",
         finalContent: "done",
       });
     } finally {

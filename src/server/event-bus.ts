@@ -24,7 +24,7 @@ export interface BusSnapshot {
   activeTools: ActiveTool[];
   intentText: string;
   complete: boolean;
-  terminalType?: "done" | "error" | "aborted";
+  terminalType?: "done" | "error" | "aborted" | "shutdown";
   finalContent?: string;
   errorMessage?: string;
   /** The user prompt that initiated this turn (for reconnect recovery) */
@@ -47,7 +47,7 @@ export class SessionEventBus {
   private intentText = "";
   private finalContent?: string;
   private errorMessage?: string;
-  private terminalType?: "done" | "error" | "aborted";
+  private terminalType?: "done" | "error" | "aborted" | "shutdown";
   private mcpServers: unknown[] = [];
   /** The user prompt that initiated this turn (for reconnect recovery) */
   private pendingPrompt?: string;
@@ -116,6 +116,14 @@ export class SessionEventBus {
         break;
       case "aborted":
         this.terminalType = "aborted";
+        this.finalContent = event.content;
+        this._complete = true;
+        this.accumulatedContent = "";
+        this.activeTools = [];
+        this.scheduleCleanup();
+        break;
+      case "shutdown":
+        this.terminalType = "shutdown";
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
