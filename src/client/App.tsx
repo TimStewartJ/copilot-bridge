@@ -40,6 +40,7 @@ import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type Voice
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
+import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
@@ -118,8 +119,12 @@ export default function App() {
   // Track optimistic sessions that the server doesn't know about yet
   const optimisticIdsRef = useRef(new Set<string>());
 
-  // Guard: skip SSE-driven task refetch while a task mutation is in-flight
-  const taskMutationInFlight = useRef(0);
+  // Buffer task:changed SSE invalidations during optimistic task mutations so
+  // concurrent server-side checklist changes are flushed instead of dropped.
+  const taskChangeInvalidator = useMemo(
+    () => createDeferredTaskChangeInvalidator(queryClient),
+    [queryClient],
+  );
 
 
   // Derive active IDs and mode from URL
@@ -311,15 +316,7 @@ export default function App() {
         queryClient.invalidateQueries({ queryKey: ["task"] });
         break;
       case "task:changed":
-        if (taskMutationInFlight.current === 0) {
-          invalidateTasks();
-          invalidateDashboard();
-          invalidateOpenTodos();
-          // Also refresh enriched WI/PR data so linked items show latest state
-          queryClient.invalidateQueries({
-            predicate: (q) => q.queryKey[0] === "task" && q.queryKey[2] === "enriched",
-          });
-        }
+        taskChangeInvalidator.handleTaskChange(event.taskId);
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
@@ -331,7 +328,7 @@ export default function App() {
         invalidateOpenTodos();
         break;
     }
-  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateDashboard, invalidateOpenTodos, invalidateSessions, invalidateTasks, queryClient]));
+  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateDashboard, invalidateOpenTodos, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
@@ -698,14 +695,14 @@ export default function App() {
       const rest = prev.filter((t) => !reorderedIds.has(t.id));
       return [...reordered, ...rest];
     });
-    taskMutationInFlight.current++;
+    taskChangeInvalidator.beginTaskMutation();
     try {
       await reorderTasks(taskIds);
     } catch (err) {
       console.error("Failed to reorder tasks:", err);
       await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } finally {
-      taskMutationInFlight.current--;
+      taskChangeInvalidator.endTaskMutation();
     }
   };
 
@@ -786,14 +783,14 @@ export default function App() {
     queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
       prev?.map((t) => (t.id === taskId ? { ...t, groupId } : t)),
     );
-    taskMutationInFlight.current++;
+    taskChangeInvalidator.beginTaskMutation();
     try {
       await patchTask(taskId, { groupId: groupId ?? ("" as any) });
     } catch (err) {
       console.error("Failed to move task to group:", err);
       await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } finally {
-      taskMutationInFlight.current--;
+      taskChangeInvalidator.endTaskMutation();
     }
   };
 
@@ -811,7 +808,7 @@ export default function App() {
       const rest = withGroup.filter((t) => !reorderedIds.has(t.id));
       return [...reordered, ...rest];
     });
-    taskMutationInFlight.current++;
+    taskChangeInvalidator.beginTaskMutation();
     try {
       await patchTask(taskId, { groupId: groupId ?? ("" as any) });
       await reorderTasks(taskIds);
@@ -819,7 +816,7 @@ export default function App() {
       console.error("Failed to move and reorder:", err);
       await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
     } finally {
-      taskMutationInFlight.current--;
+      taskChangeInvalidator.endTaskMutation();
     }
   };
 
