@@ -1,33 +1,63 @@
-import { useState, useEffect } from "react";
-import {
-  fetchGlobalMcpStatus,
-  type AppSettings,
-  type McpServerConfig,
-  type McpServerStatus,
-  type Tag,
-} from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import type { AppSettings, Tag } from "../api";
 import { useSettingsQuery, useSettingsMutation } from "../hooks/queries/useSettings";
 import { useTagsQuery } from "../hooks/queries/useTags";
 import { Settings, ArrowLeft } from "lucide-react";
 import { useAppBack } from "../hooks/useAppBack";
-import EmptyState from "./shared/EmptyState";
 import {
-  SettingsSection,
   SystemPromptSection,
   ModelSection,
   ReasoningEffortSection,
   AppearanceSection,
   ProvidersSection,
-  ServerCard,
-  ServerEditor,
   TagsSection,
   VoiceInputSection,
   BridgeCommitsSection,
   CopilotUsageSection,
+  SettingsCategoryNav,
 } from "./settings";
+import { McpServersSection } from "./settings/McpServersSection";
+import {
+  DEFAULT_CATEGORY,
+  normalizeCategory,
+  type CategoryId,
+} from "./settings/settings-layout";
+
+function CategoryPanel({
+  category,
+  activeCategory,
+  children,
+}: {
+  category: CategoryId;
+  activeCategory: CategoryId;
+  children: React.ReactNode;
+}) {
+  const isActive = category === activeCategory;
+  const [hasBeenActive, setHasBeenActive] = useState(isActive);
+
+  useEffect(() => {
+    if (isActive) {
+      setHasBeenActive(true);
+    }
+  }, [isActive]);
+
+  return (
+    <div
+      role="tabpanel"
+      aria-hidden={!isActive}
+      hidden={!isActive}
+      className="space-y-6"
+      data-category-panel={category}
+    >
+      {hasBeenActive ? children : null}
+    </div>
+  );
+}
 
 export default function SettingsView() {
   const { goBack } = useAppBack();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: queriedSettings, isLoading: settingsLoading } = useSettingsQuery();
   const settingsMutation = useSettingsMutation();
   const { data: queriedTags = [] } = useTagsQuery();
@@ -36,10 +66,12 @@ export default function SettingsView() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [editingServer, setEditingServer] = useState<string | null>(null);
-  const [addingServer, setAddingServer] = useState(false);
-  const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpServerStatus>>({});
+  const [mcpSectionResetSignal, setMcpSectionResetSignal] = useState(0);
   const [tags, setTags] = useState<Tag[]>([]);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const groupParam = searchParams.get("group");
+  const activeCategory = normalizeCategory(groupParam);
 
   const hasChanges =
     settings && draft && JSON.stringify(settings) !== JSON.stringify(draft);
@@ -58,16 +90,40 @@ export default function SettingsView() {
     setTags(queriedTags);
   }, [queriedTags]);
 
-  // Fetch MCP status on mount
   useEffect(() => {
-    fetchGlobalMcpStatus()
-      .then((servers) => {
-        const map: Record<string, McpServerStatus> = {};
-        for (const s of servers) map[s.name] = s;
-        setMcpStatuses(map);
-      })
-      .catch(() => {});
-  }, []);
+    if (groupParam !== null && groupParam !== activeCategory) {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("group", activeCategory);
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [activeCategory, groupParam, setSearchParams]);
+
+  useEffect(() => {
+    scrollContainerRef.current?.scrollTo({ top: 0 });
+  }, [activeCategory]);
+
+  const setActiveCategory = useCallback(
+    (category: CategoryId) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (category === DEFAULT_CATEGORY) {
+            next.delete("group");
+          } else {
+            next.set("group", category);
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   const handleSave = async () => {
     if (!draft) return;
@@ -86,8 +142,7 @@ export default function SettingsView() {
 
   const handleDiscard = () => {
     if (settings) setDraft(structuredClone(settings));
-    setEditingServer(null);
-    setAddingServer(false);
+    setMcpSectionResetSignal((signal) => signal + 1);
   };
 
   const showToast = (msg: string) => {
@@ -95,33 +150,7 @@ export default function SettingsView() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const removeServer = (name: string) => {
-    if (!draft) return;
-    const next = structuredClone(draft);
-    delete next.mcpServers[name];
-    setDraft(next);
-    if (editingServer === name) setEditingServer(null);
-  };
-
-  const updateServer = (
-    name: string,
-    config: McpServerConfig,
-    newName?: string,
-  ) => {
-    if (!draft) return;
-    const next = structuredClone(draft);
-    if (newName && newName !== name) {
-      delete next.mcpServers[name];
-      next.mcpServers[newName] = config;
-    } else {
-      next.mcpServers[name] = config;
-    }
-    setDraft(next);
-    setEditingServer(null);
-    setAddingServer(false);
-  };
-
-  if (loading) {
+  if (loading || settingsLoading) {
     return (
       <div className="flex-1 flex items-center justify-center text-text-muted">
         Loading settings…
@@ -136,8 +165,6 @@ export default function SettingsView() {
       </div>
     );
   }
-
-  const serverEntries = Object.entries(draft.mcpServers);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -187,75 +214,39 @@ export default function SettingsView() {
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        <SystemPromptSection draft={draft} setDraft={setDraft} />
-        <ModelSection draft={draft} setDraft={setDraft} />
-        <ReasoningEffortSection draft={draft} setDraft={setDraft} />
-        <AppearanceSection draft={draft} setDraft={setDraft} />
-        <ProvidersSection draft={draft} setDraft={setDraft} />
-        <VoiceInputSection />
-        <BridgeCommitsSection />
-        <CopilotUsageSection />
-        <TagsSection tags={tags} setTags={setTags} />
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-6">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6 md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:items-start">
+          <SettingsCategoryNav
+            activeCategory={activeCategory}
+            onSelectCategory={setActiveCategory}
+            className="min-w-0"
+          />
 
-        {/* MCP Servers Section */}
-        <SettingsSection
-          title="MCP Servers"
-          description="Tool servers attached to every Copilot session. Changes apply on next interaction."
-          action={
-            <button
-              onClick={() => setAddingServer(true)}
-              disabled={addingServer}
-              className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
-            >
-              + Add Server
-            </button>
-          }
-        >
-          <div className="space-y-2">
-            {serverEntries.map(([name, cfg]) =>
-              editingServer === name ? (
-                <ServerEditor
-                  key={name}
-                  name={name}
-                  config={cfg}
-                  existingNames={serverEntries
-                    .map(([n]) => n)
-                    .filter((n) => n !== name)}
-                  onSave={(cfg, newName) => updateServer(name, cfg, newName)}
-                  onCancel={() => setEditingServer(null)}
-                />
-              ) : (
-                <ServerCard
-                  key={name}
-                  name={name}
-                  config={cfg}
-                  status={mcpStatuses[name]}
-                  onEdit={() => setEditingServer(name)}
-                  onRemove={() => removeServer(name)}
-                />
-              ),
-            )}
+          <div className="min-w-0">
+            <CategoryPanel category="general" activeCategory={activeCategory}>
+              <SystemPromptSection draft={draft} setDraft={setDraft} />
+              <ModelSection draft={draft} setDraft={setDraft} />
+              <ReasoningEffortSection draft={draft} setDraft={setDraft} />
+              <AppearanceSection draft={draft} setDraft={setDraft} />
+            </CategoryPanel>
 
-            {serverEntries.length === 0 && !addingServer && (
-              <EmptyState
-                message="No MCP servers"
-                sub="Add one to enable tool access"
+            <CategoryPanel category="integrations" activeCategory={activeCategory}>
+              <ProvidersSection draft={draft} setDraft={setDraft} />
+              <TagsSection tags={tags} setTags={setTags} />
+              <McpServersSection
+                draft={draft}
+                onDraftChange={setDraft}
+                resetSignal={mcpSectionResetSignal}
               />
-            )}
+            </CategoryPanel>
 
-            {addingServer && (
-              <ServerEditor
-                name=""
-                config={{ command: "", args: [] }}
-                existingNames={serverEntries.map(([n]) => n)}
-                onSave={(cfg, name) => updateServer(name!, cfg, name)}
-                onCancel={() => setAddingServer(false)}
-                isNew
-              />
-            )}
+            <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
+              <BridgeCommitsSection />
+              <CopilotUsageSection />
+              <VoiceInputSection />
+            </CategoryPanel>
           </div>
-        </SettingsSection>
+        </div>
       </div>
 
       {/* Sticky unsaved-changes bar */}

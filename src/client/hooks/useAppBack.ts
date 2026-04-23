@@ -1,5 +1,23 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+
+function getAppBackHistoryKey(pathname: string, search: string) {
+  if (pathname !== "/settings") {
+    return pathname + search;
+  }
+
+  const params = new URLSearchParams(search);
+  params.delete("group");
+  const normalizedSearch = params.toString();
+  return normalizedSearch ? `${pathname}?${normalizedSearch}` : pathname;
+}
+
+const MAX_STACK_SIZE = 50;
+
+let appBackStack: string[] = [];
+let currentHistoryKey: string | null = null;
+let currentUrl: string | null = null;
+let isGoingBack = false;
 
 /**
  * Tracks an app-internal navigation stack and provides a consistent
@@ -10,28 +28,29 @@ import { useLocation, useNavigate } from "react-router-dom";
 export function useAppBack() {
   const location = useLocation();
   const navigate = useNavigate();
-  const stackRef = useRef<string[]>([]);
-  const currentRef = useRef<string | null>(null);
-  const isGoingBackRef = useRef(false);
 
   useEffect(() => {
-    const path = location.pathname + location.search;
-    if (isGoingBackRef.current) {
+    const historyKey = getAppBackHistoryKey(location.pathname, location.search);
+    const nextUrl = location.pathname + location.search;
+
+    if (isGoingBack) {
       // Back-navigation: don't push the departing page onto the stack
-      isGoingBackRef.current = false;
-    } else if (currentRef.current && currentRef.current !== path) {
-      stackRef.current.push(currentRef.current);
-      // Cap the stack to avoid unbounded growth
-      if (stackRef.current.length > 50) {
-        stackRef.current = stackRef.current.slice(-50);
+      isGoingBack = false;
+    } else if (currentHistoryKey && currentUrl && currentHistoryKey !== historyKey) {
+      appBackStack.push(currentUrl);
+      if (appBackStack.length > MAX_STACK_SIZE) {
+        appBackStack = appBackStack.slice(-MAX_STACK_SIZE);
       }
     }
-    currentRef.current = path;
+
+    currentHistoryKey = historyKey;
+    currentUrl = nextUrl;
   }, [location.pathname, location.search]);
 
   const goBack = useCallback(() => {
-    isGoingBackRef.current = true;
-    const prev = stackRef.current.pop();
+    isGoingBack = true;
+    const prev = appBackStack.pop();
+
     if (prev) {
       navigate(prev);
     } else {
@@ -39,7 +58,7 @@ export function useAppBack() {
     }
   }, [navigate]);
 
-  const canGoBack = stackRef.current.length > 0;
+  const canGoBack = appBackStack.length > 0;
 
   return { goBack, canGoBack };
 }
