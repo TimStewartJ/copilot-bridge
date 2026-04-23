@@ -106,6 +106,7 @@ export interface ChatToolEntry {
   id?: string;
   type: "tool";
   toolCall: ToolCall;
+  liveSource?: "snapshot" | "event";
 }
 
 /** Union type for chronological chat rendering — either a text message or a tool call */

@@ -23,9 +23,10 @@ interface ToolCallBlockProps {
   childNodes?: ToolCallTreeNode[];
   renderChildNode?: (childNode: ToolCallTreeNode) => React.ReactNode;
   defaultExpanded?: boolean;
+  contextOnly?: boolean;
 }
 
-export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderChildNode, defaultExpanded = false }: ToolCallBlockProps) {
+export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderChildNode, defaultExpanded = false, contextOnly = false }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(defaultExpanded && childNodes.length > 0);
   const [showFullModal, setShowFullModal] = useState(false);
   const autoExpandedRef = useRef(defaultExpanded && childNodes.length > 0);
@@ -35,8 +36,8 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
   const hasDetails = hasResult || hasToolArgs(toolCall.args) || !!progressText || childNodes.length > 0;
   const timeLabel = useMemo(() => formatToolTime(toolCall), [toolCall.startedAt, toolCall.completedAt]);
   const status = useMemo(
-    () => getToolCallStatus(toolCall),
-    [toolCall.completedAt, toolCall.result, toolCall.success],
+    () => contextOnly ? null : getToolCallStatus(toolCall),
+    [contextOnly, toolCall.completedAt, toolCall.result, toolCall.success],
   );
 
   useEffect(() => {

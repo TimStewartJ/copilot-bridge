@@ -100,11 +100,12 @@ describe("event-bus", () => {
       const bus = getOrCreateBus("test-done-1");
       bus.emit({ type: "delta", content: "some text" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
-      bus.emit({ type: "done", content: "Final answer" });
+      bus.emit({ type: "done", content: "Final answer", timestamp: "2026-04-24T00:00:00.000Z" });
 
       const snap = bus.getSnapshot();
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("done");
+      expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:00.000Z");
       expect(snap.finalContent).toBe("Final answer");
       expect(snap.accumulatedContent).toBe("");
       expect(snap.activeTools).toEqual([]);
@@ -123,22 +124,26 @@ describe("event-bus", () => {
 
     it("aborted marks complete with terminal type", () => {
       const bus = getOrCreateBus("test-aborted-1");
-      bus.emit({ type: "aborted", content: "Partial answer" });
+      bus.emit({ type: "aborted", content: "Partial answer", timestamp: "2026-04-24T00:00:01.000Z" });
 
       const snap = bus.getSnapshot();
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("aborted");
+      expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:01.000Z");
       expect(snap.finalContent).toBe("Partial answer");
     });
 
     it("shutdown marks complete with terminal type", () => {
       const bus = getOrCreateBus("test-shutdown-1");
-      bus.emit({ type: "shutdown", content: "Partial answer" });
+      bus.emit({ type: "intent", intent: "Exploring codebase" });
+      bus.emit({ type: "shutdown", content: "Partial answer", timestamp: "2026-04-24T00:00:02.000Z" });
 
       const snap = bus.getSnapshot();
       expect(snap.complete).toBe(true);
       expect(snap.terminalType).toBe("shutdown");
+      expect(snap.terminalTimestamp).toBe("2026-04-24T00:00:02.000Z");
       expect(snap.finalContent).toBe("Partial answer");
+      expect(snap.intentText).toBe("");
     });
   });
 

@@ -94,4 +94,83 @@ describe("tool call tree helpers", () => {
     expect(roots[0]?.toolCall.toolCallId).toBe("subagent-1");
     expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-2"]);
   });
+
+  it("does not replay ancestor completion state when only a later child row is visible", () => {
+    const fullForest = buildToolCallForest([
+      createToolCall("subagent-1", {
+        isSubAgent: true,
+        result: "Final summary",
+        success: true,
+        completedAt: "2026-04-23T21:00:00.000Z",
+      }),
+      createToolCall("bash-2", {
+        parentToolCallId: "subagent-1",
+        success: true,
+        completedAt: "2026-04-23T21:01:00.000Z",
+      }),
+    ]);
+
+    const roots = buildRenderableSegmentRoots([
+      {
+        id: "tool-3",
+        type: "tool",
+        toolCall: createToolCall("bash-2", {
+          parentToolCallId: "subagent-1",
+          success: true,
+          completedAt: "2026-04-23T21:01:00.000Z",
+        }),
+      },
+    ], fullForest);
+
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.toolCall.toolCallId).toBe("subagent-1");
+    expect(roots[0]?.isContextOnly).toBe(true);
+    expect(roots[0]?.toolCall.result).toBeUndefined();
+    expect(roots[0]?.toolCall.success).toBeUndefined();
+    expect(roots[0]?.toolCall.completedAt).toBeUndefined();
+    expect(roots[0]?.runningCount).toBe(0);
+    expect(roots[0]?.doneCount).toBe(1);
+  });
+
+  it("uses the segment-local tool snapshot when the same tool appears again later", () => {
+    const earlyTool = createToolCall("tool-1", {
+      startedAt: "2026-04-23T21:00:00.000Z",
+      progressText: "Running",
+    });
+    const lateTool = createToolCall("tool-1", {
+      startedAt: "2026-04-23T21:00:00.000Z",
+      result: "Done",
+      success: true,
+      completedAt: "2026-04-23T21:00:05.000Z",
+    });
+    const fullForest = buildToolCallForest([earlyTool, lateTool]);
+
+    const earlyRoots = buildRenderableSegmentRoots([
+      { id: "tool-1-early", type: "tool", toolCall: earlyTool },
+    ], fullForest);
+    const lateRoots = buildRenderableSegmentRoots([
+      { id: "tool-1-late", type: "tool", toolCall: lateTool },
+    ], fullForest);
+
+    expect(earlyRoots[0]?.toolCall.progressText).toBe("Running");
+    expect(earlyRoots[0]?.toolCall.completedAt).toBeUndefined();
+    expect(lateRoots[0]?.toolCall.result).toBe("Done");
+    expect(lateRoots[0]?.toolCall.completedAt).toBe("2026-04-23T21:00:05.000Z");
+  });
+
+  it("preserves segment-local sibling order for later child-only segments", () => {
+    const fullForest = buildToolCallForest([
+      createToolCall("subagent-1", { isSubAgent: true }),
+      createToolCall("bash-a", { parentToolCallId: "subagent-1" }),
+      createToolCall("bash-b", { parentToolCallId: "subagent-1" }),
+    ]);
+
+    const roots = buildRenderableSegmentRoots([
+      { id: "tool-b", type: "tool", toolCall: createToolCall("bash-b", { parentToolCallId: "subagent-1" }) },
+      { id: "tool-a", type: "tool", toolCall: createToolCall("bash-a", { parentToolCallId: "subagent-1" }) },
+    ], fullForest);
+
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-b", "bash-a"]);
+  });
 });

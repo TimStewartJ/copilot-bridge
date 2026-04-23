@@ -12,6 +12,13 @@ export interface PendingTool {
   progressText?: string;
 }
 
+export interface PendingToolPrelude {
+  toolCallId: string;
+  name?: string;
+  progressText?: string;
+  isSubAgent?: boolean;
+}
+
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
 export type PendingOrigin = "message" | "fleet" | "reconnect" | null;
 
@@ -26,12 +33,110 @@ export interface StreamState {
   pendingOrigin: PendingOrigin;
 }
 
+function upsertPendingTool(tools: PendingTool[], nextTool: PendingTool): PendingTool[] {
+  const existingIndex = tools.findIndex((tool) => tool.toolCallId === nextTool.toolCallId);
+  if (existingIndex < 0) return [...tools, nextTool];
+  return tools.map((tool, index) => (
+    index === existingIndex
+      ? { ...tool, ...nextTool, toolCallId: tool.toolCallId }
+      : tool
+  ));
+}
+
+function patchPendingTool(tools: PendingTool[], toolCallId: string, patch: Partial<PendingTool>): PendingTool[] {
+  return tools.map((tool) => (
+    tool.toolCallId === toolCallId
+      ? { ...tool, ...patch, toolCallId: tool.toolCallId }
+      : tool
+  ));
+}
+
+function removePendingTool(tools: PendingTool[], toolCallId: string): PendingTool[] {
+  return tools.filter((tool) => tool.toolCallId !== toolCallId);
+}
+
+export function getKnownToolName(name: unknown): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const normalized = name.trim();
+  return normalized && normalized !== "unknown" ? normalized : undefined;
+}
+
+export function bufferPendingToolPrelude(
+  existing: PendingToolPrelude | undefined,
+  patch: PendingToolPrelude,
+): PendingToolPrelude {
+  return {
+    toolCallId: patch.toolCallId,
+    name: patch.name ?? existing?.name,
+    progressText: patch.progressText ?? existing?.progressText,
+    isSubAgent: patch.isSubAgent ?? existing?.isSubAgent,
+  };
+}
+
+export function resolvePendingToolName(name: unknown, prelude?: PendingToolPrelude): string {
+  return getKnownToolName(name) ?? prelude?.name ?? "unknown";
+}
+
+export function materializePendingTool<T extends Pick<PendingTool, "name" | "progressText" | "isSubAgent">>(
+  tool: T,
+  prelude?: PendingToolPrelude,
+): T {
+  if (!prelude) return tool;
+  return {
+    ...tool,
+    progressText: prelude.progressText ?? tool.progressText,
+    isSubAgent: tool.isSubAgent ?? prelude.isSubAgent,
+  };
+}
+
+export function collectTerminalPendingTools(
+  activeTools: Iterable<PendingTool>,
+  renderedTools: PendingTool[],
+  preludes: Iterable<PendingToolPrelude>,
+): PendingTool[] {
+  const collected: PendingTool[] = [];
+  const indexByToolCallId = new Map<string, number>();
+  const upsert = (tool: PendingTool) => {
+    const existingIndex = indexByToolCallId.get(tool.toolCallId);
+    if (existingIndex === undefined) {
+      indexByToolCallId.set(tool.toolCallId, collected.length);
+      collected.push(tool);
+      return;
+    }
+    const existing = collected[existingIndex];
+    collected[existingIndex] = {
+      ...existing,
+      ...tool,
+      toolCallId: existing.toolCallId,
+      name: getKnownToolName(tool.name) ?? getKnownToolName(existing.name) ?? tool.name ?? existing.name,
+      args: tool.args ?? existing.args,
+      parentToolCallId: tool.parentToolCallId ?? existing.parentToolCallId,
+      isSubAgent: tool.isSubAgent ?? existing.isSubAgent,
+      startedAt: tool.startedAt ?? existing.startedAt,
+      progressText: tool.progressText ?? existing.progressText,
+    };
+  };
+
+  for (const tool of renderedTools) upsert(tool);
+  for (const tool of activeTools) upsert(tool);
+  for (const prelude of preludes) {
+    upsert(materializePendingTool({
+      toolCallId: prelude.toolCallId,
+      name: resolvePendingToolName(undefined, prelude),
+    }, prelude));
+  }
+
+  return collected;
+}
+
 function createToolEntry(
   tool: Pick<PendingTool, "toolCallId" | "name" | "args" | "parentToolCallId" | "isSubAgent" | "startedAt" | "progressText">,
   partial: Partial<ToolCall> = {},
+  liveSource: "snapshot" | "event" = "event",
 ): ChatEntry {
   return {
     type: "tool",
+    liveSource,
     toolCall: {
       toolCallId: tool.toolCallId,
       name: tool.name,
@@ -66,6 +171,17 @@ function formatTerminalContent(content: string, terminalType?: string): string {
   return content;
 }
 
+export function buildTerminalToolEntries(
+  tools: PendingTool[],
+  terminalType: "done" | "error" | "aborted" | "shutdown",
+  completedAt?: string,
+): ChatEntry[] {
+  return tools.map((tool) => createToolEntry(tool, {
+    success: terminalType === "done",
+    ...(completedAt ? { completedAt } : {}),
+  }));
+}
+
 export function useSessionStream(
   sessionId: string | null,
   onEntriesAppended: (entries: ChatEntry[]) => void,
@@ -94,12 +210,16 @@ export function useSessionStream(
   onTitleChangedRef.current = onTitleChanged;
 
   const retryCountRef = useRef(0);
+  const renderedActiveToolsRef = useRef<PendingTool[]>([]);
 
   const connectStream = useCallback((sid: string, pendingOrigin: PendingOrigin = "reconnect") => {
     abortRef.current?.abort();
     const abort = new AbortController();
     abortRef.current = abort;
 
+    if (pendingOrigin !== "reconnect") {
+      renderedActiveToolsRef.current = [];
+    }
     setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin }));
 
     fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
@@ -122,6 +242,23 @@ export function useSessionStream(
 
         // Plain Map for synchronous metadata access on tool_done
         const activeToolMeta = new Map<string, PendingTool>();
+        const pendingToolPrelude = new Map<string, PendingToolPrelude>();
+        const emitTerminalToolEntries = (
+          terminalType: "done" | "error" | "aborted" | "shutdown",
+          completedAt?: string,
+        ) => {
+          const tools = collectTerminalPendingTools(
+            activeToolMeta.values(),
+            renderedActiveToolsRef.current,
+            pendingToolPrelude.values(),
+          ).filter((tool) => !isHiddenTool(tool.name, tool.args, sid));
+          if (tools.length > 0) {
+            onEntriesRef.current(buildTerminalToolEntries(tools, terminalType, completedAt));
+          }
+          activeToolMeta.clear();
+          pendingToolPrelude.clear();
+          renderedActiveToolsRef.current = [];
+        };
 
         while (true) {
           const { done, value } = await reader.read();
@@ -140,6 +277,10 @@ export function useSessionStream(
               switch (event.type) {
                 case "snapshot": {
                   if (event.complete) {
+                    emitTerminalToolEntries(
+                      event.terminalType ?? (event.errorMessage ? "error" : "done"),
+                      event.terminalTimestamp ?? event.timestamp,
+                    );
                     if (event.errorMessage) {
                       onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.errorMessage}` }]);
                     } else if (typeof event.finalContent === "string" && event.finalContent.length > 0) {
@@ -166,9 +307,11 @@ export function useSessionStream(
                       isSubAgent: t.isSubAgent,
                     }));
                   activeToolMeta.clear();
+                  pendingToolPrelude.clear();
                   for (const t of tools) activeToolMeta.set(t.toolCallId, t);
+                  renderedActiveToolsRef.current = tools;
                   if (tools.length > 0) {
-                    onEntriesRef.current(tools.map((tool) => createToolEntry(tool)));
+                    onEntriesRef.current(tools.map((tool) => createToolEntry(tool, {}, "snapshot")));
                   }
                   setStreamState((prev) => ({
                     ...prev,
@@ -211,16 +354,19 @@ export function useSessionStream(
                   }));
                   break;
                 case "tool_start": {
-                  const tool: PendingTool = {
+                  const prelude = event.toolCallId ? pendingToolPrelude.get(event.toolCallId) : undefined;
+                  const tool = materializePendingTool<PendingTool>({
                     toolCallId: event.toolCallId ?? "",
-                    name: event.name ?? "unknown",
+                    name: resolvePendingToolName(event.name, prelude),
                     args: event.args,
                     parentToolCallId: event.parentToolCallId,
                     isSubAgent: event.isSubAgent,
                     startedAt: event.timestamp,
-                  };
+                  }, prelude);
+                  if (tool.toolCallId) pendingToolPrelude.delete(tool.toolCallId);
                   if (isHiddenTool(tool.name, tool.args, sid)) break;
                   activeToolMeta.set(tool.toolCallId, tool);
+                  renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, tool);
                   onEntriesRef.current([createToolEntry(tool)]);
                   setStreamState((s) => ({
                     ...s,
@@ -234,13 +380,24 @@ export function useSessionStream(
                 case "tool_progress":
                   if (typeof event.toolCallId === "string") {
                     const meta = activeToolMeta.get(event.toolCallId);
-                    if (meta) meta.progressText = event.message ?? meta.progressText;
-                    const nextTool = meta ?? {
-                      toolCallId: event.toolCallId,
-                      name: event.name ?? "unknown",
-                      progressText: event.message ?? "",
-                    };
-                    onEntriesRef.current([createToolEntry(nextTool, { progressText: event.message ?? nextTool.progressText })]);
+                    if (meta) {
+                      meta.progressText = event.message ?? meta.progressText;
+                      const nextTool = {
+                        ...meta,
+                        progressText: event.message ?? meta.progressText,
+                      };
+                      renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, nextTool);
+                      onEntriesRef.current([createToolEntry(nextTool)]);
+                    } else {
+                      pendingToolPrelude.set(
+                        event.toolCallId,
+                        bufferPendingToolPrelude(pendingToolPrelude.get(event.toolCallId), {
+                          toolCallId: event.toolCallId,
+                          name: getKnownToolName(event.name),
+                          progressText: event.message ?? "",
+                        }),
+                      );
+                    }
                     setStreamState((s) => ({
                       ...s,
                       activeTools: s.activeTools.map((tool) =>
@@ -254,13 +411,24 @@ export function useSessionStream(
                 case "tool_output":
                   if (typeof event.toolCallId === "string") {
                     const meta = activeToolMeta.get(event.toolCallId);
-                    if (meta) meta.progressText = event.content ?? meta.progressText;
-                    const nextTool = meta ?? {
-                      toolCallId: event.toolCallId,
-                      name: event.name ?? "unknown",
-                      progressText: event.content ?? "",
-                    };
-                    onEntriesRef.current([createToolEntry(nextTool, { progressText: event.content ?? nextTool.progressText })]);
+                    if (meta) {
+                      meta.progressText = event.content ?? meta.progressText;
+                      const nextTool = {
+                        ...meta,
+                        progressText: event.content ?? meta.progressText,
+                      };
+                      renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, nextTool);
+                      onEntriesRef.current([createToolEntry(nextTool)]);
+                    } else {
+                      pendingToolPrelude.set(
+                        event.toolCallId,
+                        bufferPendingToolPrelude(pendingToolPrelude.get(event.toolCallId), {
+                          toolCallId: event.toolCallId,
+                          name: getKnownToolName(event.name),
+                          progressText: event.content ?? "",
+                        }),
+                      );
+                    }
                     setStreamState((s) => ({
                       ...s,
                       activeTools: s.activeTools.map((tool) =>
@@ -276,6 +444,11 @@ export function useSessionStream(
                   if (meta) {
                     meta.name = event.name ?? meta.name;
                     meta.isSubAgent = (event.isSubAgent as boolean) ?? meta.isSubAgent;
+                    renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, {
+                      ...meta,
+                      name: event.name ?? meta.name,
+                      isSubAgent: (event.isSubAgent as boolean) ?? meta.isSubAgent,
+                    });
                     onEntriesRef.current([createToolEntry(meta)]);
                   }
                   setStreamState((s) => ({
@@ -286,23 +459,36 @@ export function useSessionStream(
                         : t,
                     ),
                   }));
+                  if (!meta && typeof event.toolCallId === "string") {
+                    pendingToolPrelude.set(
+                      event.toolCallId,
+                      bufferPendingToolPrelude(pendingToolPrelude.get(event.toolCallId), {
+                        toolCallId: event.toolCallId,
+                        name: getKnownToolName(event.name),
+                        isSubAgent: event.isSubAgent as boolean | undefined,
+                      }),
+                    );
+                  }
                   break;
                 }
                 case "tool_done": {
                   const meta = activeToolMeta.get(event.toolCallId);
-                  const toolName = meta?.name ?? event.name ?? "unknown";
+                  const prelude = pendingToolPrelude.get(event.toolCallId);
+                  const toolName = meta?.name ?? resolvePendingToolName(event.name, prelude);
                   const toolArgs = meta?.args;
+                  pendingToolPrelude.delete(event.toolCallId);
                   if (isHiddenTool(toolName, toolArgs, sid)) break;
                   activeToolMeta.delete(event.toolCallId);
+                  renderedActiveToolsRef.current = removePendingTool(renderedActiveToolsRef.current, event.toolCallId);
                   const tc: ToolCall = {
                     toolCallId: event.toolCallId ?? "",
                     name: toolName,
                     args: meta?.args,
                     result: event.result,
-                    progressText: meta?.progressText,
+                    progressText: meta?.progressText ?? prelude?.progressText,
                     success: event.success,
                     parentToolCallId: meta?.parentToolCallId ?? event.parentToolCallId,
-                    isSubAgent: meta?.isSubAgent ?? event.isSubAgent,
+                    isSubAgent: meta?.isSubAgent ?? prelude?.isSubAgent ?? event.isSubAgent,
                     startedAt: meta?.startedAt,
                     completedAt: event.timestamp,
                   };
@@ -318,6 +504,7 @@ export function useSessionStream(
                   onTitleChangedRef.current();
                   break;
                 case "done":
+                  emitTerminalToolEntries("done", event.timestamp);
                   if (event.content) {
                     onEntriesRef.current([{ role: "assistant", content: event.content }]);
                   }
@@ -326,6 +513,7 @@ export function useSessionStream(
                   accumulatedContent = "";
                   break;
                 case "aborted": {
+                  emitTerminalToolEntries("aborted", event.timestamp);
                   const text = event.content || accumulatedContent;
                   if (text) {
                     onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "aborted") }]);
@@ -335,6 +523,7 @@ export function useSessionStream(
                   break;
                 }
                 case "shutdown": {
+                  emitTerminalToolEntries("shutdown", event.timestamp);
                   const text = event.content || accumulatedContent;
                   if (text) {
                     onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "shutdown") }]);
@@ -344,6 +533,7 @@ export function useSessionStream(
                   break;
                 }
                 case "error":
+                  emitTerminalToolEntries("error", event.timestamp);
                   onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   break;
@@ -376,6 +566,7 @@ export function useSessionStream(
   useEffect(() => {
     sessionRef.current = sessionId;
     retryCountRef.current = 0;
+    renderedActiveToolsRef.current = [];
     setStreamState(mkState("idle"));
     abortRef.current?.abort();
     return () => { abortRef.current?.abort(); };

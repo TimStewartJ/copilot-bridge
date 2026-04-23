@@ -29,10 +29,11 @@ function createUserMessage(id: string, content = id): ChatEntry {
   };
 }
 
-function createToolEntry(toolCallId: string): ChatEntry {
+function createToolEntry(toolCallId: string, liveSource?: "snapshot" | "event"): ChatEntry {
   return {
     id: `tool-${toolCallId}`,
     type: "tool",
+    ...(liveSource ? { liveSource } : {}),
     toolCall: {
       toolCallId,
       name: "view",
@@ -287,6 +288,76 @@ describe("appendLiveEntries", () => {
         toolCallId: "tool-1",
         progressText: "Reading file...",
         startedAt: "2026-04-22T20:00:00.000Z",
+      },
+    });
+  });
+
+  it("appends later tool completion after an intervening message instead of rewriting the original row", () => {
+    const previousEntries = [
+      createToolEntry("tool-1"),
+      { id: "entry-2", role: "assistant", content: "Checkpoint" } satisfies ChatEntry,
+    ];
+
+    const merged = appendLiveEntries(previousEntries, [
+      {
+        id: "stream-tool-1",
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-1",
+          name: "view",
+          result: "done",
+          success: true,
+          completedAt: "2026-04-22T20:00:02.000Z",
+        },
+      } satisfies ChatEntry,
+    ]);
+
+    expect(merged).toHaveLength(3);
+    expect(merged[0]).toMatchObject({
+      type: "tool",
+      toolCall: {
+        toolCallId: "tool-1",
+      },
+    });
+    expect(merged[0]?.type === "tool" ? merged[0].toolCall.completedAt : undefined).toBeUndefined();
+    expect(merged[2]).toMatchObject({
+      id: "stream-tool-1",
+      type: "tool",
+      toolCall: {
+        toolCallId: "tool-1",
+        result: "done",
+        success: true,
+        completedAt: "2026-04-22T20:00:02.000Z",
+      },
+    });
+  });
+
+  it("merges reconnect snapshot tool state into the existing row after an intervening message", () => {
+    const previousEntries = [
+      createToolEntry("tool-1"),
+      { id: "entry-2", role: "assistant", content: "Checkpoint" } satisfies ChatEntry,
+    ];
+
+    const merged = appendLiveEntries(previousEntries, [
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        toolCall: {
+          toolCallId: "tool-1",
+          name: "view",
+          progressText: "Still running",
+        },
+      } satisfies ChatEntry,
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({
+      id: "tool-tool-1",
+      type: "tool",
+      liveSource: "snapshot",
+      toolCall: {
+        toolCallId: "tool-1",
+        progressText: "Still running",
       },
     });
   });

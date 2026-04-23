@@ -18,6 +18,6 @@ export default memo(function ToolCallTree({ node, defaultExpanded = false }: Too
   );
 
   return node.toolCall.isSubAgent
-    ? <SubAgentGroup agentTool={node.toolCall} childNodes={node.children} renderChildNode={renderChildNode} defaultExpanded={defaultExpanded} />
-    : <ToolCallBlock toolCall={node.toolCall} childNodes={node.children} renderChildNode={renderChildNode} defaultExpanded={defaultExpanded} />;
+    ? <SubAgentGroup agentTool={node.toolCall} childNodes={node.children} renderChildNode={renderChildNode} defaultExpanded={defaultExpanded} contextOnly={node.isContextOnly} />
+    : <ToolCallBlock toolCall={node.toolCall} childNodes={node.children} renderChildNode={renderChildNode} defaultExpanded={defaultExpanded} contextOnly={node.isContextOnly} />;
 });
