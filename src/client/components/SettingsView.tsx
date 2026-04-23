@@ -3,8 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import type { AppSettings, Tag } from "../api";
 import { useSettingsQuery, useSettingsMutation } from "../hooks/queries/useSettings";
 import { useTagsQuery } from "../hooks/queries/useTags";
-import { Settings, ArrowLeft } from "lucide-react";
-import { useAppBack } from "../hooks/useAppBack";
+import { Settings } from "lucide-react";
 import {
   SystemPromptSection,
   ModelSection,
@@ -56,7 +55,6 @@ function CategoryPanel({
 }
 
 export default function SettingsView() {
-  const { goBack } = useAppBack();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: queriedSettings, isLoading: settingsLoading } = useSettingsQuery();
   const settingsMutation = useSettingsMutation();
@@ -170,19 +168,10 @@ export default function SettingsView() {
     <div className="flex-1 flex flex-col min-h-0">
       {/* Header */}
       <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-secondary">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={goBack}
-            className="text-text-muted hover:text-accent transition-colors text-sm flex items-center gap-1"
-          >
-            <ArrowLeft size={14} />
-            Back
-          </button>
-          <h1 className="text-lg font-medium text-text-primary flex items-center gap-1.5">
-            <Settings size={16} className="text-text-muted" />
-            Settings
-          </h1>
-        </div>
+        <h1 className="text-lg font-medium text-text-primary flex items-center gap-1.5">
+          <Settings size={16} className="text-text-muted" />
+          Settings
+        </h1>
         <div className="flex items-center gap-2">
           {hasChanges && (
             <button
