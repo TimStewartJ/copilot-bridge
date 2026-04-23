@@ -75,6 +75,14 @@ export function VoiceInputSection() {
           </span>
         </div>
 
+        <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+          Voice input is intentionally configured at the host level so command paths, model files, and GPU flags are not editable from the app. Set the environment variables below in <code>.env</code> or the process environment, then restart the Bridge.
+        </div>
+
+        <pre className="overflow-x-auto rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">
+          <code>{REQUIRED_ENV_VARS.join("\n")}</code>
+        </pre>
+
         {status && (
           <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2">
             <div>
@@ -103,14 +111,6 @@ export function VoiceInputSection() {
             Status check failed: {error}
           </div>
         )}
-
-        <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
-          Voice input is intentionally configured at the host level so command paths, model files, and GPU flags are not editable from the app. Set the environment variables below in <code>.env</code> or the process environment, then restart the Bridge.
-        </div>
-
-        <pre className="overflow-x-auto rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">
-          <code>{REQUIRED_ENV_VARS.join("\n")}</code>
-        </pre>
       </div>
     </SettingsSection>
   );
