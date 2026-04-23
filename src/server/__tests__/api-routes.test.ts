@@ -1375,6 +1375,29 @@ describe("Session routes (mocked)", () => {
     expect(res.body).toHaveProperty("sessions");
   });
 
+  it("GET /api/sessions keeps sessions visible when only a title override exists", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "dup-session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("dup-session", "Copy of Original session");
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "dup-session",
+        summary: "Copy of Original session",
+      }),
+    ]);
+  });
+
   it("GET /api/sessions includes runState while keeping busy derived for stalled sessions", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
@@ -1435,6 +1458,29 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("schedules");
     expect(Array.isArray(res.body.schedules)).toBe(true);
+  });
+
+  it("GET /api/dashboard keeps sessions visible when only a title override exists", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "dup-session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("dup-session", "Copy of Original session");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.unreadSessions).toEqual([
+      expect.objectContaining({
+        sessionId: "dup-session",
+        title: "Copy of Original session",
+      }),
+    ]);
   });
 
   it("GET /api/dashboard enriches schedules with task title", async () => {
@@ -1605,6 +1651,24 @@ describe("Session manager routes", () => {
     const res = await request(app).post("/api/sessions/test-id/duplicate");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("sessionId");
+  });
+
+  it("POST /api/sessions/:id/duplicate seeds the copied title from the source summary", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "test-id",
+        summary: "Original session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/duplicate");
+
+    expect(res.status).toBe(200);
+    expect(ctx.sessionTitles.getTitle("dup-session")).toBe("Copy of Original session");
   });
 
   it("POST /api/sessions/:id/reload reloads a session", async () => {
