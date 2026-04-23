@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { get } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import request from "supertest";
 import type { Express } from "express";
 import { join } from "node:path";
@@ -26,6 +27,31 @@ const TRANSCRIPTION_ENV_KEYS = [
 const ORIGINAL_TRANSCRIPTION_ENV = Object.fromEntries(
   TRANSCRIPTION_ENV_KEYS.map((key) => [key, process.env[key]]),
 ) as Record<(typeof TRANSCRIPTION_ENV_KEYS)[number], string | undefined>;
+const COPILOT_USAGE_TEST_ROOT = join(process.cwd(), "data", "test-api-copilot-usage");
+const copilotUsageTestDirs: string[] = [];
+
+function createCopilotUsageTestHome(options?: { dotDir?: boolean }): string {
+  const rootDir = join(COPILOT_USAGE_TEST_ROOT, randomUUID());
+  const copilotHome = options?.dotDir ? join(rootDir, ".copilot") : rootDir;
+  mkdirSync(copilotHome, { recursive: true });
+  copilotUsageTestDirs.push(rootDir);
+  return copilotHome;
+}
+
+function writeCopilotUsageEvents(copilotHome: string, sessionId: string, events: unknown[]): void {
+  const sessionDir = join(copilotHome, "session-state", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    join(sessionDir, "events.jsonl"),
+    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+  );
+}
+
+function writeRawCopilotUsageEvents(copilotHome: string, sessionId: string, lines: string[]): void {
+  const sessionDir = join(copilotHome, "session-state", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(join(sessionDir, "events.jsonl"), `${lines.join("\n")}\n`);
+}
 
 beforeEach(() => {
   clearRestartPending();
@@ -45,6 +71,9 @@ afterEach(() => {
     } else {
       process.env[key] = original;
     }
+  }
+  for (const dir of copilotUsageTestDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1543,6 +1572,367 @@ describe("Session routes (mocked)", () => {
     expect(res.body.orphanSessions).toEqual([
       expect.objectContaining({ sessionId: "stall-1", runState: "stalled", busy: true, unread: true }),
     ]);
+  });
+
+  it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 3, cost: 99 },
+              usage: { inputTokens: 12, outputTokens: 8, cacheReadTokens: 2, cacheWriteTokens: 1, reasoningTokens: 4 },
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      generatedAt: expect.any(String),
+      totals: {
+        requests: 3,
+        inputTokens: 12,
+        outputTokens: 8,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 1,
+        reasoningTokens: 4,
+        totalTokens: 27,
+      },
+      coverage: {
+        sessionsSeen: 1,
+        sessionsWithEvents: 1,
+        sessionsIncluded: 1,
+        sessionsSkipped: 0,
+        skippedByReason: {
+          no_events: 0,
+          no_shutdown: 0,
+          empty_model_metrics: 0,
+          parse_error: 0,
+        },
+        earliestIncludedAt: "2026-05-01T12:00:00.000Z",
+        latestIncludedAt: "2026-05-01T12:00:00.000Z",
+        earliestSkippedAt: null,
+        latestSkippedAt: null,
+      },
+      models: [
+        {
+          model: "gpt-4o",
+          sessions: 1,
+          requests: 3,
+          inputTokens: 12,
+          outputTokens: 8,
+          cacheReadTokens: 2,
+          cacheWriteTokens: 1,
+          reasoningTokens: 4,
+          totalTokens: 27,
+        },
+      ],
+    });
+    expect(res.body.totals).not.toHaveProperty("cost");
+    expect(res.body.models[0]).not.toHaveProperty("cost");
+    expect(JSON.stringify(res.body)).not.toContain(copilotHome);
+  });
+
+  it("GET /api/copilot-usage supports refresh=1 cache bypass", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-01T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 1 },
+              usage: { inputTokens: 5, outputTokens: 4 },
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const initial = await request(app).get("/api/copilot-usage");
+    expect(initial.status).toBe(200);
+    expect(initial.body.totals.totalTokens).toBe(9);
+
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-02T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 2 },
+              usage: { inputTokens: 20, outputTokens: 10 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const cached = await request(app).get("/api/copilot-usage");
+    expect(cached.status).toBe(200);
+    expect(cached.body.totals.totalTokens).toBe(9);
+
+    const refreshed = await request(app).get("/api/copilot-usage?refresh=1");
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.totals.totalTokens).toBe(30);
+    expect(refreshed.body.totals.requests).toBe(2);
+  });
+
+  it("GET /api/copilot-usage reads from injected copilotHome", async () => {
+    const copilotHome = createCopilotUsageTestHome({ dotDir: true });
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-03T12:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "claude-sonnet": {
+              requests: { count: 2 },
+              usage: { outputTokens: 11 },
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([
+      expect.objectContaining({
+        model: "claude-sonnet",
+        requests: 2,
+        totalTokens: 11,
+      }),
+    ]);
+  });
+
+  it("GET /api/copilot-usage handles zero-includable histories cleanly", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    mkdirSync(join(copilotHome, "session-state", "no-events"), { recursive: true });
+    writeCopilotUsageEvents(copilotHome, "no-shutdown", [
+      { type: "assistant.message", timestamp: "2026-05-04T12:00:00.000Z", data: { content: "still running" } },
+    ]);
+    writeCopilotUsageEvents(copilotHome, "empty-metrics", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-04T13:00:00.000Z",
+        data: { modelMetrics: {} },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals).toEqual({
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+    });
+    expect(res.body.models).toEqual([]);
+    expect(res.body.coverage).toEqual({
+      sessionsSeen: 3,
+      sessionsWithEvents: 2,
+      sessionsIncluded: 0,
+      sessionsSkipped: 3,
+      skippedByReason: {
+        no_events: 1,
+        no_shutdown: 1,
+        empty_model_metrics: 1,
+        parse_error: 0,
+      },
+      earliestIncludedAt: null,
+      latestIncludedAt: null,
+      earliestSkippedAt: "2026-05-04T13:00:00.000Z",
+      latestSkippedAt: "2026-05-04T13:00:00.000Z",
+    });
+  });
+
+  it("GET /api/copilot-usage omits malformed shutdown timestamps from coverage fields", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "not-a-real-timestamp",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 2 },
+              usage: { inputTokens: 7, outputTokens: 5 },
+            },
+          },
+        },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals.totalTokens).toBe(12);
+    expect(res.body.coverage).toEqual({
+      sessionsSeen: 1,
+      sessionsWithEvents: 1,
+      sessionsIncluded: 1,
+      sessionsSkipped: 0,
+      skippedByReason: {
+        no_events: 0,
+        no_shutdown: 0,
+        empty_model_metrics: 0,
+        parse_error: 0,
+      },
+      earliestIncludedAt: null,
+      latestIncludedAt: null,
+      earliestSkippedAt: null,
+      latestSkippedAt: null,
+    });
+  });
+
+  it("GET /api/copilot-usage keeps earlier persisted shutdown summaries when a session resumes", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeCopilotUsageEvents(copilotHome, "usage-session", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-05T08:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 2 },
+              usage: { inputTokens: 10, outputTokens: 3 },
+            },
+          },
+        },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-05-05T08:05:00.000Z",
+        data: { content: "session resumed" },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-05-05T09:00:00.000Z",
+        data: {
+          modelMetrics: {
+            o3: {
+              requests: { count: 1 },
+              usage: { reasoningTokens: 6 },
+            },
+          },
+        },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-05-05T09:05:00.000Z",
+        data: { content: "active tail" },
+      },
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals).toEqual({
+      requests: 3,
+      inputTokens: 10,
+      outputTokens: 3,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 6,
+      totalTokens: 19,
+    });
+    expect(res.body.coverage).toEqual({
+      sessionsSeen: 1,
+      sessionsWithEvents: 1,
+      sessionsIncluded: 1,
+      sessionsSkipped: 0,
+      skippedByReason: {
+        no_events: 0,
+        no_shutdown: 0,
+        empty_model_metrics: 0,
+        parse_error: 0,
+      },
+      earliestIncludedAt: "2026-05-05T08:00:00.000Z",
+      latestIncludedAt: "2026-05-05T09:00:00.000Z",
+      earliestSkippedAt: null,
+      latestSkippedAt: null,
+    });
+  });
+
+  it("GET /api/copilot-usage ignores malformed active tail lines after shutdown summaries", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeRawCopilotUsageEvents(copilotHome, "usage-session", [
+      JSON.stringify({
+        type: "session.shutdown",
+        timestamp: "2026-05-06T08:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-4o": {
+              requests: { count: 2 },
+              usage: { inputTokens: 10, outputTokens: 3 },
+            },
+          },
+        },
+      }),
+      "{not valid json",
+    ]);
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals).toEqual({
+      requests: 2,
+      inputTokens: 10,
+      outputTokens: 3,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 13,
+    });
+    expect(res.body.coverage).toEqual({
+      sessionsSeen: 1,
+      sessionsWithEvents: 1,
+      sessionsIncluded: 1,
+      sessionsSkipped: 0,
+      skippedByReason: {
+        no_events: 0,
+        no_shutdown: 0,
+        empty_model_metrics: 0,
+        parse_error: 0,
+      },
+      earliestIncludedAt: "2026-05-06T08:00:00.000Z",
+      latestIncludedAt: "2026-05-06T08:00:00.000Z",
+      earliestSkippedAt: null,
+      latestSkippedAt: null,
+    });
+  });
+
+  it("GET /api/copilot-usage returns a safe error for unreadable session-state", async () => {
+    const copilotHome = createCopilotUsageTestHome();
+    writeFileSync(join(copilotHome, "session-state"), "not a directory");
+    ({ app } = createTestApp({ copilotHome }));
+
+    const res = await request(app).get("/api/copilot-usage");
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "Unable to read local Copilot usage history." });
+    expect(JSON.stringify(res.body)).not.toContain(copilotHome);
   });
 });
 

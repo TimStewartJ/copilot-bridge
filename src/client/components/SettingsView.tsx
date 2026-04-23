@@ -23,6 +23,7 @@ import {
   TagsSection,
   VoiceInputSection,
   BridgeCommitsSection,
+  CopilotUsageSection,
 } from "./settings";
 
 export default function SettingsView() {
@@ -194,6 +195,7 @@ export default function SettingsView() {
         <ProvidersSection draft={draft} setDraft={setDraft} />
         <VoiceInputSection />
         <BridgeCommitsSection />
+        <CopilotUsageSection />
         <TagsSection tags={tags} setTags={setTags} />
 
         {/* MCP Servers Section */}
