@@ -240,15 +240,18 @@ export async function uploadFile(sessionId: string, file: File): Promise<Uploade
   };
 }
 
-async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
+async function apiFetch<T>(path: string, body?: unknown, options?: { signal?: AbortSignal }): Promise<T> {
   const t0 = performance.now();
   const opts: RequestInit = body
     ? {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: options?.signal,
       }
-    : {};
+    : {
+        signal: options?.signal,
+      };
   const res = await fetch(`${API_BASE}${path}`, opts);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -774,6 +777,53 @@ export interface DashboardData {
 
 export async function fetchDashboard(): Promise<DashboardData> {
   return apiFetch<DashboardData>("/api/dashboard");
+}
+
+export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
+
+export interface CopilotUsageTotals {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+export interface CopilotUsageModelRow extends CopilotUsageTotals {
+  model: string;
+  sessions: number;
+}
+
+export interface CopilotUsageCoverage {
+  sessionsSeen: number;
+  sessionsWithEvents: number;
+  sessionsIncluded: number;
+  sessionsSkipped: number;
+  skippedByReason: Record<CopilotUsageSkipReason, number>;
+  earliestIncludedAt: string | null;
+  latestIncludedAt: string | null;
+  earliestSkippedAt: string | null;
+  latestSkippedAt: string | null;
+}
+
+export interface CopilotUsageSummary {
+  generatedAt: string;
+  totals: CopilotUsageTotals;
+  coverage: CopilotUsageCoverage;
+  models: CopilotUsageModelRow[];
+}
+
+export async function fetchCopilotUsage(options?: { refresh?: boolean; signal?: AbortSignal }): Promise<CopilotUsageSummary> {
+  const params = new URLSearchParams();
+  if (options?.refresh) {
+    params.set("refresh", "1");
+  }
+  const query = params.toString();
+  return apiFetch<CopilotUsageSummary>(`/api/copilot-usage${query ? `?${query}` : ""}`, undefined, {
+    signal: options?.signal,
+  });
 }
 
 // ── Settings API ──────────────────────────────────────────────────

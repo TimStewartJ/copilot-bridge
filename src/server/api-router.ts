@@ -20,6 +20,7 @@ import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
+import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -64,6 +65,28 @@ function serializeSchedule(schedule: Schedule) {
   return {
     ...schedule,
     ...(schedule.sessionMode !== "reuse-target" ? { reuseSession: schedule.sessionMode === "reuse-last" } : {}),
+  };
+}
+
+function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
+  return {
+    generatedAt: summary.generatedAt,
+    totals: { ...summary.totals },
+    coverage: {
+      ...summary.coverage,
+      skippedByReason: { ...summary.coverage.skippedByReason },
+    },
+    models: summary.models.map((row) => ({
+      model: row.model,
+      sessions: row.sessions,
+      requests: row.requests,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cacheReadTokens: row.cacheReadTokens,
+      cacheWriteTokens: row.cacheWriteTokens,
+      reasoningTokens: row.reasoningTokens,
+      totalTokens: row.totalTokens,
+    })),
   };
 }
 
@@ -130,6 +153,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
+  const copilotUsageReader = createCopilotUsageReader({ copilotHome: getCopilotHome(ctx) });
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
@@ -438,6 +462,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  router.get("/copilot-usage", async (req, res) => {
+    try {
+      const refresh = req.query.refresh === "1";
+      const summary = await copilotUsageReader.readSummary({ refresh });
+      res.json(serializeCopilotUsageSummary(summary));
+    } catch (err) {
+      console.error("[copilot-usage] Error:", err);
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Unable to read local Copilot usage history.",
+      });
+    }
   });
 
   // POST /shutdown — graceful shutdown: abort active sessions, stop SDK, exit
