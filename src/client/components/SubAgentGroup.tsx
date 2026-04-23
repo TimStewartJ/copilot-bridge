@@ -13,9 +13,10 @@ interface SubAgentGroupProps {
   childNodes?: ToolCallTreeNode[];
   renderChildNode?: (childNode: ToolCallTreeNode) => React.ReactNode;
   defaultExpanded?: boolean;
+  contextOnly?: boolean;
 }
 
-export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderChildNode, defaultExpanded = false }: SubAgentGroupProps) {
+export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderChildNode, defaultExpanded = false, contextOnly = false }: SubAgentGroupProps) {
   const [expanded, setExpanded] = useState(defaultExpanded && childNodes.length > 0);
   const [showFullModal, setShowFullModal] = useState(false);
   const autoExpandedRef = useRef(defaultExpanded && childNodes.length > 0);
@@ -50,7 +51,7 @@ export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderC
           <span className="text-text-muted truncate">{progressText}</span>
         )}
         <span className="ml-auto flex items-center gap-2 shrink-0">
-          <ToolStatusBadge toolCall={agentTool} />
+          {!contextOnly && <ToolStatusBadge toolCall={agentTool} />}
           {hasContent && (
             <span className="text-text-faint">
               {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}

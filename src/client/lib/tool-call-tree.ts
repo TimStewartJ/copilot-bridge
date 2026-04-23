@@ -7,6 +7,7 @@ export interface ToolCallTreeNode {
   depth: number;
   rootToolCallId: string;
   status: ToolCallStatus;
+  isContextOnly: boolean;
   descendantCount: number;
   runningCount: number;
   doneCount: number;
@@ -86,6 +87,7 @@ export function buildToolCallForest(toolCalls: ToolCall[]): ToolCallForest {
       depth,
       rootToolCallId,
       status,
+      isContextOnly: false,
       descendantCount: children.reduce((sum, child) => sum + 1 + child.descendantCount, 0),
       runningCount,
       doneCount,
@@ -103,19 +105,52 @@ export function getActiveToolCallRoots(roots: ToolCallTreeNode[]): ToolCallTreeN
   return roots.filter((root) => root.runningCount > 0);
 }
 
+function buildContextToolCall(toolCall: ToolCall, isVisible: boolean): ToolCall {
+  if (isVisible) return toolCall;
+  return {
+    toolCallId: toolCall.toolCallId,
+    name: toolCall.name,
+    parentToolCallId: toolCall.parentToolCallId,
+    isSubAgent: toolCall.isSubAgent,
+  };
+}
+
 function buildPrunedNode(
   node: ToolCallTreeNode,
   includeIds: Set<string>,
+  visibleToolCalls: Map<string, ToolCall>,
+  visibleOrderById: Map<string, number>,
+  firstVisibleOrderById: Map<string, number>,
   depth: number,
   rootToolCallId: string,
 ): ToolCallTreeNode {
   const children = node.children
     .filter((child) => includeIds.has(child.toolCall.toolCallId))
-    .map((child) => buildPrunedNode(child, includeIds, depth + 1, rootToolCallId));
-  const status = getToolCallStatus(node.toolCall);
-  let runningCount = status === "running" ? 1 : 0;
-  let doneCount = status === "done" ? 1 : 0;
-  let failedCount = status === "failed" ? 1 : 0;
+    .map((child) => buildPrunedNode(
+      child,
+      includeIds,
+      visibleToolCalls,
+      visibleOrderById,
+      firstVisibleOrderById,
+      depth + 1,
+      rootToolCallId,
+    ))
+    .sort((left, right) => (
+      (firstVisibleOrderById.get(left.toolCall.toolCallId) ?? Number.POSITIVE_INFINITY)
+      - (firstVisibleOrderById.get(right.toolCall.toolCallId) ?? Number.POSITIVE_INFINITY)
+    ));
+  const visibleToolCall = visibleToolCalls.get(node.toolCall.toolCallId);
+  const isContextOnly = !visibleToolCall;
+  const toolCall = visibleToolCall ?? buildContextToolCall(node.toolCall, false);
+  const status = getToolCallStatus(toolCall);
+  let runningCount = !isContextOnly && status === "running" ? 1 : 0;
+  let doneCount = !isContextOnly && status === "done" ? 1 : 0;
+  let failedCount = !isContextOnly && status === "failed" ? 1 : 0;
+  const firstVisibleOrder = Math.min(
+    visibleOrderById.get(node.toolCall.toolCallId) ?? Number.POSITIVE_INFINITY,
+    ...children.map((child) => firstVisibleOrderById.get(child.toolCall.toolCallId) ?? Number.POSITIVE_INFINITY),
+  );
+  firstVisibleOrderById.set(node.toolCall.toolCallId, firstVisibleOrder);
 
   for (const child of children) {
     runningCount += child.runningCount;
@@ -124,11 +159,12 @@ function buildPrunedNode(
   }
 
   return {
-    toolCall: node.toolCall,
+    toolCall,
     children,
     depth,
     rootToolCallId,
     status,
+    isContextOnly,
     descendantCount: children.reduce((sum, child) => sum + 1 + child.descendantCount, 0),
     runningCount,
     doneCount,
@@ -141,10 +177,15 @@ export function buildRenderableSegmentRoots(
   fullForest: ToolCallForest,
 ): ToolCallTreeNode[] {
   const includeIds = new Set<string>();
+  const visibleToolCalls = new Map<string, ToolCall>();
+  const visibleOrderById = new Map<string, number>();
+  const firstVisibleOrderById = new Map<string, number>();
   const orderedRootIds: string[] = [];
   const seenRootIds = new Set<string>();
 
-  for (const entry of segmentEntries) {
+  for (const [index, entry] of segmentEntries.entries()) {
+    visibleToolCalls.set(entry.toolCall.toolCallId, entry.toolCall);
+    visibleOrderById.set(entry.toolCall.toolCallId, index);
     const node = fullForest.nodesById.get(entry.toolCall.toolCallId);
     if (!node) continue;
 
@@ -164,7 +205,7 @@ export function buildRenderableSegmentRoots(
 
   return orderedRootIds.flatMap((rootId) => {
     const root = fullForest.nodesById.get(rootId);
-    return root ? [buildPrunedNode(root, includeIds, 0, rootId)] : [];
+    return root ? [buildPrunedNode(root, includeIds, visibleToolCalls, visibleOrderById, firstVisibleOrderById, 0, rootId)] : [];
   });
 }
 

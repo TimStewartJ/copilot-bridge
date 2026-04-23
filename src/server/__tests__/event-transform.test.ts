@@ -30,6 +30,23 @@ describe("event-transform visible activity", () => {
     expect(lastVisibleActivityAt).toBe("2026-04-10T10:00:04.000Z");
   });
 
+  it("advances visible activity to the terminal timestamp when a visible tool is interrupted", () => {
+    const lastVisibleActivityAt = getLastVisibleActivityAt([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { toolCallId: "tool-2", toolName: "bash" },
+      },
+      {
+        type: "abort",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { reason: "user cancelled" },
+      },
+    ]);
+
+    expect(lastVisibleActivityAt).toBe("2026-04-10T10:00:02.000Z");
+  });
+
   it("hides self-renames that omit sessionId", () => {
     const events = [
       {
@@ -371,6 +388,39 @@ describe("event-transform tool results", () => {
         type: "tool",
         toolCall: {
           toolCallId: "tool-4",
+          name: "bash",
+          progressText: "Running tests...",
+          success: false,
+          completedAt: "2026-04-10T10:00:02.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("marks open tools as failed when the turn ends with abort", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { toolCallId: "tool-5", toolName: "bash", arguments: { command: "npm test" } },
+      },
+      {
+        type: "tool.execution_progress",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "tool-5", progressMessage: "Running tests..." },
+      },
+      {
+        type: "abort",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { reason: "user cancelled" },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-5",
           name: "bash",
           progressText: "Running tests...",
           success: false,

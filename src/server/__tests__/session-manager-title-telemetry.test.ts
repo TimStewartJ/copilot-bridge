@@ -353,7 +353,7 @@ describe("SessionManager self-renaming", () => {
     await expect(manager._doWork("session-sync-subscribe", "help me improve session titles", bus)).resolves.toBeUndefined();
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(busEvents.filter((event) => event.type === "done")).toEqual([{ type: "done", content: "Done." }]);
+    expect(busEvents.filter((event) => event.type === "done")).toMatchObject([{ type: "done", content: "Done." }]);
     expect(sessionTitles.getTitle("session-sync-subscribe")).toBe("Improve session titles");
   });
 

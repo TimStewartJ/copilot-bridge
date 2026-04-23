@@ -32,6 +32,7 @@ export type TransformedMessage = TransformedEntry;
 
 function isTurnTerminalEvent(event: any): boolean {
   return event.type === "session.shutdown"
+    || event.type === "abort"
     || event.type === "session.idle"
     || event.type === "session.error";
 }
@@ -76,7 +77,7 @@ export function getVisibleEventTimestamp(event: any, sessionId?: string): string
 }
 
 export function getLastVisibleActivityAt(events: any[], sessionId?: string): string | undefined {
-  const visibleToolCallIds = new Set<string>();
+  const openVisibleToolCallIds = new Set<string>();
   let lastVisibleActivityAt: string | undefined;
 
   for (const event of events) {
@@ -84,14 +85,22 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
     if (timestamp) {
       lastVisibleActivityAt = timestamp;
       if (event.type === "tool.execution_start" && event?.data?.toolCallId) {
-        visibleToolCallIds.add(event.data.toolCallId);
+        openVisibleToolCallIds.add(event.data.toolCallId);
       }
       continue;
     }
 
-    if (event.type === "tool.execution_complete" && event?.data?.toolCallId && visibleToolCallIds.has(event.data.toolCallId)) {
+    if (event.type === "tool.execution_complete" && event?.data?.toolCallId && openVisibleToolCallIds.has(event.data.toolCallId)) {
       const completedAt = event?.timestamp;
       if (completedAt) lastVisibleActivityAt = completedAt;
+      openVisibleToolCallIds.delete(event.data.toolCallId);
+      continue;
+    }
+
+    if (isTurnTerminalEvent(event) && openVisibleToolCallIds.size > 0) {
+      const terminalAt = event?.timestamp;
+      if (terminalAt) lastVisibleActivityAt = terminalAt;
+      openVisibleToolCallIds.clear();
     }
   }
   return lastVisibleActivityAt;

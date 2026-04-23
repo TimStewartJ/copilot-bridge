@@ -27,6 +27,7 @@ export interface BusSnapshot {
   intentText: string;
   complete: boolean;
   terminalType?: "done" | "error" | "aborted" | "shutdown";
+  terminalTimestamp?: string;
   finalContent?: string;
   errorMessage?: string;
   /** The user prompt that initiated this turn (for reconnect recovery) */
@@ -50,6 +51,7 @@ export class SessionEventBus {
   private finalContent?: string;
   private errorMessage?: string;
   private terminalType?: "done" | "error" | "aborted" | "shutdown";
+  private terminalTimestamp?: string;
   private mcpServers: unknown[] = [];
   /** The user prompt that initiated this turn (for reconnect recovery) */
   private pendingPrompt?: string;
@@ -125,6 +127,7 @@ export class SessionEventBus {
         break;
       case "done":
         this.terminalType = "done";
+        this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
@@ -134,6 +137,7 @@ export class SessionEventBus {
         break;
       case "aborted":
         this.terminalType = "aborted";
+        this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
@@ -143,14 +147,17 @@ export class SessionEventBus {
         break;
       case "shutdown":
         this.terminalType = "shutdown";
+        this.terminalTimestamp = event.timestamp as string | undefined;
         this.finalContent = event.content;
         this._complete = true;
         this.accumulatedContent = "";
+        this.intentText = "";
         this.activeTools = [];
         this.scheduleCleanup();
         break;
       case "error":
         this.terminalType = "error";
+        this.terminalTimestamp = event.timestamp as string | undefined;
         this.errorMessage = event.message;
         this._complete = true;
         this.accumulatedContent = "";
@@ -179,6 +186,7 @@ export class SessionEventBus {
       intentText: this.intentText,
       complete: this._complete,
       terminalType: this.terminalType,
+      terminalTimestamp: this.terminalTimestamp,
       finalContent: this.finalContent,
       errorMessage: this.errorMessage,
       mcpServers: [...this.mcpServers],
@@ -218,6 +226,7 @@ export class SessionEventBus {
     this.activeTools = [];
     this.intentText = "";
     this.terminalType = undefined;
+    this.terminalTimestamp = undefined;
     this.finalContent = undefined;
     this.errorMessage = undefined;
     this.pendingPrompt = undefined;

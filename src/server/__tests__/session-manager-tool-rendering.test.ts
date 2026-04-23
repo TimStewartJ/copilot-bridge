@@ -199,4 +199,77 @@ describe("SessionManager tool result rendering", () => {
       success: false,
     }));
   });
+
+  it("uses tracked tool and sub-agent names for progress and partial output events", async () => {
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-3");
+    const events: any[] = [];
+
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    const session = createSession([
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T12:00:00.000Z",
+        data: { toolCallId: "tool-progress", toolName: "bash", arguments: { command: "npm test" } },
+      },
+      {
+        type: "tool.execution_progress",
+        timestamp: "2026-04-10T12:00:01.000Z",
+        data: { toolCallId: "tool-progress", progressMessage: "Running tests..." },
+      },
+      {
+        type: "tool.execution_partial_result",
+        timestamp: "2026-04-10T12:00:02.000Z",
+        data: { toolCallId: "tool-progress", partialOutput: "12 tests passed" },
+      },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T12:00:03.000Z",
+        data: { toolCallId: "tool-agent-progress", toolName: "task", arguments: { prompt: "Investigate" } },
+      },
+      {
+        type: "subagent.started",
+        timestamp: "2026-04-10T12:00:04.000Z",
+        data: { toolCallId: "tool-agent-progress", agentName: "explore", agentDisplayName: "Explore agent" },
+      },
+      {
+        type: "tool.execution_progress",
+        timestamp: "2026-04-10T12:00:05.000Z",
+        data: { toolCallId: "tool-agent-progress", progressMessage: "Searching files..." },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-04-10T12:00:06.000Z",
+        data: { content: "Done." },
+      },
+      { type: "session.idle", timestamp: "2026-04-10T12:00:07.000Z", data: {} },
+    ]);
+
+    manager.client = {} as any;
+    manager.sessionObjects.set("session-3", session);
+
+    await manager._doWork("session-3", "show progress labels", bus);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_progress",
+      toolCallId: "tool-progress",
+      name: "bash",
+      message: "Running tests...",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_output",
+      toolCallId: "tool-progress",
+      name: "bash",
+      content: "12 tests passed",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_progress",
+      toolCallId: "tool-agent-progress",
+      name: "🤖 Explore agent",
+      message: "Searching files...",
+    }));
+  });
 });

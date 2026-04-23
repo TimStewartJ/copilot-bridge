@@ -1472,11 +1472,11 @@ export class SessionManager {
       settleAbortFallback(false);
     };
 
-    const finish = (emitTerminal?: () => void): boolean => {
+    const finish = (emitTerminal?: (timestamp: string) => void): boolean => {
       if (completed) return false;
       completed = true;
       clearAbortWait();
-      emitTerminal?.();
+      emitTerminal?.(new Date().toISOString());
       resolveCompletion();
       return true;
     };
@@ -1485,23 +1485,23 @@ export class SessionManager {
       completion,
       isCompleted: () => completed,
       completeDone: (content) => {
-        finish(() => {
-          bus.emit({ type: "done", content });
+        finish((timestamp) => {
+          bus.emit({ type: "done", content, timestamp });
         });
       },
       completeError: (message) => {
-        finish(() => {
-          bus.emit({ type: "error", message });
+        finish((timestamp) => {
+          bus.emit({ type: "error", message, timestamp });
         });
       },
       completeAborted: (content) => {
-        finish(() => {
-          bus.emit({ type: "aborted", content });
+        finish((timestamp) => {
+          bus.emit({ type: "aborted", content, timestamp });
         });
       },
       completeShutdown: (content) => {
-        finish(() => {
-          bus.emit({ type: "shutdown", content });
+        finish((timestamp) => {
+          bus.emit({ type: "shutdown", content, timestamp });
         });
       },
       awaitAbortConfirmation: (delayMs, getContent) => {
@@ -1518,8 +1518,8 @@ export class SessionManager {
               return;
             }
             console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
-            resolve(finish(() => {
-              bus.emit({ type: "aborted", content: getContent() });
+            resolve(finish((timestamp) => {
+              bus.emit({ type: "aborted", content: getContent(), timestamp });
             }));
           }, delayMs);
         });
@@ -2412,6 +2412,21 @@ export class SessionManager {
     const subAgentMap = new Map<string, string>();
     // Capture sub-agent response text: parentToolCallId → last response content
     const subAgentResponseMap = new Map<string, string>();
+    const rememberToolName = (toolCallId: unknown, toolName: unknown): string | undefined => {
+      if (typeof toolName !== "string") return undefined;
+      const normalized = toolName.trim();
+      if (!normalized) return undefined;
+      if (typeof toolCallId === "string" && toolCallId) {
+        toolNameMap.set(toolCallId, normalized);
+      }
+      return normalized;
+    };
+    const getTrackedToolDisplayName = (toolCallId: unknown, fallbackName?: string): string => {
+      if (typeof toolCallId === "string" && toolCallId) {
+        return subAgentMap.get(toolCallId) ?? toolNameMap.get(toolCallId) ?? fallbackName ?? "unknown";
+      }
+      return fallbackName ?? "unknown";
+    };
     // Track sync shell tool calls that are still within their initial_wait grace window.
     const syncShellWaits = new Map<string, number>();
     const handledCurrentTurnEventKeys = new Set<string>();
@@ -2542,10 +2557,26 @@ export class SessionManager {
           break;
         }
         case "tool.execution_progress":
-          bus.emit({ type: "tool_progress", toolCallId: data?.toolCallId, name: data?.toolCallId, message: data?.progressMessage ?? "" });
+          bus.emit({
+            type: "tool_progress",
+            toolCallId: data?.toolCallId,
+            name: getTrackedToolDisplayName(
+              data?.toolCallId,
+              rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
+            ),
+            message: data?.progressMessage ?? "",
+          });
           break;
         case "tool.execution_partial_result":
-          bus.emit({ type: "tool_output", toolCallId: data?.toolCallId, name: data?.toolCallId, content: data?.partialOutput ?? "" });
+          bus.emit({
+            type: "tool_output",
+            toolCallId: data?.toolCallId,
+            name: getTrackedToolDisplayName(
+              data?.toolCallId,
+              rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
+            ),
+            content: data?.partialOutput ?? "",
+          });
           break;
         case "tool.execution_complete": {
           if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);

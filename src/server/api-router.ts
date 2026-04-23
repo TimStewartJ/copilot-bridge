@@ -777,12 +777,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (closed || res.writableEnded) return;
       const normalized = event.type === "snapshot" && event.complete
         ? event.terminalType === "error" || event.errorMessage
-          ? { type: "error", message: event.errorMessage ?? "Unknown session error" }
+          ? { type: "error", message: event.errorMessage ?? "Unknown session error", timestamp: event.terminalTimestamp }
           : event.terminalType === "aborted"
-            ? { type: "aborted", content: event.finalContent }
+            ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp }
             : event.terminalType === "shutdown"
-              ? { type: "shutdown", content: event.finalContent }
-            : { type: "done", content: event.finalContent }
+              ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp }
+            : { type: "done", content: event.finalContent, timestamp: event.terminalTimestamp }
         : event;
       if (!firstEventSent) {
         firstEventSent = true;

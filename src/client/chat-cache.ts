@@ -130,8 +130,21 @@ function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
   return undefined;
 }
 
-function findToolEntryIndex(entries: ChatEntry[], toolCallId: string): number {
-  return entries.findIndex((entry) => entry.type === "tool" && entry.toolCall?.toolCallId === toolCallId);
+function findLastToolEntryIndex(entries: ChatEntry[], toolCallId: string): number {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type === "tool" && entry.toolCall?.toolCallId === toolCallId) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function hasMessageAfterIndex(entries: ChatEntry[], index: number): boolean {
+  for (let currentIndex = index + 1; currentIndex < entries.length; currentIndex += 1) {
+    if (entries[currentIndex]?.type !== "tool") return true;
+  }
+  return false;
 }
 
 function mergeLiveToolEntry(existingEntry: Extract<ChatEntry, { type: "tool" }>, incomingEntry: Extract<ChatEntry, { type: "tool" }>): Extract<ChatEntry, { type: "tool" }> {
@@ -170,8 +183,10 @@ export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries:
     if (incomingEntry.type === "tool") {
       const toolCallId = incomingEntry.toolCall?.toolCallId;
       if (toolCallId) {
-        const existingToolIndex = findToolEntryIndex(nextEntries, toolCallId);
-        if (existingToolIndex >= 0) {
+        const existingToolIndex = findLastToolEntryIndex(nextEntries, toolCallId);
+        const shouldMergeIntoExistingEntry = existingToolIndex >= 0
+          && (incomingEntry.liveSource === "snapshot" || !hasMessageAfterIndex(nextEntries, existingToolIndex));
+        if (shouldMergeIntoExistingEntry) {
           if (nextEntries === previousEntries) nextEntries = [...previousEntries];
           const existingToolEntry = nextEntries[existingToolIndex] as Extract<ChatEntry, { type: "tool" }>;
           nextEntries[existingToolIndex] = mergeLiveToolEntry(existingToolEntry, incomingEntry);
