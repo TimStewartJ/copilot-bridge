@@ -119,6 +119,19 @@ describe("mergeTailMessages", () => {
     expect(hasClientGeneratedEntries(normalized)).toBe(false);
   });
 
+  it("preserves interrupted terminal placeholders inside the canonical range", () => {
+    const normalized = normalizeCommittedClientEntries(
+      [
+        { id: "local-1", role: "assistant", content: "Partial answer\n\n*(interrupted)*" },
+      ],
+      0,
+      1,
+    );
+
+    expect(normalized[0]?.id).toBe("local-1");
+    expect(hasClientGeneratedEntries(normalized)).toBe(true);
+  });
+
   it("preserves older loaded messages when the refreshed tail overlaps", () => {
     const previousEntries = Array.from({ length: 50 }, (_, index) => createMessage(`old-${index + 51}`));
     const nextWindow = Array.from({ length: 50 }, (_, index) => createMessage(`new-${index + 71}`));

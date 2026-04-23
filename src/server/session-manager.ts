@@ -1302,6 +1302,7 @@ interface SessionRunController {
   completeDone(content: string): void;
   completeError(message: string): void;
   completeAborted(content: string): void;
+  completeShutdown(content: string): void;
   awaitAbortConfirmation(delayMs: number, getContent: () => string): Promise<boolean>;
   clearAbortWait(): void;
 }
@@ -1496,6 +1497,11 @@ export class SessionManager {
       completeAborted: (content) => {
         finish(() => {
           bus.emit({ type: "aborted", content });
+        });
+      },
+      completeShutdown: (content) => {
+        finish(() => {
+          bus.emit({ type: "shutdown", content });
         });
       },
       awaitAbortConfirmation: (delayMs, getContent) => {
@@ -2606,7 +2612,7 @@ export class SessionManager {
           } else {
             console.log(`[sdk] [${sid}] 🛑 Shutdown${shutdownType ? ` (${shutdownType})` : ""}`);
             const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
-            runController.completeAborted(partialContent);
+            runController.completeShutdown(partialContent);
           }
           break;
         }

@@ -40,6 +40,12 @@ function isHiddenTool(name: string, args: ToolArgs | undefined, sessionId: strin
   return targetSessionId === undefined || targetSessionId === sessionId;
 }
 
+function formatTerminalContent(content: string, terminalType?: string): string {
+  if (terminalType === "aborted") return `${content}\n\n*(stopped)*`;
+  if (terminalType === "shutdown") return `${content}\n\n*(interrupted)*`;
+  return content;
+}
+
 export function useSessionStream(
   sessionId: string | null,
   onEntriesAppended: (entries: ChatEntry[]) => void,
@@ -111,9 +117,7 @@ export function useSessionStream(
                     if (event.errorMessage) {
                       onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.errorMessage}` }]);
                     } else if (typeof event.finalContent === "string" && event.finalContent.length > 0) {
-                      const text = event.terminalType === "aborted"
-                        ? `${event.finalContent}\n\n*(stopped)*`
-                        : event.finalContent;
+                      const text = formatTerminalContent(event.finalContent, event.terminalType);
                       onEntriesRef.current([{ role: "assistant", content: text }]);
                     }
                     setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
@@ -252,7 +256,16 @@ export function useSessionStream(
                 case "aborted": {
                   const text = event.content || accumulatedContent;
                   if (text) {
-                    onEntriesRef.current([{ role: "assistant", content: text + "\n\n*(stopped)*" }]);
+                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "aborted") }]);
+                  }
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  accumulatedContent = "";
+                  break;
+                }
+                case "shutdown": {
+                  const text = event.content || accumulatedContent;
+                  if (text) {
+                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "shutdown") }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";

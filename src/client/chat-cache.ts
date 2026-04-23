@@ -105,7 +105,9 @@ function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
   if (!isClientGeneratedEntry(entry)) return false;
   if (entry.type === "tool") return false;
   if (entry.role === "user") return false;
-  return entry.content.startsWith("⚠️ Error:") || entry.content.includes("*(stopped)*");
+  return entry.content.startsWith("⚠️ Error:")
+    || entry.content.includes("*(stopped)*")
+    || entry.content.includes("*(interrupted)*");
 }
 
 export function normalizeCommittedClientEntries(

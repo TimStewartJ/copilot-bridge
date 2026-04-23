@@ -780,6 +780,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
           ? { type: "error", message: event.errorMessage ?? "Unknown session error" }
           : event.terminalType === "aborted"
             ? { type: "aborted", content: event.finalContent }
+            : event.terminalType === "shutdown"
+              ? { type: "shutdown", content: event.finalContent }
             : { type: "done", content: event.finalContent }
         : event;
       if (!firstEventSent) {
@@ -798,7 +800,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         close();
         return;
       }
-      if (normalized.type === "done" || normalized.type === "error" || normalized.type === "aborted") {
+      if (normalized.type === "done" || normalized.type === "error" || normalized.type === "aborted" || normalized.type === "shutdown") {
         close();
       }
     };
