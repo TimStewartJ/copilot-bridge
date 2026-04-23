@@ -49,6 +49,17 @@ function getSessionStatus(ctx: AppContext, sessionId: string): { runState: Sessi
   return { runState, busy: runState !== "idle" };
 }
 
+function resolveSessionSummary(
+  ctx: AppContext,
+  session: { sessionId: string; summary?: string | null },
+): string | undefined {
+  const title = ctx.sessionTitles.getTitle(session.sessionId);
+  if (title) return title;
+  const summary = session.summary ?? undefined;
+  if (!summary || summary.startsWith("Generate a concise")) return undefined;
+  return summary;
+}
+
 function serializeSchedule(schedule: Schedule) {
   return {
     ...schedule,
@@ -370,9 +381,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       const enriched = await Promise.all(
         sessions
-          .filter((s: any) => s.summary)
-          .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
-          .map(async (s: any) => {
+          .map((s: any) => ({ session: s, summary: resolveSessionSummary(ctx, s) }))
+          .filter((entry): entry is { session: any; summary: string } => !!entry.summary)
+          .map(async ({ session: s, summary }) => {
             const id = s.sessionId;
             const archived = meta[id]?.archived === true;
 
@@ -386,8 +397,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
             const archivedAt = meta[id]?.archivedAt ?? null;
-            const generatedTitle = ctx.sessionTitles.getTitle(id);
-            const summary = generatedTitle ?? s.summary;
             const status = getSessionStatus(ctx, id);
             return {
               ...s,
@@ -613,11 +622,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (ctx.sessionManager.isSessionBusy(sourceId)) {
         return res.status(409).json({ error: "Cannot duplicate a busy session" });
       }
+      let originalTitle = ctx.sessionTitles.getTitle(sourceId);
+      if (!originalTitle) {
+        const sourceSession = (await ctx.sessionManager.listSessionsFromDisk())
+          .find((session: any) => session.sessionId === sourceId);
+        originalTitle = sourceSession ? resolveSessionSummary(ctx, sourceSession) : undefined;
+      }
       const result = await ctx.sessionManager.duplicateSession(sourceId);
       invalidateEnrichedCache();
 
       // Copy title with "Copy of" prefix
-      const originalTitle = ctx.sessionTitles.getTitle(sourceId);
       if (originalTitle) {
         ctx.sessionTitles.setTitle(result.sessionId, `Copy of ${originalTitle}`);
       }
@@ -1362,13 +1376,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
       // Enrich sessions (lightweight — skip disk size for dashboard)
       const enrichedSessions = (await Promise.all(
         sessions
-          .filter((s: any) => s.summary)
-          .filter((s: any) => !s.summary?.startsWith("Generate a concise"))
-          .map(async (s: any) => {
+          .map((s: any) => ({ session: s, summary: resolveSessionSummary(ctx, s) }))
+          .filter((entry): entry is { session: any; summary: string } => !!entry.summary)
+          .map(async ({ session: s, summary }) => {
             const id = s.sessionId;
             const archived = meta[id]?.archived === true;
-            const generatedTitle = ctx.sessionTitles.getTitle(id);
-            const summary = generatedTitle ?? s.summary;
             const status = getSessionStatus(ctx, id);
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
             return { ...s, summary, ...status, hasPlan, archived };
