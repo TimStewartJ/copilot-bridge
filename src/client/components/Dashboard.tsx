@@ -13,6 +13,7 @@ import {
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useScheduleDetail } from "../hooks/useScheduleDetail";
 import { useTriggerScheduleMutation, useToggleScheduleMutation, useDeleteScheduleMutation } from "../hooks/queries/useSchedules";
+import { type SessionNavigationTarget } from "../lib/session-path";
 import { getLastViewedSession } from "../last-viewed";
 import { timeAgo } from "../time";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
@@ -67,7 +68,7 @@ function sortTodos(todos: DashboardTodo[], sort: TodoSort): DashboardTodo[] {
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { todoId?: string }) => void;
-  onSelectSession: (id: string) => void;
+  onSelectSession: (target: SessionNavigationTarget) => void;
   onNewSession: () => void;
   onResumeTask: (taskId: string, sessionId?: string) => void;
 }
@@ -251,6 +252,9 @@ export default function Dashboard({
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
   const activeSchedules = schedules.filter((s) => s.enabled);
   const pausedSchedules = schedules.filter((s) => !s.enabled);
+  const selectSession = (session: SessionNavigationTarget) => {
+    onSelectSession({ sessionId: session.sessionId, taskId: session.taskId ?? null });
+  };
 
   return (
     <div className="flex-1 min-h-0 relative">
@@ -275,7 +279,7 @@ export default function Dashboard({
                     {workingSessions.map((s) => (
                       <button
                         key={s.sessionId}
-                        onClick={() => onSelectSession(s.sessionId)}
+                        onClick={() => selectSession(s)}
                         className="text-xs px-2 py-1 rounded bg-info/10 text-info hover:bg-info/20 transition-colors truncate max-w-[200px]"
                       >
                         {s.intentText || s.title}
@@ -301,7 +305,7 @@ export default function Dashboard({
                     {stalledSessions.map((s) => (
                       <button
                         key={s.sessionId}
-                        onClick={() => onSelectSession(s.sessionId)}
+                        onClick={() => selectSession(s)}
                         className="text-xs px-2 py-1 rounded bg-warning/10 text-warning hover:bg-warning/20 transition-colors truncate max-w-[200px]"
                       >
                         {s.intentText || s.title}
@@ -324,7 +328,7 @@ export default function Dashboard({
                     {unreadSessions.map((s) => (
                       <button
                         key={s.sessionId}
-                        onClick={() => onSelectSession(s.sessionId)}
+                        onClick={() => selectSession(s)}
                         className="text-xs px-2 py-1 rounded bg-success/10 text-success hover:bg-success/20 transition-colors truncate max-w-[200px]"
                       >
                         {s.title}
@@ -594,7 +598,7 @@ export default function Dashboard({
                     <OrphanSessionRow
                       key={s.sessionId}
                       session={s}
-                      onSelect={() => onSelectSession(s.sessionId)}
+                      onSelect={() => selectSession(s)}
                     />
                   ))}
                 </div>
@@ -660,7 +664,7 @@ export default function Dashboard({
           onToggle={(s) => toggleMutation.mutate(s)}
           onDelete={(id) => { deleteMutation.mutate(id); schedDetail.close(); }}
           onSaved={() => { schedDetail.close(); refetch(); }}
-          onSelectSession={onSelectSession}
+          onSelectSession={(sessionId) => selectSession({ sessionId, taskId: schedDetail.schedule?.taskId ?? null })}
           onSelectTask={onSelectTask}
         />
       )}

@@ -40,6 +40,8 @@ import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type Voice
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
+import { getMobileRouteMeta } from "./lib/mobile-route-meta";
+import { getSessionPath, type SessionNavigationTarget } from "./lib/session-path";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
@@ -61,10 +63,10 @@ import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import PullToRefresh from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
+import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
-import { useAppBack } from "./hooks/useAppBack";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 
@@ -78,7 +80,6 @@ export default function App() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const { hasAttention: pageHasAttention, hasAttentionRef: pageHasAttentionRef } = usePageAttention();
-  const { goBack } = useAppBack();
   const queryClient = useQueryClient();
 
   // ── React Query data ────────────────────────────────────────
@@ -128,18 +129,12 @@ export default function App() {
 
 
   // Derive active IDs and mode from URL
-  const activeSessionId =
-    location.pathname.match(/^\/tasks\/[^/]+\/sessions\/(.+)/)?.[1] ??
-    location.pathname.match(/^\/sessions\/(.+)/)?.[1] ??
-    null;
-  const activeTaskId = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
+  const mobileRouteMeta = getMobileRouteMeta(location.pathname, location.search);
+  const activeSessionId = mobileRouteMeta.sessionId;
+  const activeTaskId = mobileRouteMeta.taskId;
   const activeComposerKey = getComposerKeyFromPathname(location.pathname);
-  const quickChatsRoute = location.pathname === "/chats";
-  // Also treat as quick-chats mode when viewing a session not linked to any task
-  const quickChatsMode = quickChatsRoute || (
-    !!activeSessionId && !activeTaskId &&
-    !tasks.some((t) => t.sessionIds.includes(activeSessionId))
-  );
+  const quickChatsRoute = mobileRouteMeta.route === "chat-list";
+  const quickChatsMode = quickChatsRoute || mobileRouteMeta.route === "quick-chat";
 
   // Sync selectedTask when activeTaskId changes
   useEffect(() => {
@@ -537,7 +532,11 @@ export default function App() {
     navigate("/settings");
   };
 
-  const handleOpenDocs = () => {
+  const handleOpenDocsRoot = useCallback(() => {
+    navigate("/docs");
+  }, [navigate]);
+
+  const handleOpenDocs = useCallback(() => {
     const lastDoc = getLastViewedDoc();
     if (lastDoc) {
       // Stored as "path" or "path?db" for DB folders
@@ -545,23 +544,15 @@ export default function App() {
       const docPath = isDb ? lastDoc.slice(0, -3) : lastDoc;
       navigate(isDb ? `/docs/${docPath}?db` : `/docs/${docPath}`);
     } else {
-      navigate("/docs");
+      handleOpenDocsRoot();
     }
-  };
+  }, [handleOpenDocsRoot, navigate]);
 
-  const isDocsActive = location.pathname.startsWith("/docs");
+  const isDocsActive = mobileRouteMeta.activeTab === "docs";
   const isDashboardActive = location.pathname === "/" || location.pathname === "/dashboard";
 
   // ── Mobile bottom nav state ──────────────────────────────────
-  const mobileActiveTab = location.pathname === "/dashboard"
-    ? "home" as const
-    : isDocsActive
-      ? "docs" as const
-      : location.pathname === "/settings"
-        ? "settings" as const
-        : quickChatsMode
-          ? "chats" as const
-          : "tasks" as const;
+  const mobileActiveTab = mobileRouteMeta.activeTab;
 
   const handleRailTabChange = (tab: "tasks" | "chats") => {
     if (tab === "tasks") {
@@ -585,17 +576,19 @@ export default function App() {
       case "home": navigate("/dashboard"); break;
       case "tasks": handleGoHome(); break;
       case "chats": handleOpenQuickChatsList(); break;
-      case "docs": handleOpenDocs(); break;
+      case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [navigate, handleGoHome, handleOpenQuickChatsList, handleOpenDocs, handleOpenSettings]);
+  }, [navigate, handleGoHome, handleOpenQuickChatsList, handleOpenDocsRoot, handleOpenSettings]);
+
+  const handleMobileUp = useCallback(() => {
+    const upTarget = mobileRouteMeta.upTarget;
+    if (!upTarget) return;
+    navigate(upTarget.to);
+  }, [mobileRouteMeta.upTarget, navigate]);
 
   const handleSelectSession = (sessionId: string) => {
-    if (activeTaskId) {
-      navigate(`/tasks/${activeTaskId}/sessions/${sessionId}`);
-    } else {
-      navigate(`/sessions/${sessionId}`);
-    }
+    navigate(getSessionPath({ sessionId, taskId: activeTaskId }));
   };
 
   const handleNewSession = (taskId: string) => {
@@ -607,10 +600,11 @@ export default function App() {
   };
 
   const navigateToSession = useCallback((sessionId: string, taskId?: string, replace = false) => {
-    const path = taskId
-      ? `/tasks/${taskId}/sessions/${sessionId}`
-      : `/sessions/${sessionId}`;
-    navigate(path, { replace });
+    navigate(getSessionPath({ sessionId, taskId }), { replace });
+  }, [navigate]);
+
+  const handleSelectDashboardSession = useCallback((target: SessionNavigationTarget) => {
+    navigate(getSessionPath(target));
   }, [navigate]);
 
   // Actually create a session on the server (called on first message send)
@@ -1086,16 +1080,14 @@ export default function App() {
   // On mobile (< md / 768px), we show stacked full-screen views.
   // The route determines which level of the hierarchy is visible.
 
-  const isTaskDashboard = !!activeTaskId && !activeSessionId;
-
   const isMobileRoute = {
-    dashboard: location.pathname === "/dashboard",
-    taskList: (location.pathname === "/" || location.pathname === "/chats") && !activeTaskId && !activeSessionId,
-    taskDashboard: isTaskDashboard,
-    taskPanel: !!activeTaskId && !!activeSessionId,
-    chat: !!activeSessionId,
-    settings: location.pathname === "/settings",
-    docs: location.pathname.startsWith("/docs"),
+    dashboard: mobileRouteMeta.route === "dashboard",
+    taskList: mobileRouteMeta.route === "task-list" || mobileRouteMeta.route === "chat-list",
+    taskDashboard: mobileRouteMeta.route === "task-dashboard",
+    taskPanel: mobileRouteMeta.route === "task-session",
+    chat: mobileRouteMeta.route === "task-session" || mobileRouteMeta.route === "quick-chat",
+    settings: mobileRouteMeta.route === "settings",
+    docs: mobileRouteMeta.route === "docs-root" || mobileRouteMeta.route === "docs-detail",
   };
 
   return (
@@ -1259,16 +1251,14 @@ export default function App() {
       `.trim()}>
         {restartBanner.phase && <RestartBanner phase={restartBanner.phase} waitingSessions={restartBanner.waitingSessions} />}
 
-        {/* Mobile back bar (hidden on top-level tab views) */}
-        <div className={`shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-bg-secondary md:hidden ${isMobileRoute.dashboard ? "hidden" : ""}`}>
-          <button
-            onClick={goBack}
-            className="text-text-muted hover:text-text-primary transition-colors text-sm"
-            aria-label="Back"
-          >
-            ← Back
-          </button>
-        </div>
+        {mobileRouteMeta.showSharedHeader && (
+          <MobileDetailHeader
+            onBack={handleMobileUp}
+            upLabel={mobileRouteMeta.upTarget?.label}
+            title={mobileRouteMeta.detailHeader?.title}
+            metadata={mobileRouteMeta.detailHeader?.metadata}
+          />
+        )}
 
         <main className="flex-1 flex flex-col min-h-0">
           <Routes>
@@ -1277,7 +1267,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
-                  onSelectSession={(id) => navigate(`/sessions/${id}`)}
+                  onSelectSession={handleSelectDashboardSession}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
                 />
@@ -1288,7 +1278,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
-                  onSelectSession={(id) => navigate(`/sessions/${id}`)}
+                  onSelectSession={handleSelectDashboardSession}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
                 />
@@ -1335,7 +1325,7 @@ export default function App() {
                     <div className="text-text-muted text-sm">Task not found</div>
                     <button
                       onClick={() => navigate("/")}
-                      className="text-xs text-accent hover:text-accent-hover"
+                      className="hidden text-xs text-accent hover:text-accent-hover md:inline-block"
                     >
                       ← Back to Home
                     </button>
@@ -1399,7 +1389,7 @@ export default function App() {
       </div>{/* ← close row wrapper */}
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
-      {isMobile && (isMobileRoute.dashboard || isMobileRoute.taskList || isMobileRoute.taskDashboard || isMobileRoute.settings || isMobileRoute.docs) && (
+      {isMobile && mobileRouteMeta.showBottomNav && (
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
