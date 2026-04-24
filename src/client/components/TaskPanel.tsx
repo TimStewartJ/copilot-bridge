@@ -1,29 +1,38 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session } from "../api";
-import { GROUP_COLOR_DOT } from "../group-colors";
 import { unlinkResource, patchTask } from "../api";
+import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
 import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
+import {
+  resolveTaskPanelChecklistHighlight,
+  type TaskDashboardNavigationOptions,
+} from "../task-detail-focus";
+import {
+  getTaskPanelChecklistPreview,
+  sortTaskPanelSessions,
+  TASK_PANEL_SESSION_PREVIEW_LIMIT,
+} from "../task-panel-preview";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
-import TaskGitStatusSummary from "./TaskGitStatusSummary";
-import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import {
   FolderOpen,
-  Pencil,
   LayoutDashboard,
-  BookOpen,
   Pin,
   AlertTriangle,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
+import TaskPanelSummaryRow from "./TaskPanelSummaryRow";
+import TaskGitStatusSummary from "./TaskGitStatusSummary";
+import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
+import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import {
   WorkItemList,
   PullRequestList,
@@ -33,28 +42,27 @@ import {
   ScheduleSection,
 } from "./task-sections";
 
-// ── Compact section header for sidebar ───────────────────────────
-
-
-
 function SectionLabel({ label, count, progress }: { label: string; count?: number; progress?: string }) {
   return (
-    <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wider px-3 py-1">
+    <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
       {label}
       {progress !== undefined && (
-        <span className="text-text-faint ml-1">({progress})</span>
+        <span className="ml-1 text-text-faint">({progress})</span>
       )}
       {progress === undefined && count !== undefined && (
-        <span className="text-text-faint ml-1">({count})</span>
+        <span className="ml-1 text-text-faint">({count})</span>
       )}
     </div>
   );
 }
 
-// ── Props ────────────────────────────────────────────────────────
+function getPathTail(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? path;
+}
 
 interface TaskPanelProps {
-  // Task mode
   task: Task | null;
   taskGroups?: TaskGroup[];
   sessions: Session[];
@@ -70,7 +78,6 @@ interface TaskPanelProps {
   onArchiveSession?: (id: string, archived: boolean) => void;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
-  // Linking
   tasks?: Task[];
   onLinkToTask?: (sessionId: string, taskId: string) => void;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
@@ -82,18 +89,13 @@ interface TaskPanelProps {
   hasDraft?: (sessionId: string) => boolean;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onRefresh?: () => Promise<void>;
-  onViewDashboard?: (taskId: string) => void;
-  // Bulk actions
+  onViewDashboard?: (taskId: string, options?: TaskDashboardNavigationOptions) => void;
   onMarkAllRead?: () => void;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
-  // Lazy-load archived sessions
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
-  // Tags
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
 }
-
-// ── Component ────────────────────────────────────────────────────
 
 export default function TaskPanel({
   task,
@@ -126,68 +128,194 @@ export default function TaskPanel({
   archivedLoaded,
   onSetTaskTags,
 }: TaskPanelProps) {
-  // ── Consolidated workspace hook ─────────────────────────────
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
-  const activeSession = ws.linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
+  const {
+    enrichedWIs,
+    enrichedPRs,
+    sched,
+    schedDetail,
+    notes,
+    taskGitStatus,
+    checklistItems,
+    checklistItemsReady,
+    createChecklistItemMutation,
+    onChecklistItemUpdate,
+    onChecklistItemDelete,
+    newChecklistItemText,
+    setNewChecklistItemText,
+    linkedSessions,
+    taskOwnTags,
+    taskGroup: group,
+    inheritedTagIds,
+    effectiveTags,
+    relatedDocs,
+    refresh,
+  } = ws;
+  const activeSession = linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
   const sessionWorkspaceQuery = useSessionWorkspaceQuery(activeSession?.sessionId, task?.id);
 
-  // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-
-  // ── Doc preview (panel-specific) ──────────────────────────
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
-
-  // ── Checklist highlight (from dashboard navigation) ─────────
   const [searchParams, setSearchParams] = useSearchParams();
   const [highlightChecklistItemId, setHighlightChecklistItemId] = useState<string | null>(null);
+  const [hasChecklistHandoff, setHasChecklistHandoff] = useState(false);
+  const [handoffChecklistItemId, setHandoffChecklistItemId] = useState<string | null>(null);
+  const [panelHighlightRequest, setPanelHighlightRequest] = useState<{ highlightId: string | null } | null>(null);
+  const [momentumTask, setMomentumTask] = useState(task);
+  const highlightTimerRef = useRef<number | null>(null);
+  const pendingChecklistItemId = searchParams.get("checklistItem");
 
   useEffect(() => {
-    const checklistItemId = searchParams.get("checklistItem");
-    if (checklistItemId) {
-      setHighlightChecklistItemId(checklistItemId);
-      setSearchParams((prev) => { prev.delete("checklistItem"); return prev; }, { replace: true });
-      const timer = setTimeout(() => setHighlightChecklistItemId(null), 1500);
-      return () => clearTimeout(timer);
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
     }
-  }, [searchParams]);
-
-  // Reset editing state when task changes
-  useEffect(() => {
     setEditingTitle(false);
     setPreviewDocPath(null);
     setWorkspaceSheetOpen(false);
+    setHighlightChecklistItemId(null);
+    setHasChecklistHandoff(false);
+    setHandoffChecklistItemId(null);
+    setPanelHighlightRequest(null);
   }, [task?.id]);
 
-  // ── No task selected (empty state) ───────────────────────────
+  useEffect(() => {
+    const resolvedHighlight = resolveTaskPanelChecklistHighlight({
+      focusedChecklistItemId: pendingChecklistItemId,
+      checklistItems,
+      checklistItemsReady,
+    });
+
+    if (!pendingChecklistItemId || !resolvedHighlight.consumeParam) return;
+
+    setHasChecklistHandoff(true);
+    setHandoffChecklistItemId(resolvedHighlight.highlightId);
+    setPanelHighlightRequest({ highlightId: resolvedHighlight.highlightId });
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("checklistItem");
+      return next;
+    }, { replace: true });
+  }, [checklistItems, checklistItemsReady, pendingChecklistItemId, setSearchParams]);
+
+  useEffect(() => {
+    if (!panelHighlightRequest) return;
+
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+
+    setHighlightChecklistItemId(null);
+
+    const frameId = requestAnimationFrame(() => {
+      if (!panelHighlightRequest.highlightId) return;
+
+      setHighlightChecklistItemId(panelHighlightRequest.highlightId);
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightChecklistItemId((current) => (
+          current === panelHighlightRequest.highlightId ? null : current
+        ));
+        highlightTimerRef.current = null;
+      }, 1500);
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [panelHighlightRequest]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setMomentumTask(task);
+  }, [task]);
+
+  const currentTask = task && momentumTask && momentumTask.id === task.id ? momentumTask : task;
+  const alertChips = useMemo(() => {
+    if (!currentTask) return [];
+    return getTaskAlertChips({
+      task: currentTask,
+      sessions: linkedSessions,
+      activeSessionId,
+      isUnread,
+      pullRequests: enrichedPRs,
+    });
+  }, [activeSessionId, currentTask, enrichedPRs, isUnread, linkedSessions]);
+
+  const recentSessions = useMemo(
+    () => sortTaskPanelSessions(linkedSessions, activeSessionId, isUnread),
+    [activeSessionId, isUnread, linkedSessions],
+  );
+
+  const checklistPreview = useMemo(
+    () => getTaskPanelChecklistPreview(checklistItems, { highlightId: highlightChecklistItemId }),
+    [checklistItems, highlightChecklistItemId],
+  );
+
   if (!task) {
     return (
-      <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border items-center justify-center">
+      <div className="flex h-full w-full flex-col items-center justify-center border-r border-border bg-bg-secondary md:w-64">
         <span className="text-xs text-text-faint">Select a task</span>
       </div>
     );
   }
+  const inlineSessions = recentSessions.slice(0, TASK_PANEL_SESSION_PREVIEW_LIMIT);
+  const hiddenSessionCount = Math.max(linkedSessions.length - inlineSessions.length, 0);
+  const checklistSummary = [
+    checklistPreview.overdueCount > 0
+      ? { label: `${checklistPreview.overdueCount} overdue`, className: "text-error" }
+      : null,
+    checklistPreview.dueSoonCount > 0
+      ? { label: `${checklistPreview.dueSoonCount} due soon`, className: "text-warning" }
+      : null,
+    checklistPreview.openCount > 0
+      ? { label: `${checklistPreview.openCount} open`, className: "text-text-faint" }
+      : null,
+    checklistPreview.completedCount > 0
+      ? { label: `${checklistPreview.completedCount} done`, className: "text-text-faint" }
+      : null,
+  ].filter((item): item is { label: string; className: string } => item !== null);
 
-  // ── Task mode ────────────────────────────────────────────────
-
-  const {
-    enrichedWIs, enrichedPRs,
-    sched, schedDetail,
-    notes,
-    taskGitStatus,
-    checklistItems, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
-    newChecklistItemText, setNewChecklistItemText,
-    linkedSessions,
-    taskOwnTags, inheritedTagIds, effectiveTags,
-    relatedDocs,
-    refresh,
-  } = ws;
+  const hasNotesSummary = Boolean(task.notes?.trim());
+  const openTaskOverview = (section?: "sessions" | "checklist") => {
+    const checklistItemId = section === "sessions"
+      ? undefined
+      : pendingChecklistItemId ?? handoffChecklistItemId ?? highlightChecklistItemId ?? undefined;
+    const nextSection = section ?? (checklistItemId || hasChecklistHandoff ? "checklist" : undefined);
+    const options = nextSection || checklistItemId
+      ? { section: nextSection, checklistItemId }
+      : undefined;
+    onViewDashboard?.(task.id, options);
+  };
+  const openDashboard = onViewDashboard ? () => openTaskOverview() : undefined;
   const { data: sessionWorkspace } = sessionWorkspaceQuery;
   const activeWorkspacePath = sessionWorkspace?.effectiveCwd ?? activeSession?.workspace?.effectiveCwd ?? task.cwd;
   const workspaceOverridesTask = sessionWorkspace?.overridesTaskWorkspace ?? activeSession?.workspace?.overridesTaskWorkspace ?? false;
   const workspaceWarning = sessionWorkspace?.warnings?.[0];
   const workspaceStatus = sessionWorkspace?.gitStatus ?? taskGitStatus;
+  const workspaceTitle = activeWorkspacePath ? getPathTail(activeWorkspacePath) : "Set workspace";
+  const workspaceSubtitle = workspaceWarning?.message
+    ?? activeWorkspacePath
+    ?? "Attach a project folder to this task";
+  const workspaceChips = [
+    workspaceOverridesTask
+      ? { label: "override", className: "bg-warning/15 text-warning" }
+      : null,
+    sessionWorkspace?.pathState === "missing"
+      ? { label: "missing", className: "bg-error/15 text-error" }
+      : null,
+  ].filter((item): item is { label: string; className: string } => item !== null);
+  const showWorkspaceDefault = Boolean(
+    task.cwd && activeWorkspacePath && !areWorkspacePathsEqual(activeWorkspacePath, task.cwd),
+  );
+  const showSecondarySummaries = true;
 
   const commitTitle = () => {
     const trimmed = titleDraft.trim();
@@ -198,26 +326,29 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="h-full w-full md:w-64 flex flex-col bg-bg-secondary border-r border-border min-w-0 overflow-hidden">
-      {/* Header — inline task editing */}
-      <div className="p-3 border-b border-border">
-        {/* Dashboard link */}
-        {onViewDashboard && (
-          <button
-            onClick={() => onViewDashboard(task.id)}
-            className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-accent transition-colors mb-1.5"
-          >
-            <LayoutDashboard size={10} />
-            <span>Task Overview</span>
-          </button>
-        )}
+    <div className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-border bg-bg-secondary md:w-64">
+      <div className="space-y-2.5 border-b border-border p-3">
+        <div className="flex items-center justify-between gap-2">
+          {onViewDashboard ? (
+            <button
+              onClick={() => openTaskOverview()}
+              className="inline-flex items-center gap-1.5 text-[10px] text-text-muted transition-colors hover:text-accent"
+            >
+              <LayoutDashboard size={10} />
+              <span>Task Overview</span>
+            </button>
+          ) : <span />}
+          <span className={getStatusBadgeClass(currentTask.status)}>
+            {currentTask.status}
+          </span>
+        </div>
+
         <div className="flex items-start gap-2">
-          {/* Title (click-to-edit) */}
-          <div className="flex-1 min-w-0">
+          <div className="min-w-0 flex-1 space-y-1.5">
             {editingTitle ? (
               <input
                 autoFocus
-                className="w-full text-sm font-medium bg-bg-surface border border-border rounded px-1.5 py-0.5 text-text-primary outline-none focus:border-accent"
+                className="w-full rounded border border-border bg-bg-surface px-1.5 py-0.5 text-sm font-medium text-text-primary outline-none focus:border-accent"
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onBlur={commitTitle}
@@ -232,18 +363,47 @@ export default function TaskPanel({
                   setTitleDraft(task.title);
                   setEditingTitle(true);
                 }}
-                className="text-sm font-medium text-text-primary hover:text-accent leading-tight line-clamp-2 text-left transition-colors w-full"
+                className="w-full text-left text-sm font-medium leading-tight text-text-primary transition-colors hover:text-accent"
                 title="Click to edit title"
               >
-                {task.title}
+                <span className="line-clamp-2">{task.title}</span>
               </button>
             )}
+
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {group && (
+                <div className="flex shrink-0 items-center gap-1 rounded bg-bg-hover px-1.5 py-0.5 text-[10px] text-text-muted" title={`Group: ${group.name}`}>
+                  <span className={`h-2 w-2 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
+                  <span className="max-w-[88px] truncate">{group.name}</span>
+                </div>
+              )}
+              {(effectiveTags.length > 0 || onSetTaskTags) && (
+                <div className="flex min-w-0 flex-wrap items-center gap-1">
+                  <TagPillList
+                    tags={effectiveTags}
+                    inheritedTagIds={inheritedTagIds}
+                    onRemove={onSetTaskTags ? (tagId) => {
+                      const newIds = taskOwnTags.filter((tag) => tag.id !== tagId).map((tag) => tag.id);
+                      onSetTaskTags(task.id, newIds);
+                    } : undefined}
+                    max={3}
+                  />
+                  {onSetTaskTags && (
+                    <TagPicker
+                      selectedTagIds={taskOwnTags.map((tag) => tag.id)}
+                      inheritedTagIds={inheritedTagIds}
+                      onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
+                      compact
+                    />
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Pin toggle */}
           <button
             onClick={() => onUpdateTask(task.id, { pinned: !task.pinned })}
-            className={`p-1 rounded transition-colors shrink-0 ${
+            className={`shrink-0 rounded p-1 transition-colors ${
               task.pinned
                 ? "text-accent hover:text-accent-hover"
                 : "text-text-faint hover:text-text-muted"
@@ -252,276 +412,256 @@ export default function TaskPanel({
           >
             <Pin size={12} className={task.pinned ? "rotate-45" : ""} />
           </button>
-
-          {/* Group badge */}
-          {(() => {
-            const group = taskGroups.find((g) => g.id === task.groupId);
-            if (!group) return null;
-            const colorDot = GROUP_COLOR_DOT[group.color] ?? "bg-slate-500";
-            return (
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-bg-hover shrink-0" title={`Group: ${group.name}`}>
-                <span className={`w-2 h-2 rounded-full ${colorDot}`} />
-                <span className="truncate max-w-[80px]">{group.name}</span>
-              </div>
-            );
-          })()}
         </div>
-        {/* Tags */}
-        {(effectiveTags.length > 0 || onSetTaskTags) && (
-          <div className="flex items-center gap-1 flex-wrap px-3 pb-2">
-            <TagPillList
-              tags={effectiveTags}
-              inheritedTagIds={inheritedTagIds}
-              onRemove={onSetTaskTags ? (tagId) => {
-                const newIds = taskOwnTags.filter((t) => t.id !== tagId).map((t) => t.id);
-                onSetTaskTags(task.id, newIds);
-              } : undefined}
-              max={4}
-            />
-            {onSetTaskTags && (
-              <TagPicker
-                selectedTagIds={taskOwnTags.map((t) => t.id)}
-                inheritedTagIds={inheritedTagIds}
-                onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
-                compact
-              />
-            )}
+
+        {alertChips.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {alertChips.map((chip) => (
+              <span
+                key={chip.kind}
+                className={`rounded-full px-2 py-0.5 text-[10px] ${ALERT_TONE_CLASS[chip.tone]}`}
+                title={chip.title}
+              >
+                {chip.label}
+              </span>
+            ))}
           </div>
         )}
-        <div className="px-3 pb-3">
-          <TaskMomentumFields
-            task={task}
-            onSaved={() => {
-              void onTasksChanged?.();
-            }}
-          />
-        </div>
+
+        <TaskMomentumFields
+          task={currentTask}
+          onPatched={setMomentumTask}
+          onSaved={() => {
+            void onTasksChanged?.();
+          }}
+        />
       </div>
 
-      {/* Scrollable content */}
-      <div className="flex-1 min-h-0 relative">
-      <PullToRefresh onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }} className="absolute inset-0 overflow-x-hidden p-2 space-y-3">
-        {/* Sessions */}
-        <div>
-          <SectionLabel label="Sessions" count={linkedSessions.length} />
-          <SessionList
-            key={task.id}
-            variant="compact"
-            sessions={linkedSessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={onSelectSession}
-            onNewSession={() => onNewSession(task.id)}
-            newButtonLabel="+ New Chat"
-            isUnread={isUnread}
-            onArchiveSession={onArchiveSession}
-            archivingIds={archivingIds}
-            exitingIds={exitingIds}
-            taskContext={task}
-            onUnlinkFromTask={
-              onUnlinkFromTask
-                ? onUnlinkFromTask
-                : async (sessionId, taskId) => {
-                    await unlinkResource(taskId, {
-                      type: "session",
-                      sessionId,
-                    });
-                    onTasksChanged?.();
-                  }
-            }
-            onDeleteSession={onDeleteSession}
-            onDuplicateSession={onDuplicateSession}
-            onReloadSession={onReloadSession}
-            onMarkUnread={onMarkUnread}
-            onBulkAction={onBulkAction}
-            hasDraft={hasDraft}
-            onRequestArchived={onRequestArchived}
-            archivedLoaded={archivedLoaded}
-          />
-        </div>
-
-        {/* Checklist */}
-        <div>
-          <SectionLabel
-            label="Checklist"
-            count={checklistItems.length > 0 ? undefined : 0}
-            progress={checklistItems.length > 0 ? `${checklistItems.filter((t) => t.done).length}/${checklistItems.length}` : undefined}
-          />
-          <TaskChecklistSection
-            checklistItems={checklistItems}
-            newChecklistItemText={newChecklistItemText}
-            onNewChecklistItemTextChange={setNewChecklistItemText}
-            onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
-            onChecklistItemUpdate={onChecklistItemUpdate}
-            onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
-            variant="panel"
-            highlightId={highlightChecklistItemId}
-          />
-        </div>
-
-        {/* Work Items */}
-        {task.workItems.length > 0 && (
+      <div className="relative min-h-0 flex-1">
+        <PullToRefresh
+          onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }}
+          className="absolute inset-0 overflow-x-hidden p-2 space-y-3"
+        >
           <div>
-            <SectionLabel label="Work Items" count={task.workItems.length} />
-            <WorkItemList
-              enrichedWIs={enrichedWIs}
-              rawWIs={task.workItems}
+            <SectionLabel label="Sessions" count={linkedSessions.length} />
+            <SessionList
+              key={task.id}
               variant="compact"
+              sessions={inlineSessions}
+              activeSessionId={activeSessionId}
+              onSelectSession={onSelectSession}
+              onNewSession={() => onNewSession(task.id)}
+              newButtonLabel="+ New Chat"
+              showEmptyState={linkedSessions.length === 0}
+              isUnread={isUnread}
+              onArchiveSession={onArchiveSession}
+              archivingIds={archivingIds}
+              exitingIds={exitingIds}
+              taskContext={task}
+              onUnlinkFromTask={
+                onUnlinkFromTask
+                  ? onUnlinkFromTask
+                  : async (sessionId, taskId) => {
+                      await unlinkResource(taskId, {
+                        type: "session",
+                        sessionId,
+                      });
+                      onTasksChanged?.();
+                    }
+              }
+              onDeleteSession={onDeleteSession}
+              onDuplicateSession={onDuplicateSession}
+              onReloadSession={onReloadSession}
+              onMarkUnread={onMarkUnread}
+              hasDraft={hasDraft}
             />
+            {inlineSessions.length === 0 && linkedSessions.length > 0 && (
+              <div className="px-3 py-1 text-[11px] text-text-faint">
+                Older session history lives in Task Overview.
+              </div>
+            )}
+            {hiddenSessionCount > 0 && onViewDashboard && (
+              <button
+                onClick={() => openTaskOverview("sessions")}
+                className="px-3 pt-1 text-[11px] text-accent transition-colors hover:text-accent-hover"
+              >
+                View all {linkedSessions.length} session{linkedSessions.length === 1 ? "" : "s"}
+              </button>
+            )}
           </div>
-        )}
 
-        {/* Pull Requests */}
-        {task.pullRequests.length > 0 && (
           <div>
             <SectionLabel
-              label="Pull Requests"
-              count={task.pullRequests.length}
+              label="Checklist"
+              count={checklistItems.length > 0 ? undefined : 0}
+              progress={checklistItems.length > 0 ? `${checklistItems.filter((item) => item.done).length}/${checklistItems.length}` : undefined}
             />
-            <PullRequestList
-              enrichedPRs={enrichedPRs}
-              rawPRs={task.pullRequests}
-              variant="compact"
+            {checklistSummary.length > 0 && (
+              <div className="flex flex-wrap gap-x-2 gap-y-1 px-3 pb-1 text-[10px]">
+                {checklistSummary.map((item) => (
+                  <span key={item.label} className={item.className}>
+                    {item.label}
+                  </span>
+                ))}
+              </div>
+            )}
+            <TaskChecklistSection
+              checklistItems={checklistItems}
+              newChecklistItemText={newChecklistItemText}
+              onNewChecklistItemTextChange={setNewChecklistItemText}
+              onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
+              onChecklistItemUpdate={onChecklistItemUpdate}
+              onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
+              variant="panel"
+              highlightId={highlightChecklistItemId}
+              onViewAll={onViewDashboard ? () => openTaskOverview("checklist") : undefined}
             />
           </div>
-        )}
 
-        {/* Schedules */}
-        <ScheduleSection
-          schedules={sched.schedules}
-          variant="compact"
-          label={<SectionLabel label="Schedules" count={sched.schedules.length} />}
-          onAdd={() => schedDetail.openForCreate(task.id)}
-          onOpen={(s) => schedDetail.openSheet(s)}
-          onTrigger={(id) => sched.trigger(id)}
-          onToggle={(s) => sched.toggle(s)}
-          onEdit={(s) => schedDetail.openSheet(s, "edit")}
-          onDelete={(id) => sched.remove(id)}
-        />
-
-        {/* Schedule Detail Sheet (unified view/edit/create) */}
-        {schedDetail.isOpen && (
-          <ScheduleDetailSheet
-            schedule={schedDetail.schedule}
-            taskId={task.id}
-            taskTitle={task.title}
-            mode={schedDetail.mode}
-            onClose={schedDetail.close}
-            onSwitchToEdit={schedDetail.switchToEdit}
-            onSwitchToView={schedDetail.switchToView}
-            onTrigger={sched.trigger}
-            onToggle={sched.toggle}
-            onDelete={sched.remove}
-            onSaved={() => { schedDetail.close(); sched.reload(); }}
-            onSelectSession={onSelectSession}
-          />
-        )}
-
-        {/* Working Directory */}
-        <div>
-          <SectionLabel label="Workspace" />
-          <button
-            onClick={() => setWorkspaceSheetOpen(true)}
-            className="mx-1 w-[calc(100%-0.5rem)] rounded-md px-2 py-2 text-left transition-colors hover:bg-bg-hover"
-          >
-            <div className="flex items-start gap-1.5">
-              <FolderOpen size={12} className="mt-0.5 shrink-0 text-text-faint" />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span
-                    className="truncate font-mono text-xs text-text-muted"
-                    title={activeWorkspacePath ?? "Workspace not configured"}
-                  >
-                    {activeWorkspacePath ?? "Set workspace…"}
-                  </span>
-                  {workspaceOverridesTask && (
-                    <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
-                      Overrides task workspace
-                    </span>
-                  )}
-                  {sessionWorkspace?.pathState === "missing" && (
-                    <span className="rounded-full bg-error/15 px-1.5 py-0.5 text-[10px] font-medium text-error">
-                      Missing workspace
-                    </span>
+          {showSecondarySummaries && (
+            <div>
+              <SectionLabel label="Details" />
+              <div className="space-y-1">
+                {task.workItems.length > 0 && (
+                  <WorkItemList
+                    enrichedWIs={enrichedWIs}
+                    rawWIs={task.workItems}
+                    variant="summary"
+                    onOpenSummary={openDashboard}
+                  />
+                )}
+                {task.pullRequests.length > 0 && (
+                  <PullRequestList
+                    enrichedPRs={enrichedPRs}
+                    rawPRs={task.pullRequests}
+                    variant="summary"
+                    onOpenSummary={openDashboard}
+                  />
+                )}
+                {hasNotesSummary && (
+                  <TaskNotesSection
+                    notes={task.notes || undefined}
+                    onView={notes.openToView}
+                    onEdit={notes.openToEdit}
+                    variant="summary"
+                  />
+                )}
+                {relatedDocs.length > 0 && (
+                  <RelatedDocsSection
+                    docs={relatedDocs}
+                    variant="summary"
+                    onPreview={(path) => setPreviewDocPath(path)}
+                    resetKey={task.id}
+                  />
+                )}
+                {sched.schedules.length > 0 && (
+                  <ScheduleSection
+                    schedules={sched.schedules}
+                    variant="summary"
+                    onAdd={() => schedDetail.openForCreate(task.id)}
+                    onOpen={(schedule) => schedDetail.openSheet(schedule)}
+                    onTrigger={(id) => sched.trigger(id)}
+                    onToggle={(schedule) => sched.toggle(schedule)}
+                    onEdit={(schedule) => schedDetail.openSheet(schedule, "edit")}
+                    onDelete={(id) => sched.remove(id)}
+                  />
+                )}
+                <div className="space-y-1">
+                  <TaskPanelSummaryRow
+                    label="Workspace"
+                    icon={workspaceWarning || sessionWorkspace?.pathState === "missing"
+                      ? <AlertTriangle size={14} className={sessionWorkspace?.pathState === "missing" ? "text-error" : "text-warning"} />
+                      : <FolderOpen size={14} />}
+                    title={workspaceTitle}
+                    subtitle={workspaceSubtitle}
+                    subtitleClassName={workspaceWarning ? "line-clamp-2 text-warning" : "truncate font-mono"}
+                    chips={workspaceChips}
+                    onClick={() => setWorkspaceSheetOpen(true)}
+                  />
+                  {!workspaceWarning && (showWorkspaceDefault || workspaceStatus) && (
+                    <div className="rounded-md bg-bg-surface px-2.5 pb-2 pl-8">
+                      {showWorkspaceDefault && (
+                        <div className="mb-1 truncate text-[10px] text-text-faint">
+                          Task default: <span className="font-mono">{task.cwd}</span>
+                        </div>
+                      )}
+                      <TaskGitStatusSummary gitStatus={workspaceStatus} />
+                    </div>
                   )}
                 </div>
-                {workspaceWarning ? (
-                  <div className="mt-1 flex items-start gap-1 text-[10px] text-warning">
-                    <AlertTriangle size={10} className="mt-0.5 shrink-0" />
-                    <span className="line-clamp-2">{workspaceWarning.message}</span>
-                  </div>
-                ) : (
-                  <>
-                    {task.cwd && activeWorkspacePath && !areWorkspacePathsEqual(activeWorkspacePath, task.cwd) && (
-                      <div className="mt-1 text-[10px] text-text-faint">
-                        Task default: <span className="font-mono">{task.cwd}</span>
-                      </div>
-                    )}
-                    <TaskGitStatusSummary
-                      gitStatus={workspaceStatus}
-                      className="mt-1"
-                    />
-                  </>
-                )}
               </div>
             </div>
-          </button>
-        </div>
+          )}
 
-        {/* Notes */}
-        <div>
-          <SectionLabel label="Notes" />
-          <TaskNotesSection
-            notes={task.notes || undefined}
-            onView={notes.openToView}
-            onEdit={notes.openToEdit}
-            truncate
-          />
-        </div>
-
-        {/* Related Docs */}
-        {relatedDocs.length > 0 && (
-          <div>
-            <SectionLabel label="Docs" count={relatedDocs.length} />
-            <RelatedDocsSection
-              docs={relatedDocs}
-              variant="compact"
-              onPreview={(path) => setPreviewDocPath(path)}
-              resetKey={task.id}
+          {schedDetail.isOpen && (
+            <ScheduleDetailSheet
+              schedule={schedDetail.schedule}
+              taskId={task.id}
+              taskTitle={task.title}
+              mode={schedDetail.mode}
+              onClose={schedDetail.close}
+              onSwitchToEdit={schedDetail.switchToEdit}
+              onSwitchToView={schedDetail.switchToView}
+              onTrigger={sched.trigger}
+              onToggle={sched.toggle}
+              onDelete={sched.remove}
+              onSaved={() => {
+                schedDetail.close();
+                sched.reload();
+              }}
+              onSelectSession={onSelectSession}
             />
-          </div>
-        )}
+          )}
 
-        {/* Doc Preview Sheet */}
-        {previewDocPath && (
-          <DocPreviewSheet
-            docPath={previewDocPath}
-            onClose={() => setPreviewDocPath(null)}
-          />
-        )}
+          {previewDocPath && (
+            <DocPreviewSheet
+              docPath={previewDocPath}
+              onClose={() => setPreviewDocPath(null)}
+            />
+          )}
 
-        {/* Notes Sheet */}
-        {notes.notesSheetOpen && (
-          <NotesSheet
-            notes={task.notes}
-            startInEditMode={notes.notesStartEdit}
-            onSave={async (newNotes) => {
-              await patchTask(task.id, { notes: newNotes });
-              onTasksChanged?.();
-            }}
-            onClose={notes.close}
-          />
-        )}
-        {workspaceSheetOpen && (
-          <WorkspaceDetailsSheet
-            task={task}
-            session={activeSession}
-            taskGitStatus={taskGitStatus}
-            onClose={() => setWorkspaceSheetOpen(false)}
-            onTaskUpdated={onTasksChanged}
-          />
-        )}
-      </PullToRefresh>
+          {notes.notesSheetOpen && (
+            <NotesSheet
+              notes={task.notes}
+              startInEditMode={notes.notesStartEdit}
+              onSave={async (newNotes) => {
+                await patchTask(task.id, { notes: newNotes });
+                onTasksChanged?.();
+              }}
+              onClose={notes.close}
+            />
+          )}
+          {workspaceSheetOpen && (
+            <WorkspaceDetailsSheet
+              task={task}
+              session={activeSession}
+              taskGitStatus={taskGitStatus}
+              onClose={() => setWorkspaceSheetOpen(false)}
+              onTaskUpdated={onTasksChanged}
+            />
+          )}
+        </PullToRefresh>
       </div>
     </div>
   );
+}
+
+const ALERT_TONE_CLASS: Record<TaskAlertTone, string> = {
+  accent: "bg-accent/15 text-accent",
+  info: "bg-info/15 text-info",
+  success: "bg-success/15 text-success",
+  warning: "bg-warning/15 text-warning",
+  danger: "bg-error/15 text-error",
+};
+
+function getStatusBadgeClass(status: Task["status"]): string {
+  return `rounded-full px-1.5 py-0.5 text-[10px] capitalize ${
+    status === "active"
+      ? "bg-success/15 text-success"
+      : status === "paused"
+        ? "bg-warning/15 text-warning"
+        : status === "done"
+          ? "bg-accent/15 text-accent"
+          : "bg-text-muted/15 text-text-muted"
+  }`;
 }

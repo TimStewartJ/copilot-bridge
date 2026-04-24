@@ -1,18 +1,30 @@
 import type { EnrichedPR, PRRef } from "../../api";
 import { PR_STATUS_STYLES } from "../../work-item-styles";
 import { GitPullRequest } from "lucide-react";
+import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
 
 export interface PullRequestListProps {
   enrichedPRs: EnrichedPR[];
   rawPRs: PRRef[];
-  variant?: "compact" | "card";
+  variant?: "compact" | "card" | "summary";
+  onOpenSummary?: () => void;
+}
+
+const PR_SUMMARY_STYLES: Record<string, string> = {
+  active: "bg-accent/15 text-accent",
+  completed: "bg-success/15 text-success",
+  abandoned: "bg-text-muted/15 text-text-muted",
+};
+
+function sortCountEntries(a: [string, number], b: [string, number]) {
+  return b[1] - a[1] || a[0].localeCompare(b[0]);
 }
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact" }: PullRequestListProps) {
+export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", onOpenSummary }: PullRequestListProps) {
   const isCompact = variant === "compact";
   const items = enrichedPRs.length > 0
     ? enrichedPRs
@@ -27,6 +39,49 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
         reviewerCount: 0,
         url: "#",
       }));
+
+  if (variant === "summary") {
+    if (items.length === 0) return null;
+
+    const primaryPr = items[0];
+    const statusCounts = new Map<string, number>();
+
+    for (const pr of items) {
+      if (pr.status) statusCounts.set(pr.status, (statusCounts.get(pr.status) ?? 0) + 1);
+    }
+
+    const chips: TaskPanelSummaryChip[] = [...statusCounts.entries()]
+      .sort(sortCountEntries)
+      .slice(0, 3)
+      .map(([status, count]) => ({
+        label: `${count} ${PR_STATUS_STYLES[status]?.label ?? status}`,
+        className: PR_SUMMARY_STYLES[status] ?? "bg-text-muted/15 text-text-muted",
+      }));
+
+    const title = items.length === 1
+      ? primaryPr.title ?? `#${primaryPr.prId}`
+      : `${items.length} linked pull requests`;
+
+    const subtitle = items.length === 1
+      ? [primaryPr.repoName || primaryPr.repoId, `#${primaryPr.prId}`].join(" · ")
+      : [
+          items.slice(0, 2).map((pr) => `#${pr.prId}`).join(" · "),
+          items.length > 2 ? `+${items.length - 2} more` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+    return (
+      <TaskPanelSummaryRow
+        label="Pull requests"
+        icon={<GitPullRequest size={14} />}
+        title={title}
+        subtitle={subtitle || undefined}
+        chips={chips}
+        onClick={onOpenSummary}
+      />
+    );
+  }
 
   return (
     <div className={isCompact ? "space-y-0.5" : "space-y-1"}>

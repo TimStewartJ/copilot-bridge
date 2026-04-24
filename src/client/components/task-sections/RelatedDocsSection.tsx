@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import type { RelatedDoc } from "../../api";
 import { BookOpen } from "lucide-react";
+import TaskPanelSummaryRow from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
 
 export interface RelatedDocsSectionProps {
   docs: RelatedDoc[];
-  variant?: "compact" | "card";
+  variant?: "compact" | "card" | "summary";
   onPreview?: (path: string) => void;
   /** Reset expansion state when this key changes (e.g. task ID). */
   resetKey?: string;
@@ -22,6 +23,23 @@ export default function RelatedDocsSection({ docs, variant = "compact", onPrevie
   useEffect(() => { setExpanded(false); }, [resetKey]);
 
   if (docs.length === 0) return null;
+
+  if (variant === "summary") {
+    const primaryDoc = [...docs].sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime())[0];
+    const title = docs.length === 1 ? primaryDoc.title : `${docs.length} related docs`;
+    const subtitle = docs.length === 1 ? primaryDoc.path : `Latest: ${primaryDoc.title}`;
+
+    return (
+      <TaskPanelSummaryRow
+        label="Docs"
+        icon={<BookOpen size={14} />}
+        title={title}
+        subtitle={subtitle}
+        subtitleClassName={docs.length === 1 ? "truncate font-mono" : undefined}
+        onClick={onPreview ? () => onPreview(primaryDoc.path) : undefined}
+      />
+    );
+  }
 
   if (isCompact) {
     const COLLAPSED_MAX = 5;
