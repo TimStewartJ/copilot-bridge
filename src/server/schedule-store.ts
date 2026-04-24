@@ -10,6 +10,21 @@ export function getServerTimezone(): string {
 }
 
 export type ScheduleSessionMode = "new" | "reuse-last" | "reuse-target";
+export type ScheduleTriggerSource = "manual" | "cron" | "once" | "catchup";
+export type AutomaticScheduleTriggerSource = Exclude<ScheduleTriggerSource, "manual">;
+export interface AutomaticRunClaim {
+  runKey: string;
+  claimedAt: string;
+  leaseExpiresAt: string;
+}
+export interface SessionReuseClaim {
+  sessionId: string;
+  claimedAt: string;
+  leaseExpiresAt: string;
+}
+
+const SCHEDULE_RUN_CLAIM_TTL_MS = 2 * 60 * 1000;
+const SCHEDULE_LOCK_RUN_KEY = "__schedule_active__";
 
 export interface Schedule {
   id: string;
@@ -51,6 +66,58 @@ export type ScheduleUpdate = Partial<Pick<Schedule,
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createScheduleStore(db: DatabaseSync) {
+  const insertAutomaticRunClaim = db.prepare(`
+    INSERT INTO schedule_run_claims (scheduleId, runKey, source, status, claimedAt, leaseExpiresAt)
+    VALUES (?, ?, ?, 'claimed', ?, ?)
+  `);
+  const getAutomaticRunClaim = db.prepare(`
+    SELECT status, claimedAt, leaseExpiresAt
+    FROM schedule_run_claims
+    WHERE scheduleId = ? AND runKey = ?
+  `);
+  const reclaimAutomaticRunClaim = db.prepare(`
+    UPDATE schedule_run_claims
+    SET source = ?, status = 'claimed', claimedAt = ?, leaseExpiresAt = ?, finishedAt = NULL, sessionId = NULL
+    WHERE scheduleId = ? AND runKey = ? AND status = 'claimed' AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+  const renewAutomaticRunClaim = db.prepare(`
+    UPDATE schedule_run_claims
+    SET leaseExpiresAt = ?
+    WHERE scheduleId = ? AND runKey = ? AND status = 'claimed' AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+  const releaseAutomaticRunClaim = db.prepare(`
+    DELETE FROM schedule_run_claims
+    WHERE scheduleId = ? AND runKey = ? AND status = 'claimed' AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+  const finishAutomaticRunClaim = db.prepare(`
+    UPDATE schedule_run_claims
+    SET status = ?, sessionId = ?, finishedAt = ?, leaseExpiresAt = ?
+    WHERE scheduleId = ? AND runKey = ? AND status = 'claimed' AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+  const insertSessionReuseClaim = db.prepare(`
+    INSERT INTO schedule_session_claims (sessionId, scheduleId, claimedAt, leaseExpiresAt)
+    VALUES (?, ?, ?, ?)
+  `);
+  const getSessionReuseClaim = db.prepare(`
+    SELECT scheduleId, claimedAt, leaseExpiresAt
+    FROM schedule_session_claims
+    WHERE sessionId = ?
+  `);
+  const reclaimSessionReuseClaim = db.prepare(`
+    UPDATE schedule_session_claims
+    SET scheduleId = ?, claimedAt = ?, leaseExpiresAt = ?
+    WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+  const renewSessionReuseClaim = db.prepare(`
+    UPDATE schedule_session_claims
+    SET leaseExpiresAt = ?
+    WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+  const releaseSessionReuseClaim = db.prepare(`
+    DELETE FROM schedule_session_claims
+    WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
+  `);
+
   function hydrate(row: any): Schedule {
     return {
       id: row.id,
@@ -141,30 +208,263 @@ export function createScheduleStore(db: DatabaseSync) {
   }
 
   function deleteSchedule(id: string): void {
+    db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(id);
     db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(id);
     db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
   }
 
-  function recordRun(id: string, sessionId: string, nextRunAt?: string): void {
-    const schedule = getSchedule(id);
-    if (!schedule) return;
-
-    const now = new Date().toISOString();
+  function applyRecordedRun(schedule: Schedule, sessionId: string, nextRunAt?: string, now = new Date().toISOString()): void {
     const newRunCount = schedule.runCount + 1;
-
     let enabled = schedule.enabled;
-    // Auto-disable one-shot schedules
     if (schedule.type === "once") enabled = false;
-    // Auto-disable if maxRuns reached
     if (schedule.maxRuns && newRunCount >= schedule.maxRuns) enabled = false;
-    // Auto-disable if expired
-    if (schedule.expiresAt && new Date() >= new Date(schedule.expiresAt)) enabled = false;
+    if (schedule.expiresAt && new Date(now) >= new Date(schedule.expiresAt)) enabled = false;
 
     db.prepare(`
       UPDATE schedules SET lastRunAt = ?, lastSessionId = ?, runCount = ?,
         nextRunAt = ?, updatedAt = ?, enabled = ?
       WHERE id = ?
-    `).run(now, sessionId, newRunCount, nextRunAt ?? null, now, enabled ? 1 : 0, id);
+    `).run(now, sessionId, newRunCount, nextRunAt ?? null, now, enabled ? 1 : 0, schedule.id);
+  }
+
+  function recordRun(id: string, sessionId: string, nextRunAt?: string): void {
+    const schedule = getSchedule(id);
+    if (!schedule) return;
+    applyRecordedRun(schedule, sessionId, nextRunAt);
+  }
+
+  function claimRun(
+    id: string,
+    runKey: string,
+    source: ScheduleTriggerSource,
+    claimedAt = new Date().toISOString(),
+  ): { acquired: true; claim: AutomaticRunClaim } | { acquired: false; runKey: string; reason: string } {
+    const normalizedRunKey = runKey === SCHEDULE_LOCK_RUN_KEY ? SCHEDULE_LOCK_RUN_KEY : new Date(runKey).toISOString();
+    const normalizedClaimedAt = new Date(claimedAt).toISOString();
+    const leaseExpiresAt = new Date(Date.parse(normalizedClaimedAt) + SCHEDULE_RUN_CLAIM_TTL_MS).toISOString();
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = getAutomaticRunClaim.get(id, normalizedRunKey) as
+        | { status: "claimed" | "triggered" | "skipped"; claimedAt: string; leaseExpiresAt: string }
+        | undefined;
+      if (!existing) {
+        insertAutomaticRunClaim.run(id, normalizedRunKey, source, normalizedClaimedAt, leaseExpiresAt);
+        db.exec("COMMIT");
+        return {
+          acquired: true,
+          claim: { runKey: normalizedRunKey, claimedAt: normalizedClaimedAt, leaseExpiresAt },
+        };
+      }
+
+      if (existing.status === "claimed" && Date.parse(existing.leaseExpiresAt) <= Date.parse(normalizedClaimedAt)) {
+        const result = reclaimAutomaticRunClaim.run(
+          source,
+          normalizedClaimedAt,
+          leaseExpiresAt,
+          id,
+          normalizedRunKey,
+          existing.claimedAt,
+          existing.leaseExpiresAt,
+        ) as { changes?: number };
+        if ((result.changes ?? 0) > 0) {
+          db.exec("COMMIT");
+          return {
+            acquired: true,
+            claim: { runKey: normalizedRunKey, claimedAt: normalizedClaimedAt, leaseExpiresAt },
+          };
+        }
+      }
+
+      db.exec("COMMIT");
+      return {
+        acquired: false,
+        runKey: normalizedRunKey,
+        reason: existing.status === "claimed"
+          ? "This scheduled slot is already being processed"
+          : "This scheduled slot already ran",
+      };
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  function claimAutomaticRun(
+    id: string,
+    runKey: string,
+    source: AutomaticScheduleTriggerSource,
+    claimedAt = new Date().toISOString(),
+  ): { acquired: true; claim: AutomaticRunClaim } | { acquired: false; runKey: string; reason: string } {
+    return claimRun(id, runKey, source, claimedAt);
+  }
+
+  function claimScheduleRun(
+    id: string,
+    source: ScheduleTriggerSource,
+    claimedAt = new Date().toISOString(),
+  ): { acquired: true; claim: AutomaticRunClaim } | { acquired: false; runKey: string; reason: string } {
+    return claimRun(id, SCHEDULE_LOCK_RUN_KEY, source, claimedAt);
+  }
+
+  function claimSessionReuse(
+    sessionId: string,
+    scheduleId: string,
+    claimedAt = new Date().toISOString(),
+  ): { acquired: true; claim: SessionReuseClaim } | { acquired: false; reason: string } {
+    const normalizedClaimedAt = new Date(claimedAt).toISOString();
+    const leaseExpiresAt = new Date(Date.parse(normalizedClaimedAt) + SCHEDULE_RUN_CLAIM_TTL_MS).toISOString();
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = getSessionReuseClaim.get(sessionId) as
+        | { scheduleId: string; claimedAt: string; leaseExpiresAt: string }
+        | undefined;
+      if (!existing) {
+        insertSessionReuseClaim.run(sessionId, scheduleId, normalizedClaimedAt, leaseExpiresAt);
+        db.exec("COMMIT");
+        return {
+          acquired: true,
+          claim: { sessionId, claimedAt: normalizedClaimedAt, leaseExpiresAt },
+        };
+      }
+
+      if (Date.parse(existing.leaseExpiresAt) <= Date.parse(normalizedClaimedAt)) {
+        const result = reclaimSessionReuseClaim.run(
+          scheduleId,
+          normalizedClaimedAt,
+          leaseExpiresAt,
+          sessionId,
+          existing.claimedAt,
+          existing.leaseExpiresAt,
+        ) as { changes?: number };
+        if ((result.changes ?? 0) > 0) {
+          db.exec("COMMIT");
+          return {
+            acquired: true,
+            claim: { sessionId, claimedAt: normalizedClaimedAt, leaseExpiresAt },
+          };
+        }
+      }
+
+      db.exec("COMMIT");
+      return { acquired: false, reason: "This session is already being reused by another scheduled run" };
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  function completeAutomaticRun(id: string, claim: AutomaticRunClaim, sessionId: string, nextRunAt?: string): boolean {
+    const finishedAt = new Date().toISOString();
+
+    db.exec("BEGIN");
+    try {
+      const result = finishAutomaticRunClaim.run(
+        "triggered",
+        sessionId,
+        finishedAt,
+        finishedAt,
+        id,
+        claim.runKey,
+        claim.claimedAt,
+        claim.leaseExpiresAt,
+      ) as { changes?: number };
+      if ((result.changes ?? 0) === 0) {
+        db.exec("COMMIT");
+        return false;
+      }
+      const schedule = getSchedule(id);
+      if (schedule) {
+        applyRecordedRun(schedule, sessionId, nextRunAt, finishedAt);
+      }
+      db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  function skipAutomaticRun(id: string, claim: AutomaticRunClaim): boolean {
+    const finishedAt = new Date().toISOString();
+
+    db.exec("BEGIN");
+    try {
+      const result = finishAutomaticRunClaim.run(
+        "skipped",
+        null,
+        finishedAt,
+        finishedAt,
+        id,
+        claim.runKey,
+        claim.claimedAt,
+        claim.leaseExpiresAt,
+      ) as { changes?: number };
+      if ((result.changes ?? 0) === 0) {
+        db.exec("COMMIT");
+        return false;
+      }
+      const schedule = getSchedule(id);
+      if (schedule?.type === "once") {
+        db.prepare(`
+          UPDATE schedules
+          SET nextRunAt = NULL, enabled = 0, updatedAt = ?
+          WHERE id = ?
+        `).run(finishedAt, schedule.id);
+      }
+      db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  function releaseClaimedAutomaticRun(id: string, claim: AutomaticRunClaim): boolean {
+    const result = releaseAutomaticRunClaim.run(
+      id,
+      claim.runKey,
+      claim.claimedAt,
+      claim.leaseExpiresAt,
+    ) as { changes?: number };
+    return (result.changes ?? 0) > 0;
+  }
+
+  function renewClaimedAutomaticRun(id: string, claim: AutomaticRunClaim, renewedAt = new Date().toISOString()): boolean {
+    const newLeaseExpiresAt = new Date(Date.parse(renewedAt) + SCHEDULE_RUN_CLAIM_TTL_MS).toISOString();
+    const result = renewAutomaticRunClaim.run(
+      newLeaseExpiresAt,
+      id,
+      claim.runKey,
+      claim.claimedAt,
+      claim.leaseExpiresAt,
+    ) as { changes?: number };
+    if ((result.changes ?? 0) === 0) return false;
+    claim.leaseExpiresAt = newLeaseExpiresAt;
+    return true;
+  }
+
+  function releaseClaimedSessionReuse(sessionId: string, claim: SessionReuseClaim): boolean {
+    const result = releaseSessionReuseClaim.run(
+      sessionId,
+      claim.claimedAt,
+      claim.leaseExpiresAt,
+    ) as { changes?: number };
+    return (result.changes ?? 0) > 0;
+  }
+
+  function renewClaimedSessionReuse(sessionId: string, claim: SessionReuseClaim, renewedAt = new Date().toISOString()): boolean {
+    const newLeaseExpiresAt = new Date(Date.parse(renewedAt) + SCHEDULE_RUN_CLAIM_TTL_MS).toISOString();
+    const result = renewSessionReuseClaim.run(
+      newLeaseExpiresAt,
+      sessionId,
+      claim.claimedAt,
+      claim.leaseExpiresAt,
+    ) as { changes?: number };
+    if ((result.changes ?? 0) === 0) return false;
+    claim.leaseExpiresAt = newLeaseExpiresAt;
+    return true;
   }
 
   function updateNextRunAt(id: string, nextRunAt: string): void {
@@ -181,7 +481,11 @@ export function createScheduleStore(db: DatabaseSync) {
 
   return {
     listSchedules, getSchedule, createSchedule, updateSchedule, deleteSchedule,
-    recordRun, updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
+    recordRun, claimScheduleRun, claimAutomaticRun, claimSessionReuse,
+    completeAutomaticRun, skipAutomaticRun,
+    releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
+    releaseClaimedSessionReuse, renewClaimedSessionReuse,
+    updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
   };
 }
 

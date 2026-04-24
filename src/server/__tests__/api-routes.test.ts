@@ -77,6 +77,36 @@ afterEach(() => {
   }
 });
 
+describe("Shutdown route", () => {
+  it("POST /api/shutdown pauses scheduling until sessions drain, then shuts the scheduler down", async () => {
+    const order: string[] = [];
+    const pauseSpy = vi.spyOn(scheduler, "setGlobalPause").mockImplementation((paused: boolean) => {
+      order.push(paused ? "pause" : "resume");
+    });
+    const shutdownSpy = vi.spyOn(scheduler, "shutdown").mockImplementation(() => {
+      order.push("shutdown");
+    });
+    ctx.sessionManager.gracefulShutdown = vi.fn(async () => {
+      order.push("graceful");
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as any);
+    try {
+      const res = await request(app)
+        .post("/api/shutdown")
+        .send({});
+      await Promise.resolve();
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, message: "Shutting down..." });
+      expect(order).toEqual(["pause", "graceful", "shutdown"]);
+    } finally {
+      pauseSpy.mockRestore();
+      shutdownSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+});
+
 describe("Fleet route", () => {
   it("POST /api/sessions/:id/fleet starts Fleet for sessions with a plan", async () => {
     const startFleet = vi.fn();

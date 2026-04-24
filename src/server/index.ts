@@ -228,8 +228,9 @@ async function main(): Promise<void> {
 async function gracefulExit(signal: string) {
   console.log(`\n[web] ${signal} received — graceful shutdown...`);
   try {
-    scheduler.shutdown();
+    scheduler.setGlobalPause(true);
     await sessionManager.gracefulShutdown();
+    scheduler.shutdown();
   } catch (err) {
     console.error("[web] Error during graceful shutdown:", err);
   }
