@@ -19,14 +19,27 @@ interface FieldConfig {
   label: string;
   placeholder: string;
   type: "text" | "datetime-local";
+  actionLabel: string;
 }
 
 const FIELD_CONFIGS: FieldConfig[] = [
-  { key: "doneWhen", label: "Done when", placeholder: "Define the finish line", type: "text" },
-  { key: "nextAction", label: "Next action", placeholder: "Capture the next concrete step", type: "text" },
-  { key: "waitingOn", label: "Waiting on", placeholder: "Who or what is blocking this", type: "text" },
-  { key: "nextTouchAt", label: "Follow up on", placeholder: "Pick a follow-up date and time", type: "datetime-local" },
+  { key: "doneWhen", label: "Done when", placeholder: "Define the finish line", type: "text", actionLabel: "Set done when" },
+  { key: "nextAction", label: "Next action", placeholder: "Capture the next concrete step", type: "text", actionLabel: "Add next action" },
+  { key: "waitingOn", label: "Waiting on", placeholder: "Who or what is blocking this", type: "text", actionLabel: "Add blocker" },
+  { key: "nextTouchAt", label: "Follow up on", placeholder: "Pick a follow-up date and time", type: "datetime-local", actionLabel: "Set follow-up" },
 ];
+
+const FIELD_CONFIG_BY_KEY = FIELD_CONFIGS.reduce<Record<MomentumFieldKey, FieldConfig>>((acc, config) => {
+  acc[config.key] = config;
+  return acc;
+}, {
+  doneWhen: FIELD_CONFIGS[0],
+  nextAction: FIELD_CONFIGS[1],
+  waitingOn: FIELD_CONFIGS[2],
+  nextTouchAt: FIELD_CONFIGS[3],
+});
+
+const PANEL_FIELD_ORDER: MomentumFieldKey[] = ["nextAction", "waitingOn", "nextTouchAt", "doneWhen"];
 
 export default function TaskMomentumFields({
   task,
@@ -45,12 +58,12 @@ export default function TaskMomentumFields({
     setDrafts(next);
     setEditingField(null);
     setSavingField(null);
-  }, [task.id, task.status, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
+  }, [task.id, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
 
   const isDashboard = variant === "dashboard";
-  const visibleFields = FIELD_CONFIGS.filter((field) => (
-    field.key === "doneWhen" || task.status === "active" || Boolean(values[field.key])
-  ));
+  const orderedPanelFields = PANEL_FIELD_ORDER.map((key) => FIELD_CONFIG_BY_KEY[key]);
+  const visiblePanelFields = orderedPanelFields.filter((field) => values[field.key] || editingField === field.key);
+  const quickAddFields = orderedPanelFields.filter((field) => !values[field.key] && editingField !== field.key);
 
   const persistField = async (field: MomentumFieldKey, rawValue: string) => {
     const normalized = normalizeDraft(field, rawValue);
@@ -92,16 +105,121 @@ export default function TaskMomentumFields({
     }
   };
 
+  if (!isDashboard) {
+    return (
+      <div className="rounded-md border border-border bg-bg-surface overflow-hidden">
+        <div className="px-3 py-2 border-b border-border/70 bg-bg-secondary/40">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+            Momentum
+          </div>
+          <div className="text-[11px] text-text-faint mt-0.5">
+            {getPanelSummary(values)}
+          </div>
+        </div>
+
+        {visiblePanelFields.length > 0 ? (
+          <div className="divide-y divide-border/70">
+            {visiblePanelFields.map((field) => {
+              const currentValue = values[field.key];
+              const isEditing = editingField === field.key;
+              const isSaving = savingField === field.key;
+
+              return (
+                <div key={field.key} className="px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                      {field.label}
+                    </span>
+                    {isSaving ? (
+                      <span className="text-[10px] text-text-faint">Saving…</span>
+                    ) : currentValue && !isEditing ? (
+                      <button
+                        type="button"
+                        onClick={() => void persistField(field.key, "")}
+                        className="text-[10px] text-text-faint hover:text-text-primary transition-colors"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {isEditing ? (
+                    <input
+                      autoFocus
+                      type={field.type}
+                      value={drafts[field.key]}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setDrafts((current) => ({ ...current, [field.key]: nextValue }));
+                      }}
+                      onBlur={() => {
+                        void persistField(field.key, drafts[field.key]);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void persistField(field.key, drafts[field.key]);
+                        }
+                        if (event.key === "Escape") {
+                          setDrafts((current) => ({ ...current, [field.key]: values[field.key] }));
+                          setEditingField(null);
+                        }
+                      }}
+                      className="mt-1.5 w-full rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary outline-none focus:border-accent"
+                      placeholder={field.placeholder}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDrafts(values);
+                        setEditingField(field.key);
+                      }}
+                      className="mt-1 w-full text-left text-xs leading-5 text-text-primary transition-colors hover:text-accent"
+                      title={currentValue || field.placeholder}
+                    >
+                      <span className="line-clamp-2">
+                        {formatFieldDisplay(field.key, currentValue)}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="px-3 py-2.5 text-xs text-text-faint">
+            Add the next step, blocker, or follow-up so this task is easy to resume.
+          </div>
+        )}
+
+        {quickAddFields.length > 0 && (
+          <div className={`px-3 py-2 flex flex-wrap gap-1.5 ${visiblePanelFields.length > 0 ? "border-t border-border/70" : ""}`}>
+            {quickAddFields.map((field) => (
+              <button
+                key={field.key}
+                type="button"
+                onClick={() => {
+                  setDrafts(values);
+                  setEditingField(field.key);
+                }}
+                className="rounded-full border border-border bg-bg-secondary px-2 py-1 text-[10px] font-medium text-text-muted transition-colors hover:border-text-muted/40 hover:text-text-primary"
+              >
+                {field.actionLabel}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={isDashboard ? "grid grid-cols-1 sm:grid-cols-2 gap-3" : "space-y-2"}>
-      {visibleFields.map((field) => {
+      {FIELD_CONFIGS.map((field) => {
         const currentValue = values[field.key];
         const isEditing = editingField === field.key;
         const isSaving = savingField === field.key;
-        const canEdit = field.key === "doneWhen" || task.status === "active";
-        const displayValue = field.key === "nextTouchAt"
-          ? (currentValue ? formatFollowUpDisplay(currentValue) : field.placeholder)
-          : (currentValue || field.placeholder);
 
         return (
           <div
@@ -114,7 +232,7 @@ export default function TaskMomentumFields({
               </span>
               {isSaving ? (
                 <span className="text-[10px] text-text-faint">Saving…</span>
-              ) : canEdit && currentValue && !isEditing ? (
+              ) : currentValue && !isEditing ? (
                 <button
                   type="button"
                   onClick={() => void persistField(field.key, "")}
@@ -150,7 +268,7 @@ export default function TaskMomentumFields({
                 className="mt-1 w-full rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary outline-none focus:border-accent"
                 placeholder={field.placeholder}
               />
-            ) : canEdit ? (
+            ) : (
               <button
                 type="button"
                 onClick={() => {
@@ -164,15 +282,10 @@ export default function TaskMomentumFields({
                 }`}
                 title={currentValue || field.placeholder}
               >
-                {displayValue}
+                {field.key === "nextTouchAt"
+                  ? (currentValue ? formatFollowUpDisplay(currentValue) : field.placeholder)
+                  : (currentValue || field.placeholder)}
               </button>
-            ) : (
-              <div
-                className="mt-1 text-xs text-text-primary"
-                title={currentValue || field.placeholder}
-              >
-                {displayValue}
-              </div>
             )}
           </div>
         );
@@ -233,6 +346,22 @@ function formatFollowUpDisplay(value: string): string {
   if (state === "overdue") return `${formatted} · overdue`;
   if (state === "due") return `${formatted} · due now`;
   return formatted;
+}
+
+function formatFieldDisplay(field: MomentumFieldKey, value: string): string {
+  if (!value) return FIELD_CONFIG_BY_KEY[field].placeholder;
+  return field === "nextTouchAt" ? formatFollowUpDisplay(value) : value;
+}
+
+function getPanelSummary(values: FieldValues): string {
+  const cues: string[] = [];
+  if (values.nextAction) cues.push("next step ready");
+  if (values.waitingOn) cues.push("blocker noted");
+  if (values.nextTouchAt) cues.push("follow-up set");
+  if (values.doneWhen) cues.push("finish line defined");
+  return cues.length > 0
+    ? cues.slice(0, 2).join(" · ")
+    : "Keep the next step, blocker, or follow-up close at hand.";
 }
 
 function startOfLocalDay(value: Date): Date {
