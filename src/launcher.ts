@@ -12,6 +12,11 @@ import { killProcessTree as platformKillTree } from "./server/platform.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import {
+  buildCommandFailureOutput,
+  isCommandTimeoutError,
+  writeValidationCommandLog,
+} from "./server/validation-command-log.js";
+import {
   clearRestartState,
   readRestartState,
   writeRestartState,
@@ -131,15 +136,41 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
   const nodeDir = dirname(NODE_PATH);
   const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const env = { ...process.env, PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
+  const startedAt = Date.now();
   try {
     const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: timeoutMs, env });
     return { ok: true, output };
   } catch (err: any) {
-    const output = err.stderr || err.stdout || String(err);
-    const timeoutMessage = err.code === "ETIMEDOUT" || err.signal === "SIGTERM"
-      ? `\nCommand timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`
-      : "";
-    return { ok: false, output: `${output}${timeoutMessage}` };
+    const elapsedMs = Date.now() - startedAt;
+    const timedOut = isCommandTimeoutError(err);
+    const rawOutput = err.stderr || err.stdout || String(err);
+    const annotatedOutput = buildCommandFailureOutput({
+      output: rawOutput,
+      elapsedMs,
+      timedOut,
+      timeoutMs,
+    });
+    const logResult = writeValidationCommandLog({
+      rootDir: ROOT,
+      source: "launcher",
+      command: cmd,
+      cwd: ROOT,
+      output: annotatedOutput,
+      elapsedMs,
+      timedOut,
+      timeoutMs,
+    });
+    return {
+      ok: false,
+      output: buildCommandFailureOutput({
+        output: rawOutput,
+        elapsedMs,
+        timedOut,
+        timeoutMs,
+        logPath: logResult.path,
+        logWriteError: logResult.error,
+      }),
+    };
   }
 }
 

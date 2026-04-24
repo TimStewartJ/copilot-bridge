@@ -25,7 +25,7 @@ function logFailure(prefix: string, output: string, log: (msg: string) => void) 
   log(`${prefix}:\n${output.slice(-500)}`);
 }
 
-const COVERAGE_TEST_TIMEOUT_MS = 10 * 60 * 1000;
+const DEPLOY_VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions): boolean {
   log("Building...");
@@ -34,21 +34,9 @@ export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions)
     return false;
   }
 
-  const client = run("npx vite build");
-  if (!client.ok) {
-    logFailure("Client build failed", client.output, log);
-    return false;
-  }
-
-  const server = run("npx tsc --noEmit");
-  if (!server.ok) {
-    logFailure("Server type check failed", server.output, log);
-    return false;
-  }
-
-  const tests = run("npx vitest run --coverage", { timeoutMs: COVERAGE_TEST_TIMEOUT_MS });
-  if (!tests.ok) {
-    logFailure("Tests failed", tests.output, log);
+  const validation = run("npm run test:deploy", { timeoutMs: DEPLOY_VALIDATION_TIMEOUT_MS });
+  if (!validation.ok) {
+    logFailure("Deploy validation failed", validation.output, log);
     return false;
   }
 

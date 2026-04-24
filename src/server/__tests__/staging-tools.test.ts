@@ -8,6 +8,7 @@ type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
 type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
+type MkdirSyncArgs = Parameters<typeof import("node:fs").mkdirSync>;
 type ToolInvocation = {
   sessionId: string;
   toolCallId: string;
@@ -37,6 +38,11 @@ const originalDemoMode = process.env.BRIDGE_DEMO_MODE;
 
 function isDataFilePath(path: string, filename: string): boolean {
   return basename(path) === filename && basename(dirname(path)) === "data";
+}
+
+function isValidationLogPath(path: string): boolean {
+  const parts = path.split(/[/\\]/);
+  return parts.includes("data") && parts.includes("validation-logs");
 }
 
 function mockDataFilePresence(
@@ -80,10 +86,16 @@ vi.mock("node:fs", async (importOriginal) => {
         isDataFilePath(normalized, "pre-deploy-sha")
         || isDataFilePath(normalized, "restart.signal")
         || isDataFilePath(normalized, "deps-hash")
+        || isValidationLogPath(normalized)
       ) {
         return;
       }
       return actual.writeFileSync(...args);
+    },
+    mkdirSync: (...args: MkdirSyncArgs) => {
+      const [path] = args;
+      if (isValidationLogPath(String(path))) return undefined as ReturnType<typeof actual.mkdirSync>;
+      return actual.mkdirSync(...args);
     },
     readFileSync: (path: Parameters<typeof actual.readFileSync>[0], ...args: unknown[]) => {
       const override = readFileSyncOverrideMock(path);
@@ -716,7 +728,7 @@ describe("staging tools", () => {
 
   it("returns a normalized failure result when staging_preview validation fails", async () => {
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "npm run test:xplat-audit && npx vitest run --coverage") {
+      if (cmd === "npm run test:preview") {
         const error = new Error("tests failed") as Error & { stderr: string };
         error.stderr = "FAIL src/server/__tests__/staging-tools.test.ts\n1 failed\n";
         throw error;
@@ -738,9 +750,9 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       resultType: "failure",
-      sessionLog: expect.stringContaining("Command: npm run test:xplat-audit && npx vitest run --coverage"),
+      sessionLog: expect.stringContaining("Command: npm run test:preview"),
       toolTelemetry: {
-        command: "npm run test:xplat-audit && npx vitest run --coverage",
+        command: "npm run test:preview",
         cwd: stagingDir,
         stagingDir,
       },
@@ -748,10 +760,11 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("Staging preview validation failed.");
     expect(result.textResultForLlm).toContain("The staged changes did not pass the preview validation run.");
     expect(result.textResultForLlm).toContain("1 failed");
+    expect(result.textResultForLlm).toContain("Full command output:");
     expect(result).not.toHaveProperty("error");
   });
 
-  it("allows a longer timeout for staging_preview validation coverage runs", async () => {
+  it("allows a longer timeout for staging_preview validation runs", async () => {
     const tools = await loadStagingTools();
     const stagingDir = createTempDir("bridge-stage-preview-timeout-");
 
@@ -766,13 +779,32 @@ describe("staging tools", () => {
     );
 
     const previewValidationCall = execSyncMock.mock.calls.find(
-      ([cmd]) => cmd === "npm run test:xplat-audit && npx vitest run --coverage",
+      ([cmd]) => cmd === "npm run test:preview",
     );
 
     expect(previewValidationCall?.[1]).toMatchObject({
       cwd: stagingDir,
       timeout: 600_000,
     });
+  });
+
+  it("skips staging_preview validation when validate is false", async () => {
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-preview-smoke-");
+
+    await tools.staging_preview.handler(
+      { stagingDir, validate: false },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    );
+
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).not.toContain("npm run test:preview");
+    expect(commands.some((cmd) => cmd.startsWith("npx vite build --base"))).toBe(true);
   });
 
   it("returns a normalized failure result when staging_deploy hits a rebase conflict", async () => {

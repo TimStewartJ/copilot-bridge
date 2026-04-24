@@ -25,9 +25,14 @@
     "build": "npm run build:client && npm run build:server",
     "start": "node dist/server/index.js",
     "test": "vitest run",
+    "test:unit": "vitest run",
     "test:xplat-audit": "tsx src/server/xplat-test-audit.ts",
-    "preview:smoke": "tsx src/server/preview-smoke.ts",
+    "test:preview": "npm run test:xplat-audit && npx tsc --noEmit && npx vitest run",
+    "test:deploy": "npm run test:preview && npx vite build",
     "test:coverage": "vitest run --coverage",
+    "test:full": "npm run test:xplat-audit && npx tsc --noEmit && npm run test:coverage && npm run build",
+    "preview:smoke": "tsx src/server/preview-smoke.ts",
+    "preview:smoke:full": "tsx src/server/preview-smoke.ts --validate",
     "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
