@@ -460,7 +460,10 @@ describe("staging tools", () => {
         toolName: "staging_deploy",
         arguments: {},
       } satisfies ToolInvocation,
-    );
+    ) as {
+      resultType: string;
+      textResultForLlm: string;
+    };
 
     expect(result.resultType).toBe("failure");
     expect(result.textResultForLlm).toContain("A restart is already pending");
