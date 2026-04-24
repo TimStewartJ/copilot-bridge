@@ -20,6 +20,16 @@ describe("runLauncherBuild", () => {
     expect(log).toHaveBeenNthCalledWith(1, "Building...");
     expect(log).toHaveBeenNthCalledWith(2, "Dependency sync failed — aborting build");
   });
+
+  it("allows extra time for coverage tests during builds", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn(() => ({ ok: true, output: "" }));
+    const log = vi.fn();
+
+    expect(runLauncherBuild({ ensureDeps, run, log })).toBe(true);
+
+    expect(run).toHaveBeenCalledWith("npx vitest run --coverage", { timeoutMs: 600_000 });
+  });
 });
 
 describe("rebuildAfterRollback", () => {

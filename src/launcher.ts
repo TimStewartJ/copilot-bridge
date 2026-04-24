@@ -41,6 +41,7 @@ import {
   shouldIgnoreHealthPollResult,
 } from "./launcher-health.js";
 import { runLauncherBuild, runLauncherRollbackWithCheckpointHandling, verifyLauncherStartup } from "./launcher-build.js";
+import type { LauncherCommandOptions } from "./launcher-build.js";
 import {
   decideLauncherStartup,
   decideRecoveryExecution,
@@ -123,15 +124,22 @@ function clearSignal() {
   try { if (existsSync(SIGNAL_FILE)) unlinkSync(SIGNAL_FILE); } catch {}
 }
 
-function run(cmd: string): { ok: boolean; output: string } {
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+
+function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; output: string } {
   // Prepend the launcher's Node v22 directory to PATH so npx/vitest use it
   const nodeDir = dirname(NODE_PATH);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const env = { ...process.env, PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
   try {
-    const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: 120_000, env });
+    const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: timeoutMs, env });
     return { ok: true, output };
   } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
+    const output = err.stderr || err.stdout || String(err);
+    const timeoutMessage = err.code === "ETIMEDOUT" || err.signal === "SIGTERM"
+      ? `\nCommand timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`
+      : "";
+    return { ok: false, output: `${output}${timeoutMessage}` };
   }
 }
 

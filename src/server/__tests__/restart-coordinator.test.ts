@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { waitForIdleSessions, type BusyState } from "../restart-coordinator.js";
 
-function createDeps(states: Array<BusyState | Error>, opts?: { isServerAlive?: () => boolean }) {
+function createDeps(
+  states: Array<BusyState | Error>,
+  opts?: { isServerAlive?: () => boolean; busyWaitTimeout?: number },
+) {
   const log = vi.fn();
   const sleep = vi.fn().mockResolvedValue(undefined);
   const fetchBusy = vi.fn(async () => {
@@ -18,7 +21,7 @@ function createDeps(states: Array<BusyState | Error>, opts?: { isServerAlive?: (
       log,
       isServerAlive: opts?.isServerAlive ?? (() => true),
       busyCheckInterval: 1,
-      busyWaitTimeout: 10,
+      busyWaitTimeout: opts?.busyWaitTimeout ?? 10,
       staleThreshold: 5_000,
     },
     fetchBusy,
@@ -40,7 +43,7 @@ describe("waitForIdleSessions", () => {
     const { deps, fetchBusy, log } = createDeps([
       new Error("ECONNRESET"),
       { busy: false, count: 0, sessions: [] },
-    ]);
+    ], { busyWaitTimeout: 1_000 });
 
     await expect(waitForIdleSessions(deps)).resolves.toBe(true);
     expect(fetchBusy).toHaveBeenCalledTimes(2);
