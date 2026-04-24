@@ -1097,7 +1097,7 @@ export default function DocsView() {
     setDbFolder(null);
     setNavigatorOpen(false);
     setNewPagePath("");
-    setNewPageContent("---\ntitle: \ntags: []\n---\n\n");
+    setNewPageContent("---\ntitle: \ndescription: \ntags: []\n---\n\n");
     navigate("/docs");
   }, [navigate]);
 
