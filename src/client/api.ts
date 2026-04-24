@@ -133,6 +133,10 @@ export interface Task {
   groupId?: string;
   cwd?: string;
   notes: string;
+  doneWhen?: string;
+  nextAction?: string;
+  waitingOn?: string;
+  nextTouchAt?: string;
   priority: number;
   pinned: boolean;
   order: number;
@@ -421,7 +425,18 @@ export async function fetchTask(id: string): Promise<Task> {
 
 export async function updateTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "pinned">>,
+  updates: {
+    title?: Task["title"];
+    status?: Task["status"];
+    notes?: Task["notes"];
+    priority?: Task["priority"];
+    cwd?: Task["cwd"];
+    pinned?: Task["pinned"];
+    doneWhen?: Task["doneWhen"] | null;
+    nextAction?: Task["nextAction"] | null;
+    waitingOn?: Task["waitingOn"] | null;
+    nextTouchAt?: Task["nextTouchAt"] | null;
+  },
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
     ...updates,
@@ -432,7 +447,19 @@ export async function updateTask(
 
 export async function patchTask(
   id: string,
-  updates: Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId" | "pinned">>,
+  updates: {
+    title?: Task["title"];
+    status?: Task["status"];
+    notes?: Task["notes"];
+    priority?: Task["priority"];
+    cwd?: Task["cwd"];
+    groupId?: Task["groupId"];
+    pinned?: Task["pinned"];
+    doneWhen?: Task["doneWhen"] | null;
+    nextAction?: Task["nextAction"] | null;
+    waitingOn?: Task["waitingOn"] | null;
+    nextTouchAt?: Task["nextTouchAt"] | null;
+  },
 ): Promise<Task> {
   const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
     method: "PATCH",
@@ -773,6 +800,24 @@ export interface DashboardData {
   openChecklistItems: DashboardChecklistItem[];
   completedChecklistItems: DashboardChecklistItem[];
   schedules: DashboardSchedule[];
+  taskMomentum: DashboardTaskMomentum;
+}
+
+export interface DashboardTaskMomentumSummary {
+  needsDecision: number;
+  followUpNow: number;
+  waiting: number;
+  candidateToClose: number;
+  stale: number;
+}
+
+export interface DashboardTaskMomentum {
+  summary: DashboardTaskMomentumSummary;
+  needsDecision: DashboardActiveTask[];
+  followUpNow: DashboardActiveTask[];
+  waiting: DashboardActiveTask[];
+  candidateToClose: DashboardActiveTask[];
+  stale: DashboardActiveTask[];
 }
 
 export async function fetchDashboard(): Promise<DashboardData> {

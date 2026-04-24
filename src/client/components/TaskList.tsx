@@ -24,7 +24,15 @@ interface TaskListProps {
   sessions?: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;
-  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
+  onUpdateTask?: (
+    taskId: string,
+    updates: {
+      title?: Task["title"];
+      status?: Task["status"];
+      pinned?: Task["pinned"];
+      nextTouchAt?: Task["nextTouchAt"] | null;
+    },
+  ) => void;
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
@@ -289,5 +297,4 @@ export default function TaskList({
     </div>
   );
 }
-
 

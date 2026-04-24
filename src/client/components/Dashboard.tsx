@@ -8,6 +8,7 @@ import {
   type DashboardOrphanSession,
   type DashboardChecklistItem,
   type DashboardSchedule,
+  type DashboardTaskMomentum,
 } from "../api";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useScheduleDetail } from "../hooks/useScheduleDetail";
@@ -21,7 +22,7 @@ import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 import ChecklistItemRow from "./ChecklistItemRow";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
-import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause } from "lucide-react";
+import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause, Bell, HelpCircle, Archive, AlertTriangle, Hourglass } from "lucide-react";
 import { ScheduleRow } from "./task-sections";
 
 type ChecklistSort = "deadline" | "task";
@@ -267,7 +268,7 @@ export default function Dashboard({
     );
   }
 
-  const { busySessions, unreadSessions, lastActiveTask, orphanSessions, schedules = [] } = data;
+  const { busySessions, unreadSessions, lastActiveTask, orphanSessions, schedules = [], taskMomentum } = data;
   const workingSessions = busySessions.filter((s) => s.runState !== "stalled");
   const stalledSessions = busySessions.filter((s) => s.runState === "stalled");
   const hasAttention = busySessions.length > 0 || unreadSessions.length > 0;
@@ -370,6 +371,14 @@ export default function Dashboard({
             activeTask={lastActiveTask}
             onResume={onResumeTask}
             onSelect={onSelectTask}
+          />
+        )}
+
+        {/* ── Momentum Queues ────────────────────────────── */}
+        {taskMomentum && (
+          <MomentumQueues
+            momentum={taskMomentum}
+            onSelectTask={onSelectTask}
           />
         )}
 
@@ -790,6 +799,171 @@ function OrphanSessionRow({
           <span className="text-text-faint"> · {session.branch}</span>
         )}
       </div>
+    </button>
+  );
+}
+
+// ── Momentum Queues ───────────────────────────────────────────────
+
+interface QueueConfig {
+  key: keyof Pick<DashboardTaskMomentum, "followUpNow" | "needsDecision" | "candidateToClose" | "stale" | "waiting">;
+  label: string;
+  icon: React.ReactNode;
+  color: string;
+  emptyHint?: string;
+}
+
+const QUEUE_CONFIGS: QueueConfig[] = [
+  {
+    key: "followUpNow",
+    label: "Follow up now",
+    icon: <Bell size={13} />,
+    color: "text-warning",
+    emptyHint: "Nothing due for follow-up",
+  },
+  {
+    key: "needsDecision",
+    label: "Needs decision",
+    icon: <HelpCircle size={13} />,
+    color: "text-accent",
+    emptyHint: "No pending decisions",
+  },
+  {
+    key: "waiting",
+    label: "Waiting on",
+    icon: <Hourglass size={13} />,
+    color: "text-text-secondary",
+    emptyHint: "Nothing blocked waiting",
+  },
+  {
+    key: "candidateToClose",
+    label: "Candidate to close",
+    icon: <Archive size={13} />,
+    color: "text-success",
+    emptyHint: "No tasks ready to close",
+  },
+  {
+    key: "stale",
+    label: "Stale tasks",
+    icon: <AlertTriangle size={13} />,
+    color: "text-error",
+    emptyHint: "No stale tasks",
+  },
+];
+
+function MomentumQueues({
+  momentum,
+  onSelectTask,
+}: {
+  momentum: DashboardTaskMomentum;
+  onSelectTask: (id: string) => void;
+}) {
+  const activeQueues = QUEUE_CONFIGS.filter((q) => momentum[q.key].length > 0);
+  if (activeQueues.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+        Attention
+      </h2>
+      <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
+        {activeQueues.map((q) => (
+          <MomentumQueueSection
+            key={q.key}
+            config={q}
+            tasks={momentum[q.key]}
+            onSelectTask={onSelectTask}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MomentumQueueSection({
+  config,
+  tasks,
+  onSelectTask,
+}: {
+  config: QueueConfig;
+  tasks: DashboardActiveTask[];
+  onSelectTask: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <div>
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-bg-hover transition-colors text-left"
+      >
+        <span className={config.color}>{config.icon}</span>
+        <span className="text-xs font-semibold text-text-secondary flex-1">{config.label}</span>
+        <span className="text-[11px] text-text-faint mr-1">{tasks.length}</span>
+        {expanded
+          ? <ChevronDown size={13} className="text-text-faint shrink-0" />
+          : <ChevronRight size={13} className="text-text-faint shrink-0" />
+        }
+      </button>
+      {expanded && (
+        <div className="border-t border-border divide-y divide-border">
+          {tasks.map((entry) => (
+            <MomentumTaskRow
+              key={entry.task.id}
+              entry={entry}
+              queueKey={config.key}
+              onSelect={() => onSelectTask(entry.task.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MomentumTaskRow({
+  entry,
+  queueKey,
+  onSelect,
+}: {
+  entry: DashboardActiveTask;
+  queueKey: QueueConfig["key"];
+  onSelect: () => void;
+}) {
+  const t = entry.task;
+  const hint = queueKey === "followUpNow" && t.nextTouchAt
+    ? `Touch by ${new Date(t.nextTouchAt).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })}`
+    : queueKey === "needsDecision" && t.nextAction
+      ? t.nextAction
+      : queueKey === "waiting" && t.waitingOn
+        ? `Waiting: ${t.waitingOn}`
+        : queueKey === "candidateToClose" && t.doneWhen
+          ? t.doneWhen
+          : queueKey === "stale"
+            ? `Last activity ${timeAgo(entry.lastActivity)}`
+            : undefined;
+
+  return (
+    <button
+      onClick={onSelect}
+      className="w-full text-left px-4 py-2 hover:bg-bg-hover transition-colors flex items-center gap-3 group"
+    >
+      <div className="flex-1 min-w-0">
+        <span className="text-sm text-text-primary truncate block group-hover:text-accent transition-colors">
+          {t.title}
+        </span>
+        {hint && (
+          <span className="text-xs text-text-faint truncate block mt-0.5">{hint}</span>
+        )}
+      </div>
+      {entry.hasBusySession && (
+        <span className="w-1.5 h-1.5 rounded-full bg-info animate-pulse shrink-0" />
+      )}
     </button>
   );
 }

@@ -43,6 +43,10 @@ function initSchema(db: DatabaseSync): void {
       groupId TEXT,
       cwd TEXT,
       notes TEXT NOT NULL DEFAULT '',
+      doneWhen TEXT,
+      nextAction TEXT,
+      waitingOn TEXT,
+      nextTouchAt TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
       pinned INTEGER NOT NULL DEFAULT 0,
       "order" INTEGER NOT NULL DEFAULT 0,
@@ -378,11 +382,24 @@ function initSchema(db: DatabaseSync): void {
     db.exec("ALTER TABLE task_groups ADD COLUMN notes TEXT NOT NULL DEFAULT ''");
   }
 
-  // Add pinned column to tasks
+  // Add optional momentum/pinned columns to tasks
   const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+  if (!taskCols.some((c: any) => c.name === "doneWhen")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN doneWhen TEXT");
+  }
+  if (!taskCols.some((c: any) => c.name === "nextAction")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN nextAction TEXT");
+  }
+  if (!taskCols.some((c: any) => c.name === "waitingOn")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN waitingOn TEXT");
+  }
+  if (!taskCols.some((c: any) => c.name === "nextTouchAt")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT");
+  }
   if (!taskCols.some((c: any) => c.name === "pinned")) {
     db.exec("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt)");
 
   // Migrate task_work_items.itemId from INTEGER to TEXT for string-based identifiers (e.g. Linear "ENG-123")
   const wiCols = db.prepare("PRAGMA table_info(task_work_items)").all() as any[];

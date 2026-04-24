@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { Task, TaskGroup, Session } from "../api";
 import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
@@ -15,6 +15,7 @@ import TagPicker from "./TagPicker";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import TaskMomentumFields, { getFollowUpState } from "./TaskMomentumFields";
 import {
   Pin,
   MessageSquare,
@@ -113,22 +114,80 @@ export default function TaskDashboard({
   } = ws;
   const [groupNotesOpen, setGroupNotesOpen] = useState(false);
   const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
+  const [momentumTask, setMomentumTask] = useState(task);
+
+  useEffect(() => {
+    setMomentumTask(task);
+  }, [task]);
 
   const handleRefresh = async () => {
     await Promise.all([refresh(), onRefresh?.()]);
   };
 
   const lastActivity = useMemo(() => {
-    let latest = task.updatedAt;
+    let latest = momentumTask.updatedAt;
     for (const s of linkedSessions) {
       const t = getSessionActivityTime(s);
       if (t && t > latest) latest = t;
     }
     return latest;
-  }, [task.updatedAt, linkedSessions]);
+  }, [momentumTask.updatedAt, linkedSessions]);
 
   const openChecklistItems = checklistItems.filter((t) => !t.done);
   const completedChecklistItems = checklistItems.filter((t) => t.done);
+  const momentumChips = useMemo(() => {
+    const chips: Array<{ label: string; className: string; title?: string }> = [];
+    const hasBusySession = linkedSessions.some((session) => session.busy || session.runState === "busy" || session.runState === "stalled");
+    const activePrCount = enrichedPRs.filter((pr) => pr.status === "active").length;
+    const followUpState = getFollowUpState(momentumTask.nextTouchAt);
+
+    if (
+      momentumTask.status === "active"
+      && !momentumTask.nextAction
+      && !momentumTask.waitingOn
+      && !momentumTask.nextTouchAt
+    ) {
+      chips.push({
+        label: "Needs decision",
+        className: "bg-accent/15 text-accent",
+        title: "No next action, waiting reason, or follow-up is set",
+      });
+    }
+    if (followUpState === "overdue") {
+      chips.push({
+        label: "Follow up overdue",
+        className: "bg-error/15 text-error",
+        title: "This task is due for follow-up",
+      });
+    } else if (followUpState === "due") {
+      chips.push({
+        label: "Follow up now",
+        className: "bg-warning/15 text-warning",
+        title: "This task should be revisited now",
+      });
+    }
+    if (momentumTask.status === "active" && momentumTask.waitingOn) {
+      chips.push({
+        label: "Waiting",
+        className: "bg-info/15 text-info",
+        title: momentumTask.waitingOn,
+      });
+    }
+    if (
+      momentumTask.status === "active"
+      && openChecklistItems.length === 0
+      && !hasBusySession
+      && activePrCount === 0
+    ) {
+      chips.push({
+        label: "Candidate to close",
+        className: "bg-success/15 text-success",
+        title: momentumTask.doneWhen || "No open checklist items, busy sessions, or active PRs",
+      });
+    }
+
+    return chips;
+  }, [enrichedPRs, linkedSessions, momentumTask, openChecklistItems.length]);
 
   return (
     <div className="flex-1 min-h-0 relative">
@@ -147,12 +206,12 @@ export default function TaskDashboard({
                   </div>
                 )}
                 <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${
-                  task.status === "active" ? "bg-success/15 text-success" :
-                  task.status === "paused" ? "bg-warning/15 text-warning" :
-                  task.status === "done" ? "bg-accent/15 text-accent" :
+                  momentumTask.status === "active" ? "bg-success/15 text-success" :
+                  momentumTask.status === "paused" ? "bg-warning/15 text-warning" :
+                  momentumTask.status === "done" ? "bg-accent/15 text-accent" :
                   "bg-text-muted/15 text-text-muted"
                 }`}>
-                  {task.status}
+                  {momentumTask.status}
                 </span>
                 <button
                   onClick={() => onUpdateTask(task.id, { pinned: !task.pinned })}
@@ -197,7 +256,30 @@ export default function TaskDashboard({
                 </div>
               )}
               <div className="text-xs text-text-faint mt-1">
-                Last activity {timeAgo(lastActivity)} · Created {timeAgo(task.createdAt)}
+                Last activity {timeAgo(lastActivity)} · Created {timeAgo(momentumTask.createdAt)}
+              </div>
+              {momentumChips.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {momentumChips.map((chip) => (
+                    <span
+                      key={chip.label}
+                      className={`text-[10px] px-2 py-0.5 rounded-full ${chip.className}`}
+                      title={chip.title}
+                    >
+                      {chip.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3">
+                <TaskMomentumFields
+                  task={momentumTask}
+                  variant="dashboard"
+                  onPatched={setMomentumTask}
+                  onSaved={() => {
+                    void onTasksChanged?.();
+                  }}
+                />
               </div>
             </div>
             <button

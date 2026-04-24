@@ -26,6 +26,10 @@ describe("task-store", () => {
       expect(task.title).toBe("My Task");
       expect(task.status).toBe("active");
       expect(task.notes).toBe("");
+      expect(task.doneWhen).toBeUndefined();
+      expect(task.nextAction).toBeUndefined();
+      expect(task.waitingOn).toBeUndefined();
+      expect(task.nextTouchAt).toBeUndefined();
       expect(task.sessionIds).toEqual([]);
       expect(task.workItems).toEqual([]);
       expect(task.pullRequests).toEqual([]);
@@ -68,6 +72,119 @@ describe("task-store", () => {
       expect(updated.notes).toBe("some notes");
     });
 
+    it("updateTask rejects invalid nextTouchAt values", () => {
+      const task = store.createTask("Original");
+      const invalidValues = [
+        "not-a-date",
+        "2026-02-31T00:00:00.000Z",
+        "2026-05-02 09:30",
+        JSON.parse("{\"value\":123}").value,
+      ];
+
+      for (const nextTouchAt of invalidValues) {
+        expect(() => store.updateTask(task.id, { nextTouchAt }))
+          .toThrow("nextTouchAt must be a valid ISO timestamp with timezone");
+      }
+
+      expect(store.getTask(task.id)?.nextTouchAt).toBeUndefined();
+    });
+
+    it("hydrates optional momentum fields from stored rows", () => {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+          priority, pinned, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "task-hydrate",
+        "Hydrate me",
+        "paused",
+        null,
+        null,
+        "",
+        "Ship after green build",
+        "Review the latest diff",
+        "QA sign-off",
+        "2025-01-02T03:04:05.000Z",
+        0,
+        0,
+        0,
+        now,
+        now,
+      );
+
+      expect(store.getTask("task-hydrate")).toMatchObject({
+        doneWhen: "Ship after green build",
+        nextAction: "Review the latest diff",
+        waitingOn: "QA sign-off",
+        nextTouchAt: "2025-01-02T03:04:05.000Z",
+      });
+    });
+
+    it("hydrates null and empty-string momentum fields as undefined", () => {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+          priority, pinned, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "task-hydrate-empty",
+        "Hydrate empty",
+        "active",
+        null,
+        null,
+        "",
+        null,
+        "",
+        "   ",
+        "",
+        0,
+        0,
+        0,
+        now,
+        now,
+      );
+
+      expect(store.getTask("task-hydrate-empty")).toMatchObject({
+        doneWhen: undefined,
+        nextAction: undefined,
+        waitingOn: undefined,
+        nextTouchAt: undefined,
+      });
+    });
+
+    it("hydrates invalid nextTouchAt values as undefined", () => {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+          priority, pinned, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "task-hydrate-invalid-touch",
+        "Hydrate invalid touch",
+        "active",
+        null,
+        null,
+        "",
+        null,
+        null,
+        null,
+        "not-a-date",
+        0,
+        0,
+        0,
+        now,
+        now,
+      );
+
+      expect(store.getTask("task-hydrate-invalid-touch")).toMatchObject({
+        nextTouchAt: undefined,
+      });
+    });
+
     it("updateTask throws for missing task", () => {
       expect(() => store.updateTask("nope", { title: "x" })).toThrow("not found");
     });
@@ -79,6 +196,54 @@ describe("task-store", () => {
       const done = store.listTasks().filter((t) => t.status === "done");
       expect(done).toHaveLength(1);
       expect(done[0].order).toBe(0);
+    });
+
+    it("updateTask persists optional momentum fields and clears empty strings", () => {
+      const task = store.createTask("Momentum");
+
+      const updated = store.updateTask(task.id, {
+        doneWhen: "Merged and deployed",
+        nextAction: "Ping support",
+        waitingOn: "Vendor response",
+        nextTouchAt: "2025-02-03T04:05:06.000Z",
+      });
+
+      expect(updated).toMatchObject({
+        doneWhen: "Merged and deployed",
+        nextAction: "Ping support",
+        waitingOn: "Vendor response",
+        nextTouchAt: "2025-02-03T04:05:06.000Z",
+      });
+
+      const raw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw).toEqual({
+        doneWhen: "Merged and deployed",
+        nextAction: "Ping support",
+        waitingOn: "Vendor response",
+        nextTouchAt: "2025-02-03T04:05:06.000Z",
+      });
+
+      const cleared = store.updateTask(task.id, {
+        doneWhen: "",
+        nextAction: "",
+        waitingOn: "   ",
+        nextTouchAt: "",
+      });
+
+      expect(cleared).toMatchObject({
+        doneWhen: undefined,
+        nextAction: undefined,
+        waitingOn: undefined,
+        nextTouchAt: undefined,
+      });
+
+      const clearedRaw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(clearedRaw).toEqual({
+        doneWhen: null,
+        nextAction: null,
+        waitingOn: null,
+        nextTouchAt: null,
+      });
     });
 
     it("deleteTask removes the task", () => {
