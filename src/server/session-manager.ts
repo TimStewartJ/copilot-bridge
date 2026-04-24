@@ -6,7 +6,7 @@ import type { SectionOverride } from "@github/copilot-sdk";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile, stat, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join, dirname, resolve, basename, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -52,10 +52,19 @@ import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated }
 import { err, getToolExecutionDisplayText, ok, toolFailure, type Result } from "./tool-results.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { publishOutboundAttachment } from "./outbound-attachments.js";
+import {
+  clearRestartState,
+  createDefaultRestartState,
+  readRestartState,
+  writeRestartState,
+  type RestartPhase,
+  type RestartState,
+} from "./restart-state.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const SIGNAL_FILE = join(REPO_ROOT, "data", "restart.signal");
+const DEFAULT_RESTART_STATE_PATH = join(REPO_ROOT, "data", "restart-state.json");
 const PRE_DEPLOY_SHA_FILE = join(REPO_ROOT, "data", "pre-deploy-sha");
 // Keep the cloud-only session store tool out of bridge-managed sessions.
 const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql"];
@@ -376,26 +385,67 @@ interface SessionConfigOptions {
 
 // Module-level ref so universal tools can query session state
 let _instance: SessionManager | null = null;
-let _restartPending = false;
-let _restartPendingSince = 0;
-const RESTART_TIMEOUT = 15 * 60 * 1000; // 15 min — if server is still alive, restart failed
+let _restartStatePath = DEFAULT_RESTART_STATE_PATH;
+let _restartState = createDefaultRestartState();
+let _restartStateWriteQueue: Promise<void> = Promise.resolve();
 export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect.";
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
+function resolveRestartStatePath(runtimePaths?: RuntimePaths): string {
+  return join(runtimePaths?.dataDir ?? join(REPO_ROOT, "data"), "restart-state.json");
+}
+
+function queueRestartStateMutation(mutation: () => Promise<void>): void {
+  _restartStateWriteQueue = _restartStateWriteQueue
+    .catch(() => undefined)
+    .then(mutation)
+    .catch((error) => {
+      console.error("[restart] Failed to persist restart state:", error);
+    });
+}
+
+function cacheRestartState(state: RestartState): RestartState {
+  _restartState = state;
+  return state;
+}
+
+function isRestartActive(state: RestartState): boolean {
+  return state.phase !== "idle";
+}
+
+function getRestartPhaseForWaitingSessions(phase: RestartPhase, waitingSessions: number): RestartPhase {
+  if (phase === "restarting") return "restarting";
+  return waitingSessions > 0 ? "waiting-for-sessions" : "queued";
+}
+
+export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
+  const nextPath = resolveRestartStatePath(runtimePaths);
+  if (_restartStatePath === nextPath) return;
+  _restartStatePath = nextPath;
+  _restartState = createDefaultRestartState();
+  _restartStateWriteQueue = Promise.resolve();
+}
+
+export async function refreshRestartState(): Promise<RestartState> {
+  await _restartStateWriteQueue;
+  return cacheRestartState(await readRestartState(_restartStatePath));
+}
+
 export function isRestartPending(): boolean {
-  if (_restartPending && _restartPendingSince && Date.now() - _restartPendingSince > RESTART_TIMEOUT) {
-    clearRestartPending();
-  }
-  return _restartPending;
+  return isRestartActive(_restartState);
 }
 export function clearRestartPending(): void {
-  if (!_restartPending) return;
-  _restartPending = false;
-  _restartPendingSince = 0;
-  globalBus.emit({ type: "server:restart-cleared" });
+  const wasPending = isRestartActive(_restartState);
+  cacheRestartState(createDefaultRestartState());
+  queueRestartStateMutation(async () => {
+    await clearRestartState(_restartStatePath);
+  });
+  if (wasPending) {
+    globalBus.emit({ type: "server:restart-cleared" });
+  }
 }
 export function getRestartWaitingCount(): number {
-  return _instance ? _instance.getActiveSessions().length : 0;
+  return _restartState.waitingSessions;
 }
 
 /** Restart is imminent — pending AND no active sessions blocking it. */
@@ -409,30 +459,45 @@ export function isRestartPendingError(err: unknown): boolean {
 
 /**
  * Shared logic for both self_restart and staging_deploy.
- * Sets restart-pending state, emits the SSE event, and starts the watchdog.
+ * Sets restart-pending state and emits the SSE event.
  * Returns the waiting-session count (excludes the calling session).
  */
 export function triggerRestartPending(): number {
-  _restartPending = true;
-  _restartPendingSince = Date.now();
-
-  // Watchdog: if the launcher consumes the signal file but this process
-  // survives (restart failed / rolled back), auto-clear the pending state.
-  const watchdog = setInterval(() => {
-    if (!_restartPending) { clearInterval(watchdog); return; }
-    if (!existsSync(SIGNAL_FILE)) {
-      setTimeout(() => {
-        if (_restartPending) clearRestartPending();
-      }, 90_000);
-      clearInterval(watchdog);
-    }
-  }, 5_000);
-
   // The calling session is still counted as active; subtract 1 since it will
   // finish momentarily and should not count as "blocking" the restart.
   const waitingCount = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
-  globalBus.emit({ type: "server:restart-pending", waitingSessions: waitingCount });
+  const nextState: RestartState = cacheRestartState({
+    requestId: randomUUID(),
+    phase: getRestartPhaseForWaitingSessions("queued", waitingCount),
+    requestedAt: new Date().toISOString(),
+    waitingSessions: waitingCount,
+    launcherHeartbeatAt: null,
+  });
+  queueRestartStateMutation(async () => {
+    cacheRestartState(await writeRestartState(_restartStatePath, nextState));
+  });
+  globalBus.emit({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
   return waitingCount;
+}
+
+function syncRestartWaitingSessions(waitingSessions: number): void {
+  if (!isRestartActive(_restartState)) return;
+  const nextState: RestartState = {
+    ..._restartState,
+    phase: getRestartPhaseForWaitingSessions(_restartState.phase, waitingSessions),
+    waitingSessions,
+  };
+  if (
+    nextState.phase === _restartState.phase
+    && nextState.waitingSessions === _restartState.waitingSessions
+  ) {
+    return;
+  }
+  cacheRestartState(nextState);
+  queueRestartStateMutation(async () => {
+    cacheRestartState(await writeRestartState(_restartStatePath, nextState));
+  });
+  globalBus.emit({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
 }
 
 // Universal tools — same instance for every session
@@ -847,11 +912,15 @@ export function createBridgeTools(ctx: AppContext) {
     description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will auto-checkpoint, rebuild, and swap processes. IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
+      if (isRestartPending()) {
+        return toolFailure("A restart is already pending. Wait for it to complete before restarting.");
+      }
       const dataDir = join(REPO_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-      writeFileSync(SIGNAL_FILE, new Date().toISOString());
 
       const otherBusy = triggerRestartPending();
+      writeFileSync(SIGNAL_FILE, new Date().toISOString());
+
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";
@@ -870,7 +939,7 @@ export function createBridgeTools(ctx: AppContext) {
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      if (existsSync(SIGNAL_FILE)) {
+      if (isRestartPending() || existsSync(SIGNAL_FILE)) {
         return toolFailure("A restart is already pending. Wait for it to complete before updating.");
       }
 
@@ -915,8 +984,8 @@ export function createBridgeTools(ctx: AppContext) {
           const diffResult = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
           return diffResult.ok && !!diffResult.output.trim();
         })();
-      writeFileSync(SIGNAL_FILE, new Date().toISOString());
       const otherBusy = triggerRestartPending();
+      writeFileSync(SIGNAL_FILE, new Date().toISOString());
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";
@@ -1494,6 +1563,8 @@ export class SessionManager {
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
+    configureRestartStateStore(deps.runtimePaths);
+    void refreshRestartState();
   }
 
   private recordSpan(name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>): void {
@@ -1600,8 +1671,8 @@ export class SessionManager {
       if (!current) return;
       this.sessionRuns.delete(sessionId);
       this.deps.globalBus.emit({ type: "session:idle", sessionId });
-      if (_restartPending) {
-        this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.sessionRuns.size });
+      if (isRestartPending()) {
+        syncRestartWaitingSessions(this.sessionRuns.size);
       }
       return;
     }
@@ -1617,8 +1688,8 @@ export class SessionManager {
     if (current?.state === state) return;
 
     this.deps.globalBus.emit({ type: state === "stalled" ? "session:stalled" : "session:busy", sessionId });
-    if (_restartPending && !current) {
-      this.deps.globalBus.emit({ type: "server:restart-pending", waitingSessions: this.sessionRuns.size });
+    if (isRestartPending() && !current) {
+      syncRestartWaitingSessions(this.sessionRuns.size);
     }
   }
 
@@ -2315,7 +2386,7 @@ export class SessionManager {
   // Fire and forget — starts work and emits events to the session's EventBus
   startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): void {
     if (!this.client) throw new Error("SessionManager not initialized");
-    if (isRestartImminent()) {
+    if (isRestartPending()) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
@@ -2334,7 +2405,7 @@ export class SessionManager {
     if (!this.hasPlan(sessionId)) {
       throw new Error("Session has no plan to run with Fleet");
     }
-    if (isRestartImminent()) {
+    if (isRestartPending()) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
     if (this.isSessionBusy(sessionId)) {

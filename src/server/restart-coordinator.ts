@@ -18,6 +18,8 @@ interface WaitForIdleDeps {
   busyCheckInterval: number;
   busyWaitTimeout: number;
   staleThreshold: number;
+  /** Called on each loop iteration when sessions are still busy, with the current active count. */
+  onWaiting?: (count: number) => void | Promise<void>;
 }
 
 export async function waitForIdleSessions(deps: WaitForIdleDeps): Promise<boolean> {
@@ -36,6 +38,8 @@ export async function waitForIdleSessions(deps: WaitForIdleDeps): Promise<boolea
         if (Date.now() > start) deps.log("All sessions idle — proceeding with restart");
         return true;
       }
+
+      if (deps.onWaiting) await Promise.resolve(deps.onWaiting(data.count));
 
       const sessions = data.sessions ?? [];
       if (sessions.length === 0) {

@@ -8,7 +8,14 @@ import { join, basename, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { openDatabase, type DatabaseSync } from "./db.js";
-import { isRestartPending, isRestartImminent, isRestartPendingError, getRestartWaitingCount, clearRestartPending, RESTART_PENDING_MESSAGE, type SessionRunState } from "./session-manager.js";
+import {
+  clearRestartPending,
+  configureRestartStateStore,
+  isRestartPendingError,
+  RESTART_PENDING_MESSAGE,
+  refreshRestartState,
+  type SessionRunState,
+} from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import type { Schedule } from "./schedule-store.js";
 import { resolveScheduleSessionSelection } from "./schedule-targeting.js";
@@ -149,6 +156,7 @@ function parseWavDurationSeconds(buffer: Buffer): number {
 }
 
 export function createApiRouter(ctx: AppContext): express.Router {
+  configureRestartStateStore(ctx.runtimePaths);
   const router = express.Router();
   const transcriptionService =
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
@@ -532,15 +540,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try { res.write(`: connected\n\n`); }
     catch { close(); }
 
-    // Send authoritative restart state so clients don't have to guess
-    if (isRestartPending()) {
-      const count = getRestartWaitingCount();
-      try { res.write(`data: ${JSON.stringify({ type: "server:restart-pending", waitingSessions: count })}\n\n`); }
-      catch { close(); }
-    } else {
-      try { res.write(`data: ${JSON.stringify({ type: "server:restart-cleared" })}\n\n`); }
-      catch { close(); }
-    }
+    void refreshRestartState()
+      .then((restartState) => {
+        if (closed || res.writableEnded) return;
+        if (restartState.phase !== "idle") {
+          try { res.write(`data: ${JSON.stringify({ type: "server:restart-pending", waitingSessions: restartState.waitingSessions })}\n\n`); }
+          catch { close(); }
+          return;
+        }
+        try { res.write(`data: ${JSON.stringify({ type: "server:restart-cleared" })}\n\n`); }
+        catch { close(); }
+      })
+      .catch(() => {
+        close();
+      });
 
     res.on("error", () => { close(); });
     req.on("close", () => { close(); });
@@ -636,7 +649,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/sessions", async (req, res) => {
-    if (isRestartImminent()) {
+    if ((await refreshRestartState()).phase !== "idle") {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -654,7 +667,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.post("/sessions/:id/duplicate", async (req, res) => {
     const sourceId = req.params.id;
     try {
-      if (isRestartImminent()) {
+      if ((await refreshRestartState()).phase !== "idle") {
         res.set("Retry-After", "5");
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
@@ -688,14 +701,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   // POST /chat — fire and forget, starts work in background
-  router.post("/chat", (req, res) => {
+  router.post("/chat", async (req, res) => {
     const { sessionId, prompt, attachments } = req.body;
 
     if (!sessionId || !prompt) {
       return res.status(400).json({ error: "sessionId and prompt are required" });
     }
 
-    if (isRestartImminent()) {
+    if ((await refreshRestartState()).phase !== "idle") {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -726,7 +739,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  router.post("/sessions/:id/fleet", (req, res) => {
+  router.post("/sessions/:id/fleet", async (req, res) => {
     const sessionId = req.params.id;
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
 
@@ -736,7 +749,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!ctx.sessionManager.hasPlan(sessionId)) {
       return res.status(409).json({ error: "Session has no plan to run with Fleet" });
     }
-    if (isRestartImminent()) {
+    if ((await refreshRestartState()).phase !== "idle") {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -1320,7 +1333,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!task) return res.status(404).json({ error: "Task not found" });
 
     try {
-      if (isRestartImminent()) {
+      if ((await refreshRestartState()).phase !== "idle") {
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
       const prDescriptions = task.pullRequests.map(

@@ -384,4 +384,84 @@ describe("self_update", () => {
       toolFailure("A restart is already pending. Wait for it to complete before updating."),
     );
   });
+
+  it("rejects when restart is already pending via restart state", async () => {
+    existsSyncOverrideMock.mockImplementation(() => undefined);
+
+    const mod = await loadSessionManagerModule();
+    mod.triggerRestartPending();
+
+    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    if (!tool) throw new Error("self_update tool not found");
+
+    await expect(tool.handler({}, {
+      sessionId: "session-1",
+      toolCallId: "tool-1",
+      toolName: "self_update",
+      arguments: {},
+    } satisfies ToolInvocation)).resolves.toEqual(
+      toolFailure("A restart is already pending. Wait for it to complete before updating."),
+    );
+
+    mod.clearRestartPending();
+  });
+});
+
+describe("self_restart", () => {
+  it("rejects when restart is already pending", async () => {
+    existsSyncOverrideMock.mockImplementation(() => undefined);
+
+    const mod = await loadSessionManagerModule();
+    mod.triggerRestartPending();
+
+    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    if (!tool) throw new Error("self_restart tool not found");
+
+    await expect(tool.handler({}, {
+      sessionId: "session-1",
+      toolCallId: "tool-1",
+      toolName: "self_restart",
+      arguments: {},
+    } satisfies ToolInvocation)).resolves.toEqual(
+      toolFailure("A restart is already pending. Wait for it to complete before restarting."),
+    );
+
+    mod.clearRestartPending();
+  });
+
+  it("queues restart state before writing the signal file", async () => {
+    existsSyncOverrideMock.mockImplementation(() => undefined);
+
+    const callOrder: string[] = [];
+
+    const mod = await loadSessionManagerModule();
+
+    const originalTrigger = mod.triggerRestartPending;
+    vi.spyOn(mod, "triggerRestartPending").mockImplementation(() => {
+      callOrder.push("triggerRestartPending");
+      return originalTrigger();
+    });
+
+    writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
+      const path = String(args[0]);
+      if (isDataFilePath(path, "restart.signal")) {
+        callOrder.push("writeSignalFile");
+      }
+    });
+
+    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    if (!tool) throw new Error("self_restart tool not found");
+
+    const result = await tool.handler({}, {
+      sessionId: "session-1",
+      toolCallId: "tool-1",
+      toolName: "self_restart",
+      arguments: {},
+    } satisfies ToolInvocation) as { success: boolean };
+
+    expect(result.success).toBe(true);
+    expect(callOrder.indexOf("triggerRestartPending")).toBeLessThan(callOrder.indexOf("writeSignalFile"));
+
+    mod.clearRestartPending();
+  });
 });
