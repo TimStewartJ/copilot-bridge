@@ -1,18 +1,24 @@
 import type { EnrichedWorkItem, WorkItemRef } from "../../api";
 import { WI_TYPE_ICONS, WI_STATE_STYLES } from "../../work-item-styles";
 import { ClipboardList } from "lucide-react";
+import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
 
 export interface WorkItemListProps {
   enrichedWIs: EnrichedWorkItem[];
   rawWIs: WorkItemRef[];
-  variant?: "compact" | "card";
+  variant?: "compact" | "card" | "summary";
+  onOpenSummary?: () => void;
+}
+
+function sortCountEntries(a: [string, number], b: [string, number]) {
+  return b[1] - a[1] || a[0].localeCompare(b[0]);
 }
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact" }: WorkItemListProps) {
+export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact", onOpenSummary }: WorkItemListProps) {
   const isCompact = variant === "compact";
   const items = enrichedWIs.length > 0
     ? enrichedWIs
@@ -26,6 +32,51 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact" 
         areaPath: null as string | null,
         url: "#",
       }));
+
+  if (variant === "summary") {
+    if (items.length === 0) return null;
+
+    const primaryItem = items[0];
+    const stateCounts = new Map<string, number>();
+
+    for (const wi of items) {
+      if (wi.state) stateCounts.set(wi.state, (stateCounts.get(wi.state) ?? 0) + 1);
+    }
+
+    const chips: TaskPanelSummaryChip[] = [...stateCounts.entries()]
+      .sort(sortCountEntries)
+      .slice(0, 3)
+      .map(([state, count]) => ({
+        label: `${count} ${state}`,
+        className: WI_STATE_STYLES[state] ?? "bg-text-muted/15 text-text-muted",
+      }));
+
+    const title = items.length === 1
+      ? primaryItem.title ?? primaryItem.id
+      : `${items.length} linked work items`;
+
+    const subtitle = items.length === 1
+      ? [primaryItem.id, primaryItem.type, primaryItem.assignedTo ?? primaryItem.areaPath]
+          .filter(Boolean)
+          .join(" · ")
+      : [
+          items.slice(0, 2).map((wi) => wi.id).join(" · "),
+          items.length > 2 ? `+${items.length - 2} more` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+    return (
+      <TaskPanelSummaryRow
+        label="Work items"
+        icon={<ClipboardList size={14} />}
+        title={title}
+        subtitle={subtitle || undefined}
+        chips={chips}
+        onClick={onOpenSummary}
+      />
+    );
+  }
 
   return (
     <div className={isCompact ? "space-y-0.5" : "space-y-1"}>

@@ -1,6 +1,8 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { Pencil, StickyNote } from "lucide-react";
+import TaskPanelSummaryRow from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -9,12 +11,58 @@ export interface TaskNotesSectionProps {
   onView: () => void;
   onEdit: () => void;
   truncate?: boolean;
+  variant?: "default" | "summary";
+}
+
+function getNotesPreview(notes: string): string {
+  return notes
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/^>\s+/gm, "")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function TaskNotesSection({ notes, onView, onEdit, truncate = false }: TaskNotesSectionProps) {
-  if (notes) {
+export default function TaskNotesSection({ notes, onView, onEdit, truncate = false, variant = "default" }: TaskNotesSectionProps) {
+  const trimmedNotes = notes?.trim();
+
+  if (variant === "summary") {
+    if (!trimmedNotes) return null;
+
+    const preview = getNotesPreview(trimmedNotes);
+
+    return (
+      <TaskPanelSummaryRow
+        label="Notes"
+        icon={<StickyNote size={14} />}
+        title={preview || "View notes"}
+        titleClassName="line-clamp-2"
+        onClick={onView}
+        trailing={(
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEdit();
+            }}
+            className="p-1 text-text-faint hover:text-text-primary transition-colors"
+            title="Edit notes"
+          >
+            <Pencil size={12} />
+          </button>
+        )}
+      />
+    );
+  }
+
+  if (trimmedNotes) {
     return (
       <div
         onClick={onView}
@@ -32,7 +80,7 @@ export default function TaskNotesSection({ notes, onView, onEdit, truncate = fal
                 : "prose prose-invert prose-sm max-w-none text-text-secondary prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-code:text-accent prose-code:text-xs prose-a:text-accent prose-a:no-underline"
             }
           >
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{notes}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{trimmedNotes}</ReactMarkdown>
           </div>
         </div>
         {truncate && (
