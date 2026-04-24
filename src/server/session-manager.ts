@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve, basename, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import matter from "gray-matter";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore, InvalidTaskUpdateError } from "./task-store.js";
@@ -466,6 +467,30 @@ export function createBridgeTools(ctx: AppContext) {
   };
 
   const normalizeDocsToolFailure = (error: unknown) => toolFailure(error instanceof Error ? error.message : String(error));
+  const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
+
+  function getTaggedDocFrontmatterTags(frontmatter: { tags?: unknown }): string[] {
+    if (Array.isArray(frontmatter.tags)) {
+      return frontmatter.tags
+        .filter((tag): tag is string => typeof tag === "string")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+    }
+    if (typeof frontmatter.tags === "string") {
+      const trimmed = frontmatter.tags.trim();
+      return trimmed ? [trimmed] : [];
+    }
+    return [];
+  }
+
+  function validateTaggedDocContent(content: string): void {
+    const { data } = matter(content);
+    const tags = getTaggedDocFrontmatterTags(data);
+    if (tags.length === 0) return;
+    if (typeof data.description !== "string" || !data.description.trim()) {
+      throw new Error(TAGGED_DOC_DESCRIPTION_ERROR);
+    }
+  }
 
   const tools = [
   defineTool("task_link_work_item", {
@@ -1146,10 +1171,11 @@ export function createBridgeTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_write", {
-      description: "Create or update a knowledge base page. Provide raw markdown content (with optional YAML frontmatter). Supports [[wikilinks]] — use [[page-path]] or [[page-path|Display Text]] to link between pages (resolved by path, title, or slug). Rejects writes to database collection folders — for those, use docs_db_add with { folder, fields: { title, ... }, body }.",
+      description: "Create or update a knowledge base page. Provide raw markdown content (with optional YAML frontmatter). Tagged or reference pages should include frontmatter title, description, and tags so the bridge can surface them to agents. Supports [[wikilinks]] — use [[page-path]] or [[page-path|Display Text]] to link between pages (resolved by path, title, or slug). Rejects writes to database collection folders — for those, use docs_db_add with { folder, fields: { title, ... }, body }.",
       parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" }, content: { type: "string", description: "Raw markdown content (may include YAML frontmatter)" } }, required: ["path", "content"] },
       handler: async (args: any) => {
         try {
+          validateTaggedDocContent(args.content);
           const page = ctx.docsStore!.writePage(args.path, args.content);
           ctx.docsIndex!.indexPage(page);
           return { path: page.path, success: true };
@@ -1159,11 +1185,13 @@ export function createBridgeTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_edit", {
-      description: "Make a surgical string replacement in a knowledge base page. Finds exactly one occurrence of old_str in the raw markdown (frontmatter + body) and replaces it with new_str. Supports [[wikilinks]] — use [[page-path]] or [[page-path|Display Text]] to link between pages. Errors if old_str is not found or matches multiple times — include more surrounding context to disambiguate.",
+      description: "Make a surgical string replacement in a knowledge base page. Finds exactly one occurrence of old_str in the raw markdown (frontmatter + body) and replaces it with new_str. Tagged or reference pages must still include a frontmatter description after the edit. Supports [[wikilinks]] — use [[page-path]] or [[page-path|Display Text]] to link between pages. Errors if old_str is not found or matches multiple times — include more surrounding context to disambiguate.",
       parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" }, old_str: { type: "string", description: "The exact string to find in the raw page content" }, new_str: { type: "string", description: "The replacement string" } }, required: ["path", "old_str", "new_str"] },
       handler: async (args: any) => {
         try {
-          const page = ctx.docsStore!.editPage(args.path, args.old_str, args.new_str);
+          const updatedContent = ctx.docsStore!.previewEditPageContent(args.path, args.old_str, args.new_str);
+          validateTaggedDocContent(updatedContent);
+          const page = ctx.docsStore!.writePage(args.path, updatedContent);
           ctx.docsIndex!.indexPage(page);
           return { path: page.path, success: true };
         } catch (error) {

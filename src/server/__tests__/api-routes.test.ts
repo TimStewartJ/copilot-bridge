@@ -2696,6 +2696,25 @@ describe("Docs routes", () => {
     expect(res.body.path).toBe("test-page");
   });
 
+  it("PUT /api/docs/pages allows tagged pages without a description", async () => {
+    const res = await request(app)
+      .put("/api/docs/pages/tagged-page")
+      .send({
+        content: `---
+title: Tagged page
+tags:
+  - deploy
+---
+
+# Tagged page
+`,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(ctx.docsStore!.readPage("tagged-page")?.frontmatter.tags).toEqual(["deploy"]);
+    expect(ctx.docsStore!.readPage("tagged-page")?.frontmatter.description).toBeUndefined();
+  });
+
   it("GET /api/docs/pages reads a written page", async () => {
     await request(app)
       .put("/api/docs/pages/read-me")

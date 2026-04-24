@@ -4,6 +4,8 @@ import { createBridgeTools } from "../session-manager.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./helpers.js";
 
+const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
+
 function getTool(ctx: AppContext, name: string) {
   const tool = createBridgeTools(ctx).find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
@@ -56,6 +58,86 @@ describe("session manager failure results", () => {
 
     await expect(docsReadTool.handler({ path: "../escape" }, createInvocation("docs_read")))
       .resolves.toEqual(toolFailure('Invalid page path: directory traversal ("..") is not allowed'));
+  });
+
+  it("rejects tagged docs_write pages without a description", async () => {
+    const { ctx } = createTestApp();
+    const docsWriteTool = getTool(ctx, "docs_write");
+
+    await expect(docsWriteTool.handler({
+      path: "notes/tagged-without-description",
+      content: `---
+title: Tagged page
+tags:
+  - deploy
+---
+
+    # Tagged page
+`,
+    }, createInvocation("docs_write")))
+      .resolves.toEqual(toolFailure(TAGGED_DOC_DESCRIPTION_ERROR));
+  });
+
+  it("allows tagged docs_write pages when a description is present", async () => {
+    const { ctx } = createTestApp();
+    const docsWriteTool = getTool(ctx, "docs_write");
+
+    await expect(docsWriteTool.handler({
+      path: "notes/tagged-with-description",
+      content: `---
+title: Tagged page
+description: Helpful summary
+tags:
+  - deploy
+---
+
+# Tagged page
+`,
+    }, createInvocation("docs_write")))
+      .resolves.toMatchObject({ path: "notes/tagged-with-description", success: true });
+  });
+
+  it("rejects docs_edit changes that leave a tagged page without a description", async () => {
+    const { ctx } = createTestApp();
+    const docsEditTool = getTool(ctx, "docs_edit");
+    ctx.docsStore!.writePage("notes/tagged-edit-without-description", `---
+title: Tagged page
+description: Helpful summary
+tags:
+  - deploy
+---
+
+# Tagged page
+`);
+
+    await expect(docsEditTool.handler({
+      path: "notes/tagged-edit-without-description",
+      old_str: "description: Helpful summary",
+      new_str: "description:   ",
+    }, createInvocation("docs_edit")))
+      .resolves.toEqual(toolFailure(TAGGED_DOC_DESCRIPTION_ERROR));
+  });
+
+  it("allows docs_edit changes that preserve a tagged page description", async () => {
+    const { ctx } = createTestApp();
+    const docsEditTool = getTool(ctx, "docs_edit");
+    ctx.docsStore!.writePage("notes/tagged-edit-with-description", `---
+title: Tagged page
+description: Helpful summary
+tags:
+  - deploy
+---
+
+Original body
+`);
+
+    await expect(docsEditTool.handler({
+      path: "notes/tagged-edit-with-description",
+      old_str: "Original body",
+      new_str: "Updated body",
+    }, createInvocation("docs_edit")))
+      .resolves.toMatchObject({ path: "notes/tagged-edit-with-description", success: true });
+    expect(ctx.docsStore!.readPage("notes/tagged-edit-with-description")?.body).toBe("Updated body");
   });
 
   it("surfaces unexpected docs tool errors as failure results", async () => {
