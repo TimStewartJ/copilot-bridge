@@ -2,8 +2,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeRestartState } from "../restart-state.js";
-import { SessionManager, RESTART_PENDING_MESSAGE, configureRestartStateStore, refreshRestartState } from "../session-manager.js";
+import { readRestartState, writeRestartState } from "../restart-state.js";
+import {
+  clearRestartPending,
+  SessionManager,
+  RESTART_PENDING_MESSAGE,
+  configureRestartStateStore,
+  getRestartWaitingCount,
+  isRestartImminent,
+  isRestartPending,
+  refreshRestartState,
+  triggerRestartPending,
+} from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
@@ -71,6 +81,14 @@ describe("SessionManager run state", () => {
 
   async function flushMicrotasks() {
     for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  async function waitForRestartPhase(filePath: string, phase: "idle" | "queued" | "waiting-for-sessions" | "restarting") {
+    for (let i = 0; i < 50; i++) {
+      if ((await readRestartState(filePath)).phase === phase) return;
+      await flushMicrotasks();
+    }
+    throw new Error(`Timed out waiting for restart state ${phase} at ${filePath}`);
   }
 
   beforeEach(() => {
@@ -1035,6 +1053,232 @@ describe("SessionManager run state", () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  describe("syncRestartWaitingSessions handoff guard", () => {
+    it("does not clobber launcher-owned fields when launcher has heartbeated before queued write fires", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-handoff-"));
+      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
+      try {
+        const { manager } = createManager({ copilotHome });
+        configureRestartStateStore({
+          demoMode: false,
+          dataDir,
+          docsDir: join(dataDir, "docs"),
+          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
+        });
+        const restartStatePath = join(dataDir, "restart-state.json");
+
+        // Start a session BEFORE restart becomes pending (startWork throws if restart is pending)
+        const { session, getHandler, getReleaseSend } = makeSession();
+        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.startWork("session-1", "hello");
+        await flushMicrotasks();
+
+        // Server-initiated restart state (one session blocking)
+        await writeRestartState(restartStatePath, {
+          requestId: "req-handoff",
+          phase: "waiting-for-sessions",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: null,
+        });
+        await refreshRestartState();  // loads server state into in-memory cache
+
+        // Launcher picks up the restart and advances the file while server cache is still stale
+        await writeRestartState(restartStatePath, {
+          requestId: "req-handoff",
+          phase: "restarting",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: "2026-01-01T00:00:01.000Z",
+        });
+
+        // Session ends → syncRestartWaitingSessions is called with stale cached state
+        getReleaseSend()?.();
+        await flushMicrotasks();
+        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
+        await flushMicrotasks();
+
+        // Flush the write queue — refreshRestartState awaits _restartStateWriteQueue
+        await refreshRestartState();
+
+        // Launcher-owned fields must be intact on disk; the server must not have overwritten them
+        const diskState = await readRestartState(restartStatePath);
+        expect(diskState.phase).toBe("restarting");
+        expect(diskState.launcherHeartbeatAt).toBe("2026-01-01T00:00:01.000Z");
+        expect(diskState.requestId).toBe("req-handoff");
+        expect(diskState.waitingSessions).toBe(1);
+      } finally {
+        configureRestartStateStore(undefined);
+        rmSync(dataDir, { recursive: true, force: true });
+        rmSync(copilotHome, { recursive: true, force: true });
+      }
+    });
+
+    it("does not clobber launcher phase when launcher advanced to restarting without a heartbeat yet", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-phase-"));
+      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home2-"));
+      try {
+        const { manager } = createManager({ copilotHome });
+        configureRestartStateStore({
+          demoMode: false,
+          dataDir,
+          docsDir: join(dataDir, "docs"),
+          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
+        });
+        const restartStatePath = join(dataDir, "restart-state.json");
+
+        const { session, getHandler, getReleaseSend } = makeSession();
+        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.startWork("session-2", "hello");
+        await flushMicrotasks();
+
+        await writeRestartState(restartStatePath, {
+          requestId: "req-phase-only",
+          phase: "waiting-for-sessions",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: null,
+        });
+        await refreshRestartState();
+
+        // Launcher transitions phase to "restarting" but has not written launcherHeartbeatAt yet
+        await writeRestartState(restartStatePath, {
+          requestId: "req-phase-only",
+          phase: "restarting",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: null,
+        });
+
+        getReleaseSend()?.();
+        await flushMicrotasks();
+        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
+        await flushMicrotasks();
+
+        await refreshRestartState();
+
+        const diskState = await readRestartState(restartStatePath);
+        expect(diskState.phase).toBe("restarting");
+        expect(diskState.requestId).toBe("req-phase-only");
+      } finally {
+        configureRestartStateStore(undefined);
+        rmSync(dataDir, { recursive: true, force: true });
+        rmSync(copilotHome, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps pre-pickup waiting-session countdown in memory without rewriting disk", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-pre-pickup-"));
+      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home3-"));
+      try {
+        const { manager } = createManager({ copilotHome });
+        configureRestartStateStore({
+          demoMode: false,
+          dataDir,
+          docsDir: join(dataDir, "docs"),
+          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
+        });
+        const restartStatePath = join(dataDir, "restart-state.json");
+
+        const { session, getHandler, getReleaseSend } = makeSession();
+        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.startWork("session-3", "hello");
+        await flushMicrotasks();
+
+        // Server-initiated restart — launcher has NOT picked up yet (no launcherHeartbeatAt, no "restarting" phase)
+        await writeRestartState(restartStatePath, {
+          requestId: "req-pre-pickup",
+          phase: "waiting-for-sessions",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: null,
+        });
+        await refreshRestartState();
+
+        // Session ends — server should update in-memory/UI state only until the launcher picks up.
+        getReleaseSend()?.();
+        await flushMicrotasks();
+        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
+        await flushMicrotasks();
+
+        const refreshedState = await refreshRestartState();
+
+        const diskState = await readRestartState(restartStatePath);
+        expect(refreshedState.phase).toBe("queued");
+        expect(refreshedState.waitingSessions).toBe(0);
+        expect(getRestartWaitingCount()).toBe(0);
+        expect(isRestartImminent()).toBe(true);
+        expect(diskState.phase).toBe("waiting-for-sessions");
+        expect(diskState.waitingSessions).toBe(1);
+        expect(diskState.requestId).toBe("req-pre-pickup");
+        expect(diskState.launcherHeartbeatAt).toBeNull();
+      } finally {
+        configureRestartStateStore(undefined);
+        rmSync(dataDir, { recursive: true, force: true });
+        rmSync(copilotHome, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps queued restart-state writes bound to the path active when they were enqueued", async () => {
+      const firstDataDir = mkdtempSync(join(tmpdir(), "bridge-restart-first-"));
+      const secondDataDir = mkdtempSync(join(tmpdir(), "bridge-restart-second-"));
+      try {
+        const firstRuntimePaths = {
+          demoMode: false,
+          dataDir: firstDataDir,
+          docsDir: join(firstDataDir, "docs"),
+          env: { ...process.env, BRIDGE_DATA_DIR: firstDataDir, BRIDGE_DOCS_DIR: join(firstDataDir, "docs") },
+        };
+        const secondRuntimePaths = {
+          demoMode: false,
+          dataDir: secondDataDir,
+          docsDir: join(secondDataDir, "docs"),
+          env: { ...process.env, BRIDGE_DATA_DIR: secondDataDir, BRIDGE_DOCS_DIR: join(secondDataDir, "docs") },
+        };
+        const firstRestartStatePath = join(firstDataDir, "restart-state.json");
+        const secondRestartStatePath = join(secondDataDir, "restart-state.json");
+
+        configureRestartStateStore(firstRuntimePaths);
+        triggerRestartPending();
+        configureRestartStateStore(secondRuntimePaths);
+
+        await waitForRestartPhase(firstRestartStatePath, "queued");
+        expect(isRestartPending()).toBe(false);
+        await expect(refreshRestartState()).resolves.toMatchObject({ phase: "idle" });
+        expect((await readRestartState(secondRestartStatePath)).phase).toBe("idle");
+
+        await writeRestartState(firstRestartStatePath, {
+          requestId: "req-first",
+          phase: "waiting-for-sessions",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: null,
+        });
+        await writeRestartState(secondRestartStatePath, {
+          requestId: "req-second",
+          phase: "waiting-for-sessions",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: null,
+        });
+
+        configureRestartStateStore(firstRuntimePaths);
+        await refreshRestartState();
+        clearRestartPending();
+        configureRestartStateStore(secondRuntimePaths);
+
+        await waitForRestartPhase(firstRestartStatePath, "idle");
+        const secondDiskState = await readRestartState(secondRestartStatePath);
+        expect(secondDiskState.phase).toBe("waiting-for-sessions");
+        expect(secondDiskState.requestId).toBe("req-second");
+      } finally {
+        configureRestartStateStore(undefined);
+        rmSync(firstDataDir, { recursive: true, force: true });
+        rmSync(secondDataDir, { recursive: true, force: true });
+      }
+    });
   });
 
 });

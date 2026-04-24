@@ -34,6 +34,7 @@ import { createApiRouter } from "./api-router.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
+import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -167,6 +168,8 @@ async function main(): Promise<void> {
   console.log();
 
   await sessionManager.initialize();
+  configureRestartStateStore(runtimePaths);
+  await refreshRestartState();
   defaultContext.voiceJobManager.resumePendingJobs();
 
   // Prune old telemetry data

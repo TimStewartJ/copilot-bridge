@@ -709,6 +709,43 @@ describe("Voice job routes", () => {
     expect(jobRes.body.status).toBe("done");
   });
 
+  it("POST /api/voice-jobs rejects draft-session autosend while restart is active in persisted state", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createSession = vi.fn();
+    const runtimePaths = createRestartRuntimePaths();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "req-voice-job",
+      phase: "queued",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      waitingSessions: 0,
+      launcherHeartbeatAt: null,
+    });
+    ({ app } = createTestApp({
+      runtimePaths,
+      sessionManager,
+      transcriptionService: createMockTranscriptionService({
+        getStatus: () => ({
+          available: true,
+          provider: "whisper.cpp",
+          label: "whisper.cpp",
+          maxDurationSeconds: 120,
+        }),
+      }),
+    }));
+
+    const res = await request(app)
+      .post("/api/voice-jobs")
+      .field("composerKey", "draft:quickchat")
+      .attach("audio", createWavBuffer(1), {
+        filename: "recording.wav",
+        contentType: "audio/wav",
+      });
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+  });
+
   it("draft-route voice jobs recover through the materialized session when autosend fails", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
@@ -1752,6 +1789,26 @@ describe("Session routes (mocked)", () => {
     expect(res.body).toHaveProperty("sessionId");
   });
 
+  it("POST /api/sessions rejects session creation when restart is active in persisted state", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createSession = vi.fn();
+    const runtimePaths = createRestartRuntimePaths();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "req-session-create",
+      phase: "queued",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      waitingSessions: 0,
+      launcherHeartbeatAt: null,
+    });
+    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
+
+    const res = await request(app).post("/api/sessions");
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+  });
+
   it("POST /api/chat requires sessionId and prompt", async () => {
     const res = await request(app)
       .post("/api/chat")
@@ -1779,6 +1836,29 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(503);
     expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
     expect(sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/sessions/:id/fleet rejects new fleet work when restart is active in persisted state", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.hasPlan = vi.fn().mockReturnValue(true);
+    sessionManager.startFleet = vi.fn();
+    const runtimePaths = createRestartRuntimePaths();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "req-fleet-gating",
+      phase: "waiting-for-sessions",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      waitingSessions: 2,
+      launcherHeartbeatAt: null,
+    });
+    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-session/fleet")
+      .send({});
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
+    expect(sessionManager.startFleet).not.toHaveBeenCalled();
   });
 
   it("GET /api/busy returns activity summary", async () => {
