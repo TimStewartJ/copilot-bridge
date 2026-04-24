@@ -1,8 +1,9 @@
 export type LauncherCommandResult = { ok: boolean; output: string };
+export type LauncherCommandOptions = { timeoutMs?: number };
 
 interface LauncherBuildOptions {
   ensureDeps: () => boolean;
-  run: (cmd: string) => LauncherCommandResult;
+  run: (cmd: string, options?: LauncherCommandOptions) => LauncherCommandResult;
   log: (msg: string) => void;
 }
 
@@ -24,6 +25,8 @@ function logFailure(prefix: string, output: string, log: (msg: string) => void) 
   log(`${prefix}:\n${output.slice(-500)}`);
 }
 
+const COVERAGE_TEST_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions): boolean {
   log("Building...");
   if (!ensureDeps()) {
@@ -43,7 +46,7 @@ export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions)
     return false;
   }
 
-  const tests = run("npx vitest run --coverage");
+  const tests = run("npx vitest run --coverage", { timeoutMs: COVERAGE_TEST_TIMEOUT_MS });
   if (!tests.ok) {
     logFailure("Tests failed", tests.output, log);
     return false;
