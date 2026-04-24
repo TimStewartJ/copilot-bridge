@@ -1498,15 +1498,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
           };
         });
 
-      // Active + paused tasks with enrichment
-      const inFlightTasks = tasks.filter((t) => t.status === "active" || t.status === "paused");
+      // Active tasks with enrichment
+      const activeTasks = tasks.filter((t) => t.status === "active");
 
-      // Batch-fetch all work items across all in-flight tasks
-      const allWorkItemRefs = inFlightTasks.flatMap((t) => t.workItems);
+      // Batch-fetch all work items across all active tasks
+      const allWorkItemRefs = activeTasks.flatMap((t) => t.workItems);
       const uniqueWIRefs = allWorkItemRefs.filter((ref, i, arr) =>
         arr.findIndex((r) => r.id === ref.id && r.provider === ref.provider) === i,
       );
-      const allPRs = inFlightTasks.flatMap((t) => t.pullRequests);
+      const allPRs = activeTasks.flatMap((t) => t.pullRequests);
       const uniquePRs = allPRs.filter((pr, i, arr) =>
         arr.findIndex((p) => p.repoId === pr.repoId && p.prId === pr.prId && p.provider === pr.provider) === i,
       );
@@ -1519,7 +1519,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const wiMap = new Map(allWorkItems.map((wi) => [`${wi.provider}:${wi.id}`, wi]));
       const prMap = new Map(allEnrichedPRs.map((pr) => [`${pr.provider}:${pr.repoId}:${pr.prId}`, pr]));
 
-      const activeTasks = inFlightTasks.map((task) => {
+      const activeTaskEntries = activeTasks.map((task) => {
         // Work item state summary
         const byState: Record<string, number> = {};
         for (const wiRef of task.workItems) {
@@ -1581,14 +1581,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
       });
 
       // Sort: unread first, then busy, then most recent
-      activeTasks.sort((a, b) => {
+      activeTaskEntries.sort((a, b) => {
         if (a.hasUnread !== b.hasUnread) return a.hasUnread ? -1 : 1;
         if (a.hasBusySession !== b.hasBusySession) return a.hasBusySession ? -1 : 1;
         return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
       });
 
       // Last active task (most recently updated active task)
-      const lastActiveTask = activeTasks.find((t) => t.task.status === "active") ?? null;
+      const lastActiveTask = activeTaskEntries[0] ?? null;
 
       const nowMs = Date.now();
       const staleCutoffMs = nowMs - 7 * 24 * 60 * 60 * 1000;
@@ -1601,22 +1601,21 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const lastActivityMs = Date.parse(lastActivity);
         return Number.isFinite(lastActivityMs) && lastActivityMs < staleCutoffMs;
       };
-      const activeMomentumTasks = activeTasks.filter((entry) => entry.task.status === "active");
       const taskMomentum = {
-        needsDecision: activeMomentumTasks.filter((entry) =>
+        needsDecision: activeTaskEntries.filter((entry) =>
           !entry.task.nextAction
           && !entry.task.waitingOn
           && !entry.task.nextTouchAt,
         ),
-        followUpNow: activeMomentumTasks.filter((entry) => isDueNow(entry.task.nextTouchAt)),
-        waiting: activeMomentumTasks.filter((entry) => !!entry.task.waitingOn),
-        candidateToClose: activeMomentumTasks.filter((entry) =>
+        followUpNow: activeTaskEntries.filter((entry) => isDueNow(entry.task.nextTouchAt)),
+        waiting: activeTaskEntries.filter((entry) => !!entry.task.waitingOn),
+        candidateToClose: activeTaskEntries.filter((entry) =>
           entry.checklistSummary.open === 0
           && !entry.hasBusySession
           && entry.prSummary.active === 0
           && entry.prSummary.unknown === 0,
         ),
-        stale: activeMomentumTasks.filter((entry) =>
+        stale: activeTaskEntries.filter((entry) =>
           !entry.hasBusySession
           && !entry.hasUnread
           && !entry.task.nextTouchAt

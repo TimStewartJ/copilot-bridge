@@ -199,3 +199,109 @@ describe("database checklist migration", () => {
     db.close();
   });
 });
+
+describe("database task status migration", () => {
+  it("migrates legacy paused tasks to active on open", () => {
+    const dataDir = createTempDataDir();
+    const dbPath = join(dataDir, "bridge.db");
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    createLegacyTaskTable(legacyDb);
+    legacyDb.prepare(`
+      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'paused', NULL, NULL, '', 0, 0, 0, ?, ?)
+    `).run("task-paused", "Paused task", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
+    legacyDb.close();
+
+    const db = openDatabase(dataDir);
+    const row = db.prepare("SELECT status FROM tasks WHERE id = ?").get("task-paused") as { status: string };
+
+    expect(row.status).toBe("active");
+    db.close();
+  });
+
+  it("clears parked momentum from non-active tasks on open", () => {
+    const dataDir = createTempDataDir();
+    const dbPath = join(dataDir, "bridge.db");
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    createLegacyTaskTable(legacyDb);
+    legacyDb.exec(`
+      ALTER TABLE tasks ADD COLUMN doneWhen TEXT;
+      ALTER TABLE tasks ADD COLUMN nextAction TEXT;
+      ALTER TABLE tasks ADD COLUMN waitingOn TEXT;
+      ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT;
+    `);
+    legacyDb.prepare(`
+      INSERT INTO tasks (
+        id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+        priority, pinned, "order", createdAt, updatedAt
+      )
+      VALUES (?, ?, 'done', NULL, NULL, '', ?, ?, ?, ?, 0, 0, 0, ?, ?)
+    `).run(
+      "task-done",
+      "Done task",
+      "Feature is shipped",
+      "Check the dashboard",
+      "Support confirmation",
+      "2026-04-08T00:00:00.000Z",
+      "2026-04-01T00:00:00.000Z",
+      "2026-04-01T00:00:00.000Z",
+    );
+    legacyDb.close();
+
+    const db = openDatabase(dataDir);
+    const row = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get("task-done") as Record<string, unknown>;
+
+    expect(row).toEqual({
+      doneWhen: "Feature is shipped",
+      nextAction: null,
+      waitingOn: null,
+      nextTouchAt: null,
+    });
+
+    db.close();
+  });
+
+  it("clears parked momentum from archived tasks on open", () => {
+    const dataDir = createTempDataDir();
+    const dbPath = join(dataDir, "bridge.db");
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    createLegacyTaskTable(legacyDb);
+    legacyDb.exec(`
+      ALTER TABLE tasks ADD COLUMN doneWhen TEXT;
+      ALTER TABLE tasks ADD COLUMN nextAction TEXT;
+      ALTER TABLE tasks ADD COLUMN waitingOn TEXT;
+      ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT;
+    `);
+    legacyDb.prepare(`
+      INSERT INTO tasks (
+        id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+        priority, pinned, "order", createdAt, updatedAt
+      )
+      VALUES (?, ?, 'archived', NULL, NULL, '', ?, ?, ?, ?, 0, 0, 0, ?, ?)
+    `).run(
+      "task-archived",
+      "Archived task",
+      "Feature is shipped",
+      "Check the dashboard",
+      "Support confirmation",
+      "2026-04-08T00:00:00.000Z",
+      "2026-04-01T00:00:00.000Z",
+      "2026-04-01T00:00:00.000Z",
+    );
+    legacyDb.close();
+
+    const db = openDatabase(dataDir);
+    const row = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get("task-archived") as Record<string, unknown>;
+
+    expect(row).toEqual({
+      doneWhen: "Feature is shipped",
+      nextAction: null,
+      waitingOn: null,
+      nextTouchAt: null,
+    });
+    db.close();
+  });
+});

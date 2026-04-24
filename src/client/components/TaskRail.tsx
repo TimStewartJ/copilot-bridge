@@ -77,7 +77,6 @@ interface TaskRailProps {
 
 const STATUS_BG: Record<Task["status"], string> = {
   active: "bg-accent/15",
-  paused: "bg-warning/15",
   done: "bg-success/15",
   archived: "bg-text-faint/10",
 };

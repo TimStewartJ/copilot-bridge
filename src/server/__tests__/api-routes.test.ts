@@ -926,6 +926,19 @@ describe("Task routes", () => {
     expect(unpin.body.task.pinned).toBe(false);
   });
 
+  it("PATCH /api/tasks/:id normalizes paused status updates to active", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Normalize status" });
+    const id = create.body.task.id;
+
+    const update = await request(app).patch(`/api/tasks/${id}`).send({ status: "paused" });
+    expect(update.status).toBe(200);
+    expect(update.body.task.status).toBe("active");
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.status).toBe("active");
+  });
+
   it("PATCH /api/tasks/:id clears momentum fields when passed empty strings", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "Clear Momentum" });
     const id = create.body.task.id;
@@ -957,6 +970,78 @@ describe("Task routes", () => {
     expect(get.body.task.nextTouchAt).toBeUndefined();
   });
 
+  it("PATCH /api/tasks/:id clears parked momentum when a task is marked done", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Close me out" });
+    const id = create.body.task.id;
+
+    await request(app).patch(`/api/tasks/${id}`).send({
+      doneWhen: "Rolled out to all tenants",
+      nextAction: "Check the dashboard",
+      waitingOn: "Support confirmation",
+      nextTouchAt: "2030-01-01T00:00:00.000Z",
+    });
+
+    const done = await request(app).patch(`/api/tasks/${id}`).send({ status: "done" });
+    expect(done.status).toBe(200);
+    expect(done.body.task.status).toBe("done");
+    expect(done.body.task.doneWhen).toBe("Rolled out to all tenants");
+    expect(done.body.task.nextAction).toBeUndefined();
+    expect(done.body.task.waitingOn).toBeUndefined();
+    expect(done.body.task.nextTouchAt).toBeUndefined();
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.status).toBe("done");
+    expect(get.body.task.doneWhen).toBe("Rolled out to all tenants");
+    expect(get.body.task.nextAction).toBeUndefined();
+    expect(get.body.task.waitingOn).toBeUndefined();
+    expect(get.body.task.nextTouchAt).toBeUndefined();
+  });
+
+  it("PATCH /api/tasks/:id clears parked momentum when a task is archived", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Archive me" });
+    const id = create.body.task.id;
+
+    await request(app).patch(`/api/tasks/${id}`).send({
+      nextAction: "Check the dashboard",
+      waitingOn: "Support confirmation",
+      nextTouchAt: "2030-01-01T00:00:00.000Z",
+    });
+
+    const archived = await request(app).patch(`/api/tasks/${id}`).send({ status: "archived" });
+    expect(archived.status).toBe(200);
+    expect(archived.body.task.status).toBe("archived");
+    expect(archived.body.task.nextAction).toBeUndefined();
+    expect(archived.body.task.waitingOn).toBeUndefined();
+    expect(archived.body.task.nextTouchAt).toBeUndefined();
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.status).toBe("archived");
+    expect(get.body.task.nextAction).toBeUndefined();
+    expect(get.body.task.waitingOn).toBeUndefined();
+    expect(get.body.task.nextTouchAt).toBeUndefined();
+  });
+
+  it("PATCH /api/tasks/:id rejects parked momentum updates for done tasks", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Stay closed" });
+    const id = create.body.task.id;
+
+    await request(app).patch(`/api/tasks/${id}`).send({ status: "done" });
+
+    const invalid = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ nextAction: "Actually keep working on this" });
+
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("nextAction, waitingOn, and nextTouchAt can only be set on active tasks");
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.status).toBe("done");
+    expect(get.body.task.nextAction).toBeUndefined();
+  });
+
   it("PATCH /api/tasks/:id rejects invalid nextTouchAt values", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "Invalid touch" });
     const id = create.body.task.id;
@@ -973,6 +1058,22 @@ describe("Task routes", () => {
     const get = await request(app).get(`/api/tasks/${id}`);
     expect(get.status).toBe(200);
     expect(get.body.task.nextTouchAt).toBeUndefined();
+  });
+
+  it("PATCH /api/tasks/:id rejects invalid status values", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Invalid status" });
+    const id = create.body.task.id;
+
+    const invalid = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "bogus" });
+
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("status must be one of: active, done, archived");
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.status).toBe("active");
   });
 });
 
@@ -1866,39 +1967,6 @@ describe("Session routes (mocked)", () => {
     }
   });
 
-  it("GET /api/dashboard taskMomentum.followUpNow excludes paused tasks", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
-
-    try {
-      const testApp = createTestApp();
-      app = testApp.app;
-      ctx = testApp.ctx;
-
-      const pausedTask = ctx.taskStore.createTask("Paused follow-up");
-      ctx.taskStore.updateTask(pausedTask.id, {
-        status: "paused",
-        nextAction: "Resume later",
-        nextTouchAt: "2026-05-01T11:00:00.000Z",
-      });
-
-      const activeTask = ctx.taskStore.createTask("Active follow-up");
-      ctx.taskStore.updateTask(activeTask.id, {
-        nextAction: "Check now",
-        nextTouchAt: "2026-05-01T11:00:00.000Z",
-      });
-
-      const res = await request(app).get("/api/dashboard");
-      const followUpNowIds = res.body.taskMomentum.followUpNow.map((e: any) => e.task.id);
-
-      expect(res.status).toBe(200);
-      expect(followUpNowIds).toContain(activeTask.id);
-      expect(followUpNowIds).not.toContain(pausedTask.id);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("GET /api/dashboard taskMomentum.needsDecision excludes deferred tasks with nextTouchAt", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
@@ -2039,54 +2107,6 @@ describe("Session routes (mocked)", () => {
       expect(res.status).toBe(200);
       expect(staleIds).toContain(trueStale.id);
       expect(staleIds).not.toContain(touchedStale.id);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("GET /api/dashboard taskMomentum excludes paused tasks from active-only queues", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
-
-    try {
-      const testApp = createTestApp();
-      app = testApp.app;
-      ctx = testApp.ctx;
-      const { db } = testApp;
-
-      const pausedDecision = ctx.taskStore.createTask("Paused decision");
-      ctx.taskStore.updateTask(pausedDecision.id, { status: "paused" });
-
-      const pausedWaiting = ctx.taskStore.createTask("Paused waiting");
-      ctx.taskStore.updateTask(pausedWaiting.id, {
-        status: "paused",
-        waitingOn: "External input",
-      });
-
-      const pausedClose = ctx.taskStore.createTask("Paused close");
-      ctx.taskStore.updateTask(pausedClose.id, {
-        status: "paused",
-        nextAction: "Close it later",
-      });
-
-      const pausedStale = ctx.taskStore.createTask("Paused stale");
-      ctx.taskStore.updateTask(pausedStale.id, {
-        status: "paused",
-        nextAction: "Revisit eventually",
-      });
-      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run("2026-04-20T09:00:00.000Z", pausedStale.id);
-
-      const res = await request(app).get("/api/dashboard");
-      const needsDecisionIds = res.body.taskMomentum.needsDecision.map((e: any) => e.task.id);
-      const waitingIds = res.body.taskMomentum.waiting.map((e: any) => e.task.id);
-      const candidateIds = res.body.taskMomentum.candidateToClose.map((e: any) => e.task.id);
-      const staleIds = res.body.taskMomentum.stale.map((e: any) => e.task.id);
-
-      expect(res.status).toBe(200);
-      expect(needsDecisionIds).not.toContain(pausedDecision.id);
-      expect(waitingIds).not.toContain(pausedWaiting.id);
-      expect(candidateIds).not.toContain(pausedClose.id);
-      expect(staleIds).not.toContain(pausedStale.id);
     } finally {
       vi.useRealTimers();
     }

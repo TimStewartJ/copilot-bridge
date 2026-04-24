@@ -129,7 +129,7 @@ export interface PRRef {
 export interface Task {
   id: string;
   title: string;
-  status: "active" | "paused" | "done" | "archived";
+  status: "active" | "done" | "archived";
   groupId?: string;
   cwd?: string;
   notes: string;

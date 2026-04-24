@@ -7,6 +7,8 @@ import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import type { ProviderName } from "./providers/types.js";
 
 export class InvalidTaskUpdateError extends Error {}
+type TaskStatus = "active" | "done" | "archived";
+const ACTIVE_TASK_MOMENTUM_ERROR = "nextAction, waitingOn, and nextTouchAt can only be set on active tasks";
 
 const ISO_TIMESTAMP_WITH_TIMEZONE_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):(\d{2}))$/;
 
@@ -25,7 +27,7 @@ export interface PRRef {
 export interface Task {
   id: string;
   title: string;
-  status: "active" | "paused" | "done" | "archived";
+  status: TaskStatus;
   groupId?: string;
   cwd?: string;
   notes: string;
@@ -49,9 +51,8 @@ type TaskUpdate = Partial<
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
-  paused: 1,
-  done: 2,
-  archived: 3,
+  done: 1,
+  archived: 2,
 };
 
 function getDefaultTaskCwd(): string | undefined {
@@ -62,6 +63,18 @@ function getDefaultTaskCwd(): string | undefined {
 
 function normalizeOptionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function normalizeStoredTaskStatus(value: unknown): TaskStatus {
+  if (value === "active" || value === "paused") return "active";
+  if (value === "done" || value === "archived") return value;
+  throw new Error(`Unsupported task status: ${String(value)}`);
+}
+
+function normalizeUpdatedTaskStatus(value: unknown): TaskStatus {
+  if (value === "active" || value === "paused") return "active";
+  if (value === "done" || value === "archived") return value;
+  throw new InvalidTaskUpdateError("status must be one of: active, done, archived");
 }
 
 function isLeapYear(year: number): boolean {
@@ -152,7 +165,7 @@ export function createTaskStore(
     return {
       id,
       title: row.title,
-      status: row.status,
+      status: normalizeStoredTaskStatus(row.status),
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
       notes: row.notes,
@@ -221,27 +234,58 @@ export function createTaskStore(
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
     if (!row) throw new Error(`Task ${id} not found`);
 
-    const oldStatus = row.status;
+    const oldStatus = normalizeStoredTaskStatus(row.status);
     const now = new Date().toISOString();
+    const hasDoneWhenUpdate = updates.doneWhen !== undefined;
+    const hasNextActionUpdate = updates.nextAction !== undefined;
+    const hasWaitingOnUpdate = updates.waitingOn !== undefined;
+    const hasNextTouchAtUpdate = updates.nextTouchAt !== undefined;
 
     const fields: string[] = ["updatedAt = ?"];
     const values: any[] = [now];
+    let requestedStatus: TaskStatus | undefined;
+    let targetStatus = oldStatus;
 
     if (updates.title !== undefined) { fields.push("title = ?"); values.push(updates.title); }
-    if (updates.status !== undefined) { fields.push("status = ?"); values.push(updates.status); }
+    if (updates.status !== undefined) {
+      requestedStatus = normalizeUpdatedTaskStatus(updates.status);
+      targetStatus = requestedStatus;
+      fields.push("status = ?");
+      values.push(targetStatus);
+    }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
     if (updates.priority !== undefined) { fields.push("priority = ?"); values.push(updates.priority); }
     if (updates.pinned !== undefined) { fields.push("pinned = ?"); values.push(updates.pinned ? 1 : 0); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
     if (updates.groupId !== undefined) { fields.push("groupId = ?"); values.push(updates.groupId || null); }
-    if (updates.doneWhen !== undefined) { fields.push("doneWhen = ?"); values.push(normalizeOptionalText(updates.doneWhen) ?? null); }
-    if (updates.nextAction !== undefined) { fields.push("nextAction = ?"); values.push(normalizeOptionalText(updates.nextAction) ?? null); }
-    if (updates.waitingOn !== undefined) { fields.push("waitingOn = ?"); values.push(normalizeOptionalText(updates.waitingOn) ?? null); }
-    if (updates.nextTouchAt !== undefined) { fields.push("nextTouchAt = ?"); values.push(normalizeOptionalTimestamp(updates.nextTouchAt, { strict: true }) ?? null); }
+    const doneWhen = hasDoneWhenUpdate ? normalizeOptionalText(updates.doneWhen) ?? null : undefined;
+    const nextAction = hasNextActionUpdate ? normalizeOptionalText(updates.nextAction) ?? null : undefined;
+    const waitingOn = hasWaitingOnUpdate ? normalizeOptionalText(updates.waitingOn) ?? null : undefined;
+    const nextTouchAt = hasNextTouchAtUpdate
+      ? normalizeOptionalTimestamp(updates.nextTouchAt, { strict: true }) ?? null
+      : undefined;
+    const isSettingActiveTaskMomentum = nextAction !== undefined && nextAction !== null
+      || waitingOn !== undefined && waitingOn !== null
+      || nextTouchAt !== undefined && nextTouchAt !== null;
+
+    if (targetStatus !== "active" && isSettingActiveTaskMomentum) {
+      throw new InvalidTaskUpdateError(ACTIVE_TASK_MOMENTUM_ERROR);
+    }
+
+    if (hasDoneWhenUpdate) { fields.push("doneWhen = ?"); values.push(doneWhen); }
+    if (hasNextActionUpdate) { fields.push("nextAction = ?"); values.push(nextAction); }
+    if (hasWaitingOnUpdate) { fields.push("waitingOn = ?"); values.push(waitingOn); }
+    if (hasNextTouchAtUpdate) { fields.push("nextTouchAt = ?"); values.push(nextTouchAt); }
+
+    if (targetStatus !== "active") {
+      if (!hasNextActionUpdate) { fields.push("nextAction = ?"); values.push(null); }
+      if (!hasWaitingOnUpdate) { fields.push("waitingOn = ?"); values.push(null); }
+      if (!hasNextTouchAtUpdate) { fields.push("nextTouchAt = ?"); values.push(null); }
+    }
 
     // When status changes, place task at top of new group
-    if (updates.status !== undefined && updates.status !== oldStatus) {
-      db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(updates.status, id);
+    if (requestedStatus !== undefined && requestedStatus !== oldStatus) {
+      db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(requestedStatus, id);
       fields.push('"order" = ?');
       values.push(0);
     }

@@ -4,7 +4,8 @@ import { X } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-success/15 text-success",
-  paused: "bg-warning/15 text-warning",
+  done: "bg-accent/15 text-accent",
+  archived: "bg-text-muted/15 text-text-muted",
 };
 
 interface TaskPickerDialogProps {
@@ -33,9 +34,7 @@ export default function TaskPickerDialog({
     return () => document.removeEventListener("keydown", onEsc);
   }, [onClose]);
 
-  const pickable = tasks.filter(
-    (t) => t.status === "active" || t.status === "paused",
-  );
+  const pickable = tasks.filter((t) => t.status === "active");
 
   const filtered = pickable.filter(
     (t) =>

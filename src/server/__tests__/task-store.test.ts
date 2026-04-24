@@ -115,6 +115,7 @@ describe("task-store", () => {
       );
 
       expect(store.getTask("task-hydrate")).toMatchObject({
+        status: "active",
         doneWhen: "Ship after green build",
         nextAction: "Review the latest diff",
         waitingOn: "QA sign-off",
@@ -196,6 +197,84 @@ describe("task-store", () => {
       const done = store.listTasks().filter((t) => t.status === "done");
       expect(done).toHaveLength(1);
       expect(done[0].order).toBe(0);
+    });
+
+    it("updateTask normalizes paused status updates to active", () => {
+      const task = store.createTask("Normalize me");
+
+      const updated = store.updateTask(task.id, { status: "paused" as any });
+
+      expect(updated.status).toBe("active");
+      const raw = db.prepare("SELECT status FROM tasks WHERE id = ?").get(task.id) as { status: string };
+      expect(raw.status).toBe("active");
+    });
+
+    it("updateTask clears parked momentum when a task is marked done", () => {
+      const task = store.createTask("Ship it");
+      store.updateTask(task.id, {
+        doneWhen: "Feature flag is enabled everywhere",
+        nextAction: "Check rollout metrics",
+        waitingOn: "Support sign-off",
+        nextTouchAt: "2025-02-03T04:05:06.000Z",
+      });
+
+      const updated = store.updateTask(task.id, { status: "done" });
+
+      expect(updated).toMatchObject({
+        status: "done",
+        doneWhen: "Feature flag is enabled everywhere",
+        nextAction: undefined,
+        waitingOn: undefined,
+        nextTouchAt: undefined,
+      });
+
+      const raw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw).toEqual({
+        doneWhen: "Feature flag is enabled everywhere",
+        nextAction: null,
+        waitingOn: null,
+        nextTouchAt: null,
+      });
+    });
+
+    it("updateTask clears parked momentum when a task is archived", () => {
+      const task = store.createTask("Archive it");
+      store.updateTask(task.id, {
+        nextAction: "Check rollout metrics",
+        waitingOn: "Support sign-off",
+        nextTouchAt: "2025-02-03T04:05:06.000Z",
+      });
+
+      const updated = store.updateTask(task.id, { status: "archived" });
+
+      expect(updated).toMatchObject({
+        status: "archived",
+        nextAction: undefined,
+        waitingOn: undefined,
+        nextTouchAt: undefined,
+      });
+
+      const raw = db.prepare("SELECT nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw).toEqual({
+        nextAction: null,
+        waitingOn: null,
+        nextTouchAt: null,
+      });
+    });
+
+    it("updateTask rejects parked momentum updates for done tasks", () => {
+      const task = store.createTask("Already done");
+      store.updateTask(task.id, { status: "done" });
+
+      expect(() => store.updateTask(task.id, { nextAction: "Re-open the task" as any }))
+        .toThrow("nextAction, waitingOn, and nextTouchAt can only be set on active tasks");
+
+      expect(store.getTask(task.id)).toMatchObject({
+        status: "done",
+        nextAction: undefined,
+        waitingOn: undefined,
+        nextTouchAt: undefined,
+      });
     });
 
     it("updateTask persists optional momentum fields and clears empty strings", () => {

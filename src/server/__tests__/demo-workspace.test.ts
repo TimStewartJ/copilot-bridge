@@ -49,6 +49,13 @@ describe("demo workspace", () => {
         cwd: workspace.workspaceDir,
       });
 
+      const backlog = taskStore.listTasks().find((task) => task.title === "Future integrations backlog");
+      expect(backlog).toMatchObject({
+        status: "active",
+        nextAction: "Review which vendor portals are worth automating next cycle",
+      });
+      expect(backlog?.nextTouchAt).toBeTruthy();
+
       const followUp = scheduleStore.listSchedules().find((schedule) => schedule.name === "Launch follow-up prompt");
       expect(followUp).toBeDefined();
       expect(followUp?.type).toBe("once");

@@ -399,6 +399,13 @@ function initSchema(db: DatabaseSync): void {
   if (!taskCols.some((c: any) => c.name === "pinned")) {
     db.exec("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
+  db.exec("UPDATE tasks SET status = 'active' WHERE status = 'paused'");
+  db.exec(`
+    UPDATE tasks
+    SET nextAction = NULL, waitingOn = NULL, nextTouchAt = NULL
+    WHERE status != 'active'
+      AND (nextAction IS NOT NULL OR waitingOn IS NOT NULL OR nextTouchAt IS NOT NULL)
+  `);
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt)");
 
   // Migrate task_work_items.itemId from INTEGER to TEXT for string-based identifiers (e.g. Linear "ENG-123")

@@ -23,7 +23,7 @@ const DEMO_REVIEW_SCHEDULE_NAME = "Friday launch review";
 const DEMO_REVIEW_SCHEDULE_PROMPT = "Review open Acme launch work. Summarize wins, risks, and next steps for the rollout.";
 
 export const DEMO_DATA_DIRNAME = "demo-data";
-export const DEMO_SEED_VERSION = 4;
+export const DEMO_SEED_VERSION = 5;
 
 export interface DemoPaths {
   dataDir: string;
@@ -383,11 +383,12 @@ The goal is to show how the bridge can move from cheap source discovery to heavi
 
     const backlog = createSeedTask("Future integrations backlog", automationGroup.id, {
       cwd: paths.workspaceDir,
-      status: "paused",
+      nextAction: "Review which vendor portals are worth automating next cycle",
+      nextTouchAt: timestamp(7 * DAY_MS),
       notes: `
 # Why this exists
 
-This paused task is here to make the workspace feel lived-in. It hints at future ideas without crowding the core launch flow.
+This backlog task stays active but scheduled for later so it hints at future ideas without crowding the core launch flow.
       `.trim(),
     });
 

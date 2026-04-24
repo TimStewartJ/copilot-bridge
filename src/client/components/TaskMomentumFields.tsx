@@ -45,9 +45,12 @@ export default function TaskMomentumFields({
     setDrafts(next);
     setEditingField(null);
     setSavingField(null);
-  }, [task.id, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
+  }, [task.id, task.status, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
 
   const isDashboard = variant === "dashboard";
+  const visibleFields = FIELD_CONFIGS.filter((field) => (
+    field.key === "doneWhen" || task.status === "active" || Boolean(values[field.key])
+  ));
 
   const persistField = async (field: MomentumFieldKey, rawValue: string) => {
     const normalized = normalizeDraft(field, rawValue);
@@ -91,10 +94,14 @@ export default function TaskMomentumFields({
 
   return (
     <div className={isDashboard ? "grid grid-cols-1 sm:grid-cols-2 gap-3" : "space-y-2"}>
-      {FIELD_CONFIGS.map((field) => {
+      {visibleFields.map((field) => {
         const currentValue = values[field.key];
         const isEditing = editingField === field.key;
         const isSaving = savingField === field.key;
+        const canEdit = field.key === "doneWhen" || task.status === "active";
+        const displayValue = field.key === "nextTouchAt"
+          ? (currentValue ? formatFollowUpDisplay(currentValue) : field.placeholder)
+          : (currentValue || field.placeholder);
 
         return (
           <div
@@ -107,7 +114,7 @@ export default function TaskMomentumFields({
               </span>
               {isSaving ? (
                 <span className="text-[10px] text-text-faint">Saving…</span>
-              ) : currentValue && !isEditing ? (
+              ) : canEdit && currentValue && !isEditing ? (
                 <button
                   type="button"
                   onClick={() => void persistField(field.key, "")}
@@ -143,7 +150,7 @@ export default function TaskMomentumFields({
                 className="mt-1 w-full rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary outline-none focus:border-accent"
                 placeholder={field.placeholder}
               />
-            ) : (
+            ) : canEdit ? (
               <button
                 type="button"
                 onClick={() => {
@@ -157,10 +164,15 @@ export default function TaskMomentumFields({
                 }`}
                 title={currentValue || field.placeholder}
               >
-                {field.key === "nextTouchAt"
-                  ? (currentValue ? formatFollowUpDisplay(currentValue) : field.placeholder)
-                  : (currentValue || field.placeholder)}
+                {displayValue}
               </button>
+            ) : (
+              <div
+                className="mt-1 text-xs text-text-primary"
+                title={currentValue || field.placeholder}
+              >
+                {displayValue}
+              </div>
             )}
           </div>
         );

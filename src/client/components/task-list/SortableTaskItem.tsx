@@ -9,7 +9,6 @@ import { getFollowUpState } from "../TaskMomentumFields";
 
 const STATUS_TEXT: Record<Task["status"], string> = {
   active: "text-success",
-  paused: "text-warning",
   done: "text-text-muted",
   archived: "text-text-faint",
 };
@@ -117,7 +116,7 @@ export default function SortableTaskItem({
 
 function getMomentumBadges(task: Task): Array<{ label: string; className: string; title?: string }> {
   const badges: Array<{ label: string; className: string; title?: string }> = [];
-  const followUpState = getFollowUpState(task.nextTouchAt);
+  const followUpState = task.status === "active" ? getFollowUpState(task.nextTouchAt) : null;
 
   if (followUpState === "overdue" || followUpState === "due") {
     badges.push({
