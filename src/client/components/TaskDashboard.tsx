@@ -1,4 +1,5 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session } from "../api";
 import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
@@ -98,6 +99,8 @@ export default function TaskDashboard({
   onRequestArchived,
   archivedLoaded,
 }: TaskDashboardProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
+
   // ── Consolidated workspace hook ─────────────────────────────
   const ws = useTaskWorkspace(task, taskGroups, sessions);
   const {
@@ -116,6 +119,10 @@ export default function TaskDashboard({
   const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
   const [momentumTask, setMomentumTask] = useState(task);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
+  const [highlightedSection, setHighlightedSection] = useState<"sessions" | "checklist" | null>(null);
+  const sessionsSectionRef = useRef<HTMLDivElement>(null);
+  const checklistSectionRef = useRef<HTMLDivElement>(null);
+  const focusedSection = searchParams.get("section");
 
   useEffect(() => {
     setMomentumTask(task);
@@ -124,6 +131,31 @@ export default function TaskDashboard({
   useEffect(() => {
     setWorkspaceSheetOpen(false);
   }, [task.id]);
+
+  useEffect(() => {
+    if (focusedSection !== "sessions" && focusedSection !== "checklist") return;
+
+    const target = focusedSection === "sessions"
+      ? sessionsSectionRef.current
+      : checklistSectionRef.current;
+    if (!target) return;
+
+    setHighlightedSection(focusedSection);
+    requestAnimationFrame(() => {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+    const timer = setTimeout(() => setHighlightedSection((current) => (
+      current === focusedSection ? null : current
+    )), 1600);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("section");
+      return next;
+    }, { replace: true });
+
+    return () => clearTimeout(timer);
+  }, [focusedSection, setSearchParams]);
 
   const handleRefresh = async () => {
     await Promise.all([refresh(), onRefresh?.()]);
@@ -308,54 +340,59 @@ export default function TaskDashboard({
           {/* ── Left Column ─────────────────────────────── */}
           <div className="space-y-6">
             {/* Sessions */}
-            <Section
-              icon={<MessageSquare size={14} />}
-              title="Sessions"
-              count={linkedSessions.filter((s) => !s.archived).length}
-              action={
-                <button
-                  onClick={() => onNewSession(task.id)}
-                  className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-                >
-                  <Plus size={12} /> New
-                </button>
-              }
+            <div
+              ref={sessionsSectionRef}
+              className={highlightedSection === "sessions" ? "animate-checklist-highlight rounded-lg" : ""}
             >
-              {linkedSessions.length === 0 ? (
-                <EmptyState message="No sessions yet" sub="Start a chat to begin working" />
-              ) : (
-                <SessionList
-                  key={task.id}
-                  variant="compact"
-                  sessions={linkedSessions}
-                  activeSessionId={null}
-                  onSelectSession={onSelectSession}
-                  onNewSession={() => onNewSession(task.id)}
-                  showEmptyState={false}
-                  isUnread={isUnread}
-                  onArchiveSession={onArchiveSession}
-                  archivingIds={archivingIds}
-                  exitingIds={exitingIds}
-                  taskContext={task}
-                  onUnlinkFromTask={
-                    onUnlinkFromTask
-                      ?? (async (sessionId, taskId) => {
-                           await unlinkResource(taskId, { type: "session", sessionId });
-                           onTasksChanged?.();
-                         })
-                  }
-                  onDeleteSession={onDeleteSession}
-                  onDuplicateSession={onDuplicateSession}
-                  onReloadSession={onReloadSession}
-                  onMarkUnread={onMarkUnread}
-                  onBulkAction={onBulkAction}
-                  hasDraft={hasDraft}
-                  onRequestArchived={onRequestArchived}
-                  archivedLoaded={archivedLoaded}
-                  className=""
-                />
-              )}
-            </Section>
+              <Section
+                icon={<MessageSquare size={14} />}
+                title="Sessions"
+                count={linkedSessions.filter((s) => !s.archived).length}
+                action={
+                  <button
+                    onClick={() => onNewSession(task.id)}
+                    className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
+                  >
+                    <Plus size={12} /> New
+                  </button>
+                }
+              >
+                {linkedSessions.length === 0 ? (
+                  <EmptyState message="No sessions yet" sub="Start a chat to begin working" />
+                ) : (
+                  <SessionList
+                    key={task.id}
+                    variant="compact"
+                    sessions={linkedSessions}
+                    activeSessionId={null}
+                    onSelectSession={onSelectSession}
+                    onNewSession={() => onNewSession(task.id)}
+                    showEmptyState={false}
+                    isUnread={isUnread}
+                    onArchiveSession={onArchiveSession}
+                    archivingIds={archivingIds}
+                    exitingIds={exitingIds}
+                    taskContext={task}
+                    onUnlinkFromTask={
+                      onUnlinkFromTask
+                        ?? (async (sessionId, taskId) => {
+                             await unlinkResource(taskId, { type: "session", sessionId });
+                             onTasksChanged?.();
+                           })
+                    }
+                    onDeleteSession={onDeleteSession}
+                    onDuplicateSession={onDuplicateSession}
+                    onReloadSession={onReloadSession}
+                    onMarkUnread={onMarkUnread}
+                    onBulkAction={onBulkAction}
+                    hasDraft={hasDraft}
+                    onRequestArchived={onRequestArchived}
+                    archivedLoaded={archivedLoaded}
+                    className=""
+                  />
+                )}
+              </Section>
+            </div>
 
             {/* Work Items */}
             {task.workItems.length > 0 && (
@@ -391,21 +428,26 @@ export default function TaskDashboard({
           {/* ── Right Column ─────────────────────────────── */}
           <div className="space-y-6">
             {/* Checklist */}
-            <Section
-              icon={<CheckSquare size={14} />}
-              title="Checklist"
-              count={checklistItems.length > 0 ? `${completedChecklistItems.length}/${checklistItems.length}` : undefined}
+            <div
+              ref={checklistSectionRef}
+              className={highlightedSection === "checklist" ? "animate-checklist-highlight rounded-lg" : ""}
             >
-              <TaskChecklistSection
-                checklistItems={checklistItems}
-                newChecklistItemText={newChecklistItemText}
-                onNewChecklistItemTextChange={setNewChecklistItemText}
-                onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
-                onChecklistItemUpdate={onChecklistItemUpdate}
-                onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
-                variant="card"
-              />
-            </Section>
+              <Section
+                icon={<CheckSquare size={14} />}
+                title="Checklist"
+                count={checklistItems.length > 0 ? `${completedChecklistItems.length}/${checklistItems.length}` : undefined}
+              >
+                <TaskChecklistSection
+                  checklistItems={checklistItems}
+                  newChecklistItemText={newChecklistItemText}
+                  onNewChecklistItemTextChange={setNewChecklistItemText}
+                  onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
+                  onChecklistItemUpdate={onChecklistItemUpdate}
+                  onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
+                  variant="card"
+                />
+              </Section>
+            </div>
 
             {/* Schedules */}
             <Section
