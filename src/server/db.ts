@@ -105,6 +105,23 @@ function initSchema(db: DatabaseSync): void {
       sessionId TEXT NOT NULL,
       recordedAt TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS schedule_run_claims (
+      scheduleId TEXT NOT NULL,
+      runKey TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'claimed',
+      claimedAt TEXT NOT NULL,
+      leaseExpiresAt TEXT NOT NULL,
+      finishedAt TEXT,
+      sessionId TEXT,
+      PRIMARY KEY (scheduleId, runKey)
+    );
+    CREATE TABLE IF NOT EXISTS schedule_session_claims (
+      sessionId TEXT PRIMARY KEY,
+      scheduleId TEXT NOT NULL,
+      claimedAt TEXT NOT NULL,
+      leaseExpiresAt TEXT NOT NULL
+    );
 
     -- Settings (key-value, main entry is key='app')
     CREATE TABLE IF NOT EXISTS settings (
@@ -165,6 +182,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
     CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(scheduleId, recordedAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_schedule_run_claims_status ON schedule_run_claims(status, leaseExpiresAt);
     CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
 
     -- Voice jobs

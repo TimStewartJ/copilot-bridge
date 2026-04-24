@@ -483,8 +483,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
     console.log("[web] Graceful shutdown requested via API");
     res.json({ ok: true, message: "Shutting down..." });
     try {
-      scheduler.shutdown();
+      scheduler.setGlobalPause(true);
       await ctx.sessionManager.gracefulShutdown();
+      scheduler.shutdown();
     } catch (err) {
       console.error("[web] Error during graceful shutdown:", err);
     }
@@ -1776,7 +1777,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/schedules/:id/trigger", async (req, res) => {
     try {
-      const result = await scheduler.triggerSchedule(req.params.id);
+      const result = await scheduler.triggerSchedule(req.params.id, { source: "manual" });
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: String(err) });
