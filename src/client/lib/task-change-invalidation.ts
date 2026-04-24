@@ -6,14 +6,14 @@ export function invalidateSharedTaskChangeQueries(
 ): void {
   void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
   void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
-  void queryClient.invalidateQueries({ queryKey: queryKeys.openTodos });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems });
 }
 
 export function invalidateTaskScopedChangeQueries(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   taskId: string,
 ): void {
-  void queryClient.invalidateQueries({ queryKey: queryKeys.taskTodos(taskId) });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.taskChecklistItems(taskId) });
   void queryClient.invalidateQueries({
     predicate: (query) =>
       query.queryKey[0] === "task"

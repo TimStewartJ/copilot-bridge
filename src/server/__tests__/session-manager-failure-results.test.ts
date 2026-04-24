@@ -20,16 +20,24 @@ function createInvocation(toolName: string) {
 }
 
 describe("session manager failure results", () => {
-  it("normalizes task and todo not-found failures", async () => {
+  it("normalizes task and checklist not-found failures", async () => {
     const { ctx } = createTestApp();
 
     const taskLinkTool = getTool(ctx, "task_link_work_item");
     await expect(taskLinkTool.handler({ taskId: "missing-task", workItemId: "123" }, createInvocation("task_link_work_item")))
       .resolves.toEqual(toolFailure("Task missing-task not found"));
 
-    const todoAddTool = getTool(ctx, "todo_add");
-    await expect(todoAddTool.handler({ taskId: "missing-task", text: "Ship it" }, createInvocation("todo_add")))
+    const checklistAddTool = getTool(ctx, "checklist_add");
+    await expect(checklistAddTool.handler({ taskId: "missing-task", text: "Ship it" }, createInvocation("checklist_add")))
       .resolves.toEqual(toolFailure("Task missing-task not found"));
+  });
+
+  it("does not expose removed todo tools", () => {
+    const { ctx } = createTestApp();
+    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_add")).toBe(false);
+    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_list")).toBe(false);
+    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_update")).toBe(false);
+    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_remove")).toBe(false);
   });
 
   it("normalizes duplicate tag creation failures", async () => {

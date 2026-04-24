@@ -10,7 +10,7 @@ import { createSettingsStore } from "./settings-store.js";
 import { createTagStore, type TagColor } from "./tag-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createTaskStore } from "./task-store.js";
-import { createTodoStore } from "./todo-store.js";
+import { createChecklistStore } from "./checklist-store.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 
 const DAY_MS = 86_400_000;
@@ -23,7 +23,7 @@ const DEMO_REVIEW_SCHEDULE_NAME = "Friday launch review";
 const DEMO_REVIEW_SCHEDULE_PROMPT = "Review open Acme launch work. Summarize wins, risks, and next steps for the rollout.";
 
 export const DEMO_DATA_DIRNAME = "demo-data";
-export const DEMO_SEED_VERSION = 3;
+export const DEMO_SEED_VERSION = 4;
 
 export interface DemoPaths {
   dataDir: string;
@@ -123,19 +123,19 @@ function createSeedTag(
   return tagStore.updateTag(tag.id, { instructions });
 }
 
-function addSeedTodo(
-  todoStore: ReturnType<typeof createTodoStore>,
+function addSeedChecklistItem(
+  checklistStore: ReturnType<typeof createChecklistStore>,
   taskId: string | null,
   text: string,
   options: { done?: boolean; deadlineOffsetDays?: number } = {},
 ): void {
-  const todo = todoStore.createTodo(
+  const checklistItem = checklistStore.createChecklistItem(
     taskId,
     text,
     options.deadlineOffsetDays !== undefined ? dateOnly(options.deadlineOffsetDays) : undefined,
   );
   if (options.done) {
-    todoStore.updateTodo(todo.id, { done: true });
+    checklistStore.updateChecklistItem(checklistItem.id, { done: true });
   }
 }
 
@@ -170,7 +170,7 @@ This folder anchors the fictional rollout workspace used by the seeded demo.
 # 5-minute tour
 
 1. Open the pinned **Start Here - Acme Launch Workspace** task.
-2. Read the task note and check off a couple todos as you explore.
+2. Read the task note and check off a couple checklist items as you explore.
 3. Start a task chat and paste one of the prompt ideas below.
 4. Trigger the sample schedule on the task.
 5. Add one entry to the **Launch Notes** collection in Docs.
@@ -179,7 +179,7 @@ This folder anchors the fictional rollout workspace used by the seeded demo.
 
 - "Summarize the Acme launch workspace and suggest the next three things to inspect."
 - "Create a docs page called \`acme/release-qa\` with the questions the rollout team should answer before Friday."
-- "Look at this task, its todos, and its schedules, then explain how this workspace fits together."
+- "Look at this task, its checklist, and its schedules, then explain how this workspace fits together."
 - "Turn the launch plan into a short checklist for a Friday status review."
 `));
 
@@ -202,7 +202,7 @@ Acme is preparing a fictional rollout of **Acme Assist** to a small pilot group 
 Use this workspace to keep the launch thread compact:
 
 - the pinned task explains where to start
-- todos make next actions easy to see
+- checklist items make next actions easy to see
 - schedules show how follow-up can stay attached to a task
 - docs and database entries keep written context close to the work
 `));
@@ -278,7 +278,7 @@ function seedWorkspace(repoRoot: string): void {
     const taskGroupStore = createTaskGroupStore(db);
     const settingsStore = createSettingsStore(db);
     const scheduleStore = createScheduleStore(db);
-    const todoStore = createTodoStore(db, bus);
+    const checklistStore = createChecklistStore(db, bus);
     const tagStore = createTagStore(db);
     const docsStore = createDocsStore(paths.docsDir);
 
@@ -335,7 +335,7 @@ This seeded workspace is framed as a fictional Acme launch so you can explore th
 ## Try this in order
 
 1. Open the related docs for this task and read \`acme/start-here\`.
-2. Check off a couple todos below as you explore.
+2. Check off a couple checklist items below as you explore.
 3. Start a task session and paste one of the prompt ideas from the note or docs.
 4. Trigger the **Launch follow-up prompt** schedule.
 5. Open Docs and add one item to the **Launch Notes** collection.
@@ -345,7 +345,7 @@ This seeded workspace is framed as a fictional Acme launch so you can explore th
 
 - "Summarize the Acme launch workspace and suggest the next three things to inspect."
 - "Turn this task into a short launch-readiness walkthrough I could use in a status update."
-- "Draft a short Friday update based on the current docs, todos, and schedules."
+- "Draft a short Friday update based on the current docs, checklist items, and schedules."
       `.trim(),
     });
 
@@ -396,25 +396,25 @@ This paused task is here to make the workspace feel lived-in. It hints at future
     tagStore.setEntityTags("task", startHere.id, [docsTag.id]);
     tagStore.setEntityTags("task", launchReadiness.id, [docsTag.id]);
 
-    addSeedTodo(todoStore, startHere.id, "Open the pinned task and read the note", { done: true });
-    addSeedTodo(todoStore, startHere.id, "Start one task chat and try a guided prompt", { deadlineOffsetDays: 1 });
-    addSeedTodo(todoStore, startHere.id, "Trigger the sample schedule once", { deadlineOffsetDays: 1 });
-    addSeedTodo(todoStore, startHere.id, "Add one launch-notes entry in Docs", { deadlineOffsetDays: 2 });
+    addSeedChecklistItem(checklistStore, startHere.id, "Open the pinned task and read the note", { done: true });
+    addSeedChecklistItem(checklistStore, startHere.id, "Start one task chat and try a guided prompt", { deadlineOffsetDays: 1 });
+    addSeedChecklistItem(checklistStore, startHere.id, "Trigger the sample schedule once", { deadlineOffsetDays: 1 });
+    addSeedChecklistItem(checklistStore, startHere.id, "Add one launch-notes entry in Docs", { deadlineOffsetDays: 2 });
 
-    addSeedTodo(todoStore, launchReadiness.id, "Draft a short leadership update", { deadlineOffsetDays: 2 });
-    addSeedTodo(todoStore, launchReadiness.id, "Capture dashboard and workflow screenshots for Friday review", { deadlineOffsetDays: 2 });
-    addSeedTodo(todoStore, launchReadiness.id, "Refine the stakeholder brief", { done: true });
+    addSeedChecklistItem(checklistStore, launchReadiness.id, "Draft a short leadership update", { deadlineOffsetDays: 2 });
+    addSeedChecklistItem(checklistStore, launchReadiness.id, "Capture dashboard and workflow screenshots for Friday review", { deadlineOffsetDays: 2 });
+    addSeedChecklistItem(checklistStore, launchReadiness.id, "Refine the stakeholder brief", { done: true });
 
-    addSeedTodo(todoStore, browserIdeas.id, "Compare browser_exec with the browser skill", { deadlineOffsetDays: 4 });
-    addSeedTodo(todoStore, browserIdeas.id, "Collect one web_search/browser_fetch example flow", { deadlineOffsetDays: 4 });
-    addSeedTodo(todoStore, browserIdeas.id, "Decide where computer-use actually adds value", { done: true });
+    addSeedChecklistItem(checklistStore, browserIdeas.id, "Compare browser_exec with the browser skill", { deadlineOffsetDays: 4 });
+    addSeedChecklistItem(checklistStore, browserIdeas.id, "Collect one web_search/browser_fetch example flow", { deadlineOffsetDays: 4 });
+    addSeedChecklistItem(checklistStore, browserIdeas.id, "Decide where computer-use actually adds value", { done: true });
 
-    addSeedTodo(todoStore, backlog.id, "Sketch vendor-auth onboarding for a future portal integration");
-    addSeedTodo(todoStore, backlog.id, "Consider a sample dataset for provider cards later");
+    addSeedChecklistItem(checklistStore, backlog.id, "Sketch vendor-auth onboarding for a future portal integration");
+    addSeedChecklistItem(checklistStore, backlog.id, "Consider a sample dataset for provider cards later");
 
-    addSeedTodo(todoStore, null, "Collect three screenshots for the launch brief", { deadlineOffsetDays: 1 });
-    addSeedTodo(todoStore, null, "Write down open questions after the Friday review", { deadlineOffsetDays: 2 });
-    addSeedTodo(todoStore, null, "Refresh the stakeholder brief", { done: true });
+    addSeedChecklistItem(checklistStore, null, "Collect three screenshots for the launch brief", { deadlineOffsetDays: 1 });
+    addSeedChecklistItem(checklistStore, null, "Write down open questions after the Friday review", { deadlineOffsetDays: 2 });
+    addSeedChecklistItem(checklistStore, null, "Refresh the stakeholder brief", { done: true });
 
     scheduleStore.createSchedule({
       taskId: startHere.id,

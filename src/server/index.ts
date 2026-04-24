@@ -17,7 +17,7 @@ import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
-import { createTodoStore } from "./todo-store.js";
+import { createChecklistStore } from "./checklist-store.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
 import { createTagStore } from "./tag-store.js";
@@ -64,7 +64,7 @@ const settingsStore = createSettingsStore(db);
 const sessionMetaStore = createSessionMetaStore(db);
 const sessionTitles = createSessionTitlesStore(db);
 const readStateStore = createReadStateStore(db);
-const todoStore = createTodoStore(db, defaultGlobalBus);
+const checklistStore = createChecklistStore(db, defaultGlobalBus);
 const tagStore = createTagStore(db);
 const telemetryStore = createTelemetryStore(db);
 const voiceJobStore = createVoiceJobStore(db);
@@ -80,7 +80,7 @@ setMcpServersGetter(() => settingsStore.getMcpServers());
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionTitles, readStateStore, todoStore, docsStore, docsIndex, tagStore, telemetryStore,
+  sessionMetaStore, sessionTitles, readStateStore, checklistStore, docsStore, docsIndex, tagStore, telemetryStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction

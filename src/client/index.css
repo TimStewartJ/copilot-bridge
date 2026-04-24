@@ -196,7 +196,7 @@ body {
   overflow: hidden;
 }
 
-@keyframes todo-check {
+@keyframes checklist-check {
   from {
     opacity: 1;
     transform: translateX(0) scale(1);
@@ -216,13 +216,13 @@ body {
   }
 }
 
-.animate-todo-check {
-  animation: todo-check 0.35s ease-out forwards;
+.animate-checklist-check {
+  animation: checklist-check 0.35s ease-out forwards;
   pointer-events: none;
   overflow: hidden;
 }
 
-@keyframes todo-uncheck {
+@keyframes checklist-uncheck {
   from {
     opacity: 0;
     max-height: 0;
@@ -233,19 +233,19 @@ body {
   }
 }
 
-.animate-todo-uncheck {
-  animation: todo-uncheck 0.25s ease-out forwards;
+.animate-checklist-uncheck {
+  animation: checklist-uncheck 0.25s ease-out forwards;
   overflow: hidden;
 }
 
-@keyframes todo-highlight {
+@keyframes checklist-highlight {
   0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
   15%, 85% { box-shadow: inset 0 0 0 100px rgba(59, 130, 246, 0.08); }
   30%, 70% { box-shadow: inset 0 0 0 100px rgba(59, 130, 246, 0.14); }
 }
 
-.animate-todo-highlight {
-  animation: todo-highlight 1.2s ease-in-out;
+.animate-checklist-highlight {
+  animation: checklist-highlight 1.2s ease-in-out;
   border-radius: 0.375rem;
 }
 

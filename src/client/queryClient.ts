@@ -28,8 +28,8 @@ export const queryKeys = {
   sessions: (opts?: { includeArchived?: boolean }) =>
     ["sessions", opts ?? {}] as const,
   task: (id: string) => ["task", id] as const,
-  taskTodos: (id: string) => ["task", id, "todos"] as const,
-  openTodos: ["todos", "open"] as const,
+  taskChecklistItems: (id: string) => ["task", id, "checklist-items"] as const,
+  openChecklistItems: ["checklist-items", "open"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
   allSchedules: ["schedules"] as const,

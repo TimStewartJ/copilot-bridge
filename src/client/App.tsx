@@ -48,9 +48,9 @@ import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { useSessionsQuery } from "./hooks/queries/useSessions";
-import { useOpenTodosQuery } from "./hooks/queries/useTodos";
+import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
-import { getHomeTodoIndicator } from "./todo-helpers";
+import { getHomeChecklistIndicator } from "./checklist-helpers";
 import TaskRail from "./components/TaskRail";
 import TaskPanel from "./components/TaskPanel";
 import TaskDashboard from "./components/TaskDashboard";
@@ -87,7 +87,7 @@ export default function App() {
   const { data: sessions = [] } = useSessionsQuery(archivedLoaded);
   const { data: tasks = [] } = useTasksQuery();
   const { data: taskGroups = [] } = useTaskGroupsQuery();
-  const { data: openTodos = [] } = useOpenTodosQuery();
+  const { data: openChecklistItems = [] } = useOpenChecklistItemsQuery();
 
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskNotFound, setTaskNotFound] = useState(false);
@@ -222,8 +222,8 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
   const invalidateDashboard = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }), [queryClient]);
-  const invalidateOpenTodos = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.openTodos }), [queryClient]);
+  const invalidateOpenChecklistItems = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems }), [queryClient]);
   const invalidateTaskGroups = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.taskGroups }), [queryClient]);
 
@@ -331,10 +331,10 @@ export default function App() {
         // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
         invalidateDashboard();
-        invalidateOpenTodos();
+        invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateDashboard, invalidateOpenTodos, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
@@ -459,9 +459,9 @@ export default function App() {
   const mobileChatUnreadCount = useMemo(() => {
     return countChatTabUnread(globalSessions, isUnread);
   }, [globalSessions, isUnread]);
-  const homeTodoIndicator = useMemo(() => {
-    return getHomeTodoIndicator(openTodos);
-  }, [openTodos]);
+  const homeChecklistIndicator = useMemo(() => {
+    return getHomeChecklistIndicator(openChecklistItems);
+  }, [openChecklistItems]);
 
   const [archivingIds, setArchivingIds] = useState<Set<string>>(new Set());
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
@@ -486,8 +486,8 @@ export default function App() {
 
   // ── Navigation handlers ───────────────────────────────────────
 
-  const handleSelectTask = (id: string, opts?: { todoId?: string }) => {
-    const todoParam = opts?.todoId ? `?todo=${opts.todoId}` : "";
+  const handleSelectTask = (id: string, opts?: { checklistItemId?: string }) => {
+    const checklistItemParam = opts?.checklistItemId ? `?checklistItem=${opts.checklistItemId}` : "";
     if (!isMobile) {
       const task = tasks.find((t) => t.id === id);
       if (task && task.sessionIds.length > 0) {
@@ -496,11 +496,11 @@ export default function App() {
           lastViewed && task.sessionIds.includes(lastViewed)
             ? lastViewed
             : task.sessionIds[task.sessionIds.length - 1];
-        navigate(`/tasks/${id}/sessions/${targetSessionId}${todoParam}`);
+        navigate(`/tasks/${id}/sessions/${targetSessionId}${checklistItemParam}`);
         return;
       }
     }
-    navigate(`/tasks/${id}${todoParam}`);
+    navigate(`/tasks/${id}${checklistItemParam}`);
   };
 
   const handleSelectQuickChats = () => {
@@ -1110,7 +1110,7 @@ export default function App() {
         onOpenDocs={handleOpenDocs}
         isDocsActive={isDocsActive}
         isDashboardActive={isDashboardActive}
-        homeTodoIndicator={homeTodoIndicator}
+        homeChecklistIndicator={homeChecklistIndicator}
         expanded={railExpanded}
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
@@ -1393,7 +1393,7 @@ export default function App() {
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
-          homeTodoIndicator={homeTodoIndicator}
+          homeChecklistIndicator={homeChecklistIndicator}
           taskUnreadCount={mobileTaskUnreadCount}
           chatUnreadCount={mobileChatUnreadCount}
         />

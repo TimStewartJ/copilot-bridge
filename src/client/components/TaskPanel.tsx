@@ -24,7 +24,7 @@ import DocPreviewSheet from "./DocPreviewSheet";
 import {
   WorkItemList,
   PullRequestList,
-  TaskTodoSection,
+  TaskChecklistSection,
   TaskNotesSection,
   RelatedDocsSection,
   ScheduleSection,
@@ -140,16 +140,16 @@ export default function TaskPanel({
   // ── Doc preview (panel-specific) ──────────────────────────
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
 
-  // ── Todo highlight (from dashboard navigation) ──────────────
+  // ── Checklist highlight (from dashboard navigation) ─────────
   const [searchParams, setSearchParams] = useSearchParams();
-  const [highlightTodoId, setHighlightTodoId] = useState<string | null>(null);
+  const [highlightChecklistItemId, setHighlightChecklistItemId] = useState<string | null>(null);
 
   useEffect(() => {
-    const todoId = searchParams.get("todo");
-    if (todoId) {
-      setHighlightTodoId(todoId);
-      setSearchParams((prev) => { prev.delete("todo"); return prev; }, { replace: true });
-      const timer = setTimeout(() => setHighlightTodoId(null), 1500);
+    const checklistItemId = searchParams.get("checklistItem");
+    if (checklistItemId) {
+      setHighlightChecklistItemId(checklistItemId);
+      setSearchParams((prev) => { prev.delete("checklistItem"); return prev; }, { replace: true });
+      const timer = setTimeout(() => setHighlightChecklistItemId(null), 1500);
       return () => clearTimeout(timer);
     }
   }, [searchParams]);
@@ -176,8 +176,8 @@ export default function TaskPanel({
     enrichedWIs, enrichedPRs, reloadEnriched,
     sched, schedDetail,
     notes,
-    todos, createTodoMutation, onTodoUpdate, onTodoDelete,
-    newTodoText, setNewTodoText,
+    checklistItems, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
+    newChecklistItemText, setNewChecklistItemText,
     linkedSessions,
     taskOwnTags, inheritedTagIds, effectiveTags,
     relatedDocs,
@@ -330,18 +330,18 @@ export default function TaskPanel({
         <div>
           <SectionLabel
             label="Checklist"
-            count={todos.length > 0 ? undefined : 0}
-            progress={todos.length > 0 ? `${todos.filter((t) => t.done).length}/${todos.length}` : undefined}
+            count={checklistItems.length > 0 ? undefined : 0}
+            progress={checklistItems.length > 0 ? `${checklistItems.filter((t) => t.done).length}/${checklistItems.length}` : undefined}
           />
-          <TaskTodoSection
-            todos={todos}
-            newTodoText={newTodoText}
-            onNewTodoTextChange={setNewTodoText}
-            onCreateTodo={async (text) => { await createTodoMutation.mutateAsync({ text }); }}
-            onTodoUpdate={onTodoUpdate}
-            onTodoDelete={(id) => onTodoDelete(id)}
+          <TaskChecklistSection
+            checklistItems={checklistItems}
+            newChecklistItemText={newChecklistItemText}
+            onNewChecklistItemTextChange={setNewChecklistItemText}
+            onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
+            onChecklistItemUpdate={onChecklistItemUpdate}
+            onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
             variant="panel"
-            highlightId={highlightTodoId}
+            highlightId={highlightChecklistItemId}
           />
         </div>
 

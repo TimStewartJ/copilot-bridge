@@ -5,12 +5,16 @@ import { useTaskEnrichment } from "./useTaskEnrichment";
 import { useTaskSchedules } from "./useTaskSchedules";
 import { useScheduleDetail } from "./useScheduleDetail";
 import { useNotesSheet } from "./useNotesSheet";
-import { useTaskTodosQuery, useCreateTodoMutation, useTodoCacheUpdaters } from "./queries/useTodos";
+import {
+  useTaskChecklistItemsQuery,
+  useCreateChecklistItemMutation,
+  useChecklistItemCacheUpdaters,
+} from "./queries/useChecklistItems";
 
 /**
  * Consolidates shared setup for TaskPanel and TaskDashboard:
  * enrichment, schedules, schedule detail sheet, notes sheet,
- * todos, linked sessions, effective tags, and related docs.
+ * checklist items, linked sessions, effective tags, and related docs.
  */
 export function useTaskWorkspace(
   task: Task | undefined,
@@ -29,11 +33,14 @@ export function useTaskWorkspace(
   // ── Notes ───────────────────────────────────────────────────
   const notes = useNotesSheet(task?.id);
 
-  // ── Todos ───────────────────────────────────────────────────
-  const { data: todos = [], refetch: refetchTodos } = useTaskTodosQuery(task?.id);
-  const createTodoMutation = useCreateTodoMutation(task?.id);
-  const { onUpdate: onTodoUpdate, onDelete: onTodoDelete } = useTodoCacheUpdaters(task?.id);
-  const [newTodoText, setNewTodoText] = useState("");
+  // ── Checklist items ──────────────────────────────────────────
+  const { data: checklistItems = [], refetch: refetchChecklistItems } = useTaskChecklistItemsQuery(task?.id);
+  const createChecklistItemMutation = useCreateChecklistItemMutation(task?.id);
+  const {
+    onUpdate: onChecklistItemUpdate,
+    onDelete: onChecklistItemDelete,
+  } = useChecklistItemCacheUpdaters(task?.id);
+  const [newChecklistItemText, setNewChecklistItemText] = useState("");
 
   // ── Linked sessions ─────────────────────────────────────────
   const linkedSessions = sessions.filter((s) =>
@@ -64,10 +71,10 @@ export function useTaskWorkspace(
   const refresh = useCallback(async () => {
     await Promise.all([
       reloadEnriched(),
-      refetchTodos(),
+      refetchChecklistItems(),
       sched.reload(),
     ]);
-  }, [reloadEnriched, refetchTodos, sched.reload]);
+  }, [reloadEnriched, refetchChecklistItems, sched.reload]);
 
   return {
     // Enrichment
@@ -79,13 +86,13 @@ export function useTaskWorkspace(
     schedDetail,
     // Notes
     notes,
-    // Todos
-    todos,
-    createTodoMutation,
-    onTodoUpdate,
-    onTodoDelete,
-    newTodoText,
-    setNewTodoText,
+    // Checklist items
+    checklistItems,
+    createChecklistItemMutation,
+    onChecklistItemUpdate,
+    onChecklistItemDelete,
+    newChecklistItemText,
+    setNewChecklistItemText,
     // Sessions
     linkedSessions,
     // Tags

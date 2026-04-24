@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { describeHomeTodoIndicator, getHomeTodoIndicator } from "./todo-helpers";
+import { describeHomeChecklistIndicator, getHomeChecklistIndicator } from "./checklist-helpers";
 
-describe("getHomeTodoIndicator", () => {
+describe("getHomeChecklistIndicator", () => {
   const today = new Date(2026, 3, 21, 12, 0, 0);
 
-  it("returns none when there are no due-today or overdue open todos", () => {
-    const indicator = getHomeTodoIndicator([
+  it("returns none when there are no due-today or overdue open checklist items", () => {
+    const indicator = getHomeChecklistIndicator([
       { deadline: "2026-04-22" },
       { deadline: "2026-04-25" },
       { deadline: undefined },
@@ -19,8 +19,8 @@ describe("getHomeTodoIndicator", () => {
     });
   });
 
-  it("returns due-today when open todos are due today", () => {
-    const indicator = getHomeTodoIndicator([
+  it("returns due-today when open checklist items are due today", () => {
+    const indicator = getHomeChecklistIndicator([
       { deadline: "2026-04-21" },
       { deadline: "2026-04-21" },
       { deadline: "2026-04-22" },
@@ -32,11 +32,11 @@ describe("getHomeTodoIndicator", () => {
       overdueCount: 0,
       urgentCount: 2,
     });
-    expect(describeHomeTodoIndicator(indicator)).toBe("2 to-dos due today");
+    expect(describeHomeChecklistIndicator(indicator)).toBe("2 checklist items due today");
   });
 
-  it("returns overdue when any open todo is overdue", () => {
-    const indicator = getHomeTodoIndicator([
+  it("returns overdue when any open checklist item is overdue", () => {
+    const indicator = getHomeChecklistIndicator([
       { deadline: "2026-04-19" },
       { deadline: "2026-04-21" },
       { deadline: "2026-04-20", done: true },
@@ -48,6 +48,6 @@ describe("getHomeTodoIndicator", () => {
       overdueCount: 1,
       urgentCount: 2,
     });
-    expect(describeHomeTodoIndicator(indicator)).toBe("1 overdue to-do");
+    expect(describeHomeChecklistIndicator(indicator)).toBe("1 overdue checklist item");
   });
 });

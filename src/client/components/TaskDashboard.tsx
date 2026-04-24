@@ -33,7 +33,7 @@ import {
 import {
   WorkItemList,
   PullRequestList,
-  TaskTodoSection,
+  TaskChecklistSection,
   TaskNotesSection,
   RelatedDocsSection,
   ScheduleSection,
@@ -104,8 +104,8 @@ export default function TaskDashboard({
     enrichedWIs, enrichedPRs,
     sched, schedDetail,
     notes,
-    todos, createTodoMutation, onTodoUpdate, onTodoDelete,
-    newTodoText, setNewTodoText,
+    checklistItems, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
+    newChecklistItemText, setNewChecklistItemText,
     linkedSessions,
     taskOwnTags, taskGroup: group, inheritedTagIds, effectiveTags,
     relatedDocs,
@@ -127,8 +127,8 @@ export default function TaskDashboard({
     return latest;
   }, [task.updatedAt, linkedSessions]);
 
-  const openTodos = todos.filter((t) => !t.done);
-  const doneTodos = todos.filter((t) => t.done);
+  const openChecklistItems = checklistItems.filter((t) => !t.done);
+  const completedChecklistItems = checklistItems.filter((t) => t.done);
 
   return (
     <div className="flex-1 min-h-0 relative">
@@ -297,19 +297,19 @@ export default function TaskDashboard({
 
           {/* ── Right Column ─────────────────────────────── */}
           <div className="space-y-6">
-            {/* Todos */}
+            {/* Checklist */}
             <Section
               icon={<CheckSquare size={14} />}
               title="Checklist"
-              count={todos.length > 0 ? `${doneTodos.length}/${todos.length}` : undefined}
+              count={checklistItems.length > 0 ? `${completedChecklistItems.length}/${checklistItems.length}` : undefined}
             >
-              <TaskTodoSection
-                todos={todos}
-                newTodoText={newTodoText}
-                onNewTodoTextChange={setNewTodoText}
-                onCreateTodo={async (text) => { await createTodoMutation.mutateAsync({ text }); }}
-                onTodoUpdate={onTodoUpdate}
-                onTodoDelete={(id) => onTodoDelete(id)}
+              <TaskChecklistSection
+                checklistItems={checklistItems}
+                newChecklistItemText={newChecklistItemText}
+                onNewChecklistItemTextChange={setNewChecklistItemText}
+                onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
+                onChecklistItemUpdate={onChecklistItemUpdate}
+                onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
                 variant="card"
               />
             </Section>

@@ -42,7 +42,7 @@ describe("SessionManager self-renaming", () => {
       sessionMetaStore: {} as any,
       sessionTitles,
       readStateStore: {} as any,
-      todoStore: {} as any,
+      checklistStore: {} as any,
       tagStore: undefined,
       telemetryStore: undefined,
       docsStore: undefined,

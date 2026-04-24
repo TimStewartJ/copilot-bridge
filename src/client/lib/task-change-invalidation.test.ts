@@ -13,8 +13,8 @@ describe("invalidateTaskChangeQueries", () => {
 
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openTodos });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskTodos("task-123") });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openChecklistItems });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
 
     const predicate = invalidateQueries.mock.calls
       .map(([filters]) => filters?.predicate)
@@ -23,7 +23,7 @@ describe("invalidateTaskChangeQueries", () => {
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-999") })).toBe(false);
-    expect(predicate?.({ queryKey: queryKeys.taskTodos("task-123") })).toBe(false);
+    expect(predicate?.({ queryKey: queryKeys.taskChecklistItems("task-123") })).toBe(false);
   });
 
   it("skips task-scoped invalidation when the change is not tied to a task", () => {
@@ -34,7 +34,7 @@ describe("invalidateTaskChangeQueries", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(3);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: queryKeys.dashboard });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.openTodos });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.openChecklistItems });
   });
 });
 
@@ -55,8 +55,8 @@ describe("createDeferredTaskChangeInvalidator", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(5);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: queryKeys.dashboard });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.openTodos });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.taskTodos("task-123") });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.openChecklistItems });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.taskChecklistItems("task-123") });
 
     const predicate = invalidateQueries.mock.calls[4]?.[0]?.predicate;
     expect(predicate).toBeTypeOf("function");
@@ -75,6 +75,6 @@ describe("createDeferredTaskChangeInvalidator", () => {
     expect(invalidateQueries).not.toHaveBeenCalled();
 
     invalidator.endTaskMutation();
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskTodos("task-123") });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
   });
 });

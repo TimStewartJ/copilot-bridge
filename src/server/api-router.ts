@@ -1330,57 +1330,57 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  // ── Todo routes ──────────────────────────────────────────────────
+  // ── Checklist routes ─────────────────────────────────────────────
 
-  router.get("/tasks/:taskId/todos", (req, res) => {
-    res.json({ todos: ctx.todoStore.listTodos(req.params.taskId) });
+  router.get("/tasks/:taskId/checklist-items", (req, res) => {
+    res.json({ checklistItems: ctx.checklistStore.listChecklistItems(req.params.taskId) });
   });
 
-  router.post("/tasks/:taskId/todos", (req, res) => {
+  router.post("/tasks/:taskId/checklist-items", (req, res) => {
     const { text, deadline } = req.body;
     if (!text) return res.status(400).json({ error: "text is required" });
     try {
-      const todo = ctx.todoStore.createTodo(req.params.taskId, text, deadline);
-      res.json({ todo });
+      const checklistItem = ctx.checklistStore.createChecklistItem(req.params.taskId, text, deadline);
+      res.json({ checklistItem });
     } catch (err) {
       res.status(404).json({ error: String(err) });
     }
   });
 
-  router.post("/todos", (req, res) => {
+  router.post("/checklist-items", (req, res) => {
     const { text, deadline } = req.body;
     if (!text) return res.status(400).json({ error: "text is required" });
     try {
-      const todo = ctx.todoStore.createTodo(null, text, deadline);
-      res.json({ todo });
+      const checklistItem = ctx.checklistStore.createChecklistItem(null, text, deadline);
+      res.json({ checklistItem });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
   });
 
-  router.patch("/todos/:id", (req, res) => {
+  router.patch("/checklist-items/:id", (req, res) => {
     try {
-      const todo = ctx.todoStore.updateTodo(req.params.id, req.body);
-      res.json({ todo });
+      const checklistItem = ctx.checklistStore.updateChecklistItem(req.params.id, req.body);
+      res.json({ checklistItem });
     } catch (err) {
       res.status(404).json({ error: String(err) });
     }
   });
 
-  router.delete("/todos/:id", (req, res) => {
-    ctx.todoStore.deleteTodo(req.params.id);
+  router.delete("/checklist-items/:id", (req, res) => {
+    ctx.checklistStore.deleteChecklistItem(req.params.id);
     res.json({ ok: true });
   });
 
-  router.put("/tasks/:taskId/todos/reorder", (req, res) => {
-    const { todoIds } = req.body;
-    if (!Array.isArray(todoIds)) return res.status(400).json({ error: "todoIds array is required" });
-    const todos = ctx.todoStore.reorderTodos(req.params.taskId, todoIds);
-    res.json({ todos });
+  router.put("/tasks/:taskId/checklist-items/reorder", (req, res) => {
+    const { checklistItemIds } = req.body;
+    if (!Array.isArray(checklistItemIds)) return res.status(400).json({ error: "checklistItemIds array is required" });
+    const checklistItems = ctx.checklistStore.reorderChecklistItems(req.params.taskId, checklistItemIds);
+    res.json({ checklistItems });
   });
 
-  router.get("/todos/open", (_req, res) => {
-    res.json({ todos: ctx.todoStore.listAllOpen() });
+  router.get("/checklist-items/open", (_req, res) => {
+    res.json({ checklistItems: ctx.checklistStore.listAllOpenChecklistItems() });
   });
 
   // ── Read State routes ─────────────────────────────────────────────
@@ -1524,17 +1524,22 @@ export function createApiRouter(ctx: AppContext): express.Router {
           sessionById.get(sid)?.busy,
         );
 
-        // Todo summary
-        const todos = ctx.todoStore.listTodos(task.id);
-        const todoDone = todos.filter((t) => t.done).length;
+        // Checklist summary
+        const checklistItems = ctx.checklistStore.listChecklistItems(task.id);
+        const checklistDone = checklistItems.filter((t) => t.done).length;
         const today = new Date().toISOString().slice(0, 10);
-        const todoOverdue = todos.filter((t) => !t.done && t.deadline && t.deadline < today).length;
+        const checklistOverdue = checklistItems.filter((t) => !t.done && t.deadline && t.deadline < today).length;
 
         return {
           task,
           workItemSummary: { total: task.workItems.length, byState },
           prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted },
-          todoSummary: { total: todos.length, done: todoDone, open: todos.length - todoDone, overdue: todoOverdue },
+          checklistSummary: {
+            total: checklistItems.length,
+            done: checklistDone,
+            open: checklistItems.length - checklistDone,
+            overdue: checklistOverdue,
+          },
           hasUnread,
           hasBusySession,
           lastActivity,
@@ -1570,11 +1575,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
           unread: isUnread(s.sessionId, s.lastVisibleActivityAt),
         }));
 
-      // Open todos across all active tasks and global todos
+      // Open checklist items across all active tasks and global checklist items
       const taskGroups = ctx.taskGroupStore.listGroups();
-      const enrichTodo = (todo: ReturnType<typeof ctx.todoStore.listAllOpen>[number]) => {
-        const task = todo.taskId ? tasks.find((t) => t.id === todo.taskId) : null;
-        const taskTitle = task?.title ?? (todo.taskId ? "Unknown" : null);
+      const enrichChecklistItem = (checklistItem: ReturnType<typeof ctx.checklistStore.listAllOpenChecklistItems>[number]) => {
+        const task = checklistItem.taskId ? tasks.find((t) => t.id === checklistItem.taskId) : null;
+        const taskTitle = task?.title ?? (checklistItem.taskId ? "Unknown" : null);
         const taskGroupColor = task?.groupId
           ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
           : null;
@@ -1584,13 +1589,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const taskGroupOrder = taskGroupId
           ? taskGroups.find((g) => g.id === taskGroupId)?.order ?? null
           : null;
-        return { ...todo, taskTitle, taskGroupColor, taskOrder, taskStatus, taskGroupId, taskGroupOrder };
+        return { ...checklistItem, taskTitle, taskGroupColor, taskOrder, taskStatus, taskGroupId, taskGroupOrder };
       };
 
-      const openTodos = ctx.todoStore.listAllOpen().map(enrichTodo);
+      const openChecklistItems = ctx.checklistStore.listAllOpenChecklistItems().map(enrichChecklistItem);
 
-      // Recently completed todos
-      const completedTodos = ctx.todoStore.listRecentlyCompleted().map(enrichTodo);
+      // Recently completed checklist items
+      const completedChecklistItems = ctx.checklistStore.listRecentlyCompletedChecklistItems().map(enrichChecklistItem);
 
       // Active schedules
       const allSchedules = ctx.scheduleStore.listSchedules();
@@ -1610,8 +1615,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         unreadSessions,
         lastActiveTask,
         orphanSessions,
-        openTodos,
-        completedTodos,
+        openChecklistItems,
+        completedChecklistItems,
         schedules: dashboardSchedules,
       });
       ctx.telemetryStore?.recordSpan({ name: "dashboard", duration: Date.now() - t0, source: "server" });

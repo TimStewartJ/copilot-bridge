@@ -35,7 +35,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
-import type { TodoStore } from "./todo-store.js";
+import type { ChecklistStore } from "./checklist-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
@@ -460,9 +460,9 @@ export function createBridgeTools(ctx: AppContext) {
     return tag ? ok(tag) : err(`Tag ${tagId} not found`);
   };
 
-  const ensureTodo = (todoId: string): Result<NonNullable<ReturnType<TodoStore["getTodo"]>>> => {
-    const todo = ctx.todoStore.getTodo(todoId);
-    return todo ? ok(todo) : err(`Todo ${todoId} not found`);
+  const ensureChecklistItem = (checklistItemId: string): Result<NonNullable<ReturnType<ChecklistStore["getChecklistItem"]>>> => {
+    const checklistItem = ctx.checklistStore.getChecklistItem(checklistItemId);
+    return checklistItem ? ok(checklistItem) : err(`Checklist item ${checklistItemId} not found`);
   };
 
   const normalizeDocsToolFailure = (error: unknown) => toolFailure(error instanceof Error ? error.message : String(error));
@@ -548,8 +548,11 @@ export function createBridgeTools(ctx: AppContext) {
     handler: async (args: any) => {
       const task = ensureTask(args.taskId);
       if (!task.ok) return toolFailure(task.error);
-      const todos = ctx.todoStore.listTodos(args.taskId);
-      return { ...task.value, todos: todos.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })) };
+      const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
+      return {
+        ...task.value,
+        checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),
+      };
     },
   }),
   defineTool("task_list", {
@@ -672,53 +675,57 @@ export function createBridgeTools(ctx: AppContext) {
       return { success: true, message: "Tag deleted" };
     },
   }),
-  // ── Todo tools ────────────────────────────────────────────────
-  defineTool("todo_add", {
-    description: "Add a to-do item to a task's checklist, or create a global to-do if no taskId is provided",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID. Omit to create a global (unparented) to-do item." }, text: { type: "string", description: "The to-do text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
+  // ── Checklist tools ───────────────────────────────────────────
+  defineTool("checklist_add", {
+    description: "Add a checklist item to a task's checklist, or create a global checklist item if no taskId is provided",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID. Omit to create a global (unparented) checklist item." }, text: { type: "string", description: "The checklist item text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
     handler: async (args: any) => {
       if (args.taskId !== undefined && args.taskId !== null) {
         const task = ensureTask(args.taskId);
         if (!task.ok) return toolFailure(task.error);
       }
-      const todo = ctx.todoStore.createTodo(args.taskId ?? null, args.text, args.deadline);
-      return { success: true, message: `Todo added: "${todo.text}"${todo.deadline ? ` (due ${todo.deadline})` : ""}`, todoId: todo.id };
-    },
-  }),
-  defineTool("todo_list", {
-    description: "List all to-do items for a task",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
-    handler: async (args: any) => {
-      const todos = ctx.todoStore.listTodos(args.taskId);
-      const today = new Date().toISOString().slice(0, 10);
+      const checklistItem = ctx.checklistStore.createChecklistItem(args.taskId ?? null, args.text, args.deadline);
       return {
-        todos: todos.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null, isOverdue: !t.done && !!t.deadline && t.deadline < today })),
-        total: todos.length,
-        done: todos.filter((t) => t.done).length,
+        success: true,
+        message: `Checklist item added: "${checklistItem.text}"${checklistItem.deadline ? ` (due ${checklistItem.deadline})` : ""}`,
+        checklistItemId: checklistItem.id,
       };
     },
   }),
-  defineTool("todo_update", {
-    description: "Update a to-do item's text, done status, or deadline",
-    parameters: { type: "object", properties: { todoId: { type: "string", description: "The to-do item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: "string", description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["todoId"] },
+  defineTool("checklist_list", {
+    description: "List all checklist items for a task",
+    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
+    handler: async (args: any) => {
+      const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
+      const today = new Date().toISOString().slice(0, 10);
+      return {
+        checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null, isOverdue: !t.done && !!t.deadline && t.deadline < today })),
+        total: checklistItems.length,
+        done: checklistItems.filter((t) => t.done).length,
+      };
+    },
+  }),
+  defineTool("checklist_update", {
+    description: "Update a checklist item's text, done status, or deadline",
+    parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: "string", description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
       const updates: Record<string, any> = {};
       if (args.text !== undefined) updates.text = args.text;
       if (args.done !== undefined) updates.done = args.done;
       if (args.deadline !== undefined) updates.deadline = args.deadline || undefined;
       if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: text, done, deadline");
-      const todo = ensureTodo(args.todoId);
-      if (!todo.ok) return toolFailure(todo.error);
-      const updatedTodo = ctx.todoStore.updateTodo(args.todoId, updates);
-      return { success: true, message: `Todo ${args.done ? "completed" : "updated"}: "${updatedTodo.text}"` };
+      const checklistItem = ensureChecklistItem(args.checklistItemId);
+      if (!checklistItem.ok) return toolFailure(checklistItem.error);
+      const updatedChecklistItem = ctx.checklistStore.updateChecklistItem(args.checklistItemId, updates);
+      return { success: true, message: `Checklist item ${args.done ? "completed" : "updated"}: "${updatedChecklistItem.text}"` };
     },
   }),
-  defineTool("todo_remove", {
-    description: "Remove a to-do item from a task's checklist",
-    parameters: { type: "object", properties: { todoId: { type: "string", description: "The to-do item ID" } }, required: ["todoId"] },
+  defineTool("checklist_remove", {
+    description: "Remove a checklist item from a task's checklist",
+    parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
-      ctx.todoStore.deleteTodo(args.todoId);
-      return { success: true, message: "Todo removed" };
+      ctx.checklistStore.deleteChecklistItem(args.checklistItemId);
+      return { success: true, message: "Checklist item removed" };
     },
   }),
   defineTool("session_rename", {
@@ -1352,7 +1359,7 @@ export interface SessionManagerDeps {
   sessionTitles: SessionTitlesStore;
   taskStore: TaskStore;
   taskGroupStore?: TaskGroupStore;
-  todoStore?: TodoStore;
+  checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
   docsIndex?: DocsIndex;
@@ -1395,7 +1402,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     sessionTitles: ctx.sessionTitles,
     taskStore: ctx.taskStore,
     taskGroupStore: ctx.taskGroupStore,
-    todoStore: ctx.todoStore,
+    checklistStore: ctx.checklistStore,
     settingsStore: ctx.settingsStore,
     tagStore: ctx.tagStore,
     docsIndex: ctx.docsIndex,
@@ -1735,10 +1742,10 @@ export class SessionManager {
       if (groupNotes?.notes?.trim()) {
         contextParts.push(`Group notes (from task group "${groupNotes.groupName}" that this task belongs to):\n${groupNotes.notes}`);
       }
-      const todos = this.deps.todoStore?.listTodos(task.id) ?? [];
-      if (todos.length > 0) {
+      const checklistItems = this.deps.checklistStore?.listChecklistItems(task.id) ?? [];
+      if (checklistItems.length > 0) {
         const today = new Date().toISOString().slice(0, 10);
-        const todoLines = todos.map((t: any) => {
+        const checklistItemLines = checklistItems.map((t: any) => {
           let line = `- [${t.done ? "x" : " "}] ${t.text} [id: ${t.id}]`;
           if (t.deadline) {
             const overdue = !t.done && t.deadline < today;
@@ -1746,7 +1753,7 @@ export class SessionManager {
           }
           return line;
         }).join("\n");
-        contextParts.push(`Task checklist:\n${todoLines}`);
+        contextParts.push(`Task checklist:\n${checklistItemLines}`);
       }
     }
 

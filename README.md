@@ -13,28 +13,28 @@ The seeded demo opens into a fictional Acme launch workspace so the first-run ex
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/readme/task-workspace.png" alt="Task workspace showing notes, todos, schedules, and related context" />
+      <img src="assets/readme/task-workspace.png" alt="Task workspace showing notes, checklist items, schedules, and related context" />
     </td>
     <td width="50%">
       <img src="assets/readme/docs-launch-notes.png" alt="Docs collection showing the seeded launch notes database" />
     </td>
   </tr>
   <tr>
-    <td><strong>Task workspace</strong> — notes, todos, schedules, and linked context stay attached to the work.</td>
+    <td><strong>Task workspace</strong> — notes, checklist items, schedules, and linked context stay attached to the work.</td>
     <td><strong>Docs collection</strong> — markdown pages and database-style collections live in the same workspace.</td>
   </tr>
 </table>
 
 ## Why It Is Interesting
 
-- **Task-centric instead of chat-centric** - sessions live next to notes, todos, schedules, docs, and linked work.
+- **Task-centric instead of chat-centric** - sessions live next to notes, checklist items, schedules, docs, and linked work.
 - **Persistent local workspace** - SQLite-backed app state plus a markdown knowledge base means work survives restarts and browser refreshes.
-- **Large tool surface** - the agent can manage tasks, tags, todos, docs, schedules, browser sessions, web search, and optional desktop automation from inside the same workspace.
+- **Large tool surface** - the agent can manage tasks, tags, checklist items, docs, schedules, browser sessions, web search, and optional desktop automation from inside the same workspace.
 - **Built to improve itself** - launcher-managed restart, update, staging preview, and rollback flows make local self-iteration practical.
 
 ## What It Does
 
-- **Task workspace** - tasks, task groups, tags, notes, todos, linked sessions, linked work items, linked pull requests, and task dashboards.
+- **Task workspace** - tasks, task groups, tags, notes, checklist items, linked sessions, linked work items, linked pull requests, and task dashboards.
 - **Persistent Copilot sessions** - quick chats and task-scoped chats with SSE streaming, tool call indicators, unread state, drafts, and archive support.
 - **Knowledge base** - markdown pages, wikilinks, preview sheets, and database-style collections for structured notes.
 - **Schedules** - cron or one-shot prompts that can create a fresh session or reuse an existing one.
@@ -122,7 +122,7 @@ If you are opening the bridge for the first time, keep it simple:
 1. Run `npm run demo:start` if you want the guided sample workspace, or `npm run dev` if you want a blank workspace.
 2. Go to **Settings** and pick your model, reasoning effort, theme, and favicon.
 3. Skip Azure DevOps/GitHub/Linear setup for now if you just want a clean local demo.
-4. Create a task, add a todo and a note, then start a task session.
+4. Create a task, add a checklist item and a note, then start a task session.
 5. Open **Docs** and create a page or collection entry to exercise the knowledge base.
 6. Ask the agent to do something bridge-native, like create a schedule, rename the session, or search the web.
 
@@ -231,7 +231,7 @@ src/
 │   ├── session-manager.ts         # Copilot SDK wrapper + tool registry
 │   ├── db.ts                      # SQLite schema/bootstrap
 │   ├── task-store.ts              # Tasks, links, ordering
-│   ├── todo-store.ts              # Task/global todos
+│   ├── checklist-store.ts         # Task/global checklist items
 │   ├── schedule-store.ts          # Scheduled sessions
 │   ├── docs-store.ts              # Markdown knowledge base
 │   ├── settings-store.ts          # App settings + MCP registry
