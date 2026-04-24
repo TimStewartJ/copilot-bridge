@@ -1,5 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearRestartPending, RESTART_PENDING_MESSAGE, triggerRestartPending } from "../session-manager.js";
+import { mkdtempSync } from "node:fs";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  clearRestartPending,
+  configureRestartStateStore,
+  isRestartPending,
+  refreshRestartState,
+  RESTART_PENDING_MESSAGE,
+  triggerRestartPending,
+} from "../session-manager.js";
+import { writeRestartState } from "../restart-state.js";
 import * as scheduler from "../scheduler.js";
 import { computeNextRunAt, matchesCron, matchesField } from "../scheduler.js";
 import { createTestApp } from "./helpers.js";
@@ -139,6 +151,60 @@ describe("scheduler restart gating", () => {
     expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
     expect(sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it("skips triggering schedules when restart is pending with waiting sessions", async () => {
+    // This verifies the change from isRestartImminent (only when waitingSessions=0) to
+    // isRestartPending (any non-idle phase), so schedules are blocked even during the
+    // waiting-for-sessions phase.
+    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const { ctx } = createTestApp();
+    try {
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir: tempDir, env: process.env });
+      await writeRestartState(join(tempDir, "restart-state.json"), {
+        requestId: "req-waiting",
+        phase: "waiting-for-sessions",
+        requestedAt: new Date().toISOString(),
+        waitingSessions: 2,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+      if (!isRestartPending()) {
+        throw new Error(`BUG in test setup: isRestartPending() still false after refreshRestartState()`);
+      }
+
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Waiting-sessions gated schedule",
+        prompt: "run now",
+        type: "cron",
+        cron: "0 0 * * *",
+      });
+
+      const result = await scheduler.triggerSchedule(schedule.id);
+
+      expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
+      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+    } finally {
+      clearRestartPending();
+      configureRestartStateStore(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("rolls back a newly created schedule session if restart pending flips before startWork", async () => {

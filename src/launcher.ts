@@ -11,12 +11,23 @@ import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log
 import { killProcessTree as platformKillTree } from "./server/platform.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
+import {
+  clearRestartState,
+  readRestartState,
+  writeRestartState,
+} from "./server/restart-state.js";
 import { canUseDevtunnelCli, getDevtunnelCliStatus } from "./server/tunnel.js";
 import {
   clearPersistentRollbackFailureState,
   hasPersistentRollbackFailureState,
   markPersistentRollbackFailureState,
 } from "./launcher-rollback-state.js";
+import {
+  buildRestartingState,
+  buildRestartingWaitingState,
+  buildWaitingState,
+  type RestartPickupInfo,
+} from "./launcher-restart-state-ops.js";
 import {
   didRestartRecover,
   resolveRollbackRecoveryOutcome,
@@ -43,6 +54,7 @@ const ROOT = join(__dirname, "..");
 const NODE_PATH = process.execPath; // use the same node binary that's running the launcher
 const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
+const RESTART_STATE_FILE = join(ROOT, "data", "restart-state.json");
 const PRE_DEPLOY_SHA_FILE = join(ROOT, "data", "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(ROOT, "data", "rollback-required");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
@@ -219,6 +231,30 @@ function clearRollbackCheckpointAfterHealthyState() {
   clearRollbackCheckpoint(PRE_DEPLOY_SHA_FILE);
 }
 
+/** Read existing queued state to preserve requestId / requestedAt for continuity. */
+async function readRestartPickupInfo(): Promise<RestartPickupInfo> {
+  const state = await readRestartState(RESTART_STATE_FILE);
+  return { requestId: state.requestId, requestedAt: state.requestedAt };
+}
+
+/** Write restart state without throwing — state writes are monitoring aids, not critical path. */
+async function safeWriteRestartState(state: Parameters<typeof writeRestartState>[1]): Promise<void> {
+  try {
+    await writeRestartState(RESTART_STATE_FILE, state);
+  } catch (err) {
+    log(`Failed to write restart state (non-fatal): ${err}`);
+  }
+}
+
+/** Clear restart state without throwing. */
+async function safeClearRestartState(): Promise<void> {
+  try {
+    await clearRestartState(RESTART_STATE_FILE);
+  } catch (err) {
+    log(`Failed to clear restart state (non-fatal): ${err}`);
+  }
+}
+
 async function processRestartSignal(): Promise<void> {
   if (restarting || shuttingDown) return;
   restarting = true;
@@ -227,6 +263,7 @@ async function processRestartSignal(): Promise<void> {
     restartOutcome = await restart();
   } finally {
     clearSignal();
+    await safeClearRestartState();
     restarting = false;
     if (didRestartRecover(restartOutcome)) {
       clearFailedRollbackState();
@@ -497,7 +534,7 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
   return exited;
 }
 
-async function waitForIdleSessions(): Promise<boolean> {
+async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
   const busyUrl = `http://localhost:${PORT}/api/busy`;
   return waitForIdleSessionsImpl({
     fetchBusy: async () => {
@@ -511,6 +548,7 @@ async function waitForIdleSessions(): Promise<boolean> {
     busyCheckInterval: BUSY_CHECK_INTERVAL,
     busyWaitTimeout: BUSY_WAIT_TIMEOUT,
     staleThreshold: STALE_THRESHOLD,
+    onWaiting,
   });
 }
 
@@ -548,7 +586,19 @@ async function restart(): Promise<RestartOutcome> {
   log("═══ Restart requested ═══");
   const hadRunningServerAtStart = serverProcess !== null;
 
-  await waitForIdleSessions();
+  // Preserve requestId / requestedAt from the queued state written by the server.
+  const pickupInfo = await readRestartPickupInfo();
+
+  // Transition: queued → waiting-for-sessions
+  await safeWriteRestartState(buildWaitingState(pickupInfo, 0, new Date().toISOString()));
+
+  // First session wait — refresh waitingSessions + launcherHeartbeatAt on every busy check.
+  await waitForIdleSessions(async (count) => {
+    await safeWriteRestartState(buildWaitingState(pickupInfo, count, new Date().toISOString()));
+  });
+
+  // Transition: waiting-for-sessions → restarting (build / shutdown / swap begins now)
+  await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
 
   if (!build()) {
     log("Build failed — rolling back");
@@ -602,7 +652,11 @@ async function restart(): Promise<RestartOutcome> {
     return "recovered-via-rollback";
   }
 
-  await waitForIdleSessions();
+  // Second session wait (new sessions that started during the build) — still in "restarting".
+  await waitForIdleSessions(async (count) => {
+    await safeWriteRestartState(buildRestartingWaitingState(pickupInfo, count, new Date().toISOString()));
+  });
+
   const stopped = await gracefulStopServer();
   if (!stopped) {
     log("❌ Existing server did not exit after force kill — aborting restart");

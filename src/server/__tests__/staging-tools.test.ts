@@ -17,6 +17,7 @@ type ToolInvocation = {
 
 const execSyncMock = vi.hoisted(() => vi.fn<(cmd: string, options?: { cwd?: string }) => string>(() => ""));
 const triggerRestartPendingMock = vi.fn();
+const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
 const dependencySyncHashMock = vi.fn(() => "same-hash");
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
@@ -99,6 +100,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 vi.mock("../session-manager.js", () => ({
   triggerRestartPending: triggerRestartPendingMock,
+  isRestartPending: isRestartPendingMock,
 }));
 
 vi.mock("../dependency-sync.js", () => ({
@@ -165,6 +167,8 @@ afterEach(() => {
     rmSync(STAGING_DIST_PARENT, { recursive: true, force: true });
   }
   triggerRestartPendingMock.mockReset();
+  isRestartPendingMock.mockReset();
+  isRestartPendingMock.mockReturnValue(false);
   dependencySyncHashMock.mockReset();
   dependencySyncHashMock.mockReturnValue("same-hash");
   existsSyncOverrideMock.mockReset();
@@ -434,6 +438,34 @@ describe("staging tools", () => {
     expect(commands.some((cmd) => cmd.startsWith("git diff "))).toBe(true);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "deps-hash"))).toBe(false);
+  });
+
+  it("rejects staging_deploy when restart is already pending via restart state", async () => {
+    isRestartPendingMock.mockReturnValue(true);
+    mockDataFilePresence({ restartSignal: false });
+
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Should be rejected" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    );
+
+    expect(result.resultType).toBe("failure");
+    expect(result.textResultForLlm).toContain("A restart is already pending");
+    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
   });
 
   it("preserves an existing rollback checkpoint during deploy", async () => {

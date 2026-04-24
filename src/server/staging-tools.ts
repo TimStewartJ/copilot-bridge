@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
-import { triggerRestartPending } from "./session-manager.js";
+import { isRestartPending, triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
 import { config } from "./config.js";
@@ -1296,7 +1296,7 @@ export const STAGING_TOOLS = [
         );
       }
 
-      if (existsSync(SIGNAL_FILE)) {
+      if (isRestartPending() || existsSync(SIGNAL_FILE)) {
         return stagingFailure(
           "A restart is already pending.",
           "A restart is already pending. Wait for it to complete before deploying.",
@@ -1482,8 +1482,8 @@ export const STAGING_TOOLS = [
       // Signal launcher to restart
       const dataDir = join(PRODUCTION_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-      writeFileSync(SIGNAL_FILE, new Date().toISOString());
       triggerRestartPending();
+      writeFileSync(SIGNAL_FILE, new Date().toISOString());
       log("Restart signal sent");
 
       // Cleanup staging worktree and branch (best-effort — deploy already succeeded)

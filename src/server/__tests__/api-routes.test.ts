@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AppContext } from "../app-context.js";
 import { publishOutboundAttachment } from "../outbound-attachments.js";
-import { clearRestartPending, RESTART_PENDING_MESSAGE, triggerRestartPending } from "../session-manager.js";
+import { writeRestartState } from "../restart-state.js";
+import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
 import * as providers from "../providers/index.js";
 import { createMockSessionManager, createMockTranscriptionService, createTestApp } from "./helpers.js";
@@ -30,6 +31,7 @@ const ORIGINAL_TRANSCRIPTION_ENV = Object.fromEntries(
 ) as Record<(typeof TRANSCRIPTION_ENV_KEYS)[number], string | undefined>;
 const COPILOT_USAGE_TEST_ROOT = join(process.cwd(), "data", "test-api-copilot-usage");
 const copilotUsageTestDirs: string[] = [];
+const restartStateTestDirs: string[] = [];
 
 function createCopilotUsageTestHome(options?: { dotDir?: boolean }): string {
   const rootDir = join(COPILOT_USAGE_TEST_ROOT, randomUUID());
@@ -76,7 +78,27 @@ afterEach(() => {
   for (const dir of copilotUsageTestDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+  for (const dir of restartStateTestDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
+
+function createRestartRuntimePaths() {
+  const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-data-"));
+  const docsDir = mkdtempSync(join(tmpdir(), "bridge-restart-docs-"));
+  restartStateTestDirs.push(dataDir, docsDir);
+  return {
+    demoMode: false,
+    dataDir,
+    docsDir,
+    env: {
+      ...process.env,
+      BRIDGE_DEMO_MODE: "false",
+      BRIDGE_DATA_DIR: dataDir,
+      BRIDGE_DOCS_DIR: docsDir,
+    },
+  };
+}
 
 describe("Shutdown route", () => {
   it("POST /api/shutdown pauses scheduling until sessions drain, then shuts the scheduler down", async () => {
@@ -242,6 +264,47 @@ describe("Status stream", () => {
       });
 
       expect(body).toContain('data: {"type":"session:stalled","sessionId":"session-123"}');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("GET /api/status-stream seeds restart-pending from persisted restart state", async () => {
+    const runtimePaths = createRestartRuntimePaths();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "req-status-stream",
+      phase: "waiting-for-sessions",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      waitingSessions: 2,
+      launcherHeartbeatAt: null,
+    });
+    ({ app, ctx } = createTestApp({ runtimePaths }));
+
+    const server = app.listen(0);
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Unable to determine test server port");
+
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = get(`http://127.0.0.1:${address.port}/api/status-stream`, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            text += chunk;
+            if (text.includes('"type":"server:restart-pending","waitingSessions":2')) {
+              req.destroy();
+              resolve(text);
+            }
+          });
+          res.on("error", reject);
+        });
+        req.on("error", (error: NodeJS.ErrnoException) => {
+          if (error.code === "ECONNRESET") return;
+          reject(error);
+        });
+      });
+
+      expect(body).toContain('data: {"type":"server:restart-pending","waitingSessions":2}');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
@@ -1595,11 +1658,18 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/chat rejects new work when restart is imminent (no active sessions)", async () => {
+  it("POST /api/chat rejects new work when restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    triggerRestartPending();
+    const runtimePaths = createRestartRuntimePaths();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "req-chat-gating",
+      phase: "waiting-for-sessions",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      waitingSessions: 2,
+      launcherHeartbeatAt: null,
+    });
+    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
 
     const res = await request(app)
       .post("/api/chat")

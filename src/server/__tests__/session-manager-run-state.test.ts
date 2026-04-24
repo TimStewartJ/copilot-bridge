@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionManager } from "../session-manager.js";
+import { writeRestartState } from "../restart-state.js";
+import { SessionManager, RESTART_PENDING_MESSAGE, configureRestartStateStore, refreshRestartState } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
@@ -79,6 +80,46 @@ describe("SessionManager run state", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("blocks startWork while persisted restart state is active even before restart is imminent", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
+    try {
+      const { manager } = createManager({
+        copilotHome,
+      });
+      manager.client = {
+        resumeSession: vi.fn(),
+      };
+
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: dataDir,
+          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
+        },
+      });
+      await writeRestartState(join(dataDir, "restart-state.json"), {
+        requestId: "req-run-state",
+        phase: "waiting-for-sessions",
+        requestedAt: "2026-04-24T12:00:00.000Z",
+        waitingSessions: 2,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+
+      expect(() => manager.startWork("session-1", "hello")).toThrow(RESTART_PENDING_MESSAGE);
+      expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    } finally {
+      configureRestartStateStore(undefined);
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(copilotHome, { recursive: true, force: true });
+    }
   });
 
   it("transitions busy → stalled → busy → idle from the server run-state model", async () => {
