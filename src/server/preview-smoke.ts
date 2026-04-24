@@ -55,7 +55,7 @@ function findPreviewTool() {
   const tool = STAGING_TOOLS.find((candidate) => candidate.name === "staging_preview");
   assert(tool, "staging_preview tool not found");
   return tool as {
-    handler: (args: { stagingDir: string; profile: "demo" }, invocation?: unknown) => Promise<PreviewResult>;
+    handler: (args: { stagingDir: string; profile: "demo"; validate?: boolean }, invocation?: unknown) => Promise<PreviewResult>;
   };
 }
 
@@ -96,8 +96,32 @@ function assertStagingWorktree(stagingDir: string): void {
   assert.match(branch, /^staging\//, `preview smoke must target a staging/* worktree, got branch ${branch}`);
 }
 
+function parseArgs(argv: string[]): { stagingDir?: string; validate: boolean } {
+  let stagingDir: string | undefined;
+  let validate = false;
+
+  for (const arg of argv) {
+    if (arg === "--validate" || arg === "--full") {
+      validate = true;
+      continue;
+    }
+    if (arg === "--no-validate") {
+      validate = false;
+      continue;
+    }
+    if (!stagingDir) {
+      stagingDir = arg;
+      continue;
+    }
+    throw new Error(`unexpected preview smoke argument: ${arg}`);
+  }
+
+  return { stagingDir, validate };
+}
+
 async function main(): Promise<void> {
-  const stagingDir = resolveStagingDir(process.argv[2]);
+  const { stagingDir: stagingArg, validate } = parseArgs(process.argv.slice(2));
+  const stagingDir = resolveStagingDir(stagingArg);
   assertStagingWorktree(stagingDir);
   const prefix = buildPreviewPrefix(stagingDir, "demo");
   const expectedWorkspace = join(stagingDir, DEMO_DATA_DIRNAME, "workspace");
@@ -105,8 +129,9 @@ async function main(): Promise<void> {
   const previewTool = findPreviewTool();
 
   try {
-    console.log(`[preview-smoke] building demo preview for ${stagingDir}`);
-    const result = await previewTool.handler({ stagingDir, profile: "demo" }, {});
+    const validationNote = validate ? "with validation" : "without validation";
+    console.log(`[preview-smoke] building demo preview ${validationNote} for ${stagingDir}`);
+    const result = await previewTool.handler({ stagingDir, profile: "demo", validate }, {});
     assert.equal(result.success, true, result.error ?? "preview failed");
     assert.equal(result.profile, "demo");
     assert.equal(result.previewPath, `/staging/${prefix}/`);

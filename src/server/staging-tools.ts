@@ -16,6 +16,11 @@ import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
 import { config } from "./config.js";
 import { toolFailure } from "./tool-results.js";
+import {
+  buildCommandFailureOutput,
+  isCommandTimeoutError,
+  writeValidationCommandLog,
+} from "./validation-command-log.js";
 import type { AppContext } from "./app-context.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import type express from "express";
@@ -883,17 +888,41 @@ function run(
     ...process.env,
     PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
   };
+  const startedAt = Date.now();
   try {
     const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs, env });
     return { ok: true, output };
   } catch (err: any) {
-    const output = joinFailureSections(
-      err.stderr || err.stdout || String(err),
-      err.code === "ETIMEDOUT" || err.signal === "SIGTERM"
-        ? `Command timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`
-        : undefined,
-    );
-    return { ok: false, output: output ?? String(err) };
+    const elapsedMs = Date.now() - startedAt;
+    const timedOut = isCommandTimeoutError(err);
+    const rawOutput = err.stderr || err.stdout || String(err);
+    const annotatedOutput = buildCommandFailureOutput({
+      output: rawOutput,
+      elapsedMs,
+      timedOut,
+      timeoutMs,
+    });
+    const logResult = writeValidationCommandLog({
+      rootDir: PRODUCTION_ROOT,
+      source: "staging",
+      command: cmd,
+      cwd,
+      output: annotatedOutput,
+      elapsedMs,
+      timedOut,
+      timeoutMs,
+    });
+    return {
+      ok: false,
+      output: buildCommandFailureOutput({
+        output: rawOutput,
+        elapsedMs,
+        timedOut,
+        timeoutMs,
+        logPath: logResult.path,
+        logWriteError: logResult.error,
+      }),
+    };
   }
 }
 
@@ -1239,12 +1268,17 @@ export const STAGING_TOOLS = [
           enum: ["clone", "demo"],
           description: "Preview data profile. 'clone' copies production-like data; 'demo' seeds the curated demo workspace. Defaults to 'clone'.",
         },
+        validate: {
+          type: "boolean",
+          description: "Run preview validation before building. Defaults to true; preview smoke can pass false after validation has already happened.",
+        },
       },
       required: ["stagingDir"],
     },
     handler: async (args: any) => {
       const { stagingDir } = args;
       const profile = resolvePreviewProfile(args.profile);
+      const shouldValidate = args.validate !== false;
 
       if (!existsSync(stagingDir)) {
         return stagingFailure(
@@ -1269,20 +1303,23 @@ export const STAGING_TOOLS = [
       // Install deps if staging package.json diverged from production
       ensureStagingDeps(stagingDir);
 
-      // Run local x-plat audit + tests before building
-      const previewValidationCommand = "npm run test:xplat-audit && npx vitest run --coverage";
-      const testResult = run(previewValidationCommand, stagingDir, {
-        timeoutMs: PREVIEW_VALIDATION_TIMEOUT_MS,
-      });
-      if (!testResult.ok) {
-        return commandFailure(
-          "Staging preview validation failed.",
-          "The staged changes did not pass the preview validation run.",
-          previewValidationCommand,
-          stagingDir,
-          testResult.output,
-          { stagingDir },
-        );
+      if (shouldValidate) {
+        const previewValidationCommand = "npm run test:preview";
+        const testResult = run(previewValidationCommand, stagingDir, {
+          timeoutMs: PREVIEW_VALIDATION_TIMEOUT_MS,
+        });
+        if (!testResult.ok) {
+          return commandFailure(
+            "Staging preview validation failed.",
+            "The staged changes did not pass the preview validation run.",
+            previewValidationCommand,
+            stagingDir,
+            testResult.output,
+            { stagingDir },
+          );
+        }
+      } else {
+        log("Skipping staging preview validation");
       }
 
       // Build the client with the staging base path

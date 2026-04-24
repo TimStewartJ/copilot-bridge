@@ -21,14 +21,24 @@ describe("runLauncherBuild", () => {
     expect(log).toHaveBeenNthCalledWith(2, "Dependency sync failed — aborting build");
   });
 
-  it("allows extra time for coverage tests during builds", () => {
+  it("uses the fast deploy validation contract instead of coverage", () => {
     const ensureDeps = vi.fn(() => true);
     const run = vi.fn(() => ({ ok: true, output: "" }));
     const log = vi.fn();
 
     expect(runLauncherBuild({ ensureDeps, run, log })).toBe(true);
 
-    expect(run).toHaveBeenCalledWith("npx vitest run --coverage", { timeoutMs: 600_000 });
+    expect(run).toHaveBeenCalledWith("npm run test:deploy", { timeoutMs: 600_000 });
+  });
+
+  it("logs deploy validation failures without running rollback", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn(() => ({ ok: false, output: "plain vitest failed" }));
+    const log = vi.fn();
+
+    expect(runLauncherBuild({ ensureDeps, run, log })).toBe(false);
+
+    expect(log).toHaveBeenCalledWith("Deploy validation failed:\nplain vitest failed");
   });
 });
 
