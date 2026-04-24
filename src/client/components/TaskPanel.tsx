@@ -558,6 +558,7 @@ export default function TaskPanel({
                   <ScheduleSection
                     schedules={sched.schedules}
                     variant="summary"
+                    resetKey={task.id}
                     onAdd={() => schedDetail.openForCreate(task.id)}
                     onOpen={(schedule) => schedDetail.openSheet(schedule)}
                     onTrigger={(id) => sched.trigger(id)}

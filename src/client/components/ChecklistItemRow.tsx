@@ -48,6 +48,8 @@ interface DashboardVariantProps extends BaseProps {
 
 interface CardVariantProps extends BaseProps {
   variant: "card";
+  /** Scroll-to and flash animation */
+  highlight?: boolean;
 }
 
 type ChecklistItemRowProps = PanelVariantProps | DashboardVariantProps | CardVariantProps;
@@ -64,7 +66,7 @@ function isDashboardChecklistItem(
 
 export default function ChecklistItemRow(props: ChecklistItemRowProps) {
   const { checklistItem, onUpdate, onDelete, canDelete = true, variant } = props;
-  const highlight = variant === "panel" ? props.highlight : false;
+  const highlight = variant === "dashboard" ? false : (props.highlight ?? false);
 
   const dateRef = useRef<HTMLInputElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -196,7 +198,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
     ? `flex items-start gap-1.5 px-3 py-1 group select-none hover:bg-bg-hover rounded-md transition-colors ${highlight ? "animate-checklist-highlight" : ""} ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
     : isDashboard
       ? `flex items-center gap-2 px-3 py-1 select-none hover:bg-bg-hover transition-all first:rounded-t-lg last:rounded-b-lg group ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
-      : `flex items-start gap-2 px-3 py-2 select-none rounded-md bg-bg-surface group ${pressing ? "scale-[0.98]" : ""}`;
+      : `flex items-start gap-2 px-3 py-2 select-none rounded-md bg-bg-surface group ${highlight ? "animate-checklist-highlight" : ""} ${pressing ? "scale-[0.98]" : ""}`;
 
   const textClass = isPanel
     ? `text-xs break-words ${checklistItem.done ? "text-text-faint line-through" : "text-text-secondary"}`

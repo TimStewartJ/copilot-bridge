@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 
 interface CollapsibleCompletedProps {
@@ -8,10 +8,24 @@ interface CollapsibleCompletedProps {
   label?: string;
   /** Extra classes on the toggle button text */
   className?: string;
+  /** Forces the completed list open, while still allowing user toggles afterward */
+  forceOpen?: boolean;
 }
 
-export default function CollapsibleCompleted({ count, children, label = "completed", className }: CollapsibleCompletedProps) {
-  const [collapsed, setCollapsed] = useState(true);
+export default function CollapsibleCompleted({
+  count,
+  children,
+  label = "completed",
+  className,
+  forceOpen = false,
+}: CollapsibleCompletedProps) {
+  const [collapsed, setCollapsed] = useState(!forceOpen);
+
+  useEffect(() => {
+    if (forceOpen) {
+      setCollapsed(false);
+    }
+  }, [forceOpen]);
 
   if (count === 0) return null;
 

@@ -45,6 +45,7 @@ export default function TaskChecklistSection({
   ].filter((item): item is string => item !== null);
   const hasOverflow = overflowSummary.length > 0;
   const highlightedCompletedItem = panelPreview.highlightedCompletedItem;
+  const hasHighlightedCompletedItem = completedChecklistItems.some((item) => item.id === highlightId);
 
   return (
     <>
@@ -55,18 +56,23 @@ export default function TaskChecklistSection({
               key={checklistItem.id}
               variant="card"
               checklistItem={checklistItem}
+              highlight={checklistItem.id === highlightId}
               onUpdate={onChecklistItemUpdate}
               onDelete={() => onChecklistItemDelete(checklistItem.id)}
             />
           ))}
           {completedChecklistItems.length > 0 && (
-            <CollapsibleCompleted count={completedChecklistItems.length}>
+            <CollapsibleCompleted
+              count={completedChecklistItems.length}
+              forceOpen={hasHighlightedCompletedItem}
+            >
               <div className="pt-1 space-y-1">
                 {completedChecklistItems.map((checklistItem) => (
                   <ChecklistItemRow
                     key={checklistItem.id}
                     variant="card"
                     checklistItem={checklistItem}
+                    highlight={checklistItem.id === highlightId}
                     onUpdate={onChecklistItemUpdate}
                     onDelete={() => onChecklistItemDelete(checklistItem.id)}
                   />

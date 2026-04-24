@@ -16,6 +16,7 @@ interface TaskPanelSummaryRowProps {
   trailing?: ReactNode;
   titleClassName?: string;
   subtitleClassName?: string;
+  expanded?: boolean;
 }
 
 export default function TaskPanelSummaryRow({
@@ -28,7 +29,14 @@ export default function TaskPanelSummaryRow({
   trailing,
   titleClassName,
   subtitleClassName,
+  expanded = false,
 }: TaskPanelSummaryRowProps) {
+  const chevron = (
+    <ChevronRight
+      size={12}
+      className={`mt-1 shrink-0 text-text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+    />
+  );
   const content = (
     <>
       <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -60,7 +68,7 @@ export default function TaskPanelSummaryRow({
         </div>
       </div>
       {onClick && !trailing && (
-        <ChevronRight size={12} className="mt-1 shrink-0 text-text-faint" />
+        chevron
       )}
     </>
   );
@@ -83,7 +91,7 @@ export default function TaskPanelSummaryRow({
         <div className="flex shrink-0 items-start gap-0.5 pr-2 pt-2">
           {trailing}
           {onClick && (
-            <ChevronRight size={12} className="mt-1 shrink-0 text-text-faint" />
+            chevron
           )}
         </div>
       )}
