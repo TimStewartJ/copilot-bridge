@@ -173,9 +173,9 @@ export interface TagMcpServer {
   config: McpServerConfig;
 }
 
-// ── Todo types ────────────────────────────────────────────────────
+// ── Checklist item types ──────────────────────────────────────────
 
-export interface Todo {
+export interface ChecklistItem {
   id: string;
   taskId: string | null;
   text: string;
@@ -728,7 +728,7 @@ export interface DashboardActiveTask {
   task: Task;
   workItemSummary: { total: number; byState: Record<string, number> };
   prSummary: { total: number; active: number; completed: number };
-  todoSummary: { total: number; done: number; open: number; overdue: number };
+  checklistSummary: { total: number; done: number; open: number; overdue: number };
   hasUnread: boolean;
   hasBusySession: boolean;
   lastActivity: string;
@@ -744,7 +744,7 @@ export interface DashboardOrphanSession {
   unread: boolean;
 }
 
-export interface DashboardTodo {
+export interface DashboardChecklistItem {
   id: string;
   taskId: string | null;
   text: string;
@@ -770,8 +770,8 @@ export interface DashboardData {
   unreadSessions: DashboardUnreadSession[];
   lastActiveTask: DashboardActiveTask | null;
   orphanSessions: DashboardOrphanSession[];
-  openTodos: DashboardTodo[];
-  completedTodos: DashboardTodo[];
+  openChecklistItems: DashboardChecklistItem[];
+  completedChecklistItems: DashboardChecklistItem[];
   schedules: DashboardSchedule[];
 }
 
@@ -1193,33 +1193,33 @@ export async function fetchScheduleSessions(
   return apiFetch<ScheduleSessionsResponse>(`/api/schedules/${scheduleId}/sessions${qs ? `?${qs}` : ""}`);
 }
 
-// ── Todo API ──────────────────────────────────────────────────────
+// ── Checklist item API ────────────────────────────────────────────
 
-export async function fetchTodos(taskId: string): Promise<Todo[]> {
-  const data = await apiFetch<{ todos: Todo[] }>(`/api/tasks/${taskId}/todos`);
-  return data.todos;
+export async function fetchChecklistItems(taskId: string): Promise<ChecklistItem[]> {
+  const data = await apiFetch<{ checklistItems: ChecklistItem[] }>(`/api/tasks/${taskId}/checklist-items`);
+  return data.checklistItems;
 }
 
-export async function fetchOpenTodos(): Promise<Todo[]> {
-  const data = await apiFetch<{ todos: Todo[] }>("/api/todos/open");
-  return data.todos;
+export async function fetchOpenChecklistItems(): Promise<ChecklistItem[]> {
+  const data = await apiFetch<{ checklistItems: ChecklistItem[] }>("/api/checklist-items/open");
+  return data.checklistItems;
 }
 
-export async function createTodo(taskId: string, text: string, deadline?: string): Promise<Todo> {
-  const data = await apiFetch<{ todo: Todo }>(`/api/tasks/${taskId}/todos`, { text, deadline });
-  return data.todo;
+export async function createChecklistItem(taskId: string, text: string, deadline?: string): Promise<ChecklistItem> {
+  const data = await apiFetch<{ checklistItem: ChecklistItem }>(`/api/tasks/${taskId}/checklist-items`, { text, deadline });
+  return data.checklistItem;
 }
 
-export async function createGlobalTodo(text: string, deadline?: string): Promise<Todo> {
-  const data = await apiFetch<{ todo: Todo }>(`/api/todos`, { text, deadline });
-  return data.todo;
+export async function createGlobalChecklistItem(text: string, deadline?: string): Promise<ChecklistItem> {
+  const data = await apiFetch<{ checklistItem: ChecklistItem }>(`/api/checklist-items`, { text, deadline });
+  return data.checklistItem;
 }
 
-export async function patchTodo(
+export async function patchChecklistItem(
   id: string,
-  updates: Partial<Pick<Todo, "text" | "done">> & { deadline?: string | null },
-): Promise<Todo> {
-  const res = await fetch(`${API_BASE}/api/todos/${id}`, {
+  updates: Partial<Pick<ChecklistItem, "text" | "done">> & { deadline?: string | null },
+): Promise<ChecklistItem> {
+  const res = await fetch(`${API_BASE}/api/checklist-items/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -1229,25 +1229,25 @@ export async function patchTodo(
     throw new Error(err.error || res.statusText);
   }
   const data = await res.json();
-  return data.todo;
+  return data.checklistItem;
 }
 
-export async function deleteTodo(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/todos/${id}`, { method: "DELETE" });
+export async function deleteChecklistItem(id: string): Promise<void> {
+  await fetch(`${API_BASE}/api/checklist-items/${id}`, { method: "DELETE" });
 }
 
-export async function reorderTodos(taskId: string, todoIds: string[]): Promise<Todo[]> {
-  const res = await fetch(`${API_BASE}/api/tasks/${taskId}/todos/reorder`, {
+export async function reorderChecklistItems(taskId: string, checklistItemIds: string[]): Promise<ChecklistItem[]> {
+  const res = await fetch(`${API_BASE}/api/tasks/${taskId}/checklist-items/reorder`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ todoIds }),
+    body: JSON.stringify({ checklistItemIds }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
   }
   const data = await res.json();
-  return data.todos;
+  return data.checklistItems;
 }
 
 // ── Docs API ──────────────────────────────────────────────────────

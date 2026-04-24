@@ -471,7 +471,7 @@ async function createStagingContext(
   const [globalBusMod, eventBusMod, dbMod, migrateMod,
     taskStoreMod, taskGroupStoreMod,
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod,
-    sessionTitlesMod, readStateStoreMod, todoStoreMod,
+    sessionTitlesMod, readStateStoreMod, checklistStoreMod,
     docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
     telemetryStoreMod,
@@ -490,7 +490,7 @@ async function createStagingContext(
     import(ts("session-meta-store.ts")),
     import(ts("session-titles.ts")),
     import(ts("read-state-store.ts")),
-    import(ts("todo-store.ts")),
+    import(ts("checklist-store.ts")),
     importOptionalStagingModule(ts("docs-store.ts")),
     importOptionalStagingModule(ts("docs-index.ts")),
     import(ts("session-manager.ts")),
@@ -516,7 +516,7 @@ async function createStagingContext(
     const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(db);
     const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
     const readStateStore = readStateStoreMod.createReadStateStore(db);
-    const todoStore = todoStoreMod.createTodoStore(db, globalBus);
+    const checklistStore = checklistStoreMod.createChecklistStore(db, globalBus);
     const tagStore = tagStoreMod?.createTagStore(db);
     const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
     const transcriptionService = transcriptionServiceMod?.createTranscriptionService();
@@ -530,7 +530,7 @@ async function createStagingContext(
 
     const ctx: AppContext = {
       taskStore, taskGroupStore, scheduleStore, settingsStore,
-      sessionMetaStore, sessionTitles, readStateStore, todoStore,
+      sessionMetaStore, sessionTitles, readStateStore, checklistStore,
       ...(docsStore && { docsStore }),
       ...(docsIndex && { docsIndex }),
       ...(tagStore && { tagStore }),

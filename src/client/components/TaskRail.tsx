@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { type Task, type TaskGroup, type Session } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
-import { describeHomeTodoIndicator, type HomeTodoIndicator } from "../todo-helpers";
+import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
@@ -30,7 +30,7 @@ interface TaskRailProps {
   onOpenDocs: () => void;
   isDocsActive: boolean;
   isDashboardActive: boolean;
-  homeTodoIndicator?: HomeTodoIndicator;
+  homeChecklistIndicator?: HomeChecklistIndicator;
   expanded: boolean;
   onToggleExpanded: () => void;
   sessions?: Session[];
@@ -87,7 +87,7 @@ export default function TaskRail({
   onOpenDocs,
   isDocsActive,
   isDashboardActive,
-  homeTodoIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
+  homeChecklistIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
   expanded,
   onToggleExpanded,
   sessions = [],
@@ -124,10 +124,10 @@ export default function TaskRail({
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
-  const homeIndicatorDescription = describeHomeTodoIndicator(homeTodoIndicator);
-  const homeIndicatorDotClass = homeTodoIndicator.state === "overdue"
+  const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
+  const homeIndicatorDotClass = homeChecklistIndicator.state === "overdue"
     ? "bg-error"
-    : homeTodoIndicator.state === "due-today"
+    : homeChecklistIndicator.state === "due-today"
       ? "bg-warning"
       : "";
 
@@ -319,7 +319,7 @@ export default function TaskRail({
             className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
           >
             <LayoutDashboard size={18} />
-            {homeTodoIndicator.state !== "none" && (
+            {homeChecklistIndicator.state !== "none" && (
               <span
                 aria-hidden="true"
                 className={`absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary ${homeIndicatorDotClass}`}
@@ -621,7 +621,7 @@ export default function TaskRail({
         >
           <LayoutDashboard size={14} />
           Dashboard
-          {homeTodoIndicator.state !== "none" && (
+          {homeChecklistIndicator.state !== "none" && (
             <span
               aria-hidden="true"
               className={`ml-auto h-2.5 w-2.5 rounded-full ${homeIndicatorDotClass}`}

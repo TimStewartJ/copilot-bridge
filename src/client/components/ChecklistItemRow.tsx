@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Todo, DashboardTodo } from "../api";
-import { patchTodo, deleteTodo } from "../api";
-import { deadlineUrgency, deadlineLabel, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../todo-helpers";
+import type { ChecklistItem, DashboardChecklistItem } from "../api";
+import { patchChecklistItem, deleteChecklistItem } from "../api";
+import { deadlineUrgency, deadlineLabel, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../checklist-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -19,14 +19,14 @@ import {
 // ── Variant-specific props ──────────────────────────────────────
 
 interface BaseProps {
-  todo: Todo | DashboardTodo;
-  /** Called after patchTodo for edit/deadline/toggle (default behavior) */
-  onUpdate: (todo: Todo) => void;
-  /** Called after deleteTodo completes */
+  checklistItem: ChecklistItem | DashboardChecklistItem;
+  /** Called after patchChecklistItem for edit/deadline/toggle (default behavior) */
+  onUpdate: (checklistItem: ChecklistItem) => void;
+  /** Called after deleteChecklistItem completes */
   onDelete: (id: string) => void;
   /** Whether deletion is allowed (default: true) */
   canDelete?: boolean;
-  /** Override default toggle (patchTodo + onUpdate). Parent handles API + state. */
+  /** Override default toggle (patchChecklistItem + onUpdate). Parent handles API + state. */
   onToggle?: () => void;
   /** Called on deadline change. If provided, replaces onUpdate for deadline changes. */
   onDeadlineChange?: (deadline: string | null) => void;
@@ -40,7 +40,7 @@ interface PanelVariantProps extends BaseProps {
 
 interface DashboardVariantProps extends BaseProps {
   variant: "dashboard";
-  /** Navigate to the todo's parent task */
+  /** Navigate to the checklist item's parent task */
   onSelectTask?: () => void;
   /** Hide the task name pill (e.g. when grouped by task) */
   hideTaskPill?: boolean;
@@ -50,31 +50,33 @@ interface CardVariantProps extends BaseProps {
   variant: "card";
 }
 
-type TodoRowProps = PanelVariantProps | DashboardVariantProps | CardVariantProps;
+type ChecklistItemRowProps = PanelVariantProps | DashboardVariantProps | CardVariantProps;
 
-// ── Helper to check if todo is DashboardTodo ────────────────────
+// ── Helper to check if checklistItem is DashboardChecklistItem ───
 
-function isDashboardTodo(todo: Todo | DashboardTodo): todo is DashboardTodo {
-  return "taskTitle" in todo;
+function isDashboardChecklistItem(
+  checklistItem: ChecklistItem | DashboardChecklistItem,
+): checklistItem is DashboardChecklistItem {
+  return "taskTitle" in checklistItem;
 }
 
 // ── Component ───────────────────────────────────────────────────
 
-export default function TodoRow(props: TodoRowProps) {
-  const { todo, onUpdate, onDelete, canDelete = true, variant } = props;
+export default function ChecklistItemRow(props: ChecklistItemRowProps) {
+  const { checklistItem, onUpdate, onDelete, canDelete = true, variant } = props;
   const highlight = variant === "panel" ? props.highlight : false;
 
   const dateRef = useRef<HTMLInputElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
-  const urgency = deadlineUrgency(todo.deadline, todo.done);
+  const urgency = deadlineUrgency(checklistItem.deadline, checklistItem.done);
   const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(todo.text);
+  const [editText, setEditText] = useState(checklistItem.text);
 
   // Context menu
   const { bind, menu, closeMenu, isTarget } = useLongPressMenu<string>();
-  const pressing = isTarget(todo.id);
+  const pressing = isTarget(checklistItem.id);
 
   // Scroll into view on highlight
   useEffect(() => {
@@ -94,41 +96,41 @@ export default function TodoRow(props: TodoRowProps) {
   const commitEdit = useCallback(async () => {
     const trimmed = editText.trim();
     setEditing(false);
-    if (!trimmed || trimmed === todo.text) {
-      setEditText(todo.text);
+    if (!trimmed || trimmed === checklistItem.text) {
+      setEditText(checklistItem.text);
       return;
     }
-    const snapshot = { ...todo } as Todo;
-    onUpdate({ ...todo, text: trimmed } as Todo);
+    const snapshot = { ...checklistItem } as ChecklistItem;
+    onUpdate({ ...checklistItem, text: trimmed } as ChecklistItem);
     try {
-      await patchTodo(todo.id, { text: trimmed });
+      await patchChecklistItem(checklistItem.id, { text: trimmed });
     } catch {
       onUpdate(snapshot);
     }
-  }, [editText, todo, onUpdate]);
+  }, [editText, checklistItem, onUpdate]);
 
   const handleToggle = useCallback(async () => {
     if (props.onToggle) {
       props.onToggle();
     } else {
-      const snapshot = { ...todo } as Todo;
-      onUpdate({ ...todo, done: !todo.done } as Todo);
+      const snapshot = { ...checklistItem } as ChecklistItem;
+      onUpdate({ ...checklistItem, done: !checklistItem.done } as ChecklistItem);
       try {
-        await patchTodo(todo.id, { done: !todo.done });
+        await patchChecklistItem(checklistItem.id, { done: !checklistItem.done });
       } catch {
         onUpdate(snapshot);
       }
     }
-  }, [todo, onUpdate, props.onToggle]);
+  }, [checklistItem, onUpdate, props.onToggle]);
 
   const handleDelete = useCallback(async () => {
-    onDelete(todo.id);
+    onDelete(checklistItem.id);
     try {
-      await deleteTodo(todo.id);
+      await deleteChecklistItem(checklistItem.id);
     } catch {
       // Deletion failed; next refetch will restore the item
     }
-  }, [todo.id, onDelete]);
+  }, [checklistItem.id, onDelete]);
 
   const handleSetDeadline = useCallback(() => {
     const el = dateRef.current;
@@ -138,50 +140,50 @@ export default function TodoRow(props: TodoRowProps) {
   }, []);
 
   const handleClearDeadline = useCallback(async () => {
-    const prevDeadline = todo.deadline;
+    const prevDeadline = checklistItem.deadline;
     if (props.onDeadlineChange) {
       props.onDeadlineChange(null);
     } else {
-      onUpdate({ ...todo, deadline: undefined } as Todo);
+      onUpdate({ ...checklistItem, deadline: undefined } as ChecklistItem);
     }
     try {
-      await patchTodo(todo.id, { deadline: null });
+      await patchChecklistItem(checklistItem.id, { deadline: null });
     } catch {
       if (props.onDeadlineChange) {
         props.onDeadlineChange(prevDeadline ?? null);
       } else {
-        onUpdate({ ...todo } as Todo);
+        onUpdate({ ...checklistItem } as ChecklistItem);
       }
     }
-  }, [todo, onUpdate, props.onDeadlineChange]);
+  }, [checklistItem, onUpdate, props.onDeadlineChange]);
 
   const handleDateChange = useCallback(async (val: string | null) => {
-    const prevDeadline = todo.deadline;
+    const prevDeadline = checklistItem.deadline;
     if (props.onDeadlineChange) {
       props.onDeadlineChange(val);
     } else {
-      onUpdate({ ...todo, deadline: val ?? undefined } as Todo);
+      onUpdate({ ...checklistItem, deadline: val ?? undefined } as ChecklistItem);
     }
     try {
-      await patchTodo(todo.id, { deadline: val });
+      await patchChecklistItem(checklistItem.id, { deadline: val });
     } catch {
       if (props.onDeadlineChange) {
         props.onDeadlineChange(prevDeadline ?? null);
       } else {
-        onUpdate({ ...todo } as Todo);
+        onUpdate({ ...checklistItem } as ChecklistItem);
       }
     }
-  }, [todo, onUpdate, props.onDeadlineChange]);
+  }, [checklistItem, onUpdate, props.onDeadlineChange]);
 
   const startEdit = useCallback(() => {
-    if (!todo.done) {
-      setEditText(todo.text);
+    if (!checklistItem.done) {
+      setEditText(checklistItem.text);
       setEditing(true);
     }
-  }, [todo.done, todo.text]);
+  }, [checklistItem.done, checklistItem.text]);
 
   // Dashboard-specific data
-  const dashTodo = isDashboardTodo(todo) ? todo : null;
+  const dashboardChecklistItem = isDashboardChecklistItem(checklistItem) ? checklistItem : null;
   const onSelectTask = variant === "dashboard" ? props.onSelectTask : undefined;
   const hideTaskPill = variant === "dashboard" ? props.hideTaskPill : false;
 
@@ -191,14 +193,14 @@ export default function TodoRow(props: TodoRowProps) {
   const isCard = variant === "card";
 
   const rowClass = isPanel
-    ? `flex items-start gap-1.5 px-3 py-1 group select-none hover:bg-bg-hover rounded-md transition-colors ${highlight ? "animate-todo-highlight" : ""} ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
+    ? `flex items-start gap-1.5 px-3 py-1 group select-none hover:bg-bg-hover rounded-md transition-colors ${highlight ? "animate-checklist-highlight" : ""} ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
     : isDashboard
       ? `flex items-center gap-2 px-3 py-1 select-none hover:bg-bg-hover transition-all first:rounded-t-lg last:rounded-b-lg group ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
       : `flex items-start gap-2 px-3 py-2 select-none rounded-md bg-bg-surface group ${pressing ? "scale-[0.98]" : ""}`;
 
   const textClass = isPanel
-    ? `text-xs break-words ${todo.done ? "text-text-faint line-through" : "text-text-secondary"}`
-    : `text-sm break-words ${todo.done ? "text-text-faint line-through" : "text-text-primary"}`;
+    ? `text-xs break-words ${checklistItem.done ? "text-text-faint line-through" : "text-text-secondary"}`
+    : `text-sm break-words ${checklistItem.done ? "text-text-faint line-through" : "text-text-primary"}`;
 
   const checkboxSize = isPanel ? "w-3.5 h-3.5" : "w-3.5 h-3.5";
   const checkIconSize = 9;
@@ -210,10 +212,10 @@ export default function TodoRow(props: TodoRowProps) {
     <>
       <div
         ref={rowRef}
-        data-todo-id={todo.id}
+        data-checklist-item-id={checklistItem.id}
         className={rowClass}
         style={{ WebkitTouchCallout: "none" }}
-        {...bind(todo.id, () => rowClick?.())}
+        {...bind(checklistItem.id, () => rowClick?.())}
       >
         {/* Checkbox */}
         <button
@@ -226,14 +228,14 @@ export default function TodoRow(props: TodoRowProps) {
               ? "w-10 h-10 rounded-lg active:bg-bg-hover"
               : "mt-0.5"
           }`}
-          aria-label={todo.done ? "Mark incomplete" : "Mark complete"}
+           aria-label={checklistItem.done ? "Mark incomplete" : "Mark complete"}
         >
           <span className={`${checkboxSize} rounded border flex items-center justify-center transition-colors ${
-            todo.done
+            checklistItem.done
               ? "bg-success/80 border-success/80 text-white hover:bg-success/60"
               : CHECKBOX_URGENCY[urgency]
           }`}>
-            {todo.done && <Check size={checkIconSize} strokeWidth={3} />}
+            {checklistItem.done && <Check size={checkIconSize} strokeWidth={3} />}
           </span>
         </button>
 
@@ -251,7 +253,7 @@ export default function TodoRow(props: TodoRowProps) {
               onBlur={commitEdit}
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitEdit();
-                if (e.key === "Escape") { setEditText(todo.text); setEditing(false); }
+                if (e.key === "Escape") { setEditText(checklistItem.text); setEditing(false); }
               }}
               className={`w-full bg-transparent border-b border-accent outline-none py-0 ${
                 isPanel ? "text-xs text-text-secondary" : "text-sm text-text-primary"
@@ -260,14 +262,14 @@ export default function TodoRow(props: TodoRowProps) {
           ) : (
             <span
               onClick={(e) => {
-                if (!isDashboard && !todo.done) {
+                if (!isDashboard && !checklistItem.done) {
                   e.stopPropagation();
                   startEdit();
                 }
               }}
-              className={`${textClass} ${!isDashboard && !todo.done ? "cursor-text" : ""}`}
+              className={`${textClass} ${!isDashboard && !checklistItem.done ? "cursor-text" : ""}`}
             >
-              {todo.text}
+              {checklistItem.text}
             </span>
           )}
 
@@ -275,26 +277,26 @@ export default function TodoRow(props: TodoRowProps) {
           {!editing && (
             <div className={`flex items-center gap-2 ${isDashboard ? "text-xs mt-0.5" : isPanel ? "" : "mt-0.5"}`}>
               {/* Task pill (dashboard only) */}
-              {isDashboard && dashTodo?.taskTitle && !hideTaskPill && (
+              {isDashboard && dashboardChecklistItem?.taskTitle && !hideTaskPill && (
                 <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
-                  dashTodo.taskGroupColor
-                    ? `${GROUP_COLOR_BG[dashTodo.taskGroupColor] ?? ""} text-text-secondary`
+                  dashboardChecklistItem.taskGroupColor
+                    ? `${GROUP_COLOR_BG[dashboardChecklistItem.taskGroupColor] ?? ""} text-text-secondary`
                     : "bg-bg-hover text-text-faint"
                 }`}>
-                  {dashTodo.taskGroupColor && (
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${GROUP_COLOR_DOT[dashTodo.taskGroupColor] ?? ""}`} />
+                  {dashboardChecklistItem.taskGroupColor && (
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${GROUP_COLOR_DOT[dashboardChecklistItem.taskGroupColor] ?? ""}`} />
                   )}
-                  {dashTodo.taskTitle}
+                  {dashboardChecklistItem.taskTitle}
                 </span>
               )}
 
               {/* Deadline badge */}
-              {todo.deadline && !todo.done && (
+              {checklistItem.deadline && !checklistItem.done && (
                 isPanel ? (
                   <span
                     className={`inline-flex items-center gap-0.5 ml-1.5 px-1 py-0.5 -my-0.5 rounded text-[10px] ${DEADLINE_STYLES[urgency]}`}
                   >
-                    {urgency === "overdue" && "⚠ "}{deadlineLabel(todo.deadline)}
+                    {urgency === "overdue" && "⚠ "}{deadlineLabel(checklistItem.deadline)}
                   </span>
                 ) : (
                   <span className={`shrink-0 flex items-center gap-0.5 ${
@@ -303,7 +305,7 @@ export default function TodoRow(props: TodoRowProps) {
                     urgency === "overdue" ? "text-error" : urgency === "soon" ? "text-warning" : "text-text-faint"
                   }`}>
                     {urgency === "overdue" && <AlertTriangle size={10} />}
-                    {deadlineLabel(todo.deadline)}
+                    {deadlineLabel(checklistItem.deadline)}
                   </span>
                 )
               )}
@@ -318,7 +320,7 @@ export default function TodoRow(props: TodoRowProps) {
           type="date"
           className="absolute opacity-0 pointer-events-none w-0 h-0 overflow-hidden"
           tabIndex={-1}
-          value={todo.deadline ?? ""}
+          value={checklistItem.deadline ?? ""}
           onChange={async (e) => {
             const val = e.target.value || null;
             await handleDateChange(val);
@@ -329,7 +331,7 @@ export default function TodoRow(props: TodoRowProps) {
       {/* Context menu */}
       {menu && (
         <ContextMenu position={menu} onClose={closeMenu}>
-          {!todo.done && (
+          {!checklistItem.done && (
             <CtxItem
               icon={<Pencil size={14} />}
               label="Edit"
@@ -341,7 +343,7 @@ export default function TodoRow(props: TodoRowProps) {
             label="Set deadline"
             onClick={() => { closeMenu(); handleSetDeadline(); }}
           />
-          {todo.deadline && (
+          {checklistItem.deadline && (
             <CtxItem
               icon={<CalendarX2 size={14} />}
               label="Clear deadline"

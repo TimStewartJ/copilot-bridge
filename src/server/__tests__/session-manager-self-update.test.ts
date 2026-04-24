@@ -67,7 +67,7 @@ function createToolContext() {
     sessionMetaStore: {} as any,
     sessionTitles: createSessionTitlesStore(db),
     readStateStore: {} as any,
-    todoStore: {} as any,
+    checklistStore: {} as any,
     tagStore: undefined,
     telemetryStore: undefined,
     docsStore: undefined,

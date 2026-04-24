@@ -1,13 +1,13 @@
 import { LayoutDashboard, ListTodo, MessageSquare, BookOpen, Settings } from "lucide-react";
 import { useMemo } from "react";
-import { describeHomeTodoIndicator, type HomeTodoIndicator } from "../todo-helpers";
+import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 
 type Tab = "home" | "tasks" | "chats" | "docs" | "settings";
 
 interface MobileBottomNavProps {
   activeTab: Tab;
   onSelectTab: (tab: Tab) => void;
-  homeTodoIndicator?: HomeTodoIndicator;
+  homeChecklistIndicator?: HomeChecklistIndicator;
   taskUnreadCount?: number;
   chatUnreadCount?: number;
   showDocs?: boolean;
@@ -20,7 +20,7 @@ const isStandalone = typeof window !== "undefined" &&
 export function MobileBottomNav({
   activeTab,
   onSelectTab,
-  homeTodoIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
+  homeChecklistIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
   taskUnreadCount = 0,
   chatUnreadCount = 0,
   showDocs = true,
@@ -47,11 +47,11 @@ export function MobileBottomNav({
               ? chatUnreadCount
               : 0;
           const homeIndicatorDescription = id === "home"
-            ? describeHomeTodoIndicator(homeTodoIndicator)
+            ? describeHomeChecklistIndicator(homeChecklistIndicator)
             : null;
-          const homeIndicatorDotClass = homeTodoIndicator.state === "overdue"
+          const homeIndicatorDotClass = homeChecklistIndicator.state === "overdue"
             ? "bg-error"
-            : homeTodoIndicator.state === "due-today"
+            : homeChecklistIndicator.state === "due-today"
               ? "bg-warning"
               : "";
           return (
@@ -68,7 +68,7 @@ export function MobileBottomNav({
                     {unreadCount > 99 ? "99+" : unreadCount}
                   </span>
                 )}
-                {unreadCount === 0 && id === "home" && homeTodoIndicator.state !== "none" && (
+                {unreadCount === 0 && id === "home" && homeChecklistIndicator.state !== "none" && (
                   <span
                     aria-hidden="true"
                     className={`absolute -top-0.5 -right-1 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary ${homeIndicatorDotClass}`}

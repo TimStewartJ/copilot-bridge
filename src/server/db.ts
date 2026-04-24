@@ -164,8 +164,8 @@ function initSchema(db: DatabaseSync): void {
       lastReadAt TEXT NOT NULL
     );
 
-    -- Todos (per-task checklists or global/unparented)
-    CREATE TABLE IF NOT EXISTS todos (
+    -- Checklist items (per-task checklists or global/unparented)
+    CREATE TABLE IF NOT EXISTS checklist_items (
       id TEXT PRIMARY KEY,
       taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
       text TEXT NOT NULL,
@@ -183,7 +183,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
     CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(scheduleId, recordedAt DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_schedule_run_claims_status ON schedule_run_claims(status, leaseExpiresAt);
-    CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
+    CREATE INDEX IF NOT EXISTS idx_checklist_items_taskId ON checklist_items(taskId);
 
     -- Voice jobs
     CREATE TABLE IF NOT EXISTS voice_jobs (
@@ -308,33 +308,68 @@ function initSchema(db: DatabaseSync): void {
       );
   `);
 
-  // Add deadline column to todos
-  const todoCols = db.prepare("PRAGMA table_info(todos)").all() as any[];
-  if (!todoCols.some((c: any) => c.name === "deadline")) {
-    db.exec('ALTER TABLE todos ADD COLUMN deadline TEXT');
-  }
+  const tableExists = (tableName: string): boolean =>
+    !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+  const getTableInfo = (tableName: string): any[] =>
+    tableExists(tableName) ? (db.prepare(`PRAGMA table_info(${tableName})`).all() as any[]) : [];
 
-  // Make taskId nullable for global (unparented) todos
-  const todoInfo = db.prepare("PRAGMA table_info(todos)").all() as any[];
-  const taskIdCol = todoInfo.find((c: any) => c.name === "taskId");
-  if (taskIdCol && taskIdCol.notnull === 1) {
-    db.exec(`
-      CREATE TABLE todos_new (
-        id TEXT PRIMARY KEY,
-        taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
-        text TEXT NOT NULL,
-        done INTEGER NOT NULL DEFAULT 0,
-        "order" INTEGER NOT NULL DEFAULT 0,
-        createdAt TEXT NOT NULL,
-        completedAt TEXT,
-        deadline TEXT
-      );
-      INSERT INTO todos_new (id, taskId, text, done, "order", createdAt, completedAt, deadline)
-        SELECT id, taskId, text, done, "order", createdAt, completedAt, deadline FROM todos;
-      DROP TABLE todos;
-      ALTER TABLE todos_new RENAME TO todos;
-      CREATE INDEX IF NOT EXISTS idx_todos_taskId ON todos(taskId);
-    `);
+  // Migrate legacy Bridge todos -> checklist_items, then normalize checklist_items schema.
+  db.exec("BEGIN");
+  try {
+    if (tableExists("todos")) {
+      const legacyTodoCols = getTableInfo("todos");
+      const deadlineExpr = legacyTodoCols.some((c: any) => c.name === "deadline") ? "deadline" : "NULL";
+      db.exec(`
+        INSERT OR IGNORE INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+        SELECT id, taskId, text, done, "order", createdAt, completedAt, ${deadlineExpr}
+        FROM todos;
+      `);
+
+      const missingLegacyRows = (db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM todos legacy
+        WHERE NOT EXISTS (
+          SELECT 1 FROM checklist_items current WHERE current.id = legacy.id
+        )
+      `).get() as any).count ?? 0;
+      if (missingLegacyRows > 0) {
+        throw new Error(`Checklist migration incomplete: ${missingLegacyRows} legacy row(s) missing`);
+      }
+
+      db.exec("DROP TABLE todos");
+    }
+
+    const checklistItemCols = getTableInfo("checklist_items");
+    if (!checklistItemCols.some((c: any) => c.name === "deadline")) {
+      db.exec("ALTER TABLE checklist_items ADD COLUMN deadline TEXT");
+    }
+
+    const normalizedChecklistItemCols = getTableInfo("checklist_items");
+    const taskIdCol = normalizedChecklistItemCols.find((c: any) => c.name === "taskId");
+    if (taskIdCol && taskIdCol.notnull === 1) {
+      db.exec(`
+        CREATE TABLE checklist_items_new (
+          id TEXT PRIMARY KEY,
+          taskId TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          done INTEGER NOT NULL DEFAULT 0,
+          "order" INTEGER NOT NULL DEFAULT 0,
+          createdAt TEXT NOT NULL,
+          completedAt TEXT,
+          deadline TEXT
+        );
+        INSERT INTO checklist_items_new (id, taskId, text, done, "order", createdAt, completedAt, deadline)
+          SELECT id, taskId, text, done, "order", createdAt, completedAt, deadline FROM checklist_items;
+        DROP TABLE checklist_items;
+        ALTER TABLE checklist_items_new RENAME TO checklist_items;
+      `);
+    }
+
+    db.exec("CREATE INDEX IF NOT EXISTS idx_checklist_items_taskId ON checklist_items(taskId)");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
 
   // Add notes column to task_groups

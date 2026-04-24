@@ -2,12 +2,11 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import {
   getSessionActivityTime,
   getSessionRunState,
-  patchTodo,
-  createGlobalTodo,
-  type DashboardData,
+  patchChecklistItem,
+  createGlobalChecklistItem,
   type DashboardActiveTask,
   type DashboardOrphanSession,
-  type DashboardTodo,
+  type DashboardChecklistItem,
   type DashboardSchedule,
 } from "../api";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
@@ -19,22 +18,22 @@ import { timeAgo } from "../time";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
-import TodoRow from "./TodoRow";
+import ChecklistItemRow from "./ChecklistItemRow";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause } from "lucide-react";
 import { ScheduleRow } from "./task-sections";
 
-type TodoSort = "deadline" | "task";
+type ChecklistSort = "deadline" | "task";
 
-const SORT_LABELS: Record<TodoSort, string> = {
+const SORT_LABELS: Record<ChecklistSort, string> = {
   deadline: "Deadline",
   task: "By task",
 };
 
-const SORT_STORAGE_KEY = "dashboard-todo-sort";
+const SORT_STORAGE_KEY = "dashboard-checklist-sort";
 
-function getSavedSort(): TodoSort {
+function getSavedSort(): ChecklistSort {
   try {
     const val = localStorage.getItem(SORT_STORAGE_KEY);
     if (val === "deadline" || val === "task") return val;
@@ -47,14 +46,17 @@ function deadlineSortKey(deadline: string | undefined): number {
   return new Date(deadline + "T00:00:00").getTime();
 }
 
-function sortTodos(todos: DashboardTodo[], sort: TodoSort): DashboardTodo[] {
-  const copy = [...todos];
+function sortChecklistItems(
+  checklistItems: DashboardChecklistItem[],
+  sort: ChecklistSort,
+): DashboardChecklistItem[] {
+  const copy = [...checklistItems];
   switch (sort) {
     case "deadline":
       return copy.sort((a, b) => deadlineSortKey(a.deadline) - deadlineSortKey(b.deadline) || b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     case "task":
       return copy.sort((a, b) => {
-        // Global todos first, then group by task title
+        // Global checklist items first, then group by task title
         if (!a.taskId && b.taskId) return -1;
         if (a.taskId && !b.taskId) return 1;
         const titleCmp = (a.taskTitle ?? "").localeCompare(b.taskTitle ?? "");
@@ -67,7 +69,8 @@ function sortTodos(todos: DashboardTodo[], sort: TodoSort): DashboardTodo[] {
 }
 
 interface DashboardProps {
-  onSelectTask: (id: string, opts?: { todoId?: string }) => void;
+  onSelectSession: (target: SessionNavigationTarget) => void;
+  onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
   onSelectSession: (target: SessionNavigationTarget) => void;
   onNewSession: () => void;
   onResumeTask: (taskId: string, sessionId?: string) => void;
@@ -75,20 +78,20 @@ interface DashboardProps {
 
 // ── Task grouping for "By task" view ──────────────────────────────
 
-interface TodoGroup {
+interface ChecklistGroup {
   key: string;
   taskId: string | null;
   taskTitle: string | null;
   taskGroupColor: string | null;
-  todos: DashboardTodo[];
+  checklistItems: DashboardChecklistItem[];
 }
 
 const TASK_STATUS_ORDER: Record<string, number> = { active: 0, paused: 1, done: 2, archived: 3 };
 
-function groupTodosByTask(todos: DashboardTodo[]): TodoGroup[] {
-  const globalTodos: DashboardTodo[] = [];
+function groupChecklistItemsByTask(checklistItems: DashboardChecklistItem[]): ChecklistGroup[] {
+  const globalChecklistItems: DashboardChecklistItem[] = [];
   const taskMap = new Map<string, {
-    todos: DashboardTodo[];
+    checklistItems: DashboardChecklistItem[];
     taskTitle: string | null;
     taskGroupColor: string | null;
     taskGroupOrder: number | null;
@@ -96,30 +99,30 @@ function groupTodosByTask(todos: DashboardTodo[]): TodoGroup[] {
     taskOrder: number;
   }>();
 
-  for (const todo of todos) {
-    if (!todo.taskId) {
-      globalTodos.push(todo);
+  for (const checklistItem of checklistItems) {
+    if (!checklistItem.taskId) {
+      globalChecklistItems.push(checklistItem);
     } else {
-      let entry = taskMap.get(todo.taskId);
+      let entry = taskMap.get(checklistItem.taskId);
       if (!entry) {
         entry = {
-          todos: [],
-          taskTitle: todo.taskTitle,
-          taskGroupColor: todo.taskGroupColor,
-          taskGroupOrder: todo.taskGroupOrder,
-          taskStatusOrder: TASK_STATUS_ORDER[todo.taskStatus ?? "active"] ?? 0,
-          taskOrder: todo.taskOrder,
+          checklistItems: [],
+          taskTitle: checklistItem.taskTitle,
+          taskGroupColor: checklistItem.taskGroupColor,
+          taskGroupOrder: checklistItem.taskGroupOrder,
+          taskStatusOrder: TASK_STATUS_ORDER[checklistItem.taskStatus ?? "active"] ?? 0,
+          taskOrder: checklistItem.taskOrder,
         };
-        taskMap.set(todo.taskId, entry);
+        taskMap.set(checklistItem.taskId, entry);
       }
-      entry.todos.push(todo);
+      entry.checklistItems.push(checklistItem);
     }
   }
 
   for (const entry of taskMap.values()) {
-    entry.todos.sort((a, b) => a.order - b.order);
+    entry.checklistItems.sort((a, b) => a.order - b.order);
   }
-  globalTodos.sort((a, b) => a.order - b.order);
+  globalChecklistItems.sort((a, b) => a.order - b.order);
 
   // Match TaskRail order: grouped tasks first (by group order), then ungrouped; within each: status → task order
   const taskEntries = [...taskMap.entries()].sort(([, a], [, b]) => {
@@ -133,17 +136,29 @@ function groupTodosByTask(todos: DashboardTodo[]): TodoGroup[] {
     return a.taskOrder - b.taskOrder;
   });
 
-  const groups: TodoGroup[] = [];
-  if (globalTodos.length > 0) {
-    groups.push({ key: "__global__", taskId: null, taskTitle: null, taskGroupColor: null, todos: globalTodos });
+  const groups: ChecklistGroup[] = [];
+  if (globalChecklistItems.length > 0) {
+    groups.push({
+      key: "__global__",
+      taskId: null,
+      taskTitle: null,
+      taskGroupColor: null,
+      checklistItems: globalChecklistItems,
+    });
   }
   for (const [taskId, entry] of taskEntries) {
-    groups.push({ key: taskId, taskId, taskTitle: entry.taskTitle, taskGroupColor: entry.taskGroupColor, todos: entry.todos });
+    groups.push({
+      key: taskId,
+      taskId,
+      taskTitle: entry.taskTitle,
+      taskGroupColor: entry.taskGroupColor,
+      checklistItems: entry.checklistItems,
+    });
   }
   return groups;
 }
 
-const COLLAPSE_STORAGE_KEY = "dashboard-todo-collapsed";
+const COLLAPSE_STORAGE_KEY = "dashboard-checklist-collapsed";
 
 function getCollapsedSet(): Set<string> {
   try {
@@ -164,27 +179,33 @@ export default function Dashboard({
   const triggerMutation = useTriggerScheduleMutation(undefined);
   const toggleMutation = useToggleScheduleMutation(undefined);
   const deleteMutation = useDeleteScheduleMutation(undefined);
-  const [localOpenTodos, setLocalOpenTodos] = useState<DashboardTodo[]>([]);
-  const [localCompletedTodos, setLocalCompletedTodos] = useState<DashboardTodo[]>([]);
+  const [localOpenChecklistItems, setLocalOpenChecklistItems] = useState<DashboardChecklistItem[]>([]);
+  const [localCompletedChecklistItems, setLocalCompletedChecklistItems] = useState<DashboardChecklistItem[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
-  const [newTodoText, setNewTodoText] = useState("");
-  const [todoSort, setTodoSort] = useState<TodoSort>(getSavedSort);
+  const [newChecklistItemText, setNewChecklistItemText] = useState("");
+  const [checklistSort, setChecklistSort] = useState<ChecklistSort>(getSavedSort);
   const lastLocalChange = useRef(0);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(getCollapsedSet);
 
-  // Sync local todo state from query data, respecting the optimistic update guard
+  // Sync local checklist state from query data, respecting the optimistic update guard
   useEffect(() => {
     if (!data) return;
     const recentLocalChange = Date.now() - lastLocalChange.current < 5000;
     if (!recentLocalChange) {
-      setLocalOpenTodos(data.openTodos);
-      setLocalCompletedTodos(data.completedTodos);
+      setLocalOpenChecklistItems(data.openChecklistItems);
+      setLocalCompletedChecklistItems(data.completedChecklistItems);
     }
   }, [data]);
 
-  const sortedOpenTodos = useMemo(() => sortTodos(localOpenTodos, todoSort), [localOpenTodos, todoSort]);
-  const todoGroups = useMemo(() => groupTodosByTask(localOpenTodos), [localOpenTodos]);
+  const sortedOpenChecklistItems = useMemo(
+    () => sortChecklistItems(localOpenChecklistItems, checklistSort),
+    [localOpenChecklistItems, checklistSort],
+  );
+  const checklistGroups = useMemo(
+    () => groupChecklistItemsByTask(localOpenChecklistItems),
+    [localOpenChecklistItems],
+  );
 
   const toggleGroupCollapse = (key: string) => {
     setCollapsedGroups((prev) => {
@@ -196,35 +217,35 @@ export default function Dashboard({
     });
   };
 
-  const handleSortChange = (sort: TodoSort) => {
-    setTodoSort(sort);
+  const handleSortChange = (sort: ChecklistSort) => {
+    setChecklistSort(sort);
     try { localStorage.setItem(SORT_STORAGE_KEY, sort); } catch {}
   };
 
-  const handleAddTodo = async (e: React.FormEvent) => {
+  const handleAddChecklistItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    const text = newTodoText.trim();
+    const text = newChecklistItemText.trim();
     if (!text) return;
-    setNewTodoText("");
+    setNewChecklistItemText("");
     lastLocalChange.current = Date.now();
     const tempId = `temp-${Date.now()}`;
-    const optimistic: DashboardTodo = {
+    const optimistic: DashboardChecklistItem = {
       id: tempId, taskId: null, text, done: false, order: 0,
       createdAt: new Date().toISOString(),
       taskTitle: null, taskGroupColor: null, taskOrder: 0,
       taskStatus: null, taskGroupId: null, taskGroupOrder: null,
     };
-    setLocalOpenTodos((prev) => [optimistic, ...prev]);
+    setLocalOpenChecklistItems((prev) => [optimistic, ...prev]);
     try {
-      const todo = await createGlobalTodo(text);
-      setLocalOpenTodos((prev) => prev.map((t) =>
+      const checklistItem = await createGlobalChecklistItem(text);
+      setLocalOpenChecklistItems((prev) => prev.map((t) =>
         t.id === tempId
-          ? { ...todo, taskTitle: null, taskGroupColor: null, taskOrder: 0, taskStatus: null, taskGroupId: null, taskGroupOrder: null }
+          ? { ...checklistItem, taskTitle: null, taskGroupColor: null, taskOrder: 0, taskStatus: null, taskGroupId: null, taskGroupOrder: null }
           : t
       ));
     } catch (err) {
-      console.error("Failed to create todo:", err);
-      setLocalOpenTodos((prev) => prev.filter((t) => t.id !== tempId));
+      console.error("Failed to create checklist item:", err);
+      setLocalOpenChecklistItems((prev) => prev.filter((t) => t.id !== tempId));
     }
   };
 
@@ -354,25 +375,25 @@ export default function Dashboard({
 
         {/* ── Dashboard Content (2-col) ──────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left: To-Dos (wider) */}
+          {/* Left: Checklist (wider) */}
           <div className="lg:col-span-2 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
                 <CheckSquare size={14} />
-                Open To-Dos
-                {localOpenTodos.length > 0 && (
-                  <span className="text-text-faint font-normal">({localOpenTodos.filter((t) => !exitingIds.has(t.id)).length})</span>
+                Open Checklist
+                {localOpenChecklistItems.length > 0 && (
+                  <span className="text-text-faint font-normal">({localOpenChecklistItems.filter((t) => !exitingIds.has(t.id)).length})</span>
                 )}
               </h2>
-              {localOpenTodos.length > 1 && (
+              {localOpenChecklistItems.length > 1 && (
                 <div className="flex items-center gap-1">
                   <ArrowUpDown size={11} className="text-text-faint" />
-                  {(Object.keys(SORT_LABELS) as TodoSort[]).map((s) => (
+                  {(Object.keys(SORT_LABELS) as ChecklistSort[]).map((s) => (
                     <button
                       key={s}
                       onClick={() => handleSortChange(s)}
                       className={`text-[11px] px-1.5 py-0.5 rounded transition-colors ${
-                        todoSort === s
+                        checklistSort === s
                           ? "bg-accent/15 text-accent font-medium"
                           : "text-text-faint hover:text-text-secondary"
                       }`}
@@ -384,32 +405,32 @@ export default function Dashboard({
               )}
             </div>
 
-            {/* Add todo input */}
-            <form onSubmit={handleAddTodo}>
+            {/* Add checklist item input */}
+            <form onSubmit={handleAddChecklistItem}>
               <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-bg-surface border border-border focus-within:border-accent transition-colors">
                 <Plus size={14} className="text-text-faint shrink-0" />
                 <input
                   type="text"
-                  value={newTodoText}
-                  onChange={(e) => setNewTodoText(e.target.value)}
-                  placeholder="Add a to-do…"
+                  value={newChecklistItemText}
+                  onChange={(e) => setNewChecklistItemText(e.target.value)}
+                  placeholder="Add a checklist item..."
                   className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-faint outline-none"
                 />
               </div>
             </form>
 
-            {localOpenTodos.length === 0 && localCompletedTodos.length === 0 ? (
+            {localOpenChecklistItems.length === 0 && localCompletedChecklistItems.length === 0 ? (
               <EmptyState
-                message="No to-dos yet"
+                message="No checklist items yet"
                 sub="Add one above or from within a task"
               />
             ) : (
               <>
-                {localOpenTodos.length > 0 && todoSort === "task" ? (
+                {localOpenChecklistItems.length > 0 && checklistSort === "task" ? (
                   <div className="space-y-2">
-                    {todoGroups.map((group) => {
+                    {checklistGroups.map((group) => {
                       const isCollapsed = collapsedGroups.has(group.key);
-                      const visibleCount = group.todos.filter((t) => !exitingIds.has(t.id)).length;
+                      const visibleCount = group.checklistItems.filter((t) => !exitingIds.has(t.id)).length;
                       return (
                         <div key={group.key} className="bg-bg-surface border border-border rounded-lg overflow-hidden">
                           <button
@@ -424,49 +445,49 @@ export default function Dashboard({
                               <span className={`w-2 h-2 rounded-full shrink-0 ${GROUP_COLOR_DOT[group.taskGroupColor] ?? ""}`} />
                             )}
                             <span className="font-medium text-text-secondary truncate">
-                              {group.taskTitle ?? "Global To-Dos"}
+                              {group.taskTitle ?? "Global Checklist"}
                             </span>
                             <span className="text-text-faint text-xs ml-auto shrink-0">{visibleCount}</span>
                           </button>
                           {!isCollapsed && (
                             <div className="divide-y divide-border border-t border-border">
-                              {group.todos.map((todo) => (
+                              {group.checklistItems.map((checklistItem) => (
                                 <div
-                                  key={todo.id}
-                                  className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
+                                  key={checklistItem.id}
+                                  className={exitingIds.has(checklistItem.id) ? "animate-checklist-check" : ""}
                                   onAnimationEnd={() => {
-                                    if (exitingIds.has(todo.id)) {
-                                      setExitingIds((prev) => { const n = new Set(prev); n.delete(todo.id); return n; });
-                                      setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                                      setLocalCompletedTodos((prev) => [{ ...todo, done: true }, ...prev]);
+                                    if (exitingIds.has(checklistItem.id)) {
+                                      setExitingIds((prev) => { const n = new Set(prev); n.delete(checklistItem.id); return n; });
+                                      setLocalOpenChecklistItems((prev) => prev.filter((t) => t.id !== checklistItem.id));
+                                      setLocalCompletedChecklistItems((prev) => [{ ...checklistItem, done: true }, ...prev]);
                                     }
                                   }}
                                 >
-                                  <TodoRow
+                                  <ChecklistItemRow
                                     variant="dashboard"
-                                    todo={todo}
+                                    checklistItem={checklistItem}
                                     hideTaskPill
-                                    onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
+                                    onSelectTask={checklistItem.taskId ? () => onSelectTask(checklistItem.taskId!, { checklistItemId: checklistItem.id }) : undefined}
                                     onToggle={async () => {
                                       lastLocalChange.current = Date.now();
-                                      setExitingIds((prev) => new Set(prev).add(todo.id));
-                                      await patchTodo(todo.id, { done: true });
+                                      setExitingIds((prev) => new Set(prev).add(checklistItem.id));
+                                      await patchChecklistItem(checklistItem.id, { done: true });
                                     }}
                                     onDeadlineChange={(deadline) => {
                                       lastLocalChange.current = Date.now();
-                                      setLocalOpenTodos((prev) => prev.map((t) =>
-                                        t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
+                                      setLocalOpenChecklistItems((prev) => prev.map((t) =>
+                                        t.id === checklistItem.id ? { ...t, deadline: deadline ?? undefined } : t
                                       ));
                                     }}
                                     onUpdate={(updated) => {
                                       lastLocalChange.current = Date.now();
-                                      setLocalOpenTodos((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+                                      setLocalOpenChecklistItems((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
                                     }}
                                     onDelete={() => {
                                       lastLocalChange.current = Date.now();
-                                      setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                                      setLocalOpenChecklistItems((prev) => prev.filter((t) => t.id !== checklistItem.id));
                                     }}
-                                    canDelete={!todo.taskId}
+                                    canDelete={!checklistItem.taskId}
                                   />
                                 </div>
                               ))}
@@ -476,57 +497,57 @@ export default function Dashboard({
                       );
                     })}
                   </div>
-                ) : localOpenTodos.length > 0 ? (
+                ) : localOpenChecklistItems.length > 0 ? (
                   <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
-                    {sortedOpenTodos.map((todo) => (
+                    {sortedOpenChecklistItems.map((checklistItem) => (
                       <div
-                        key={todo.id}
-                        className={exitingIds.has(todo.id) ? "animate-todo-check" : ""}
+                        key={checklistItem.id}
+                        className={exitingIds.has(checklistItem.id) ? "animate-checklist-check" : ""}
                         onAnimationEnd={() => {
-                          if (exitingIds.has(todo.id)) {
-                            setExitingIds((prev) => { const n = new Set(prev); n.delete(todo.id); return n; });
-                            setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                            setLocalCompletedTodos((prev) => [{ ...todo, done: true }, ...prev]);
+                          if (exitingIds.has(checklistItem.id)) {
+                            setExitingIds((prev) => { const n = new Set(prev); n.delete(checklistItem.id); return n; });
+                            setLocalOpenChecklistItems((prev) => prev.filter((t) => t.id !== checklistItem.id));
+                            setLocalCompletedChecklistItems((prev) => [{ ...checklistItem, done: true }, ...prev]);
                           }
                         }}
                       >
-                        <TodoRow
+                        <ChecklistItemRow
                           variant="dashboard"
-                          todo={todo}
-                          onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
+                          checklistItem={checklistItem}
+                          onSelectTask={checklistItem.taskId ? () => onSelectTask(checklistItem.taskId!, { checklistItemId: checklistItem.id }) : undefined}
                           onToggle={async () => {
                             lastLocalChange.current = Date.now();
-                            setExitingIds((prev) => new Set(prev).add(todo.id));
-                            await patchTodo(todo.id, { done: true });
+                            setExitingIds((prev) => new Set(prev).add(checklistItem.id));
+                            await patchChecklistItem(checklistItem.id, { done: true });
                           }}
                           onDeadlineChange={(deadline) => {
                             lastLocalChange.current = Date.now();
-                            setLocalOpenTodos((prev) => prev.map((t) =>
-                              t.id === todo.id ? { ...t, deadline: deadline ?? undefined } : t
+                            setLocalOpenChecklistItems((prev) => prev.map((t) =>
+                              t.id === checklistItem.id ? { ...t, deadline: deadline ?? undefined } : t
                             ));
                           }}
                           onUpdate={(updated) => {
                             lastLocalChange.current = Date.now();
-                            setLocalOpenTodos((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+                            setLocalOpenChecklistItems((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
                           }}
                           onDelete={() => {
                             lastLocalChange.current = Date.now();
-                            setLocalOpenTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                            setLocalOpenChecklistItems((prev) => prev.filter((t) => t.id !== checklistItem.id));
                           }}
-                          canDelete={!todo.taskId}
+                          canDelete={!checklistItem.taskId}
                         />
                       </div>
                     ))}
                   </div>
                 ) : null}
 
-                {localOpenTodos.length === 0 && localCompletedTodos.length > 0 && (
+                {localOpenChecklistItems.length === 0 && localCompletedChecklistItems.length > 0 && (
                   <div className="text-center py-6 px-4 rounded-md bg-bg-surface border border-border">
                     <div className="text-sm text-success">✓ All done!</div>
                   </div>
                 )}
 
-                {localCompletedTodos.length > 0 && (
+                {localCompletedChecklistItems.length > 0 && (
                   <>
                     <button
                       onClick={() => setShowCompleted((v) => !v)}
@@ -535,31 +556,31 @@ export default function Dashboard({
                       {showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       <Check size={14} />
                       Completed
-                      <span className="text-text-faint font-normal">({localCompletedTodos.length})</span>
+                      <span className="text-text-faint font-normal">({localCompletedChecklistItems.length})</span>
                     </button>
                     {showCompleted && (
                       <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
-                        {localCompletedTodos.map((todo) => (
-                          <TodoRow
-                            key={todo.id}
+                        {localCompletedChecklistItems.map((checklistItem) => (
+                          <ChecklistItemRow
+                            key={checklistItem.id}
                             variant="dashboard"
-                            todo={todo}
-                            onSelectTask={todo.taskId ? () => onSelectTask(todo.taskId!, { todoId: todo.id }) : undefined}
+                            checklistItem={checklistItem}
+                            onSelectTask={checklistItem.taskId ? () => onSelectTask(checklistItem.taskId!, { checklistItemId: checklistItem.id }) : undefined}
                             onToggle={async () => {
                               lastLocalChange.current = Date.now();
-                              setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
-                              setLocalOpenTodos((prev) => [...prev, { ...todo, done: false }]);
-                              await patchTodo(todo.id, { done: false });
+                              setLocalCompletedChecklistItems((prev) => prev.filter((t) => t.id !== checklistItem.id));
+                              setLocalOpenChecklistItems((prev) => [...prev, { ...checklistItem, done: false }]);
+                              await patchChecklistItem(checklistItem.id, { done: false });
                             }}
                             onUpdate={(updated) => {
                               lastLocalChange.current = Date.now();
-                              setLocalCompletedTodos((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
+                              setLocalCompletedChecklistItems((prev) => prev.map((t) => t.id === updated.id ? { ...t, ...updated } : t));
                             }}
                             onDelete={() => {
                               lastLocalChange.current = Date.now();
-                              setLocalCompletedTodos((prev) => prev.filter((t) => t.id !== todo.id));
+                              setLocalCompletedChecklistItems((prev) => prev.filter((t) => t.id !== checklistItem.id));
                             }}
-                            canDelete={!todo.taskId}
+                            canDelete={!checklistItem.taskId}
                           />
                         ))}
                       </div>
@@ -707,8 +728,8 @@ function ResumeStrip({
           {activeTask.prSummary.total > 0 && (
             <span>{activeTask.prSummary.active} active PR{activeTask.prSummary.active !== 1 ? "s" : ""}</span>
           )}
-          {activeTask.todoSummary.total > 0 && (
-            <span>{activeTask.todoSummary.done}/{activeTask.todoSummary.total} todos</span>
+          {activeTask.checklistSummary.total > 0 && (
+            <span>{activeTask.checklistSummary.done}/{activeTask.checklistSummary.total} checklist items</span>
           )}
           <span>{timeAgo(activeTask.lastActivity)}</span>
         </div>

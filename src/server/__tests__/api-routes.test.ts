@@ -886,101 +886,109 @@ describe("Task group routes", () => {
   });
 });
 
-// ── Todo CRUD ────────────────────────────────────────────────────
+// ── Checklist CRUD ───────────────────────────────────────────────
 
-describe("Todo routes", () => {
+describe("Checklist routes", () => {
   let taskId: string;
 
   beforeEach(async () => {
     const task = await request(app)
       .post("/api/tasks")
-      .send({ title: "Todo Host" });
+      .send({ title: "Checklist Host" });
     taskId = task.body.task.id;
   });
 
-  it("GET /api/tasks/:taskId/todos returns empty list initially", async () => {
-    const res = await request(app).get(`/api/tasks/${taskId}/todos`);
+  it("GET /api/tasks/:taskId/checklist-items returns empty list initially", async () => {
+    const res = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
     expect(res.status).toBe(200);
-    expect(res.body.todos).toEqual([]);
+    expect(res.body.checklistItems).toEqual([]);
   });
 
-  it("POST /api/tasks/:taskId/todos creates a todo", async () => {
+  it("POST /api/tasks/:taskId/checklist-items creates a checklist item", async () => {
     const res = await request(app)
-      .post(`/api/tasks/${taskId}/todos`)
+      .post(`/api/tasks/${taskId}/checklist-items`)
       .send({ text: "Write tests" });
     expect(res.status).toBe(200);
-    expect(res.body.todo.text).toBe("Write tests");
-    expect(res.body.todo.done).toBe(false);
+    expect(res.body.checklistItem.text).toBe("Write tests");
+    expect(res.body.checklistItem.done).toBe(false);
   });
 
-  it("PATCH /api/todos/:id updates a todo", async () => {
+  it("PATCH /api/checklist-items/:id updates a checklist item", async () => {
     const create = await request(app)
-      .post(`/api/tasks/${taskId}/todos`)
+      .post(`/api/tasks/${taskId}/checklist-items`)
       .send({ text: "Draft" });
-    const id = create.body.todo.id;
+    const id = create.body.checklistItem.id;
 
     const res = await request(app)
-      .patch(`/api/todos/${id}`)
+      .patch(`/api/checklist-items/${id}`)
       .send({ text: "Final", done: true });
     expect(res.status).toBe(200);
-    expect(res.body.todo.text).toBe("Final");
-    expect(res.body.todo.done).toBe(true);
+    expect(res.body.checklistItem.text).toBe("Final");
+    expect(res.body.checklistItem.done).toBe(true);
   });
 
-  it("DELETE /api/todos/:id removes a todo", async () => {
+  it("DELETE /api/checklist-items/:id removes a checklist item", async () => {
     const create = await request(app)
-      .post(`/api/tasks/${taskId}/todos`)
+      .post(`/api/tasks/${taskId}/checklist-items`)
       .send({ text: "Ephemeral" });
-    const id = create.body.todo.id;
+    const id = create.body.checklistItem.id;
 
-    const del = await request(app).delete(`/api/todos/${id}`);
+    const del = await request(app).delete(`/api/checklist-items/${id}`);
     expect(del.status).toBe(200);
     expect(del.body.ok).toBe(true);
 
-    const list = await request(app).get(`/api/tasks/${taskId}/todos`);
-    expect(list.body.todos).toEqual([]);
+    const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
+    expect(list.body.checklistItems).toEqual([]);
   });
 
-  it("POST /api/todos creates a global todo", async () => {
+  it("POST /api/checklist-items creates a global checklist item", async () => {
     const res = await request(app)
-      .post("/api/todos")
-      .send({ text: "Global todo" });
+      .post("/api/checklist-items")
+      .send({ text: "Global checklist item" });
     expect(res.status).toBe(200);
-    expect(res.body.todo.text).toBe("Global todo");
-    expect(res.body.todo.taskId).toBeNull();
+    expect(res.body.checklistItem.text).toBe("Global checklist item");
+    expect(res.body.checklistItem.taskId).toBeNull();
   });
 
-  it("GET /api/todos/open returns open todos", async () => {
+  it("GET /api/checklist-items/open returns open checklist items", async () => {
     await request(app)
-      .post(`/api/tasks/${taskId}/todos`)
+      .post(`/api/tasks/${taskId}/checklist-items`)
       .send({ text: "Open one" });
 
-    const res = await request(app).get("/api/todos/open");
+    const res = await request(app).get("/api/checklist-items/open");
     expect(res.status).toBe(200);
-    expect(res.body.todos.length).toBeGreaterThanOrEqual(1);
-    expect(res.body.todos[0].text).toBe("Open one");
+    expect(res.body.checklistItems.length).toBeGreaterThanOrEqual(1);
+    expect(res.body.checklistItems[0].text).toBe("Open one");
   });
 
-  it("PUT /api/tasks/:taskId/todos/reorder reorders todos", async () => {
-    const t1 = (await request(app).post(`/api/tasks/${taskId}/todos`).send({ text: "First" })).body.todo;
-    const t2 = (await request(app).post(`/api/tasks/${taskId}/todos`).send({ text: "Second" })).body.todo;
+  it("PUT /api/tasks/:taskId/checklist-items/reorder reorders checklist items", async () => {
+    const t1 = (await request(app).post(`/api/tasks/${taskId}/checklist-items`).send({ text: "First" })).body.checklistItem;
+    const t2 = (await request(app).post(`/api/tasks/${taskId}/checklist-items`).send({ text: "Second" })).body.checklistItem;
 
     const res = await request(app)
-      .put(`/api/tasks/${taskId}/todos/reorder`)
-      .send({ todoIds: [t2.id, t1.id] });
+      .put(`/api/tasks/${taskId}/checklist-items/reorder`)
+      .send({ checklistItemIds: [t2.id, t1.id] });
     expect(res.status).toBe(200);
 
-    const list = await request(app).get(`/api/tasks/${taskId}/todos`);
-    expect(list.body.todos[0].id).toBe(t2.id);
-    expect(list.body.todos[1].id).toBe(t1.id);
+    const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
+    expect(list.body.checklistItems[0].id).toBe(t2.id);
+    expect(list.body.checklistItems[1].id).toBe(t1.id);
   });
 
-  it("POST /api/tasks/:taskId/todos with deadline", async () => {
+  it("POST /api/tasks/:taskId/checklist-items with deadline", async () => {
     const res = await request(app)
-      .post(`/api/tasks/${taskId}/todos`)
+      .post(`/api/tasks/${taskId}/checklist-items`)
       .send({ text: "Due soon", deadline: "2026-12-31" });
     expect(res.status).toBe(200);
-    expect(res.body.todo.deadline).toBe("2026-12-31");
+    expect(res.body.checklistItem.deadline).toBe("2026-12-31");
+  });
+
+  it("old /api/todos routes are not exposed", async () => {
+    expect((await request(app).get(`/api/tasks/${taskId}/todos`)).status).toBe(404);
+    expect((await request(app).post(`/api/tasks/${taskId}/todos`).send({ text: "Old route" })).status).toBe(404);
+    expect((await request(app).post("/api/todos").send({ text: "Old route" })).status).toBe(404);
+    expect((await request(app).get("/api/todos/open")).status).toBe(404);
+    expect((await request(app).put(`/api/tasks/${taskId}/todos/reorder`).send({ todoIds: [] })).status).toBe(404);
   });
 });
 

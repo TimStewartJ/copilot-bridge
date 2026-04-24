@@ -15,7 +15,7 @@ import { createSettingsStore } from "../settings-store.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createReadStateStore } from "../read-state-store.js";
-import { createTodoStore } from "../todo-store.js";
+import { createChecklistStore } from "../checklist-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
@@ -122,7 +122,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     sessionMetaStore: createSessionMetaStore(db),
     sessionTitles: createSessionTitlesStore(db),
     readStateStore: createReadStateStore(db),
-    todoStore: createTodoStore(db, globalBus),
+     checklistStore: createChecklistStore(db, globalBus),
     tagStore: createTagStore(db),
     telemetryStore: createTelemetryStore(db),
     docsStore,

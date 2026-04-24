@@ -1,10 +1,10 @@
-// Shared deadline/todo helpers used by TaskPanel and Dashboard
+// Shared deadline/checklist helpers used by TaskPanel and Dashboard
 
 export type DeadlineUrgency = "none" | "soon" | "overdue";
-export type HomeTodoIndicatorState = "none" | "due-today" | "overdue";
+export type HomeChecklistIndicatorState = "none" | "due-today" | "overdue";
 
-export interface HomeTodoIndicator {
-  state: HomeTodoIndicatorState;
+export interface HomeChecklistIndicator {
+  state: HomeChecklistIndicatorState;
   dueTodayCount: number;
   overdueCount: number;
   urgentCount: number;
@@ -38,18 +38,18 @@ export function deadlineLabel(deadline: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function getHomeTodoIndicator(
-  todos: readonly DeadlineLike[],
+export function getHomeChecklistIndicator(
+  checklistItems: readonly DeadlineLike[],
   now = new Date(),
-): HomeTodoIndicator {
+): HomeChecklistIndicator {
   const today = localDateKey(now);
   let overdueCount = 0;
   let dueTodayCount = 0;
 
-  for (const todo of todos) {
-    if (!todo.deadline || todo.done) continue;
-    if (todo.deadline < today) overdueCount++;
-    else if (todo.deadline === today) dueTodayCount++;
+  for (const checklistItem of checklistItems) {
+    if (!checklistItem.deadline || checklistItem.done) continue;
+    if (checklistItem.deadline < today) overdueCount++;
+    else if (checklistItem.deadline === today) dueTodayCount++;
   }
 
   return {
@@ -60,12 +60,12 @@ export function getHomeTodoIndicator(
   };
 }
 
-export function describeHomeTodoIndicator(indicator: HomeTodoIndicator): string | null {
+export function describeHomeChecklistIndicator(indicator: HomeChecklistIndicator): string | null {
   if (indicator.state === "overdue") {
-    return `${indicator.overdueCount} overdue to-do${indicator.overdueCount === 1 ? "" : "s"}`;
+    return `${indicator.overdueCount} overdue checklist item${indicator.overdueCount === 1 ? "" : "s"}`;
   }
   if (indicator.state === "due-today") {
-    return `${indicator.dueTodayCount} to-do${indicator.dueTodayCount === 1 ? "" : "s"} due today`;
+    return `${indicator.dueTodayCount} checklist item${indicator.dueTodayCount === 1 ? "" : "s"} due today`;
   }
   return null;
 }

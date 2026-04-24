@@ -8,7 +8,7 @@ import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { ReadStateStore } from "./read-state-store.js";
-import type { TodoStore } from "./todo-store.js";
+import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { TagStore } from "./tag-store.js";
@@ -28,7 +28,7 @@ export interface AppContext {
   sessionMetaStore: SessionMetaStore;
   sessionTitles: SessionTitlesStore;
   readStateStore: ReadStateStore;
-  todoStore: TodoStore;
+  checklistStore: ChecklistStore;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
   tagStore?: TagStore;
