@@ -8,6 +8,99 @@ import { createScheduleStore } from "../schedule-store.js";
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 
+describe("JSON task migration", () => {
+  it("normalizes paused tasks to active and clears parked momentum from non-active tasks", () => {
+    const db = setupTestDb();
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-migrate-tasks-"));
+
+    writeFileSync(
+      join(dataDir, "tasks.json"),
+      JSON.stringify([
+        {
+          id: "task-paused",
+          title: "Paused task",
+          status: "paused",
+          notes: "",
+          doneWhen: "Release is fully rolled out",
+          nextAction: "Review production metrics",
+          waitingOn: "Customer confirmation",
+          nextTouchAt: "2026-03-01T12:00:00.000Z",
+          pinned: true,
+          order: 1,
+          createdAt: "2026-02-01T00:00:00.000Z",
+          updatedAt: "2026-02-02T00:00:00.000Z",
+        },
+        {
+          id: "task-done",
+          title: "Done task",
+          status: "done",
+          notes: "",
+          doneWhen: "Release is fully rolled out",
+          nextAction: "Should be cleared",
+          waitingOn: "Should be cleared",
+          nextTouchAt: "2026-03-02T12:00:00.000Z",
+          pinned: false,
+          order: 2,
+          createdAt: "2026-02-03T00:00:00.000Z",
+          updatedAt: "2026-02-04T00:00:00.000Z",
+        },
+        {
+          id: "task-archived",
+          title: "Archived task",
+          status: "archived",
+          notes: "",
+          doneWhen: "Release is fully rolled out",
+          nextAction: "Should be cleared",
+          waitingOn: "Should be cleared",
+          nextTouchAt: "2026-03-03T12:00:00.000Z",
+          pinned: false,
+          order: 3,
+          createdAt: "2026-02-05T00:00:00.000Z",
+          updatedAt: "2026-02-06T00:00:00.000Z",
+        },
+      ]),
+    );
+
+    migrateJsonToSqlite(db, dataDir);
+
+    const rows = db.prepare(`
+      SELECT id, status, doneWhen, nextAction, waitingOn, nextTouchAt, pinned
+      FROM tasks
+      ORDER BY id
+    `).all() as Array<Record<string, unknown>>;
+
+    expect(rows).toEqual([
+      {
+        id: "task-archived",
+        status: "archived",
+        doneWhen: "Release is fully rolled out",
+        nextAction: null,
+        waitingOn: null,
+        nextTouchAt: null,
+        pinned: 0,
+      },
+      {
+        id: "task-done",
+        status: "done",
+        doneWhen: "Release is fully rolled out",
+        nextAction: null,
+        waitingOn: null,
+        nextTouchAt: null,
+        pinned: 0,
+      },
+      {
+        id: "task-paused",
+        status: "active",
+        doneWhen: "Release is fully rolled out",
+        nextAction: "Review production metrics",
+        waitingOn: "Customer confirmation",
+        nextTouchAt: "2026-03-01T12:00:00.000Z",
+        pinned: 1,
+      },
+    ]);
+  });
+});
+
 describe("JSON schedule migration", () => {
   it("preserves run history from both session metadata and schedules", () => {
     const db = setupTestDb();

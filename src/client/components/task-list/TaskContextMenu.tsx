@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
-import { Eye, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, Pin, CalendarDays, X } from "lucide-react";
+import { Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, Pin, CalendarDays, X } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 
@@ -103,13 +103,6 @@ export default function TaskContextMenu({
           onClick={() => { onUpdateTask(task.id, { status: "active" }); closeMenu(); }}
         />
       )}
-      {onUpdateTask && task.status !== "paused" && task.status !== "archived" && (
-        <CtxItem
-          icon={<Pause size={14} />}
-          label="Set Paused"
-          onClick={() => { onUpdateTask(task.id, { status: "paused" }); closeMenu(); }}
-        />
-      )}
       {onUpdateTask && task.status !== "done" && task.status !== "archived" && (
         <CtxItem
           icon={<CheckCircle size={14} />}
@@ -127,7 +120,7 @@ export default function TaskContextMenu({
           }}
         />
       )}
-      {onUpdateTask && task.status !== "archived" && (
+      {onUpdateTask && task.status === "active" && (
         <>
           <CtxDivider />
           <CtxItem

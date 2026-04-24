@@ -2,9 +2,8 @@ import type { Task, TaskGroup } from "../api";
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
-  paused: 1,
-  done: 2,
-  archived: 3,
+  done: 1,
+  archived: 2,
 };
 
 /** Sort tasks by status priority then by order, with pinned tasks floating to top within each status tier. */
@@ -28,11 +27,14 @@ export function splitArchivedTasks(tasks: Task[]): { nonArchived: Task[]; archiv
 }
 
 /** Group tasks by status category. */
-export function groupTasksByStatus(tasks: Task[]): Record<Task["status"], Task[]> {
+export function groupTasksByStatus(tasks: Task[]): {
+  active: Task[];
+  done: Task[];
+  archived: Task[];
+} {
   const sorted = sortTasksByStatusAndOrder(tasks);
   return {
     active: sorted.filter((t) => t.status === "active"),
-    paused: sorted.filter((t) => t.status === "paused"),
     done: sorted.filter((t) => t.status === "done"),
     archived: sorted.filter((t) => t.status === "archived"),
   };

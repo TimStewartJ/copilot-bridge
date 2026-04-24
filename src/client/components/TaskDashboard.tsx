@@ -207,7 +207,6 @@ export default function TaskDashboard({
                 )}
                 <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${
                   momentumTask.status === "active" ? "bg-success/15 text-success" :
-                  momentumTask.status === "paused" ? "bg-warning/15 text-warning" :
                   momentumTask.status === "done" ? "bg-accent/15 text-accent" :
                   "bg-text-muted/15 text-text-muted"
                 }`}>

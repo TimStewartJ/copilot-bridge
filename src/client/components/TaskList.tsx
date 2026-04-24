@@ -87,11 +87,11 @@ export default function TaskList({
 
   const groupedSections = useMemo(() => {
     if (!hasGroups) return null;
-    const nonArchived = [...grouped.active, ...grouped.paused, ...grouped.done];
+    const nonArchived = [...grouped.active, ...grouped.done];
     return buildGroupSections(nonArchived, taskGroups);
   }, [hasGroups, grouped, taskGroups]);
 
-  const allNonArchived = [...grouped.active, ...grouped.paused, ...grouped.done];
+  const allNonArchived = [...grouped.active, ...grouped.done];
 
   const {
     sensors,
@@ -241,7 +241,6 @@ export default function TaskList({
         ) : (
           <>
             {renderGroup("Active", grouped.active)}
-            {renderGroup("Paused", grouped.paused)}
             {renderGroup("Done", grouped.done)}
           </>
         )}

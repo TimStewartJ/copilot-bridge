@@ -94,4 +94,25 @@ describe("session manager task tools", () => {
 
     expect(ctx.taskStore.getTask(task.id)?.nextTouchAt).toBeUndefined();
   });
+
+  it("task_update rejects parked momentum updates for done tasks", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Momentum closed");
+    ctx.taskStore.updateTask(task.id, { status: "done" });
+    const tool = getTool(ctx, "task_update");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      nextAction: "Take another pass",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("nextAction, waitingOn, and nextTouchAt can only be set on active tasks"),
+    );
+
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
+      status: "done",
+      nextAction: undefined,
+      waitingOn: undefined,
+      nextTouchAt: undefined,
+    }));
+  });
 });

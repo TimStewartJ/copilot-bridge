@@ -87,7 +87,7 @@ interface ChecklistGroup {
   checklistItems: DashboardChecklistItem[];
 }
 
-const TASK_STATUS_ORDER: Record<string, number> = { active: 0, paused: 1, done: 2, archived: 3 };
+const TASK_STATUS_ORDER: Record<string, number> = { active: 0, done: 1, archived: 2 };
 
 function groupChecklistItemsByTask(checklistItems: DashboardChecklistItem[]): ChecklistGroup[] {
   const globalChecklistItems: DashboardChecklistItem[] = [];

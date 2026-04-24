@@ -8,6 +8,16 @@ import { looksLikePromptEchoTitle } from "./session-title-utils.js";
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 
+function normalizeLegacyTaskStatus(value: unknown): "active" | "done" | "archived" {
+  if (value === undefined || value === null || value === "active" || value === "paused") return "active";
+  if (value === "done" || value === "archived") return value;
+  throw new Error(`Unsupported legacy task status: ${String(value)}`);
+}
+
+function normalizeOptionalTaskText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
 export function migrateJsonToSqlite(db: DatabaseSync, dataDir: string): void {
   // Check if migration is needed: if tasks table already has rows, skip
   const count = (db.prepare("SELECT COUNT(*) as cnt FROM tasks").get() as any).cnt;
@@ -52,8 +62,11 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
   if (!Array.isArray(tasks)) return;
 
   const insertTask = db.prepare(`
-    INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (
+      id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+      priority, pinned, "order", createdAt, updatedAt
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSession = db.prepare(
     "INSERT OR IGNORE INTO task_sessions (taskId, sessionId) VALUES (?, ?)",
@@ -66,6 +79,12 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
   );
 
   for (const t of tasks) {
+    const status = normalizeLegacyTaskStatus(t.status);
+    const doneWhen = normalizeOptionalTaskText(t.doneWhen);
+    const nextAction = status === "active" ? normalizeOptionalTaskText(t.nextAction) : null;
+    const waitingOn = status === "active" ? normalizeOptionalTaskText(t.waitingOn) : null;
+    const nextTouchAt = status === "active" ? normalizeOptionalTaskText(t.nextTouchAt) : null;
+
     // Handle legacy workItemIds migration
     const workItems = Array.isArray(t.workItems)
       ? t.workItems
@@ -74,8 +93,9 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
         : [];
 
     insertTask.run(
-      t.id, t.title, t.status ?? "active", t.groupId ?? null, t.cwd ?? null,
-      t.notes ?? "", t.priority ?? 0, t.order ?? 0,
+      t.id, t.title, status, t.groupId ?? null, t.cwd ?? null,
+      t.notes ?? "", doneWhen, nextAction, waitingOn, nextTouchAt,
+      t.priority ?? 0, t.pinned ? 1 : 0, t.order ?? 0,
       t.createdAt ?? new Date().toISOString(), t.updatedAt ?? new Date().toISOString(),
     );
 
