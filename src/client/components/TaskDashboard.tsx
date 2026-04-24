@@ -3,13 +3,14 @@ import type { Task, TaskGroup, Session } from "../api";
 import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
-import { useTagsQuery } from "../hooks/queries/useTags";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh from "./PullToRefresh";
 import SessionList from "./SessionList";
 import NotesSheet from "./NotesSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
+import TaskGitStatusSummary from "./TaskGitStatusSummary";
+import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import ReactMarkdown from "react-markdown";
@@ -97,14 +98,13 @@ export default function TaskDashboard({
   onRequestArchived,
   archivedLoaded,
 }: TaskDashboardProps) {
-  const { data: allTags = [] } = useTagsQuery();
-
   // ── Consolidated workspace hook ─────────────────────────────
   const ws = useTaskWorkspace(task, taskGroups, sessions);
   const {
     enrichedWIs, enrichedPRs,
     sched, schedDetail,
     notes,
+    taskGitStatus,
     checklistItems, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
     newChecklistItemText, setNewChecklistItemText,
     linkedSessions,
@@ -115,10 +115,15 @@ export default function TaskDashboard({
   const [groupNotesOpen, setGroupNotesOpen] = useState(false);
   const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
   const [momentumTask, setMomentumTask] = useState(task);
+  const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
 
   useEffect(() => {
     setMomentumTask(task);
   }, [task]);
+
+  useEffect(() => {
+    setWorkspaceSheetOpen(false);
+  }, [task.id]);
 
   const handleRefresh = async () => {
     await Promise.all([refresh(), onRefresh?.()]);
@@ -188,7 +193,7 @@ export default function TaskDashboard({
 
     return chips;
   }, [enrichedPRs, linkedSessions, momentumTask, openChecklistItems.length]);
-
+  
   return (
     <div className="flex-1 min-h-0 relative">
     <PullToRefresh onRefresh={handleRefresh} className="absolute inset-0">
@@ -248,12 +253,19 @@ export default function TaskDashboard({
                   )}
                 </div>
               )}
-              {task.cwd && (
-                <div className="flex items-center gap-1.5 mt-1.5 text-xs text-text-muted">
+              <button
+                onClick={() => setWorkspaceSheetOpen(true)}
+                className="-ml-1 mt-1.5 rounded-md px-1 py-1 text-left transition-colors hover:bg-bg-hover/70"
+              >
+                <div className="flex items-center gap-1.5 text-xs text-text-muted">
                   <FolderOpen size={12} className="text-text-faint" />
-                  <span className="font-mono">{task.cwd}</span>
+                  <span className="font-mono">{task.cwd ?? "Set workspace…"}</span>
                 </div>
-              )}
+                <TaskGitStatusSummary
+                  gitStatus={taskGitStatus}
+                  className="mt-1 pl-[18px] text-[11px]"
+                />
+              </button>
               <div className="text-xs text-text-faint mt-1">
                 Last activity {timeAgo(lastActivity)} · Created {timeAgo(momentumTask.createdAt)}
               </div>
@@ -543,6 +555,14 @@ export default function TaskDashboard({
           onDelete={sched.remove}
           onSaved={() => { schedDetail.close(); sched.reload(); }}
           onSelectSession={onSelectSession}
+        />
+      )}
+      {workspaceSheetOpen && (
+        <WorkspaceDetailsSheet
+          task={task}
+          taskGitStatus={taskGitStatus}
+          onClose={() => setWorkspaceSheetOpen(false)}
+          onTaskUpdated={onTasksChanged}
         />
       )}
     </PullToRefresh>

@@ -1882,6 +1882,27 @@ describe("Session routes (mocked)", () => {
     expect(Array.isArray(res.body.schedules)).toBe(true);
   });
 
+  it("GET /api/dashboard tolerates preview contexts without dashboard stores", async () => {
+    ({ app, ctx } = createTestApp({
+      taskGroupStore: undefined as any,
+      scheduleStore: undefined as any,
+      checklistStore: undefined as any,
+      voiceJobManager: {} as any,
+    }));
+    ctx.taskStore.createTask("Dashboard Task");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastActiveTask).toEqual(expect.objectContaining({
+      task: expect.objectContaining({ title: "Dashboard Task" }),
+      checklistSummary: { total: 0, done: 0, open: 0, overdue: 0 },
+    }));
+    expect(res.body.openChecklistItems).toEqual([]);
+    expect(res.body.completedChecklistItems).toEqual([]);
+    expect(res.body.schedules).toEqual([]);
+  });
+
   it("GET /api/dashboard keeps sessions visible when only a title override exists", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
@@ -2698,6 +2719,21 @@ describe("Session manager routes", () => {
 
     expect(res.status).toBe(200);
     expect(ctx.sessionTitles.getTitle("dup-session")).toBe("Copy of Original session");
+  });
+
+  it("POST /api/sessions/:id/duplicate preserves all task links from the source session", async () => {
+    const sessionManager = createMockSessionManager();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const taskA = ctx.taskStore.createTask("Task A");
+    ctx.taskStore.linkSession(taskA.id, "test-id");
+    const taskB = ctx.taskStore.createTask("Task B");
+    ctx.taskStore.linkSession(taskB.id, "test-id");
+
+    const res = await request(app).post("/api/sessions/test-id/duplicate");
+
+    expect(res.status).toBe(200);
+    expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain("dup-session");
+    expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain("dup-session");
   });
 
   it("POST /api/sessions/:id/reload reloads a session", async () => {

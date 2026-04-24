@@ -13,6 +13,7 @@ import { createTaskGroupStore } from "../task-group-store.js";
 import { createScheduleStore } from "../schedule-store.js";
 import { createSettingsStore } from "../settings-store.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
+import { createSessionWorkspaceStore } from "../session-workspace-store.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
@@ -65,6 +66,17 @@ export function createMockSessionManager() {
     hasPlan: () => true,
     createTaskSession: async () => ({ sessionId: "task-session" }),
     invalidateSessionListCache: () => {},
+    setSessionWorkspace: (sessionId: string, cwd: string) => ({
+      cwd,
+      source: "explicit",
+      message: `Session workspace set to ${cwd} for future turns`,
+      sessionId,
+    }),
+    resetSessionWorkspace: (_sessionId: string) => ({
+      cwd: "",
+      source: "task-default",
+      message: "Session workspace reset to linked task default",
+    }),
   } as any;
 }
 export function createMockTranscriptionService(overrides?: Partial<TranscriptionService>): TranscriptionService {
@@ -120,6 +132,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     scheduleStore: createScheduleStore(db),
     settingsStore: createSettingsStore(db),
     sessionMetaStore: createSessionMetaStore(db),
+    sessionWorkspaceStore: createSessionWorkspaceStore(db),
     sessionTitles: createSessionTitlesStore(db),
     readStateStore: createReadStateStore(db),
      checklistStore: createChecklistStore(db, globalBus),

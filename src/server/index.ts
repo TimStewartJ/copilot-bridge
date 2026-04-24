@@ -13,6 +13,7 @@ import { migrateJsonToSqlite } from "./migrate-json-to-sqlite.js";
 import { createTaskStore } from "./task-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createSessionMetaStore } from "./session-meta-store.js";
+import { createSessionWorkspaceStore } from "./session-workspace-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import { createScheduleStore } from "./schedule-store.js";
@@ -63,6 +64,7 @@ const taskGroupStore = createTaskGroupStore(db);
 const scheduleStore = createScheduleStore(db);
 const settingsStore = createSettingsStore(db);
 const sessionMetaStore = createSessionMetaStore(db);
+const sessionWorkspaceStore = createSessionWorkspaceStore(db);
 const sessionTitles = createSessionTitlesStore(db);
 const readStateStore = createReadStateStore(db);
 const checklistStore = createChecklistStore(db, defaultGlobalBus);
@@ -81,7 +83,7 @@ setMcpServersGetter(() => settingsStore.getMcpServers());
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionTitles, readStateStore, checklistStore, docsStore, docsIndex, tagStore, telemetryStore,
+  sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore, docsStore, docsIndex, tagStore, telemetryStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction

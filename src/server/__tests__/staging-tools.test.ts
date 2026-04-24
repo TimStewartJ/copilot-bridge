@@ -230,6 +230,98 @@ describe("staging tools", () => {
     expect(mod.parsePreviewPrefix("missing", activeWorktrees)).toBeNull();
   });
 
+  it("creates a staging context for legacy worktrees that only provide todoStore", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingDir = createTempDir("bridge-stage-legacy-worktree-");
+    const serverDir = join(stagingDir, "src", "server");
+    mkdirSync(serverDir, { recursive: true });
+
+    const writeServerModule = (filename: string, source: string) => {
+      writeFileSync(join(serverDir, filename), source);
+    };
+
+    writeServerModule("global-bus.ts", `export function createGlobalBus() { return { emit() {} }; }`);
+    writeServerModule("event-bus.ts", `export function createEventBusRegistry() { return {}; }`);
+    writeServerModule(
+      "db.ts",
+      `export function openDatabase() {
+         return {
+           close() {},
+           exec() {},
+           prepare() {
+             return {
+               get() { return undefined; },
+               all() { return []; },
+               run() {},
+             };
+           },
+         };
+       }`,
+    );
+    writeServerModule("migrate-json-to-sqlite.ts", `export function migrateJsonToSqlite() {}`);
+    writeServerModule("task-store.ts", `export function createTaskStore() { return {}; }`);
+    writeServerModule("task-group-store.ts", `export function createTaskGroupStore() { return {}; }`);
+    writeServerModule("schedule-store.ts", `export function createScheduleStore() { return {}; }`);
+    writeServerModule(
+      "settings-store.ts",
+      `export function createSettingsStore() { return { getMcpServers() { return {}; } }; }`,
+    );
+    writeServerModule("session-meta-store.ts", `export function createSessionMetaStore() { return {}; }`);
+    writeServerModule("session-titles.ts", `export function createSessionTitlesStore() { return {}; }`);
+    writeServerModule("read-state-store.ts", `export function createReadStateStore() { return {}; }`);
+    writeServerModule(
+      "todo-store.ts",
+      `export function createTodoStore() {
+         return {
+           listTodos() { return []; },
+           getTodo() { return undefined; },
+           createTodo() { return {}; },
+           updateTodo() { return {}; },
+           deleteTodo() {},
+           reorderTodos() { return []; },
+           listAllOpen() { return []; },
+           listRecentlyCompleted() { return []; },
+         };
+       }`,
+    );
+    writeServerModule(
+      "session-manager.ts",
+      `export function createBridgeTools(ctx) {
+         if (!ctx.todoStore) throw new Error("missing todoStore");
+         return [];
+       }
+       export function createSessionManager(ctx) {
+         return {
+           legacyTodoStorePresent: Boolean(ctx.todoStore),
+           gracefulShutdown: async () => {},
+         };
+       }`,
+    );
+    writeServerModule("api-router.ts", `export function createApiRouter() { return null; }`);
+
+    const runtimePaths = {
+      demoMode: false,
+      workspaceDir: join(stagingDir, "workspace"),
+      dataDir: join(stagingDir, "data"),
+      docsDir: join(stagingDir, "docs"),
+      copilotHome: join(stagingDir, ".copilot"),
+      env: {},
+    };
+    mkdirSync(runtimePaths.workspaceDir, { recursive: true });
+    mkdirSync(runtimePaths.dataDir, { recursive: true });
+    mkdirSync(runtimePaths.docsDir, { recursive: true });
+
+    const { ctx, db } = await mod.__testing.createStagingContext(stagingDir, runtimePaths, "/staging/test/api");
+    try {
+      expect((ctx as any).todoStore).toBeTruthy();
+      expect((ctx.sessionManager as any).legacyTodoStorePresent).toBe(true);
+    } finally {
+      await ctx.voiceJobManager.shutdown();
+      await ctx.sessionManager.gracefulShutdown();
+      db.close();
+    }
+  });
+
   it("reseeds a staging SQLite database even when stale target files already exist", async () => {
     const mod = await loadStagingToolsModule();
     const productionDataDir = createProductionDataDir();
@@ -657,6 +749,30 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("The staged changes did not pass the preview validation run.");
     expect(result.textResultForLlm).toContain("1 failed");
     expect(result).not.toHaveProperty("error");
+  });
+
+  it("allows a longer timeout for staging_preview validation coverage runs", async () => {
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-preview-timeout-");
+
+    await tools.staging_preview.handler(
+      { stagingDir },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    );
+
+    const previewValidationCall = execSyncMock.mock.calls.find(
+      ([cmd]) => cmd === "npm run test:xplat-audit && npx vitest run --coverage",
+    );
+
+    expect(previewValidationCall?.[1]).toMatchObject({
+      cwd: stagingDir,
+      timeout: 600_000,
+    });
   });
 
   it("returns a normalized failure result when staging_deploy hits a rebase conflict", async () => {

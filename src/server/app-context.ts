@@ -6,6 +6,7 @@ import type { TaskGroupStore } from "./task-group-store.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { ReadStateStore } from "./read-state-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
@@ -26,6 +27,7 @@ export interface AppContext {
   scheduleStore: ScheduleStore;
   settingsStore: SettingsStore;
   sessionMetaStore: SessionMetaStore;
+  sessionWorkspaceStore: SessionWorkspaceStore;
   sessionTitles: SessionTitlesStore;
   readStateStore: ReadStateStore;
   checklistStore: ChecklistStore;

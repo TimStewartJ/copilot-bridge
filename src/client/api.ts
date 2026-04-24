@@ -1,5 +1,47 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 export type { McpServerConfig } from "../mcp-config";
+
+export interface SessionWorkspaceOverride {
+  cwd: string;
+  updatedAt: string;
+}
+
+export interface SessionWorkspaceSummary {
+  effectiveCwd?: string;
+  taskCwd?: string;
+  sessionOverride?: SessionWorkspaceOverride;
+  overridesTaskWorkspace: boolean;
+}
+
+export type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "default" | "none";
+export type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
+export type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace";
+
+export interface SessionWorkspaceWarning {
+  code: SessionWorkspaceWarningCode;
+  message: string;
+}
+
+export interface SessionWorkspaceWorktree {
+  cwd: string;
+  workspaceKind: "main" | "linked";
+  head: GitWorktreeHead;
+  selected: boolean;
+}
+
+export interface SessionWorkspaceDetails extends SessionWorkspaceSummary {
+  sessionId: string;
+  taskId?: string;
+  source: SessionWorkspaceSource;
+  pathState: SessionWorkspacePathState;
+  warnings: SessionWorkspaceWarning[];
+  availableWorktrees: SessionWorkspaceWorktree[];
+  canResetToTask: boolean;
+  runState: SessionRunState;
+  busy: boolean;
+  gitStatus: TaskGitStatus;
+}
 
 export interface Session {
   sessionId: string;
@@ -23,6 +65,7 @@ export interface Session {
     gitRoot?: string;
     branch?: string;
   };
+  workspace?: SessionWorkspaceSummary;
 }
 
 export type SessionRunState = "busy" | "stalled" | "idle";
@@ -221,6 +264,8 @@ export interface EnrichedTaskData {
   pullRequests: EnrichedPR[];
 }
 
+export type TaskGitStatus = TaskGitStatusResponse;
+
 // Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/
 const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
 export { API_BASE };
@@ -406,6 +451,68 @@ export async function reloadSession(sessionId: string): Promise<ReloadSessionRes
   return apiFetch<ReloadSessionResult>(`/api/sessions/${sessionId}/reload`, {});
 }
 
+function buildSessionWorkspaceQuery(taskId?: string): string {
+  if (!taskId) return "";
+  const params = new URLSearchParams();
+  params.set("taskId", taskId);
+  return `?${params.toString()}`;
+}
+
+async function parseApiResponse<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function fetchSessionWorkspace(
+  sessionId: string,
+  options?: { taskId?: string; signal?: AbortSignal },
+): Promise<SessionWorkspaceDetails> {
+  const qs = buildSessionWorkspaceQuery(options?.taskId);
+  return apiFetch<SessionWorkspaceDetails>(`/api/sessions/${sessionId}/workspace${qs}`, undefined, { signal: options?.signal });
+}
+
+export async function setSessionWorkspacePath(
+  sessionId: string,
+  cwd: string,
+  options?: { taskId?: string },
+): Promise<SessionWorkspaceDetails> {
+  const qs = buildSessionWorkspaceQuery(options?.taskId);
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/workspace/path${qs}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cwd }),
+  });
+  return parseApiResponse<SessionWorkspaceDetails>(res);
+}
+
+export async function selectSessionWorkspace(
+  sessionId: string,
+  cwd: string,
+  options?: { taskId?: string },
+): Promise<SessionWorkspaceDetails> {
+  const qs = buildSessionWorkspaceQuery(options?.taskId);
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/workspace/worktree${qs}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cwd }),
+  });
+  return parseApiResponse<SessionWorkspaceDetails>(res);
+}
+
+export async function resetSessionWorkspace(
+  sessionId: string,
+  options?: { taskId?: string },
+): Promise<SessionWorkspaceDetails> {
+  const qs = buildSessionWorkspaceQuery(options?.taskId);
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/workspace${qs}`, {
+    method: "DELETE",
+  });
+  return parseApiResponse<SessionWorkspaceDetails>(res);
+}
+
 // ── Task API ──────────────────────────────────────────────────────
 
 export async function fetchTasks(): Promise<Task[]> {
@@ -421,6 +528,13 @@ export async function createTask(title: string, groupId?: string): Promise<Task>
 export async function fetchTask(id: string): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${id}`);
   return data.task;
+}
+
+export async function fetchTaskGitStatus(
+  id: string,
+  options?: { signal?: AbortSignal },
+): Promise<TaskGitStatus> {
+  return apiFetch<TaskGitStatus>(`/api/tasks/${id}/git-status`, undefined, options);
 }
 
 export async function updateTask(

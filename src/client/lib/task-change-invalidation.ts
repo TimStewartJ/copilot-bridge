@@ -5,6 +5,7 @@ export function invalidateSharedTaskChangeQueries(
   queryClient: Pick<QueryClient, "invalidateQueries">,
 ): void {
   void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+  void queryClient.invalidateQueries({ queryKey: ["sessions"] });
   void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
   void queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems });
 }
@@ -14,11 +15,12 @@ export function invalidateTaskScopedChangeQueries(
   taskId: string,
 ): void {
   void queryClient.invalidateQueries({ queryKey: queryKeys.taskChecklistItems(taskId) });
+  void queryClient.invalidateQueries({ queryKey: ["session-workspace"] });
   void queryClient.invalidateQueries({
     predicate: (query) =>
       query.queryKey[0] === "task"
       && query.queryKey[1] === taskId
-      && query.queryKey[2] === "enriched",
+      && (query.queryKey[2] === "enriched" || query.queryKey[2] === "git-status"),
   });
 }
 

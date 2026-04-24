@@ -10,6 +10,7 @@ import {
   useCreateChecklistItemMutation,
   useChecklistItemCacheUpdaters,
 } from "./queries/useChecklistItems";
+import { useTaskGitStatusQuery } from "./queries/useTaskGitStatus";
 
 /**
  * Consolidates shared setup for TaskPanel and TaskDashboard:
@@ -41,6 +42,11 @@ export function useTaskWorkspace(
     onDelete: onChecklistItemDelete,
   } = useChecklistItemCacheUpdaters(task?.id);
   const [newChecklistItemText, setNewChecklistItemText] = useState("");
+  // ── Git status ───────────────────────────────────────────────
+  const { data: taskGitStatus, refetch: refetchTaskGitStatus } = useTaskGitStatusQuery(
+    task?.id,
+    !!task?.cwd,
+  );
 
   // ── Linked sessions ─────────────────────────────────────────
   const linkedSessions = sessions.filter((s) =>
@@ -69,12 +75,14 @@ export function useTaskWorkspace(
 
   // ── Refresh ─────────────────────────────────────────────────
   const refresh = useCallback(async () => {
-    await Promise.all([
+    const work = [
       reloadEnriched(),
       refetchChecklistItems(),
       sched.reload(),
-    ]);
-  }, [reloadEnriched, refetchChecklistItems, sched.reload]);
+    ];
+    if (task?.cwd) work.push(refetchTaskGitStatus());
+    await Promise.all(work);
+  }, [reloadEnriched, refetchChecklistItems, refetchTaskGitStatus, sched.reload, task?.cwd]);
 
   return {
     // Enrichment
@@ -93,6 +101,8 @@ export function useTaskWorkspace(
     onChecklistItemDelete,
     newChecklistItemText,
     setNewChecklistItemText,
+    // Git status
+    taskGitStatus,
     // Sessions
     linkedSessions,
     // Tags
