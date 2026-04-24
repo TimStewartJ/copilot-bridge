@@ -6,6 +6,10 @@ import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 
 import type { ProviderName } from "./providers/types.js";
 
+export class InvalidTaskUpdateError extends Error {}
+
+const ISO_TIMESTAMP_WITH_TIMEZONE_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):(\d{2}))$/;
+
 export interface WorkItemRef {
   id: string;
   provider: ProviderName;
@@ -25,6 +29,10 @@ export interface Task {
   groupId?: string;
   cwd?: string;
   notes: string;
+  doneWhen?: string;
+  nextAction?: string;
+  waitingOn?: string;
+  nextTouchAt?: string;
   priority: number;
   pinned: boolean;
   order: number;
@@ -35,7 +43,9 @@ export interface Task {
   pullRequests: PRRef[];
 }
 
-type TaskUpdate = Partial<Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId" | "pinned">>;
+type TaskUpdate = Partial<
+  Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId" | "pinned" | "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt">
+>;
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
@@ -48,6 +58,72 @@ function getDefaultTaskCwd(): string | undefined {
   const runtimePaths = resolveRuntimePaths(process.env);
   if (!runtimePaths.demoMode) return undefined;
   return runtimePaths.workspaceDir;
+}
+
+function normalizeOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return [31, -1, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+function parseIsoTimestampWithTimezone(text: string): string | undefined {
+  const match = ISO_TIMESTAMP_WITH_TIMEZONE_RE.exec(text);
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const millisecond = match[7] === undefined ? 0 : Number(match[7].padEnd(3, "0"));
+
+  if (
+    month < 1 || month > 12
+    || day < 1 || day > daysInMonth(year, month)
+    || hour < 0 || hour > 23
+    || minute < 0 || minute > 59
+    || second < 0 || second > 59
+  ) {
+    return undefined;
+  }
+
+  let offsetMinutes = 0;
+  if (match[8] !== "Z") {
+    const offsetHour = Number(match[10]);
+    const offsetMinute = Number(match[11]);
+    if (offsetHour > 23 || offsetMinute > 59) return undefined;
+    const sign = match[9] === "-" ? -1 : 1;
+    offsetMinutes = sign * (offsetHour * 60 + offsetMinute);
+  }
+
+  const utcDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond));
+  if (year >= 0 && year < 100) utcDate.setUTCFullYear(year);
+  const utcMillis = utcDate.getTime() - offsetMinutes * 60_000;
+  return new Date(utcMillis).toISOString();
+}
+
+function normalizeOptionalTimestamp(value: unknown, opts: { strict?: boolean } = {}): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    if (opts.strict) throw new InvalidTaskUpdateError("nextTouchAt must be a valid ISO timestamp with timezone");
+    return undefined;
+  }
+  const text = value.trim();
+  if (text === "") return undefined;
+  const normalized = parseIsoTimestampWithTimezone(text);
+  if (!normalized) {
+    if (opts.strict) throw new InvalidTaskUpdateError("nextTouchAt must be a valid ISO timestamp with timezone");
+    return undefined;
+  }
+  return normalized;
 }
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -80,6 +156,10 @@ export function createTaskStore(
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
       notes: row.notes,
+      doneWhen: normalizeOptionalText(row.doneWhen),
+      nextAction: normalizeOptionalText(row.nextAction),
+      waitingOn: normalizeOptionalText(row.waitingOn),
+      nextTouchAt: normalizeOptionalTimestamp(row.nextTouchAt),
       priority: row.priority,
       pinned: row.pinned === 1,
       order: row.order,
@@ -154,6 +234,10 @@ export function createTaskStore(
     if (updates.pinned !== undefined) { fields.push("pinned = ?"); values.push(updates.pinned ? 1 : 0); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
     if (updates.groupId !== undefined) { fields.push("groupId = ?"); values.push(updates.groupId || null); }
+    if (updates.doneWhen !== undefined) { fields.push("doneWhen = ?"); values.push(normalizeOptionalText(updates.doneWhen) ?? null); }
+    if (updates.nextAction !== undefined) { fields.push("nextAction = ?"); values.push(normalizeOptionalText(updates.nextAction) ?? null); }
+    if (updates.waitingOn !== undefined) { fields.push("waitingOn = ?"); values.push(normalizeOptionalText(updates.waitingOn) ?? null); }
+    if (updates.nextTouchAt !== undefined) { fields.push("nextTouchAt = ?"); values.push(normalizeOptionalTimestamp(updates.nextTouchAt, { strict: true }) ?? null); }
 
     // When status changes, place task at top of new group
     if (updates.status !== undefined && updates.status !== oldStatus) {

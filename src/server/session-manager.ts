@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
-import { createTaskStore } from "./task-store.js";
+import { createTaskStore, InvalidTaskUpdateError } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
 import type { Task } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
@@ -510,15 +510,34 @@ export function createBridgeTools(ctx: AppContext) {
   }),
   defineTool("task_update", {
     description: "Update a task's title, notes, working directory, group, and/or tags. Only provided fields are changed.",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, title: { type: "string", description: "New title" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, cwd: { type: "string", description: "Working directory path for the task" }, groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." } }, required: ["taskId"] },
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The task ID" },
+        title: { type: "string", description: "New title" },
+        notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },
+        cwd: { type: "string", description: "Working directory path for the task" },
+        groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" },
+        doneWhen: { anyOf: [{ type: "string" }, { type: "null" }], description: "Definition of done for this task. Null clears it." },
+        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The next concrete action for this task. Null clears it." },
+        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "What this task is waiting on. Null clears it." },
+        nextTouchAt: { anyOf: [{ type: "string" }, { type: "null" }], description: "ISO timestamp with timezone for when to revisit the task. Null clears it." },
+        tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." },
+      },
+      required: ["taskId"],
+    },
     handler: async (args: any) => {
-      const updates: Record<string, string> = {};
+      const updates: Record<string, string | null> = {};
       if (args.title !== undefined) updates.title = args.title;
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
+      if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
+      if (args.nextAction !== undefined) updates.nextAction = args.nextAction;
+      if (args.waitingOn !== undefined) updates.waitingOn = args.waitingOn;
+      if (args.nextTouchAt !== undefined) updates.nextTouchAt = args.nextTouchAt;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, notes, cwd, groupId, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, notes, cwd, groupId, doneWhen, nextAction, waitingOn, nextTouchAt, tags");
       const task = ensureTask(args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
@@ -528,7 +547,12 @@ export function createBridgeTools(ctx: AppContext) {
         tagStore = tagStoreResult.value;
       }
       if (Object.keys(updates).length > 0) {
-        ctx.taskStore.updateTask(args.taskId, updates);
+        try {
+          ctx.taskStore.updateTask(args.taskId, updates as any);
+        } catch (error) {
+          if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
+          throw error;
+        }
       }
       if (hasTags && tagStore) {
         const tagIds = args.tags.map((name: string) => {

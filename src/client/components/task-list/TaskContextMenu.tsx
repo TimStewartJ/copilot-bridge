@@ -1,13 +1,20 @@
 import { useState, useCallback, useMemo } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
-import { Eye, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, Pin } from "lucide-react";
+import { Eye, Copy, Check, Play, Pause, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, Pin, CalendarDays, X } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 
+type TaskMenuUpdates = {
+  title?: Task["title"];
+  status?: Task["status"];
+  pinned?: Task["pinned"];
+  nextTouchAt?: Task["nextTouchAt"] | null;
+};
+
 interface TaskContextMenuActions {
   markRead?: (sessionId: string) => void;
-  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
+  onUpdateTask?: (taskId: string, updates: TaskMenuUpdates) => void;
   onDeleteTask?: (taskId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
@@ -106,7 +113,7 @@ export default function TaskContextMenu({
       {onUpdateTask && task.status !== "done" && task.status !== "archived" && (
         <CtxItem
           icon={<CheckCircle size={14} />}
-          label="Set Done"
+          label="Mark done"
           onClick={() => { onUpdateTask(task.id, { status: "done" }); closeMenu(); }}
         />
       )}
@@ -119,6 +126,27 @@ export default function TaskContextMenu({
             closeMenu();
           }}
         />
+      )}
+      {onUpdateTask && task.status !== "archived" && (
+        <>
+          <CtxDivider />
+          <CtxItem
+            icon={<CalendarDays size={14} />}
+            label="Follow up tomorrow"
+            onClick={() => { onUpdateTask(task.id, { nextTouchAt: toRelativeFollowUpAt(1) }); closeMenu(); }}
+          />
+          <CtxItem
+            icon={<CalendarDays size={14} />}
+            label="Follow up next week"
+            onClick={() => { onUpdateTask(task.id, { nextTouchAt: toRelativeFollowUpAt(7) }); closeMenu(); }}
+          />
+          <CtxItem
+            icon={<X size={14} />}
+            label="Clear follow-up"
+            disabled={!task.nextTouchAt}
+            onClick={() => { onUpdateTask(task.id, { nextTouchAt: null }); closeMenu(); }}
+          />
+        </>
       )}
 
       {/* Move to Group */}
@@ -179,4 +207,10 @@ export default function TaskContextMenu({
       )}
     </ContextMenu>
   );
+}
+
+function toRelativeFollowUpAt(daysFromToday: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + daysFromToday);
+  return date.toISOString();
 }

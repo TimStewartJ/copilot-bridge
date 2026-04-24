@@ -21,6 +21,7 @@ import {
   Pin,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
+import TaskMomentumFields from "./TaskMomentumFields";
 import {
   WorkItemList,
   PullRequestList,
@@ -283,6 +284,14 @@ export default function TaskPanel({
             )}
           </div>
         )}
+        <div className="px-3 pb-3">
+          <TaskMomentumFields
+            task={task}
+            onSaved={() => {
+              void onTasksChanged?.();
+            }}
+          />
+        </div>
       </div>
 
       {/* Scrollable content */}

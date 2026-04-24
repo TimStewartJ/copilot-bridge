@@ -5,6 +5,7 @@ import { timeAgo } from "../../time";
 import { TAG_COLOR_DOT as TAG_DOT } from "../../tag-colors";
 import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
+import { getFollowUpState } from "../TaskMomentumFields";
 
 const STATUS_TEXT: Record<Task["status"], string> = {
   active: "text-success",
@@ -44,6 +45,7 @@ export default function SortableTaskItem({
   };
 
   const isRail = variant === "rail";
+  const momentumBadges = getMomentumBadges(task);
 
   return (
     <div ref={setNodeRef} style={style} className="group">
@@ -94,12 +96,57 @@ export default function SortableTaskItem({
             </span>
           )}
         </div>
-        <div className="text-xs text-text-muted mt-0.5 transition-all duration-150 pl-0 group-hover:pl-4">
-          {timeAgo(indicator?.lastActivity ?? task.updatedAt)}
-          {(indicator?.busyCount ?? 0) > 0 && ` · ${indicator!.busyCount} in flight`}
-          {(indicator?.unreadCount ?? 0) > 0 && ` · ${indicator!.unreadCount} unread`}
+        <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-text-muted transition-all duration-150 pl-0 group-hover:pl-4">
+          {momentumBadges.map((badge) => (
+            <span
+              key={badge.label}
+              className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
+              title={badge.title}
+            >
+              {badge.label}
+            </span>
+          ))}
+          <span>{timeAgo(indicator?.lastActivity ?? task.updatedAt)}</span>
+          {(indicator?.busyCount ?? 0) > 0 && <span>· {indicator!.busyCount} in flight</span>}
+          {(indicator?.unreadCount ?? 0) > 0 && <span>· {indicator!.unreadCount} unread</span>}
         </div>
       </button>
     </div>
   );
+}
+
+function getMomentumBadges(task: Task): Array<{ label: string; className: string; title?: string }> {
+  const badges: Array<{ label: string; className: string; title?: string }> = [];
+  const followUpState = getFollowUpState(task.nextTouchAt);
+
+  if (followUpState === "overdue" || followUpState === "due") {
+    badges.push({
+      label: "Follow up",
+      className: followUpState === "overdue" ? "bg-error/15 text-error" : "bg-warning/15 text-warning",
+      title: task.nextTouchAt
+        ? `Due ${new Date(task.nextTouchAt).toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })}`
+        : undefined,
+    });
+  }
+  if (task.status === "active" && task.waitingOn) {
+    badges.push({
+      label: "Waiting",
+      className: "bg-info/15 text-info",
+      title: task.waitingOn,
+    });
+  }
+  if (task.status === "active" && !task.nextAction && !task.waitingOn && !task.nextTouchAt) {
+    badges.push({
+      label: "Needs decision",
+      className: "bg-accent/15 text-accent",
+      title: "No next action, waiting reason, or follow-up is set",
+    });
+  }
+
+  return badges;
 }

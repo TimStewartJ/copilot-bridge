@@ -21,6 +21,7 @@ import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
 import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
+import { InvalidTaskUpdateError } from "./task-store.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -1236,10 +1237,28 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.patch("/tasks/:id", (req, res) => {
     try {
-      const task = ctx.taskStore.updateTask(req.params.id, req.body);
+      const task = ctx.taskStore.updateTask(req.params.id, {
+        title: req.body?.title,
+        status: req.body?.status,
+        notes: req.body?.notes,
+        priority: req.body?.priority,
+        cwd: req.body?.cwd,
+        groupId: req.body?.groupId,
+        pinned: req.body?.pinned,
+        doneWhen: req.body?.doneWhen,
+        nextAction: req.body?.nextAction,
+        waitingOn: req.body?.waitingOn,
+        nextTouchAt: req.body?.nextTouchAt,
+      });
       res.json({ task });
     } catch (err) {
-      res.status(404).json({ error: String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      const status = err instanceof InvalidTaskUpdateError
+        ? 400
+        : /Task .* not found/.test(message)
+          ? 404
+          : 400;
+      res.status(status).json({ error: message });
     }
   });
 
@@ -1499,10 +1518,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
         // PR status summary
         let prActive = 0;
         let prCompleted = 0;
+        let prUnknown = 0;
         for (const pr of task.pullRequests) {
           const enriched = prMap.get(`${pr.provider}:${pr.repoId}:${pr.prId}`);
           if (enriched?.status === "active") prActive++;
           else if (enriched?.status === "completed") prCompleted++;
+          else if (enriched?.status === null || enriched === undefined) prUnknown++;
         }
 
         // Unread check — busy sessions excluded (busy is a separate signal)
@@ -1533,7 +1554,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return {
           task,
           workItemSummary: { total: task.workItems.length, byState },
-          prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted },
+          prSummary: { total: task.pullRequests.length, active: prActive, completed: prCompleted, unknown: prUnknown },
           checklistSummary: {
             total: checklistItems.length,
             done: checklistDone,
@@ -1555,6 +1576,40 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       // Last active task (most recently updated active task)
       const lastActiveTask = activeTasks.find((t) => t.task.status === "active") ?? null;
+
+      const nowMs = Date.now();
+      const staleCutoffMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+      const isDueNow = (nextTouchAt?: string) => {
+        if (!nextTouchAt) return false;
+        const dueAt = Date.parse(nextTouchAt);
+        return Number.isFinite(dueAt) && dueAt <= nowMs;
+      };
+      const isStale = (lastActivity: string) => {
+        const lastActivityMs = Date.parse(lastActivity);
+        return Number.isFinite(lastActivityMs) && lastActivityMs < staleCutoffMs;
+      };
+      const activeMomentumTasks = activeTasks.filter((entry) => entry.task.status === "active");
+      const taskMomentum = {
+        needsDecision: activeMomentumTasks.filter((entry) =>
+          !entry.task.nextAction
+          && !entry.task.waitingOn
+          && !entry.task.nextTouchAt,
+        ),
+        followUpNow: activeMomentumTasks.filter((entry) => isDueNow(entry.task.nextTouchAt)),
+        waiting: activeMomentumTasks.filter((entry) => !!entry.task.waitingOn),
+        candidateToClose: activeMomentumTasks.filter((entry) =>
+          entry.checklistSummary.open === 0
+          && !entry.hasBusySession
+          && entry.prSummary.active === 0
+          && entry.prSummary.unknown === 0,
+        ),
+        stale: activeMomentumTasks.filter((entry) =>
+          !entry.hasBusySession
+          && !entry.hasUnread
+          && !entry.task.nextTouchAt
+          && isStale(entry.lastActivity),
+        ),
+      };
 
       // Orphan sessions: not linked to any task, unread or active in last 24h
       const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -1618,6 +1673,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
         openChecklistItems,
         completedChecklistItems,
         schedules: dashboardSchedules,
+        taskMomentum: {
+          summary: {
+            needsDecision: taskMomentum.needsDecision.length,
+            followUpNow: taskMomentum.followUpNow.length,
+            waiting: taskMomentum.waiting.length,
+            candidateToClose: taskMomentum.candidateToClose.length,
+            stale: taskMomentum.stale.length,
+          },
+          ...taskMomentum,
+        },
       });
       ctx.telemetryStore?.recordSpan({ name: "dashboard", duration: Date.now() - t0, source: "server" });
     } catch (err) {

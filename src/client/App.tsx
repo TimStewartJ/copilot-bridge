@@ -670,7 +670,15 @@ export default function App() {
     }
   };
 
-  const handleUpdateTask = async (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => {
+  const handleUpdateTask = async (
+    taskId: string,
+    updates: {
+      title?: Task["title"];
+      status?: Task["status"];
+      pinned?: Task["pinned"];
+      nextTouchAt?: Task["nextTouchAt"] | null;
+    },
+  ) => {
     try {
       const updated = await patchTask(taskId, updates);
       if (updates.status || updates.pinned !== undefined) {
@@ -1451,7 +1459,15 @@ function MobileTaskListView({
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   markRead?: (sessionId: string) => void;
-  onUpdateTask?: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
+  onUpdateTask?: (
+    taskId: string,
+    updates: {
+      title?: Task["title"];
+      status?: Task["status"];
+      pinned?: Task["pinned"];
+      nextTouchAt?: Task["nextTouchAt"] | null;
+    },
+  ) => void;
   onDeleteTask?: (taskId: string) => void;
   onReorderTasks?: (taskIds: string[]) => void;
   quickChatsMode: boolean;

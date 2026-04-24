@@ -10,6 +10,7 @@ import type { AppContext } from "../app-context.js";
 import { publishOutboundAttachment } from "../outbound-attachments.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE, triggerRestartPending } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
+import * as providers from "../providers/index.js";
 import { createMockSessionManager, createMockTranscriptionService, createTestApp } from "./helpers.js";
 
 let app: Express;
@@ -753,10 +754,30 @@ describe("Task routes", () => {
 
     const res = await request(app)
       .patch(`/api/tasks/${id}`)
-      .send({ title: "Updated", notes: "Some notes" });
+      .send({
+        title: "Updated",
+        notes: "Some notes",
+        doneWhen: "Shipped to production",
+        nextAction: "Verify telemetry",
+        waitingOn: "Customer confirmation",
+        nextTouchAt: "2026-05-02T09:00:00.000Z",
+      });
     expect(res.status).toBe(200);
     expect(res.body.task.title).toBe("Updated");
     expect(res.body.task.notes).toBe("Some notes");
+    expect(res.body.task.doneWhen).toBe("Shipped to production");
+    expect(res.body.task.nextAction).toBe("Verify telemetry");
+    expect(res.body.task.waitingOn).toBe("Customer confirmation");
+    expect(res.body.task.nextTouchAt).toBe("2026-05-02T09:00:00.000Z");
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task).toEqual(expect.objectContaining({
+      doneWhen: "Shipped to production",
+      nextAction: "Verify telemetry",
+      waitingOn: "Customer confirmation",
+      nextTouchAt: "2026-05-02T09:00:00.000Z",
+    }));
   });
 
   it("DELETE /api/tasks/:id removes a task", async () => {
@@ -827,6 +848,68 @@ describe("Task routes", () => {
       .send({ title: "Grouped Task", groupId: group.id });
     expect(res.status).toBe(200);
     expect(res.body.task.groupId).toBe(group.id);
+  });
+
+  it("PATCH /api/tasks/:id sets pinned field", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Pin Me" });
+    const id = create.body.task.id;
+
+    const pin = await request(app).patch(`/api/tasks/${id}`).send({ pinned: true });
+    expect(pin.status).toBe(200);
+    expect(pin.body.task.pinned).toBe(true);
+
+    const unpin = await request(app).patch(`/api/tasks/${id}`).send({ pinned: false });
+    expect(unpin.status).toBe(200);
+    expect(unpin.body.task.pinned).toBe(false);
+  });
+
+  it("PATCH /api/tasks/:id clears momentum fields when passed empty strings", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Clear Momentum" });
+    const id = create.body.task.id;
+
+    await request(app).patch(`/api/tasks/${id}`).send({
+      doneWhen: "Merged",
+      nextAction: "Deploy",
+      waitingOn: "Review",
+      nextTouchAt: "2030-01-01T00:00:00.000Z",
+    });
+
+    const cleared = await request(app).patch(`/api/tasks/${id}`).send({
+      doneWhen: "",
+      nextAction: "",
+      waitingOn: "   ",
+      nextTouchAt: "",
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.task.doneWhen).toBeUndefined();
+    expect(cleared.body.task.nextAction).toBeUndefined();
+    expect(cleared.body.task.waitingOn).toBeUndefined();
+    expect(cleared.body.task.nextTouchAt).toBeUndefined();
+
+    // Verify persistence via GET
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.body.task.doneWhen).toBeUndefined();
+    expect(get.body.task.nextAction).toBeUndefined();
+    expect(get.body.task.waitingOn).toBeUndefined();
+    expect(get.body.task.nextTouchAt).toBeUndefined();
+  });
+
+  it("PATCH /api/tasks/:id rejects invalid nextTouchAt values", async () => {
+    const create = await request(app).post("/api/tasks").send({ title: "Invalid touch" });
+    const id = create.body.task.id;
+
+    for (const nextTouchAt of ["not-a-date", "2026-02-31T00:00:00.000Z", "2026-05-02 09:30", 123]) {
+      const invalid = await request(app)
+        .patch(`/api/tasks/${id}`)
+        .send({ nextTouchAt });
+
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toContain("nextTouchAt must be a valid ISO timestamp with timezone");
+    }
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.nextTouchAt).toBeUndefined();
   });
 });
 
@@ -1610,6 +1693,333 @@ describe("Session routes (mocked)", () => {
     expect(res.body.orphanSessions).toEqual([
       expect.objectContaining({ sessionId: "stall-1", runState: "stalled", busy: true, unread: true }),
     ]);
+  });
+
+  it("GET /api/dashboard returns derived task momentum queues", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+      const { db } = testApp;
+
+      const decisionTask = ctx.taskStore.createTask("Needs a decision");
+      const followUpTask = ctx.taskStore.createTask("Follow up now");
+      const waitingTask = ctx.taskStore.createTask("Waiting on someone");
+      const closeTask = ctx.taskStore.createTask("Candidate to close");
+      const staleTask = ctx.taskStore.createTask("Stale task");
+
+      ctx.taskStore.updateTask(followUpTask.id, {
+        nextAction: "Reply to the thread",
+        nextTouchAt: "2026-05-01T11:00:00.000Z",
+      });
+      ctx.taskStore.updateTask(waitingTask.id, {
+        nextAction: "Review when it lands",
+        waitingOn: "Design feedback",
+      });
+      ctx.taskStore.updateTask(closeTask.id, {
+        nextAction: "Close it out",
+      });
+      ctx.taskStore.updateTask(staleTask.id, {
+        nextAction: "Revisit later",
+      });
+      ctx.checklistStore.createChecklistItem(staleTask.id, "Still blocked");
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run("2026-04-20T09:00:00.000Z", staleTask.id);
+
+      const res = await request(app).get("/api/dashboard");
+      const needsDecisionIds = res.body.taskMomentum.needsDecision.map((entry: any) => entry.task.id);
+      const followUpNowIds = res.body.taskMomentum.followUpNow.map((entry: any) => entry.task.id);
+      const waitingIds = res.body.taskMomentum.waiting.map((entry: any) => entry.task.id);
+      const candidateToCloseIds = res.body.taskMomentum.candidateToClose.map((entry: any) => entry.task.id);
+      const staleIds = res.body.taskMomentum.stale.map((entry: any) => entry.task.id);
+
+      expect(res.status).toBe(200);
+      expect(res.body.taskMomentum.summary).toEqual({
+        needsDecision: 1,
+        followUpNow: 1,
+        waiting: 1,
+        candidateToClose: res.body.taskMomentum.candidateToClose.length,
+        stale: 1,
+      });
+      expect(needsDecisionIds).toEqual([decisionTask.id]);
+      expect(followUpNowIds).toEqual([followUpTask.id]);
+      expect(waitingIds).toEqual([waitingTask.id]);
+      expect(candidateToCloseIds).toContain(closeTask.id);
+      expect(candidateToCloseIds).not.toContain(staleTask.id);
+      expect(staleIds).toEqual([staleTask.id]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("GET /api/dashboard taskMomentum.summary counts match queue lengths", async () => {
+    const res = await request(app).get("/api/dashboard");
+    expect(res.status).toBe(200);
+    const { summary, needsDecision, followUpNow, waiting, candidateToClose, stale } = res.body.taskMomentum;
+    expect(summary.needsDecision).toBe(needsDecision.length);
+    expect(summary.followUpNow).toBe(followUpNow.length);
+    expect(summary.waiting).toBe(waiting.length);
+    expect(summary.candidateToClose).toBe(candidateToClose.length);
+    expect(summary.stale).toBe(stale.length);
+  });
+
+  it("GET /api/dashboard taskMomentum.followUpNow excludes tasks with future nextTouchAt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+
+      const futureTask = ctx.taskStore.createTask("Future reminder");
+      ctx.taskStore.updateTask(futureTask.id, {
+        nextAction: "Check in",
+        nextTouchAt: "2026-05-01T13:00:00.000Z", // 1 hour in the future
+      });
+      const pastTask = ctx.taskStore.createTask("Past reminder");
+      ctx.taskStore.updateTask(pastTask.id, {
+        nextAction: "Already due",
+        nextTouchAt: "2026-05-01T11:00:00.000Z", // 1 hour in the past
+      });
+
+      const res = await request(app).get("/api/dashboard");
+      const followUpNowIds = res.body.taskMomentum.followUpNow.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(followUpNowIds).not.toContain(futureTask.id);
+      expect(followUpNowIds).toContain(pastTask.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("GET /api/dashboard taskMomentum.followUpNow excludes paused tasks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+
+      const pausedTask = ctx.taskStore.createTask("Paused follow-up");
+      ctx.taskStore.updateTask(pausedTask.id, {
+        status: "paused",
+        nextAction: "Resume later",
+        nextTouchAt: "2026-05-01T11:00:00.000Z",
+      });
+
+      const activeTask = ctx.taskStore.createTask("Active follow-up");
+      ctx.taskStore.updateTask(activeTask.id, {
+        nextAction: "Check now",
+        nextTouchAt: "2026-05-01T11:00:00.000Z",
+      });
+
+      const res = await request(app).get("/api/dashboard");
+      const followUpNowIds = res.body.taskMomentum.followUpNow.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(followUpNowIds).toContain(activeTask.id);
+      expect(followUpNowIds).not.toContain(pausedTask.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("GET /api/dashboard taskMomentum.needsDecision excludes deferred tasks with nextTouchAt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+
+      const deferredTask = ctx.taskStore.createTask("Deferred");
+      ctx.taskStore.updateTask(deferredTask.id, {
+        nextTouchAt: "2026-05-02T12:00:00.000Z",
+      });
+      const undecidedTask = ctx.taskStore.createTask("Needs decision");
+
+      const res = await request(app).get("/api/dashboard");
+      const needsDecisionIds = res.body.taskMomentum.needsDecision.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(needsDecisionIds).toContain(undecidedTask.id);
+      expect(needsDecisionIds).not.toContain(deferredTask.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("GET /api/dashboard taskMomentum.candidateToClose excludes tasks with open checklist items", async () => {
+    const testApp = createTestApp();
+    app = testApp.app;
+    ctx = testApp.ctx;
+
+    const clean = ctx.taskStore.createTask("Ready to close");
+    const blocked = ctx.taskStore.createTask("Has open checklist");
+    ctx.checklistStore.createChecklistItem(blocked.id, "Unfinished item");
+
+    const res = await request(app).get("/api/dashboard");
+    const candidateIds = res.body.taskMomentum.candidateToClose.map((e: any) => e.task.id);
+
+    expect(res.status).toBe(200);
+    expect(candidateIds).toContain(clean.id);
+    expect(candidateIds).not.toContain(blocked.id);
+  });
+
+  it("GET /api/dashboard taskMomentum.candidateToClose excludes tasks with busy sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "busy-sess",
+        summary: "Active work",
+        lastVisibleActivityAt: new Date().toISOString(),
+      },
+    ]);
+    sessionManager.getSessionRunState = vi.fn().mockImplementation((id: string) =>
+      id === "busy-sess" ? "running" : "idle",
+    );
+
+    const testApp = createTestApp({ sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+
+    const busyTask = ctx.taskStore.createTask("Has busy session");
+    ctx.taskStore.linkSession(busyTask.id, "busy-sess");
+    const idleTask = ctx.taskStore.createTask("No busy session");
+
+    const res = await request(app).get("/api/dashboard");
+    const candidateIds = res.body.taskMomentum.candidateToClose.map((e: any) => e.task.id);
+
+    expect(res.status).toBe(200);
+    expect(candidateIds).not.toContain(busyTask.id);
+    expect(candidateIds).toContain(idleTask.id);
+  });
+
+  it("GET /api/dashboard taskMomentum.candidateToClose excludes tasks with unknown PR status", async () => {
+    const enrichPullRequestsSpy = vi.spyOn(providers, "enrichPullRequests").mockResolvedValue([
+      {
+        repoId: "repo-1",
+        repoName: "repo-1",
+        prId: 42,
+        provider: "github",
+        title: null,
+        status: null,
+        createdBy: null,
+        reviewerCount: 0,
+        url: "https://example.test/repo-1/pull/42",
+      },
+    ]);
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+
+      const unknownPrTask = ctx.taskStore.createTask("PR status unavailable");
+      ctx.taskStore.linkPR(unknownPrTask.id, {
+        repoId: "repo-1",
+        repoName: "repo-1",
+        prId: 42,
+        provider: "github",
+      });
+
+      const cleanTask = ctx.taskStore.createTask("Ready to close");
+
+      const res = await request(app).get("/api/dashboard");
+      const candidateIds = res.body.taskMomentum.candidateToClose.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(candidateIds).toContain(cleanTask.id);
+      expect(candidateIds).not.toContain(unknownPrTask.id);
+    } finally {
+      enrichPullRequestsSpy.mockRestore();
+    }
+  });
+
+  it("GET /api/dashboard taskMomentum.stale excludes tasks with nextTouchAt set", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+      const { db } = testApp;
+
+      // Both tasks are "old" (last touched > 7 days ago)
+      const trueStale = ctx.taskStore.createTask("Truly stale");
+      const touchedStale = ctx.taskStore.createTask("Stale but scheduled");
+      ctx.taskStore.updateTask(touchedStale.id, {
+        nextTouchAt: "2026-06-01T00:00:00.000Z",
+      });
+
+      const staleTs = "2026-04-20T09:00:00.000Z";
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(staleTs, trueStale.id);
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(staleTs, touchedStale.id);
+
+      const res = await request(app).get("/api/dashboard");
+      const staleIds = res.body.taskMomentum.stale.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(staleIds).toContain(trueStale.id);
+      expect(staleIds).not.toContain(touchedStale.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("GET /api/dashboard taskMomentum excludes paused tasks from active-only queues", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+      const { db } = testApp;
+
+      const pausedDecision = ctx.taskStore.createTask("Paused decision");
+      ctx.taskStore.updateTask(pausedDecision.id, { status: "paused" });
+
+      const pausedWaiting = ctx.taskStore.createTask("Paused waiting");
+      ctx.taskStore.updateTask(pausedWaiting.id, {
+        status: "paused",
+        waitingOn: "External input",
+      });
+
+      const pausedClose = ctx.taskStore.createTask("Paused close");
+      ctx.taskStore.updateTask(pausedClose.id, {
+        status: "paused",
+        nextAction: "Close it later",
+      });
+
+      const pausedStale = ctx.taskStore.createTask("Paused stale");
+      ctx.taskStore.updateTask(pausedStale.id, {
+        status: "paused",
+        nextAction: "Revisit eventually",
+      });
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run("2026-04-20T09:00:00.000Z", pausedStale.id);
+
+      const res = await request(app).get("/api/dashboard");
+      const needsDecisionIds = res.body.taskMomentum.needsDecision.map((e: any) => e.task.id);
+      const waitingIds = res.body.taskMomentum.waiting.map((e: any) => e.task.id);
+      const candidateIds = res.body.taskMomentum.candidateToClose.map((e: any) => e.task.id);
+      const staleIds = res.body.taskMomentum.stale.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(needsDecisionIds).not.toContain(pausedDecision.id);
+      expect(waitingIds).not.toContain(pausedWaiting.id);
+      expect(candidateIds).not.toContain(pausedClose.id);
+      expect(staleIds).not.toContain(pausedStale.id);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
