@@ -378,6 +378,12 @@ export default function SessionList({
             {session.diskSizeBytes
               ? ` · ${formatSize(session.diskSizeBytes)}`
               : ""}
+            {session.workspace?.overridesTaskWorkspace && (
+              <>
+                {" · "}
+                <span className="text-warning">Overrides task workspace</span>
+              </>
+            )}
             {session.hasPlan && " · "}
             {session.hasPlan && <ClipboardList size={10} className="inline" />}
             {hasDraft?.(id) && " · "}

@@ -102,6 +102,13 @@ function initSchema(db: DatabaseSync): void {
       scheduleName TEXT
     );
 
+    -- Persisted session workspaces
+    CREATE TABLE IF NOT EXISTS session_workspace (
+      sessionId TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
     -- Per-run schedule history
     CREATE TABLE IF NOT EXISTS schedule_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,24 +1,26 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { unlinkResource, patchTask } from "../api";
-import { useTagsQuery } from "../hooks/queries/useTags";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
+import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
+import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
 import SessionList from "./SessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
+import TaskGitStatusSummary from "./TaskGitStatusSummary";
+import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import {
   FolderOpen,
-  Copy,
-  Check,
   Pencil,
   LayoutDashboard,
   BookOpen,
   Pin,
+  AlertTriangle,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
@@ -124,22 +126,18 @@ export default function TaskPanel({
   archivedLoaded,
   onSetTaskTags,
 }: TaskPanelProps) {
-  const { data: allTags = [] } = useTagsQuery();
-
   // ── Consolidated workspace hook ─────────────────────────────
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
+  const activeSession = ws.linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
+  const sessionWorkspaceQuery = useSessionWorkspaceQuery(activeSession?.sessionId, task?.id);
 
   // ── Inline editing state ─────────────────────────────────────
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
-  // ── CWD editing state ──────────────────────────────────────
-  const [editingCwd, setEditingCwd] = useState(false);
-  const [cwdDraft, setCwdDraft] = useState("");
-  const [cwdCopied, setCwdCopied] = useState(false);
-
   // ── Doc preview (panel-specific) ──────────────────────────
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
+  const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
 
   // ── Checklist highlight (from dashboard navigation) ─────────
   const [searchParams, setSearchParams] = useSearchParams();
@@ -158,8 +156,8 @@ export default function TaskPanel({
   // Reset editing state when task changes
   useEffect(() => {
     setEditingTitle(false);
-    setEditingCwd(false);
     setPreviewDocPath(null);
+    setWorkspaceSheetOpen(false);
   }, [task?.id]);
 
   // ── No task selected (empty state) ───────────────────────────
@@ -174,9 +172,10 @@ export default function TaskPanel({
   // ── Task mode ────────────────────────────────────────────────
 
   const {
-    enrichedWIs, enrichedPRs, reloadEnriched,
+    enrichedWIs, enrichedPRs,
     sched, schedDetail,
     notes,
+    taskGitStatus,
     checklistItems, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
     newChecklistItemText, setNewChecklistItemText,
     linkedSessions,
@@ -184,6 +183,11 @@ export default function TaskPanel({
     relatedDocs,
     refresh,
   } = ws;
+  const { data: sessionWorkspace } = sessionWorkspaceQuery;
+  const activeWorkspacePath = sessionWorkspace?.effectiveCwd ?? activeSession?.workspace?.effectiveCwd ?? task.cwd;
+  const workspaceOverridesTask = sessionWorkspace?.overridesTaskWorkspace ?? activeSession?.workspace?.overridesTaskWorkspace ?? false;
+  const workspaceWarning = sessionWorkspace?.warnings?.[0];
+  const workspaceStatus = sessionWorkspace?.gitStatus ?? taskGitStatus;
 
   const commitTitle = () => {
     const trimmed = titleDraft.trim();
@@ -414,67 +418,53 @@ export default function TaskPanel({
 
         {/* Working Directory */}
         <div>
-          <SectionLabel label="Working Directory" />
-          <div className="px-3 py-1 group">
-            {editingCwd ? (
-              <input
-                autoFocus
-                className="w-full text-xs font-mono bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
-                value={cwdDraft}
-                onChange={(e) => setCwdDraft(e.target.value)}
-                onBlur={() => {
-                  const trimmed = cwdDraft.trim();
-                  if (trimmed !== (task.cwd ?? "")) {
-                    patchTask(task.id, { cwd: trimmed || undefined as any }).then(() => onTasksChanged?.());
-                  }
-                  setEditingCwd(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  if (e.key === "Escape") setEditingCwd(false);
-                }}
-                placeholder="e.g. D:\my-project"
-              />
-            ) : task.cwd ? (
-              <div className="flex items-center gap-1.5">
-                <FolderOpen size={12} className="text-text-faint shrink-0" />
-                <span
-                  className="text-xs font-mono text-text-muted truncate flex-1 cursor-pointer hover:text-text-primary transition-colors"
-                  title={task.cwd}
-                  onClick={() => { setCwdDraft(task.cwd ?? ""); setEditingCwd(true); }}
-                >
-                  {task.cwd}
-                </span>
-                <div className="hidden group-hover:flex items-center gap-0.5">
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(task.cwd!);
-                      setCwdCopied(true);
-                      setTimeout(() => setCwdCopied(false), 1500);
-                    }}
-                    className="p-0.5 text-text-faint hover:text-text-primary transition-colors"
-                    title="Copy path"
+          <SectionLabel label="Workspace" />
+          <button
+            onClick={() => setWorkspaceSheetOpen(true)}
+            className="mx-1 w-[calc(100%-0.5rem)] rounded-md px-2 py-2 text-left transition-colors hover:bg-bg-hover"
+          >
+            <div className="flex items-start gap-1.5">
+              <FolderOpen size={12} className="mt-0.5 shrink-0 text-text-faint" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className="truncate font-mono text-xs text-text-muted"
+                    title={activeWorkspacePath ?? "Workspace not configured"}
                   >
-                    {cwdCopied ? <Check size={10} /> : <Copy size={10} />}
-                  </button>
-                  <button
-                    onClick={() => { setCwdDraft(task.cwd ?? ""); setEditingCwd(true); }}
-                    className="p-0.5 text-text-faint hover:text-text-primary transition-colors"
-                    title="Edit"
-                  >
-                    <Pencil size={10} />
-                  </button>
+                    {activeWorkspacePath ?? "Set workspace…"}
+                  </span>
+                  {workspaceOverridesTask && (
+                    <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                      Overrides task workspace
+                    </span>
+                  )}
+                  {sessionWorkspace?.pathState === "missing" && (
+                    <span className="rounded-full bg-error/15 px-1.5 py-0.5 text-[10px] font-medium text-error">
+                      Missing workspace
+                    </span>
+                  )}
                 </div>
+                {workspaceWarning ? (
+                  <div className="mt-1 flex items-start gap-1 text-[10px] text-warning">
+                    <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+                    <span className="line-clamp-2">{workspaceWarning.message}</span>
+                  </div>
+                ) : (
+                  <>
+                    {task.cwd && activeWorkspacePath && !areWorkspacePathsEqual(activeWorkspacePath, task.cwd) && (
+                      <div className="mt-1 text-[10px] text-text-faint">
+                        Task default: <span className="font-mono">{task.cwd}</span>
+                      </div>
+                    )}
+                    <TaskGitStatusSummary
+                      gitStatus={workspaceStatus}
+                      className="mt-1"
+                    />
+                  </>
+                )}
               </div>
-            ) : (
-              <button
-                onClick={() => { setCwdDraft(""); setEditingCwd(true); }}
-                className="text-[10px] text-text-faint hover:text-accent transition-colors"
-              >
-                Set working directory…
-              </button>
-            )}
-          </div>
+            </div>
+          </button>
         </div>
 
         {/* Notes */}
@@ -519,6 +509,15 @@ export default function TaskPanel({
               onTasksChanged?.();
             }}
             onClose={notes.close}
+          />
+        )}
+        {workspaceSheetOpen && (
+          <WorkspaceDetailsSheet
+            task={task}
+            session={activeSession}
+            taskGitStatus={taskGitStatus}
+            onClose={() => setWorkspaceSheetOpen(false)}
+            onTaskUpdated={onTasksChanged}
           />
         )}
       </PullToRefresh>

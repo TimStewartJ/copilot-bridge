@@ -25,10 +25,12 @@ import { createTranscriptionService, type TranscriptionService } from "./transcr
 import { createVoiceJobStore } from "./voice-job-store.js";
 import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
+import { readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
 import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
-import { InvalidTaskUpdateError } from "./task-store.js";
+import { InvalidTaskUpdateError, type Task } from "./task-store.js";
+import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -52,10 +54,278 @@ function getCopilotHome(ctx: AppContext): string {
 }
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+const TASK_GIT_STATUS_NOT_CONFIGURED_ERROR = "Task working directory is not configured.";
+const SESSION_WORKSPACE_NOT_CONFIGURED_ERROR = "Session workspace is not configured.";
+const SESSION_WORKSPACE_BUSY_ERROR = "Cannot change workspace for a busy session.";
+const SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR = "Linked task workspace is not configured.";
+const SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR = "No sibling worktrees are available for this session.";
+const SESSION_WORKTREE_SELECTION_INVALID_ERROR = "Selected workspace is not a discovered sibling worktree.";
+
+type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "default" | "none";
+type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
+type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace";
+
+interface SessionWorkspaceSummaryPayload {
+  effectiveCwd?: string;
+  taskCwd?: string;
+  sessionOverride?: {
+    cwd: string;
+    updatedAt: string;
+  };
+  overridesTaskWorkspace: boolean;
+}
+
+interface SessionWorkspaceWarningPayload {
+  code: SessionWorkspaceWarningCode;
+  message: string;
+}
+
+interface SessionWorkspaceWorktreePayload {
+  cwd: string;
+  workspaceKind: "main" | "linked";
+  head: GitWorktreeHead;
+  selected: boolean;
+}
+
+interface SessionWorkspaceDetailsPayload extends SessionWorkspaceSummaryPayload {
+  sessionId: string;
+  taskId?: string;
+  source: SessionWorkspaceSource;
+  pathState: SessionWorkspacePathState;
+  warnings: SessionWorkspaceWarningPayload[];
+  availableWorktrees: SessionWorkspaceWorktreePayload[];
+  canResetToTask: boolean;
+  runState: SessionRunState;
+  busy: boolean;
+  gitStatus: TaskGitStatusResponse;
+}
+
+type LegacyCompatibleOkGitStatus = Extract<TaskGitStatusResponse, { status: "ok" }> & {
+  worktreePath?: string;
+  workspaceKind?: "main" | "linked";
+  head?: GitWorktreeHead;
+  siblingWorktrees?: Array<{
+    worktreePath?: string;
+    workspaceKind?: "main" | "linked";
+    head?: GitWorktreeHead;
+  }>;
+};
 
 function getSessionStatus(ctx: AppContext, sessionId: string): { runState: SessionRunState; busy: boolean } {
   const runState = ctx.sessionManager.getSessionRunState(sessionId);
   return { runState, busy: runState !== "idle" };
+}
+
+function normalizeWorkspacePath(cwd?: string | null): string | undefined {
+  const trimmed = cwd?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeWorkspacePathForComparison(cwd: string): string {
+  const normalized = cwd.trim().replace(/\\/g, "/");
+  if (normalized === "/" || /^[A-Za-z]:\/$/.test(normalized)) return normalized.toLowerCase();
+  return normalized.replace(/\/+$/, "").toLowerCase();
+}
+
+function parseWorkspaceCwd(content: string): string | undefined {
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.startsWith("cwd:")) continue;
+    const cwd = line.slice(5).trim();
+    if (cwd) return cwd;
+  }
+  return undefined;
+}
+
+function getDefaultSessionCwd(ctx: AppContext): string | undefined {
+  return ctx.runtimePaths?.demoMode ? ctx.runtimePaths.workspaceDir : undefined;
+}
+
+function getLegacySessionWorkspaceCwd(ctx: AppContext, sessionId: string): string | undefined {
+  const yamlPath = join(getCopilotHome(ctx), "session-state", sessionId, "workspace.yaml");
+  try {
+    if (!existsSync(yamlPath)) return undefined;
+    return parseWorkspaceCwd(readFileSync(yamlPath, "utf-8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function buildSessionWorkspaceSummary(
+  ctx: AppContext,
+  sessionId: string,
+  task?: Pick<Task, "cwd"> | null,
+): SessionWorkspaceSummaryPayload & {
+  source: SessionWorkspaceSource;
+} {
+  const sessionOverride = ctx.sessionWorkspaceStore?.getWorkspace(sessionId);
+  const overrideCwd = normalizeWorkspacePath(sessionOverride?.cwd);
+  const legacyCwd = getLegacySessionWorkspaceCwd(ctx, sessionId);
+  const taskCwd = normalizeWorkspacePath(task?.cwd);
+  const defaultCwd = getDefaultSessionCwd(ctx);
+  const effectiveCwd = overrideCwd ?? legacyCwd ?? taskCwd ?? defaultCwd;
+  const source: SessionWorkspaceSource = overrideCwd
+    ? "session_workspace"
+    : legacyCwd
+      ? "workspace_yaml"
+      : taskCwd
+        ? "task"
+        : defaultCwd
+          ? "default"
+          : "none";
+
+  return {
+    effectiveCwd,
+    taskCwd,
+    sessionOverride: sessionOverride && overrideCwd
+      ? {
+          cwd: sessionOverride.cwd,
+          updatedAt: sessionOverride.updatedAt,
+        }
+      : undefined,
+    overridesTaskWorkspace: !!overrideCwd && !!taskCwd && normalizeWorkspacePathForComparison(overrideCwd) !== normalizeWorkspacePathForComparison(taskCwd),
+    source,
+  };
+}
+
+function toUnavailableGitStatus(cwd: string, error: string): TaskGitStatusResponse {
+  return {
+    status: "unavailable",
+    cwd,
+    error,
+  };
+}
+
+function buildWorktreeChoices(
+  gitStatus: TaskGitStatusResponse,
+  selectedCwd?: string,
+): SessionWorkspaceWorktreePayload[] {
+  if (gitStatus.status !== "ok") return [];
+
+  const compatStatus = gitStatus as LegacyCompatibleOkGitStatus;
+  const primaryWorktreePath = normalizeWorkspacePath(
+    typeof compatStatus.worktreePath === "string" ? compatStatus.worktreePath : gitStatus.cwd,
+  );
+  const workspaceKind = compatStatus.workspaceKind === "linked" ? "linked" : "main";
+  const head = compatStatus.head
+    ?? (gitStatus.branch?.trim()
+      ? { kind: "branch", name: gitStatus.branch.trim() }
+      : { kind: "detached", shortSha: "unknown" });
+
+  const selected = selectedCwd ? normalizeWorkspacePathForComparison(selectedCwd) : undefined;
+  const byPath = new Map<string, SessionWorkspaceWorktreePayload>();
+  const addWorktree = (cwd: string, workspaceKind: "main" | "linked", head: GitWorktreeHead) => {
+    const normalizedCwd = normalizeWorkspacePath(cwd);
+    if (!normalizedCwd) return;
+    const key = normalizeWorkspacePathForComparison(normalizedCwd);
+    if (byPath.has(key)) return;
+    byPath.set(key, {
+      cwd: normalizedCwd,
+      workspaceKind,
+      head,
+      selected: key === selected,
+    });
+  };
+
+  if (primaryWorktreePath) {
+    addWorktree(primaryWorktreePath, workspaceKind, head);
+  }
+  for (const sibling of compatStatus.siblingWorktrees ?? []) {
+    if (!sibling.head) continue;
+    addWorktree(
+      sibling.worktreePath ?? "",
+      sibling.workspaceKind === "linked" ? "linked" : "main",
+      sibling.head,
+    );
+  }
+  return [...byPath.values()];
+}
+
+async function readSessionWorkspaceGitStatus(
+  summary: SessionWorkspaceSummaryPayload & { source: SessionWorkspaceSource },
+): Promise<{ gitStatus: TaskGitStatusResponse; availableWorktrees: SessionWorkspaceWorktreePayload[]; pathState: SessionWorkspacePathState; warnings: SessionWorkspaceWarningPayload[] }> {
+  const warnings: SessionWorkspaceWarningPayload[] = [];
+  if (!summary.effectiveCwd) {
+    return {
+      gitStatus: {
+        status: "not_configured",
+        error: SESSION_WORKSPACE_NOT_CONFIGURED_ERROR,
+      },
+      availableWorktrees: [],
+      pathState: "unconfigured",
+      warnings,
+    };
+  }
+
+  let pathState: SessionWorkspacePathState = "available";
+  if (!existsSync(summary.effectiveCwd)) {
+    pathState = "missing";
+    warnings.push({
+      code: summary.source === "session_workspace" ? "missing_pinned_workspace" : "missing_workspace",
+      message: summary.source === "session_workspace"
+        ? `Pinned session workspace does not exist: ${summary.effectiveCwd}`
+        : `Workspace path does not exist: ${summary.effectiveCwd}`,
+    });
+  }
+
+  const gitStatus = pathState === "missing"
+    ? toUnavailableGitStatus(summary.effectiveCwd, warnings[0]!.message)
+    : await readGitWorktreeStatus(summary.effectiveCwd).catch((error) =>
+      toUnavailableGitStatus(summary.effectiveCwd!, error instanceof Error ? error.message : String(error)));
+
+  let availableWorktrees = buildWorktreeChoices(gitStatus, summary.effectiveCwd);
+  const shouldFallbackToTaskStatus = availableWorktrees.length === 0
+    && !!summary.taskCwd
+    && normalizeWorkspacePathForComparison(summary.taskCwd) !== normalizeWorkspacePathForComparison(summary.effectiveCwd);
+  if (shouldFallbackToTaskStatus && existsSync(summary.taskCwd!)) {
+    const taskGitStatus = await readGitWorktreeStatus(summary.taskCwd!).catch((error) =>
+      toUnavailableGitStatus(summary.taskCwd!, error instanceof Error ? error.message : String(error)));
+    availableWorktrees = buildWorktreeChoices(taskGitStatus, summary.effectiveCwd);
+  }
+
+  return {
+    gitStatus,
+    availableWorktrees,
+    pathState,
+    warnings,
+  };
+}
+
+async function buildSessionWorkspaceDetails(
+  ctx: AppContext,
+  sessionId: string,
+  task?: Task | null,
+): Promise<SessionWorkspaceDetailsPayload> {
+  const summary = buildSessionWorkspaceSummary(ctx, sessionId, task);
+  const { gitStatus, availableWorktrees, pathState, warnings } = await readSessionWorkspaceGitStatus(summary);
+  return {
+    sessionId,
+    taskId: task?.id,
+    ...summary,
+    pathState,
+    warnings,
+    availableWorktrees,
+    canResetToTask: !!summary.taskCwd,
+    ...getSessionStatus(ctx, sessionId),
+    gitStatus,
+  };
+}
+
+function resolveWorkspaceTask(ctx: AppContext, sessionId: string, requestedTaskId?: string): Task | undefined {
+  const taskId = normalizeWorkspacePath(requestedTaskId);
+  if (!taskId) {
+    const linkedTasks = ctx.taskStore.listTasks?.().filter((task) => task.sessionIds.includes(sessionId)) ?? [];
+    if (linkedTasks.length === 1) return linkedTasks[0];
+    if (linkedTasks.length > 1) return undefined;
+    return ctx.taskStore.findTaskBySessionId(sessionId);
+  }
+  const task = ctx.taskStore.getTask(taskId);
+  if (!task) {
+    throw new Error("Task not found");
+  }
+  if (!task.sessionIds.includes(sessionId)) {
+    throw new Error("Task is not linked to session");
+  }
+  return task;
 }
 
 function resolveSessionSummary(
@@ -99,6 +369,9 @@ function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
 }
 
 type RouterCompatContext = Omit<AppContext, "voiceJobManager"> & {
+  taskGroupStore?: AppContext["taskGroupStore"];
+  scheduleStore?: AppContext["scheduleStore"];
+  checklistStore?: AppContext["checklistStore"];
   voiceJobManager?: VoiceJobManager;
   __voiceJobFallbackDb?: DatabaseSync;
   __voiceJobFallbackCleanupInstalled?: boolean;
@@ -385,6 +658,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       case "session:idle":
       case "session:title":
       case "session:archived":
+      case "task:changed":
         invalidateEnrichedCache();
         break;
     }
@@ -435,9 +709,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
             const archivedAt = meta[id]?.archivedAt ?? null;
             const status = getSessionStatus(ctx, id);
+            const linkedTask = resolveWorkspaceTask(ctx, id);
+            const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
+            const context = {
+              ...(s.context ?? {}),
+              ...(workspace.effectiveCwd ? { cwd: workspace.effectiveCwd } : {}),
+            };
             return {
               ...s,
               summary,
+              context: Object.keys(context).length > 0 ? context : undefined,
+              workspace,
               diskSizeBytes: diskSizeCache.get(id) ?? 0,
               ...status,
               hasPlan,
@@ -692,9 +974,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         ctx.sessionTitles.setTitle(result.sessionId, `Copy of ${originalTitle}`);
       }
 
-      // Copy task links if the source session was linked to a task
-      const linkedTask = ctx.taskStore.findTaskBySessionId(sourceId);
-      if (linkedTask) {
+      // Copy all task links from the source session
+      for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
         ctx.taskStore.linkSession(linkedTask.id, result.sessionId);
       }
 
@@ -936,6 +1217,88 @@ export function createApiRouter(ctx: AppContext): express.Router {
       res.json({ ok: true, archived });
     } catch (err) {
       res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.get("/sessions/:id/workspace", async (req, res) => {
+    try {
+      const task = resolveWorkspaceTask(ctx, req.params.id, typeof req.query.taskId === "string" ? req.query.taskId : undefined);
+      res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(message === "Task not found" ? 404 : 400).json({ error: message });
+    }
+  });
+
+  router.put("/sessions/:id/workspace/path", async (req, res) => {
+    const cwd = normalizeWorkspacePath(req.body?.cwd);
+    if (!cwd) {
+      return res.status(400).json({ error: "cwd is required" });
+    }
+    if (ctx.sessionManager.isSessionBusy(req.params.id)) {
+      return res.status(409).json({ error: SESSION_WORKSPACE_BUSY_ERROR });
+    }
+    try {
+      const task = resolveWorkspaceTask(ctx, req.params.id, typeof req.query.taskId === "string" ? req.query.taskId : undefined);
+      ctx.sessionManager.setSessionWorkspace(req.params.id, cwd);
+      invalidateEnrichedCache();
+      res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(message === "Task not found" ? 404 : 400).json({ error: message });
+    }
+  });
+
+  router.put("/sessions/:id/workspace/worktree", async (req, res) => {
+    const cwd = normalizeWorkspacePath(req.body?.cwd);
+    if (!cwd) {
+      return res.status(400).json({ error: "cwd is required" });
+    }
+    if (ctx.sessionManager.isSessionBusy(req.params.id)) {
+      return res.status(409).json({ error: SESSION_WORKSPACE_BUSY_ERROR });
+    }
+    try {
+      const task = resolveWorkspaceTask(ctx, req.params.id, typeof req.query.taskId === "string" ? req.query.taskId : undefined);
+      const details = await buildSessionWorkspaceDetails(ctx, req.params.id, task);
+      if (details.availableWorktrees.length === 0) {
+        return res.status(409).json({ error: SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR });
+      }
+      const requestedCwd = normalizeWorkspacePathForComparison(cwd);
+      const matchesKnownWorktree = details.availableWorktrees.some((worktree) =>
+        normalizeWorkspacePathForComparison(worktree.cwd) === requestedCwd);
+      if (!matchesKnownWorktree) {
+        return res.status(400).json({ error: SESSION_WORKTREE_SELECTION_INVALID_ERROR });
+      }
+      ctx.sessionManager.setSessionWorkspace(req.params.id, cwd);
+      invalidateEnrichedCache();
+      res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(message === "Task not found" ? 404 : 400).json({ error: message });
+    }
+  });
+
+  router.delete("/sessions/:id/workspace", async (req, res) => {
+    if (ctx.sessionManager.isSessionBusy(req.params.id)) {
+      return res.status(409).json({ error: SESSION_WORKSPACE_BUSY_ERROR });
+    }
+    try {
+      const requestedTaskId = typeof req.query.taskId === "string" ? req.query.taskId : undefined;
+      const task = resolveWorkspaceTask(ctx, req.params.id, requestedTaskId);
+      if (requestedTaskId) {
+        const taskCwd = normalizeWorkspacePath(task?.cwd);
+        if (!taskCwd) {
+          return res.status(409).json({ error: SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR });
+        }
+        ctx.sessionManager.resetSessionWorkspace(req.params.id, { taskId: requestedTaskId, taskCwd });
+      } else {
+        ctx.sessionManager.resetSessionWorkspace(req.params.id);
+      }
+      invalidateEnrichedCache();
+      res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(message === "Task not found" ? 404 : 400).json({ error: message });
     }
   });
 
@@ -1235,6 +1598,28 @@ export function createApiRouter(ctx: AppContext): express.Router {
     res.json({ task: { ...task, tags } });
   });
 
+  router.get("/tasks/:id/git-status", async (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    const taskCwd = task.cwd?.trim();
+    if (!taskCwd) {
+      return res.json({
+        status: "not_configured",
+        error: TASK_GIT_STATUS_NOT_CONFIGURED_ERROR,
+      });
+    }
+
+    try {
+      res.json(await readGitWorktreeStatus(taskCwd));
+    } catch (error) {
+      res.json({
+        status: "unavailable",
+        cwd: taskCwd,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   // Enriched task data — fetches work item + PR metadata from configured providers
   router.get("/tasks/:id/enriched", async (req, res) => {
     const task = ctx.taskStore.getTask(req.params.id);
@@ -1441,6 +1826,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/dashboard", async (_req, res) => {
     try {
+      const compatCtx = ctx as RouterCompatContext;
       const t0 = Date.now();
       const sessions = await ctx.sessionManager.listSessionsFromDisk();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
@@ -1563,7 +1949,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         );
 
         // Checklist summary
-        const checklistItems = ctx.checklistStore.listChecklistItems(task.id);
+        const checklistItems = compatCtx.checklistStore?.listChecklistItems(task.id) ?? [];
         const checklistDone = checklistItems.filter((t) => t.done).length;
         const today = new Date().toISOString().slice(0, 10);
         const checklistOverdue = checklistItems.filter((t) => !t.done && t.deadline && t.deadline < today).length;
@@ -1645,14 +2031,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
           busy: s.busy ?? false,
           unread: isUnread(s.sessionId, s.lastVisibleActivityAt),
         }));
-
       // Open checklist items across all active tasks and global checklist items
-      const taskGroups = ctx.taskGroupStore.listGroups();
-      const enrichChecklistItem = (checklistItem: ReturnType<typeof ctx.checklistStore.listAllOpenChecklistItems>[number]) => {
+      const taskGroups = compatCtx.taskGroupStore?.listGroups() ?? [];
+      const enrichChecklistItem = (checklistItem: { taskId: string | null }) => {
         const task = checklistItem.taskId ? tasks.find((t) => t.id === checklistItem.taskId) : null;
         const taskTitle = task?.title ?? (checklistItem.taskId ? "Unknown" : null);
         const taskGroupColor = task?.groupId
-          ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
+          ? compatCtx.taskGroupStore?.getGroup(task.groupId)?.color ?? null
           : null;
         const taskOrder = task?.order ?? 0;
         const taskStatus = task?.status ?? null;
@@ -1663,20 +2048,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return { ...checklistItem, taskTitle, taskGroupColor, taskOrder, taskStatus, taskGroupId, taskGroupOrder };
       };
 
-      const openChecklistItems = ctx.checklistStore.listAllOpenChecklistItems().map(enrichChecklistItem);
+      const openChecklistItems = (compatCtx.checklistStore?.listAllOpenChecklistItems() ?? []).map(enrichChecklistItem);
 
       // Recently completed checklist items
-      const completedChecklistItems = ctx.checklistStore.listRecentlyCompletedChecklistItems().map(enrichChecklistItem);
+      const completedChecklistItems = (compatCtx.checklistStore?.listRecentlyCompletedChecklistItems() ?? []).map(enrichChecklistItem);
 
       // Active schedules
-      const allSchedules = ctx.scheduleStore.listSchedules();
+      const allSchedules = compatCtx.scheduleStore?.listSchedules() ?? [];
       const dashboardSchedules = allSchedules.map((sched) => {
         const task = tasks.find((t) => t.id === sched.taskId);
         return {
           ...serializeSchedule(sched),
           taskTitle: task?.title ?? null,
           taskGroupColor: task?.groupId
-            ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
+            ? compatCtx.taskGroupStore?.getGroup(task.groupId)?.color ?? null
             : null,
         };
       });

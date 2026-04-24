@@ -6,15 +6,17 @@ import {
 } from "./task-change-invalidation";
 
 describe("invalidateTaskChangeQueries", () => {
-  it("invalidates shared task data and the affected task checklist", () => {
+  it("invalidates shared task data and task-scoped task detail queries", () => {
     const invalidateQueries = vi.fn();
 
     invalidateTaskChangeQueries({ invalidateQueries } as any, "task-123");
 
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.tasks });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["sessions"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openChecklistItems });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace"] });
 
     const predicate = invalidateQueries.mock.calls
       .map(([filters]) => filters?.predicate)
@@ -22,6 +24,7 @@ describe("invalidateTaskChangeQueries", () => {
 
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
+    expect(predicate?.({ queryKey: queryKeys.taskGitStatus("task-123") })).toBe(true);
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-999") })).toBe(false);
     expect(predicate?.({ queryKey: queryKeys.taskChecklistItems("task-123") })).toBe(false);
   });
@@ -31,10 +34,11 @@ describe("invalidateTaskChangeQueries", () => {
 
     invalidateTaskChangeQueries({ invalidateQueries } as any);
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(invalidateQueries).toHaveBeenCalledTimes(4);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: queryKeys.dashboard });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.openChecklistItems });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.dashboard });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
   });
 });
 
@@ -52,15 +56,18 @@ describe("createDeferredTaskChangeInvalidator", () => {
 
     invalidator.endTaskMutation();
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(5);
+    expect(invalidateQueries).toHaveBeenCalledTimes(7);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: queryKeys.dashboard });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.openChecklistItems });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.taskChecklistItems("task-123") });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: queryKeys.dashboard });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(5, { queryKey: queryKeys.taskChecklistItems("task-123") });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(6, { queryKey: ["session-workspace"] });
 
-    const predicate = invalidateQueries.mock.calls[4]?.[0]?.predicate;
+    const predicate = invalidateQueries.mock.calls[6]?.[0]?.predicate;
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
+    expect(predicate?.({ queryKey: queryKeys.taskGitStatus("task-123") })).toBe(true);
   });
 
   it("waits for nested task mutations before flushing queued changes", () => {
@@ -76,5 +83,6 @@ describe("createDeferredTaskChangeInvalidator", () => {
 
     invalidator.endTaskMutation();
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace"] });
   });
 });

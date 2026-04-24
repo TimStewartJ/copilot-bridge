@@ -37,6 +37,7 @@ import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
+import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
@@ -213,6 +214,15 @@ function parseWorkspaceSummary(content: string): string | undefined {
   }
 
   return summary ?? (summaryLines.length > 0 ? summaryLines.join("\n") : undefined);
+}
+
+function parseWorkspaceCwd(content: string): string | undefined {
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.startsWith("cwd:")) continue;
+    const cwd = line.slice(5).trim();
+    if (cwd) return cwd;
+  }
+  return undefined;
 }
 
 function looksLikeExistingSessionTitle(summary: string): boolean {
@@ -898,6 +908,68 @@ export function createBridgeTools(ctx: AppContext) {
       return { success: true, sessionId, message: `Session renamed to "${title}"` };
     },
   }),
+  defineTool("session_set_workspace", {
+    description: "Switch the current session's workspace for future turns. Set an explicit cwd or reset back to the linked task's current default workspace snapshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "The session ID to update. Defaults to the current session." },
+        cwd: { type: "string", description: "Explicit working directory to use for future turns." },
+        taskId: { type: "string", description: "When resetting, choose which linked task's current default workspace to copy into the session." },
+        reset: { type: "boolean", description: "When true, copy the linked task's current default working directory into this session's pinned workspace." },
+      },
+    },
+    handler: async (args: any, invocation: any) => {
+      const sessionId = typeof args.sessionId === "string" && args.sessionId.trim()
+        ? args.sessionId.trim()
+        : invocation.sessionId;
+      if (!sessionId) return toolFailure("sessionId is required");
+
+      const hasCwd = typeof args.cwd === "string";
+      const cwd = hasCwd ? args.cwd.trim() : undefined;
+      const hasTaskId = typeof args.taskId === "string";
+      const taskId = hasTaskId ? args.taskId.trim() : undefined;
+      const reset = args.reset === true;
+
+      if (reset === hasCwd) {
+        return toolFailure("Provide exactly one of: cwd, reset");
+      }
+      if (hasCwd && !cwd) {
+        return toolFailure("cwd is required");
+      }
+      if (hasTaskId && !taskId) {
+        return toolFailure("taskId is required");
+      }
+      if (taskId && !reset) {
+        return toolFailure("taskId can only be used with reset");
+      }
+
+      try {
+        const allowDuringActiveTurn = invocation.sessionId === sessionId;
+        const result = reset
+          ? ctx.sessionManager.resetSessionWorkspace(sessionId, { allowDuringActiveTurn, taskId })
+          : ctx.sessionManager.setSessionWorkspace(sessionId, cwd!, { allowDuringActiveTurn });
+        return {
+          success: true,
+          sessionId,
+          cwd: result.cwd,
+          source: result.source,
+          message: result.message,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === "Cannot switch workspace for a busy session") {
+          return {
+            ...toolFailure(message, {
+              detail: "Workspace changes only take effect when the session is idle.",
+            }),
+            blocked: true,
+          };
+        }
+        return toolFailure(message);
+      }
+    },
+  }),
   defineTool("send_attachment", {
     description:
       "Publish a file as an attachment the user can open or download. " +
@@ -1518,6 +1590,7 @@ export interface SessionManagerDeps {
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   sessionTitles: SessionTitlesStore;
+  sessionWorkspaceStore?: SessionWorkspaceStore;
   taskStore: TaskStore;
   taskGroupStore?: TaskGroupStore;
   checklistStore?: ChecklistStore;
@@ -1561,6 +1634,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     globalBus: ctx.globalBus,
     eventBusRegistry: ctx.eventBusRegistry,
     sessionTitles: ctx.sessionTitles,
+    sessionWorkspaceStore: ctx.sessionWorkspaceStore,
     taskStore: ctx.taskStore,
     taskGroupStore: ctx.taskGroupStore,
     checklistStore: ctx.checklistStore,
@@ -1596,6 +1670,7 @@ export class SessionManager {
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private visibleActivityCache = new Map<string, { eventsMtimeMs: number; lastVisibleActivityAt?: string }>();
+  private pendingSessionEvictions = new Set<string>();
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
   private sessionListCache: { data: any[]; timestamp: number } | null = null;
@@ -1785,6 +1860,15 @@ export class SessionManager {
     }
   }
 
+  private getLegacyWorkspaceCwd(sessionId: string): string | undefined {
+    const yamlPath = join(this.getSessionStateDir(sessionId), "workspace.yaml");
+    try {
+      return parseWorkspaceCwd(readFileSync(yamlPath, "utf-8"));
+    } catch {
+      return undefined;
+    }
+  }
+
   private getCopilotHome(): string {
     return this.deps.copilotHome ?? join(homedir(), ".copilot");
   }
@@ -1846,11 +1930,136 @@ export class SessionManager {
     return { groupName: group.name, notes: group.notes };
   }
 
+  private findLinkedTask(sessionId: string): Task | undefined {
+    const linkedTasks = this.listLinkedTasks(sessionId);
+    return linkedTasks.length === 1 ? linkedTasks[0] : undefined;
+  }
+
+  private listLinkedTasks(sessionId: string): Task[] {
+    const listedTasks = this.deps.taskStore.listTasks?.().filter((task) => task.sessionIds.includes(sessionId)) ?? [];
+    if (listedTasks.length > 0) return listedTasks;
+    const linkedTask = this.deps.taskStore.findTaskBySessionId?.(sessionId);
+    return linkedTask ? [linkedTask] : [];
+  }
+
+  private resolveResetTaskCwd(
+    sessionId: string,
+    opts: { taskCwd?: string; taskId?: string },
+  ): string | undefined {
+    const explicitTaskCwd = opts.taskCwd?.trim();
+    if (explicitTaskCwd) return explicitTaskCwd;
+
+    const explicitTaskId = opts.taskId?.trim();
+    if (explicitTaskId) {
+      const task = this.deps.taskStore.getTask?.(explicitTaskId);
+      if (!task) throw new Error("Task not found");
+      if (!task.sessionIds.includes(sessionId)) {
+        throw new Error("Task is not linked to session");
+      }
+      return task.cwd?.trim();
+    }
+
+    const linkedTasks = this.listLinkedTasks(sessionId);
+    if (linkedTasks.length > 1) {
+      throw new Error("Session is linked to multiple tasks; provide taskId when resetting workspace");
+    }
+    return linkedTasks[0]?.cwd?.trim();
+  }
+
+  private resolveEffectiveSessionCwd(opts: { sessionId?: string; task?: Pick<Task, "cwd"> | null }): string | undefined {
+    const { sessionId, task } = opts;
+    const persistedCwd = sessionId ? this.deps.sessionWorkspaceStore?.getWorkspace(sessionId)?.cwd : undefined;
+    if (persistedCwd?.trim()) return persistedCwd;
+
+    const legacyCwd = sessionId ? this.getLegacyWorkspaceCwd(sessionId) : undefined;
+    if (legacyCwd?.trim()) return legacyCwd;
+
+    if (task?.cwd?.trim()) return task.cwd;
+
+    return resolveDemoWorkspaceDir(this.deps.runtimePaths);
+  }
+
+  private persistSessionWorkspace(sessionId: string, cwd?: string): void {
+    if (!cwd?.trim()) return;
+    this.deps.sessionWorkspaceStore?.setWorkspace(sessionId, cwd);
+  }
+
+  setSessionWorkspace(sessionId: string, cwd: string, opts: { allowDuringActiveTurn?: boolean } = {}): {
+    cwd: string;
+    source: "explicit";
+    message: string;
+  } {
+    const normalizedCwd = cwd.trim();
+    if (!normalizedCwd) {
+      throw new Error("cwd is required");
+    }
+    this.ensureSessionWorkspaceCanChange(sessionId, opts);
+    const store = this.deps.sessionWorkspaceStore;
+    if (!store) {
+      throw new Error("Session workspace store is not configured");
+    }
+    store.setWorkspace(sessionId, normalizedCwd);
+    this.applySessionWorkspaceChange(sessionId, opts);
+    return {
+      cwd: normalizedCwd,
+      source: "explicit",
+      message: `Session workspace set to ${normalizedCwd} for future turns`,
+    };
+  }
+
+  resetSessionWorkspace(
+    sessionId: string,
+    opts: { allowDuringActiveTurn?: boolean; taskCwd?: string; taskId?: string } = {},
+  ): {
+    cwd: string;
+    source: "task-default";
+    message: string;
+  } {
+    this.ensureSessionWorkspaceCanChange(sessionId, opts);
+    const taskCwd = this.resolveResetTaskCwd(sessionId, opts);
+    if (!taskCwd) {
+      throw new Error("Linked task has no default workspace");
+    }
+    const store = this.deps.sessionWorkspaceStore;
+    if (!store) {
+      throw new Error("Session workspace store is not configured");
+    }
+    store.setWorkspace(sessionId, taskCwd);
+    this.applySessionWorkspaceChange(sessionId, opts);
+    return {
+      cwd: taskCwd,
+      source: "task-default",
+      message: `Session workspace reset to linked task default ${taskCwd}`,
+    };
+  }
+
+  private ensureSessionWorkspaceCanChange(sessionId: string, opts: { allowDuringActiveTurn?: boolean } = {}): void {
+    if (this.isSessionBusy(sessionId) && !opts.allowDuringActiveTurn) {
+      throw new Error("Cannot switch workspace for a busy session");
+    }
+  }
+
+  private applySessionWorkspaceChange(sessionId: string, opts: { allowDuringActiveTurn?: boolean } = {}): void {
+    this.ensureSessionWorkspaceCanChange(sessionId, opts);
+    if (this.isSessionBusy(sessionId)) {
+      this.pendingSessionEvictions.add(sessionId);
+    } else {
+      this.evictCachedSession(sessionId);
+    }
+    this.invalidateSessionListCache();
+  }
+
+  private flushPendingSessionEviction(sessionId: string): void {
+    if (this.pendingSessionEvictions.delete(sessionId)) {
+      this.evictCachedSession(sessionId);
+    }
+  }
+
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
     const runtimePaths = this.deps.runtimePaths;
     const demoMode = isDemoMode(runtimePaths);
-    const workingDirectory = task?.cwd ?? resolveDemoWorkspaceDir(runtimePaths);
+    const workingDirectory = this.resolveEffectiveSessionCwd({ sessionId, task });
 
     const cfg: any = {
       onPermissionRequest: approveAll,
@@ -2106,14 +2315,16 @@ export class SessionManager {
         const session: any = { sessionId: dirName };
         const summary = parseWorkspaceSummary(content);
         if (summary) session.summary = summary;
+        const linkedTask = this.findLinkedTask(dirName);
+        const effectiveCwd = this.deps.sessionWorkspaceStore?.getWorkspace(dirName)?.cwd
+          ?? parseWorkspaceCwd(content)
+          ?? linkedTask?.cwd
+          ?? resolveDemoWorkspaceDir(this.deps.runtimePaths);
 
         for (const line of content.split(/\r?\n/)) {
           if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
-          else if (line.startsWith("cwd:")) {
-            const cwd = line.slice(5).trim();
-            if (cwd) session.context = { cwd };
-          }
         }
+        if (effectiveCwd) session.context = { cwd: effectiveCwd };
         // Track session recency from the last visible event, not raw log-file mtime.
         const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
         try {
@@ -2206,10 +2417,12 @@ export class SessionManager {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const t0 = Date.now();
-    const session = await this.client.createSession(this.buildSessionConfig());
+    const sessionConfig = this.buildSessionConfig();
+    const session = await this.client.createSession(sessionConfig);
     const duration = Date.now() - t0;
 
     this.sessionObjects.set(session.sessionId, session);
+    this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
     this.invalidateSessionListCache();
     this.recordSpan("session.create", duration, session.sessionId);
@@ -2234,6 +2447,8 @@ export class SessionManager {
     const session = await this.client.createSession(this.buildSessionConfig());
     const newId = session.sessionId;
     const destDir = join(sessionStateDir, newId);
+    const sourceTask = this.findLinkedTask(sourceSessionId);
+    const sourceCwd = this.resolveEffectiveSessionCwd({ sessionId: sourceSessionId, task: sourceTask });
 
     // Copy events.jsonl from source, rewriting the session.start event's sessionId
     const sourceEventsPath = join(sourceDir, "events.jsonl");
@@ -2270,6 +2485,7 @@ export class SessionManager {
     // picking up the copied event history.
     session.disconnect();
     this.sessionObjects.delete(newId);
+    this.persistSessionWorkspace(newId, sourceCwd);
 
     console.log(`[sdk] Duplicated session ${sourceSessionId.slice(0, 8)} → ${newId.slice(0, 8)}`);
     this.invalidateSessionListCache();
@@ -2289,7 +2505,7 @@ export class SessionManager {
       title: taskTitle,
       status: "active" as const,
       groupId: fullTask?.groupId,
-      cwd,
+      cwd: fullTask?.cwd ?? cwd,
       notes: notes || "",
       priority: 0,
       pinned: fullTask?.pinned ?? false,
@@ -2302,12 +2518,20 @@ export class SessionManager {
     };
 
     const t0 = Date.now();
+    const sessionConfig = this.buildSessionConfig({
+      task,
+      isNewTask: isPlaceholder,
+      prDescriptions,
+      scheduleContext,
+      groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
+    });
     const session = await this.client.createSession(
-      this.buildSessionConfig({ task, isNewTask: isPlaceholder, prDescriptions, scheduleContext, groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId) }),
+      sessionConfig,
     );
     const duration = Date.now() - t0;
 
     this.sessionObjects.set(session.sessionId, session);
+    this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
     this.invalidateSessionListCache();
     this.recordSpan("session.createTask", duration, session.sessionId, { taskId });
@@ -2329,6 +2553,7 @@ export class SessionManager {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Missing run controller during abort — resolving locally`);
       bus?.emit({ type: "aborted", content: getAbortContent() });
       this.setSessionRunState(sessionId, "idle");
+      this.flushPendingSessionEviction(sessionId);
       return true;
     }
 
@@ -2477,6 +2702,7 @@ export class SessionManager {
         this.activeRunControllers.delete(sessionId);
       }
       this.setSessionRunState(sessionId, "idle");
+      this.flushPendingSessionEviction(sessionId);
     });
   }
 
@@ -2528,7 +2754,7 @@ export class SessionManager {
     const sid = sessionId.slice(0, 8);
 
     // Build resume config with optional task context
-    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     if (linkedTask) {
@@ -3144,7 +3370,7 @@ export class SessionManager {
 
     const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
-    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const linkedTask = this.findLinkedTask(sessionId);
     const msgResumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
     const tConfig = Date.now();
 
@@ -3282,7 +3508,7 @@ export class SessionManager {
     const t0 = Date.now();
     console.log(`[sdk] [${sid}] Warming session...`);
 
-    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     this.resumingSessions.add(sessionId);
@@ -3327,6 +3553,7 @@ export class SessionManager {
       }
     }
     this.visibleActivityCache.delete(sessionId);
+    this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
     this.invalidateSessionListCache();
 
     // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
@@ -3348,7 +3575,7 @@ export class SessionManager {
     }
 
     const sid = sessionId.slice(0, 8);
-    const linkedTask = this.deps.taskStore.findTaskBySessionId(sessionId);
+    const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
 
     this.resumingSessions.add(sessionId);

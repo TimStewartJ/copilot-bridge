@@ -30,6 +30,8 @@ const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
 const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const PREVIEW_VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEMO_PREVIEW_SUFFIX = "-demo";
 
 export type StagingPreviewProfile = "clone" | "demo";
@@ -49,6 +51,50 @@ interface ActiveStagingBackend {
   cleanup: () => Promise<void>;
   stagingDir: string;
   runtimePaths: RuntimePaths;
+}
+
+type LegacyTodoStore = {
+  listTodos: (taskId: string) => unknown[];
+  getTodo: (id: string) => unknown;
+  createTodo: (taskId: string | null, text: string, deadline?: string) => unknown;
+  updateTodo: (id: string, updates: Record<string, unknown>) => unknown;
+  deleteTodo: (id: string) => void;
+  reorderTodos: (taskId: string, todoIds: string[]) => unknown[];
+  listAllOpen: () => unknown[];
+  listRecentlyCompleted: () => unknown[];
+};
+
+type StagingAppContext = AppContext & { todoStore?: LegacyTodoStore };
+
+function createNoopSessionWorkspaceStore() {
+  return {
+    getWorkspace: () => undefined,
+    setWorkspace: (_sessionId: string, cwd: string) => ({ cwd, updatedAt: new Date().toISOString() }),
+    deleteWorkspace: () => {},
+    listWorkspaces: () => ({}),
+  };
+}
+
+function createNoopChecklistStore() {
+  return {
+    listChecklistItems: () => [],
+    getChecklistItem: () => undefined,
+    createChecklistItem: (_taskId: string | null, text: string, _deadline?: string) => ({
+      id: "",
+      taskId: null,
+      text,
+      done: false,
+      order: 0,
+      createdAt: new Date().toISOString(),
+    }),
+    updateChecklistItem: () => {
+      throw new Error("Checklist store is not available in this staging worktree.");
+    },
+    deleteChecklistItem: () => {},
+    reorderChecklistItems: () => [],
+    listAllOpenChecklistItems: () => [],
+    listRecentlyCompletedChecklistItems: () => [],
+  };
 }
 
 function resolvePreviewProfile(value?: string): StagingPreviewProfile {
@@ -164,7 +210,22 @@ function isMissingOptionalStagingModule(error: unknown, specifier: string): bool
   const message = error instanceof Error ? error.message : String(error);
   const missingTarget = message.match(/Cannot find (?:module|package) ['"]([^'"]+)['"]/)?.[1];
   if (!missingTarget) return false;
-  return missingTarget === rawSpecifier || missingTarget === resolvedSpecifier;
+  const rawMissingTarget = missingTarget.replace(/\?.*$/, "");
+  if (
+    missingTarget === specifier
+    || missingTarget === rawSpecifier
+    || missingTarget === resolvedSpecifier
+    || rawMissingTarget === rawSpecifier
+    || rawMissingTarget === resolvedSpecifier
+  ) {
+    return true;
+  }
+  if (!rawMissingTarget.startsWith("file:")) return false;
+  try {
+    return fileURLToPath(rawMissingTarget) === resolvedSpecifier;
+  } catch {
+    return false;
+  }
 }
 
 async function importOptionalStagingModule(specifier: string) {
@@ -470,8 +531,8 @@ async function createStagingContext(
   // Dynamic imports from the staging worktree
   const [globalBusMod, eventBusMod, dbMod, migrateMod,
     taskStoreMod, taskGroupStoreMod,
-    scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod,
-    sessionTitlesMod, readStateStoreMod, checklistStoreMod,
+    scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod, sessionWorkspaceStoreMod,
+    sessionTitlesMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
     docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
     telemetryStoreMod,
@@ -488,9 +549,11 @@ async function createStagingContext(
     import(ts("schedule-store.ts")),
     import(ts("settings-store.ts")),
     import(ts("session-meta-store.ts")),
+    importOptionalStagingModule(ts("session-workspace-store.ts")),
     import(ts("session-titles.ts")),
     import(ts("read-state-store.ts")),
-    import(ts("checklist-store.ts")),
+    importOptionalStagingModule(ts("checklist-store.ts")),
+    importOptionalStagingModule(ts("todo-store.ts")),
     importOptionalStagingModule(ts("docs-store.ts")),
     importOptionalStagingModule(ts("docs-index.ts")),
     import(ts("session-manager.ts")),
@@ -514,9 +577,13 @@ async function createStagingContext(
     const scheduleStore = scheduleStoreMod.createScheduleStore(db);
     const settingsStore = settingsStoreMod.createSettingsStore(db);
     const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(db);
+    const sessionWorkspaceStore = sessionWorkspaceStoreMod?.createSessionWorkspaceStore?.(db)
+      ?? createNoopSessionWorkspaceStore();
     const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
     const readStateStore = readStateStoreMod.createReadStateStore(db);
-    const checklistStore = checklistStoreMod.createChecklistStore(db, globalBus);
+    const checklistStore = checklistStoreMod?.createChecklistStore?.(db, globalBus)
+      ?? createNoopChecklistStore();
+    const todoStore = todoStoreMod?.createTodoStore?.(db, globalBus);
     const tagStore = tagStoreMod?.createTagStore(db);
     const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
     const transcriptionService = transcriptionServiceMod?.createTranscriptionService();
@@ -528,9 +595,10 @@ async function createStagingContext(
     const copilotHome = runtimePaths.copilotHome ?? join(runtimePaths.dataDir, ".copilot");
     mkdirSync(copilotHome, { recursive: true });
 
-    const ctx: AppContext = {
+    const ctx: StagingAppContext = {
       taskStore, taskGroupStore, scheduleStore, settingsStore,
-      sessionMetaStore, sessionTitles, readStateStore, checklistStore,
+      sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore,
+      ...(todoStore && { todoStore }),
       ...(docsStore && { docsStore }),
       ...(docsIndex && { docsIndex }),
       ...(tagStore && { tagStore }),
@@ -801,20 +869,31 @@ function log(msg: string) {
   console.log(`[staging] ${msg}`);
 }
 
-function run(cmd: string, cwd: string): { ok: boolean; output: string } {
+function run(
+  cmd: string,
+  cwd: string,
+  options: { timeoutMs?: number } = {},
+): { ok: boolean; output: string } {
   // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
   // resolve the correct Node binary (v22+ required for node:sqlite) instead of
   // whatever older `node` happens to be first on the system PATH.
   const nodeDir = dirname(process.execPath);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const env = {
     ...process.env,
     PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
   };
   try {
-    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: 120_000, env });
+    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs, env });
     return { ok: true, output };
   } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
+    const output = joinFailureSections(
+      err.stderr || err.stdout || String(err),
+      err.code === "ETIMEDOUT" || err.signal === "SIGTERM"
+        ? `Command timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`
+        : undefined,
+    );
+    return { ok: false, output: output ?? String(err) };
   }
 }
 
@@ -1059,6 +1138,7 @@ export const __testing = {
   seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}) {
     return seedStagingData(stagingDir, options).dataDir;
   },
+  createStagingContext,
   restoreStagingBackendWithRetry,
   listStagingBranchPrefixes,
   pruneOrphanedWorktreesImpl,
@@ -1191,7 +1271,9 @@ export const STAGING_TOOLS = [
 
       // Run local x-plat audit + tests before building
       const previewValidationCommand = "npm run test:xplat-audit && npx vitest run --coverage";
-      const testResult = run(previewValidationCommand, stagingDir);
+      const testResult = run(previewValidationCommand, stagingDir, {
+        timeoutMs: PREVIEW_VALIDATION_TIMEOUT_MS,
+      });
       if (!testResult.ok) {
         return commandFailure(
           "Staging preview validation failed.",
