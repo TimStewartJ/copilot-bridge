@@ -311,6 +311,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
         });
         return res.status(202).json(job);
       } catch (error) {
+        if (isRestartPendingError(error)) {
+          res.set("Retry-After", "5");
+          return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
+        }
         return res.status(error instanceof InvalidWavError ? 400 : 500).json({
           error: error instanceof Error ? error.message : String(error),
         });

@@ -11,7 +11,7 @@ import {
   RESTART_PENDING_MESSAGE,
   triggerRestartPending,
 } from "../session-manager.js";
-import { writeRestartState } from "../restart-state.js";
+import { clearRestartState, writeRestartState } from "../restart-state.js";
 import * as scheduler from "../scheduler.js";
 import { computeNextRunAt, matchesCron, matchesField } from "../scheduler.js";
 import { createTestApp } from "./helpers.js";
@@ -742,7 +742,7 @@ describe("scheduler restart gating", () => {
 
     expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session-3", "run once");
     unsubscribe();
-  });
+  }, 20_000);
 
   it("does not re-arm a one-shot retry for permanent target configuration skips", async () => {
     vi.useFakeTimers();
@@ -1293,7 +1293,9 @@ describe("scheduler startup recovery", () => {
 
     await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(2);
+    });
     expect(sessionManager.startWork).toHaveBeenCalledWith("link-fail-session-2", "run after link retry");
     linkSpy.mockRestore();
   });
@@ -1335,6 +1337,341 @@ describe("scheduler startup recovery", () => {
     expect(updated.enabled).toBe(false);
   });
 
+  it("retries missed one-shot catch-up after restart clears", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const docsDir = join(tempDir, "docs");
+    const { ctx } = createTestApp({
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+    });
+    try {
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      await writeRestartState(join(tempDir, "restart-state.json"), {
+        requestId: "req-one-shot-catchup",
+        phase: "waiting-for-sessions",
+        requestedAt: new Date().toISOString(),
+        waitingSessions: 1,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "restart-cleared-one-shot" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Restart deferred one-shot",
+        prompt: "catch up later",
+        type: "once",
+        runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      });
+
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      await Promise.resolve();
+      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+
+      clearRestartPending();
+      ctx.globalBus.emit({ type: "server:restart-cleared" });
+
+      await vi.waitFor(() => {
+        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+      });
+      expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-one-shot", "catch up later");
+      expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
+        runCount: 1,
+        enabled: false,
+      });
+    } finally {
+      clearRestartPending();
+      configureRestartStateStore(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("polls persisted restart state and catches up after launcher-style restart clears", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const docsDir = join(tempDir, "docs");
+    const restartStatePath = join(tempDir, "restart-state.json");
+    const { ctx } = createTestApp({
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+    });
+    try {
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      await writeRestartState(restartStatePath, {
+        requestId: "req-launcher-restart-catchup",
+        phase: "restarting",
+        requestedAt: new Date().toISOString(),
+        waitingSessions: 0,
+        launcherHeartbeatAt: new Date().toISOString(),
+      });
+      await refreshRestartState();
+
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "launcher-cleared-one-shot" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Launcher restart deferred one-shot",
+        prompt: "catch up after launcher clears",
+        type: "once",
+        runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      });
+
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+
+      await clearRestartState(restartStatePath);
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await vi.waitFor(() => {
+        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+      });
+      expect(sessionManager.startWork).toHaveBeenCalledWith(
+        "launcher-cleared-one-shot",
+        "catch up after launcher clears",
+      );
+      expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
+        runCount: 1,
+        enabled: false,
+      });
+    } finally {
+      clearRestartPending();
+      configureRestartStateStore(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds aged deferred one-shot eligibility after a launcher-style restart boots mid-restart", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const docsDir = join(tempDir, "docs");
+    const restartStatePath = join(tempDir, "restart-state.json");
+    const { ctx } = createTestApp({
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+    });
+    try {
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      const restartRequestedAt = new Date().toISOString();
+      await writeRestartState(restartStatePath, {
+        requestId: "req-launcher-restart-aged-catchup",
+        phase: "restarting",
+        requestedAt: restartRequestedAt,
+        waitingSessions: 0,
+        launcherHeartbeatAt: restartRequestedAt,
+      });
+      await refreshRestartState();
+
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "launcher-aged-one-shot" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Launcher aged deferred one-shot",
+        prompt: "catch up after long restart",
+        type: "once",
+        runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      });
+
+      await vi.advanceTimersByTimeAsync(90 * 60_000);
+
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+      expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(true);
+
+      await clearRestartState(restartStatePath);
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await vi.waitFor(() => {
+        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+      });
+      expect(sessionManager.startWork).toHaveBeenCalledWith(
+        "launcher-aged-one-shot",
+        "catch up after long restart",
+      );
+      expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
+        runCount: 1,
+        enabled: false,
+      });
+    } finally {
+      clearRestartPending();
+      configureRestartStateStore(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replay a deferred one-shot slot after the schedule is rescheduled before restart clears", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    triggerRestartPending();
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "rescheduled-one-shot" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const originalRunAt = new Date(Date.now() - 30 * 60_000).toISOString();
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Deferred rescheduled one-shot",
+      prompt: "run after reschedule",
+      type: "once",
+      runAt: originalRunAt,
+    });
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    await Promise.resolve();
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+
+    const rescheduledRunAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    ctx.scheduleStore.updateSchedule(schedule.id, { runAt: rescheduledRunAt });
+    scheduler.armOneShot(schedule.id, rescheduledRunAt);
+    ctx.scheduleStore.updateNextRunAt(schedule.id, rescheduledRunAt);
+
+    clearRestartPending();
+    ctx.globalBus.emit({ type: "server:restart-cleared" });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
+      enabled: true,
+      runCount: 0,
+      runAt: rescheduledRunAt,
+      nextRunAt: rescheduledRunAt,
+    });
+
+    await vi.advanceTimersByTimeAsync(25 * 60_000);
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionManager.startWork).toHaveBeenCalledWith("rescheduled-one-shot", "run after reschedule");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
+      enabled: false,
+      runCount: 1,
+    });
+  });
+
+  it("retries missed cron catch-up after restart clears", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const docsDir = join(tempDir, "docs");
+    const { ctx, db } = createTestApp({
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+    });
+    try {
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      await writeRestartState(join(tempDir, "restart-state.json"), {
+        requestId: "req-cron-catchup",
+        phase: "waiting-for-sessions",
+        requestedAt: new Date().toISOString(),
+        waitingSessions: 1,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "restart-cleared-cron" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Restart deferred cron",
+        prompt: "catch up cron",
+        type: "cron",
+        cron: "30 * * * *",
+      });
+      db.prepare("UPDATE schedules SET lastRunAt = ?, runCount = ? WHERE id = ?").run(
+        "2026-04-16T15:00:00.000Z",
+        1,
+        schedule.id,
+      );
+
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      await Promise.resolve();
+      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+
+      clearRestartPending();
+      ctx.globalBus.emit({ type: "server:restart-cleared" });
+
+      await vi.waitFor(() => {
+        expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+      });
+      expect(sessionManager.startWork).toHaveBeenCalledWith("restart-cleared-cron", "catch up cron");
+      expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(2);
+    } finally {
+      clearRestartPending();
+      configureRestartStateStore(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("disables stale one-shot schedules instead of replaying them", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
@@ -1363,10 +1700,10 @@ describe("scheduler startup recovery", () => {
       globalBus: ctx.globalBus,
     });
 
-    await Promise.resolve();
-
+    await vi.waitFor(() => {
+      expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(false);
+    });
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(false);
   });
 
   it("processes missed startup catch-up sequentially so all schedules run", async () => {

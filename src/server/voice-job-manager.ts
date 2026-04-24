@@ -3,6 +3,11 @@ import { mkdirSync } from "node:fs";
 import { copyFile, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { SessionManager } from "./session-manager.js";
+import {
+  isRestartPendingError,
+  RESTART_PENDING_MESSAGE,
+  refreshRestartState,
+} from "./session-manager.js";
 import type { TaskGroupStore } from "./task-group-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
@@ -46,8 +51,11 @@ export function createVoiceJobManager({
 
   const processingJobs = new Set<string>();
   const processingJobRuns = new Map<string, Promise<void>>();
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const SEND_ACCEPTANCE_TIMEOUT_MS = 15_000;
   const SEND_ACCEPTANCE_POLL_MS = 250;
+  const RESTART_RETRY_DELAY_MS = 30_000;
+  let shuttingDown = false;
 
   function toSnapshot(job: VoiceJob | undefined): VoiceJobSnapshot | undefined {
     if (!job) return undefined;
@@ -64,6 +72,9 @@ export function createVoiceJobManager({
     sourceFilePath,
     originalFilename,
   }: AcceptVoiceJobInput): Promise<VoiceJobSnapshot> {
+    if ((await refreshRestartState()).phase !== "idle") {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
     const id = randomUUID();
     const jobDir = join(voiceJobsDir, id);
     mkdirSync(jobDir, { recursive: true });
@@ -126,6 +137,10 @@ export function createVoiceJobManager({
             || (job.status === "error" && !job.transcript)
           );
         if (!canResume || !job) return;
+        if ((await refreshRestartState()).phase !== "idle") {
+          scheduleRetry(job.id);
+          return;
+        }
 
         await transcribeAndSend(job, job.transcript);
       } finally {
@@ -139,6 +154,11 @@ export function createVoiceJobManager({
   }
 
   async function shutdown(): Promise<void> {
+    shuttingDown = true;
+    for (const timer of retryTimers.values()) {
+      clearTimeout(timer);
+    }
+    retryTimers.clear();
     await Promise.allSettled([...processingJobRuns.values()]);
   }
 
@@ -176,6 +196,11 @@ export function createVoiceJobManager({
     const targetSessionId = job.targetSessionId;
     if (!targetSessionId) {
       store.markError(job.id, "Voice job target session is missing.", transcript);
+      return;
+    }
+
+    if ((await refreshRestartState()).phase !== "idle") {
+      scheduleRetry(job.id);
       return;
     }
 
@@ -233,12 +258,25 @@ export function createVoiceJobManager({
         error: undefined,
       });
     } catch (error) {
+      if (isRestartPendingError(error)) {
+        scheduleRetry(job.id);
+        return;
+      }
       store.markError(
         job.id,
         `Auto-send failed. Transcript was saved to the composer instead. (${error instanceof Error ? error.message : String(error)})`,
         transcript,
       );
     }
+  }
+
+  function scheduleRetry(jobId: string): void {
+    if (shuttingDown || retryTimers.has(jobId)) return;
+    const timer = setTimeout(() => {
+      retryTimers.delete(jobId);
+      void processVoiceJob(jobId);
+    }, RESTART_RETRY_DELAY_MS);
+    retryTimers.set(jobId, timer);
   }
 
   async function sessionHasAcceptedTranscript(

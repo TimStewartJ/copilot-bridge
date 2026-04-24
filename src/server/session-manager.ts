@@ -386,6 +386,7 @@ interface SessionConfigOptions {
 // Module-level ref so universal tools can query session state
 let _instance: SessionManager | null = null;
 let _restartStatePath = DEFAULT_RESTART_STATE_PATH;
+let _restartStateStoreGeneration = 0;
 let _restartState = createDefaultRestartState();
 let _restartStateWriteQueue: Promise<void> = Promise.resolve();
 export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect.";
@@ -393,6 +394,22 @@ const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run indepe
 
 function resolveRestartStatePath(runtimePaths?: RuntimePaths): string {
   return join(runtimePaths?.dataDir ?? join(REPO_ROOT, "data"), "restart-state.json");
+}
+
+type RestartStateStoreBinding = {
+  path: string;
+  generation: number;
+};
+
+function getRestartStateStoreBinding(): RestartStateStoreBinding {
+  return {
+    path: _restartStatePath,
+    generation: _restartStateStoreGeneration,
+  };
+}
+
+function isCurrentRestartStateStore(binding: RestartStateStoreBinding): boolean {
+  return binding.path === _restartStatePath && binding.generation === _restartStateStoreGeneration;
 }
 
 function queueRestartStateMutation(mutation: () => Promise<void>): void {
@@ -409,6 +426,10 @@ function cacheRestartState(state: RestartState): RestartState {
   return state;
 }
 
+function hasLauncherTakenRestartOwnership(state: RestartState): boolean {
+  return state.launcherHeartbeatAt !== null || state.phase === "restarting";
+}
+
 function isRestartActive(state: RestartState): boolean {
   return state.phase !== "idle";
 }
@@ -422,13 +443,24 @@ export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
   const nextPath = resolveRestartStatePath(runtimePaths);
   if (_restartStatePath === nextPath) return;
   _restartStatePath = nextPath;
+  _restartStateStoreGeneration += 1;
   _restartState = createDefaultRestartState();
   _restartStateWriteQueue = Promise.resolve();
 }
 
 export async function refreshRestartState(): Promise<RestartState> {
   await _restartStateWriteQueue;
-  return cacheRestartState(await readRestartState(_restartStatePath));
+  const persisted = await readRestartState(_restartStatePath);
+  if (
+    isRestartActive(_restartState)
+    && _restartState.requestId !== null
+    && persisted.requestId === _restartState.requestId
+    && persisted.phase !== "idle"
+    && !hasLauncherTakenRestartOwnership(persisted)
+  ) {
+    return _restartState;
+  }
+  return cacheRestartState(persisted);
 }
 
 export function isRestartPending(): boolean {
@@ -436,9 +468,10 @@ export function isRestartPending(): boolean {
 }
 export function clearRestartPending(): void {
   const wasPending = isRestartActive(_restartState);
+  const restartStateStore = getRestartStateStoreBinding();
   cacheRestartState(createDefaultRestartState());
   queueRestartStateMutation(async () => {
-    await clearRestartState(_restartStatePath);
+    await clearRestartState(restartStateStore.path);
   });
   if (wasPending) {
     globalBus.emit({ type: "server:restart-cleared" });
@@ -466,6 +499,7 @@ export function triggerRestartPending(): number {
   // The calling session is still counted as active; subtract 1 since it will
   // finish momentarily and should not count as "blocking" the restart.
   const waitingCount = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
+  const restartStateStore = getRestartStateStoreBinding();
   const nextState: RestartState = cacheRestartState({
     requestId: randomUUID(),
     phase: getRestartPhaseForWaitingSessions("queued", waitingCount),
@@ -474,29 +508,35 @@ export function triggerRestartPending(): number {
     launcherHeartbeatAt: null,
   });
   queueRestartStateMutation(async () => {
-    cacheRestartState(await writeRestartState(_restartStatePath, nextState));
+    const persistedState = await writeRestartState(restartStateStore.path, nextState);
+    if (isCurrentRestartStateStore(restartStateStore)) {
+      cacheRestartState(persistedState);
+    }
   });
   globalBus.emit({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
   return waitingCount;
 }
 
 function syncRestartWaitingSessions(waitingSessions: number): void {
-  if (!isRestartActive(_restartState)) return;
-  const nextState: RestartState = {
-    ..._restartState,
-    phase: getRestartPhaseForWaitingSessions(_restartState.phase, waitingSessions),
-    waitingSessions,
-  };
+  if (!isRestartActive(_restartState) || hasLauncherTakenRestartOwnership(_restartState)) return;
+  const nextPhase = getRestartPhaseForWaitingSessions(_restartState.phase, waitingSessions);
   if (
-    nextState.phase === _restartState.phase
-    && nextState.waitingSessions === _restartState.waitingSessions
+    nextPhase === _restartState.phase
+    && waitingSessions === _restartState.waitingSessions
   ) {
     return;
   }
+  // Snapshot server-owned fields. The launcher may update launcherHeartbeatAt,
+  // phase, and requestId on disk between now and when the write queue fires.
+  const nextState: RestartState = {
+    ..._restartState,
+    phase: nextPhase,
+    waitingSessions,
+  };
   cacheRestartState(nextState);
-  queueRestartStateMutation(async () => {
-    cacheRestartState(await writeRestartState(_restartStatePath, nextState));
-  });
+  // The persisted restart-state file is only used to publish the initial restart
+  // request. After that, waiting-session countdown stays in memory/SSE so the
+  // launcher is the sole writer once it picks up the request.
   globalBus.emit({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
 }
 
