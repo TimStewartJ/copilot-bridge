@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
 import { fetchRelatedDocs } from "../api";
+import { isChecklistItemsReadyForFocus } from "../task-detail-focus";
 import { useTaskEnrichment } from "./useTaskEnrichment";
 import { useTaskSchedules } from "./useTaskSchedules";
 import { useScheduleDetail } from "./useScheduleDetail";
@@ -35,7 +36,22 @@ export function useTaskWorkspace(
   const notes = useNotesSheet(task?.id);
 
   // ── Checklist items ──────────────────────────────────────────
-  const { data: checklistItems = [], refetch: refetchChecklistItems } = useTaskChecklistItemsQuery(task?.id);
+  const {
+    data: checklistItems = [],
+    refetch: refetchChecklistItems,
+    isFetched,
+    isFetchedAfterMount,
+    isFetching,
+    isStale,
+    isSuccess,
+  } = useTaskChecklistItemsQuery(task?.id);
+  const checklistItemsReady = isChecklistItemsReadyForFocus({
+    isFetched,
+    isFetchedAfterMount,
+    isStale,
+    isFetching,
+    isSuccess,
+  });
   const createChecklistItemMutation = useCreateChecklistItemMutation(task?.id);
   const {
     onUpdate: onChecklistItemUpdate,
@@ -96,6 +112,7 @@ export function useTaskWorkspace(
     notes,
     // Checklist items
     checklistItems,
+    checklistItemsReady,
     createChecklistItemMutation,
     onChecklistItemUpdate,
     onChecklistItemDelete,

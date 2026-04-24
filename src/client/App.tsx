@@ -44,6 +44,7 @@ import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { getSessionPath, type SessionNavigationTarget } from "./lib/session-path";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
+import { buildTaskDashboardSearch } from "./task-detail-focus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
@@ -1238,7 +1239,7 @@ export default function App() {
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
                   onViewDashboard={(taskId, options) => navigate(
-                    `/tasks/${taskId}${options?.section ? `?section=${options.section}` : ""}`,
+                    `/tasks/${taskId}${buildTaskDashboardSearch(options)}`,
                   )}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}

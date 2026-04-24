@@ -5,6 +5,7 @@ import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
+import { resolveTaskDashboardFocus, type TaskFocusRequest } from "../task-detail-focus";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh from "./PullToRefresh";
 import SessionList from "./SessionList";
@@ -108,7 +109,7 @@ export default function TaskDashboard({
     sched, schedDetail,
     notes,
     taskGitStatus,
-    checklistItems, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
+    checklistItems, checklistItemsReady, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
     newChecklistItemText, setNewChecklistItemText,
     linkedSessions,
     taskOwnTags, taskGroup: group, inheritedTagIds, effectiveTags,
@@ -120,9 +121,13 @@ export default function TaskDashboard({
   const [momentumTask, setMomentumTask] = useState(task);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
   const [highlightedSection, setHighlightedSection] = useState<"sessions" | "checklist" | null>(null);
+  const [highlightedChecklistItemId, setHighlightedChecklistItemId] = useState<string | null>(null);
+  const [focusRequest, setFocusRequest] = useState<TaskFocusRequest | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
   const sessionsSectionRef = useRef<HTMLDivElement>(null);
   const checklistSectionRef = useRef<HTMLDivElement>(null);
   const focusedSection = searchParams.get("section");
+  const focusedChecklistItemId = searchParams.get("checklistItem");
 
   useEffect(() => {
     setMomentumTask(task);
@@ -130,32 +135,76 @@ export default function TaskDashboard({
 
   useEffect(() => {
     setWorkspaceSheetOpen(false);
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+    setHighlightedSection(null);
+    setHighlightedChecklistItemId(null);
+    setFocusRequest(null);
   }, [task.id]);
 
   useEffect(() => {
-    if (focusedSection !== "sessions" && focusedSection !== "checklist") return;
-
-    const target = focusedSection === "sessions"
-      ? sessionsSectionRef.current
-      : checklistSectionRef.current;
-    if (!target) return;
-
-    setHighlightedSection(focusedSection);
-    requestAnimationFrame(() => {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    const resolvedFocus = resolveTaskDashboardFocus({
+      focusedSection,
+      focusedChecklistItemId,
+      checklistItems,
+      checklistItemsReady,
     });
 
-    const timer = setTimeout(() => setHighlightedSection((current) => (
-      current === focusedSection ? null : current
-    )), 1600);
+    if (!resolvedFocus.request || !resolvedFocus.consumeParams) return;
+
+    setFocusRequest(resolvedFocus.request);
+
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete("section");
+      next.delete("checklistItem");
       return next;
     }, { replace: true });
+  }, [checklistItems, checklistItemsReady, focusedChecklistItemId, focusedSection, setSearchParams]);
 
-    return () => clearTimeout(timer);
-  }, [focusedSection, setSearchParams]);
+  useEffect(() => {
+    if (!focusRequest) return;
+
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+
+    setHighlightedSection(null);
+    setHighlightedChecklistItemId(null);
+
+    const frameId = requestAnimationFrame(() => {
+      const target = focusRequest.section === "sessions"
+        ? sessionsSectionRef.current
+        : checklistSectionRef.current;
+
+      setHighlightedSection(focusRequest.section);
+      setHighlightedChecklistItemId(focusRequest.checklistItemId ?? null);
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightedSection((current) => (
+          current === focusRequest.section ? null : current
+        ));
+        setHighlightedChecklistItemId((current) => (
+          current === (focusRequest.checklistItemId ?? null) ? null : current
+        ));
+        highlightTimerRef.current = null;
+      }, 1600);
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [focusRequest]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleRefresh = async () => {
     await Promise.all([refresh(), onRefresh?.()]);
@@ -445,6 +494,7 @@ export default function TaskDashboard({
                   onChecklistItemUpdate={onChecklistItemUpdate}
                   onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
                   variant="card"
+                  highlightId={highlightedChecklistItemId}
                 />
               </Section>
             </div>
@@ -465,21 +515,17 @@ export default function TaskDashboard({
             >
               {sched.schedules.length === 0 ? (
                 <EmptyState message="No schedules" sub="Automate recurring work with scheduled sessions" />
-              ) : (() => {
-                const activeSchedules = sched.schedules.filter((s) => s.enabled);
-                const disabledSchedules = sched.schedules.filter((s) => !s.enabled);
-                return (
-                  <ScheduleSection
-                    schedules={sched.schedules}
-                    variant="card"
-                    onOpen={(s) => schedDetail.openSheet(s)}
-                    onTrigger={(id) => sched.trigger(id)}
-                    onToggle={(s) => sched.toggle(s)}
-                    onEdit={(s) => schedDetail.openSheet(s, "edit")}
-                    onDelete={(id) => sched.remove(id)}
-                  />
-                );
-              })()}
+              ) : (
+                <ScheduleSection
+                  schedules={sched.schedules}
+                  variant="card"
+                  onOpen={(s) => schedDetail.openSheet(s)}
+                  onTrigger={(id) => sched.trigger(id)}
+                  onToggle={(s) => sched.toggle(s)}
+                  onEdit={(s) => schedDetail.openSheet(s, "edit")}
+                  onDelete={(id) => sched.remove(id)}
+                />
+              )}
             </Section>
 
             {/* Group Notes */}

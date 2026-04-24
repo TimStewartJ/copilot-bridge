@@ -131,8 +131,8 @@ describe("TaskPanel", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      const [{ act }, { createRoot }, { default: TaskPanel }] = await Promise.all([
-        import("react"),
+      const [{ flushSync }, { createRoot }, { default: TaskPanel }] = await Promise.all([
+        import("react-dom"),
         import("react-dom/client"),
         import("./TaskPanel"),
       ]);
@@ -148,7 +148,7 @@ describe("TaskPanel", () => {
       };
 
       expect(() => {
-        act(() => {
+        flushSync(() => {
           root.render(
             createElement(
               MemoryRouter,
@@ -165,7 +165,7 @@ describe("TaskPanel", () => {
       expect(dom.container.textContent).toContain("Select a task");
 
       expect(() => {
-        act(() => {
+        flushSync(() => {
           root.render(
             createElement(
               MemoryRouter,
@@ -182,9 +182,10 @@ describe("TaskPanel", () => {
       expect(consoleError.mock.calls.flat().join(" ")).not.toContain("Rendered more hooks than during the previous render");
       expect(dom.container.textContent).toContain("Workspace task");
 
-      act(() => {
+      flushSync(() => {
         root.unmount();
       });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     } finally {
       consoleError.mockRestore();
       dom.cleanup();

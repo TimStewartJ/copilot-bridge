@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { getFollowUpState, toDateTimeInputValue, toDateTimeStorageValue } from "./components/TaskMomentumFields";
+import {
+  getFollowUpState,
+  getPanelFieldTone,
+  toDateTimeInputValue,
+  toDateTimeStorageValue,
+} from "./components/TaskMomentumFields";
 
 describe("getFollowUpState", () => {
   const now = new Date("2026-05-01T12:00:00.000Z");
@@ -29,5 +34,25 @@ describe("follow-up datetime conversions", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("getPanelFieldTone", () => {
+  const now = new Date("2026-05-01T12:00");
+
+  it("uses warning tone for same-day passed follow-ups", () => {
+    expect(getPanelFieldTone("nextTouchAt", "2026-05-01T11:00", now)).toBe("warning");
+  });
+
+  it("uses danger tone for prior-day follow-ups", () => {
+    expect(getPanelFieldTone("nextTouchAt", "2026-04-30T23:00", now)).toBe("danger");
+  });
+
+  it("keeps upcoming follow-ups neutral", () => {
+    expect(getPanelFieldTone("nextTouchAt", "2026-05-01T13:00", now)).toBeNull();
+  });
+
+  it("keeps non-follow-up fields neutral", () => {
+    expect(getPanelFieldTone("nextAction", "Ship preview polish", now)).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
 
 type FieldValues = Record<MomentumFieldKey, string>;
 export type FollowUpState = "overdue" | "due" | "upcoming" | null;
+export type PanelFieldTone = "danger" | "warning" | null;
 
 interface TaskMomentumFieldsProps {
   task: Task;
@@ -123,11 +124,22 @@ export default function TaskMomentumFields({
               const currentValue = values[field.key];
               const isEditing = editingField === field.key;
               const isSaving = savingField === field.key;
+              const tone = getPanelFieldTone(field.key, currentValue);
+              const rowClassName = tone === "danger"
+                ? "bg-error/10"
+                : tone === "warning"
+                  ? "bg-warning/10"
+                  : "";
+              const labelClassName = tone === "danger"
+                ? "text-error"
+                : tone === "warning"
+                  ? "text-warning"
+                  : "text-text-muted";
 
               return (
-                <div key={field.key} className="px-3 py-2">
+                <div key={field.key} className={`px-3 py-2 ${rowClassName}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                    <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelClassName}`}>
                       {field.label}
                     </span>
                     {isSaving ? (
@@ -187,11 +199,7 @@ export default function TaskMomentumFields({
               );
             })}
           </div>
-        ) : (
-          <div className="px-3 py-2.5 text-xs text-text-faint">
-            Add the next step, blocker, or follow-up so this task is easy to resume.
-          </div>
-        )}
+        ) : null}
 
         {quickAddFields.length > 0 && (
           <div className={`px-3 py-2 flex flex-wrap gap-1.5 ${visiblePanelFields.length > 0 ? "border-t border-border/70" : ""}`}>
@@ -301,6 +309,18 @@ export function getFollowUpState(nextTouchAt?: string, now = new Date()): Follow
 
   if (parsed.getTime() > now.getTime()) return "upcoming";
   return parsed.getTime() < startOfLocalDay(now).getTime() ? "overdue" : "due";
+}
+
+export function getPanelFieldTone(
+  field: MomentumFieldKey,
+  value: string,
+  now = new Date(),
+): PanelFieldTone {
+  if (field !== "nextTouchAt" || !value) return null;
+  const state = getFollowUpState(value, now);
+  if (state === "overdue") return "danger";
+  if (state === "due") return "warning";
+  return null;
 }
 
 function toFieldValues(task: Task): FieldValues {
