@@ -1237,7 +1237,9 @@ export default function App() {
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
-                  onViewDashboard={(taskId) => navigate(`/tasks/${taskId}`)}
+                  onViewDashboard={(taskId, options) => navigate(
+                    `/tasks/${taskId}${options?.section ? `?section=${options.section}` : ""}`,
+                  )}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}

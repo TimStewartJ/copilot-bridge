@@ -1,5 +1,5 @@
-import { type ReactNode } from "react";
 import type { ChecklistItem } from "../../api";
+import { getTaskPanelChecklistPreview } from "../../task-panel-preview";
 import ChecklistItemRow from "../ChecklistItemRow";
 import CollapsibleCompleted from "../shared/CollapsibleCompleted";
 import { Plus } from "lucide-react";
@@ -15,6 +15,7 @@ export interface TaskChecklistSectionProps {
   onChecklistItemDelete: (id: string) => void;
   variant?: "panel" | "card";
   highlightId?: string | null;
+  onViewAll?: () => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -28,10 +29,22 @@ export default function TaskChecklistSection({
   onChecklistItemDelete,
   variant = "panel",
   highlightId,
+  onViewAll,
 }: TaskChecklistSectionProps) {
   const openChecklistItems = checklistItems.filter((t) => !t.done);
   const completedChecklistItems = checklistItems.filter((t) => t.done);
   const isCard = variant === "card";
+  const panelPreview = getTaskPanelChecklistPreview(checklistItems, { highlightId });
+  const overflowSummary = [
+    panelPreview.hiddenOpenCount > 0
+      ? `${panelPreview.hiddenOpenCount} more open`
+      : null,
+    panelPreview.completedCount > 0
+      ? `${panelPreview.completedCount} done`
+      : null,
+  ].filter((item): item is string => item !== null);
+  const hasOverflow = overflowSummary.length > 0;
+  const highlightedCompletedItem = panelPreview.highlightedCompletedItem;
 
   return (
     <>
@@ -83,9 +96,9 @@ export default function TaskChecklistSection({
         </div>
       ) : (
         <>
-          {openChecklistItems.length > 0 && (
+          {panelPreview.openPreviewItems.length > 0 && (
             <div className="space-y-0">
-              {openChecklistItems.map((checklistItem) => (
+              {panelPreview.openPreviewItems.map((checklistItem) => (
                 <ChecklistItemRow
                   key={checklistItem.id}
                   variant="panel"
@@ -97,21 +110,19 @@ export default function TaskChecklistSection({
               ))}
             </div>
           )}
-          {completedChecklistItems.length > 0 && (
-            <CollapsibleCompleted count={completedChecklistItems.length}>
-              <div className="space-y-0">
-                {completedChecklistItems.map((checklistItem) => (
-                  <ChecklistItemRow
-                    key={checklistItem.id}
-                    variant="panel"
-                    checklistItem={checklistItem}
-                    highlight={checklistItem.id === highlightId}
-                    onUpdate={onChecklistItemUpdate}
-                    onDelete={() => onChecklistItemDelete(checklistItem.id)}
-                  />
-                ))}
+          {highlightedCompletedItem && (
+            <div className="pt-1">
+              <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-text-faint">
+                From history
               </div>
-            </CollapsibleCompleted>
+              <ChecklistItemRow
+                variant="panel"
+                checklistItem={highlightedCompletedItem}
+                highlight
+                onUpdate={onChecklistItemUpdate}
+                onDelete={() => onChecklistItemDelete(highlightedCompletedItem.id)}
+              />
+            </div>
           )}
           <div className="px-3 py-1">
             <input
@@ -127,6 +138,21 @@ export default function TaskChecklistSection({
               }}
             />
           </div>
+          {hasOverflow && (
+            onViewAll ? (
+              <button
+                onClick={onViewAll}
+                className="px-3 pb-1 text-[11px] text-accent hover:text-accent-hover transition-colors"
+              >
+                View full checklist
+                <span className="text-text-faint ml-1">· {overflowSummary.join(" · ")}</span>
+              </button>
+            ) : (
+              <div className="px-3 pb-1 text-[10px] text-text-faint">
+                {overflowSummary.join(" · ")}
+              </div>
+            )
+          )}
         </>
       )}
     </>
