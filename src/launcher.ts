@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
-import { killProcessTree as platformKillTree } from "./server/platform.js";
+import {
+  killProcessTree as platformKillTree,
+  shouldSpawnDetachedProcessGroup,
+  waitForProcessTreeExit,
+  type ProcessTreeKillResult,
+} from "./server/platform.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import {
@@ -53,7 +58,7 @@ import {
   shouldCheckFollowUpRecovery,
   shouldClearRollbackCheckpointAfterHealthyState,
 } from "./launcher-recovery.js";
-import { isChildProcessActive, waitForChildExit } from "./launcher-process.js";
+import { isChildProcessActive } from "./launcher-process.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -519,6 +524,7 @@ function startServer(): ChildProcess {
     cwd: ROOT,
     stdio: ["ignore", "inherit", "inherit"],
     env,
+    detached: shouldSpawnDetachedProcessGroup(),
   });
   steadyHealthFailures = 0;
 
@@ -544,10 +550,9 @@ function startServer(): ChildProcess {
   return child;
 }
 
-function killProcessTree(proc: ChildProcess | null): boolean {
-  if (!proc || !proc.pid) return false;
-  platformKillTree(proc.pid);
-  return true;
+function killProcessTree(proc: ChildProcess | null): ProcessTreeKillResult | null {
+  if (!proc || !proc.pid) return null;
+  return platformKillTree(proc.pid);
 }
 
 function killServer() {
@@ -565,10 +570,17 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
   }
 
   log(reason);
-  killProcessTree(existingServer);
-  const exited = await waitForChildExit(existingServer, timeoutMs);
+  const killResult = killProcessTree(existingServer);
+  if (!killResult) {
+    log("❌ Server process did not have a PID for force kill");
+    return false;
+  }
+
+  const exited = await waitForProcessTreeExit(killResult, timeoutMs);
   if (!exited) {
-    log(`❌ Server did not exit within ${timeoutMs}ms after force kill`);
+    log(`❌ Server process tree did not exit within ${timeoutMs}ms after force kill`);
+  } else if (serverProcess === existingServer) {
+    serverProcess = null;
   }
   return exited;
 }
