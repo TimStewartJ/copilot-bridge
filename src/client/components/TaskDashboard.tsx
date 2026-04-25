@@ -5,9 +5,10 @@ import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
+import { hasTaskDashboardFocusParams } from "../lib/mobile-scroll-restoration";
 import { resolveTaskDashboardFocus, type TaskFocusRequest } from "../task-detail-focus";
 import EmptyState from "./shared/EmptyState";
-import PullToRefresh from "./PullToRefresh";
+import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import SessionList from "./SessionList";
 import NotesSheet from "./NotesSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
@@ -71,6 +72,7 @@ interface TaskDashboardProps {
   // Lazy-load archived sessions
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -99,8 +101,24 @@ export default function TaskDashboard({
   hasDraft,
   onRequestArchived,
   archivedLoaded,
+  scrollRestoration,
 }: TaskDashboardProps) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const scrollRestorationSuppressionRef = useRef<{ taskId: string; suppress: boolean } | null>(null);
+  let scrollRestorationSuppression = scrollRestorationSuppressionRef.current;
+  if (scrollRestorationSuppression?.taskId !== task.id) {
+    scrollRestorationSuppression = {
+      taskId: task.id,
+      suppress: hasTaskDashboardFocusParams(searchParams),
+    };
+    scrollRestorationSuppressionRef.current = scrollRestorationSuppression;
+  }
+  const scrollRestorationForVisit = scrollRestoration
+    ? {
+        ...scrollRestoration,
+        restore: scrollRestoration.restore !== false && !scrollRestorationSuppression.suppress,
+      }
+    : undefined;
 
   // ── Consolidated workspace hook ─────────────────────────────
   const ws = useTaskWorkspace(task, taskGroups, sessions);
@@ -277,7 +295,11 @@ export default function TaskDashboard({
   
   return (
     <div className="flex-1 min-h-0 relative">
-    <PullToRefresh onRefresh={handleRefresh} className="absolute inset-0">
+    <PullToRefresh
+      onRefresh={handleRefresh}
+      className="absolute inset-0"
+      scrollRestoration={scrollRestorationForVisit}
+    >
       <div className="max-w-4xl mx-auto px-4 md:px-8 py-6 space-y-6">
         {/* ── Task Header ─────────────────────────────────── */}
         <div>

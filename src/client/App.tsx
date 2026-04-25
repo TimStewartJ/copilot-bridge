@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
+import { Routes, Route, useNavigate, useParams, useLocation, useNavigationType } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryClient";
 import {
@@ -41,6 +41,7 @@ import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { getMobileRouteMeta } from "./lib/mobile-route-meta";
+import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, type SessionNavigationTarget } from "./lib/session-path";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
@@ -62,7 +63,7 @@ import SettingsView from "./components/SettingsView";
 import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
-import PullToRefresh from "./components/PullToRefresh";
+import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
@@ -79,6 +80,7 @@ function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<strin
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationType = useNavigationType();
   const isMobile = useIsMobile();
   const { hasAttention: pageHasAttention, hasAttentionRef: pageHasAttentionRef } = usePageAttention();
   const queryClient = useQueryClient();
@@ -136,6 +138,23 @@ export default function App() {
   const activeComposerKey = getComposerKeyFromPathname(location.pathname);
   const quickChatsRoute = mobileRouteMeta.route === "chat-list";
   const quickChatsMode = quickChatsRoute || mobileRouteMeta.route === "quick-chat";
+  const mobileScrollRestorationPolicy = isMobile
+    ? getMobileScrollRestorationPolicy(mobileRouteMeta, {
+        navigationType,
+        locationState: location.state,
+      })
+    : null;
+  const mobileDashboardScrollRestoration = mobileScrollRestorationPolicy?.key === "mobile:dashboard"
+    ? mobileScrollRestorationPolicy
+    : undefined;
+  const mobileTaskListScrollRestoration = mobileScrollRestorationPolicy?.key === "mobile:tasks:list"
+    || mobileScrollRestorationPolicy?.key === "mobile:chats:list"
+    ? mobileScrollRestorationPolicy
+    : undefined;
+  const mobileTaskDashboardScrollRestoration = activeTaskId
+    && mobileScrollRestorationPolicy?.key === `mobile:task-dashboard:${activeTaskId}`
+    ? mobileScrollRestorationPolicy
+    : undefined;
 
   // Sync selectedTask when activeTaskId changes
   useEffect(() => {
@@ -585,7 +604,7 @@ export default function App() {
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;
     if (!upTarget) return;
-    navigate(upTarget.to);
+    navigate(upTarget.to, { state: createBridgeMobileScrollRestoreState() });
   }, [mobileRouteMeta.upTarget, navigate]);
 
   const handleSelectSession = (sessionId: string) => {
@@ -1208,6 +1227,7 @@ export default function App() {
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
                   archivedLoaded={archivedLoaded}
+                  scrollRestoration={mobileTaskListScrollRestoration}
                 />
               </div>
             )}
@@ -1292,6 +1312,7 @@ export default function App() {
                   onSelectSession={handleSelectDashboardSession}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
+                  scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
             />
@@ -1330,6 +1351,7 @@ export default function App() {
                     hasDraft={hasDraft}
                     onRequestArchived={requestArchivedSessions}
                     archivedLoaded={archivedLoaded}
+                    scrollRestoration={mobileTaskDashboardScrollRestoration}
                   />
                 ) : taskNotFound ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
@@ -1454,6 +1476,7 @@ function MobileTaskListView({
   onBulkAction,
   onRequestArchived,
   archivedLoaded,
+  scrollRestoration,
 }: {
   tasks: Task[];
   activeTaskId: string | null;
@@ -1500,6 +1523,7 @@ function MobileTaskListView({
   onBulkAction?: (action: import("./api").BatchAction, sessionIds: string[]) => void;
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  scrollRestoration?: PullToRefreshScrollRestoration;
 }){
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
@@ -1512,7 +1536,11 @@ function MobileTaskListView({
 
       {/* Content — pull-to-refresh wraps both tabs */}
       <div className="flex-1 min-h-0 relative">
-      <PullToRefresh onRefresh={onRefresh} className="absolute inset-0 overflow-x-hidden min-w-0" scrollKey={quickChatsMode ? "chats" : "tasks"}>
+      <PullToRefresh
+        onRefresh={onRefresh}
+        className="absolute inset-0 overflow-x-hidden min-w-0"
+        scrollRestoration={scrollRestoration}
+      >
         {quickChatsMode ? (
           <SessionList
             variant="compact"
