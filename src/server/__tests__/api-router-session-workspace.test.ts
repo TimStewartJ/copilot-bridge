@@ -65,6 +65,57 @@ describe("session workspace routes", () => {
     ]);
   });
 
+  it("builds an active-only session list unless archived sessions are requested", async () => {
+    const copilotHome = createCopilotHome();
+    const listSessionsFromDisk = vi.fn(async (opts?: { includeArchived?: boolean }) => (
+      opts?.includeArchived
+        ? [
+          { sessionId: "active-session", summary: "Active session" },
+          { sessionId: "archived-session", summary: "Archived session" },
+        ]
+        : [{ sessionId: "active-session", summary: "Active session" }]
+    ));
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk,
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    ctx.sessionMetaStore.setArchived("archived-session", true);
+
+    const activeRes = await request(app).get("/api/sessions");
+    const archivedRes = await request(app).get("/api/sessions?includeArchived=true");
+
+    expect(activeRes.status).toBe(200);
+    expect(activeRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session"]);
+    expect(archivedRes.status).toBe(200);
+    expect(archivedRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session", "archived-session"]);
+    expect(listSessionsFromDisk).toHaveBeenNthCalledWith(1, { includeArchived: false });
+    expect(listSessionsFromDisk).toHaveBeenNthCalledWith(2, { includeArchived: true });
+  });
+
+  it("keeps the session list cache across busy and idle events", async () => {
+    const copilotHome = createCopilotHome();
+    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listSessionsFromDisk,
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+
+    const firstRes = await request(app).get("/api/sessions");
+    ctx.globalBus.emit({ type: "session:busy", sessionId: "session-1" });
+    ctx.globalBus.emit({ type: "session:idle", sessionId: "session-1" });
+    const secondRes = await request(app).get("/api/sessions");
+
+    expect(firstRes.status).toBe(200);
+    expect(secondRes.status).toBe(200);
+    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
+  });
+
   it("avoids arbitrary task workspace defaults in the session list for multi-task sessions", async () => {
     const copilotHome = createCopilotHome();
     const sessionManager = {

@@ -11,7 +11,7 @@ import { join, dirname, resolve, basename, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
-import { getLastVisibleActivityAt, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
+import { getLastVisibleActivityAt, getVisibleEventTimestamp, transformEventsToMessages, type TransformedEntry } from "./event-transform.js";
 import { config } from "./config.js";
 import { createTaskStore, InvalidTaskUpdateError } from "./task-store.js";
 import type { WorkItemRef } from "./task-store.js";
@@ -38,6 +38,7 @@ import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
+import type { SessionMetaStore } from "./session-meta-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
@@ -1591,6 +1592,7 @@ export interface SessionManagerDeps {
   eventBusRegistry: EventBusRegistry;
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
+  sessionMetaStore?: SessionMetaStore;
   taskStore: TaskStore;
   taskGroupStore?: TaskGroupStore;
   checklistStore?: ChecklistStore;
@@ -1635,6 +1637,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     eventBusRegistry: ctx.eventBusRegistry,
     sessionTitles: ctx.sessionTitles,
     sessionWorkspaceStore: ctx.sessionWorkspaceStore,
+    sessionMetaStore: ctx.sessionMetaStore,
     taskStore: ctx.taskStore,
     taskGroupStore: ctx.taskGroupStore,
     checklistStore: ctx.checklistStore,
@@ -1669,7 +1672,6 @@ export class SessionManager {
   private resumingSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
-  private visibleActivityCache = new Map<string, { eventsMtimeMs: number; lastVisibleActivityAt?: string }>();
   private pendingSessionEvictions = new Set<string>();
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
@@ -1686,6 +1688,15 @@ export class SessionManager {
     try {
       this.deps.telemetryStore?.recordSpan({ name, duration, sessionId, metadata, source: "server" });
     } catch { /* telemetry should never break core flow */ }
+  }
+
+  private persistLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void {
+    if (!lastVisibleActivityAt) return;
+    try {
+      this.deps.sessionMetaStore?.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to persist visible activity:`, err);
+    }
   }
 
   private createRunController(
@@ -1816,39 +1827,6 @@ export class SessionManager {
       return;
     }
     current.lastEventAt = at;
-  }
-
-  private async getCachedLastVisibleActivityAt(
-    sessionId: string,
-    eventsPath: string,
-    eventsMtimeMs: number,
-  ): Promise<string | undefined> {
-    const cached = this.visibleActivityCache.get(sessionId);
-    if (cached && cached.eventsMtimeMs === eventsMtimeMs) {
-      return cached.lastVisibleActivityAt;
-    }
-
-    let raw: string;
-    try {
-      raw = await readFile(eventsPath, "utf-8");
-    } catch {
-      this.visibleActivityCache.set(sessionId, { eventsMtimeMs, lastVisibleActivityAt: cached?.lastVisibleActivityAt });
-      return cached?.lastVisibleActivityAt;
-    }
-
-    const events: any[] = [];
-    for (const line of raw.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        events.push(JSON.parse(line));
-      } catch {
-        continue;
-      }
-    }
-
-    const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
-    this.visibleActivityCache.set(sessionId, { eventsMtimeMs, lastVisibleActivityAt });
-    return lastVisibleActivityAt;
   }
 
   private getWorkspaceSummary(sessionId: string): string | undefined {
@@ -2295,7 +2273,7 @@ export class SessionManager {
    * ~170ms for 4000+ sessions vs ~2500ms for SDK listSessions.
    * Async to avoid blocking the event loop during filesystem I/O.
    */
-  async listSessionsFromDisk(): Promise<any[]> {
+  async listSessionsFromDisk(options: { includeArchived?: boolean } = {}): Promise<any[]> {
     const t0 = Date.now();
     const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
     const sessionStateDir = join(copilotHome, "session-state");
@@ -2307,8 +2285,12 @@ export class SessionManager {
       return [];
     }
     const dirs = entries.filter((d: any) => d.isDirectory()).map((d: any) => d.name);
+    const includeArchived = options.includeArchived ?? true;
+    const meta = this.deps.sessionMetaStore?.listMeta() ?? {};
 
     const sessionPromises = dirs.map(async (dirName) => {
+      const sessionMeta = meta[dirName];
+      if (!includeArchived && sessionMeta?.archived) return null;
       const yamlPath = join(sessionStateDir, dirName, "workspace.yaml");
       try {
         const content = await readFile(yamlPath, "utf-8");
@@ -2325,12 +2307,12 @@ export class SessionManager {
           if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
         }
         if (effectiveCwd) session.context = { cwd: effectiveCwd };
-        // Track session recency from the last visible event, not raw log-file mtime.
+        // Keep the list path cheap: use persisted visible activity, never parse events.jsonl here.
         const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
         try {
           const st = await stat(eventsPath);
-          session.lastVisibleActivityAt = await this.getCachedLastVisibleActivityAt(dirName, eventsPath, st.mtimeMs);
-          session.modifiedTime = session.lastVisibleActivityAt ?? session.startTime;
+          session.lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt;
+          session.modifiedTime = session.lastVisibleActivityAt ?? session.startTime ?? st.mtime.toISOString();
         } catch {
           try {
             const st = await stat(yamlPath);
@@ -2348,7 +2330,7 @@ export class SessionManager {
     // Sort by most recent visible activity first
     sessions.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
 
-    this.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: sessions.length });
+    this.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: sessions.length, includeArchived });
     return sessions;
   }
 
@@ -2884,6 +2866,7 @@ export class SessionManager {
         this.touchSessionRun(sessionId, eventAt);
       }
       const data = (event as any).data;
+      this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
       switch (event.type) {
         case "user.message":
           bus.clearPendingPrompt();
@@ -3427,6 +3410,7 @@ export class SessionManager {
 
     const tTransform = Date.now();
     const messages = transformEventsToMessages(events, sessionId);
+    this.persistLastVisibleActivityAt(sessionId, getLastVisibleActivityAt(events, sessionId));
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     const transformMs = Date.now() - tTransform;
@@ -3479,6 +3463,7 @@ export class SessionManager {
     }
 
     const messages = transformEventsToMessages(events, sessionId);
+    this.persistLastVisibleActivityAt(sessionId, getLastVisibleActivityAt(events, sessionId));
     const duration = Date.now() - t0;
     this.recordSpan("session.readFromDisk", duration, sessionId, {
       eventCount: events.length,
@@ -3552,7 +3537,6 @@ export class SessionManager {
         throw err;
       }
     }
-    this.visibleActivityCache.delete(sessionId);
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
     this.invalidateSessionListCache();
 

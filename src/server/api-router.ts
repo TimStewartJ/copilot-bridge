@@ -637,7 +637,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Caches the expensive enriched session list (disk sizes, plan checks, metadata).
   // Invalidated by session create/delete/archive and globalBus events.
   // Disk sizes are stored separately so skipDiskSize requests don't zero them out.
-  let enrichedSessionCache: { data: any[]; timestamp: number } | null = null;
+  let enrichedSessionCache: { data: any[]; timestamp: number; includesArchived: boolean } | null = null;
+  let activeSessionCacheBuild: Promise<any[]> | null = null;
+  let allSessionCacheBuild: Promise<any[]> | null = null;
   const diskSizeCache = new Map<string, number>();
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
 
@@ -654,8 +656,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Invalidate on session lifecycle events
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
-      case "session:busy":
-      case "session:idle":
       case "session:title":
       case "session:archived":
       case "task:changed":
@@ -672,7 +672,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const skipDiskSize = req.query.skipDiskSize === "true";
 
       const now = Date.now();
-      const cacheValid = enrichedSessionCache && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
+      const cacheValid = enrichedSessionCache
+        && (!includeArchived || enrichedSessionCache.includesArchived)
+        && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
 
       if (cacheValid) {
         // Serve from cache — only refresh volatile fields (busy status)
@@ -685,58 +687,75 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.json({ sessions: filtered });
       }
 
-      // Cache miss — rebuild (use fast async disk read instead of SDK RPC)
-      const sessions = await ctx.sessionManager.listSessionsFromDisk();
-      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
-      const meta = ctx.sessionMetaStore.listMeta();
+      const startCacheBuild = (buildIncludesArchived: boolean): Promise<any[]> => {
+        const existingBuild = buildIncludesArchived
+          ? allSessionCacheBuild
+          : (allSessionCacheBuild ?? activeSessionCacheBuild);
+        if (existingBuild) return existingBuild;
 
-      const enriched = await Promise.all(
-        sessions
-          .map((s: any) => ({ session: s, summary: resolveSessionSummary(ctx, s) }))
-          .filter((entry): entry is { session: any; summary: string } => !!entry.summary)
-          .map(async ({ session: s, summary }) => {
-            const id = s.sessionId;
-            const archived = meta[id]?.archived === true;
+        const build = (async () => {
+          const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
+          const sessionStateDir = join(getCopilotHome(ctx), "session-state");
+          const meta = ctx.sessionMetaStore.listMeta();
 
-            // Compute disk size: skip on polling, use cached for archived, compute for active
-            if (!skipDiskSize && !archived) {
-              try {
-                const sessionDir = join(sessionStateDir, id);
-                diskSizeCache.set(id, getDirSize(sessionDir));
-              } catch { /* session dir may not exist */ }
-            }
+          const enriched = await Promise.all(
+            sessions
+              .map((s: any) => ({ session: s, summary: resolveSessionSummary(ctx, s) }))
+              .filter((entry): entry is { session: any; summary: string } => !!entry.summary)
+              .map(async ({ session: s, summary }) => {
+                const id = s.sessionId;
+                const archived = meta[id]?.archived === true;
 
-            const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
-            const archivedAt = meta[id]?.archivedAt ?? null;
-            const status = getSessionStatus(ctx, id);
-            const linkedTask = resolveWorkspaceTask(ctx, id);
-            const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
-            const context = {
-              ...(s.context ?? {}),
-              ...(workspace.effectiveCwd ? { cwd: workspace.effectiveCwd } : {}),
-            };
-            return {
-              ...s,
-              summary,
-              context: Object.keys(context).length > 0 ? context : undefined,
-              workspace,
-              diskSizeBytes: diskSizeCache.get(id) ?? 0,
-              ...status,
-              hasPlan,
-              archived,
-              archivedAt,
-              triggeredBy: meta[id]?.triggeredBy,
-              scheduleId: meta[id]?.scheduleId,
-              scheduleName: meta[id]?.scheduleName,
-              scheduleEnabled: meta[id]?.scheduleId
-                ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
-                : undefined,
-            };
-          }),
-      );
+                // Compute disk size: skip on polling, use cached for archived, compute for active
+                if (!skipDiskSize && !archived) {
+                  try {
+                    const sessionDir = join(sessionStateDir, id);
+                    diskSizeCache.set(id, getDirSize(sessionDir));
+                  } catch { /* session dir may not exist */ }
+                }
 
-      // Update cache (store all sessions, filter happens on read)
-      enrichedSessionCache = { data: enriched, timestamp: now };
+                const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+                const archivedAt = meta[id]?.archivedAt ?? null;
+                const status = getSessionStatus(ctx, id);
+                const linkedTask = resolveWorkspaceTask(ctx, id);
+                const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
+                const context = {
+                  ...(s.context ?? {}),
+                  ...(workspace.effectiveCwd ? { cwd: workspace.effectiveCwd } : {}),
+                };
+                return {
+                  ...s,
+                  summary,
+                  context: Object.keys(context).length > 0 ? context : undefined,
+                  workspace,
+                  diskSizeBytes: diskSizeCache.get(id) ?? 0,
+                  ...status,
+                  hasPlan,
+                  archived,
+                  archivedAt,
+                  triggeredBy: meta[id]?.triggeredBy,
+                  scheduleId: meta[id]?.scheduleId,
+                  scheduleName: meta[id]?.scheduleName,
+                  scheduleEnabled: meta[id]?.scheduleId
+                    ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
+                    : undefined,
+                };
+              }),
+          );
+
+          enrichedSessionCache = { data: enriched, timestamp: Date.now(), includesArchived: buildIncludesArchived };
+          return enriched;
+        })().finally(() => {
+          if (buildIncludesArchived) allSessionCacheBuild = null;
+          else activeSessionCacheBuild = null;
+        });
+
+        if (buildIncludesArchived) allSessionCacheBuild = build;
+        else activeSessionCacheBuild = build;
+        return build;
+      };
+
+      const enriched = await startCacheBuild(includeArchived);
 
       const filtered = enriched.filter((s: any) => includeArchived || !s.archived);
       res.json({ sessions: filtered });

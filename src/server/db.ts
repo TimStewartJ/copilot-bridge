@@ -99,7 +99,8 @@ function initSchema(db: DatabaseSync): void {
       archivedAt TEXT,
       triggeredBy TEXT,
       scheduleId TEXT,
-      scheduleName TEXT
+      scheduleName TEXT,
+      lastVisibleActivityAt TEXT
     );
 
     -- Persisted session workspaces
@@ -284,6 +285,12 @@ function initSchema(db: DatabaseSync): void {
   if (!cols.some((c: any) => c.name === "linkedAt")) {
     db.exec("ALTER TABLE task_sessions ADD COLUMN linkedAt TEXT NOT NULL DEFAULT '2000-01-01T00:00:00Z'");
   }
+
+  const sessionMetaCols = db.prepare("PRAGMA table_info(session_meta)").all() as any[];
+  if (!sessionMetaCols.some((c: any) => c.name === "lastVisibleActivityAt")) {
+    db.exec("ALTER TABLE session_meta ADD COLUMN lastVisibleActivityAt TEXT");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_session_meta_lastVisibleActivityAt ON session_meta(lastVisibleActivityAt)");
 
   const scheduleCols = db.prepare("PRAGMA table_info(schedules)").all() as any[];
   if (!scheduleCols.some((c: any) => c.name === "sessionMode")) {
