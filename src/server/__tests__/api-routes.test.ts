@@ -1882,6 +1882,32 @@ describe("Session routes (mocked)", () => {
     expect(Array.isArray(res.body.schedules)).toBe(true);
   });
 
+  it("GET /api/dashboard requests active-only sessions from disk", async () => {
+    const sessionManager = createMockSessionManager();
+    const listSessionsFromDisk = vi.fn(async (opts?: { includeArchived?: boolean }) => {
+      if (opts?.includeArchived !== false) {
+        throw new Error("dashboard should not scan archived sessions");
+      }
+      return [
+        {
+          sessionId: "active-session",
+          summary: "Active session",
+          lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+        },
+      ];
+    });
+    sessionManager.listSessionsFromDisk = listSessionsFromDisk;
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
+    expect(res.body.unreadSessions).toEqual([
+      expect.objectContaining({ sessionId: "active-session", title: "Active session" }),
+    ]);
+  });
+
   it("GET /api/dashboard tolerates preview contexts without dashboard stores", async () => {
     ({ app, ctx } = createTestApp({
       taskGroupStore: undefined as any,

@@ -1847,7 +1847,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const compatCtx = ctx as RouterCompatContext;
       const t0 = Date.now();
-      const sessions = await ctx.sessionManager.listSessionsFromDisk();
+      const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: false });
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
