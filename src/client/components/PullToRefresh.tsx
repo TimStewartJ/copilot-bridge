@@ -1,13 +1,23 @@
 import { useRef, useState, useEffect, type ReactNode } from "react";
 import { Loader2, ArrowDown } from "lucide-react";
+import useElementScrollRestoration, { type UseElementScrollRestorationOptions } from "../hooks/useElementScrollRestoration";
+
+export type PullToRefreshScrollRestoration = Omit<UseElementScrollRestorationOptions, "key"> & {
+  key: string;
+};
 
 interface PullToRefreshProps {
   onRefresh: () => Promise<void>;
   children: ReactNode;
   className?: string;
-  /** When this or children structure changes, scroll resets to top */
-  scrollKey?: string;
+  /** Saves/restores container scroll; set restore=false for fresh navigation reset. */
+  scrollRestoration?: PullToRefreshScrollRestoration;
 }
+
+const DISABLED_SCROLL_RESTORATION = {
+  key: null,
+  enabled: false,
+} satisfies UseElementScrollRestorationOptions;
 
 const THRESHOLD = 64;    // px to pull before triggering refresh
 const MAX_PULL = 100;    // max visual displacement
@@ -15,7 +25,7 @@ const RESISTANCE = 0.45; // damping factor past threshold
 // Tolerate sub-pixel scroll positions left over from momentum / rounding
 const SCROLL_TOP_EPSILON = 1;
 
-export default function PullToRefresh({ onRefresh, children, className = "", scrollKey }: PullToRefreshProps) {
+export default function PullToRefresh({ onRefresh, children, className = "", scrollRestoration }: PullToRefreshProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const startYRef = useRef(0);
   const pullingRef = useRef(false);
@@ -30,10 +40,7 @@ export default function PullToRefresh({ onRefresh, children, className = "", scr
   // Keep pullDistRef in sync with state
   useEffect(() => { pullDistRef.current = pullDistance; }, [pullDistance]);
 
-  // Reset scroll position when scrollKey changes (e.g. tab switch)
-  useEffect(() => {
-    containerRef.current?.scrollTo(0, 0);
-  }, [scrollKey]);
+  useElementScrollRestoration(containerRef, scrollRestoration ?? DISABLED_SCROLL_RESTORATION);
 
   // Register ALL touch handlers as native listeners with { passive: false }
   // so the browser waits for our preventDefault before committing to native

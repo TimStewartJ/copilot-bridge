@@ -20,7 +20,7 @@ import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-co
 import EmptyState from "./shared/EmptyState";
 import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 import ChecklistItemRow from "./ChecklistItemRow";
-import PullToRefresh from "./PullToRefresh";
+import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause, Bell, HelpCircle, Archive, AlertTriangle, Hourglass } from "lucide-react";
 import { ScheduleRow } from "./task-sections";
@@ -75,6 +75,7 @@ interface DashboardProps {
   onSelectSession: (target: SessionNavigationTarget) => void;
   onNewSession: () => void;
   onResumeTask: (taskId: string, sessionId?: string) => void;
+  scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
 // ── Task grouping for "By task" view ──────────────────────────────
@@ -174,6 +175,7 @@ export default function Dashboard({
   onSelectSession,
   onNewSession,
   onResumeTask,
+  scrollRestoration,
 }: DashboardProps) {
   const { data, isLoading: loading, refetch } = useDashboardQuery();
   const schedDetail = useScheduleDetail();
@@ -280,7 +282,11 @@ export default function Dashboard({
 
   return (
     <div className="flex-1 min-h-0 relative">
-    <PullToRefresh onRefresh={handleRefresh} className="absolute inset-0">
+    <PullToRefresh
+      onRefresh={handleRefresh}
+      className="absolute inset-0"
+      scrollRestoration={scrollRestoration}
+    >
       {/* ── Attention Bar ─────────────────────────────────── */}
       {hasAttention && (
         <div className="border-b border-border bg-bg-secondary">
