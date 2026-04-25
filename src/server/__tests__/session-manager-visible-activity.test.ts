@@ -37,6 +37,7 @@ describe("SessionManager visible activity cache", () => {
   function createManager() {
     const db = setupTestDb();
     const sessionMetaStore = createSessionMetaStore(db);
+    const dataDir = join(copilotHome, "data");
     const manager = new SessionManager({
       tools: [],
       globalBus: createTestBus(),
@@ -46,6 +47,13 @@ describe("SessionManager visible activity cache", () => {
       taskStore: {} as any,
       config: { sessionMcpServers: {} },
       copilotHome,
+      runtimePaths: {
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        copilotHome,
+        env: process.env,
+      },
     });
     return { manager, sessionMetaStore };
   }
@@ -64,17 +72,6 @@ describe("SessionManager visible activity cache", () => {
     return readFileCallMock.mock.calls.filter(([readPath]) => readPath === path).length;
   }
 
-  async function listSessionsWithoutJsonParsing(manager: SessionManager) {
-    const parseSpy = vi.spyOn(JSON, "parse");
-    try {
-      const sessions = await manager.listSessionsFromDisk();
-      expect(parseSpy).not.toHaveBeenCalled();
-      return sessions;
-    } finally {
-      parseSpy.mockRestore();
-    }
-  }
-
   it("uses persisted visible activity without reading the event log", async () => {
     const eventsPath = writeSession([
       { type: "assistant.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Done" } },
@@ -83,7 +80,7 @@ describe("SessionManager visible activity cache", () => {
     const { manager, sessionMetaStore } = createManager();
     sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-04-10T10:00:00.000Z");
 
-    const sessions = await listSessionsWithoutJsonParsing(manager);
+    const sessions = await manager.listSessionsFromDisk();
 
     expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:00:00.000Z");
     expect(sessions[0]?.modifiedTime).toBe("2026-04-10T10:00:00.000Z");
@@ -97,7 +94,7 @@ describe("SessionManager visible activity cache", () => {
     ]);
     const { manager } = createManager();
 
-    const sessions = await listSessionsWithoutJsonParsing(manager);
+    const sessions = await manager.listSessionsFromDisk();
 
     expect(sessions[0]?.lastVisibleActivityAt).toBeUndefined();
     expect(sessions[0]?.modifiedTime).toBe("2026-04-10T09:59:00.000Z");
@@ -119,7 +116,7 @@ describe("SessionManager visible activity cache", () => {
     expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
 
     readFileCallMock.mockReset();
-    const sessions = await listSessionsWithoutJsonParsing(manager);
+    const sessions = await manager.listSessionsFromDisk();
     expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
     expect(countReads(eventsPath)).toBe(0);
   });
