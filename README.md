@@ -115,6 +115,12 @@ npm run dev:server   # Server only
 npm run dev:client   # Vite dev server with HMR
 ```
 
+The bridge server listens on port `3333` by default. To use a different local app port, set `BRIDGE_PORT` in your shell or `.env` file before starting the launcher/server:
+
+```bash
+BRIDGE_PORT=4444
+```
+
 ### Fastest Path to Value
 
 If you are opening the bridge for the first time, keep it simple:

@@ -14,6 +14,7 @@ import {
   waitForProcessTreeExit,
   type ProcessTreeKillResult,
 } from "./server/platform.js";
+import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import {
@@ -70,15 +71,13 @@ const PRE_DEPLOY_SHA_FILE = join(ROOT, "data", "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(ROOT, "data", "rollback-required");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
 const LAUNCHER_LOG_PATH = getLauncherLogPath();
-const PORT = 3333;
-const HEALTH_URL = `http://localhost:${PORT}/api/health`;
+const MANAGED_ENV_KEYS = new Set(loadBridgeEnv());
 const MAX_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 30_000;
 const HEALTH_POLL_INTERVAL = 30_000;
 const HEALTH_POLL_TIMEOUT = 5_000;
 const HEALTH_FAILURE_THRESHOLD = 2;
-const MANAGED_ENV_KEYS = new Set(loadBridgeEnv());
 
 // Notification config
 const TUNNEL_NAME = process.env.BRIDGE_TUNNEL_NAME || "copilot-bridge";
@@ -115,11 +114,16 @@ let healthPollInFlight = false;
 let recoveringServer = false;
 let tunnelStatusLogged = false;
 let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
+let currentServerPort = resolveBridgePort();
 
 function log(msg: string) {
   const line = `[launcher] ${msg}`;
   console.log(line);
   appendLauncherLogLine(line);
+}
+
+function bridgeLocalUrl(pathname: string, port = currentServerPort): string {
+  return `http://localhost:${port}${pathname}`;
 }
 
 function gitHash(): string {
@@ -333,7 +337,7 @@ async function healthCheck(expectedChild: ChildProcess | null = serverProcess): 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(HEALTH_URL, { signal: controller.signal });
+      const res = await fetch(bridgeLocalUrl("/api/health"), { signal: controller.signal });
       return res.ok;
     } catch {
       return false;
@@ -460,7 +464,7 @@ async function pollServerHealth(): Promise<void> {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), HEALTH_POLL_TIMEOUT);
       try {
-        const res = await fetch(HEALTH_URL, { signal: controller.signal });
+        const res = await fetch(bridgeLocalUrl("/api/health"), { signal: controller.signal });
         healthy = res.ok;
       } catch {
         healthy = false;
@@ -516,8 +520,10 @@ function shouldUseDevtunnel(): boolean {
 }
 
 function startServer(): ChildProcess {
-  log("Starting server...");
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS);
+  const port = resolveBridgePort(env);
+  currentServerPort = port;
+  log(`Starting server on port ${port}...`);
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
   const child = spawn(NODE_PATH, [TSX_CLI, SERVER_ENTRY], {
@@ -586,7 +592,7 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
 }
 
 async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
-  const busyUrl = `http://localhost:${PORT}/api/busy`;
+  const busyUrl = bridgeLocalUrl("/api/busy");
   return waitForIdleSessionsImpl({
     fetchBusy: async () => {
       const res = await fetch(busyUrl);
@@ -604,7 +610,7 @@ async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise
 }
 
 async function gracefulStopServer(): Promise<boolean> {
-  const shutdownUrl = `http://localhost:${PORT}/api/shutdown`;
+  const shutdownUrl = bridgeLocalUrl("/api/shutdown");
   try {
     log("Requesting graceful shutdown...");
     const controller = new AbortController();
@@ -658,7 +664,7 @@ async function restart(): Promise<RestartOutcome> {
     if (!rollbackSucceeded) {
       log("Rollback did not complete successfully");
       enterStoppedStateAfterFailedRollback();
-      try { await fetch(`http://localhost:${PORT}/api/restart-clear`, { method: "POST" }); }
+      try { await fetch(bridgeLocalUrl("/api/restart-clear"), { method: "POST" }); }
       catch { /* server may be unreachable */ }
       consecutiveFailures++;
       if (consecutiveFailures >= MAX_FAILURES) {
@@ -681,7 +687,7 @@ async function restart(): Promise<RestartOutcome> {
     }
 
     // Old server is still running with restart banner — dismiss it immediately
-    try { await fetch(`http://localhost:${PORT}/api/restart-clear`, { method: "POST" }); }
+    try { await fetch(bridgeLocalUrl("/api/restart-clear"), { method: "POST" }); }
     catch { /* server may be unreachable */ }
 
     const outcome = resolveRollbackRecoveryOutcome({
@@ -814,8 +820,9 @@ function startTunnel(): Promise<string> {
   killTunnel();
 
   return new Promise((resolve, reject) => {
-    log("Starting dev tunnel...");
-    tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME], {
+    const port = currentServerPort;
+    log(`Starting dev tunnel for local port ${port}...`);
+    tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME, "--port", String(port)], {
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
     });
@@ -833,8 +840,8 @@ function startTunnel(): Promise<string> {
 
     tunnelProcess.stdout?.on("data", (data: Buffer) => {
       stdout += data.toString();
-      // Look for the URL: "Connect via browser: https://xxx-3333.usw2.devtunnels.ms"
-      const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/);
+      const match = stdout.match(/Connect via browser:\s+(https:\/\/\S+)/)
+        ?? stdout.match(/Hosting port \d+ at\s+(https:\/\/\S+)/);
       if (match && !resolved) {
         resolved = true;
         clearTimeout(timeout);

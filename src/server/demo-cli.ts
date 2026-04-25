@@ -3,6 +3,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDemoWorkspace, resetDemoWorkspace, type DemoPaths } from "./demo-workspace.js";
+import { loadBridgeEnv } from "./env-loader.js";
+import { resolveBridgePort } from "./port-config.js";
 
 type DemoCommand = "start" | "seed" | "reset";
 
@@ -57,14 +59,17 @@ export function createDemoServerEnv(
 }
 
 function startServer(paths: Pick<DemoPaths, "dataDir" | "docsDir" | "copilotHome">): void {
+  const env = createDemoServerEnv(process.env, paths);
+  const port = resolveBridgePort(env);
+
   console.log(`[demo] Launching bridge with demo workspace at ${paths.dataDir}`);
-  console.log("[demo] Open http://localhost:3333 and start with the pinned \"Start Here - Acme Launch Workspace\" task.");
+  console.log(`[demo] Open http://localhost:${port} and start with the pinned "Start Here - Acme Launch Workspace" task.`);
   mkdirSync(paths.copilotHome, { recursive: true });
 
   const child = spawn(process.execPath, [TSX_CLI, SERVER_ENTRY], {
     cwd: ROOT,
     stdio: "inherit",
-    env: createDemoServerEnv(process.env, paths),
+    env,
   });
 
   const forwardSignal = (signal: NodeJS.Signals) => {
@@ -88,6 +93,7 @@ function printWorkspaceStatus(result: ReturnType<typeof ensureDemoWorkspace>, co
 }
 
 async function main(): Promise<void> {
+  loadBridgeEnv();
   ensureLocalTooling();
 
   const command = resolveCommand(process.argv[2]);
