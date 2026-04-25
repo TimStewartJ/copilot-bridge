@@ -8,6 +8,7 @@ export interface SessionMeta {
   triggeredBy?: "user" | "schedule";
   scheduleId?: string;
   scheduleName?: string;
+  lastVisibleActivityAt?: string;
 }
 
 export interface ScheduleRunRecord {
@@ -28,6 +29,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
       triggeredBy: row.triggeredBy ?? undefined,
       scheduleId: row.scheduleId ?? undefined,
       scheduleName: row.scheduleName ?? undefined,
+      lastVisibleActivityAt: row.lastVisibleActivityAt ?? undefined,
     };
   }
 
@@ -74,6 +76,19 @@ export function createSessionMetaStore(db: DatabaseSync) {
     }
   }
 
+  function setLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt: string): void {
+    db.prepare(`
+      INSERT INTO session_meta (sessionId, archived, archivedAt, lastVisibleActivityAt)
+      VALUES (?, 0, '', ?)
+      ON CONFLICT(sessionId) DO UPDATE SET
+        lastVisibleActivityAt = CASE
+          WHEN session_meta.lastVisibleActivityAt IS NULL OR session_meta.lastVisibleActivityAt < excluded.lastVisibleActivityAt
+          THEN excluded.lastVisibleActivityAt
+          ELSE session_meta.lastVisibleActivityAt
+        END
+    `).run(sessionId, lastVisibleActivityAt);
+  }
+
   function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {
     db.prepare(`
       INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
@@ -114,6 +129,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
     setArchived,
     deleteMeta,
     setScheduleMeta,
+    setLastVisibleActivityAt,
     recordScheduleRun,
     listMeta,
     listScheduleRuns,
