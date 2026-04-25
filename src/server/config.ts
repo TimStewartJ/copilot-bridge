@@ -1,6 +1,7 @@
 // Configuration for the Copilot Web Bridge
 
 import type { McpServerConfig } from "./mcp-config.js";
+import { resolveBridgePort } from "./port-config.js";
 
 /** Settings getter — set by index.ts after DB init */
 let _getMcpServers: (() => Record<string, McpServerConfig>) | null = null;
@@ -12,7 +13,7 @@ export function setMcpServersGetter(fn: () => Record<string, McpServerConfig>): 
 export const config = {
   // Web server
   web: {
-    port: 3333,
+    port: resolveBridgePort(),
   },
 
   /** MCP servers — reads from settings store (live-reloaded per session) */
