@@ -44,7 +44,7 @@ export default function SortableTaskItem({
   };
 
   const isRail = variant === "rail";
-  const momentumBadges = getMomentumBadges(task);
+  const momentumBadges = getTaskListMomentumBadges(task);
 
   return (
     <div ref={setNodeRef} style={style} className="group">
@@ -114,7 +114,7 @@ export default function SortableTaskItem({
   );
 }
 
-function getMomentumBadges(task: Task): Array<{ label: string; className: string; title?: string }> {
+export function getTaskListMomentumBadges(task: Task): Array<{ label: string; className: string; title?: string }> {
   const badges: Array<{ label: string; className: string; title?: string }> = [];
   const followUpState = task.status === "active" ? getFollowUpState(task.nextTouchAt) : null;
 
@@ -130,13 +130,6 @@ function getMomentumBadges(task: Task): Array<{ label: string; className: string
             minute: "2-digit",
           })}`
         : undefined,
-    });
-  }
-  if (task.status === "active" && task.waitingOn) {
-    badges.push({
-      label: "Waiting",
-      className: "bg-info/15 text-info",
-      title: task.waitingOn,
     });
   }
   if (task.status === "active" && !task.nextAction && !task.waitingOn && !task.nextTouchAt) {
