@@ -17,8 +17,7 @@ import {
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
-import type { Schedule } from "./schedule-store.js";
-import { resolveScheduleSessionSelection } from "./schedule-targeting.js";
+import type { Schedule, ScheduleSessionMode } from "./schedule-store.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
@@ -342,8 +341,12 @@ function resolveSessionSummary(
 function serializeSchedule(schedule: Schedule) {
   return {
     ...schedule,
-    ...(schedule.sessionMode !== "reuse-target" ? { reuseSession: schedule.sessionMode === "reuse-last" } : {}),
+    reuseSession: schedule.sessionMode === "reuse-last",
   };
+}
+
+function isScheduleSessionMode(value: unknown): value is ScheduleSessionMode {
+  return value === "new" || value === "reuse-last";
 }
 
 function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
@@ -798,6 +801,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     res.json({ ok: true, message: "Shutting down..." });
     try {
       scheduler.setGlobalPause(true);
+      ctx.deferredPromptRunner?.shutdown();
       await ctx.sessionManager.gracefulShutdown();
       scheduler.shutdown();
     } catch (err) {
@@ -2122,11 +2126,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/schedules", async (req, res) => {
     try {
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, sessionMode, targetSessionId, maxRuns, expiresAt } = req.body;
+      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, sessionMode, maxRuns, expiresAt } = req.body;
+      if (Object.prototype.hasOwnProperty.call(req.body, "targetSessionId")) {
+        return res.status(400).json({ error: "targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups" });
+      }
+      if (sessionMode !== undefined && !isScheduleSessionMode(sessionMode)) {
+        return res.status(400).json({ error: `Invalid sessionMode: ${String(sessionMode)}` });
+      }
       const resolvedSessionMode = sessionMode
         ?? (typeof req.body.reuseSession === "boolean"
           ? (req.body.reuseSession ? "reuse-last" : "new")
-          : undefined);
+          : "new");
       if (!taskId || !name || !prompt || !type) {
         return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
       }
@@ -2144,19 +2154,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
       }
 
-      const selection = await resolveScheduleSessionSelection(
-        { sessionMode: resolvedSessionMode, targetSessionId },
-        {
-          taskId,
-          taskStore: ctx.taskStore,
-          listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
-          defaultSessionMode: "new",
-        },
-      );
-      if (!selection.ok) {
-        return res.status(400).json({ error: selection.error });
-      }
-
       const schedule = ctx.scheduleStore.createSchedule({
         taskId,
         name,
@@ -2165,8 +2162,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         cron: cronExpr,
         runAt,
         timezone,
-        sessionMode: selection.value.sessionMode,
-        targetSessionId: selection.value.targetSessionId,
+        sessionMode: resolvedSessionMode,
         maxRuns,
         expiresAt,
       });
@@ -2194,42 +2190,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const existing = ctx.scheduleStore.getSchedule(req.params.id);
       if (!existing) return res.status(404).json({ error: "Schedule not found" });
 
+      if (Object.prototype.hasOwnProperty.call(req.body, "targetSessionId")) {
+        return res.status(400).json({ error: "targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups" });
+      }
+
       const updates = { ...req.body };
+      if (req.body.sessionMode !== undefined && !isScheduleSessionMode(req.body.sessionMode)) {
+        return res.status(400).json({ error: `Invalid sessionMode: ${String(req.body.sessionMode)}` });
+      }
       const resolvedSessionMode = req.body.sessionMode
-        ?? (existing.sessionMode !== "reuse-target" && typeof req.body.reuseSession === "boolean"
+        ?? (typeof req.body.reuseSession === "boolean"
           ? (req.body.reuseSession ? "reuse-last" : "new")
           : undefined);
-      if (resolvedSessionMode !== undefined || req.body.targetSessionId !== undefined) {
-        const existingTargetStillLinked = !!existing.targetSessionId
-          && ctx.taskStore.getTask(existing.taskId)?.sessionIds.includes(existing.targetSessionId) === true;
-        const preservingExistingTarget = resolvedSessionMode === "reuse-target"
-          && req.body.targetSessionId === undefined
-          && existing.sessionMode === "reuse-target"
-          && existingTargetStillLinked;
-        if (preservingExistingTarget) {
-          updates.sessionMode = "reuse-target";
-        } else {
-          const defaultTargetSessionId = existing.sessionMode === "reuse-target"
-            ? existing.targetSessionId
-            : undefined;
-          const selection = await resolveScheduleSessionSelection(
-            { sessionMode: resolvedSessionMode, targetSessionId: req.body.targetSessionId },
-            {
-              taskId: existing.taskId,
-              taskStore: ctx.taskStore,
-              listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
-              defaultSessionMode: existing.sessionMode,
-              defaultTargetSessionId,
-            },
-          );
-          if (!selection.ok) {
-            return res.status(400).json({ error: selection.error });
-          }
-          updates.sessionMode = selection.value.sessionMode;
-          if (selection.value.sessionMode === "reuse-target" || req.body.targetSessionId !== undefined) {
-            updates.targetSessionId = selection.value.targetSessionId;
-          }
-        }
+      if (resolvedSessionMode !== undefined) {
+        updates.sessionMode = resolvedSessionMode;
       }
 
       const schedule = ctx.scheduleStore.updateSchedule(req.params.id, updates);

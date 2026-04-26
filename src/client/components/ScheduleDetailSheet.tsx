@@ -1,9 +1,7 @@
 import { useState, useEffect } from "react";
-import type { Schedule, ScheduleCreateInput, ScheduleRun, ScheduleSessionMode, Session } from "../api";
+import type { Schedule, ScheduleCreateInput, ScheduleRun, ScheduleSessionMode } from "../api";
 import { createSchedule, patchSchedule, fetchServerTimezone, getSessionRunState } from "../api";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
-import { useSessionsQuery } from "../hooks/queries/useSessions";
-import { useTasksQuery } from "../hooks/queries/useTasks";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
 import {
@@ -14,12 +12,10 @@ import {
   Pencil,
   Trash2,
   MoreVertical,
-  ExternalLink,
   ChevronDown,
   RefreshCw,
   Calendar,
   Repeat,
-  MessageSquare,
   Globe,
 } from "lucide-react";
 import EmptyState from "./shared/EmptyState";
@@ -47,57 +43,10 @@ const SESSION_MODE_OPTIONS: Array<{ value: ScheduleSessionMode; label: string; d
     label: "Reuse last schedule session",
     description: "Continue the most recent session previously used by this schedule.",
   },
-  {
-    value: "reuse-target",
-    label: "Reuse target session",
-    description: "Always send work to a specific linked session on this task.",
-  },
 ];
 
 function formatSessionMode(mode: ScheduleSessionMode): string {
-  switch (mode) {
-    case "reuse-last":
-      return "Reuse last schedule session";
-    case "reuse-target":
-      return "Reuse target session";
-    default:
-      return "New session every run";
-  }
-}
-
-function getSessionOptionLabel(session: Session): string {
-  const base = session.summary?.trim() || "Untitled session";
-  const shortId = session.sessionId.slice(0, 8);
-  const runState = getSessionRunState(session);
-  const suffix = session.archived ? " [archived]" : runState === "stalled" ? " [stalled]" : runState === "busy" ? " [busy]" : "";
-  return `${base} (${shortId})${suffix}`;
-}
-
-function useTaskSessionOptions(taskId: string, targetSessionId?: string) {
-  const { data: tasks = [] } = useTasksQuery();
-  const { data: allSessions = [] } = useSessionsQuery(true);
-  const task = tasks.find((candidate) => candidate.id === taskId);
-  const sessionById = new Map(allSessions.map((session) => [session.sessionId, session]));
-  const linkedSessions = (task?.sessionIds ?? []).map((sessionId) =>
-    sessionById.get(sessionId) ?? ({
-      sessionId,
-      summary: `Missing session (${sessionId.slice(0, 8)})`,
-      archived: true,
-    } satisfies Session),
-  );
-  const selectedTargetSession = targetSessionId
-    ? linkedSessions.find((session) => session.sessionId === targetSessionId)
-      ?? sessionById.get(targetSessionId)
-      ?? ({
-        sessionId: targetSessionId,
-        summary: `Missing session (${targetSessionId.slice(0, 8)})`,
-        archived: true,
-      } satisfies Session)
-    : undefined;
-
-  const selectedTargetSessionMissing = !!targetSessionId && !sessionById.has(targetSessionId);
-
-  return { linkedSessions, selectedTargetSession, selectedTargetSessionMissing };
+  return mode === "reuse-last" ? "Reuse last schedule session" : "New session every run";
 }
 
 // ── Props ────────────────────────────────────────────────────────
@@ -190,7 +139,6 @@ function ViewMode({
   onSelectTask?: (taskId: string) => void;
 }) {
   const { data: sessionData } = useScheduleSessionsQuery(schedule.id);
-  const { selectedTargetSession, selectedTargetSessionMissing } = useTaskSessionOptions(schedule.taskId, schedule.targetSessionId);
   const [showOverflow, setShowOverflow] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
@@ -309,32 +257,9 @@ function ViewMode({
               <span className="text-text-faint block mb-0.5">Session mode</span>
               <span className="text-text-secondary flex items-center gap-1">
                 {schedule.sessionMode === "reuse-last" && <RefreshCw size={10} />}
-                {schedule.sessionMode === "reuse-target" && <MessageSquare size={10} />}
                 {formatSessionMode(schedule.sessionMode)}
               </span>
             </div>
-            {schedule.sessionMode === "reuse-target" && (
-              <div className="col-span-2">
-                <span className="text-text-faint block mb-0.5">Target session</span>
-                {selectedTargetSession ? (
-                  selectedTargetSessionMissing ? (
-                    <span className="text-text-muted truncate block max-w-full">
-                      {selectedTargetSession.summary || selectedTargetSession.sessionId.slice(0, 8)}
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => onSelectSession?.(selectedTargetSession.sessionId)}
-                      className="text-accent hover:text-accent-hover transition-colors truncate block max-w-full text-left flex items-center gap-1"
-                    >
-                      {selectedTargetSession.summary || selectedTargetSession.sessionId.slice(0, 8)}
-                      <ExternalLink size={10} className="shrink-0" />
-                    </button>
-                  )
-                ) : (
-                  <span className="text-text-muted">Missing target session</span>
-                )}
-              </div>
-            )}
             {schedule.maxRuns && (
               <div>
                 <span className="text-text-faint block mb-0.5">Max runs</span>
@@ -462,11 +387,9 @@ function EditMode({
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
   const [sessionMode, setSessionMode] = useState<ScheduleSessionMode>(schedule?.sessionMode ?? "new");
-  const [targetSessionId, setTargetSessionId] = useState(schedule?.targetSessionId ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { linkedSessions } = useTaskSessionOptions(taskId, targetSessionId || undefined);
 
   // Fetch server timezone as default for new schedules
   useEffect(() => {
@@ -487,7 +410,6 @@ function EditMode({
     setRunAt(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
     setTimezone(schedule?.timezone ?? "");
     setSessionMode(schedule?.sessionMode ?? "new");
-    setTargetSessionId(schedule?.targetSessionId ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
   }, [schedule]);
 
@@ -495,7 +417,6 @@ function EditMode({
     if (!name.trim() || !prompt.trim()) { setError("Name and prompt are required"); return; }
     if (type === "cron" && !cronExpr.trim()) { setError("Cron expression is required"); return; }
     if (type === "once" && !runAt) { setError("Run time is required"); return; }
-    if (sessionMode === "reuse-target" && !targetSessionId) { setError("Target session is required"); return; }
 
     setSaving(true);
     setError(null);
@@ -509,7 +430,6 @@ function EditMode({
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
           sessionMode,
-          ...(sessionMode === "reuse-target" ? { targetSessionId } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
         };
         await createSchedule(input);
@@ -521,7 +441,6 @@ function EditMode({
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
           sessionMode,
-          ...(sessionMode === "reuse-target" ? { targetSessionId } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
         });
       }
@@ -658,32 +577,6 @@ function EditMode({
                 ))}
               </div>
             </div>
-
-            {sessionMode === "reuse-target" && (
-              <div className="col-span-2">
-                <span className="text-text-faint block mb-1">Target session</span>
-                <select
-                  className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
-                  value={targetSessionId}
-                  onChange={(e) => setTargetSessionId(e.target.value)}
-                >
-                  <option value="">Select a linked session…</option>
-                  {linkedSessions.map((session) => (
-                    <option key={session.sessionId} value={session.sessionId}>
-                      {getSessionOptionLabel(session)}
-                    </option>
-                  ))}
-                  {targetSessionId && !linkedSessions.some((session) => session.sessionId === targetSessionId) && (
-                    <option value={targetSessionId}>Missing session ({targetSessionId.slice(0, 8)})</option>
-                  )}
-                </select>
-                {linkedSessions.length === 0 && (
-                  <div className="text-[10px] text-text-faint mt-1">
-                    No linked sessions are available on this task yet.
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Max runs */}
             <div>

@@ -7,6 +7,7 @@ import type { Express } from "express";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AppContext } from "../app-context.js";
+import type { DeferredPromptRunner } from "../deferred-prompt-runner.js";
 import { publishOutboundAttachment } from "../outbound-attachments.js";
 import { writeRestartState } from "../restart-state.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
@@ -109,6 +110,14 @@ describe("Shutdown route", () => {
     const shutdownSpy = vi.spyOn(scheduler, "shutdown").mockImplementation(() => {
       order.push("shutdown");
     });
+    const deferredPromptRunner: DeferredPromptRunner = {
+      start: vi.fn(),
+      poke: vi.fn(),
+      shutdown: vi.fn(() => {
+        order.push("deferred");
+      }),
+    };
+    ctx.deferredPromptRunner = deferredPromptRunner;
     ctx.sessionManager.gracefulShutdown = vi.fn(async () => {
       order.push("graceful");
     });
@@ -121,7 +130,7 @@ describe("Shutdown route", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, message: "Shutting down..." });
-      expect(order).toEqual(["pause", "graceful", "shutdown"]);
+      expect(order).toEqual(["pause", "deferred", "graceful", "shutdown"]);
     } finally {
       pauseSpy.mockRestore();
       shutdownSpy.mockRestore();
@@ -1484,6 +1493,12 @@ describe("Schedule routes", () => {
       .post("/api/tasks")
       .send({ title: "Schedule Host" });
     taskId = task.body.task.id;
+    scheduler.initialize(ctx.sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
   });
 
   it("GET /api/schedules returns empty list initially", async () => {
@@ -1515,34 +1530,23 @@ describe("Schedule routes", () => {
     expect(res.body.error).toMatch(/cron/);
   });
 
-  it("POST /api/schedules accepts reuse-target mode for linked task sessions", async () => {
-    ctx.taskStore.linkSession(taskId, "linked-session");
-    ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "linked-session" }];
-    scheduler.initialize(ctx.sessionManager as any, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
+  it("POST /api/schedules serializes new schedules without targetSessionId", async () => {
     const res = await request(app)
       .post("/api/schedules")
       .send({
         taskId,
-        name: "Target linked session",
+        name: "Fresh schedule",
         prompt: "Continue the conversation",
         type: "cron",
         cron: "0 0 * * *",
-        sessionMode: "reuse-target",
-        targetSessionId: "linked-session",
       });
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
+      sessionMode: "new",
+      reuseSession: false,
     });
-    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.body).not.toHaveProperty("targetSessionId");
   });
 
   it("POST /api/schedules still honors legacy reuseSession=true", async () => {
@@ -1561,131 +1565,70 @@ describe("Schedule routes", () => {
     expect(res.body).toMatchObject({ sessionMode: "reuse-last", reuseSession: true });
   });
 
-  it("POST /api/schedules rejects reuse-target mode for sessions outside the task", async () => {
-    ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "linked-session" }];
-
+  it("POST /api/schedules rejects invalid reuse-target mode", async () => {
     const res = await request(app)
       .post("/api/schedules")
       .send({
         taskId,
-        name: "Wrong target",
+        name: "Wrong mode",
         prompt: "Continue the conversation",
         type: "cron",
         cron: "0 0 * * *",
         sessionMode: "reuse-target",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid sessionMode: reuse-target");
+  });
+
+  it("POST /api/schedules rejects legacy targetSessionId input", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Wrong target field",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
         targetSessionId: "linked-session",
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/same task/i);
+    expect(res.body.error).toBe("targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups");
   });
 
-  it("PATCH /api/schedules preserves the existing target for reuse-target schedules", async () => {
-    ctx.taskStore.linkSession(taskId, "linked-session");
-    ctx.taskStore.linkSession(taskId, "other-session");
-    ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "linked-session" },
-      { sessionId: "other-session" },
-    ];
-    scheduler.initialize(ctx.sessionManager as any, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
+  it("PATCH /api/schedules rejects invalid reuse-target mode", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
       name: "Keep target",
       prompt: "Continue the conversation",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
     });
 
     const res = await request(app)
       .patch(`/api/schedules/${schedule.id}`)
       .send({ sessionMode: "reuse-target" });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
-    });
-    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid sessionMode: reuse-target");
   });
 
-  it("PATCH /api/schedules preserves a missing existing target for reuse-target schedules", async () => {
-    ctx.taskStore.linkSession(taskId, "linked-session");
-    ctx.sessionManager.listSessionsFromDisk = async () => [];
+  it("PATCH /api/schedules rejects legacy targetSessionId input", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
-      name: "Keep missing target",
+      name: "Ignore target field",
       prompt: "Continue the conversation",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
     });
 
     const res = await request(app)
       .patch(`/api/schedules/${schedule.id}`)
-      .send({ sessionMode: "reuse-target", name: "Renamed" });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      name: "Renamed",
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
-    });
-  });
-
-  it("PATCH /api/schedules rejects preserving a target that is no longer linked to the task", async () => {
-    ctx.taskStore.linkSession(taskId, "linked-session");
-    ctx.taskStore.unlinkSession(taskId, "linked-session");
-    ctx.sessionManager.listSessionsFromDisk = async () => [];
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Broken target",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
-    });
-
-    const res = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ sessionMode: "reuse-target", name: "Renamed" });
+      .send({ name: "Renamed", targetSessionId: "linked-session" });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/same task/i);
-  });
-
-  it("PATCH /api/schedules ignores legacy reuseSession for existing reuse-target schedules", async () => {
-    ctx.taskStore.linkSession(taskId, "linked-session");
-    ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "linked-session" }];
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Keep target legacy",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
-    });
-
-    const res = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ reuseSession: true, name: "Renamed" });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      name: "Renamed",
-      sessionMode: "reuse-target",
-      targetSessionId: "linked-session",
-    });
-    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.body.error).toBe("targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups");
   });
 
   it("PATCH /api/schedules still honors legacy reuseSession=false", async () => {

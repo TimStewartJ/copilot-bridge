@@ -9,7 +9,7 @@ export function getServerTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-export type ScheduleSessionMode = "new" | "reuse-last" | "reuse-target";
+export type ScheduleSessionMode = "new" | "reuse-last";
 export type ScheduleTriggerSource = "manual" | "cron" | "once" | "catchup";
 export type AutomaticScheduleTriggerSource = Exclude<ScheduleTriggerSource, "manual">;
 export interface AutomaticRunClaim {
@@ -41,7 +41,6 @@ export interface Schedule {
   // Behavior
   enabled: boolean;
   sessionMode: ScheduleSessionMode;
-  targetSessionId?: string;
   lastSessionId?: string;
 
   // Lifecycle
@@ -57,10 +56,10 @@ export interface Schedule {
 }
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "targetSessionId" | "maxRuns" | "expiresAt">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "maxRuns" | "expiresAt">>;
 
 export type ScheduleUpdate = Partial<Pick<Schedule,
-  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "targetSessionId" | "maxRuns" | "expiresAt"
+  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "maxRuns" | "expiresAt"
 >>;
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -118,6 +117,14 @@ export function createScheduleStore(db: DatabaseSync) {
     WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
   `);
 
+  function normalizeSessionMode(row: { sessionMode?: string | null; reuseSession?: number | null }): ScheduleSessionMode {
+    if (row.sessionMode === "reuse-last") return "reuse-last";
+    if (row.sessionMode === "new") return "new";
+    if (row.sessionMode === "reuse-target") return "reuse-last";
+    if (row.reuseSession === 1) return "reuse-last";
+    return "new";
+  }
+
   function hydrate(row: any): Schedule {
     return {
       id: row.id,
@@ -129,9 +136,8 @@ export function createScheduleStore(db: DatabaseSync) {
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
       enabled: row.enabled === 1,
-      sessionMode: (row.sessionMode ?? (row.reuseSession === 1 ? "reuse-last" : "new")) as ScheduleSessionMode,
-      targetSessionId: row.targetSessionId ?? undefined,
-      lastSessionId: row.lastSessionId ?? undefined,
+      sessionMode: normalizeSessionMode(row),
+      lastSessionId: row.lastSessionId ?? row.targetSessionId ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastRunAt: row.lastRunAt ?? undefined,
@@ -158,7 +164,6 @@ export function createScheduleStore(db: DatabaseSync) {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const sessionMode = input.sessionMode ?? "new";
-    const targetSessionId = sessionMode === "reuse-target" ? input.targetSessionId ?? null : null;
 
     db.prepare(`
       INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
@@ -167,7 +172,7 @@ export function createScheduleStore(db: DatabaseSync) {
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
-      sessionMode, targetSessionId, now, now,
+      sessionMode, null, now, now,
       input.maxRuns ?? null, input.expiresAt ?? null,
     );
 
@@ -190,14 +195,7 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.sessionMode !== undefined) {
       fields.push("sessionMode = ?");
       values.push(updates.sessionMode);
-      if (updates.sessionMode !== "reuse-target") {
-        fields.push("targetSessionId = ?");
-        values.push(null);
-      }
-    }
-    if (updates.targetSessionId !== undefined && updates.sessionMode !== "new" && updates.sessionMode !== "reuse-last") {
-      fields.push("targetSessionId = ?");
-      values.push(updates.targetSessionId);
+      fields.push("reuseLastRequiresExistingSession = 0");
     }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }
@@ -479,6 +477,15 @@ export function createScheduleStore(db: DatabaseSync) {
     return (db.prepare("SELECT * FROM schedules WHERE enabled = 1").all() as any[]).map(hydrate);
   }
 
+  function requiresExistingReuseSession(id: string): boolean {
+    const row = db.prepare(`
+      SELECT sessionMode, reuseLastRequiresExistingSession
+      FROM schedules
+      WHERE id = ?
+    `).get(id) as { sessionMode?: string | null; reuseLastRequiresExistingSession?: number | null } | undefined;
+    return row?.sessionMode === "reuse-target" || row?.reuseLastRequiresExistingSession === 1;
+  }
+
   return {
     listSchedules, getSchedule, createSchedule, updateSchedule, deleteSchedule,
     recordRun, claimScheduleRun, claimAutomaticRun, claimSessionReuse,
@@ -486,6 +493,7 @@ export function createScheduleStore(db: DatabaseSync) {
     releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
     releaseClaimedSessionReuse, renewClaimedSessionReuse,
     updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
+    requiresExistingReuseSession,
   };
 }
 

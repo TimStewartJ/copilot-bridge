@@ -20,7 +20,6 @@ const CRON_PRESETS = [
 const SESSION_MODE_OPTIONS: Array<{ value: ScheduleSessionMode; label: string }> = [
   { value: "new", label: "New session every run" },
   { value: "reuse-last", label: "Reuse last schedule session" },
-  { value: "reuse-target", label: "Reuse target session" },
 ];
 
 interface ScheduleEditorDialogProps {
@@ -39,7 +38,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : ""); // datetime-local format
   const [sessionMode, setSessionMode] = useState<ScheduleSessionMode>(schedule?.sessionMode ?? "new");
-  const [targetSessionId, setTargetSessionId] = useState(schedule?.targetSessionId ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -64,11 +62,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
       setError("Run time is required");
       return;
     }
-    if (sessionMode === "reuse-target" && !targetSessionId.trim()) {
-      setError("Target session is required");
-      return;
-    }
-
     setSaving(true);
     setError(null);
 
@@ -80,7 +73,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           sessionMode,
-          ...(sessionMode === "reuse-target" ? { targetSessionId: targetSessionId.trim() } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
         });
       } else {
@@ -91,7 +83,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           sessionMode,
-          ...(sessionMode === "reuse-target" ? { targetSessionId: targetSessionId.trim() } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
         };
         await createSchedule(input);
@@ -222,22 +213,11 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
                     value={sessionMode}
                     onChange={(e) => setSessionMode(e.target.value as ScheduleSessionMode)}
                   >
-                    {SESSION_MODE_OPTIONS.map((option) => (
+                {SESSION_MODE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
                 </div>
-                {sessionMode === "reuse-target" && (
-                  <div>
-                    <label className="block text-xs text-text-muted mb-1">Target session ID</label>
-                    <input
-                      className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
-                      placeholder="Session ID linked to this task"
-                      value={targetSessionId}
-                      onChange={(e) => setTargetSessionId(e.target.value)}
-                    />
-                  </div>
-                )}
                 <div>
                   <label className="block text-xs text-text-muted mb-1">Max runs (optional)</label>
                   <input

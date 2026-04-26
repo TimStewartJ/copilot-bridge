@@ -20,6 +20,8 @@ import type { SessionManager } from "./session-manager.js";
 import type { TranscriptionService } from "./transcription-service.js";
 import type { VoiceJobManager } from "./voice-job-manager.js";
 import type { RuntimePaths } from "./runtime-paths.js";
+import type { DeferredPromptStore } from "./deferred-prompt-store.js";
+import type { DeferredPromptRunner } from "./deferred-prompt-runner.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -40,6 +42,10 @@ export interface AppContext {
   sessionManager: SessionManager;
   transcriptionService: TranscriptionService;
   voiceJobManager: VoiceJobManager;
+  /** Deferred prompt persistence */
+  deferredPromptStore?: DeferredPromptStore;
+  /** Deferred prompt dispatcher */
+  deferredPromptRunner?: DeferredPromptRunner;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
   /** Public API mount path used for server-generated links (e.g. "/api" or "/staging/<prefix>/api") */

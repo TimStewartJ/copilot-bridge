@@ -229,7 +229,8 @@ function initSchema(db: DatabaseSync): void {
       nextRunAt TEXT,
       runCount INTEGER NOT NULL DEFAULT 0,
       maxRuns INTEGER,
-      expiresAt TEXT
+      expiresAt TEXT,
+      reuseLastRequiresExistingSession INTEGER NOT NULL DEFAULT 0
     );
 
     -- Read state
@@ -339,6 +340,25 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (tagId, serverName),
       FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
     );
+
+    -- Deferred prompts (same-session deferred execution)
+    CREATE TABLE IF NOT EXISTS deferred_prompts (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      runAt TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimToken TEXT,
+      leaseExpiresAt TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_deferred_prompts_status_runAt
+      ON deferred_prompts(status, runAt);
+    CREATE INDEX IF NOT EXISTS idx_deferred_prompts_sessionId_status_runAt
+      ON deferred_prompts(sessionId, status, runAt);
   `);
 
   // ── Migrations ──────────────────────────────────────────────────
@@ -364,6 +384,26 @@ function initSchema(db: DatabaseSync): void {
   if (!scheduleCols.some((c: any) => c.name === "targetSessionId")) {
     db.exec("ALTER TABLE schedules ADD COLUMN targetSessionId TEXT");
   }
+  if (!scheduleCols.some((c: any) => c.name === "reuseLastRequiresExistingSession")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN reuseLastRequiresExistingSession INTEGER NOT NULL DEFAULT 0");
+  }
+
+  // Migrate reuse-target → reuse-last using the former target as the last session.
+  // New writes can no longer create explicit target schedules, but this preserves
+  // existing same-session schedule behavior without keeping the removed mode.
+  db.exec(`
+    UPDATE schedules
+    SET sessionMode = 'reuse-last',
+        lastSessionId = targetSessionId,
+        reuseLastRequiresExistingSession = 1,
+        targetSessionId = NULL
+    WHERE sessionMode = 'reuse-target';
+
+    DELETE FROM schedule_session_claims
+    WHERE scheduleId NOT IN (
+      SELECT id FROM schedules WHERE sessionMode = 'reuse-last'
+    );
+  `);
 
   // Backfill schedule run history from prior metadata and latest schedule state
   db.exec(`

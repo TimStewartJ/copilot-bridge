@@ -36,6 +36,8 @@ import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
+import { createDeferredPromptStore } from "./deferred-prompt-store.js";
+import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -76,6 +78,7 @@ const copilotHome = runtimePaths.copilotHome;
 const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
 docsIndex.reindex();
+const deferredPromptStore = createDeferredPromptStore(db);
 
 // Wire config getter now that settings store is ready
 setMcpServersGetter(() => settingsStore.getMcpServers());
@@ -89,6 +92,7 @@ const defaultContext: AppContext = {
   sessionManager: null as any, // assigned below after construction
   transcriptionService: createTranscriptionService(),
   voiceJobManager: null as any, // assigned below after construction
+  deferredPromptStore,
   copilotHome,
   apiBasePath: "/api",
   runtimePaths,
@@ -186,6 +190,15 @@ async function main(): Promise<void> {
     scheduleStore, taskStore, sessionMetaStore, globalBus: defaultGlobalBus,
   });
 
+  // Initialize deferred prompt runner after session manager is ready
+  const deferredPromptRunner = createDeferredPromptRunner(
+    deferredPromptStore,
+    sessionManager,
+    defaultGlobalBus,
+  );
+  defaultContext.deferredPromptRunner = deferredPromptRunner;
+  deferredPromptRunner.start();
+
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();
 
@@ -234,6 +247,7 @@ async function gracefulExit(signal: string) {
   console.log(`\n[web] ${signal} received — graceful shutdown...`);
   try {
     scheduler.setGlobalPause(true);
+    defaultContext.deferredPromptRunner?.shutdown();
     await sessionManager.gracefulShutdown();
     scheduler.shutdown();
   } catch (err) {

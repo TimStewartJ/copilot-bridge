@@ -140,6 +140,56 @@ describe("SessionManager run state", () => {
     }
   });
 
+  it("startWorkAndWaitForDelivery resolves when the user prompt is accepted", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const accepted = manager.startWorkAndWaitForDelivery("session-1", "hello");
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "user.message",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+
+    await expect(accepted).resolves.toBeUndefined();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 2).toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("startWorkAndWaitForDelivery rejects when send fails before acceptance", async () => {
+    const { manager } = createManager();
+    const session = {
+      on: vi.fn(() => vi.fn()),
+      send: vi.fn(async () => {
+        throw new Error("send failed");
+      }),
+      disconnect: vi.fn(),
+    };
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    await expect(manager.startWorkAndWaitForDelivery("session-1", "hello")).rejects.toThrow("send failed");
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
   it("transitions busy → stalled → busy → idle from the server run-state model", async () => {
     const { manager, globalBus } = createManager();
     const events: string[] = [];
