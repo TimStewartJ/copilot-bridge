@@ -9,12 +9,10 @@ describe("schedule tools", () => {
     scheduler.shutdown();
   });
 
-  it("defaults schedule_create reuse-target mode to the invoking session", async () => {
+  it("rejects legacy targetSessionId for schedule_create", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = async () => [{ sessionId: "session-1" }];
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
-    ctx.taskStore.linkSession(task.id, "session-1");
     scheduler.initialize(sessionManager as any, {
       scheduleStore: ctx.scheduleStore,
       taskStore: ctx.taskStore,
@@ -28,7 +26,42 @@ describe("schedule tools", () => {
     const result = await tool.handler(
       {
         taskId: task.id,
-        name: "Target current session",
+        name: "Invalid target",
+        prompt: "continue working",
+        type: "cron",
+        cron: "0 0 * * *",
+        targetSessionId: "session-1",
+      },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-target-create",
+        toolName: "schedule_create",
+        arguments: {},
+      },
+    );
+
+    expect(result).toEqual(toolFailure("targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups"));
+    expect(ctx.scheduleStore.listSchedules(task.id)).toHaveLength(0);
+  });
+
+  it("rejects invalid sessionMode for schedule_create", async () => {
+    const sessionManager = createMockSessionManager();
+    const { ctx } = createTestApp({ sessionManager });
+    const task = ctx.taskStore.createTask("Schedule Host");
+    scheduler.initialize(sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_create");
+    if (!tool) throw new Error("schedule_create tool not found");
+
+    const result = await tool.handler(
+      {
+        taskId: task.id,
+        name: "Invalid mode",
         prompt: "continue working",
         type: "cron",
         cron: "0 0 * * *",
@@ -42,18 +75,48 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toMatchObject({ success: true });
-    const [schedule] = ctx.scheduleStore.listSchedules(task.id);
-    expect(schedule.sessionMode).toBe("reuse-target");
-    expect(schedule.targetSessionId).toBe("session-1");
+    expect(result).toEqual(toolFailure("Invalid sessionMode: reuse-target"));
   });
 
-  it("defaults schedule_update reuse-target mode to the invoking session", async () => {
+  it("rejects legacy targetSessionId for schedule_update", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = async () => [{ sessionId: "session-1" }];
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
-    ctx.taskStore.linkSession(task.id, "session-1");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Retarget me",
+      prompt: "continue working",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    scheduler.initialize(sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_update");
+    if (!tool) throw new Error("schedule_update tool not found");
+
+    const result = await tool.handler(
+      { scheduleId: schedule.id, targetSessionId: "session-1" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-target-update",
+        toolName: "schedule_update",
+        arguments: {},
+      },
+    );
+
+    expect(result).toEqual(toolFailure("targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups"));
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.name).toBe("Retarget me");
+  });
+
+  it("rejects invalid sessionMode for schedule_update", async () => {
+    const sessionManager = createMockSessionManager();
+    const { ctx } = createTestApp({ sessionManager });
+    const task = ctx.taskStore.createTask("Schedule Host");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
       name: "Retarget me",
@@ -81,141 +144,11 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toMatchObject({ success: true });
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-      sessionMode: "reuse-target",
-      targetSessionId: "session-1",
-    });
+    expect(result).toEqual(toolFailure("Invalid sessionMode: reuse-target"));
   });
 
-  it("preserves an existing target when schedule_update keeps reuse-target mode", async () => {
+  it("accepts supported session modes", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = async () => [{ sessionId: "session-1" }, { sessionId: "session-2" }];
-    const { ctx } = createTestApp({ sessionManager });
-    const task = ctx.taskStore.createTask("Schedule Host");
-    ctx.taskStore.linkSession(task.id, "session-1");
-    ctx.taskStore.linkSession(task.id, "session-2");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Keep target",
-      prompt: "continue working",
-      type: "cron",
-      cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "session-1",
-    });
-    scheduler.initialize(sessionManager as any, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_update");
-    if (!tool) throw new Error("schedule_update tool not found");
-
-    const result = await tool.handler(
-      { scheduleId: schedule.id, sessionMode: "reuse-target" },
-      {
-        sessionId: "session-2",
-        toolCallId: "tool-4",
-        toolName: "schedule_update",
-        arguments: {},
-      },
-    );
-
-    expect(result).toMatchObject({ success: true });
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-      sessionMode: "reuse-target",
-      targetSessionId: "session-1",
-    });
-  });
-
-  it("preserves a missing existing target when schedule_update keeps reuse-target mode", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = async () => [{ sessionId: "session-2" }];
-    const { ctx } = createTestApp({ sessionManager });
-    const task = ctx.taskStore.createTask("Schedule Host");
-    ctx.taskStore.linkSession(task.id, "session-1");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Keep missing target",
-      prompt: "continue working",
-      type: "cron",
-      cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "session-1",
-    });
-    scheduler.initialize(sessionManager as any, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_update");
-    if (!tool) throw new Error("schedule_update tool not found");
-
-    const result = await tool.handler(
-      { scheduleId: schedule.id, sessionMode: "reuse-target", name: "Renamed" },
-      {
-        sessionId: "session-2",
-        toolCallId: "tool-5",
-        toolName: "schedule_update",
-        arguments: {},
-      },
-    );
-
-    expect(result).toMatchObject({ success: true });
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-      name: "Renamed",
-      sessionMode: "reuse-target",
-      targetSessionId: "session-1",
-    });
-  });
-
-  it("rejects preserving a reuse-target session that is no longer linked to the task", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = async () => [];
-    const { ctx } = createTestApp({ sessionManager });
-    const task = ctx.taskStore.createTask("Schedule Host");
-    ctx.taskStore.linkSession(task.id, "session-1");
-    ctx.taskStore.unlinkSession(task.id, "session-1");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Broken target",
-      prompt: "continue working",
-      type: "cron",
-      cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "session-1",
-    });
-    scheduler.initialize(sessionManager as any, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_update");
-    if (!tool) throw new Error("schedule_update tool not found");
-
-    const result = await tool.handler(
-      { scheduleId: schedule.id, sessionMode: "reuse-target", name: "Renamed" },
-      {
-        sessionId: "session-2",
-        toolCallId: "tool-6",
-        toolName: "schedule_update",
-        arguments: {},
-      },
-    );
-
-    expect(result).toEqual(toolFailure("Target session must already be linked to the same task"));
-  });
-
-  it("rejects schedule_create reuse-target mode when the invoking session is not on the task", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = async () => [{ sessionId: "session-1" }];
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
     scheduler.initialize(sessionManager as any, {
@@ -231,11 +164,11 @@ describe("schedule tools", () => {
     const result = await tool.handler(
       {
         taskId: task.id,
-        name: "Target current session",
+        name: "Reuse last",
         prompt: "continue working",
         type: "cron",
         cron: "0 0 * * *",
-        sessionMode: "reuse-target",
+        sessionMode: "reuse-last",
       },
       {
         sessionId: "session-1",
@@ -245,6 +178,7 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toEqual(toolFailure("Target session must already be linked to the same task"));
+    expect(result).toMatchObject({ success: true });
+    expect(ctx.scheduleStore.listSchedules(task.id)[0]?.sessionMode).toBe("reuse-last");
   });
 });

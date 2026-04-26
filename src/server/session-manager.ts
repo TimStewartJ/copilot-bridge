@@ -18,9 +18,8 @@ import type { WorkItemRef } from "./task-store.js";
 import type { Task } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
-import { createScheduleStore } from "./schedule-store.js";
+import { createScheduleStore, type ScheduleSessionMode } from "./schedule-store.js";
 import * as schedulerModule from "./scheduler.js";
-import { resolveScheduleSessionSelection } from "./schedule-targeting.js";
 import { getOrCreateBus, getBus } from "./event-bus.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import * as globalBus from "./global-bus.js";
@@ -38,6 +37,17 @@ import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
+
+const SCHEDULE_SESSION_MODES = ["new", "reuse-last"] as const;
+
+function isScheduleSessionMode(value: unknown): value is ScheduleSessionMode {
+  return typeof value === "string" && (SCHEDULE_SESSION_MODES as readonly string[]).includes(value);
+}
+
+// ── Deferred prompt constants ────────────────────────────────────
+const DEFER_MAX_PROMPT_BYTES = 32 * 1024; // 32 KB
+const DEFER_MAX_HORIZON_DAYS = 30;
+const DEFER_MAX_HORIZON_SECONDS = DEFER_MAX_HORIZON_DAYS * 24 * 60 * 60;
 import type { SessionMetaStore } from "./session-meta-store.js";
 
 import type { SettingsStore } from "./settings-store.js";
@@ -400,7 +410,10 @@ let _restartStatePath = DEFAULT_RESTART_STATE_PATH;
 let _restartStateStoreGeneration = 0;
 let _restartState = createDefaultRestartState();
 let _restartStateWriteQueue: Promise<void> = Promise.resolve();
+let _restartEventBus: GlobalBus = globalBus.defaultGlobalBus;
 export const RESTART_PENDING_MESSAGE = "Restart pending — wait for reconnect.";
+export const PROMPT_DELIVERY_ABORTED_MESSAGE = "Session was aborted before the prompt was accepted";
+export const PROMPT_DELIVERY_SHUTDOWN_MESSAGE = "Session shut down before the prompt was accepted";
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
 function resolveRestartStatePath(runtimePaths?: RuntimePaths): string {
@@ -459,6 +472,17 @@ export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
   _restartStateWriteQueue = Promise.resolve();
 }
 
+export function configureRestartEventBus(bus?: GlobalBus): void {
+  _restartEventBus = bus ?? globalBus.defaultGlobalBus;
+}
+
+function emitRestartEvent(event: Parameters<GlobalBus["emit"]>[0]): void {
+  _restartEventBus.emit(event);
+  if (_restartEventBus !== globalBus.defaultGlobalBus) {
+    globalBus.defaultGlobalBus.emit(event);
+  }
+}
+
 export async function refreshRestartState(): Promise<RestartState> {
   await _restartStateWriteQueue;
   const persisted = await readRestartState(_restartStatePath);
@@ -485,7 +509,7 @@ export function clearRestartPending(): void {
     await clearRestartState(restartStateStore.path);
   });
   if (wasPending) {
-    globalBus.emit({ type: "server:restart-cleared" });
+    emitRestartEvent({ type: "server:restart-cleared" });
   }
 }
 export function getRestartWaitingCount(): number {
@@ -499,6 +523,13 @@ export function isRestartImminent(): boolean {
 
 export function isRestartPendingError(err: unknown): boolean {
   return err instanceof Error && err.message === RESTART_PENDING_MESSAGE;
+}
+
+export function isPromptDeliveryInterruptedError(err: unknown): boolean {
+  return err instanceof Error && (
+    err.message === PROMPT_DELIVERY_ABORTED_MESSAGE ||
+    err.message === PROMPT_DELIVERY_SHUTDOWN_MESSAGE
+  );
 }
 
 /**
@@ -524,7 +555,7 @@ export function triggerRestartPending(): number {
       cacheRestartState(persistedState);
     }
   });
-  globalBus.emit({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
+  emitRestartEvent({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
   return waitingCount;
 }
 
@@ -548,7 +579,7 @@ function syncRestartWaitingSessions(waitingSessions: number): void {
   // The persisted restart-state file is only used to publish the initial restart
   // request. After that, waiting-session countdown stays in memory/SSE so the
   // launcher is the sole writer once it picks up the request.
-  globalBus.emit({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
+  emitRestartEvent({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
 }
 
 // Universal tools — same instance for every session
@@ -1139,36 +1170,26 @@ export function createBridgeTools(ctx: AppContext) {
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
         sessionMode: {
           type: "string",
-          enum: ["new", "reuse-last", "reuse-target"],
-          description: "How the schedule chooses its session: 'new' creates a fresh session each run, 'reuse-last' continues the last session used by this schedule, and 'reuse-target' always uses targetSessionId.",
-        },
-        targetSessionId: {
-          type: "string",
-          description: "Session to use when sessionMode='reuse-target'. If omitted during an in-session tool call, defaults to the invoking session.",
+          enum: ["new", "reuse-last"],
+          description: "How the schedule chooses its session: 'new' creates a fresh session each run, and 'reuse-last' continues the last session used by this schedule.",
         },
         maxRuns: { type: "number", description: "Auto-disable after N runs (optional)" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
       },
       required: ["taskId", "name", "prompt", "type"],
     },
-    handler: async (args: any, invocation: any) => {
+    handler: async (args: any) => {
+      if (Object.prototype.hasOwnProperty.call(args, "targetSessionId")) {
+        return toolFailure("targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups");
+      }
       if (args.type === "cron" && !args.cron) return toolFailure("cron expression is required for cron schedules");
       if (args.type === "once" && !args.runAt) return toolFailure("runAt is required for one-shot schedules");
       if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
+      if (args.sessionMode !== undefined && !isScheduleSessionMode(args.sessionMode)) {
+        return toolFailure(`Invalid sessionMode: ${String(args.sessionMode)}`);
+      }
       const task = ensureTask(args.taskId);
       if (!task.ok) return toolFailure(task.error);
-
-      const selection = await resolveScheduleSessionSelection(
-        { sessionMode: args.sessionMode, targetSessionId: args.targetSessionId },
-        {
-          taskId: args.taskId,
-          taskStore: ctx.taskStore,
-          listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
-          defaultSessionMode: "new",
-          defaultTargetSessionId: args.sessionMode === "reuse-target" ? invocation?.sessionId : undefined,
-        },
-      );
-      if (!selection.ok) return toolFailure(selection.error);
 
       const schedule = ctx.scheduleStore.createSchedule({
         taskId: args.taskId,
@@ -1178,8 +1199,7 @@ export function createBridgeTools(ctx: AppContext) {
         cron: args.cron,
         runAt: args.runAt,
         timezone: args.timezone,
-        sessionMode: selection.value.sessionMode,
-        targetSessionId: selection.value.targetSessionId,
+        sessionMode: args.sessionMode ?? "new",
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
       });
@@ -1208,58 +1228,30 @@ export function createBridgeTools(ctx: AppContext) {
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
         sessionMode: {
           type: "string",
-          enum: ["new", "reuse-last", "reuse-target"],
+          enum: ["new", "reuse-last"],
           description: "Change how the schedule chooses its session.",
-        },
-        targetSessionId: {
-          type: "string",
-          description: "Session to use when sessionMode='reuse-target'. If omitted while switching to target mode from inside a session, defaults to the invoking session.",
         },
         maxRuns: { type: "number", description: "Auto-disable after N runs" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables" },
       },
       required: ["scheduleId"],
     },
-    handler: async (args: any, invocation: any) => {
+    handler: async (args: any) => {
+      if (Object.prototype.hasOwnProperty.call(args, "targetSessionId")) {
+        return toolFailure("targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups");
+      }
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       if (args.timezone && !schedulerModule.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
+      if (args.sessionMode !== undefined && !isScheduleSessionMode(args.sessionMode)) {
+        return toolFailure(`Invalid sessionMode: ${String(args.sessionMode)}`);
+      }
       const existing = ctx.scheduleStore.getSchedule(scheduleId);
       if (!existing) return toolFailure(`Schedule ${scheduleId} not found`);
 
       const nextUpdates = { ...updates };
-      if (args.sessionMode !== undefined || args.targetSessionId !== undefined) {
-        const requestedSessionMode = args.sessionMode ?? existing.sessionMode;
-        const existingTargetStillLinked = !!existing.targetSessionId
-          && ctx.taskStore.getTask(existing.taskId)?.sessionIds.includes(existing.targetSessionId) === true;
-        const preservingExistingTarget = requestedSessionMode === "reuse-target"
-          && args.targetSessionId === undefined
-          && existing.sessionMode === "reuse-target"
-          && existingTargetStillLinked;
-        if (preservingExistingTarget) {
-          nextUpdates.sessionMode = "reuse-target";
-        } else {
-          const defaultTargetSessionId = existing.sessionMode === "reuse-target"
-            ? existing.targetSessionId
-            : args.sessionMode === "reuse-target"
-              ? invocation?.sessionId
-              : undefined;
-          const selection = await resolveScheduleSessionSelection(
-            { sessionMode: args.sessionMode, targetSessionId: args.targetSessionId },
-            {
-              taskId: existing.taskId,
-              taskStore: ctx.taskStore,
-              listSessionsFromDisk: () => ctx.sessionManager.listSessionsFromDisk(),
-              defaultSessionMode: existing.sessionMode,
-              defaultTargetSessionId,
-            },
-          );
-          if (!selection.ok) return toolFailure(selection.error);
-          nextUpdates.sessionMode = selection.value.sessionMode;
-          if (selection.value.sessionMode === "reuse-target" || args.targetSessionId !== undefined) {
-            nextUpdates.targetSessionId = selection.value.targetSessionId;
-          }
-        }
+      if (args.sessionMode !== undefined) {
+        nextUpdates.sessionMode = args.sessionMode;
       }
 
       const schedule = ctx.scheduleStore.updateSchedule(scheduleId, nextUpdates);
@@ -1314,7 +1306,6 @@ export function createBridgeTools(ctx: AppContext) {
           timezone: s.timezone,
           enabled: s.enabled,
           sessionMode: s.sessionMode,
-          targetSessionId: s.targetSessionId,
           lastRunAt: s.lastRunAt,
           nextRunAt: s.nextRunAt,
           runCount: s.runCount,
@@ -1337,6 +1328,116 @@ export function createBridgeTools(ctx: AppContext) {
     handler: async (args: any) => {
       const result = await schedulerModule.triggerSchedule(args.scheduleId);
       return result;
+    },
+  }),
+
+  // ── Deferred prompt tools ────────────────────────────────────────
+
+  defineTool("defer_session", {
+    description: "Send a new user-turn prompt to this same session later. Use for polling, reminders, retries, and follow-up checks when this session should continue after a delay.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "The prompt to send to this session at the scheduled time." },
+        delaySeconds: { type: "number", description: "Seconds from now to send the prompt. Provide exactly one of delaySeconds or runAt." },
+        runAt: { type: "string", description: "ISO timestamp at which to send the prompt. Provide exactly one of delaySeconds or runAt." },
+      },
+      required: ["prompt"],
+    },
+    handler: async (args: any, invocation: any) => {
+      const sessionId: string | undefined = invocation?.sessionId;
+      if (!sessionId) return toolFailure("No active session — defer_session requires an invocation session.");
+
+      if (!ctx.deferredPromptStore) return toolFailure("Deferred prompt store is unavailable.");
+
+      const prompt: unknown = args.prompt;
+      if (typeof prompt !== "string" || !prompt.trim()) return toolFailure("prompt must be a non-empty string.");
+      if (prompt.length > DEFER_MAX_PROMPT_BYTES) return toolFailure(`prompt is too long (max ${DEFER_MAX_PROMPT_BYTES} characters).`);
+
+      const hasDelay = args.delaySeconds !== undefined;
+      const hasRunAt = args.runAt !== undefined;
+      if (hasDelay && hasRunAt) return toolFailure("Provide exactly one of delaySeconds or runAt, not both.");
+      if (!hasDelay && !hasRunAt) return toolFailure("Provide exactly one of delaySeconds or runAt.");
+
+      let runAtIso: string;
+      if (hasDelay) {
+        const delay = Number(args.delaySeconds);
+        if (!Number.isFinite(delay) || delay <= 0) return toolFailure("delaySeconds must be a positive finite number.");
+        if (delay > DEFER_MAX_HORIZON_SECONDS) return toolFailure(`delaySeconds exceeds maximum horizon of ${DEFER_MAX_HORIZON_SECONDS} seconds (${DEFER_MAX_HORIZON_DAYS} days).`);
+        runAtIso = new Date(Date.now() + delay * 1000).toISOString();
+      } else {
+        const raw = String(args.runAt);
+        const parsed = new Date(raw);
+        if (!Number.isFinite(parsed.getTime())) return toolFailure(`runAt is not a valid date: ${raw}`);
+        if (parsed.getTime() <= Date.now()) return toolFailure("runAt must be in the future.");
+        const secondsUntil = (parsed.getTime() - Date.now()) / 1000;
+        if (secondsUntil > DEFER_MAX_HORIZON_SECONDS) return toolFailure(`runAt exceeds maximum horizon of ${DEFER_MAX_HORIZON_DAYS} days from now.`);
+        runAtIso = parsed.toISOString();
+      }
+
+      const deferred = ctx.deferredPromptStore.create(sessionId, prompt, runAtIso);
+      ctx.deferredPromptRunner?.poke();
+
+      return {
+        success: true,
+        deferredPromptId: deferred.id,
+        sessionId: deferred.sessionId,
+        runAt: deferred.runAt,
+        message: `Deferred prompt scheduled for ${deferred.runAt}.`,
+      };
+    },
+  }),
+
+  defineTool("defer_cancel", {
+    description: "Cancel a pending deferred prompt in this session by its ID. Prompts already being delivered cannot be cancelled.",
+    parameters: {
+      type: "object",
+      properties: {
+        deferredPromptId: { type: "string", description: "The ID returned by defer_session." },
+      },
+      required: ["deferredPromptId"],
+    },
+    handler: async (args: any, invocation: any) => {
+      const sessionId: string | undefined = invocation?.sessionId;
+      if (!sessionId) return toolFailure("No active session — defer_cancel requires an invocation session.");
+      if (!ctx.deferredPromptStore) return toolFailure("Deferred prompt store is unavailable.");
+
+      const id = String(args.deferredPromptId);
+      const existing = ctx.deferredPromptStore.get(id);
+      if (!existing) return toolFailure(`Deferred prompt ${id} not found.`);
+      if (existing.sessionId !== sessionId) return toolFailure(`Deferred prompt ${id} does not belong to this session.`);
+      if (existing.status !== "pending") {
+        return toolFailure(`Deferred prompt ${id} is ${existing.status} and cannot be cancelled.`);
+      }
+
+      const cancelled = ctx.deferredPromptStore.cancelById(id);
+      if (!cancelled) return toolFailure(`Failed to cancel deferred prompt ${id}.`);
+      return { success: true, message: `Deferred prompt ${id} cancelled.` };
+    },
+  }),
+
+  defineTool("defer_list", {
+    description: "List pending and running deferred prompts for this session.",
+    parameters: { type: "object", properties: {} },
+    handler: async (_args: any, invocation: any) => {
+      const sessionId: string | undefined = invocation?.sessionId;
+      if (!sessionId) return toolFailure("No active session — defer_list requires an invocation session.");
+      if (!ctx.deferredPromptStore) return toolFailure("Deferred prompt store is unavailable.");
+
+      const all = ctx.deferredPromptStore.listForSession(sessionId);
+      const active = all.filter((d) => d.status === "pending" || d.status === "running");
+      return {
+        deferrals: active.map((d) => ({
+          id: d.id,
+          sessionId: d.sessionId,
+          runAt: d.runAt,
+          status: d.status,
+          attempts: d.attempts,
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt,
+          prompt: d.prompt,
+        })),
+      };
     },
   }),
 
@@ -1539,6 +1640,14 @@ export function createBridgeTools(ctx: AppContext) {
 
 export type SessionRunState = "busy" | "stalled" | "idle";
 
+type StartWorkAttachment =
+  | { type: "blob"; data: string; mimeType: string; displayName?: string }
+  | { type: "uploaded"; displayName: string; mimeType: string };
+
+type PromptDeliveryResult =
+  | { status: "accepted" }
+  | { status: "failed"; message: string };
+
 interface SessionRunRecord {
   state: Exclude<SessionRunState, "idle">;
   startedAt: number;
@@ -1548,7 +1657,9 @@ interface SessionRunRecord {
 
 interface SessionRunController {
   completion: Promise<void>;
+  promptDelivery: Promise<PromptDeliveryResult>;
   isCompleted(): boolean;
+  markPromptAccepted(): void;
   completeDone(content: string): void;
   completeError(message: string): void;
   completeAborted(content: string): void;
@@ -1690,6 +1801,7 @@ export class SessionManager {
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
     configureRestartStateStore(deps.runtimePaths);
+    configureRestartEventBus(deps.globalBus);
     void refreshRestartState();
   }
 
@@ -1716,11 +1828,16 @@ export class SessionManager {
     let abortFallbackTimer: ReturnType<typeof setTimeout> | undefined;
     let abortFallbackPromise: Promise<boolean> | null = null;
     let resolveCompletion!: () => void;
+    let resolvePromptDelivery!: (result: PromptDeliveryResult) => void;
     let resolveAbortFallback: ((fired: boolean) => void) | undefined;
 
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
+    const promptDelivery = new Promise<PromptDeliveryResult>((resolve) => {
+      resolvePromptDelivery = resolve;
+    });
+    let promptDeliverySettled = false;
 
     const settleAbortFallback = (fired: boolean) => {
       const resolver = resolveAbortFallback;
@@ -1736,6 +1853,11 @@ export class SessionManager {
       }
       settleAbortFallback(false);
     };
+    const settlePromptDelivery = (result: PromptDeliveryResult) => {
+      if (promptDeliverySettled) return;
+      promptDeliverySettled = true;
+      resolvePromptDelivery(result);
+    };
 
     const finish = (emitTerminal?: (timestamp: string) => void): boolean => {
       if (completed) return false;
@@ -1748,23 +1870,31 @@ export class SessionManager {
 
     return {
       completion,
+      promptDelivery,
       isCompleted: () => completed,
+      markPromptAccepted: () => {
+        settlePromptDelivery({ status: "accepted" });
+      },
       completeDone: (content) => {
+        settlePromptDelivery({ status: "accepted" });
         finish((timestamp) => {
           bus.emit({ type: "done", content, timestamp });
         });
       },
       completeError: (message) => {
+        settlePromptDelivery({ status: "failed", message });
         finish((timestamp) => {
           bus.emit({ type: "error", message, timestamp });
         });
       },
       completeAborted: (content) => {
+        settlePromptDelivery({ status: "failed", message: PROMPT_DELIVERY_ABORTED_MESSAGE });
         finish((timestamp) => {
           bus.emit({ type: "aborted", content, timestamp });
         });
       },
       completeShutdown: (content) => {
+        settlePromptDelivery({ status: "failed", message: PROMPT_DELIVERY_SHUTDOWN_MESSAGE });
         finish((timestamp) => {
           bus.emit({ type: "shutdown", content, timestamp });
         });
@@ -2575,7 +2705,7 @@ export class SessionManager {
    */
   private persistAndRouteAttachments(
     sessionId: string,
-    attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>,
+    attachments?: StartWorkAttachment[],
   ): Array<{ type: string; [k: string]: any }> | undefined {
     if (!attachments?.length) return undefined;
 
@@ -2639,8 +2769,7 @@ export class SessionManager {
     return `${stem} (${i})${ext}`;
   }
 
-  // Fire and forget — starts work and emits events to the session's EventBus
-  startWork(sessionId: string, prompt: string, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): void {
+  private startWorkRun(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): SessionRunController {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (isRestartPending()) {
       throw new Error(RESTART_PENDING_MESSAGE);
@@ -2653,7 +2782,23 @@ export class SessionManager {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset(); // Ensure clean state even if bus was reused
     bus.setPendingPrompt(prompt);
-    this.startBackgroundRun(sessionId, bus, (runController) => this._doWork(sessionId, prompt, bus, runController, attachments));
+    return this.startBackgroundRun(
+      sessionId,
+      bus,
+      (runController) => this._doWork(sessionId, prompt, bus, runController, attachments),
+    );
+  }
+
+  // Fire and forget — starts work and emits events to the session's EventBus
+  startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): void {
+    this.startWorkRun(sessionId, prompt, attachments);
+  }
+
+  async startWorkAndWaitForDelivery(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
+    const runController = this.startWorkRun(sessionId, prompt, attachments);
+    const delivery = await runController.promptDelivery;
+    if (delivery.status === "accepted") return;
+    throw new Error(delivery.message);
   }
 
   startFleet(sessionId: string, prompt?: string): void {
@@ -2678,7 +2823,7 @@ export class SessionManager {
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
     runner: (runController: SessionRunController) => Promise<void>,
-  ): void {
+  ): SessionRunController {
     const now = Date.now();
     const runController = this.createRunController(sessionId, bus);
     this.activeRunControllers.set(sessionId, runController);
@@ -2695,9 +2840,10 @@ export class SessionManager {
       this.setSessionRunState(sessionId, "idle");
       this.flushPendingSessionEviction(sessionId);
     });
+    return runController;
   }
 
-  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, runController?: SessionRunController, attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string } | { type: "uploaded"; displayName: string; mimeType: string }>): Promise<void> {
+  private async _doWork(sessionId: string, prompt: string, bus: ReturnType<typeof getOrCreateBus>, runController?: SessionRunController, attachments?: StartWorkAttachment[]): Promise<void> {
     const sid = sessionId.slice(0, 8);
     const sdkAttachments = this.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
@@ -2879,6 +3025,7 @@ export class SessionManager {
       switch (event.type) {
         case "user.message":
           bus.clearPendingPrompt();
+          runController.markPromptAccepted();
           break;
         case "assistant.turn_start":
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
@@ -3327,6 +3474,7 @@ export class SessionManager {
         beginSend();
         if (runController.isCompleted()) return;
         await opts.execute(session);
+        runController.markPromptAccepted();
       } catch (operationErr) {
         // If the agent evicted this session, the cached object is stale — re-resume and retry once
         if (operationErr instanceof Error && operationErr.message.includes("Session not found") && usedCache) {
@@ -3343,6 +3491,7 @@ export class SessionManager {
           beginSend();
           if (runController.isCompleted()) return;
           await opts.execute(session);
+          runController.markPromptAccepted();
         } else {
           throw operationErr;
         }

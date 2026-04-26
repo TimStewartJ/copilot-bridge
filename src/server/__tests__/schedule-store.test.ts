@@ -33,7 +33,6 @@ describe("schedule-store", () => {
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
       expect(s.sessionMode).toBe("new");
-      expect(s.targetSessionId).toBeUndefined();
     });
 
     it("getSchedule returns created schedule", () => {
@@ -62,14 +61,30 @@ describe("schedule-store", () => {
       expect(updated.sessionMode).toBe("reuse-last");
     });
 
-    it("stores target sessions for reuse-target mode", () => {
-      const s = store.createSchedule({ ...baseCron, sessionMode: "reuse-target", targetSessionId: "session-123" });
-      expect(s.sessionMode).toBe("reuse-target");
-      expect(s.targetSessionId).toBe("session-123");
+    it("normalizes legacy reuse-target rows to reuse-last without exposing targets", () => {
+      const s = store.createSchedule(baseCron);
+      db.prepare("UPDATE schedules SET sessionMode = ?, targetSessionId = ? WHERE id = ?")
+        .run("reuse-target", "session-123", s.id);
+      const hydrated = store.getSchedule(s.id)!;
+      expect(hydrated.sessionMode).toBe("reuse-last");
+      expect(hydrated.lastSessionId).toBe("session-123");
+      expect(store.requiresExistingReuseSession(s.id)).toBe(true);
+      expect((hydrated as any).targetSessionId).toBeUndefined();
+    });
 
-      const updated = store.updateSchedule(s.id, { sessionMode: "new" });
-      expect(updated.sessionMode).toBe("new");
-      expect(updated.targetSessionId).toBeUndefined();
+    it("explicit sessionMode update clears migrated reuse-target strictness", () => {
+      const s = store.createSchedule({ ...baseCron, sessionMode: "reuse-last" });
+      db.prepare("UPDATE schedules SET lastSessionId = ?, reuseLastRequiresExistingSession = 1 WHERE id = ?")
+        .run("session-123", s.id);
+
+      expect(store.requiresExistingReuseSession(s.id)).toBe(true);
+      const renamed = store.updateSchedule(s.id, { name: "Still strict" });
+      expect(renamed.sessionMode).toBe("reuse-last");
+      expect(store.requiresExistingReuseSession(s.id)).toBe(true);
+
+      const updated = store.updateSchedule(s.id, { sessionMode: "reuse-last" });
+      expect(updated.sessionMode).toBe("reuse-last");
+      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
     });
 
     it("updateSchedule throws for missing id", () => {

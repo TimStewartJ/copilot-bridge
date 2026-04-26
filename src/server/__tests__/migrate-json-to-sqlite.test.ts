@@ -205,4 +205,40 @@ describe("JSON schedule migration", () => {
       { scheduleId: "sched-legacy", sessionId: "session-legacy", recordedAt: UNKNOWN_SCHEDULE_RUN_AT },
     ]);
   });
+
+  it("preserves legacy target schedules as strict reuse-last schedules", () => {
+    const db = setupTestDb();
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-migrate-schedules-target-"));
+
+    writeFileSync(join(dataDir, "tasks.json"), "[]");
+    writeFileSync(
+      join(dataDir, "schedules.json"),
+      JSON.stringify([
+        {
+          id: "sched-target",
+          taskId: "task-1",
+          name: "Targeted follow-up",
+          prompt: "Continue this exact session",
+          type: "cron",
+          cron: "0 0 * * *",
+          enabled: true,
+          sessionMode: "reuse-target",
+          targetSessionId: "session-target",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          runCount: 0,
+        },
+      ]),
+    );
+
+    migrateJsonToSqlite(db, dataDir);
+
+    const store = createScheduleStore(db);
+    expect(store.getSchedule("sched-target")).toMatchObject({
+      id: "sched-target",
+      sessionMode: "reuse-last",
+      lastSessionId: "session-target",
+    });
+    expect(store.requiresExistingReuseSession("sched-target")).toBe(true);
+  });
 });

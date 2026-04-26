@@ -538,45 +538,18 @@ export async function triggerSchedule(
       return { skipped: reason };
     };
 
-    // Determine session: target, reuse-last, or create new
+    // Determine session: reuse-last or create new
     let sessionId: string;
     let createdSession = false;
 
-    if (schedule.sessionMode === "reuse-target") {
-      if (!schedule.targetSessionId) {
-        return skipClaimedRun("Target session is not configured", { finalizeOneShot: true });
-      }
-      if (!task.sessionIds.includes(schedule.targetSessionId)) {
-        return skipClaimedRun("Target session is no longer linked to this task", { finalizeOneShot: true });
-      }
-      sessionId = schedule.targetSessionId;
-      const reuseClaim = scheduleStore.claimSessionReuse(sessionId, scheduleId);
-      if (!reuseClaim.acquired) {
-        return skipClaimedRun("Target session is busy", { retryAutomatic: true });
-      }
-      sessionReuseClaim = reuseClaim.claim;
-      sessionReuseClaimRenewTimer = setInterval(() => {
-        if (!sessionReuseClaim || sessionReuseClaimResolved) {
-          stopSessionReuseClaimRenewal();
-          return;
-        }
-        try {
-          const renewed = scheduleStore.renewClaimedSessionReuse(sessionId, sessionReuseClaim);
-          if (!renewed) stopSessionReuseClaimRenewal();
-        } catch (err) {
-          console.warn(`[scheduler] Failed to renew reused-session lock for "${schedule.name}":`, err);
-          stopSessionReuseClaimRenewal();
-        }
-      }, AUTOMATIC_CLAIM_RENEW_INTERVAL_MS);
-      if (sessionMgr.isSessionBusy(sessionId)) {
-        return skipClaimedRun("Target session is busy", { retryAutomatic: true });
-      }
-      console.log(`[scheduler] Reusing target session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
-    } else if (schedule.sessionMode === "reuse-last"
+    const reusableLastSessionId = schedule.sessionMode === "reuse-last"
       && schedule.lastSessionId
-        && task.sessionIds.includes(schedule.lastSessionId)
-    ) {
-      sessionId = schedule.lastSessionId;
+      && task.sessionIds.includes(schedule.lastSessionId)
+      ? schedule.lastSessionId
+      : undefined;
+
+    if (reusableLastSessionId) {
+      sessionId = reusableLastSessionId;
       const reuseClaim = scheduleStore.claimSessionReuse(sessionId, scheduleId);
       if (!reuseClaim.acquired) {
         return skipClaimedRun("Reuse session is busy", { retryAutomatic: true });
@@ -599,6 +572,8 @@ export async function triggerSchedule(
         return skipClaimedRun("Reuse session is busy", { retryAutomatic: true });
       }
       console.log(`[scheduler] Reusing session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
+    } else if (schedule.sessionMode === "reuse-last" && scheduleStore.requiresExistingReuseSession(schedule.id)) {
+      return skipClaimedRun("Reuse session is unavailable", { finalizeOneShot: true });
     } else {
       // Create new task session
       const prDescriptions = task.pullRequests.map(

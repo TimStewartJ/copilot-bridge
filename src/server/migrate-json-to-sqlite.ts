@@ -213,8 +213,8 @@ function migrateSchedules(db: DatabaseSync, dataDir: string): void {
   const insert = db.prepare(`
     INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
       enabled, sessionMode, targetSessionId, lastSessionId, createdAt, updatedAt,
-      lastRunAt, nextRunAt, runCount, maxRuns, expiresAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      lastRunAt, nextRunAt, runCount, maxRuns, expiresAt, reuseLastRequiresExistingSession)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const scheduleRunInsert = db.prepare(`
     INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
@@ -225,17 +225,28 @@ function migrateSchedules(db: DatabaseSync, dataDir: string): void {
   `);
 
   for (const s of schedules) {
-    const sessionMode = s.sessionMode ?? (s.reuseSession ? "reuse-last" : "new");
+    const legacyTargetSessionId = typeof s.targetSessionId === "string" && s.targetSessionId.trim() !== ""
+      ? s.targetSessionId.trim()
+      : null;
+    const sessionMode = s.sessionMode === "reuse-last" || s.sessionMode === "reuse-target"
+      ? "reuse-last"
+      : s.sessionMode === "new"
+        ? "new"
+        : s.reuseSession
+          ? "reuse-last"
+          : "new";
+    const legacyTargetMode = s.sessionMode === "reuse-target";
+    const lastSessionId = legacyTargetSessionId ?? s.lastSessionId ?? null;
     insert.run(
       s.id, s.taskId, s.name, s.prompt, s.type, s.cron ?? null, s.runAt ?? null,
-      s.timezone ?? null, s.enabled ? 1 : 0, sessionMode, s.targetSessionId ?? null,
-      s.lastSessionId ?? null, s.createdAt, s.updatedAt,
+      s.timezone ?? null, s.enabled ? 1 : 0, sessionMode, null,
+      lastSessionId, s.createdAt, s.updatedAt,
       s.lastRunAt ?? null, s.nextRunAt ?? null, s.runCount ?? 0,
-      s.maxRuns ?? null, s.expiresAt ?? null,
+      s.maxRuns ?? null, s.expiresAt ?? null, legacyTargetMode ? 1 : 0,
     );
-    if (s.lastSessionId) {
+    if (lastSessionId) {
       const recordedAt = s.lastRunAt ?? s.updatedAt ?? s.createdAt ?? new Date().toISOString();
-      scheduleRunInsert.run(s.id, s.lastSessionId, recordedAt, s.id, s.lastSessionId);
+      scheduleRunInsert.run(s.id, lastSessionId, recordedAt, s.id, lastSessionId);
     }
   }
 

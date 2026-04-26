@@ -243,7 +243,7 @@ describe("scheduler restart gating", () => {
     expect(ctx.sessionMetaStore.getMeta("sched-session")).toBeUndefined();
   });
 
-  it("reuses the configured target session for reuse-target schedules", async () => {
+  it("reuses the last session for reuse-last schedules", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
@@ -260,33 +260,33 @@ describe("scheduler restart gating", () => {
     });
 
     const task = ctx.taskStore.createTask("Scheduled Task");
-    ctx.taskStore.linkSession(task.id, "target-session");
+    ctx.taskStore.linkSession(task.id, "last-session");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Targeted schedule",
+      name: "Reused schedule",
       prompt: "continue work",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
+    ctx.scheduleStore.recordRun(schedule.id, "last-session");
 
     const result = await scheduler.triggerSchedule(schedule.id);
 
-    expect(result).toEqual({ sessionId: "target-session" });
+    expect(result).toEqual({ sessionId: "last-session" });
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("target-session", "continue work");
-    expect(ctx.sessionMetaStore.getMeta("target-session")).toMatchObject({
+    expect(sessionManager.startWork).toHaveBeenCalledWith("last-session", "continue work");
+    expect(ctx.sessionMetaStore.getMeta("last-session")).toMatchObject({
       triggeredBy: "schedule",
       scheduleId: schedule.id,
-      scheduleName: "Targeted schedule",
+      scheduleName: "Reused schedule",
     });
   });
 
-  it("skips reuse-target schedules when the target session is busy", async () => {
+  it("skips reuse-last schedules when the last session is busy", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
-      isSessionBusy: vi.fn().mockImplementation((sessionId: string) => sessionId === "target-session"),
+      isSessionBusy: vi.fn().mockImplementation((sessionId: string) => sessionId === "last-session"),
       createTaskSession: vi.fn(),
       startWork: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -300,20 +300,59 @@ describe("scheduler restart gating", () => {
     });
 
     const task = ctx.taskStore.createTask("Scheduled Task");
-    ctx.taskStore.linkSession(task.id, "target-session");
+    ctx.taskStore.linkSession(task.id, "last-session");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Busy target schedule",
+      name: "Busy reused schedule",
       prompt: "continue work",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
+    ctx.scheduleStore.recordRun(schedule.id, "last-session");
 
     const result = await scheduler.triggerSchedule(schedule.id);
 
-    expect(result).toEqual({ skipped: "Target session is busy" });
+    expect(result).toEqual({ skipped: "Reuse session is busy" });
+    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+    expect(sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it("does not create a new session for migrated legacy target schedules when the reused session is unavailable", async () => {
+    const { ctx, db } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Migrated target schedule",
+      prompt: "continue work",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    db.prepare(`
+      UPDATE schedules
+      SET sessionMode = 'reuse-last',
+          lastSessionId = 'missing-session',
+          reuseLastRequiresExistingSession = 1
+      WHERE id = ?
+    `).run(schedule.id);
+
+    const result = await scheduler.triggerSchedule(schedule.id);
+
+    expect(result).toEqual({ skipped: "Reuse session is unavailable" });
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
     expect(sessionManager.startWork).not.toHaveBeenCalled();
   });
@@ -371,13 +410,13 @@ describe("scheduler restart gating", () => {
     ctx.taskStore.linkSession(task.id, "target-session");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Retained reuse-target lock",
+      name: "Retained reuse-last lock",
       prompt: "continue work",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
+    ctx.scheduleStore.recordRun(schedule.id, "target-session");
     const slot = new Date("2026-04-14T15:00:00.000Z").toISOString();
 
     await expect(
@@ -426,8 +465,7 @@ describe("scheduler restart gating", () => {
       prompt: "continue first",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
     const secondSchedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
@@ -435,9 +473,10 @@ describe("scheduler restart gating", () => {
       prompt: "continue second",
       type: "cron",
       cron: "5 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
+    ctx.scheduleStore.recordRun(firstSchedule.id, "target-session");
+    ctx.scheduleStore.recordRun(secondSchedule.id, "target-session");
 
     await expect(
       scheduler.triggerSchedule(firstSchedule.id, { source: "manual" }),
@@ -445,7 +484,7 @@ describe("scheduler restart gating", () => {
 
     await expect(
       scheduler.triggerSchedule(secondSchedule.id, { source: "manual" }),
-    ).resolves.toEqual({ skipped: "Target session is busy" });
+    ).resolves.toEqual({ skipped: "Reuse session is busy" });
 
     ctx.globalBus.emit({ type: "session:idle", sessionId: "target-session" });
 
@@ -456,7 +495,7 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.startWork).toHaveBeenNthCalledWith(2, "target-session", "continue second");
   });
 
-  it("keeps retained schedule locks renewed for reused sessions after the target changes", async () => {
+  it("keeps retained schedule locks renewed for reused sessions after the last session changes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T15:00:00.000Z"));
 
@@ -484,15 +523,15 @@ describe("scheduler restart gating", () => {
       prompt: "continue work",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-a",
+      sessionMode: "reuse-last",
     });
+    ctx.scheduleStore.recordRun(schedule.id, "target-a");
 
     await expect(
       scheduler.triggerSchedule(schedule.id, { source: "manual" }),
     ).resolves.toEqual({ sessionId: "target-a" });
 
-    ctx.scheduleStore.updateSchedule(schedule.id, { targetSessionId: "target-b" });
+    ctx.scheduleStore.recordRun(schedule.id, "target-b");
     await vi.advanceTimersByTimeAsync(125_000);
 
     await expect(
@@ -629,8 +668,8 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("allows a one-shot automatic run to retry after a transient busy-target skip", async () => {
-    const { ctx } = createTestApp();
+  it("allows a one-shot automatic run to retry after a transient reused-session busy skip", async () => {
+    const { ctx, db } = createTestApp();
     let busy = true;
     const sessionManager = {
       isSessionBusy: vi.fn(() => busy),
@@ -655,13 +694,13 @@ describe("scheduler restart gating", () => {
       prompt: "continue work",
       type: "once",
       runAt,
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
+    db.prepare("UPDATE schedules SET lastSessionId = ? WHERE id = ?").run("target-session", schedule.id);
 
     expect(
       await scheduler.triggerSchedule(schedule.id, { source: "once", scheduledFor: runAt }),
-    ).toEqual({ skipped: "Target session is busy" });
+    ).toEqual({ skipped: "Reuse session is busy" });
 
     busy = false;
 
@@ -743,74 +782,6 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session-3", "run once");
     unsubscribe();
   }, 20_000);
-
-  it("does not re-arm a one-shot retry for permanent target configuration skips", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
-
-    const { ctx } = createTestApp();
-    const events: Array<{ type: string; scheduleId?: string }> = [];
-    const unsubscribe = ctx.globalBus.subscribe((event) => {
-      if (event.type === "schedule:changed") {
-        events.push({ type: event.type, scheduleId: event.scheduleId });
-      }
-    });
-    const claimSpy = vi.spyOn(ctx.scheduleStore, "claimAutomaticRun");
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn(),
-      startWork: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
-
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const runAt = new Date(Date.now() + 1_000).toISOString();
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Permanent one-shot skip",
-      prompt: "continue work",
-      type: "once",
-      runAt,
-      sessionMode: "reuse-target",
-      targetSessionId: "missing-session",
-    });
-
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    expect(claimSpy).toHaveBeenCalledTimes(1);
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-      enabled: false,
-      runCount: 0,
-      nextRunAt: undefined,
-    });
-    expect(events).toContainEqual({ type: "schedule:changed", scheduleId: schedule.id });
-
-    await vi.advanceTimersByTimeAsync(30_000);
-
-    expect(claimSpy).toHaveBeenCalledTimes(1);
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-
-    scheduler.shutdown();
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-    await Promise.resolve();
-
-    expect(claimSpy).toHaveBeenCalledTimes(1);
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    unsubscribe();
-  });
 
   it("releases an automatic claim if creating the session fails before launch", async () => {
     const { ctx } = createTestApp();
@@ -1155,13 +1126,13 @@ describe("scheduler restart gating", () => {
     ctx.taskStore.linkSession(task.id, "target-session");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Reuse-target lost claim",
+      name: "Reuse-last lost claim",
       prompt: "continue work",
       type: "cron",
       cron: "0 0 * * *",
-      sessionMode: "reuse-target",
-      targetSessionId: "target-session",
+      sessionMode: "reuse-last",
     });
+    ctx.scheduleStore.recordRun(schedule.id, "target-session");
     const slotDate = new Date();
     slotDate.setSeconds(0, 0);
     const slot = slotDate.toISOString();
