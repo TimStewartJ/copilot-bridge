@@ -207,8 +207,8 @@ describe("database task status migration", () => {
     legacyDb.exec("PRAGMA foreign_keys = ON");
     createLegacyTaskTable(legacyDb);
     legacyDb.prepare(`
-      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
-      VALUES (?, ?, 'paused', NULL, NULL, '', 0, 0, 0, ?, ?)
+      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'paused', NULL, NULL, '', 0, 0, ?, ?)
     `).run("task-paused", "Paused task", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
     legacyDb.close();
 
@@ -234,9 +234,9 @@ describe("database task status migration", () => {
     legacyDb.prepare(`
       INSERT INTO tasks (
         id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-        priority, pinned, "order", createdAt, updatedAt
+        priority, "order", createdAt, updatedAt
       )
-      VALUES (?, ?, 'done', NULL, NULL, '', ?, ?, ?, ?, 0, 0, 0, ?, ?)
+      VALUES (?, ?, 'done', NULL, NULL, '', ?, ?, ?, ?, 0, 0, ?, ?)
     `).run(
       "task-done",
       "Done task",
@@ -277,9 +277,9 @@ describe("database task status migration", () => {
     legacyDb.prepare(`
       INSERT INTO tasks (
         id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-        priority, pinned, "order", createdAt, updatedAt
+        priority, "order", createdAt, updatedAt
       )
-      VALUES (?, ?, 'archived', NULL, NULL, '', ?, ?, ?, ?, 0, 0, 0, ?, ?)
+      VALUES (?, ?, 'archived', NULL, NULL, '', ?, ?, ?, ?, 0, 0, ?, ?)
     `).run(
       "task-archived",
       "Archived task",
