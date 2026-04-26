@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { Task } from "../api";
 import { X } from "lucide-react";
+import TaskKindBadge from "./TaskKindBadge";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-success/15 text-success",
@@ -90,6 +91,7 @@ export default function TaskPickerDialog({
                   <span className="font-medium truncate flex-1">
                     {task.title}
                   </span>
+                  <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
                   <span
                     className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${STATUS_COLORS[task.status] ?? ""}`}
                   >

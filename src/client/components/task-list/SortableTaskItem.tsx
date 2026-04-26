@@ -1,11 +1,12 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Pin } from "lucide-react";
+import { GripVertical } from "lucide-react";
 import { timeAgo } from "../../time";
 import { TAG_COLOR_DOT as TAG_DOT } from "../../tag-colors";
 import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import { getFollowUpState } from "../TaskMomentumFields";
+import TaskKindBadge from "../TaskKindBadge";
 
 const STATUS_TEXT: Record<Task["status"], string> = {
   active: "text-success",
@@ -78,9 +79,7 @@ export default function SortableTaskItem({
           <span className={`truncate flex-1 ml-1 ${indicator?.unread ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : ""}`}>
             {task.title}
           </span>
-          {task.pinned && (
-            <Pin size={10} className="shrink-0 ml-0.5 text-text-muted rotate-45" />
-          )}
+          <TaskKindBadge kind={task.kind} iconOnly className="ml-1 shrink-0" />
           {/* Rail variant: tag dots + status label */}
           {isRail && (task.tags?.length ?? 0) > 0 && (
             <span className="flex gap-0.5 shrink-0 ml-1">

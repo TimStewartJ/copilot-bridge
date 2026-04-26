@@ -6,13 +6,18 @@ const STATUS_ORDER: Record<Task["status"], number> = {
   archived: 2,
 };
 
-/** Sort tasks by status priority then by order, with pinned tasks floating to top within each status tier. */
+function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): number {
+  if (a.kind === b.kind) return 0;
+  return a.kind === "ongoing" ? -1 : 1;
+}
+
+/** Sort tasks by status priority then by order, with ongoing tasks floating to top within each status tier. */
 export function sortTasksByStatusAndOrder(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
     const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (statusDiff !== 0) return statusDiff;
-    // Pinned tasks float to top within their status group
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    const kindDiff = compareOngoingFirst(a, b);
+    if (kindDiff !== 0) return kindDiff;
     return a.order - b.order;
   });
 }
@@ -45,11 +50,11 @@ export interface GroupSection {
   tasks: Task[];
 }
 
-/** Sort tasks within a group: pinned first (preserving order), then by status and order. */
+/** Sort tasks within a group: ongoing first, then by status and order. */
 function sortGroupTasks(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
-    // Pinned tasks always float to top of their group
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    const kindDiff = compareOngoingFirst(a, b);
+    if (kindDiff !== 0) return kindDiff;
     const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (statusDiff !== 0) return statusDiff;
     return a.order - b.order;

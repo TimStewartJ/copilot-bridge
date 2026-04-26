@@ -15,11 +15,11 @@ describe("WorkspaceDetailsSheet", () => {
     const task: Task = {
       id: "task-1",
       title: "Workspace task",
+      kind: "task",
       status: "active",
       cwd: "/repo",
       notes: "",
       priority: 0,
-      pinned: false,
       order: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",

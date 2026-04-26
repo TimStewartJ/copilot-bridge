@@ -172,6 +172,7 @@ export interface PRRef {
 export interface Task {
   id: string;
   title: string;
+  kind: "task" | "ongoing";
   status: "active" | "done" | "archived";
   groupId?: string;
   cwd?: string;
@@ -181,7 +182,6 @@ export interface Task {
   waitingOn?: string;
   nextTouchAt?: string;
   priority: number;
-  pinned: boolean;
   order: number;
   createdAt: string;
   updatedAt: string;
@@ -520,8 +520,14 @@ export async function fetchTasks(): Promise<Task[]> {
   return data.tasks;
 }
 
-export async function createTask(title: string, groupId?: string): Promise<Task> {
-  const data = await apiFetch<{ task: Task }>("/api/tasks", { title, groupId });
+export async function createTask(
+  title: string,
+  options: {
+    groupId?: string;
+    kind?: Task["kind"];
+  } = {},
+): Promise<Task> {
+  const data = await apiFetch<{ task: Task }>("/api/tasks", { title, ...options });
   return data.task;
 }
 
@@ -541,11 +547,11 @@ export async function updateTask(
   id: string,
   updates: {
     title?: Task["title"];
+    kind?: Task["kind"];
     status?: Task["status"];
     notes?: Task["notes"];
     priority?: Task["priority"];
     cwd?: Task["cwd"];
-    pinned?: Task["pinned"];
     doneWhen?: Task["doneWhen"] | null;
     nextAction?: Task["nextAction"] | null;
     waitingOn?: Task["waitingOn"] | null;
@@ -563,12 +569,12 @@ export async function patchTask(
   id: string,
   updates: {
     title?: Task["title"];
+    kind?: Task["kind"];
     status?: Task["status"];
     notes?: Task["notes"];
     priority?: Task["priority"];
     cwd?: Task["cwd"];
     groupId?: Task["groupId"];
-    pinned?: Task["pinned"];
     doneWhen?: Task["doneWhen"] | null;
     nextAction?: Task["nextAction"] | null;
     waitingOn?: Task["waitingOn"] | null;

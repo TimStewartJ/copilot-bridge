@@ -20,6 +20,121 @@ function createInvocation(toolName: string) {
 }
 
 describe("session manager task tools", () => {
+  it("tool metadata exposes kind on task create, update, list, and info", () => {
+    const { ctx } = createTestApp();
+    const createTool = getTool(ctx, "task_create") as any;
+    const updateTool = getTool(ctx, "task_update") as any;
+    const listTool = getTool(ctx, "task_list") as any;
+    const infoTool = getTool(ctx, "task_get_info") as any;
+
+    expect(createTool.parameters.properties.kind).toEqual({
+      type: "string",
+      enum: ["task", "ongoing"],
+      description: "Task kind. Defaults to task.",
+    });
+    expect(updateTool.parameters.properties.kind).toEqual({
+      type: "string",
+      enum: ["task", "ongoing"],
+      description: "Task kind",
+    });
+    expect(listTool.description).toContain("kinds");
+    expect(infoTool.description).toContain("kind");
+  });
+
+  it("task_create accepts kind and task list/info include it", async () => {
+    const { ctx } = createTestApp();
+    const createTool = getTool(ctx, "task_create");
+    const listTool = getTool(ctx, "task_list");
+    const infoTool = getTool(ctx, "task_get_info");
+
+    const created = await createTool.handler({
+      title: "Keep bridge healthy",
+      kind: "ongoing",
+    }, createInvocation("task_create")) as {
+      success: boolean;
+      taskId: string;
+      kind: string;
+    };
+
+    expect(created).toEqual(expect.objectContaining({
+      success: true,
+      taskId: expect.any(String),
+      kind: "ongoing",
+    }));
+
+    const list = await listTool.handler({}, createInvocation("task_list"));
+    expect(list).toEqual({
+      tasks: [
+        expect.objectContaining({
+          id: created.taskId,
+          title: "Keep bridge healthy",
+          kind: "ongoing",
+          status: "active",
+        }),
+      ],
+    });
+
+    const info = await infoTool.handler({ taskId: created.taskId }, createInvocation("task_get_info"));
+    expect(info).toEqual(expect.objectContaining({
+      id: created.taskId,
+      kind: "ongoing",
+    }));
+  });
+
+  it("task_update can change kind and rejects invalid kinds", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Kind update");
+    const tool = getTool(ctx, "task_update");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      kind: "ongoing",
+    }, createInvocation("task_update"))).resolves.toEqual(expect.objectContaining({
+      success: true,
+      kind: "ongoing",
+    }));
+
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({ kind: "ongoing" }));
+
+    await expect(tool.handler({
+      taskId: task.id,
+      kind: "invalid",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("kind must be either 'task' or 'ongoing'"),
+    );
+  });
+
+  it("task_update normalizes kind-only switches to ongoing", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Kind update normalize");
+    ctx.taskStore.updateTask(task.id, { status: "done", doneWhen: "Merged and deployed" });
+    const tool = getTool(ctx, "task_update");
+    const infoTool = getTool(ctx, "task_get_info");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      kind: "ongoing",
+    }, createInvocation("task_update"))).resolves.toEqual(expect.objectContaining({
+      success: true,
+      kind: "ongoing",
+    }));
+
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
+      kind: "ongoing",
+      status: "active",
+      doneWhen: undefined,
+    }));
+
+    await expect(infoTool.handler({ taskId: task.id }, createInvocation("task_get_info"))).resolves.toEqual(
+      expect.objectContaining({
+        id: task.id,
+        kind: "ongoing",
+        status: "active",
+        doneWhen: undefined,
+      }),
+    );
+  });
+
   it("task_update stores nullable momentum fields", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum host");

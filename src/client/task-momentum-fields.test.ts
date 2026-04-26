@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getFollowUpState,
   getPanelFieldTone,
+  getVisibleMomentumFieldKeys,
   toDateTimeInputValue,
   toDateTimeStorageValue,
 } from "./components/TaskMomentumFields";
@@ -54,5 +55,15 @@ describe("getPanelFieldTone", () => {
 
   it("keeps non-follow-up fields neutral", () => {
     expect(getPanelFieldTone("nextAction", "Ship preview polish", now)).toBeNull();
+  });
+});
+
+describe("getVisibleMomentumFieldKeys", () => {
+  it("keeps doneWhen for normal tasks", () => {
+    expect(getVisibleMomentumFieldKeys("task")).toContain("doneWhen");
+  });
+
+  it("hides doneWhen for ongoing items", () => {
+    expect(getVisibleMomentumFieldKeys("ongoing")).toEqual(["nextAction", "waitingOn", "nextTouchAt"]);
   });
 });

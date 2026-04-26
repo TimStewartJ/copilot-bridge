@@ -33,12 +33,75 @@ export function openMemoryDatabase(): DatabaseSync {
   return db;
 }
 
+function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync): void {
+  const foreignKeysRow = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number } | undefined;
+  const restoreForeignKeys = foreignKeysRow?.foreign_keys !== 0;
+  let inTransaction = false;
+
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN");
+    inTransaction = true;
+    db.exec(`
+      CREATE TABLE tasks_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        status TEXT NOT NULL DEFAULT 'active',
+        groupId TEXT,
+        cwd TEXT,
+        notes TEXT NOT NULL DEFAULT '',
+        doneWhen TEXT,
+        nextAction TEXT,
+        waitingOn TEXT,
+        nextTouchAt TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        "order" INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+
+      INSERT INTO tasks_new (
+        id, title, kind, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+        priority, "order", createdAt, updatedAt
+      )
+      SELECT
+        id,
+        title,
+        CASE
+          WHEN pinned != 0 THEN 'ongoing'
+          WHEN kind IN ('task', 'ongoing') THEN kind
+          ELSE 'task'
+        END,
+        status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+        priority, "order", createdAt, updatedAt
+      FROM tasks;
+
+      DROP TABLE tasks;
+      ALTER TABLE tasks_new RENAME TO tasks;
+    `);
+    db.exec("COMMIT");
+    inTransaction = false;
+  } catch (error) {
+    if (inTransaction) db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    if (restoreForeignKeys) db.exec("PRAGMA foreign_keys = ON");
+  }
+
+  const violations = db.prepare("PRAGMA foreign_key_check").all() as any[];
+  if (violations.length > 0) {
+    throw new Error(`Task legacy-column migration left ${violations.length} foreign key violation(s)`);
+  }
+}
+
 function initSchema(db: DatabaseSync): void {
   db.exec(`
     -- Tasks
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'task',
       status TEXT NOT NULL DEFAULT 'active',
       groupId TEXT,
       cwd TEXT,
@@ -48,7 +111,6 @@ function initSchema(db: DatabaseSync): void {
       waitingOn TEXT,
       nextTouchAt TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
-      pinned INTEGER NOT NULL DEFAULT 0,
       "order" INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
@@ -396,8 +458,11 @@ function initSchema(db: DatabaseSync): void {
     db.exec("ALTER TABLE task_groups ADD COLUMN notes TEXT NOT NULL DEFAULT ''");
   }
 
-  // Add optional momentum/pinned columns to tasks
-  const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+  // Add task kind and optional momentum columns to tasks
+  let taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+  if (!taskCols.some((c: any) => c.name === "kind")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+  }
   if (!taskCols.some((c: any) => c.name === "doneWhen")) {
     db.exec("ALTER TABLE tasks ADD COLUMN doneWhen TEXT");
   }
@@ -410,9 +475,6 @@ function initSchema(db: DatabaseSync): void {
   if (!taskCols.some((c: any) => c.name === "nextTouchAt")) {
     db.exec("ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT");
   }
-  if (!taskCols.some((c: any) => c.name === "pinned")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
-  }
   db.exec("UPDATE tasks SET status = 'active' WHERE status = 'paused'");
   db.exec(`
     UPDATE tasks
@@ -420,6 +482,17 @@ function initSchema(db: DatabaseSync): void {
     WHERE status != 'active'
       AND (nextAction IS NOT NULL OR waitingOn IS NOT NULL OR nextTouchAt IS NOT NULL)
   `);
+  taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+  if (taskCols.some((c: any) => c.name === "pinned")) rebuildTasksWithoutLegacyTaskColumn(db);
+  db.exec(`
+    UPDATE tasks
+    SET
+      status = CASE WHEN status = 'done' THEN 'active' ELSE status END,
+      doneWhen = NULL
+    WHERE kind = 'ongoing'
+      AND (status = 'done' OR doneWhen IS NOT NULL);
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt)");
 
   // Migrate task_work_items.itemId from INTEGER to TEXT for string-based identifiers (e.g. Linear "ENG-123")

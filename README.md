@@ -101,7 +101,7 @@ It is intentionally scoped to the guided workspace experience. If you want the f
 
 When it starts:
 
-1. Open the pinned **Start Here - Acme Launch Workspace** task.
+1. Open the ongoing **Start Here - Acme Launch Workspace** task.
 2. Read the task note and related docs.
 3. Start a task chat and try one of the suggested prompts.
 4. Trigger the sample schedule.

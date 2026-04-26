@@ -169,7 +169,7 @@ This folder anchors the fictional rollout workspace used by the seeded demo.
   docsStore.writePage("acme/start-here", markdownPage("Start Here", ["launch", "docs"], `
 # 5-minute tour
 
-1. Open the pinned **Start Here - Acme Launch Workspace** task.
+1. Open the ongoing **Start Here - Acme Launch Workspace** task.
 2. Read the task note and check off a couple checklist items as you explore.
 3. Start a task chat and paste one of the prompt ideas below.
 4. Trigger the sample schedule on the task.
@@ -201,7 +201,7 @@ Acme is preparing a fictional rollout of **Acme Assist** to a small pilot group 
 
 Use this workspace to keep the launch thread compact:
 
-- the pinned task explains where to start
+- the ongoing task explains where to start
 - checklist items make next actions easy to see
 - schedules show how follow-up can stay attached to a task
 - docs and database entries keep written context close to the work
@@ -325,7 +325,7 @@ function seedWorkspace(repoRoot: string): void {
     };
 
     const startHere = createSeedTask("Start Here - Acme Launch Workspace", launchGroup.id, {
-      pinned: true,
+      kind: "ongoing",
       cwd: paths.workspaceDir,
       notes: `
 # Workspace goal
@@ -397,7 +397,7 @@ This backlog task stays active but scheduled for later so it hints at future ide
     tagStore.setEntityTags("task", startHere.id, [docsTag.id]);
     tagStore.setEntityTags("task", launchReadiness.id, [docsTag.id]);
 
-    addSeedChecklistItem(checklistStore, startHere.id, "Open the pinned task and read the note", { done: true });
+    addSeedChecklistItem(checklistStore, startHere.id, "Open the ongoing task and read the note", { done: true });
     addSeedChecklistItem(checklistStore, startHere.id, "Start one task chat and try a guided prompt", { deadlineOffsetDays: 1 });
     addSeedChecklistItem(checklistStore, startHere.id, "Trigger the sample schedule once", { deadlineOffsetDays: 1 });
     addSeedChecklistItem(checklistStore, startHere.id, "Add one launch-notes entry in Docs", { deadlineOffsetDays: 2 });

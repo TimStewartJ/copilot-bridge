@@ -45,7 +45,7 @@ describe("demo workspace", () => {
 
       const startHere = taskStore.listTasks().find((task) => task.title === "Start Here - Acme Launch Workspace");
       expect(startHere).toMatchObject({
-        pinned: true,
+        kind: "ongoing",
         cwd: workspace.workspaceDir,
       });
 

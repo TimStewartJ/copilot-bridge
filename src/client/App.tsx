@@ -681,7 +681,7 @@ export default function App() {
 
   const handleNewTask = async (groupId?: string) => {
     try {
-      const task = await createTask("New Task", groupId);
+      const task = await createTask("New Task", { groupId });
       queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => prev ? [task, ...prev] : [task]);
       setSelectedTask(task);
       navigate(`/tasks/${task.id}/sessions/new`);
@@ -692,17 +692,12 @@ export default function App() {
 
   const handleUpdateTask = async (
     taskId: string,
-    updates: {
-      title?: Task["title"];
-      status?: Task["status"];
-      pinned?: Task["pinned"];
-      nextTouchAt?: Task["nextTouchAt"] | null;
-    },
+    updates: Parameters<typeof patchTask>[1],
   ) => {
     try {
       const updated = await patchTask(taskId, updates);
-      if (updates.status || updates.pinned !== undefined) {
-        // When status or pinned changes, refetch all tasks since order values shift
+      if (updates.status || updates.kind !== undefined) {
+        // When status or kind changes, refetch all tasks since ordering can shift
         await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
       } else {
         queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
@@ -1490,7 +1485,6 @@ function MobileTaskListView({
     updates: {
       title?: Task["title"];
       status?: Task["status"];
-      pinned?: Task["pinned"];
       nextTouchAt?: Task["nextTouchAt"] | null;
     },
   ) => void;

@@ -827,7 +827,27 @@ describe("Task routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.task.title).toBe("Test Task");
     expect(res.body.task.id).toBeTruthy();
+    expect(res.body.task.kind).toBe("task");
     expect(res.body.task.status).toBe("active");
+  });
+
+  it("POST /api/tasks accepts kind and returns it from list/get", async () => {
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Keep running", kind: "ongoing" });
+    expect(create.status).toBe(200);
+    expect(create.body.task.kind).toBe("ongoing");
+
+    const id = create.body.task.id;
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.kind).toBe("ongoing");
+
+    const list = await request(app).get("/api/tasks");
+    expect(list.status).toBe(200);
+    expect(list.body.tasks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id, kind: "ongoing" })]),
+    );
   });
 
   it("GET /api/tasks/:id returns the created task", async () => {
@@ -878,6 +898,55 @@ describe("Task routes", () => {
       waitingOn: "Customer confirmation",
       nextTouchAt: "2026-05-02T09:00:00.000Z",
     }));
+  });
+
+  it("PATCH /api/tasks/:id updates kind and rejects invalid kinds", async () => {
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Kind patch" });
+    const id = create.body.task.id;
+
+    const update = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ kind: "ongoing" });
+    expect(update.status).toBe(200);
+    expect(update.body.task.kind).toBe("ongoing");
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.kind).toBe("ongoing");
+
+    const invalid = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ kind: "invalid" });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("kind must be either 'task' or 'ongoing'");
+  });
+
+  it("PATCH /api/tasks/:id normalizes kind-only switches to ongoing", async () => {
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Kind patch normalize" });
+    const id = create.body.task.id;
+
+    const seeded = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "done", doneWhen: "Shipped to production" });
+    expect(seeded.status).toBe(200);
+
+    const update = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ kind: "ongoing" });
+    expect(update.status).toBe(200);
+    expect(update.body.task.kind).toBe("ongoing");
+    expect(update.body.task.status).toBe("active");
+    expect(update.body.task.doneWhen).toBeUndefined();
+
+    const get = await request(app).get(`/api/tasks/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.body.task.kind).toBe("ongoing");
+    expect(get.body.task.status).toBe("active");
+    expect(get.body.task.doneWhen).toBeUndefined();
   });
 
   it("DELETE /api/tasks/:id removes a task", async () => {
@@ -948,19 +1017,6 @@ describe("Task routes", () => {
       .send({ title: "Grouped Task", groupId: group.id });
     expect(res.status).toBe(200);
     expect(res.body.task.groupId).toBe(group.id);
-  });
-
-  it("PATCH /api/tasks/:id sets pinned field", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Pin Me" });
-    const id = create.body.task.id;
-
-    const pin = await request(app).patch(`/api/tasks/${id}`).send({ pinned: true });
-    expect(pin.status).toBe(200);
-    expect(pin.body.task.pinned).toBe(true);
-
-    const unpin = await request(app).patch(`/api/tasks/${id}`).send({ pinned: false });
-    expect(unpin.status).toBe(200);
-    expect(unpin.body.task.pinned).toBe(false);
   });
 
   it("PATCH /api/tasks/:id normalizes paused status updates to active", async () => {
@@ -2204,6 +2260,74 @@ describe("Session routes (mocked)", () => {
       expect(candidateIds).not.toContain(unknownPrTask.id);
     } finally {
       enrichPullRequestsSpy.mockRestore();
+    }
+  });
+
+  it("GET /api/dashboard keeps ongoing tasks in open queues but out of candidateToClose", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
+
+    try {
+      const testApp = createTestApp();
+      app = testApp.app;
+      ctx = testApp.ctx;
+      const { db } = testApp;
+
+      const ongoingDecision = ctx.taskStore.createTask("Ongoing decision");
+      ctx.taskStore.updateTask(ongoingDecision.id, { kind: "ongoing" });
+
+      const ongoingFollowUp = ctx.taskStore.createTask("Ongoing follow-up");
+      ctx.taskStore.updateTask(ongoingFollowUp.id, {
+        kind: "ongoing",
+        nextAction: "Check in",
+        nextTouchAt: "2026-05-01T11:00:00.000Z",
+      });
+
+      const ongoingWaiting = ctx.taskStore.createTask("Ongoing waiting");
+      ctx.taskStore.updateTask(ongoingWaiting.id, {
+        kind: "ongoing",
+        nextAction: "Review update",
+        waitingOn: "External input",
+      });
+
+      const ongoingStale = ctx.taskStore.createTask("Ongoing stale");
+      ctx.taskStore.updateTask(ongoingStale.id, {
+        kind: "ongoing",
+        nextAction: "Keep monitoring",
+      });
+      db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run("2026-04-20T09:00:00.000Z", ongoingStale.id);
+
+      const closeableTask = ctx.taskStore.createTask("One-off task");
+      ctx.taskStore.updateTask(closeableTask.id, {
+        nextAction: "Wrap it up",
+      });
+
+      const res = await request(app).get("/api/dashboard");
+      const needsDecisionIds = res.body.taskMomentum.needsDecision.map((e: any) => e.task.id);
+      const followUpNowIds = res.body.taskMomentum.followUpNow.map((e: any) => e.task.id);
+      const waitingIds = res.body.taskMomentum.waiting.map((e: any) => e.task.id);
+      const candidateIds = res.body.taskMomentum.candidateToClose.map((e: any) => e.task.id);
+      const staleIds = res.body.taskMomentum.stale.map((e: any) => e.task.id);
+
+      expect(res.status).toBe(200);
+      expect(res.body.taskMomentum.summary).toEqual({
+        needsDecision: 1,
+        followUpNow: 1,
+        waiting: 1,
+        candidateToClose: 1,
+        stale: 1,
+      });
+      expect(needsDecisionIds).toContain(ongoingDecision.id);
+      expect(followUpNowIds).toContain(ongoingFollowUp.id);
+      expect(waitingIds).toContain(ongoingWaiting.id);
+      expect(staleIds).toContain(ongoingStale.id);
+      expect(candidateIds).toContain(closeableTask.id);
+      expect(candidateIds).not.toContain(ongoingDecision.id);
+      expect(candidateIds).not.toContain(ongoingFollowUp.id);
+      expect(candidateIds).not.toContain(ongoingWaiting.id);
+      expect(candidateIds).not.toContain(ongoingStale.id);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

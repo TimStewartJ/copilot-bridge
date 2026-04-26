@@ -14,6 +14,11 @@ function normalizeLegacyTaskStatus(value: unknown): "active" | "done" | "archive
   throw new Error(`Unsupported legacy task status: ${String(value)}`);
 }
 
+function normalizeLegacyTaskKind(value: unknown, pinned: unknown): "task" | "ongoing" {
+  if (pinned) return "ongoing";
+  return value === "ongoing" ? "ongoing" : "task";
+}
+
 function normalizeOptionalTaskText(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
@@ -63,8 +68,8 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
 
   const insertTask = db.prepare(`
     INSERT INTO tasks (
-      id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-      priority, pinned, "order", createdAt, updatedAt
+      id, title, kind, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+      priority, "order", createdAt, updatedAt
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
@@ -79,8 +84,10 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
   );
 
   for (const t of tasks) {
-    const status = normalizeLegacyTaskStatus(t.status);
-    const doneWhen = normalizeOptionalTaskText(t.doneWhen);
+    let status = normalizeLegacyTaskStatus(t.status);
+    const kind = normalizeLegacyTaskKind(t.kind, t.pinned);
+    const doneWhen = kind === "ongoing" ? null : normalizeOptionalTaskText(t.doneWhen);
+    if (kind === "ongoing" && status === "done") status = "active";
     const nextAction = status === "active" ? normalizeOptionalTaskText(t.nextAction) : null;
     const waitingOn = status === "active" ? normalizeOptionalTaskText(t.waitingOn) : null;
     const nextTouchAt = status === "active" ? normalizeOptionalTaskText(t.nextTouchAt) : null;
@@ -93,9 +100,9 @@ function migrateTasks(db: DatabaseSync, dataDir: string): void {
         : [];
 
     insertTask.run(
-      t.id, t.title, status, t.groupId ?? null, t.cwd ?? null,
+      t.id, t.title, kind, status, t.groupId ?? null, t.cwd ?? null,
       t.notes ?? "", doneWhen, nextAction, waitingOn, nextTouchAt,
-      t.priority ?? 0, t.pinned ? 1 : 0, t.order ?? 0,
+      t.priority ?? 0, t.order ?? 0,
       t.createdAt ?? new Date().toISOString(), t.updatedAt ?? new Date().toISOString(),
     );
 
