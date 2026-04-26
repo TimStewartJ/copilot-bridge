@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.fn();
 
@@ -27,8 +27,12 @@ describe("transcription service", () => {
     vi.resetModules();
     spawnMock.mockReset();
     for (const key of ENV_KEYS) {
-      delete process.env[key];
+      vi.stubEnv(key, undefined);
     }
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("returns disabled status when voice input is unconfigured", async () => {
@@ -46,8 +50,8 @@ describe("transcription service", () => {
   });
 
   it("returns disabled status when whisper.cpp is only partially configured", async () => {
-    process.env.BRIDGE_TRANSCRIPTION_PROVIDER = "whisper.cpp";
-    process.env.BRIDGE_WHISPER_CPP_COMMAND = "whisper-cli";
+    vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
+    vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
 
     const { createTranscriptionService } = await import("../transcription-service.js");
 
@@ -68,12 +72,12 @@ describe("transcription service", () => {
       writeFileSync(modelPath, "model");
       writeFileSync(audioPath, "audio");
 
-      process.env.BRIDGE_TRANSCRIPTION_PROVIDER = "whisper.cpp";
-      process.env.BRIDGE_WHISPER_CPP_COMMAND = "whisper-cli";
-      process.env.BRIDGE_WHISPER_CPP_MODEL = modelPath;
-      process.env.BRIDGE_WHISPER_CPP_LANGUAGE = "auto";
-      process.env.BRIDGE_WHISPER_CPP_ARGS_JSON = JSON.stringify(["--prompt", "bridge"]);
-      process.env.BRIDGE_WHISPER_CPP_NO_GPU = "true";
+      vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_MODEL", modelPath);
+      vi.stubEnv("BRIDGE_WHISPER_CPP_LANGUAGE", "auto");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_ARGS_JSON", JSON.stringify(["--prompt", "bridge"]));
+      vi.stubEnv("BRIDGE_WHISPER_CPP_NO_GPU", "true");
 
       spawnMock.mockImplementation((command: string, args: string[]) => {
         const child = new EventEmitter() as EventEmitter & {
@@ -144,10 +148,10 @@ describe("transcription service", () => {
       writeFileSync(modelPath, "model");
       writeFileSync(audioPath, "audio");
 
-      process.env.BRIDGE_TRANSCRIPTION_PROVIDER = "whisper.cpp";
-      process.env.BRIDGE_WHISPER_CPP_COMMAND = "whisper-cli";
-      process.env.BRIDGE_WHISPER_CPP_MODEL = modelPath;
-      process.env.BRIDGE_TRANSCRIPTION_TIMEOUT_MS = "10";
+      vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_MODEL", modelPath);
+      vi.stubEnv("BRIDGE_TRANSCRIPTION_TIMEOUT_MS", "10");
 
       const kill = vi.fn();
       spawnMock.mockImplementation(() => {
@@ -185,10 +189,10 @@ describe("transcription service", () => {
       const modelPath = join(tempDir, "ggml-base.en.bin");
       writeFileSync(modelPath, "model");
 
-      process.env.BRIDGE_TRANSCRIPTION_PROVIDER = "whisper.cpp";
-      process.env.BRIDGE_WHISPER_CPP_COMMAND = "whisper-cli";
-      process.env.BRIDGE_WHISPER_CPP_MODEL = modelPath;
-      process.env.BRIDGE_WHISPER_CPP_ARGS_JSON = "{bad json}";
+      vi.stubEnv("BRIDGE_TRANSCRIPTION_PROVIDER", "whisper.cpp");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_COMMAND", "whisper-cli");
+      vi.stubEnv("BRIDGE_WHISPER_CPP_MODEL", modelPath);
+      vi.stubEnv("BRIDGE_WHISPER_CPP_ARGS_JSON", "{bad json}");
 
       const { createTranscriptionService } = await import("../transcription-service.js");
 

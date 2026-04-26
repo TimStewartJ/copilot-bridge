@@ -23,6 +23,8 @@ export interface CrossPlatformTestRule {
   id: string;
   pattern: RegExp;
   message: string;
+  /** When true, violations are reported as warnings but do not fail the audit. */
+  advisory?: boolean;
 }
 
 export interface CrossPlatformTestViolation {
@@ -31,6 +33,7 @@ export interface CrossPlatformTestViolation {
   lineNumber: number;
   message: string;
   snippet: string;
+  advisory?: boolean;
 }
 
 export interface CrossPlatformAuditResult {
@@ -59,6 +62,34 @@ export const CROSS_PLATFORM_TEST_RULES: ReadonlyArray<CrossPlatformTestRule> = [
     id: "unix-chmod",
     pattern: /\bchmodSync\(/,
     message: "Mock read/stat failures instead of relying on Unix-only chmod semantics.",
+  },
+  {
+    id: "raw-process-env-mutation",
+    pattern: /(?:process\.env\.[A-Z_][A-Z0-9_]*\s*=(?!=)|delete\s+process\.env\.)/,
+    message:
+      "Use vi.stubEnv() or withTestEnv() for scoped env mutations instead of direct process.env assignment or deletion.",
+  },
+  {
+    id: "real-command-in-test",
+    pattern: /\b(?:execSync|execFileSync)\s*\(\s*["'`](?:npm|npx|vite|tsc)["'`\s]/,
+    message:
+      "Tests must not shell out to npm, npx, vite, or tsc. Mock the exec call or test behavior through the module API.",
+  },
+  {
+    id: "repo-runtime-path",
+    // Catches join(process.cwd(), "data"|".test-data"|"dist") — writing to repo-local runtime dirs in tests.
+    pattern: /join\s*\(\s*process\.cwd\s*\(\s*\)\s*,\s*["'`](?:data|\.test-data|dist)["'`]/,
+    message:
+      "Use makeTestDir() or makeTestRuntimePaths() instead of repo-local runtime paths derived from process.cwd().",
+    advisory: true,
+  },
+  {
+    id: "direct-mkdtemp",
+    // Advisory until all suites have been migrated to the shared makeTestDir() helper.
+    pattern: /\bmkdtempSync\s*\(/,
+    message:
+      "Prefer makeTestDir() from the shared test helpers over raw mkdtempSync() so cleanup is automatic.",
+    advisory: true,
   },
 ];
 
@@ -169,6 +200,7 @@ export function auditCrossPlatformTests(rootDir = REPO_ROOT): CrossPlatformAudit
             lineNumber: index + 1,
             message: rule.message,
             snippet: line.trim(),
+            advisory: rule.advisory,
           });
         }
       }
@@ -183,22 +215,39 @@ export function auditCrossPlatformTests(rootDir = REPO_ROOT): CrossPlatformAudit
 }
 
 export function formatCrossPlatformAuditResult(result: CrossPlatformAuditResult): string {
-  if (result.violations.length === 0) {
-    return `Cross-platform test audit passed (${result.scannedFiles} test file(s) scanned).`;
+  const hard = result.violations.filter((v) => !v.advisory);
+  const advisory = result.violations.filter((v) => v.advisory);
+
+  const lines: string[] = [];
+
+  if (hard.length === 0) {
+    lines.push(`Cross-platform test audit passed (${result.scannedFiles} test file(s) scanned).`);
+  } else {
+    lines.push(
+      `Cross-platform test audit failed with ${hard.length} violation(s) across ${result.scannedFiles} test file(s):`,
+      "",
+    );
+    for (const v of hard) {
+      const displayPath = (relative(result.rootDir, v.filePath) || v.filePath).replaceAll("\\", "/");
+      lines.push(`- [${v.ruleId}] ${displayPath}:${v.lineNumber} — ${v.message}`);
+      lines.push(`  ${v.snippet || "<blank line>"}`);
+    }
+    lines.push("", "Fix the violations above or rewrite the test to use the shared x-plat helpers.");
   }
 
-  const lines = [
-    `Cross-platform test audit failed with ${result.violations.length} violation(s) across ${result.scannedFiles} test file(s):`,
-    "",
-  ];
-
-  for (const violation of result.violations) {
-    const displayPath = (relative(result.rootDir, violation.filePath) || violation.filePath).replaceAll("\\", "/");
-    lines.push(`- [${violation.ruleId}] ${displayPath}:${violation.lineNumber} — ${violation.message}`);
-    lines.push(`  ${violation.snippet || "<blank line>"}`);
+  if (advisory.length > 0) {
+    lines.push(
+      "",
+      `${advisory.length} advisory finding(s) — will not fail the audit, but should be addressed:`,
+      "",
+    );
+    for (const v of advisory) {
+      const displayPath = (relative(result.rootDir, v.filePath) || v.filePath).replaceAll("\\", "/");
+      lines.push(`- [${v.ruleId}] ${displayPath}:${v.lineNumber} — ${v.message}`);
+      lines.push(`  ${v.snippet || "<blank line>"}`);
+    }
   }
 
-  lines.push("", "Fix the violations above or rewrite the test to use the shared x-plat helpers.");
   return lines.join("\n");
 }
 
@@ -211,7 +260,8 @@ if (isDirectExecution()) {
   const rootArg = process.argv[2];
   const result = auditCrossPlatformTests(rootArg ? resolve(rootArg) : REPO_ROOT);
   const output = formatCrossPlatformAuditResult(result);
-  const stream = result.violations.length === 0 ? process.stdout : process.stderr;
+  const hardViolations = result.violations.filter((v) => !v.advisory);
+  const stream = hardViolations.length === 0 ? process.stdout : process.stderr;
   stream.write(`${output}\n`);
-  if (result.violations.length > 0) process.exitCode = 1;
+  if (hardViolations.length > 0) process.exitCode = 1;
 }

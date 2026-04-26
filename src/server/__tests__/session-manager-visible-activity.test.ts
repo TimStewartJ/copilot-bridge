@@ -1,9 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
@@ -27,12 +26,9 @@ describe("SessionManager visible activity cache", () => {
 
   beforeEach(() => {
     readFileCallMock.mockReset();
-    copilotHome = join(process.cwd(), ".test-data", `bridge-visible-activity-${randomUUID()}`);
+    copilotHome = makeTestDir("visible-activity");
   });
 
-  afterEach(() => {
-    rmSync(copilotHome, { recursive: true, force: true });
-  });
 
   function createManager() {
     const db = setupTestDb();

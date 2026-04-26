@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { makeTestRuntimePaths } from "./helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../db.js";
 import { createGlobalBus } from "../global-bus.js";
@@ -11,31 +11,13 @@ import { createTaskStore } from "../task-store.js";
 import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
 
-const testRoots: string[] = [];
-
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
 
 function createRestartRuntimePaths() {
-  const rootDir = join(process.cwd(), "data", "test-voice-jobs", randomUUID());
-  const dataDir = join(rootDir, "data");
-  const docsDir = join(rootDir, "docs");
-  mkdirSync(dataDir, { recursive: true });
-  mkdirSync(docsDir, { recursive: true });
-  testRoots.push(rootDir);
-  return {
-    demoMode: false,
-    dataDir,
-    docsDir,
-    env: {
-      ...process.env,
-      BRIDGE_DEMO_MODE: "false",
-      BRIDGE_DATA_DIR: dataDir,
-      BRIDGE_DOCS_DIR: docsDir,
-    },
-  };
+  return makeTestRuntimePaths("voice-jobs");
 }
 
 beforeEach(() => {
@@ -46,9 +28,6 @@ afterEach(() => {
   clearRestartPending();
   configureRestartStateStore(undefined);
   vi.useRealTimers();
-  for (const rootDir of testRoots.splice(0)) {
-    rmSync(rootDir, { recursive: true, force: true });
-  }
 });
 
 describe("voice job restart gating", () => {

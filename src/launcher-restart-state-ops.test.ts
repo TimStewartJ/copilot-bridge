@@ -26,6 +26,7 @@ describe("buildWaitingState", () => {
       requestedAt: "2026-04-24T11:59:00.000Z",
       waitingSessions: 3,
       launcherHeartbeatAt: NOW,
+      releaseFailure: null,
     });
   });
 
@@ -36,6 +37,7 @@ describe("buildWaitingState", () => {
       requestedAt: null,
       waitingSessions: 0,
       launcherHeartbeatAt: NOW,
+      releaseFailure: null,
     });
   });
 
@@ -57,6 +59,7 @@ describe("buildRestartingState", () => {
       requestedAt: "2026-04-24T11:59:00.000Z",
       waitingSessions: 0,
       launcherHeartbeatAt: NOW,
+      releaseFailure: null,
     });
   });
 
@@ -67,6 +70,7 @@ describe("buildRestartingState", () => {
       requestedAt: null,
       waitingSessions: 0,
       launcherHeartbeatAt: NOW,
+      releaseFailure: null,
     });
   });
 });
@@ -79,6 +83,7 @@ describe("buildRestartingWaitingState", () => {
       requestedAt: "2026-04-24T11:59:00.000Z",
       waitingSessions: 2,
       launcherHeartbeatAt: NOW,
+      releaseFailure: null,
     });
   });
 
@@ -89,6 +94,7 @@ describe("buildRestartingWaitingState", () => {
       requestedAt: "2026-04-24T11:59:00.000Z",
       waitingSessions: 0,
       launcherHeartbeatAt: NOW,
+      releaseFailure: null,
     });
   });
 });

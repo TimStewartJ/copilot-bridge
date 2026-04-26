@@ -47,7 +47,7 @@ describe("computer use tools", () => {
     consoleErrorMock.mockClear();
     consoleLogMock.mockClear();
     consoleWarnMock.mockClear();
-    process.env.COMPUTER_USE = "true";
+    vi.stubEnv("COMPUTER_USE", "true");
     execMock.mockImplementation((_cmd: string, _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       cb(null, { stdout: "agent-browser\n", stderr: "" });
       return {} as any;
@@ -55,7 +55,7 @@ describe("computer use tools", () => {
   });
 
   afterEach(() => {
-    delete process.env.COMPUTER_USE;
+    vi.unstubAllEnvs();
   });
 
   afterAll(() => {

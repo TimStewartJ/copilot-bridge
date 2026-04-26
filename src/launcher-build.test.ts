@@ -28,7 +28,12 @@ describe("runLauncherBuild", () => {
 
     expect(runLauncherBuild({ ensureDeps, run, log })).toBe(true);
 
-    expect(run).toHaveBeenCalledWith("npm run test:deploy", { timeoutMs: 600_000 });
+    expect(run.mock.calls).toEqual([
+      ["npm run test:xplat-audit", { timeoutMs: 600_000 }],
+      ["npx tsc --noEmit", { timeoutMs: 600_000 }],
+      ["npx vitest run", { timeoutMs: 600_000 }],
+      ["npx vite build", { timeoutMs: 600_000 }],
+    ]);
   });
 
   it("logs deploy validation failures without running rollback", () => {
@@ -53,6 +58,18 @@ describe("rebuildAfterRollback", () => {
     expect(ensureDeps).toHaveBeenCalledOnce();
     expect(run).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("Dependency sync failed during rollback");
+  });
+
+  it("runs only the runtime rollback validation gate", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn(() => ({ ok: true, output: "" }));
+    const log = vi.fn();
+
+    expect(rebuildAfterRollback({ ensureDeps, run, log })).toBe(true);
+
+    expect(run.mock.calls).toEqual([
+      ["npx vite build", { timeoutMs: 480_000 }],
+    ]);
   });
 });
 

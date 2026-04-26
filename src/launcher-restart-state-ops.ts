@@ -26,6 +26,7 @@ export function buildWaitingState(
     requestedAt: info.requestedAt,
     waitingSessions,
     launcherHeartbeatAt: now,
+    releaseFailure: null,
   };
 }
 
@@ -43,6 +44,7 @@ export function buildRestartingState(
     requestedAt: info.requestedAt,
     waitingSessions: 0,
     launcherHeartbeatAt: now,
+    releaseFailure: null,
   };
 }
 
@@ -61,5 +63,6 @@ export function buildRestartingWaitingState(
     requestedAt: info.requestedAt,
     waitingSessions,
     launcherHeartbeatAt: now,
+    releaseFailure: null,
   };
 }

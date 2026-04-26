@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CopilotUsageReadError,
@@ -8,21 +7,10 @@ import {
   readCopilotUsageSummary,
   type CopilotUsageSummary,
 } from "../copilot-usage.js";
-
-const TEST_ROOT = join(process.cwd(), "data", "test-copilot-usage");
-const createdHomes: string[] = [];
-
-afterEach(() => {
-  for (const dir of createdHomes.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+import { makeTestDir } from "./helpers.js";
 
 function createCopilotHome(): string {
-  const dir = join(TEST_ROOT, randomUUID());
-  mkdirSync(dir, { recursive: true });
-  createdHomes.push(dir);
-  return dir;
+  return makeTestDir("copilot-usage");
 }
 
 function createSession(copilotHome: string, sessionId: string): string {

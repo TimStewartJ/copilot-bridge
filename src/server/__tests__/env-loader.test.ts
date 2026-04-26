@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,19 +10,14 @@ const TEST_KEYS = [
   "BRIDGE_TEST_ENV_REFRESH",
 ] as const;
 
-const originalEnv = new Map<string, string | undefined>(
-  TEST_KEYS.map((key) => [key, process.env[key]]),
-);
+beforeEach(() => {
+  for (const key of TEST_KEYS) {
+    vi.stubEnv(key, undefined);
+  }
+});
 
 afterEach(() => {
-  for (const key of TEST_KEYS) {
-    const value = originalEnv.get(key);
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
+  vi.unstubAllEnvs();
 });
 
 describe("loadBridgeEnv", () => {
@@ -44,7 +39,7 @@ describe("loadBridgeEnv", () => {
     try {
       const envPath = join(dir, ".env");
       writeFileSync(envPath, "BRIDGE_TEST_ENV_OVERRIDE=from-file\n");
-      process.env.BRIDGE_TEST_ENV_OVERRIDE = "from-process";
+      vi.stubEnv("BRIDGE_TEST_ENV_OVERRIDE", "from-process");
 
       expect(loadBridgeEnv(envPath)).toEqual([]);
       expect(process.env.BRIDGE_TEST_ENV_OVERRIDE).toBe("from-process");
@@ -55,7 +50,7 @@ describe("loadBridgeEnv", () => {
 
   it("returns false when the .env file is missing", () => {
     const envPath = join(tmpdir(), "bridge-env-missing", ".env");
-    delete process.env.BRIDGE_TEST_ENV_ONLY;
+    vi.stubEnv("BRIDGE_TEST_ENV_ONLY", undefined);
 
     expect(loadBridgeEnv(envPath)).toEqual([]);
     expect(process.env.BRIDGE_TEST_ENV_ONLY).toBeUndefined();
