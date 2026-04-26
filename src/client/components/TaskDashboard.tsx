@@ -20,8 +20,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import TaskMomentumFields, { getFollowUpState } from "./TaskMomentumFields";
+import TaskKindSwitcher from "./TaskKindSwitcher";
 import {
-  Pin,
   MessageSquare,
   Plus,
   GitPullRequest,
@@ -43,6 +43,7 @@ import {
   RelatedDocsSection,
   ScheduleSection,
 } from "./task-sections";
+import { getTaskKindUpdate, isOngoingTask } from "../task-kind";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ interface TaskDashboardProps {
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
-  onUpdateTask: (taskId: string, updates: Partial<Pick<Task, "title" | "status" | "pinned">>) => void;
+  onUpdateTask: (taskId: string, updates: Parameters<typeof patchTask>[1]) => void;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
@@ -228,6 +229,12 @@ export default function TaskDashboard({
     await Promise.all([refresh(), onRefresh?.()]);
   };
 
+  const handleKindChange = (nextKind: Task["kind"]) => {
+    const updates = getTaskKindUpdate(momentumTask, nextKind);
+    if (!updates) return;
+    void onUpdateTask(task.id, updates);
+  };
+
   const lastActivity = useMemo(() => {
     let latest = momentumTask.updatedAt;
     for (const s of linkedSessions) {
@@ -282,6 +289,7 @@ export default function TaskDashboard({
       && openChecklistItems.length === 0
       && !hasBusySession
       && activePrCount === 0
+      && !isOngoingTask(momentumTask)
     ) {
       chips.push({
         label: "Candidate to close",
@@ -305,7 +313,7 @@ export default function TaskDashboard({
         <div>
           <div className="flex items-start gap-3">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <LayoutDashboard size={16} className="text-text-muted shrink-0" />
                 {group && (
                   <div className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-bg-hover shrink-0">
@@ -320,17 +328,7 @@ export default function TaskDashboard({
                 }`}>
                   {momentumTask.status}
                 </span>
-                <button
-                  onClick={() => onUpdateTask(task.id, { pinned: !task.pinned })}
-                  className={`p-0.5 rounded transition-colors ${
-                    task.pinned
-                      ? "text-accent hover:text-accent-hover"
-                      : "text-text-faint hover:text-text-muted"
-                  }`}
-                  title={task.pinned ? "Unpin task" : "Pin task"}
-                >
-                  <Pin size={12} className={task.pinned ? "rotate-45" : ""} />
-                </button>
+                <TaskKindSwitcher kind={momentumTask.kind} onChange={handleKindChange} />
               </div>
               <h1 className="text-xl font-semibold text-text-primary leading-tight">
                 {task.title}

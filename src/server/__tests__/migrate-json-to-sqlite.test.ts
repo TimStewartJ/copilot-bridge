@@ -64,7 +64,7 @@ describe("JSON task migration", () => {
     migrateJsonToSqlite(db, dataDir);
 
     const rows = db.prepare(`
-      SELECT id, status, doneWhen, nextAction, waitingOn, nextTouchAt, pinned
+      SELECT id, kind, status, doneWhen, nextAction, waitingOn, nextTouchAt
       FROM tasks
       ORDER BY id
     `).all() as Array<Record<string, unknown>>;
@@ -72,30 +72,30 @@ describe("JSON task migration", () => {
     expect(rows).toEqual([
       {
         id: "task-archived",
+        kind: "task",
         status: "archived",
         doneWhen: "Release is fully rolled out",
         nextAction: null,
         waitingOn: null,
         nextTouchAt: null,
-        pinned: 0,
       },
       {
         id: "task-done",
+        kind: "task",
         status: "done",
         doneWhen: "Release is fully rolled out",
         nextAction: null,
         waitingOn: null,
         nextTouchAt: null,
-        pinned: 0,
       },
       {
         id: "task-paused",
+        kind: "ongoing",
         status: "active",
-        doneWhen: "Release is fully rolled out",
+        doneWhen: null,
         nextAction: "Review production metrics",
         waitingOn: "Customer confirmation",
         nextTouchAt: "2026-03-01T12:00:00.000Z",
-        pinned: 1,
       },
     ]);
   });

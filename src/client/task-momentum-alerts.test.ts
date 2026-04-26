@@ -5,10 +5,10 @@ import { getTaskAlertChips } from "./components/task-momentum-alerts";
 const BASE_TASK: Task = {
   id: "task-1",
   title: "Refresh header",
+  kind: "task",
   status: "active",
   notes: "",
   priority: 3,
-  pinned: false,
   order: 0,
   createdAt: "2026-05-01T09:00:00.000Z",
   updatedAt: "2026-05-01T11:00:00.000Z",

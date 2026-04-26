@@ -149,7 +149,7 @@ async function main(): Promise<void> {
     assert.equal(tasksRes.status, 200, "tasks API did not return 200");
     const startHere = tasksRes.body.tasks.find((task: any) => task.title === "Start Here - Acme Launch Workspace");
     assert(startHere, "seeded Start Here task was not present in demo preview");
-    assert.equal(startHere.pinned, true);
+    assert.equal(startHere.kind, "ongoing");
     assert.equal(startHere.cwd, expectedWorkspace);
 
     const createTaskRes = await request(app)

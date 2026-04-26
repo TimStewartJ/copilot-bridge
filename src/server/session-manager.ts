@@ -650,12 +650,13 @@ export function createBridgeTools(ctx: AppContext) {
     },
   }),
   defineTool("task_update", {
-    description: "Update a task's title, notes, working directory, group, and/or tags. Only provided fields are changed.",
+    description: "Update a task's title, kind, notes, working directory, group, and/or tags. Only provided fields are changed.",
     parameters: {
       type: "object",
       properties: {
         taskId: { type: "string", description: "The task ID" },
         title: { type: "string", description: "New title" },
+        kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
         notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" },
@@ -668,8 +669,9 @@ export function createBridgeTools(ctx: AppContext) {
       required: ["taskId"],
     },
     handler: async (args: any) => {
-      const updates: Record<string, string | null> = {};
+      const updates: Record<string, unknown> = {};
       if (args.title !== undefined) updates.title = args.title;
+      if (args.kind !== undefined) updates.kind = args.kind;
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
@@ -678,7 +680,7 @@ export function createBridgeTools(ctx: AppContext) {
       if (args.waitingOn !== undefined) updates.waitingOn = args.waitingOn;
       if (args.nextTouchAt !== undefined) updates.nextTouchAt = args.nextTouchAt;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, notes, cwd, groupId, doneWhen, nextAction, waitingOn, nextTouchAt, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, notes, cwd, groupId, doneWhen, nextAction, waitingOn, nextTouchAt, tags");
       const task = ensureTask(args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
@@ -687,9 +689,10 @@ export function createBridgeTools(ctx: AppContext) {
         if (!tagStoreResult.ok) return toolFailure(tagStoreResult.error);
         tagStore = tagStoreResult.value;
       }
+      let updatedTask = task.value;
       if (Object.keys(updates).length > 0) {
         try {
-          ctx.taskStore.updateTask(args.taskId, updates as any);
+          updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any);
         } catch (error) {
           if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
           throw error;
@@ -704,11 +707,11 @@ export function createBridgeTools(ctx: AppContext) {
         tagStore.setEntityTags("task", args.taskId, tagIds);
       }
       const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
-      return { success: true, message: `Task updated (${fields})` };
+      return { success: true, message: `Task updated (${fields})`, kind: updatedTask.kind };
     },
   }),
   defineTool("task_get_info", {
-    description: "Get task details including title, status, linked work items, PRs, and notes",
+    description: "Get task details including title, kind, status, linked work items, PRs, and notes",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
       const task = ensureTask(args.taskId);
@@ -721,15 +724,15 @@ export function createBridgeTools(ctx: AppContext) {
     },
   }),
   defineTool("task_list", {
-    description: "List all tasks with their IDs, titles, statuses, and group IDs",
+    description: "List all tasks with their IDs, titles, kinds, statuses, and group IDs",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, status: t.status, groupId: t.groupId })) };
+      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, kind: t.kind, status: t.status, groupId: t.groupId })) };
     },
   }),
   defineTool("task_create", {
     description: "Create a new task",
-    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { type: "string", description: "Optional task group ID to create the task in" } }, required: ["title"] },
+    parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind. Defaults to task." }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { type: "string", description: "Optional task group ID to create the task in" } }, required: ["title"] },
     handler: async (args: any) => {
       let tagStore: TagStore | undefined;
       if (Array.isArray(args.tags) && args.tags.length > 0) {
@@ -737,7 +740,13 @@ export function createBridgeTools(ctx: AppContext) {
         if (!tagStoreResult.ok) return toolFailure(tagStoreResult.error);
         tagStore = tagStoreResult.value;
       }
-      const task = ctx.taskStore.createTask(args.title, args.groupId);
+      let task;
+      try {
+        task = ctx.taskStore.createTask(args.title, args.groupId, args.kind);
+      } catch (error) {
+        if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
+        throw error;
+      }
       if (Array.isArray(args.tags) && args.tags.length > 0 && tagStore) {
         const tagIds = args.tags.map((name: string) => {
           const existing = tagStore.getTagByName(name);
@@ -746,7 +755,7 @@ export function createBridgeTools(ctx: AppContext) {
         });
         tagStore.setEntityTags("task", task.id, tagIds);
       }
-      return { success: true, message: `Task "${task.title}" created`, taskId: task.id };
+      return { success: true, message: `Task "${task.title}" created`, taskId: task.id, kind: task.kind };
     },
   }),
   defineTool("task_group_create", {
@@ -2485,12 +2494,12 @@ export class SessionManager {
     const task = {
       id: taskId,
       title: taskTitle,
+      kind: fullTask?.kind ?? "task",
       status: "active" as const,
       groupId: fullTask?.groupId,
       cwd: fullTask?.cwd ?? cwd,
       notes: notes || "",
       priority: 0,
-      pinned: fullTask?.pinned ?? false,
       order: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

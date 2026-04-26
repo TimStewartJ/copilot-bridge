@@ -63,7 +63,7 @@ function startServer(paths: Pick<DemoPaths, "dataDir" | "docsDir" | "copilotHome
   const port = resolveBridgePort(env);
 
   console.log(`[demo] Launching bridge with demo workspace at ${paths.dataDir}`);
-  console.log(`[demo] Open http://localhost:${port} and start with the pinned "Start Here - Acme Launch Workspace" task.`);
+  console.log(`[demo] Open http://localhost:${port} and start with the ongoing "Start Here - Acme Launch Workspace" task.`);
   mkdirSync(paths.copilotHome, { recursive: true });
 
   const child = spawn(process.execPath, [TSX_CLI, SERVER_ENTRY], {

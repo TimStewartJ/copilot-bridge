@@ -17,6 +17,8 @@ import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu } from "./task-list";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import TaskKindBadge from "./TaskKindBadge";
+import { getTaskKindLabel } from "../task-kind";
 
 interface TaskRailProps {
   tasks: Task[];
@@ -41,7 +43,6 @@ interface TaskRailProps {
     updates: {
       title?: Task["title"];
       status?: Task["status"];
-      pinned?: Task["pinned"];
       nextTouchAt?: Task["nextTouchAt"] | null;
     },
   ) => void;
@@ -80,6 +81,12 @@ const STATUS_BG: Record<Task["status"], string> = {
   done: "bg-success/15",
   archived: "bg-text-faint/10",
 };
+
+function getTaskTitle(task: Task): string {
+  return task.kind === "ongoing"
+    ? `${task.title} · ${getTaskKindLabel(task.kind).toLowerCase()}`
+    : task.title;
+}
 
 
 export default function TaskRail({
@@ -243,11 +250,11 @@ export default function TaskRail({
                       <button
                         key={task.id}
                         onClick={() => onSelectTask(task.id)}
-                        title={task.title}
+                        title={getTaskTitle(task)}
                         className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
                       >
                         {initials}
-                        {task.pinned && (
+                        {task.kind === "ongoing" && (
                           <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                         )}
                         {indicator?.busy && (
@@ -273,11 +280,11 @@ export default function TaskRail({
                 <button
                   key={task.id}
                   onClick={() => onSelectTask(task.id)}
-                  title={task.title}
+                  title={getTaskTitle(task)}
                   className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
                 >
                   {initials}
-                  {task.pinned && (
+                  {task.kind === "ongoing" && (
                     <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                   )}
                   {indicator?.busy && (
@@ -306,7 +313,7 @@ export default function TaskRail({
                   <button
                     key={task.id}
                     onClick={() => onSelectTask(task.id)}
-                    title={task.title}
+                    title={getTaskTitle(task)}
                     className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110 opacity-60`}
                   >
                     {initials}
@@ -580,6 +587,7 @@ export default function TaskRail({
                         <span className="font-medium truncate flex-1">
                           {task.title}
                         </span>
+                        <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
                         <span className="text-[10px] text-text-faint">archived</span>
                       </div>
                       <div className="text-xs text-text-muted mt-0.5">

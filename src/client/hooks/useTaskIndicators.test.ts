@@ -8,10 +8,10 @@ function createTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task-1",
     title: "Task",
+    kind: "task",
     status: "active",
     notes: "",
     priority: 0,
-    pinned: false,
     order: 0,
     createdAt: NOW,
     updatedAt: NOW,

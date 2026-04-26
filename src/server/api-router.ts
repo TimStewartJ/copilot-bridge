@@ -1600,13 +1600,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/tasks", (req, res) => {
-    const { title, groupId } = req.body;
+    const { title, groupId, kind } = req.body;
     if (!title) return res.status(400).json({ error: "title is required" });
     try {
-      const task = ctx.taskStore.createTask(title, groupId);
+      const task = ctx.taskStore.createTask(title, groupId, kind);
       res.json({ task });
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(err instanceof InvalidTaskUpdateError ? 400 : 500).json({ error: message });
     }
   });
 
@@ -1660,12 +1661,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const task = ctx.taskStore.updateTask(req.params.id, {
         title: req.body?.title,
+        kind: req.body?.kind,
         status: req.body?.status,
         notes: req.body?.notes,
         priority: req.body?.priority,
         cwd: req.body?.cwd,
         groupId: req.body?.groupId,
-        pinned: req.body?.pinned,
         doneWhen: req.body?.doneWhen,
         nextAction: req.body?.nextAction,
         waitingOn: req.body?.waitingOn,
@@ -2010,6 +2011,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const lastActivityMs = Date.parse(lastActivity);
         return Number.isFinite(lastActivityMs) && lastActivityMs < staleCutoffMs;
       };
+      const closeableMomentumTasks = activeTaskEntries.filter((entry) => entry.task.kind === "task");
       const taskMomentum = {
         needsDecision: activeTaskEntries.filter((entry) =>
           !entry.task.nextAction
@@ -2018,7 +2020,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         ),
         followUpNow: activeTaskEntries.filter((entry) => isDueNow(entry.task.nextTouchAt)),
         waiting: activeTaskEntries.filter((entry) => !!entry.task.waitingOn),
-        candidateToClose: activeTaskEntries.filter((entry) =>
+        candidateToClose: closeableMomentumTasks.filter((entry) =>
           entry.checklistSummary.open === 0
           && !entry.hasBusySession
           && entry.prSummary.active === 0

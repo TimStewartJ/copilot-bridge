@@ -24,15 +24,16 @@ import TagPicker from "./TagPicker";
 import {
   FolderOpen,
   LayoutDashboard,
-  Pin,
   AlertTriangle,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
+import TaskKindSwitcher from "./TaskKindSwitcher";
 import TaskPanelSummaryRow from "./TaskPanelSummaryRow";
 import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
+import { getTaskKindUpdate } from "../task-kind";
 import {
   WorkItemList,
   PullRequestList,
@@ -71,7 +72,7 @@ interface TaskPanelProps {
   onNewSession: (taskId: string) => void;
   onUpdateTask: (
     taskId: string,
-    updates: Partial<Pick<Task, "title" | "status" | "pinned">>,
+    updates: Parameters<typeof patchTask>[1],
   ) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
@@ -325,6 +326,12 @@ export default function TaskPanel({
     setEditingTitle(false);
   };
 
+  const handleKindChange = (nextKind: Task["kind"]) => {
+    const updates = getTaskKindUpdate(currentTask, nextKind);
+    if (!updates) return;
+    onUpdateTask(task.id, updates);
+  };
+
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-border bg-bg-secondary md:w-64">
       <div className="space-y-2.5 border-b border-border p-3">
@@ -338,9 +345,12 @@ export default function TaskPanel({
               <span>Task Overview</span>
             </button>
           ) : <span />}
-          <span className={getStatusBadgeClass(currentTask.status)}>
-            {currentTask.status}
-          </span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <TaskKindSwitcher kind={currentTask.kind} onChange={handleKindChange} />
+            <span className={getStatusBadgeClass(currentTask.status)}>
+              {currentTask.status}
+            </span>
+          </div>
         </div>
 
         <div className="flex items-start gap-2">
@@ -401,17 +411,6 @@ export default function TaskPanel({
             </div>
           </div>
 
-          <button
-            onClick={() => onUpdateTask(task.id, { pinned: !task.pinned })}
-            className={`shrink-0 rounded p-1 transition-colors ${
-              task.pinned
-                ? "text-accent hover:text-accent-hover"
-                : "text-text-faint hover:text-text-muted"
-            }`}
-            title={task.pinned ? "Unpin task" : "Pin task"}
-          >
-            <Pin size={12} className={task.pinned ? "rotate-45" : ""} />
-          </button>
         </div>
 
         {alertChips.length > 0 && (

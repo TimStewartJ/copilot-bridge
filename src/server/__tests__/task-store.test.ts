@@ -24,6 +24,7 @@ describe("task-store", () => {
       const task = store.createTask("My Task");
       expect(task.id).toBeTruthy();
       expect(task.title).toBe("My Task");
+      expect(task.kind).toBe("task");
       expect(task.status).toBe("active");
       expect(task.notes).toBe("");
       expect(task.doneWhen).toBeUndefined();
@@ -33,6 +34,40 @@ describe("task-store", () => {
       expect(task.sessionIds).toEqual([]);
       expect(task.workItems).toEqual([]);
       expect(task.pullRequests).toEqual([]);
+    });
+
+    it("createTask accepts ongoing kind and rejects invalid kinds", () => {
+      const ongoing = store.createTask("Keep watch", undefined, "ongoing");
+      expect(ongoing).toMatchObject({
+        title: "Keep watch",
+        kind: "ongoing",
+        status: "active",
+      });
+
+      const raw = db.prepare("SELECT kind FROM tasks WHERE id = ?").get(ongoing.id) as any;
+      expect(raw.kind).toBe("ongoing");
+
+      expect(() => store.createTask("Bad kind", undefined, "invalid" as any))
+        .toThrow("kind must be either 'task' or 'ongoing'");
+    });
+
+    it("createTask rejects invalid kinds without reordering active tasks", () => {
+      const first = store.createTask("First");
+      const second = store.createTask("Second");
+      const before = store.listTasks().map((task) => ({
+        id: task.id,
+        order: task.order,
+      }));
+
+      expect(() => store.createTask("Bad kind", undefined, "invalid" as any))
+        .toThrow("kind must be either 'task' or 'ongoing'");
+
+      expect(store.listTasks().map((task) => ({
+        id: task.id,
+        order: task.order,
+      }))).toEqual(before);
+      expect(store.getTask(second.id)).toMatchObject({ order: 0 });
+      expect(store.getTask(first.id)).toMatchObject({ order: 1 });
     });
 
     it("defaults task cwd to the demo workspace in demo mode", () => {
@@ -65,11 +100,83 @@ describe("task-store", () => {
       expect(list[1].id).toBe(t1.id);
     });
 
+    it("listTasks floats ongoing tasks above normal tasks within status buckets", () => {
+      const normal = store.createTask("Normal");
+      const ongoing = store.createTask("Ongoing", undefined, "ongoing");
+      const newerNormal = store.createTask("Newer normal");
+
+      const active = store.listTasks().filter((task) => task.status === "active");
+      expect(active.map((task) => task.id)).toEqual([ongoing.id, newerNormal.id, normal.id]);
+    });
+
     it("updateTask changes fields", () => {
       const task = store.createTask("Original");
       const updated = store.updateTask(task.id, { title: "Updated", notes: "some notes" });
       expect(updated.title).toBe("Updated");
       expect(updated.notes).toBe("some notes");
+    });
+
+    it("hydrates task kind from stored rows and defaults missing kinds to task", () => {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "task-kind-default",
+        "Kind default",
+        "active",
+        null,
+        null,
+        "",
+        0,
+        0,
+        now,
+        now,
+      );
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, kind, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "task-kind-ongoing",
+        "Kind ongoing",
+        "ongoing",
+        "active",
+        null,
+        null,
+        "",
+        0,
+        1,
+        now,
+        now,
+      );
+
+      expect(store.getTask("task-kind-default")).toMatchObject({ kind: "task" });
+      expect(store.getTask("task-kind-ongoing")).toMatchObject({ kind: "ongoing" });
+    });
+
+    it("hydrates invalid stored task kinds as task", () => {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO tasks (
+          id, title, kind, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "task-kind-invalid",
+        "Kind invalid",
+        "mystery",
+        "active",
+        null,
+        null,
+        "",
+        0,
+        0,
+        now,
+        now,
+      );
+
+      expect(store.getTask("task-kind-invalid")).toMatchObject({ kind: "task" });
     });
 
     it("updateTask rejects invalid nextTouchAt values", () => {
@@ -89,13 +196,55 @@ describe("task-store", () => {
       expect(store.getTask(task.id)?.nextTouchAt).toBeUndefined();
     });
 
+    it("updateTask persists kind changes", () => {
+      const task = store.createTask("Original");
+      const updated = store.updateTask(task.id, { kind: "ongoing" });
+      expect(updated.kind).toBe("ongoing");
+
+      const raw = db.prepare("SELECT kind FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw.kind).toBe("ongoing");
+    });
+
+    it("updateTask rejects invalid task kinds", () => {
+      const task = store.createTask("Original");
+      expect(() => store.updateTask(task.id, { kind: "invalid" as any }))
+        .toThrow("kind must be either 'task' or 'ongoing'");
+    });
+
+    it("updateTask rejects done status for ongoing tasks unless explicitly changed", () => {
+      const task = store.createTask("Original");
+      store.updateTask(task.id, { kind: "ongoing" });
+
+      expect(() => store.updateTask(task.id, { status: "done" }))
+        .toThrow("Ongoing tasks cannot be marked done");
+
+      const converted = store.updateTask(task.id, { kind: "task", status: "done" });
+      expect(converted).toMatchObject({ kind: "task", status: "done" });
+    });
+
+    it("updateTask clears doneWhen when switching to ongoing unless explicitly preserved", () => {
+      const task = store.createTask("Original");
+      store.updateTask(task.id, { doneWhen: "Ship it" });
+
+      const converted = store.updateTask(task.id, { kind: "ongoing" });
+      expect(converted).toMatchObject({ kind: "ongoing", doneWhen: undefined });
+
+      const raw = db.prepare("SELECT doneWhen FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw.doneWhen).toBeNull();
+
+      const explicit = store.createTask("Explicit");
+      store.updateTask(explicit.id, { doneWhen: "Still here" });
+      expect(() => store.updateTask(explicit.id, { kind: "ongoing", doneWhen: "Still here" }))
+        .toThrow("Ongoing tasks cannot keep doneWhen");
+    });
+
     it("hydrates optional momentum fields from stored rows", () => {
       const now = new Date().toISOString();
       db.prepare(`
         INSERT INTO tasks (
           id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-          priority, pinned, "order", createdAt, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         "task-hydrate",
         "Hydrate me",
@@ -107,7 +256,6 @@ describe("task-store", () => {
         "Review the latest diff",
         "QA sign-off",
         "2025-01-02T03:04:05.000Z",
-        0,
         0,
         0,
         now,
@@ -128,8 +276,8 @@ describe("task-store", () => {
       db.prepare(`
         INSERT INTO tasks (
           id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-          priority, pinned, "order", createdAt, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         "task-hydrate-empty",
         "Hydrate empty",
@@ -141,7 +289,6 @@ describe("task-store", () => {
         "",
         "   ",
         "",
-        0,
         0,
         0,
         now,
@@ -161,8 +308,8 @@ describe("task-store", () => {
       db.prepare(`
         INSERT INTO tasks (
           id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-          priority, pinned, "order", createdAt, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, "order", createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         "task-hydrate-invalid-touch",
         "Hydrate invalid touch",
@@ -174,7 +321,6 @@ describe("task-store", () => {
         null,
         null,
         "not-a-date",
-        0,
         0,
         0,
         now,
@@ -277,19 +423,45 @@ describe("task-store", () => {
       });
     });
 
+    it("updateTask switches done tasks back to active when kind changes to ongoing", () => {
+      const existingActive = store.createTask("Already active");
+      const task = store.createTask("Task 1");
+      store.updateTask(task.id, { status: "done", doneWhen: "Ship it" });
+
+      const updated = store.updateTask(task.id, { kind: "ongoing" });
+      expect(updated).toMatchObject({ kind: "ongoing", status: "active", doneWhen: undefined, order: 0 });
+
+      const active = store.listTasks().filter((candidate) => candidate.status === "active");
+      expect(active.map((candidate) => candidate.id)).toEqual([task.id, existingActive.id]);
+
+      const raw = db.prepare('SELECT status, doneWhen, "order" FROM tasks WHERE id = ?').get(task.id) as any;
+      expect(raw).toEqual({ status: "active", doneWhen: null, order: 0 });
+    });
+
+    it("updateTask preserves explicit status updates when switching to ongoing", () => {
+      const task = store.createTask("Task 1");
+      store.updateTask(task.id, { status: "done" });
+
+      const updated = store.updateTask(task.id, { kind: "ongoing", status: "archived" });
+      expect(updated).toMatchObject({ kind: "ongoing", status: "archived" });
+
+      expect(() => store.updateTask(task.id, { kind: "ongoing", status: "done" }))
+        .toThrow("Ongoing tasks cannot be marked done");
+    });
+
     it("updateTask persists optional momentum fields and clears empty strings", () => {
       const task = store.createTask("Momentum");
 
       const updated = store.updateTask(task.id, {
         doneWhen: "Merged and deployed",
-        nextAction: "Ping support",
+        nextAction: "Contact support",
         waitingOn: "Vendor response",
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });
 
       expect(updated).toMatchObject({
         doneWhen: "Merged and deployed",
-        nextAction: "Ping support",
+        nextAction: "Contact support",
         waitingOn: "Vendor response",
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });
@@ -297,7 +469,7 @@ describe("task-store", () => {
       const raw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
       expect(raw).toEqual({
         doneWhen: "Merged and deployed",
-        nextAction: "Ping support",
+        nextAction: "Contact support",
         waitingOn: "Vendor response",
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });

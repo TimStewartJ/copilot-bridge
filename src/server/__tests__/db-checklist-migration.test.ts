@@ -29,7 +29,6 @@ function createLegacyTaskTable(db: DatabaseSync): void {
       cwd TEXT,
       notes TEXT NOT NULL DEFAULT '',
       priority INTEGER NOT NULL DEFAULT 0,
-      pinned INTEGER NOT NULL DEFAULT 0,
       "order" INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
@@ -57,8 +56,8 @@ describe("database checklist migration", () => {
       );
     `);
     legacyDb.prepare(`
-      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
-      VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, 0, ?, ?)
+      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, ?, ?)
     `).run("task-1", "Migrated task", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
     legacyDb.prepare(`
       INSERT INTO todos (id, taskId, text, done, "order", createdAt, completedAt, deadline)
@@ -150,8 +149,8 @@ describe("database checklist migration", () => {
       );
     `);
     legacyDb.prepare(`
-      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
-      VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, 0, ?, ?)
+      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'active', NULL, NULL, '', 0, 0, ?, ?)
     `).run("task-2", "Normalized task", "2026-04-05T00:00:00.000Z", "2026-04-05T00:00:00.000Z");
     legacyDb.prepare(`
       INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, completedAt)

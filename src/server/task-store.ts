@@ -24,9 +24,12 @@ export interface PRRef {
   provider: ProviderName;
 }
 
+export type TaskKind = "task" | "ongoing";
+
 export interface Task {
   id: string;
   title: string;
+  kind: TaskKind;
   status: TaskStatus;
   groupId?: string;
   cwd?: string;
@@ -36,7 +39,6 @@ export interface Task {
   waitingOn?: string;
   nextTouchAt?: string;
   priority: number;
-  pinned: boolean;
   order: number;
   createdAt: string;
   updatedAt: string;
@@ -45,15 +47,30 @@ export interface Task {
   pullRequests: PRRef[];
 }
 
-type TaskUpdate = Partial<
-  Pick<Task, "title" | "status" | "notes" | "priority" | "cwd" | "groupId" | "pinned" | "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt">
->;
+type TaskUpdate = {
+  title?: string;
+  kind?: TaskKind;
+  status?: Task["status"];
+  notes?: string;
+  priority?: number;
+  cwd?: string | null;
+  groupId?: string | null;
+  doneWhen?: string | null;
+  nextAction?: string | null;
+  waitingOn?: string | null;
+  nextTouchAt?: string | null;
+};
 
 const STATUS_ORDER: Record<Task["status"], number> = {
   active: 0,
   done: 1,
   archived: 2,
 };
+
+function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): number {
+  if (a.kind === b.kind) return 0;
+  return a.kind === "ongoing" ? -1 : 1;
+}
 
 function getDefaultTaskCwd(): string | undefined {
   const runtimePaths = resolveRuntimePaths(process.env);
@@ -75,6 +92,18 @@ function normalizeUpdatedTaskStatus(value: unknown): TaskStatus {
   if (value === "active" || value === "paused") return "active";
   if (value === "done" || value === "archived") return value;
   throw new InvalidTaskUpdateError("status must be one of: active, done, archived");
+}
+
+function normalizeTaskKind(value: unknown, opts: { strict?: boolean } = {}): TaskKind {
+  if (value === "task" || value === "ongoing") return value;
+  if (opts.strict) throw new InvalidTaskUpdateError("kind must be either 'task' or 'ongoing'");
+  return "task";
+}
+
+function assertTaskInvariants(task: Pick<Task, "kind" | "status" | "doneWhen">): void {
+  if (task.kind !== "ongoing") return;
+  if (task.status === "done") throw new InvalidTaskUpdateError("Ongoing tasks cannot be marked done");
+  if (task.doneWhen !== undefined) throw new InvalidTaskUpdateError("Ongoing tasks cannot keep doneWhen");
 }
 
 function isLeapYear(year: number): boolean {
@@ -165,6 +194,7 @@ export function createTaskStore(
     return {
       id,
       title: row.title,
+      kind: normalizeTaskKind(row.kind),
       status: normalizeStoredTaskStatus(row.status),
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
@@ -174,7 +204,6 @@ export function createTaskStore(
       waitingOn: normalizeOptionalText(row.waitingOn),
       nextTouchAt: normalizeOptionalTimestamp(row.nextTouchAt),
       priority: row.priority,
-      pinned: row.pinned === 1,
       order: row.order,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -201,8 +230,8 @@ export function createTaskStore(
     return tasks.sort((a, b) => {
       const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
       if (statusDiff !== 0) return statusDiff;
-      // Pinned tasks float to top within their status group
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      const kindDiff = compareOngoingFirst(a, b);
+      if (kindDiff !== 0) return kindDiff;
       return a.order - b.order;
     });
   }
@@ -212,7 +241,9 @@ export function createTaskStore(
     return row ? hydrate(row) : undefined;
   }
 
-  function createTask(title: string, groupId?: string): Task {
+  function createTask(title: string, groupId?: string, kind?: TaskKind): Task {
+    const normalizedKind = kind === undefined ? "task" : normalizeTaskKind(kind, { strict: true });
+
     // Bump order of all existing active tasks to make room at top
     db.prepare('UPDATE tasks SET "order" = "order" + 1 WHERE status = \'active\'').run();
 
@@ -221,9 +252,9 @@ export function createTaskStore(
     const cwd = defaultTaskCwd();
 
     db.prepare(`
-      INSERT INTO tasks (id, title, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
-      VALUES (?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
-    `).run(id, title, groupId || null, cwd ?? null, now, now);
+      INSERT INTO tasks (id, title, kind, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
+      VALUES (?, ?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
+    `).run(id, title, normalizedKind, groupId || null, cwd ?? null, now, now);
 
     const task = getTask(id)!;
     emitChange(id);
@@ -240,25 +271,44 @@ export function createTaskStore(
     const hasNextActionUpdate = updates.nextAction !== undefined;
     const hasWaitingOnUpdate = updates.waitingOn !== undefined;
     const hasNextTouchAtUpdate = updates.nextTouchAt !== undefined;
+    const currentKind = normalizeTaskKind(row.kind);
+    const nextKind = updates.kind !== undefined
+      ? normalizeTaskKind(updates.kind, { strict: true })
+      : currentKind;
+    const switchingToOngoing = nextKind === "ongoing" && currentKind !== "ongoing";
+    const requestedStatus = updates.status !== undefined
+      ? normalizeUpdatedTaskStatus(updates.status)
+      : undefined;
+    const targetStatus = requestedStatus
+      ?? (switchingToOngoing && oldStatus === "done"
+        ? "active"
+        : oldStatus);
+    const shouldPersistStatus = requestedStatus !== undefined || (switchingToOngoing && oldStatus === "done");
+    const shouldPersistDoneWhen = hasDoneWhenUpdate
+      || (switchingToOngoing && row.doneWhen !== null && row.doneWhen !== undefined);
+    const doneWhen = hasDoneWhenUpdate ? normalizeOptionalText(updates.doneWhen) ?? null : undefined;
+    const nextDoneWhen = hasDoneWhenUpdate
+      ? doneWhen ?? undefined
+      : switchingToOngoing
+        ? undefined
+        : normalizeOptionalText(row.doneWhen);
+
+    assertTaskInvariants({
+      kind: nextKind,
+      status: targetStatus,
+      doneWhen: nextDoneWhen,
+    });
 
     const fields: string[] = ["updatedAt = ?"];
     const values: any[] = [now];
-    let requestedStatus: TaskStatus | undefined;
-    let targetStatus = oldStatus;
 
     if (updates.title !== undefined) { fields.push("title = ?"); values.push(updates.title); }
-    if (updates.status !== undefined) {
-      requestedStatus = normalizeUpdatedTaskStatus(updates.status);
-      targetStatus = requestedStatus;
-      fields.push("status = ?");
-      values.push(targetStatus);
-    }
+    if (updates.kind !== undefined) { fields.push("kind = ?"); values.push(nextKind); }
+    if (shouldPersistStatus) { fields.push("status = ?"); values.push(targetStatus); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
     if (updates.priority !== undefined) { fields.push("priority = ?"); values.push(updates.priority); }
-    if (updates.pinned !== undefined) { fields.push("pinned = ?"); values.push(updates.pinned ? 1 : 0); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
     if (updates.groupId !== undefined) { fields.push("groupId = ?"); values.push(updates.groupId || null); }
-    const doneWhen = hasDoneWhenUpdate ? normalizeOptionalText(updates.doneWhen) ?? null : undefined;
     const nextAction = hasNextActionUpdate ? normalizeOptionalText(updates.nextAction) ?? null : undefined;
     const waitingOn = hasWaitingOnUpdate ? normalizeOptionalText(updates.waitingOn) ?? null : undefined;
     const nextTouchAt = hasNextTouchAtUpdate
@@ -272,7 +322,7 @@ export function createTaskStore(
       throw new InvalidTaskUpdateError(ACTIVE_TASK_MOMENTUM_ERROR);
     }
 
-    if (hasDoneWhenUpdate) { fields.push("doneWhen = ?"); values.push(doneWhen); }
+    if (shouldPersistDoneWhen) { fields.push("doneWhen = ?"); values.push(hasDoneWhenUpdate ? doneWhen : null); }
     if (hasNextActionUpdate) { fields.push("nextAction = ?"); values.push(nextAction); }
     if (hasWaitingOnUpdate) { fields.push("waitingOn = ?"); values.push(waitingOn); }
     if (hasNextTouchAtUpdate) { fields.push("nextTouchAt = ?"); values.push(nextTouchAt); }
@@ -284,8 +334,8 @@ export function createTaskStore(
     }
 
     // When status changes, place task at top of new group
-    if (requestedStatus !== undefined && requestedStatus !== oldStatus) {
-      db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(requestedStatus, id);
+    if (shouldPersistStatus && targetStatus !== oldStatus) {
+      db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
       fields.push('"order" = ?');
       values.push(0);
     }

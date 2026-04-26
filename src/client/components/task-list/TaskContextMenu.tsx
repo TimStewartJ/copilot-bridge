@@ -1,14 +1,14 @@
 import { useState, useCallback, useMemo } from "react";
 import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
-import { Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, Pin, CalendarDays, X } from "lucide-react";
+import { Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
+import { isOngoingTask } from "../../task-kind";
 
 type TaskMenuUpdates = {
   title?: Task["title"];
   status?: Task["status"];
-  pinned?: Task["pinned"];
   nextTouchAt?: Task["nextTouchAt"] | null;
 };
 
@@ -86,15 +86,6 @@ export default function TaskContextMenu({
 
       <CtxDivider />
 
-      {/* Pin / Unpin */}
-      {onUpdateTask && (
-        <CtxItem
-          icon={<Pin size={14} className={task.pinned ? "rotate-45" : ""} />}
-          label={task.pinned ? "Unpin" : "Pin"}
-          onClick={() => { onUpdateTask(task.id, { pinned: !task.pinned }); closeMenu(); }}
-        />
-      )}
-
       {/* Status changes */}
       {onUpdateTask && task.status !== "active" && (
         <CtxItem
@@ -103,7 +94,7 @@ export default function TaskContextMenu({
           onClick={() => { onUpdateTask(task.id, { status: "active" }); closeMenu(); }}
         />
       )}
-      {onUpdateTask && task.status !== "done" && task.status !== "archived" && (
+      {onUpdateTask && !isOngoingTask(task) && task.status !== "done" && task.status !== "archived" && (
         <CtxItem
           icon={<CheckCircle size={14} />}
           label="Mark done"

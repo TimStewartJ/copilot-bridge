@@ -42,6 +42,12 @@ const FIELD_CONFIG_BY_KEY = FIELD_CONFIGS.reduce<Record<MomentumFieldKey, FieldC
 
 const PANEL_FIELD_ORDER: MomentumFieldKey[] = ["nextAction", "waitingOn", "nextTouchAt", "doneWhen"];
 
+export function getVisibleMomentumFieldKeys(kind: Task["kind"]): MomentumFieldKey[] {
+  return kind === "ongoing"
+    ? ["nextAction", "waitingOn", "nextTouchAt"]
+    : FIELD_CONFIGS.map((field) => field.key);
+}
+
 export default function TaskMomentumFields({
   task,
   variant = "panel",
@@ -59,10 +65,13 @@ export default function TaskMomentumFields({
     setDrafts(next);
     setEditingField(null);
     setSavingField(null);
-  }, [task.id, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
+  }, [task.id, task.kind, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
 
   const isDashboard = variant === "dashboard";
-  const orderedPanelFields = PANEL_FIELD_ORDER.map((key) => FIELD_CONFIG_BY_KEY[key]);
+  const visibleFieldKeys = getVisibleMomentumFieldKeys(task.kind);
+  const orderedPanelFields = PANEL_FIELD_ORDER
+    .filter((key) => visibleFieldKeys.includes(key))
+    .map((key) => FIELD_CONFIG_BY_KEY[key]);
   const visiblePanelFields = orderedPanelFields.filter((field) => values[field.key] || editingField === field.key);
   const quickAddFields = orderedPanelFields.filter((field) => !values[field.key] && editingField !== field.key);
 
@@ -224,7 +233,7 @@ export default function TaskMomentumFields({
 
   return (
     <div className={isDashboard ? "grid grid-cols-1 sm:grid-cols-2 gap-3" : "space-y-2"}>
-      {FIELD_CONFIGS.map((field) => {
+      {FIELD_CONFIGS.filter((field) => visibleFieldKeys.includes(field.key)).map((field) => {
         const currentValue = values[field.key];
         const isEditing = editingField === field.key;
         const isSaving = savingField === field.key;

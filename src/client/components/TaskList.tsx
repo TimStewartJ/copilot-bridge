@@ -29,7 +29,6 @@ interface TaskListProps {
     updates: {
       title?: Task["title"];
       status?: Task["status"];
-      pinned?: Task["pinned"];
       nextTouchAt?: Task["nextTouchAt"] | null;
     },
   ) => void;
