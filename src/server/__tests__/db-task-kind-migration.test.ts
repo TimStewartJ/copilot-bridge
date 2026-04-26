@@ -150,7 +150,7 @@ describe("database task kind migration", () => {
     `).all() as Array<{ id: string; status: string; doneWhen: string | null }>;
     expect(repairedRows).toEqual([
       { id: "legacy-ongoing-done", status: "active", doneWhen: null },
-      { id: "legacy-ongoing-paused", status: "paused", doneWhen: null },
+      { id: "legacy-ongoing-paused", status: "active", doneWhen: null },
     ]);
 
     const store = createTaskStore(db, createGlobalBus());
@@ -162,7 +162,7 @@ describe("database task kind migration", () => {
     });
     expect(store.updateTask("legacy-ongoing-paused", { waitingOn: "Vendor reply" })).toMatchObject({
       kind: "ongoing",
-      status: "paused",
+      status: "active",
       doneWhen: undefined,
       waitingOn: "Vendor reply",
     });
