@@ -1,25 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendLauncherLogLine, readLauncherLogTail } from "../launcher-log.js";
+import { makeTestDir } from "./helpers.js";
 
 let tempDir: string;
-let previousLogPath: string | undefined;
 
 beforeEach(() => {
-  tempDir = mkdtempSync(join(tmpdir(), "bridge-launcher-log-"));
-  previousLogPath = process.env.BRIDGE_LAUNCHER_LOG_PATH;
-  process.env.BRIDGE_LAUNCHER_LOG_PATH = join(tempDir, "launcher.log");
-});
-
-afterEach(() => {
-  if (previousLogPath === undefined) {
-    delete process.env.BRIDGE_LAUNCHER_LOG_PATH;
-  } else {
-    process.env.BRIDGE_LAUNCHER_LOG_PATH = previousLogPath;
-  }
-  rmSync(tempDir, { recursive: true, force: true });
+  tempDir = makeTestDir("launcher-log");
+  vi.stubEnv("BRIDGE_LAUNCHER_LOG_PATH", join(tempDir, "launcher.log"));
 });
 
 describe("launcher log helpers", () => {

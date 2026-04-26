@@ -1,3 +1,5 @@
+import { DEPLOY_GATE, ROLLBACK_GATE, runValidationGate } from "./server/validation-pipeline.js";
+
 export type LauncherCommandResult = { ok: boolean; output: string };
 export type LauncherCommandOptions = { timeoutMs?: number };
 
@@ -25,8 +27,6 @@ function logFailure(prefix: string, output: string, log: (msg: string) => void) 
   log(`${prefix}:\n${output.slice(-500)}`);
 }
 
-const DEPLOY_VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
-
 export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions): boolean {
   log("Building...");
   if (!ensureDeps()) {
@@ -34,9 +34,12 @@ export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions)
     return false;
   }
 
-  const validation = run("npm run test:deploy", { timeoutMs: DEPLOY_VALIDATION_TIMEOUT_MS });
+  const validation = runValidationGate(DEPLOY_GATE, {
+    cwd: ".",
+    run,
+  });
   if (!validation.ok) {
-    logFailure("Deploy validation failed", validation.output, log);
+    logFailure(`${validation.gate.label} failed`, validation.result.output, log);
     return false;
   }
 
@@ -58,9 +61,12 @@ export function rebuildAfterRollback({ ensureDeps, run, log }: LauncherBuildOpti
     return false;
   }
 
-  const client = run("npx vite build");
-  if (!client.ok) {
-    logFailure("Rollback build failed", client.output, log);
+  const validation = runValidationGate(ROLLBACK_GATE, {
+    cwd: ".",
+    run,
+  });
+  if (!validation.ok) {
+    logFailure(`${validation.gate.label} failed`, validation.result.output, log);
     return false;
   }
 

@@ -14,10 +14,13 @@ import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated }
 import { isRestartPending, triggerRestartPending } from "./session-manager.js";
 import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
+import { DEPLOY_GATE, PREVIEW_GATE, runValidationGate } from "./validation-pipeline.js";
 import { config } from "./config.js";
 import { toolFailure } from "./tool-results.js";
 import {
   buildCommandFailureOutput,
+  extractCommandFailureLogPath,
+  extractCommandFailureLogWriteError,
   isCommandTimeoutError,
   writeValidationCommandLog,
 } from "./validation-command-log.js";
@@ -36,8 +39,9 @@ const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MO
 const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-const PREVIEW_VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEMO_PREVIEW_SUFFIX = "-demo";
+const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
+const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type StagingPreviewProfile = "clone" | "demo";
 
@@ -249,8 +253,10 @@ async function importOptionalStagingModule(specifier: string) {
  * If package files or patch-package files differ, replace the node_modules
  * symlink with a real npm install so builds use the correct dependency state.
  */
-function ensureStagingDeps(stagingDir: string): void {
-  if (dependencySyncHash(stagingDir) === dependencySyncHash(PRODUCTION_ROOT)) return;
+function ensureStagingDeps(stagingDir: string): { ok: boolean; command?: string; output?: string } {
+  if (dependencySyncHash(stagingDir) === dependencySyncHash(PRODUCTION_ROOT)) {
+    return { ok: true };
+  }
 
   log("Staging dependency inputs differ from production — installing dependencies in staging...");
 
@@ -276,32 +282,17 @@ function ensureStagingDeps(stagingDir: string): void {
     log(`Prepared patched packages for staging install: ${prepared.packages.join(", ")}`);
   }
 
-  // Use a longer timeout (5 min) — clean installs can be slow
-  // Also pin PATH to the running Node binary's directory so npm uses v22+.
-  const nodeDir = dirname(process.execPath);
-  const installEnv = {
-    ...process.env,
-    PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
-  };
-  try {
-    const output = execSync("npm install --no-audit --no-fund --include=dev", {
-      cwd: stagingDir,
-      encoding: "utf-8",
-      timeout: 300_000,
-      env: installEnv,
-    });
+  const installResult = run(STAGING_INSTALL_COMMAND, stagingDir, {
+    timeoutMs: STAGING_INSTALL_TIMEOUT_MS,
+  });
+  if (installResult.ok) {
     prepared.discard();
     log("Staging npm install succeeded");
-  } catch (err: any) {
-    prepared.restore();
-    const errOutput = err.stderr || err.stdout || String(err);
-    log(`Warning: staging npm install failed: ${errOutput.slice(-300)}`);
-    // Fall back to re-linking production node_modules so builds at least attempt to work
-    const prodModules = join(PRODUCTION_ROOT, "node_modules");
-    if (existsSync(prodModules) && !existsSync(stagingModules)) {
-      createDirectoryLink(stagingModules, prodModules, PRODUCTION_ROOT);
-    }
+    return { ok: true };
   }
+  prepared.restore();
+  log(`Staging npm install failed: ${installResult.output.slice(-300)}`);
+  return { ok: false, command: STAGING_INSTALL_COMMAND, output: installResult.output };
 }
 
 /** Active staging previews: prefix → dist path */
@@ -981,6 +972,8 @@ function commandFailure(
   toolTelemetry: Record<string, unknown> = {},
 ) {
   const combinedDetail = joinFailureSections(detail, truncateFailureText(output, FAILURE_DETAIL_OUTPUT_LIMIT)) ?? detail;
+  const validationLogPath = extractCommandFailureLogPath(output);
+  const validationLogWriteError = extractCommandFailureLogWriteError(output);
   return stagingFailure(summary, combinedDetail, {
     sessionLog: joinFailureSections(
       detail,
@@ -988,7 +981,13 @@ function commandFailure(
       `Working directory: ${cwd}`,
       truncateFailureText(output, FAILURE_SESSION_LOG_OUTPUT_LIMIT),
     ),
-    toolTelemetry: { command, cwd, ...toolTelemetry },
+    toolTelemetry: {
+      command,
+      cwd,
+      ...(validationLogPath ? { validationLogPath } : {}),
+      ...(validationLogWriteError ? { validationLogWriteError } : {}),
+      ...toolTelemetry,
+    },
   });
 }
 
@@ -1317,21 +1316,31 @@ export const STAGING_TOOLS = [
       }
 
       // Install deps if staging package.json diverged from production
-      ensureStagingDeps(stagingDir);
+      const depsResult = ensureStagingDeps(stagingDir);
+      if (!depsResult.ok) {
+        return commandFailure(
+          "Staging dependency install failed.",
+          "Staging dependency inputs changed and npm install failed. Fix the staging worktree dependencies and retry.",
+          depsResult.command!,
+          stagingDir,
+          depsResult.output!,
+          { stagingDir },
+        );
+      }
 
       if (shouldValidate) {
-        const previewValidationCommand = "npm run test:preview";
-        const testResult = run(previewValidationCommand, stagingDir, {
-          timeoutMs: PREVIEW_VALIDATION_TIMEOUT_MS,
+        const validationResult = runValidationGate(PREVIEW_GATE, {
+          cwd: stagingDir,
+          run: (command, options) => run(command, stagingDir, options),
         });
-        if (!testResult.ok) {
+        if (!validationResult.ok) {
           return commandFailure(
             "Staging preview validation failed.",
-            "The staged changes did not pass the preview validation run.",
-            previewValidationCommand,
+            "The staged changes did not pass the preview validation gate.",
+            validationResult.step.command,
             stagingDir,
-            testResult.output,
-            { stagingDir },
+            validationResult.result.output,
+            { stagingDir, gateId: validationResult.gate.id },
           );
         }
       } else {
@@ -1553,6 +1562,35 @@ export const STAGING_TOOLS = [
       }
       log("Staging branch rebased onto production");
 
+      const depsResult = ensureStagingDeps(stagingDir);
+      if (!depsResult.ok) {
+        unstashProduction();
+        return commandFailure(
+          "Staging dependency install failed.",
+          "Staging dependency inputs changed after rebase and npm install failed. The rebased staging worktree is still intact for retry-after-fix.",
+          depsResult.command!,
+          stagingDir,
+          depsResult.output!,
+          { stagingDir, branch, prodBranch },
+        );
+      }
+
+      const validationResult = runValidationGate(DEPLOY_GATE, {
+        cwd: stagingDir,
+        run: (command, options) => run(command, stagingDir, options),
+      });
+      if (!validationResult.ok) {
+        unstashProduction();
+        return commandFailure(
+          "Staging deploy validation failed.",
+          "The rebased staging worktree did not pass the deploy validation gate. The staging worktree is still intact for retry-after-fix.",
+          validationResult.step.command,
+          stagingDir,
+          validationResult.result.output,
+          { stagingDir, branch, prodBranch, gateId: validationResult.gate.id },
+        );
+      }
+
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
       const headResult = run("git rev-parse HEAD", PRODUCTION_ROOT);
       const preDeploySha = headResult.ok ? headResult.output.trim() : "";
@@ -1597,20 +1635,59 @@ export const STAGING_TOOLS = [
 
       // Push to origin so other deployments can pick up the change
       let pushResult = run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+      let retryRebaseFailed = false;
       if (!pushResult.ok) {
         // Push may fail if remote has new commits — pull --rebase and retry once
         log("Push failed, attempting pull --rebase before retry...");
         const retryRebase = run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
         if (retryRebase.ok) {
           pushResult = run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+        } else {
+          retryRebaseFailed = true;
         }
       }
-      if (pushResult.ok) {
-        log("Pushed to origin");
-      } else {
-        log(`WARNING: Git push to origin failed — commits are local only. ` +
-            `Run 'git push origin ${prodBranch}' manually. ${pushResult.output.slice(-200)}`);
+      if (!pushResult.ok) {
+        if (preDeploySha) {
+          const resetCommand = `git reset --hard ${preDeploySha}`;
+          if (retryRebaseFailed) {
+            log("Push retry rebase failed — aborting any in-progress production rebase before reset");
+            const abortRebase = run("git rebase --abort", PRODUCTION_ROOT);
+            if (!abortRebase.ok) {
+              log(`Warning: git rebase --abort failed before push-failure reset: ${abortRebase.output.slice(-200)}`);
+            }
+          }
+          log(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
+          const resetResult = run(resetCommand, PRODUCTION_ROOT);
+          if (!resetResult.ok) {
+            return commandFailure(
+              "Push to origin failed and production reset failed.",
+              `The production merge succeeded locally, but pushing ${prodBranch} to origin failed and resetting the local production checkout back to ${preDeploySha} also failed. ` +
+                `Restart signaling was blocked, the rollback checkpoint was preserved, and manual recovery is required before retrying. ` +
+                `If production changes were stashed, restore them only after recovering the checkout.`,
+              resetCommand,
+              PRODUCTION_ROOT,
+              joinFailureSections(pushResult.output, resetResult.output) ?? resetResult.output,
+              { stagingDir, branch, prodBranch, commitSha, preDeploySha },
+            );
+          }
+          removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
+          log(`Production checkout reset to pre-deploy SHA after push failure: ${preDeploySha}`);
+        }
+        unstashProduction();
+        return commandFailure(
+          preDeploySha
+            ? "Push to origin failed; production merge reverted and restart blocked."
+            : "Push to origin failed; restart blocked.",
+          preDeploySha
+            ? `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. The local production checkout was reset back to ${preDeploySha}, restart signaling was blocked, and the staging worktree was left intact so deployment can be retried.`
+            : `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. Restart signaling was blocked, the rollback checkpoint was preserved, and the staging worktree was left intact for manual recovery.`,
+          `git push origin ${prodBranch}`,
+          PRODUCTION_ROOT,
+          pushResult.output,
+          { stagingDir, branch, prodBranch, commitSha, ...(preDeploySha ? { revertedTo: preDeploySha } : {}) },
+        );
       }
+      log("Pushed to origin");
 
       unstashProduction();
 

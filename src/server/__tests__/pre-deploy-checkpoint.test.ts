@@ -20,6 +20,7 @@ vi.mock("node:fs", () => ({
 import {
   clearRollbackCheckpoint,
   preserveOrCreateRollbackCheckpoint,
+  removeRollbackCheckpointIfCreated,
 } from "../pre-deploy-checkpoint.js";
 
 describe("pre-deploy checkpoint lifecycle", () => {
@@ -57,5 +58,31 @@ describe("pre-deploy checkpoint lifecycle", () => {
       createdByCurrentOperation: true,
     });
     expect(fileState.get(checkpointPath)).toBe("new-sha");
+  });
+
+  it("removes the checkpoint only when createdByCurrentOperation is true", () => {
+    const checkpoint = preserveOrCreateRollbackCheckpoint(checkpointPath, "sha-remove");
+    expect(checkpoint.createdByCurrentOperation).toBe(true);
+    expect(fileState.has(checkpointPath)).toBe(true);
+
+    removeRollbackCheckpointIfCreated(checkpointPath, checkpoint);
+    expect(fileState.has(checkpointPath)).toBe(false);
+  });
+
+  it("does not remove the checkpoint when createdByCurrentOperation is false", () => {
+    fileState.set(checkpointPath, "sha-preserve");
+
+    const checkpoint = preserveOrCreateRollbackCheckpoint(checkpointPath, "sha-other");
+    expect(checkpoint.createdByCurrentOperation).toBe(false);
+    expect(fileState.get(checkpointPath)).toBe("sha-preserve");
+
+    removeRollbackCheckpointIfCreated(checkpointPath, checkpoint);
+    expect(fileState.get(checkpointPath)).toBe("sha-preserve");
+  });
+
+  it("handles empty fallbackSha gracefully", () => {
+    const checkpoint = preserveOrCreateRollbackCheckpoint(checkpointPath, "");
+    expect(checkpoint).toEqual({ sha: "", createdByCurrentOperation: false });
+    expect(fileState.has(checkpointPath)).toBe(false);
   });
 });

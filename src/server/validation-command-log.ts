@@ -26,6 +26,9 @@ export interface ValidationCommandLogResult {
   error?: string;
 }
 
+const FULL_COMMAND_OUTPUT_PREFIX = "Full command output:";
+const FULL_COMMAND_OUTPUT_WRITE_ERROR_PREFIX = "Unable to write full command output:";
+
 export function isCommandTimeoutError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as { code?: unknown; signal?: unknown };
@@ -77,6 +80,23 @@ export function buildCommandFailureOutput({
     logPath ? `Full command output: ${logPath}` : undefined,
     logWriteError ? `Unable to write full command output: ${logWriteError}` : undefined,
   );
+}
+
+function extractPrefixedLineValue(output: string, prefix: string): string | undefined {
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith(prefix)) continue;
+    const value = line.slice(prefix.length).trim();
+    return value || undefined;
+  }
+  return undefined;
+}
+
+export function extractCommandFailureLogPath(output: string): string | undefined {
+  return extractPrefixedLineValue(output, FULL_COMMAND_OUTPUT_PREFIX);
+}
+
+export function extractCommandFailureLogWriteError(output: string): string | undefined {
+  return extractPrefixedLineValue(output, FULL_COMMAND_OUTPUT_WRITE_ERROR_PREFIX);
 }
 
 export function writeValidationCommandLog({

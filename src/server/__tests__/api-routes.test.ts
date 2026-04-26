@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { get } from "node:http";
-import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import request from "supertest";
 import type { Express } from "express";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { AppContext } from "../app-context.js";
 import type { DeferredPromptRunner } from "../deferred-prompt-runner.js";
 import { publishOutboundAttachment } from "../outbound-attachments.js";
@@ -13,7 +11,7 @@ import { writeRestartState } from "../restart-state.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
 import * as providers from "../providers/index.js";
-import { createMockSessionManager, createMockTranscriptionService, createTestApp } from "./helpers.js";
+import { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 let app: Express;
 let ctx: AppContext;
@@ -27,19 +25,14 @@ const TRANSCRIPTION_ENV_KEYS = [
   "BRIDGE_WHISPER_CPP_ARGS_JSON",
   "BRIDGE_WHISPER_CPP_NO_GPU",
 ] as const;
-const ORIGINAL_TRANSCRIPTION_ENV = Object.fromEntries(
-  TRANSCRIPTION_ENV_KEYS.map((key) => [key, process.env[key]]),
-) as Record<(typeof TRANSCRIPTION_ENV_KEYS)[number], string | undefined>;
-const COPILOT_USAGE_TEST_ROOT = join(process.cwd(), "data", "test-api-copilot-usage");
-const copilotUsageTestDirs: string[] = [];
-const restartStateTestDirs: string[] = [];
-
 function createCopilotUsageTestHome(options?: { dotDir?: boolean }): string {
-  const rootDir = join(COPILOT_USAGE_TEST_ROOT, randomUUID());
-  const copilotHome = options?.dotDir ? join(rootDir, ".copilot") : rootDir;
-  mkdirSync(copilotHome, { recursive: true });
-  copilotUsageTestDirs.push(rootDir);
-  return copilotHome;
+  const rootDir = makeTestDir("api-copilot-usage");
+  if (options?.dotDir) {
+    const copilotHome = join(rootDir, ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
+    return copilotHome;
+  }
+  return rootDir;
 }
 
 function writeCopilotUsageEvents(copilotHome: string, sessionId: string, events: unknown[]): void {
@@ -60,7 +53,7 @@ function writeRawCopilotUsageEvents(copilotHome: string, sessionId: string, line
 beforeEach(() => {
   clearRestartPending();
   for (const key of TRANSCRIPTION_ENV_KEYS) {
-    delete process.env[key];
+    vi.stubEnv(key, undefined);
   }
   ({ app, ctx } = createTestApp());
 });
@@ -68,37 +61,10 @@ beforeEach(() => {
 afterEach(() => {
   clearRestartPending();
   scheduler.shutdown();
-  for (const key of TRANSCRIPTION_ENV_KEYS) {
-    const original = ORIGINAL_TRANSCRIPTION_ENV[key];
-    if (original === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = original;
-    }
-  }
-  for (const dir of copilotUsageTestDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-  for (const dir of restartStateTestDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 function createRestartRuntimePaths() {
-  const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-data-"));
-  const docsDir = mkdtempSync(join(tmpdir(), "bridge-restart-docs-"));
-  restartStateTestDirs.push(dataDir, docsDir);
-  return {
-    demoMode: false,
-    dataDir,
-    docsDir,
-    env: {
-      ...process.env,
-      BRIDGE_DEMO_MODE: "false",
-      BRIDGE_DATA_DIR: dataDir,
-      BRIDGE_DOCS_DIR: docsDir,
-    },
-  };
+  return makeTestRuntimePaths("api-restart");
 }
 
 describe("Shutdown route", () => {
@@ -321,18 +287,10 @@ describe("Status stream", () => {
 });
 
 describe("Attachment routes", () => {
-  const tempDirs: string[] = [];
   const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it("GET /api/sessions/:id/attachments/:attachmentId downloads non-inline attachments", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
-    tempDirs.push(copilotHome);
+    const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
     const published = publishOutboundAttachment({
       copilotHome,
@@ -351,8 +309,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId serves raster images inline", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
-    tempDirs.push(copilotHome);
+    const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
     const published = publishOutboundAttachment({
       copilotHome,
@@ -371,8 +328,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId serves files from dot-directory copilot homes", async () => {
-    const parent = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
-    tempDirs.push(parent);
+    const parent = makeTestDir("route-home");
     const copilotHome = join(parent, ".copilot");
     const { app: attachmentApp } = createTestApp({ copilotHome });
     const published = publishOutboundAttachment({
@@ -391,8 +347,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId rejects invalid attachment ids", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
-    tempDirs.push(copilotHome);
+    const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
 
     const res = await request(attachmentApp)
@@ -403,8 +358,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId rejects traversal in session ids", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
-    tempDirs.push(copilotHome);
+    const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
     const victimSessionId = "11111111-1111-1111-1111-111111111111";
     const published = publishOutboundAttachment({
@@ -423,8 +377,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId returns 404 for missing attachments", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-route-home-"));
-    tempDirs.push(copilotHome);
+    const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
 
     const res = await request(attachmentApp)

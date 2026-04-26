@@ -1,7 +1,8 @@
 // Shared test helpers — SQLite in-memory database setup
 
 import express from "express";
-import { mkdtempSync } from "node:fs";
+import { afterEach, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openMemoryDatabase } from "../db.js";
@@ -26,7 +27,98 @@ import { createDocsIndex } from "../docs-index.js";
 import { createApiRouter } from "../api-router.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import type { AppContext } from "../app-context.js";
+import { resolveRuntimePaths } from "../runtime-paths.js";
+import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
+
+const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "COPILOT_HOME"] as const;
+const testCleanupPaths = new Set<string>();
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const dir of [...testCleanupPaths].sort((a, b) => b.length - a.length)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  testCleanupPaths.clear();
+});
+
+function sanitizeTestPrefix(prefix: string): string {
+  return prefix.replace(/[^a-z0-9-]+/gi, "-").replace(/^-+|-+$/g, "") || "test";
+}
+
+function createHermeticEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  for (const key of TEST_RUNTIME_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
+}
+
+export function makeTestDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `bridge-${sanitizeTestPrefix(prefix)}-`));
+  testCleanupPaths.add(dir);
+  return dir;
+}
+
+export function makeTestRuntimePaths(
+  prefix: string,
+  overrides: RuntimePathOverrides = {},
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): RuntimePaths {
+  const rootDir = makeTestDir(prefix);
+  const demoMode = overrides.demoMode ?? false;
+  const dataDir = overrides.dataDir ?? join(rootDir, "data");
+  const docsDir = overrides.docsDir ?? join(rootDir, "docs");
+  const copilotHome = overrides.copilotHome ?? join(rootDir, ".copilot");
+  const workspaceDir = overrides.workspaceDir ?? (demoMode ? join(rootDir, "workspace") : undefined);
+
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(docsDir, { recursive: true });
+  mkdirSync(copilotHome, { recursive: true });
+  if (workspaceDir) {
+    mkdirSync(workspaceDir, { recursive: true });
+  }
+
+  return resolveRuntimePaths(createHermeticEnv(baseEnv), {
+    ...overrides,
+    demoMode,
+    dataDir,
+    docsDir,
+    copilotHome,
+    ...(workspaceDir ? { workspaceDir } : {}),
+  });
+}
+
+export async function withTestEnv<T>(
+  overrides: Record<string, string | undefined>,
+  run: () => T | Promise<T>,
+): Promise<T> {
+  const keys = new Set<string>([...TEST_RUNTIME_ENV_KEYS, ...Object.keys(overrides)]);
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return await run();
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
 
 /**
  * Create an in-memory SQLite database with schema initialized.
@@ -116,15 +208,21 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
-  const runtimePaths = overrides?.runtimePaths;
-  const dataDir = runtimePaths?.dataDir ?? mkdtempSync(join(tmpdir(), "bridge-test-data-"));
-
-  const docsDir = runtimePaths?.docsDir ?? mkdtempSync(join(tmpdir(), "bridge-test-docs-"));
-  const docsStore = createDocsStore(docsDir);
+  const baseRuntimePaths = overrides?.runtimePaths ?? makeTestRuntimePaths("app", { copilotHome: overrides?.copilotHome });
+  const copilotHome = overrides?.copilotHome ?? baseRuntimePaths.copilotHome ?? join(makeTestDir("copilot-home"), ".copilot");
+  mkdirSync(copilotHome, { recursive: true });
+  const runtimePaths = resolveRuntimePaths(createHermeticEnv(baseRuntimePaths.env), {
+    demoMode: baseRuntimePaths.demoMode,
+    dataDir: baseRuntimePaths.dataDir,
+    docsDir: baseRuntimePaths.docsDir,
+    copilotHome,
+    workspaceDir: baseRuntimePaths.workspaceDir,
+  });
+  const docsStore = createDocsStore(runtimePaths.docsDir);
   const docsIndex = createDocsIndex(db, docsStore);
   const transcriptionService = createMockTranscriptionService();
   const sessionManager = createMockSessionManager();
-  const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, runtimePaths ? { runtimePaths } : undefined);
+  const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, { runtimePaths });
   const taskGroupStore = createTaskGroupStore(db);
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
@@ -146,16 +244,19 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     sessionManager,
     transcriptionService,
     deferredPromptStore: createDeferredPromptStore(db),
+    copilotHome,
     apiBasePath: "/api",
-    ...(runtimePaths ? { runtimePaths } : {}),
+    runtimePaths,
     launcherLogPath: undefined,
   };
   const ctx = {
     ...baseContext,
     ...overrides,
   } as AppContext;
+  ctx.runtimePaths = runtimePaths;
+  ctx.copilotHome ??= copilotHome;
   ctx.voiceJobManager ??= createVoiceJobManager({
-    dataDir,
+    dataDir: runtimePaths.dataDir,
     store: createVoiceJobStore(db),
     transcriptionService: ctx.transcriptionService,
     sessionManager: ctx.sessionManager,

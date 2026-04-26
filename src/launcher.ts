@@ -23,8 +23,11 @@ import {
   writeValidationCommandLog,
 } from "./server/validation-command-log.js";
 import {
+  buildRestartStateWithReleaseFailure,
   clearRestartState,
   readRestartState,
+  type ReleaseFailurePhase,
+  type ReleaseFailureState,
   writeRestartState,
 } from "./server/restart-state.js";
 import { canUseDevtunnelCli, getDevtunnelCliStatus } from "./server/tunnel.js";
@@ -115,6 +118,16 @@ let recoveringServer = false;
 let tunnelStatusLogged = false;
 let suppressAutoRecovery = hasPersistentRollbackFailureState(FAILED_ROLLBACK_STATE_FILE);
 let currentServerPort = resolveBridgePort();
+let lastCommandFailure:
+  | {
+      command: string;
+      validationLogPath?: string;
+      validationLogWriteError?: string;
+    }
+  | null = null;
+let lastRollbackTarget: string | null = null;
+let pendingReleaseFailure: ReleaseFailureState | null = null;
+let releaseCandidateSha: string | null = null;
 
 function log(msg: string) {
   const line = `[launcher] ${msg}`;
@@ -130,6 +143,10 @@ function gitHash(): string {
   try {
     return execSync("git rev-parse --short HEAD", { cwd: ROOT, encoding: "utf-8", timeout: 5_000 }).trim();
   } catch { return "unknown"; }
+}
+
+function normalizeGitHash(value: string): string | null {
+  return value && value !== "unknown" ? value : null;
 }
 
 const tag = () => `${gitHash()}, PID ${process.pid}`;
@@ -148,6 +165,7 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
   const startedAt = Date.now();
   try {
     const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: timeoutMs, env });
+    lastCommandFailure = null;
     return { ok: true, output };
   } catch (err: any) {
     const elapsedMs = Date.now() - startedAt;
@@ -169,6 +187,11 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
       timedOut,
       timeoutMs,
     });
+    lastCommandFailure = {
+      command: cmd,
+      validationLogPath: logResult.path,
+      validationLogWriteError: logResult.error,
+    };
     return {
       ok: false,
       output: buildCommandFailureOutput({
@@ -239,6 +262,7 @@ function rollback(): boolean {
       }
     }
   } catch {}
+  lastRollbackTarget = rollbackTarget;
   return runLauncherRollbackWithCheckpointHandling({
     rollbackTarget,
     ensureDeps,
@@ -303,6 +327,103 @@ async function safeClearRestartState(): Promise<void> {
   }
 }
 
+function captureReleaseFailureMetadata(): {
+  command: string | null;
+  validationLogPath: string | null;
+  commitSha: string | null;
+  rollbackTarget: string | null;
+} {
+  return {
+    command: lastCommandFailure?.command ?? null,
+    validationLogPath: lastCommandFailure?.validationLogPath ?? null,
+    commitSha: releaseCandidateSha ?? normalizeGitHash(gitHash()),
+    rollbackTarget: lastRollbackTarget,
+  };
+}
+
+function setPendingReleaseFailure(
+  phase: ReleaseFailurePhase,
+  event: ReleaseFailureState["event"],
+  message: string,
+): ReleaseFailureState {
+  const metadata = captureReleaseFailureMetadata();
+  pendingReleaseFailure = {
+    event,
+    phase,
+    failedAt: new Date().toISOString(),
+    message,
+    command: metadata.command,
+    validationLogPath: metadata.validationLogPath,
+    commitSha: metadata.commitSha,
+    rollbackTarget: metadata.rollbackTarget,
+  };
+  return pendingReleaseFailure;
+}
+
+function formatReleaseFailureMessage(
+  failure: ReleaseFailureState,
+  options: { includeTag?: boolean } = {},
+): string {
+  return [
+    failure.message,
+    failure.command ? `Command: ${failure.command}` : undefined,
+    failure.validationLogPath ? `Full command output: ${failure.validationLogPath}` : undefined,
+    failure.commitSha ? `Failed release: ${failure.commitSha}` : undefined,
+    failure.rollbackTarget ? `Rollback target: ${failure.rollbackTarget}` : undefined,
+    options.includeTag ? tag() : undefined,
+  ].filter((part): part is string => Boolean(part)).join(" — ");
+}
+
+async function safePersistPendingReleaseFailure(): Promise<void> {
+  if (!pendingReleaseFailure) return;
+  try {
+    const state = await readRestartState(RESTART_STATE_FILE);
+    await writeRestartState(
+      RESTART_STATE_FILE,
+      buildRestartStateWithReleaseFailure(state, pendingReleaseFailure),
+    );
+  } catch (err) {
+    log(`Failed to persist release failure state (non-fatal): ${err}`);
+  }
+}
+
+async function noteManualInterventionRequired(
+  phase: ReleaseFailurePhase,
+  message: string,
+): Promise<void> {
+  const failure = setPendingReleaseFailure(phase, "launcher-manual-intervention-required", message);
+  await safePersistPendingReleaseFailure();
+  await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, currentTunnelUrl ?? undefined);
+}
+
+async function noteRetryBudgetExhausted(
+  phase: ReleaseFailurePhase,
+  reason: string,
+): Promise<never> {
+  const failure = setPendingReleaseFailure(
+    phase,
+    "launcher-retry-budget-exhausted",
+    `Launcher exhausted retry budget after ${MAX_FAILURES} consecutive failures (${reason}).`,
+  );
+  await safePersistPendingReleaseFailure();
+  await notifyWebhook(`❌ ${formatReleaseFailureMessage(failure, { includeTag: true })}`, currentTunnelUrl ?? undefined);
+  process.exit(1);
+}
+
+async function recordFailureAndMaybeStop(
+  phase: ReleaseFailurePhase,
+  options: { manualInterventionMessage?: string; retryReason: string },
+): Promise<void> {
+  if (options.manualInterventionMessage) {
+    await noteManualInterventionRequired(phase, options.manualInterventionMessage);
+  }
+  consecutiveFailures++;
+  if (consecutiveFailures >= MAX_FAILURES) {
+    log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
+    await noteRetryBudgetExhausted(phase, options.retryReason);
+  }
+}
+
 async function processRestartSignal(): Promise<void> {
   if (restarting || shuttingDown) return;
   restarting = true;
@@ -311,7 +432,11 @@ async function processRestartSignal(): Promise<void> {
     restartOutcome = await restart();
   } finally {
     clearSignal();
-    await safeClearRestartState();
+    if (restartOutcome === "failed" && pendingReleaseFailure) {
+      await safePersistPendingReleaseFailure();
+    } else {
+      await safeClearRestartState();
+    }
     restarting = false;
     if (didRestartRecover(restartOutcome)) {
       clearFailedRollbackState();
@@ -642,6 +767,10 @@ async function gracefulStopServer(): Promise<boolean> {
 async function restart(): Promise<RestartOutcome> {
   log("═══ Restart requested ═══");
   const hadRunningServerAtStart = serverProcess !== null;
+  pendingReleaseFailure = null;
+  lastCommandFailure = null;
+  lastRollbackTarget = null;
+  releaseCandidateSha = normalizeGitHash(gitHash());
 
   // Preserve requestId / requestedAt from the queued state written by the server.
   const pickupInfo = await readRestartPickupInfo();
@@ -666,11 +795,10 @@ async function restart(): Promise<RestartOutcome> {
       enterStoppedStateAfterFailedRollback();
       try { await fetch(bridgeLocalUrl("/api/restart-clear"), { method: "POST" }); }
       catch { /* server may be unreachable */ }
-      consecutiveFailures++;
-      if (consecutiveFailures >= MAX_FAILURES) {
-        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-        process.exit(1);
-      }
+      await recordFailureAndMaybeStop("rollback", {
+        manualInterventionMessage: "Rollback failed after build validation failure — manual intervention required.",
+        retryReason: "rollback failure after build validation failure",
+      });
       return "failed";
     }
 
@@ -696,11 +824,10 @@ async function restart(): Promise<RestartOutcome> {
       rolledBackServerHealthy,
     });
     if (outcome === "failed") {
-      consecutiveFailures++;
-      if (consecutiveFailures >= MAX_FAILURES) {
-        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-        process.exit(1);
-      }
+      await recordFailureAndMaybeStop("rollback", {
+        manualInterventionMessage: "Rolled-back server failed health checks after build validation failure — manual intervention required.",
+        retryReason: "rolled-back server health check failure after build validation failure",
+      });
       return "failed";
     }
     consecutiveFailures = 0;
@@ -717,11 +844,9 @@ async function restart(): Promise<RestartOutcome> {
   const stopped = await gracefulStopServer();
   if (!stopped) {
     log("❌ Existing server did not exit after force kill — aborting restart");
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_FAILURES) {
-      log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-      process.exit(1);
-    }
+    await recordFailureAndMaybeStop("shutdown", {
+      retryReason: "server shutdown failure during restart",
+    });
     return "failed";
   }
   const replacementServer = startServer();
@@ -751,22 +876,19 @@ async function restart(): Promise<RestartOutcome> {
     await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
     const stoppedAfterFailure = await forceKillServerAndWait("Stopping failed restart before rollback...");
     if (!stoppedAfterFailure) {
-      consecutiveFailures++;
-      if (consecutiveFailures >= MAX_FAILURES) {
-        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-        process.exit(1);
-      }
+      await recordFailureAndMaybeStop("shutdown", {
+        retryReason: "failed restart shutdown failure before rollback",
+      });
       return "failed";
     }
     const rollbackSucceeded = rollback();
     if (!rollbackSucceeded) {
       log("❌ Rollback failed — leaving server stopped");
       enterStoppedStateAfterFailedRollback();
-      consecutiveFailures++;
-      if (consecutiveFailures >= MAX_FAILURES) {
-        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-        process.exit(1);
-      }
+      await recordFailureAndMaybeStop("rollback", {
+        manualInterventionMessage: "Rollback failed after restart health check failure — manual intervention required.",
+        retryReason: "rollback failure after restart health check failure",
+      });
       return "failed";
     }
     const rolledBackServer = startServer();
@@ -781,11 +903,10 @@ async function restart(): Promise<RestartOutcome> {
       log("❌ Rolled-back server failed health check");
       await forceKillServerAndWait("Stopping failed rolled-back server...");
       enterStoppedStateAfterFailedRollback();
-      consecutiveFailures++;
-      if (consecutiveFailures >= MAX_FAILURES) {
-        log(`❌ ${MAX_FAILURES} consecutive failures — stopping`);
-        process.exit(1);
-      }
+      await recordFailureAndMaybeStop("rollback", {
+        manualInterventionMessage: "Rolled-back server failed health checks — manual intervention required.",
+        retryReason: "rolled-back server health check failure",
+      });
       return "failed";
     }
     consecutiveFailures = 0;

@@ -14,32 +14,16 @@ const ENV_KEYS = [
   "BRIDGE_ENABLE_TUNNEL",
 ] as const;
 
-const originalEnv = new Map<string, string | undefined>(
-  ENV_KEYS.map((key) => [key, process.env[key]]),
-);
-
 async function loadTunnelModule(env: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {}) {
   vi.resetModules();
   for (const key of ENV_KEYS) {
-    const value = env[key];
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
+    vi.stubEnv(key, env[key]);
   }
   return import("../tunnel.js");
 }
 
 afterEach(() => {
-  for (const key of ENV_KEYS) {
-    const value = originalEnv.get(key);
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
+  vi.unstubAllEnvs();
   execSyncMock.mockReset();
   vi.resetModules();
 });
@@ -179,7 +163,7 @@ describe("public URL helpers", () => {
     execSyncMock.mockReturnValue(testExecutablePath("devtunnel"));
     const tunnel = await loadTunnelModule();
 
-    process.env.BRIDGE_ENABLE_TUNNEL = "false";
+    vi.stubEnv("BRIDGE_ENABLE_TUNNEL", "false");
 
     expect(tunnel.getDevtunnelCliStatus()).toEqual({
       enabled: false,
