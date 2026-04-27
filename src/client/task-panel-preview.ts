@@ -1,7 +1,6 @@
-import { getSessionActivityTime, getSessionRunState, type ChecklistItem, type Session } from "./api";
+import { getSessionActivityTime, type ChecklistItem, type Session } from "./api";
 import { deadlineUrgency } from "./checklist-helpers";
 
-export const TASK_PANEL_SESSION_PREVIEW_LIMIT = 4;
 export const TASK_PANEL_CHECKLIST_PREVIEW_LIMIT = 3;
 
 function compareIsoAscending(left?: string, right?: string): number {
@@ -12,34 +11,8 @@ function compareIsoDescending(left?: string, right?: string): number {
   return compareIsoAscending(right, left);
 }
 
-function getSessionPreviewRank(
-  session: Session,
-  isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
-): number {
-  const runState = getSessionRunState(session);
-  if (runState === "stalled") return 0;
-  if (runState === "busy") return 1;
-  if (isUnread?.(session.sessionId, getSessionActivityTime(session))) return 2;
-  return 3;
-}
-
-export function sortTaskPanelSessions(
-  sessions: Session[],
-  activeSessionId: string | null,
-  isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
-): Session[] {
-  const currentSession = activeSessionId
-    ? sessions.find((session) => session.sessionId === activeSessionId)
-    : undefined;
-
-  const remainingSessions = sessions.filter(
-    (session) => session.sessionId !== currentSession?.sessionId && !session.archived,
-  );
-
-  const sortedRemainingSessions = [...remainingSessions].sort((left, right) => {
-    const rankDiff = getSessionPreviewRank(left, isUnread) - getSessionPreviewRank(right, isUnread);
-    if (rankDiff !== 0) return rankDiff;
-
+export function sortTaskSessions(sessions: Session[]): Session[] {
+  return [...sessions].sort((left, right) => {
     const activityDiff = compareIsoDescending(
       getSessionActivityTime(left),
       getSessionActivityTime(right),
@@ -48,10 +21,6 @@ export function sortTaskPanelSessions(
 
     return left.sessionId.localeCompare(right.sessionId);
   });
-
-  return currentSession
-    ? [currentSession, ...sortedRemainingSessions]
-    : sortedRemainingSessions;
 }
 
 function getChecklistPreviewRank(checklistItem: ChecklistItem): number {

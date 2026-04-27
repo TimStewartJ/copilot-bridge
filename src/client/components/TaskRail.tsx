@@ -69,6 +69,7 @@ interface TaskRailProps {
   onMarkAllQuickChatsRead?: () => void;
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  archivedLoading?: boolean;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
   hasDraft?: (sessionId: string) => boolean;
@@ -130,6 +131,7 @@ export default function TaskRail({
   onMarkAllQuickChatsRead,
   onRequestArchived,
   archivedLoaded,
+  archivedLoading,
   archivingIds,
   exitingIds,
   hasDraft,
@@ -622,6 +624,7 @@ export default function TaskRail({
             onBulkAction={onBulkAction}
             onRequestArchived={onRequestArchived}
             archivedLoaded={archivedLoaded}
+            archivedLoading={archivedLoading}
           />
         )}
       </div>

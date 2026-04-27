@@ -2,9 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChecklistItem, Session } from "./api";
 import {
   TASK_PANEL_CHECKLIST_PREVIEW_LIMIT,
-  TASK_PANEL_SESSION_PREVIEW_LIMIT,
   getTaskPanelChecklistPreview,
-  sortTaskPanelSessions,
+  sortTaskSessions,
 } from "./task-panel-preview";
 
 const NOW = "2026-04-17T15:00:00.000Z";
@@ -41,8 +40,8 @@ function createChecklistItem(overrides: Partial<ChecklistItem> = {}): ChecklistI
   };
 }
 
-describe("sortTaskPanelSessions", () => {
-  it("keeps the active session first and prioritizes stalled, busy, unread, then recency", () => {
+describe("sortTaskSessions", () => {
+  it("sorts sessions by latest activity and includes archived sessions", () => {
     const sessions = [
       createSession({ sessionId: "recent-idle", lastVisibleActivityAt: "2026-04-17T14:00:00.000Z" }),
       createSession({ sessionId: "stalled", runState: "stalled", busy: true, lastVisibleActivityAt: "2026-04-17T12:00:00.000Z" }),
@@ -52,17 +51,15 @@ describe("sortTaskPanelSessions", () => {
       createSession({ sessionId: "current", lastVisibleActivityAt: "2026-04-17T10:00:00.000Z" }),
     ];
 
-    const preview = sortTaskPanelSessions(
-      sessions,
-      "current",
-      (sessionId) => sessionId === "unread" || sessionId === "archived",
-    );
+    const preview = sortTaskSessions(sessions);
 
-    expect(preview.slice(0, TASK_PANEL_SESSION_PREVIEW_LIMIT).map((session) => session.sessionId)).toEqual([
-      "current",
-      "stalled",
+    expect(preview.map((session) => session.sessionId)).toEqual([
+      "archived",
+      "recent-idle",
       "busy",
+      "stalled",
       "unread",
+      "current",
     ]);
   });
 });

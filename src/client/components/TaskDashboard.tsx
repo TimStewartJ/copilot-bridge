@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session } from "../api";
-import { patchTask, unlinkResource, getSessionActivityTime } from "../api";
+import { patchTask, getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
@@ -9,7 +9,7 @@ import { hasTaskDashboardFocusParams } from "../lib/mobile-scroll-restoration";
 import { resolveTaskDashboardFocus, type TaskFocusRequest } from "../task-detail-focus";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
-import SessionList from "./SessionList";
+import TaskSessionList from "./TaskSessionList";
 import NotesSheet from "./NotesSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import TaskGitStatusSummary from "./TaskGitStatusSummary";
@@ -73,6 +73,7 @@ interface TaskDashboardProps {
   // Lazy-load archived sessions
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  archivedLoading?: boolean;
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
@@ -102,6 +103,7 @@ export default function TaskDashboard({
   hasDraft,
   onRequestArchived,
   archivedLoaded,
+  archivedLoading,
   scrollRestoration,
 }: TaskDashboardProps) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -416,7 +418,7 @@ export default function TaskDashboard({
               <Section
                 icon={<MessageSquare size={14} />}
                 title="Sessions"
-                count={linkedSessions.filter((s) => !s.archived).length}
+                count={task.sessionIds.length}
                 action={
                   <button
                     onClick={() => onNewSession(task.id)}
@@ -426,29 +428,22 @@ export default function TaskDashboard({
                   </button>
                 }
               >
-                {linkedSessions.length === 0 ? (
+                {task.sessionIds.length === 0 ? (
                   <EmptyState message="No sessions yet" sub="Start a chat to begin working" />
                 ) : (
-                  <SessionList
-                    key={task.id}
-                    variant="compact"
-                    sessions={linkedSessions}
+                  <TaskSessionList
+                    task={task}
+                    linkedSessions={linkedSessions}
                     activeSessionId={null}
                     onSelectSession={onSelectSession}
-                    onNewSession={() => onNewSession(task.id)}
+                    onNewSession={onNewSession}
                     showEmptyState={false}
                     isUnread={isUnread}
                     onArchiveSession={onArchiveSession}
                     archivingIds={archivingIds}
                     exitingIds={exitingIds}
-                    taskContext={task}
-                    onUnlinkFromTask={
-                      onUnlinkFromTask
-                        ?? (async (sessionId, taskId) => {
-                             await unlinkResource(taskId, { type: "session", sessionId });
-                             onTasksChanged?.();
-                           })
-                    }
+                    onUnlinkFromTask={onUnlinkFromTask}
+                    onTasksChanged={onTasksChanged}
                     onDeleteSession={onDeleteSession}
                     onDuplicateSession={onDuplicateSession}
                     onReloadSession={onReloadSession}
@@ -457,6 +452,7 @@ export default function TaskDashboard({
                     hasDraft={hasDraft}
                     onRequestArchived={onRequestArchived}
                     archivedLoaded={archivedLoaded}
+                    archivedLoading={archivedLoading}
                     className=""
                   />
                 )}
