@@ -3,6 +3,12 @@ import { useRef } from "react";
 import { fetchSessions, type Session } from "../../api";
 import { queryKeys } from "../../queryClient";
 
+interface UseSessionsQueryOptions {
+  enabled?: boolean;
+  refetchInterval?: number | false;
+  refetchOnWindowFocus?: boolean;
+}
+
 export function mergeOptimisticSessions(
   serverSessions: Session[],
   cachedSessions: Session[] | undefined,
@@ -22,10 +28,28 @@ export function mergeOptimisticSessions(
     : serverSessions;
 }
 
-export function useSessionsQuery(includeArchived: boolean) {
+export function mergeActiveAndArchivedSessions(
+  activeSessions: Session[],
+  archivedQuerySessions: Session[],
+  includeArchived: boolean,
+  restoringSessionIds: ReadonlySet<string> = new Set(),
+): Session[] {
+  if (!includeArchived) return activeSessions;
+
+  const activeSessionIds = new Set(activeSessions.map((session) => session.sessionId));
+  const archivedSessions = archivedQuerySessions.filter((session) =>
+    !activeSessionIds.has(session.sessionId)
+      && (session.archived || restoringSessionIds.has(session.sessionId)));
+  return archivedSessions.length > 0
+    ? [...activeSessions, ...archivedSessions]
+    : activeSessions;
+}
+
+export function useSessionsQuery(includeArchived: boolean, options: UseSessionsQueryOptions = {}) {
   const hasFetchedOnce = useRef(false);
   return useQuery<Session[]>({
     queryKey: queryKeys.sessions({ includeArchived }),
+    enabled: options.enabled ?? true,
     queryFn: () => {
       // Skip expensive disk size calculation on polling refetches
       const skip = hasFetchedOnce.current;
@@ -34,8 +58,8 @@ export function useSessionsQuery(includeArchived: boolean) {
     },
     structuralSharing: (oldData, newData) =>
       mergeOptimisticSessions(newData, oldData),
-    refetchInterval: 30_000,
+    refetchInterval: options.refetchInterval ?? 30_000,
     refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: options.refetchOnWindowFocus ?? true,
   });
 }

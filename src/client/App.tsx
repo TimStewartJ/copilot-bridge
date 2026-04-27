@@ -51,7 +51,7 @@ import { buildTaskDashboardSearch } from "./task-detail-focus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
-import { useSessionsQuery } from "./hooks/queries/useSessions";
+import { mergeActiveAndArchivedSessions, useSessionsQuery } from "./hooks/queries/useSessions";
 import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
 import { getHomeChecklistIndicator } from "./checklist-helpers";
@@ -97,11 +97,23 @@ export default function App() {
 
   // ── React Query data ────────────────────────────────────────
   const [archivedLoaded, setArchivedLoaded] = useState(false);
+  const [restoringArchivedSessionIds, setRestoringArchivedSessionIds] = useState<Set<string>>(new Set());
   const {
-    data: sessions = [],
-    isFetched: sessionsFetched,
-  } = useSessionsQuery(archivedLoaded);
-  const archivedLoading = archivedLoaded && !sessionsFetched;
+    data: activeSessions = [],
+  } = useSessionsQuery(false);
+  const {
+    data: archivedQuerySessions = [],
+    isFetched: archivedSessionsFetched,
+  } = useSessionsQuery(true, {
+    enabled: archivedLoaded,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+  });
+  const sessions = useMemo(
+    () => mergeActiveAndArchivedSessions(activeSessions, archivedQuerySessions, archivedLoaded, restoringArchivedSessionIds),
+    [activeSessions, archivedQuerySessions, archivedLoaded, restoringArchivedSessionIds],
+  );
+  const archivedLoading = archivedLoaded && !archivedSessionsFetched;
   const { data: tasks = [] } = useTasksQuery();
   const { data: taskGroups = [] } = useTaskGroupsQuery();
   const { data: openChecklistItems = [] } = useOpenChecklistItemsQuery();
@@ -250,6 +262,8 @@ export default function App() {
 
   // Helper to invalidate session/task/group queries
   const invalidateSessions = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.sessions({ includeArchived: false }), exact: true }), [queryClient]);
+  const invalidateAllSessionQueries = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: ["sessions"] }), [queryClient]);
   const invalidateTasks = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
@@ -264,6 +278,24 @@ export default function App() {
     if (archivedLoaded) return;
     setArchivedLoaded(true);
   }, [archivedLoaded]);
+
+  const trackArchiveTransition = useCallback((sessionId: string, archived: boolean) => {
+    setRestoringArchivedSessionIds((prev) => {
+      const next = new Set(prev);
+      if (archived) next.delete(sessionId);
+      else next.add(sessionId);
+      return next.size === prev.size && [...next].every((id) => prev.has(id)) ? prev : next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (restoringArchivedSessionIds.size === 0) return;
+    const activeSessionIds = new Set(activeSessions.map((session) => session.sessionId));
+    setRestoringArchivedSessionIds((prev) => {
+      const next = new Set([...prev].filter((sessionId) => !activeSessionIds.has(sessionId)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [activeSessions, restoringArchivedSessionIds]);
 
   // Real-time status updates via SSE
   const patchSessionsInCache = useCallback((sessionIds: string[], patch: Partial<Session>) => {
@@ -342,8 +374,10 @@ export default function App() {
         break;
       case "session:archived":
         if (event.sessionId && typeof event.archived === "boolean") {
+          trackArchiveTransition(event.sessionId, event.archived);
           patchSessionInCache(event.sessionId, { archived: event.archived });
         }
+        invalidateAllSessionQueries();
         break;
       case "server:restart-pending":
         setRestartBanner((prev) => reduceRestartBannerState(prev, {
@@ -382,7 +416,7 @@ export default function App() {
         invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
@@ -992,11 +1026,12 @@ export default function App() {
     setArchivingIds((prev) => new Set(prev).add(sessionId));
     try {
       await patchSession(sessionId, { archived });
+      trackArchiveTransition(sessionId, archived);
       patchSessionInCache(sessionId, {
         archived,
         archivedAt: archived ? new Date().toISOString() : undefined,
       });
-      await invalidateSessions();
+      await invalidateAllSessionQueries();
     } catch (err) {
       console.error("Failed to archive session:", err);
     } finally {
@@ -1033,7 +1068,7 @@ export default function App() {
     await new Promise((r) => setTimeout(r, EXIT_ANIM_MS));
     try {
       await deleteSession(sessionId);
-      await Promise.all([invalidateSessions(), invalidateTasks()]);
+      await Promise.all([invalidateAllSessionQueries(), invalidateTasks()]);
     } catch (err) {
       console.error("Failed to delete session:", err);
     } finally {
@@ -1065,7 +1100,7 @@ export default function App() {
       } else {
         navigate(`/sessions/${newId}`);
       }
-      await Promise.all([invalidateSessions(), invalidateTasks()]);
+      await Promise.all([invalidateAllSessionQueries(), invalidateTasks()]);
     } catch (err) {
       console.error("Failed to duplicate session:", err);
     }
@@ -1176,6 +1211,7 @@ export default function App() {
       const result = await batchSessionAction(action, sessionIds);
       if (action === "archive" || action === "unarchive") {
         const successfulIds = getSuccessfulBatchSessionIds(sessionIds, result.errors);
+        for (const id of successfulIds) trackArchiveTransition(id, action === "archive");
         patchSessionsInCache(successfulIds, {
           archived: action === "archive",
           archivedAt: action === "archive" ? new Date().toISOString() : undefined,
@@ -1184,7 +1220,7 @@ export default function App() {
       if (Object.keys(result.errors).length > 0) {
         console.error(`Bulk ${action} partially failed:`, result.errors);
       }
-      await Promise.all([invalidateSessions(), invalidateTasks()]);
+      await Promise.all([invalidateAllSessionQueries(), invalidateTasks()]);
     } catch (err) {
       console.error(`Bulk ${action} failed:`, err);
     } finally {
@@ -1199,7 +1235,7 @@ export default function App() {
         return next;
       });
     }
-  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, clearDraftSessionBySessionId, clearLastViewedSession, clearLastActiveQuickChat, patchSessionsInCache, invalidateSessions, invalidateTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, clearDraft, clearDraftSessionBySessionId, clearLastViewedSession, clearLastActiveQuickChat, patchSessionsInCache, invalidateAllSessionQueries, invalidateTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
@@ -1319,7 +1355,7 @@ export default function App() {
                   onDuplicateSession={handleDuplicateSession}
                   onReloadSession={handleReloadSession}
                   markUnread={markUnread}
-                  onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
+                  onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
                   hasDraft={hasDraft}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
@@ -1356,7 +1392,7 @@ export default function App() {
                   onMarkUnread={markUnread}
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
-                  onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
+                  onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
                   onViewDashboard={(taskId, options) => navigate(
                     `/tasks/${taskId}${buildTaskDashboardSearch(options)}`,
                   )}
@@ -1439,7 +1475,7 @@ export default function App() {
                     onTasksChanged={invalidateTasks}
                     isUnread={isUnread}
                     onSetTaskTags={handleSetTaskTags}
-                    onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateSessions(), invalidateTaskGroups()]); }}
+                    onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
                     onDeleteSession={handleDeleteSession}
                     onDuplicateSession={handleDuplicateSession}
                     onReloadSession={handleReloadSession}

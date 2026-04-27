@@ -328,6 +328,24 @@ function resolveWorkspaceTask(ctx: AppContext, sessionId: string, requestedTaskI
   return task;
 }
 
+function createSessionListTaskResolver(ctx: AppContext): (sessionId: string) => Task | undefined {
+  const linkedTasksBySessionId = new Map<string, Task[]>();
+  for (const task of ctx.taskStore.listTasks?.() ?? []) {
+    for (const sessionId of task.sessionIds) {
+      const linkedTasks = linkedTasksBySessionId.get(sessionId);
+      if (linkedTasks) linkedTasks.push(task);
+      else linkedTasksBySessionId.set(sessionId, [task]);
+    }
+  }
+
+  return (sessionId: string) => {
+    const linkedTasks = linkedTasksBySessionId.get(sessionId) ?? [];
+    if (linkedTasks.length === 1) return linkedTasks[0];
+    if (linkedTasks.length > 1) return undefined;
+    return ctx.taskStore.findTaskBySessionId(sessionId);
+  };
+}
+
 function resolveSessionSummary(
   ctx: AppContext,
   session: { sessionId: string; summary?: string | null },
@@ -640,7 +658,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   // ── Enriched session list cache ─────────────────────────────────
   // Caches the expensive enriched session list (disk sizes, plan checks, metadata).
-  // Invalidated by session create/delete/archive and globalBus events.
+  // Invalidated by structural changes; volatile run-state fields are refreshed on read.
   // Disk sizes are stored separately so skipDiskSize requests don't zero them out.
   let enrichedSessionCache: { data: any[]; timestamp: number; includesArchived: boolean } | null = null;
   type SessionCacheBuild = { generation: number; promise: Promise<any[]> };
@@ -664,9 +682,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Invalidate on session lifecycle events
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
-      case "session:busy":
-      case "session:stalled":
-      case "session:idle":
       case "session:title":
       case "session:archived":
       case "task:changed":
@@ -682,20 +697,44 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const includeArchived = req.query.includeArchived === "true";
       const skipDiskSize = req.query.skipDiskSize === "true";
 
+      const materializeSessionList = (sessions: any[]): any[] => {
+        const currentMeta = ctx.sessionMetaStore.listMeta();
+        const resolveSessionListTask = createSessionListTaskResolver(ctx);
+        const publicSessions = sessions.flatMap((s: any) => {
+          const id = s.sessionId;
+          const status = getSessionStatus(ctx, id);
+          const linkedTask = resolveSessionListTask(id);
+          const summary = resolveSessionSummary(ctx, s, {
+            fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
+          });
+          if (!summary) return [];
+
+          const sessionMeta = currentMeta[id];
+          const archived = sessionMeta?.archived ?? s.archived ?? false;
+          if (!includeArchived && archived) return [];
+
+          const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
+          return [{
+            ...s,
+            summary,
+            lastVisibleActivityAt,
+            modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
+            diskSizeBytes: diskSizeCache.get(id) ?? 0,
+            ...status,
+            archived,
+          }];
+        });
+        publicSessions.sort((a: any, b: any) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
+        return publicSessions;
+      };
+
       const now = Date.now();
       const cacheValid = enrichedSessionCache
         && (!includeArchived || enrichedSessionCache.includesArchived)
         && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
 
       if (cacheValid) {
-        // Serve from cache — only refresh volatile fields (busy status)
-        const cached = enrichedSessionCache!.data.map((s: any) => ({
-          ...s,
-          diskSizeBytes: diskSizeCache.get(s.sessionId) ?? 0,
-          ...getSessionStatus(ctx, s.sessionId),
-        }));
-        const filtered = cached.filter((s: any) => includeArchived || !s.archived);
-        return res.json({ sessions: filtered });
+        return res.json({ sessions: materializeSessionList(enrichedSessionCache!.data) });
       }
 
       const startCacheBuild = (buildIncludesArchived: boolean): Promise<any[]> => {
@@ -711,20 +750,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
           const sessionStateDir = join(getCopilotHome(ctx), "session-state");
           const meta = ctx.sessionMetaStore.listMeta();
+          const resolveSessionListTask = createSessionListTaskResolver(ctx);
 
           const enriched = await Promise.all(
             sessions
               .map((s: any) => {
                 const id = s.sessionId;
                 const status = getSessionStatus(ctx, id);
-                const linkedTask = resolveWorkspaceTask(ctx, id);
-                const summary = resolveSessionSummary(ctx, s, {
-                  fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
-                });
-                return { session: s, summary, linkedTask, status };
+                const linkedTask = resolveSessionListTask(id);
+                return { session: s, linkedTask, status };
               })
-              .filter((entry): entry is { session: any; summary: string; linkedTask: Task | undefined; status: { runState: SessionRunState; busy: boolean } } => !!entry.summary)
-              .map(async ({ session: s, summary, linkedTask, status }) => {
+              .map(async ({ session: s, linkedTask, status }) => {
                 const id = s.sessionId;
                 const archived = meta[id]?.archived === true;
 
@@ -745,7 +781,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
                 };
                 return {
                   ...s,
-                  summary,
                   context: Object.keys(context).length > 0 ? context : undefined,
                   workspace,
                   diskSizeBytes: diskSizeCache.get(id) ?? 0,
@@ -783,8 +818,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       const enriched = await startCacheBuild(includeArchived);
 
-      const filtered = enriched.filter((s: any) => includeArchived || !s.archived);
-      res.json({ sessions: filtered });
+      res.json({ sessions: materializeSessionList(enriched) });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
