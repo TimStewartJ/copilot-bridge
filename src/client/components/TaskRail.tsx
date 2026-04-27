@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { type Task, type TaskGroup, type Session } from "../api";
+import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
 import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
 import { timeAgo } from "../time";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
@@ -41,9 +41,10 @@ interface TaskRailProps {
   onUpdateTask?: (
     taskId: string,
     updates: {
-      title?: Task["title"];
-      status?: Task["status"];
-      nextTouchAt?: Task["nextTouchAt"] | null;
+      title?: TaskPatch["title"];
+      status?: TaskPatch["status"];
+      nextTouchAt?: TaskPatch["nextTouchAt"];
+      completionAction?: TaskPatch["completionAction"];
     },
   ) => void;
   onDeleteTask?: (taskId: string) => void;
@@ -169,6 +170,12 @@ export default function TaskRail({
   }, [hasGroups, sortedTasks, taskGroups]);
 
   const [showArchived, setShowArchived] = useState(false);
+
+  useEffect(() => {
+    if (tasks.some((task) => task.id === activeTaskId && task.status === "archived")) {
+      setShowArchived(true);
+    }
+  }, [activeTaskId, tasks]);
 
   // Tab state for expanded rail
   const [railTab, setRailTab] = useState<"tasks" | "chats">("tasks");

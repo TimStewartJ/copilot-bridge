@@ -7,6 +7,7 @@ import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { hasTaskDashboardFocusParams } from "../lib/mobile-scroll-restoration";
 import { resolveTaskDashboardFocus, type TaskFocusRequest } from "../task-detail-focus";
+import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import TaskSessionList from "./TaskSessionList";
@@ -34,6 +35,8 @@ import {
   LayoutDashboard,
   BookOpen,
   FileText,
+  CheckCircle2,
+  RotateCcw,
 } from "lucide-react";
 import {
   WorkItemList,
@@ -53,7 +56,7 @@ interface TaskDashboardProps {
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
-  onUpdateTask: (taskId: string, updates: Parameters<typeof patchTask>[1]) => void;
+  onUpdateTask: (taskId: string, updates: Parameters<typeof patchTask>[1]) => Promise<Task | null>;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
@@ -130,7 +133,7 @@ export default function TaskDashboard({
     sched, schedDetail,
     notes,
     taskGitStatus,
-    checklistItems, checklistItemsReady, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
+    checklistItems, checklistItemsReady, checklistLoaded, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
     newChecklistItemText, setNewChecklistItemText,
     linkedSessions,
     taskOwnTags, taskGroup: group, inheritedTagIds, effectiveTags,
@@ -147,11 +150,15 @@ export default function TaskDashboard({
   const highlightTimerRef = useRef<number | null>(null);
   const sessionsSectionRef = useRef<HTMLDivElement>(null);
   const checklistSectionRef = useRef<HTMLDivElement>(null);
+  const latestTaskIdRef = useRef(task.id);
+  const [isUpdatingCompletion, setIsUpdatingCompletion] = useState(false);
   const focusedSection = searchParams.get("section");
   const focusedChecklistItemId = searchParams.get("checklistItem");
 
   useEffect(() => {
+    latestTaskIdRef.current = task.id;
     setMomentumTask(task);
+    setIsUpdatingCompletion(false);
   }, [task]);
 
   useEffect(() => {
@@ -246,12 +253,20 @@ export default function TaskDashboard({
     return latest;
   }, [momentumTask.updatedAt, linkedSessions]);
 
-  const openChecklistItems = checklistItems.filter((t) => !t.done);
   const completedChecklistItems = checklistItems.filter((t) => t.done);
+  const completionCounts = useMemo(() => getTaskCompletionCounts({
+    checklistItems,
+    linkedSessions,
+    pullRequests: enrichedPRs.length > 0
+      ? enrichedPRs
+      : task.pullRequests.map(() => ({ status: null })),
+  }), [checklistItems, linkedSessions, enrichedPRs, task.pullRequests]);
+  const completionState = useMemo(
+    () => getTaskCompletionState(momentumTask, completionCounts, { checklistLoaded }),
+    [momentumTask, completionCounts, checklistLoaded],
+  );
   const momentumChips = useMemo(() => {
     const chips: Array<{ label: string; className: string; title?: string }> = [];
-    const hasBusySession = linkedSessions.some((session) => session.busy || session.runState === "busy" || session.runState === "stalled");
-    const activePrCount = enrichedPRs.filter((pr) => pr.status === "active").length;
     const followUpState = getFollowUpState(momentumTask.nextTouchAt);
 
     if (
@@ -286,22 +301,44 @@ export default function TaskDashboard({
         title: momentumTask.waitingOn,
       });
     }
-    if (
-      momentumTask.status === "active"
-      && openChecklistItems.length === 0
-      && !hasBusySession
-      && activePrCount === 0
-      && !isOngoingTask(momentumTask)
-    ) {
+    if (!isOngoingTask(momentumTask) && completionState.isStrongCloseCandidate) {
       chips.push({
         label: "Candidate to close",
         className: "bg-success/15 text-success",
-        title: momentumTask.doneWhen || "No open checklist items, busy sessions, or active PRs",
+        title: completionState.ctaDescription,
       });
     }
 
     return chips;
-  }, [enrichedPRs, linkedSessions, momentumTask, openChecklistItems.length]);
+  }, [completionState, momentumTask]);
+
+  const completionDisabled = isOngoingTask(momentumTask)
+    || (!completionState.ctaNextStatus && !completionState.ctaCompletionAction)
+    || isUpdatingCompletion;
+  const completionDescription = isOngoingTask(momentumTask)
+    ? "Ongoing tasks stay active and cannot be completed."
+    : completionState.ctaDescription;
+  const handleCompletionAction = async () => {
+    if (completionDisabled) return;
+    const requestedTaskId = task.id;
+
+    setIsUpdatingCompletion(true);
+    try {
+      const updated = await onUpdateTask(
+        requestedTaskId,
+        completionState.ctaCompletionAction
+          ? { completionAction: completionState.ctaCompletionAction }
+          : { status: completionState.ctaNextStatus! },
+      );
+      if (updated && latestTaskIdRef.current === requestedTaskId) {
+        setMomentumTask(updated);
+      }
+    } finally {
+      if (latestTaskIdRef.current === requestedTaskId) {
+        setIsUpdatingCompletion(false);
+      }
+    }
+  };
   
   return (
     <div className="flex-1 min-h-0 relative">
@@ -396,13 +433,27 @@ export default function TaskDashboard({
                 />
               </div>
             </div>
-            <button
-              onClick={() => onNewSession(task.id)}
-              className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center gap-1.5 shrink-0"
-            >
-              <Plus size={12} />
-              New Chat
-            </button>
+            <div className="flex flex-col items-stretch gap-2 shrink-0 min-w-[11rem]">
+              <button
+                onClick={() => { void handleCompletionAction(); }}
+                disabled={completionDisabled}
+                title={completionDescription}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 disabled:bg-bg-hover disabled:text-text-faint disabled:hover:bg-bg-hover"
+              >
+                {completionState.ctaState === "completed" ? <RotateCcw size={12} /> : <CheckCircle2 size={12} />}
+                {completionState.ctaLabel}
+              </button>
+              <button
+                onClick={() => onNewSession(task.id)}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-bg-hover text-text-primary hover:bg-border transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Plus size={12} />
+                New Chat
+              </button>
+              <p className="text-[11px] text-text-muted text-right leading-relaxed">
+                {completionDescription}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -503,6 +554,7 @@ export default function TaskDashboard({
                 count={checklistItems.length > 0 ? `${completedChecklistItems.length}/${checklistItems.length}` : undefined}
               >
                 <TaskChecklistSection
+                  taskId={task.id}
                   checklistItems={checklistItems}
                   newChecklistItemText={newChecklistItemText}
                   onNewChecklistItemTextChange={setNewChecklistItemText}
@@ -511,6 +563,7 @@ export default function TaskDashboard({
                   onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
                   variant="card"
                   highlightId={highlightedChecklistItemId}
+                  isReadyToComplete={!isOngoingTask(momentumTask) && completionState.isReadyToComplete}
                 />
               </Section>
             </div>

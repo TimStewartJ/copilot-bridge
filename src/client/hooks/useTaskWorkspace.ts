@@ -52,6 +52,7 @@ export function useTaskWorkspace(
     isFetching,
     isSuccess,
   });
+  const checklistLoaded = isFetched;
   const createChecklistItemMutation = useCreateChecklistItemMutation(task?.id);
   const {
     onUpdate: onChecklistItemUpdate,
@@ -113,6 +114,7 @@ export function useTaskWorkspace(
     // Checklist items
     checklistItems,
     checklistItemsReady,
+    checklistLoaded,
     createChecklistItemMutation,
     onChecklistItemUpdate,
     onChecklistItemDelete,

@@ -81,12 +81,14 @@ export function CtxItem({
   onClick,
   className = "",
   disabled,
+  title,
 }: {
   icon?: ReactNode;
   label: string;
   onClick: () => void;
   className?: string;
   disabled?: boolean;
+  title?: string;
 }) {
   const [tapped, setTapped] = useState(false);
 
@@ -104,6 +106,7 @@ export function CtxItem({
       } ${disabled ? "opacity-40 pointer-events-none" : ""} ${className}`}
       onClick={handleClick}
       disabled={disabled}
+      title={title}
     >
       {icon}
       {label}

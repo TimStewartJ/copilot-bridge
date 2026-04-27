@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { type Task, type TaskGroup, type Session } from "../api";
+import { useState, useMemo, useEffect } from "react";
+import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
 import { GROUP_COLOR_BG } from "../group-colors";
 import { ChevronDown, ChevronRight, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
 import NotesSheet from "./NotesSheet";
@@ -27,9 +27,10 @@ interface TaskListProps {
   onUpdateTask?: (
     taskId: string,
     updates: {
-      title?: Task["title"];
-      status?: Task["status"];
-      nextTouchAt?: Task["nextTouchAt"] | null;
+      title?: TaskPatch["title"];
+      status?: TaskPatch["status"];
+      nextTouchAt?: TaskPatch["nextTouchAt"];
+      completionAction?: TaskPatch["completionAction"];
     },
   ) => void;
   onDeleteTask?: (taskId: string) => void;
@@ -77,6 +78,12 @@ export default function TaskList({
 
   const grouped = useMemo(() => groupTasksByStatus(tasks), [tasks]);
   const [showArchived, setShowArchived] = useState(false);
+
+  useEffect(() => {
+    if (tasks.some((task) => task.id === activeTaskId && task.status === "archived")) {
+      setShowArchived(true);
+    }
+  }, [activeTaskId, tasks]);
 
   // Group notes sheet state
   const [groupNotesId, setGroupNotesId] = useState<string | null>(null);

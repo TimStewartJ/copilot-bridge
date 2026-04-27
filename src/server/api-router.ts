@@ -1690,6 +1690,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         title: req.body?.title,
         kind: req.body?.kind,
         status: req.body?.status,
+        completionAction: req.body?.completionAction,
         notes: req.body?.notes,
         priority: req.body?.priority,
         cwd: req.body?.cwd,

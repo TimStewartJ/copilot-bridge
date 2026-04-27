@@ -15,6 +15,7 @@ import { useScheduleDetail } from "../hooks/useScheduleDetail";
 import { useTriggerScheduleMutation, useToggleScheduleMutation, useDeleteScheduleMutation } from "../hooks/queries/useSchedules";
 import { type SessionNavigationTarget } from "../lib/session-path";
 import { getLastViewedSession } from "../last-viewed";
+import { getTaskCompletionState } from "../task-completion-helpers";
 import { timeAgo } from "../time";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT, GROUP_COLOR_BORDER } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
@@ -937,6 +938,16 @@ function MomentumTaskRow({
   onSelect: () => void;
 }) {
   const t = entry.task;
+  const completionState = getTaskCompletionState(t, {
+    totalChecklistItems: entry.checklistSummary.total,
+    completedChecklistItems: entry.checklistSummary.done,
+    openChecklistItems: entry.checklistSummary.open,
+    linkedSessions: t.sessionIds.length,
+    busySessions: entry.hasBusySession ? 1 : 0,
+    linkedPullRequests: entry.prSummary.total,
+    activePullRequests: entry.prSummary.active,
+    unknownPullRequests: entry.prSummary.unknown,
+  });
   const hint = queueKey === "followUpNow" && t.nextTouchAt
     ? `Touch by ${new Date(t.nextTouchAt).toLocaleString(undefined, {
         month: "short",
@@ -948,8 +959,8 @@ function MomentumTaskRow({
       ? t.nextAction
       : queueKey === "waiting" && t.waitingOn
         ? `Waiting: ${t.waitingOn}`
-        : queueKey === "candidateToClose" && t.doneWhen
-          ? t.doneWhen
+        : queueKey === "candidateToClose"
+          ? completionState.ctaDescription
           : queueKey === "stale"
             ? `Last activity ${timeAgo(entry.lastActivity)}`
             : undefined;
