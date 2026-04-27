@@ -288,7 +288,6 @@ export default function TaskPanel({
       : undefined;
     onViewDashboard?.(task.id, options);
   };
-  const openDashboard = onViewDashboard ? () => openTaskOverview() : undefined;
   const { data: sessionWorkspace } = sessionWorkspaceQuery;
   const activeWorkspacePath = sessionWorkspace?.effectiveCwd ?? activeSession?.workspace?.effectiveCwd ?? task.cwd;
   const workspaceOverridesTask = sessionWorkspace?.overridesTaskWorkspace ?? activeSession?.workspace?.overridesTaskWorkspace ?? false;
@@ -498,7 +497,7 @@ export default function TaskPanel({
                     enrichedWIs={enrichedWIs}
                     rawWIs={task.workItems}
                     variant="summary"
-                    onOpenSummary={openDashboard}
+                    resetKey={task.id}
                   />
                 )}
                 {task.pullRequests.length > 0 && (
@@ -506,7 +505,7 @@ export default function TaskPanel({
                     enrichedPRs={enrichedPRs}
                     rawPRs={task.pullRequests}
                     variant="summary"
-                    onOpenSummary={openDashboard}
+                    resetKey={task.id}
                   />
                 )}
                 {hasNotesSummary && (

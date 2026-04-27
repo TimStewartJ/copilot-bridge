@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import type { RelatedDoc } from "../../api";
 import { BookOpen } from "lucide-react";
-import TaskPanelSummaryRow from "../TaskPanelSummaryRow";
+import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -25,19 +25,24 @@ export default function RelatedDocsSection({ docs, variant = "compact", onPrevie
   if (docs.length === 0) return null;
 
   if (variant === "summary") {
-    const primaryDoc = [...docs].sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime())[0];
+    const sortedDocs = [...docs].sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
+    const primaryDoc = sortedDocs[0];
     const title = docs.length === 1 ? primaryDoc.title : `${docs.length} related docs`;
     const subtitle = docs.length === 1 ? primaryDoc.path : `Latest: ${primaryDoc.title}`;
 
     return (
-      <TaskPanelSummaryRow
+      <TaskPanelSummaryDisclosure
         label="Docs"
         icon={<BookOpen size={14} />}
         title={title}
         subtitle={subtitle}
         subtitleClassName={docs.length === 1 ? "truncate font-mono" : undefined}
-        onClick={onPreview ? () => onPreview(primaryDoc.path) : undefined}
-      />
+        itemCount={docs.length}
+        resetKey={resetKey}
+        onOpenSingle={onPreview ? () => onPreview(primaryDoc.path) : undefined}
+      >
+        <RelatedDocsSection docs={docs} variant="compact" onPreview={onPreview} />
+      </TaskPanelSummaryDisclosure>
     );
   }
 

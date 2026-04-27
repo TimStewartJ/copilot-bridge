@@ -1,7 +1,8 @@
 import type { EnrichedPR, PRRef } from "../../api";
 import { PR_STATUS_STYLES } from "../../work-item-styles";
 import { GitPullRequest } from "lucide-react";
-import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
+import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
+import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -9,7 +10,7 @@ export interface PullRequestListProps {
   enrichedPRs: EnrichedPR[];
   rawPRs: PRRef[];
   variant?: "compact" | "card" | "summary";
-  onOpenSummary?: () => void;
+  resetKey?: string;
 }
 
 const PR_SUMMARY_STYLES: Record<string, string> = {
@@ -24,8 +25,9 @@ function sortCountEntries(a: [string, number], b: [string, number]) {
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", onOpenSummary }: PullRequestListProps) {
+export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compact", resetKey }: PullRequestListProps) {
   const isCompact = variant === "compact";
+
   const items = enrichedPRs.length > 0
     ? enrichedPRs
     : rawPRs.map((pr) => ({
@@ -44,6 +46,7 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
     if (items.length === 0) return null;
 
     const primaryPr = items[0];
+    const hasMultiplePRs = items.length > 1;
     const statusCounts = new Map<string, number>();
 
     for (const pr of items) {
@@ -71,15 +74,22 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
           .filter(Boolean)
           .join(" · ");
 
+    const singleUrl = !hasMultiplePRs && primaryPr.url && primaryPr.url !== "#" ? primaryPr.url : null;
+
     return (
-      <TaskPanelSummaryRow
+      <TaskPanelSummaryDisclosure
         label="Pull requests"
         icon={<GitPullRequest size={14} />}
         title={title}
         subtitle={subtitle || undefined}
         chips={chips}
-        onClick={onOpenSummary}
-      />
+        itemCount={items.length}
+        resetKey={resetKey}
+        onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
+        expandWhenSingle={!singleUrl}
+      >
+        <PullRequestList enrichedPRs={enrichedPRs} rawPRs={rawPRs} variant="compact" />
+      </TaskPanelSummaryDisclosure>
     );
   }
 
@@ -87,18 +97,12 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
     <div className={isCompact ? "space-y-0.5" : "space-y-1"}>
       {items.map((pr) => {
         const statusInfo = PR_STATUS_STYLES[pr.status ?? ""];
-        return (
-          <a
-            key={`${pr.repoId}-${pr.prId}`}
-            href={pr.url}
-            target="_blank"
-            rel="noopener"
-            className={
-              isCompact
-                ? "block px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
-                : "block px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-            }
-          >
+        const realUrl = pr.url && pr.url !== "#" ? pr.url : null;
+        const rowClass = isCompact
+          ? "block px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
+          : "block px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors";
+        const inner = (
+          <>
             <div className={`flex items-center ${isCompact ? "gap-1.5" : "gap-2"}`}>
               {isCompact ? (
                 <>
@@ -147,7 +151,25 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
                 {pr.reviewerCount > 0 && <span>{pr.reviewerCount} reviewer{pr.reviewerCount !== 1 ? "s" : ""}</span>}
               </div>
             )}
+          </>
+        );
+        return realUrl ? (
+          <a
+            key={`${pr.repoId}-${pr.prId}`}
+            href={realUrl}
+            target="_blank"
+            rel="noopener"
+            className={rowClass}
+          >
+            {inner}
           </a>
+        ) : (
+          <div
+            key={`${pr.repoId}-${pr.prId}`}
+            className={rowClass}
+          >
+            {inner}
+          </div>
         );
       })}
     </div>

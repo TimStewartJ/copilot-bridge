@@ -1,7 +1,8 @@
 import type { EnrichedWorkItem, WorkItemRef } from "../../api";
 import { WI_TYPE_ICONS, WI_STATE_STYLES } from "../../work-item-styles";
 import { ClipboardList } from "lucide-react";
-import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
+import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
+import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -9,7 +10,7 @@ export interface WorkItemListProps {
   enrichedWIs: EnrichedWorkItem[];
   rawWIs: WorkItemRef[];
   variant?: "compact" | "card" | "summary";
-  onOpenSummary?: () => void;
+  resetKey?: string;
 }
 
 function sortCountEntries(a: [string, number], b: [string, number]) {
@@ -18,8 +19,9 @@ function sortCountEntries(a: [string, number], b: [string, number]) {
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact", onOpenSummary }: WorkItemListProps) {
+export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact", resetKey }: WorkItemListProps) {
   const isCompact = variant === "compact";
+
   const items = enrichedWIs.length > 0
     ? enrichedWIs
     : rawWIs.map((w) => ({
@@ -66,15 +68,22 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
           .filter(Boolean)
           .join(" · ");
 
+    const singleUrl = primaryItem.url && primaryItem.url !== "#" ? primaryItem.url : null;
+
     return (
-      <TaskPanelSummaryRow
+      <TaskPanelSummaryDisclosure
         label="Work items"
         icon={<ClipboardList size={14} />}
         title={title}
         subtitle={subtitle || undefined}
         chips={chips}
-        onClick={onOpenSummary}
-      />
+        itemCount={items.length}
+        resetKey={resetKey}
+        onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
+        expandWhenSingle={!singleUrl}
+      >
+        <WorkItemList enrichedWIs={enrichedWIs} rawWIs={rawWIs} variant="compact" />
+      </TaskPanelSummaryDisclosure>
     );
   }
 
@@ -82,36 +91,39 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
     <div className={isCompact ? "space-y-0.5" : "space-y-1"}>
       {items.map((wi) => {
         const typeInfo = WI_TYPE_ICONS[wi.type ?? ""];
-        return (
+        const realUrl = wi.url && wi.url !== "#" ? wi.url : null;
+        const rowClass = isCompact
+          ? "block px-3 py-1.5 text-xs text-accent hover:text-accent-hover hover:bg-bg-hover rounded-md transition-colors"
+          : "block px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors";
+        const inner = (
+          <div className={`flex items-center ${isCompact ? "gap-1.5" : "gap-2"}`}>
+            {isCompact ? (
+              <span>{typeInfo?.icon ?? <ClipboardList size={12} />}</span>
+            ) : (
+              <span className={typeInfo?.color ?? "text-text-muted"}>
+                {typeInfo?.icon ?? <ClipboardList size={14} />}
+              </span>
+            )}
+            <span className={`font-medium ${isCompact ? "" : "text-xs text-accent"}`}>{wi.id}</span>
+            {isCompact && wi.title && (
+              <span className="text-text-muted truncate">{wi.title}</span>
+            )}
+            {!isCompact && wi.state && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
+                {wi.state}
+              </span>
+            )}
+          </div>
+        );
+        return realUrl ? (
           <a
             key={`${wi.provider}-${wi.id}`}
-            href={wi.url}
+            href={realUrl}
             target="_blank"
             rel="noopener"
-            className={
-              isCompact
-                ? "block px-3 py-1.5 text-xs text-accent hover:text-accent-hover hover:bg-bg-hover rounded-md transition-colors"
-                : "block px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-            }
+            className={rowClass}
           >
-            <div className={`flex items-center ${isCompact ? "gap-1.5" : "gap-2"}`}>
-              {isCompact ? (
-                <span>{typeInfo?.icon ?? <ClipboardList size={12} />}</span>
-              ) : (
-                <span className={typeInfo?.color ?? "text-text-muted"}>
-                  {typeInfo?.icon ?? <ClipboardList size={14} />}
-                </span>
-              )}
-              <span className={`font-medium ${isCompact ? "" : "text-xs text-accent"}`}>{wi.id}</span>
-              {isCompact && wi.title && (
-                <span className="text-text-muted truncate">{wi.title}</span>
-              )}
-              {!isCompact && wi.state && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
-                  {wi.state}
-                </span>
-              )}
-            </div>
+            {inner}
             {isCompact && wi.state && (
               <div className="mt-0.5 ml-5">
                 <span className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
@@ -129,6 +141,29 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
               </div>
             )}
           </a>
+        ) : (
+          <div
+            key={`${wi.provider}-${wi.id}`}
+            className={rowClass}
+          >
+            {inner}
+            {isCompact && wi.state && (
+              <div className="mt-0.5 ml-5">
+                <span className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
+                  {wi.state}
+                </span>
+              </div>
+            )}
+            {!isCompact && wi.title && (
+              <div className="text-sm text-text-primary mt-1 ml-6 line-clamp-2">{wi.title}</div>
+            )}
+            {!isCompact && (wi.assignedTo || wi.areaPath) && (
+              <div className="text-[10px] text-text-faint mt-1 ml-6 flex items-center gap-2">
+                {wi.assignedTo && <span>{wi.assignedTo}</span>}
+                {wi.areaPath && <span>{wi.areaPath}</span>}
+              </div>
+            )}
+          </div>
         );
       })}
     </div>
