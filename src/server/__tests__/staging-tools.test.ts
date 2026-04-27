@@ -279,7 +279,6 @@ describe("staging tools", () => {
          };
        }`,
     );
-    writeServerModule("migrate-json-to-sqlite.ts", `export function migrateJsonToSqlite() {}`);
     writeServerModule("task-store.ts", `export function createTaskStore() { return {}; }`);
     writeServerModule("task-group-store.ts", `export function createTaskGroupStore() { return {}; }`);
     writeServerModule("schedule-store.ts", `export function createScheduleStore() { return {}; }`);
@@ -366,32 +365,7 @@ describe("staging tools", () => {
     expect(existsSync(join(seededDataDir, "docs", "note.md"))).toBe(true);
   });
 
-  it("falls back to legacy JSON state when production bridge.db is missing", async () => {
-    const mod = await loadStagingToolsModule();
-    const productionDataDir = createTempDir("bridge-stage-missing-db-");
-    const stagingDir = createTempDir("bridge-stage-staging-");
-    const stagingDataDir = join(stagingDir, "data");
-
-    mkdirSync(stagingDataDir, { recursive: true });
-    writeFileSync(join(stagingDataDir, "bridge.db"), "stale");
-    writeFileSync(join(stagingDataDir, "bridge.db-wal"), "stale");
-    writeFileSync(join(stagingDataDir, "bridge.db-shm"), "stale");
-    writeFileSync(join(productionDataDir, "tasks.json"), JSON.stringify([{ id: "task-1", title: "Legacy task" }]));
-    writeFileSync(join(productionDataDir, "schedules.json"), JSON.stringify([
-      { id: "sched-1", name: "Legacy schedule", enabled: true, type: "cron", cron: "0 9 * * 1" },
-    ]));
-
-    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
-    expect(existsSync(join(seededDataDir, "tasks.json"))).toBe(true);
-    expect(existsSync(join(seededDataDir, "bridge.db"))).toBe(false);
-    expect(existsSync(join(seededDataDir, "bridge.db-wal"))).toBe(false);
-    expect(existsSync(join(seededDataDir, "bridge.db-shm"))).toBe(false);
-    expect(JSON.parse(readFileSync(join(seededDataDir, "schedules.json"), "utf-8"))).toEqual([
-      { id: "sched-1", name: "Legacy schedule", enabled: false, type: "cron", cron: "0 9 * * 1" },
-    ]);
-  });
-
-  it("fails explicitly when neither production bridge.db nor legacy JSON state exists", async () => {
+  it("fails explicitly when production bridge.db is missing", async () => {
     const mod = await loadStagingToolsModule();
     const productionDataDir = createTempDir("bridge-stage-missing-db-");
     const stagingDir = createTempDir("bridge-stage-staging-");

@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { config, setMcpServersGetter } from "./config.js";
 import { SessionManager, createBridgeTools, createSessionManager } from "./session-manager.js";
 import { openDatabase } from "./db.js";
-import { migrateJsonToSqlite } from "./migrate-json-to-sqlite.js";
 import { createTaskStore } from "./task-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createSessionMetaStore } from "./session-meta-store.js";
@@ -58,7 +57,6 @@ const runtimePaths = resolveRuntimePaths(process.env);
 Object.assign(process.env, runtimePaths.env);
 const dataDir = runtimePaths.dataDir;
 const db = openDatabase(dataDir);
-migrateJsonToSqlite(db, dataDir);
 
 // ── Stores (all backed by shared SQLite db) ───────────────────────
 const taskStore = createTaskStore(db, defaultGlobalBus, { runtimePaths });
