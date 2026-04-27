@@ -4,6 +4,7 @@ import { copyFile, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { SessionManager } from "./session-manager.js";
 import {
+  isRestartCutoverInProgress,
   isRestartPendingError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
@@ -72,7 +73,7 @@ export function createVoiceJobManager({
     sourceFilePath,
     originalFilename,
   }: AcceptVoiceJobInput): Promise<VoiceJobSnapshot> {
-    if ((await refreshRestartState()).phase !== "idle") {
+    if (isRestartCutoverInProgress(await refreshRestartState())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
     const id = randomUUID();
@@ -137,11 +138,10 @@ export function createVoiceJobManager({
             || (job.status === "error" && !job.transcript)
           );
         if (!canResume || !job) return;
-        if ((await refreshRestartState()).phase !== "idle") {
+        if (isRestartCutoverInProgress(await refreshRestartState())) {
           scheduleRetry(job.id);
           return;
         }
-
         await transcribeAndSend(job, job.transcript);
       } finally {
         processingJobs.delete(jobId);
@@ -199,7 +199,7 @@ export function createVoiceJobManager({
       return;
     }
 
-    if ((await refreshRestartState()).phase !== "idle") {
+    if (isRestartCutoverInProgress(await refreshRestartState())) {
       scheduleRetry(job.id);
       return;
     }

@@ -120,7 +120,7 @@ describe("scheduler restart gating", () => {
     scheduler.shutdown();
   });
 
-  it("skips triggering schedules while restart is pending", async () => {
+  it("triggers schedules while restart is pending", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
@@ -148,15 +148,12 @@ describe("scheduler restart gating", () => {
     triggerRestartPending();
     const result = await scheduler.triggerSchedule(schedule.id);
 
-    expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    expect(sessionManager.startWork).not.toHaveBeenCalled();
+    expect(result).toEqual({ sessionId: "sched-session" });
+    expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
+    expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
   });
 
-  it("skips triggering schedules when restart is pending with waiting sessions", async () => {
-    // This verifies the change from isRestartImminent (only when waitingSessions=0) to
-    // isRestartPending (any non-idle phase), so schedules are blocked even during the
-    // waiting-for-sessions phase.
+  it("triggers schedules when restart is pending with waiting sessions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
     const { ctx } = createTestApp();
     try {
@@ -198,8 +195,58 @@ describe("scheduler restart gating", () => {
 
       const result = await scheduler.triggerSchedule(schedule.id);
 
+      expect(result).toEqual({ sessionId: "sched-session" });
+      expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
+      expect(sessionManager.startWork).toHaveBeenCalledWith("sched-session", "run now");
+    } finally {
+      clearRestartPending();
+      configureRestartStateStore(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips triggering schedules while launcher restart cutover is in progress", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
+    const { ctx } = createTestApp();
+    try {
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir: tempDir, env: process.env });
+      await writeRestartState(join(tempDir, "restart-state.json"), {
+        requestId: "req-restarting",
+        phase: "restarting",
+        requestedAt: new Date().toISOString(),
+        waitingSessions: 0,
+        launcherHeartbeatAt: new Date().toISOString(),
+      });
+      await refreshRestartState();
+
+      const sessionManager = {
+        isSessionBusy: vi.fn().mockReturnValue(false),
+        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
+        startWork: vi.fn(),
+        deleteSession: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Restart cutover schedule",
+        prompt: "run now",
+        type: "cron",
+        cron: "0 0 * * *",
+      });
+
+      const result = await scheduler.triggerSchedule(schedule.id);
+
       expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
       expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
+      expect(sessionManager.startWork).not.toHaveBeenCalled();
     } finally {
       clearRestartPending();
       configureRestartStateStore(undefined);

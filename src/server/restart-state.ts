@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -127,6 +128,16 @@ function getTempRestartStatePath(filePath: string): string {
 export async function readRestartState(filePath: string): Promise<RestartState> {
   try {
     const raw = await readFile(filePath, "utf8");
+    if (!raw.trim()) return createDefaultRestartState();
+    return normalizeRestartState(JSON.parse(raw) as unknown);
+  } catch {
+    return createDefaultRestartState();
+  }
+}
+
+export function readRestartStateSync(filePath: string): RestartState {
+  try {
+    const raw = readFileSync(filePath, "utf8");
     if (!raw.trim()) return createDefaultRestartState();
     return normalizeRestartState(JSON.parse(raw) as unknown);
   } catch {
