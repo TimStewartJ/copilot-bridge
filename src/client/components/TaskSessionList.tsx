@@ -27,6 +27,8 @@ interface TaskSessionListProps {
   archivedLoaded?: boolean;
   archivedLoading?: boolean;
   className?: string;
+  /** When false, hides the embedded SessionList new-chat button (e.g. when parent already provides one) */
+  showNewButton?: boolean;
 }
 
 export default function TaskSessionList({
@@ -52,6 +54,7 @@ export default function TaskSessionList({
   archivedLoaded,
   archivedLoading = false,
   className,
+  showNewButton = true,
 }: TaskSessionListProps) {
   const sortedSessions = useMemo(
     () => sortTaskSessions(linkedSessions),
@@ -102,6 +105,7 @@ export default function TaskSessionList({
       onRequestArchived={requestTaskArchivedSessions}
       archivedLoaded={taskSessionArchivedLoaded}
       archivedLoading={hasUnloadedLinkedSessions && archivedLoading}
+      showNewButton={showNewButton}
       className={className}
     />
   );

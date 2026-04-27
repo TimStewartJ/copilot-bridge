@@ -4,6 +4,10 @@ import {
   getTaskCompletionCounts,
   getTaskCompletionState,
   getTaskCompletionSummaryParts,
+  getTaskLifecycleBadgeClass,
+  getTaskLifecycleDisplayState,
+  getTaskStatusLabel,
+  getTaskStatusTextClass,
   shouldShowTaskArchiveToggle,
   shouldSurfaceReadyToCompleteCue,
 } from "./task-completion-helpers";
@@ -288,5 +292,69 @@ describe("shouldShowTaskArchiveToggle", () => {
       { status: "archived", completedAt: undefined },
       { ctaState: "archived" },
     )).toBe(true);
+  });
+});
+
+describe("getTaskLifecycleDisplayState", () => {
+  it("returns 'completed' for done status", () => {
+    expect(getTaskLifecycleDisplayState({ status: "done", completedAt: undefined })).toBe("completed");
+  });
+
+  it("returns 'completed' for archived task with completedAt", () => {
+    expect(getTaskLifecycleDisplayState({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toBe("completed");
+  });
+
+  it("returns 'archived' for archived task without completedAt", () => {
+    expect(getTaskLifecycleDisplayState({ status: "archived", completedAt: undefined })).toBe("archived");
+  });
+
+  it("returns 'active' for active task", () => {
+    expect(getTaskLifecycleDisplayState({ status: "active", completedAt: undefined })).toBe("active");
+  });
+});
+
+describe("getTaskStatusLabel", () => {
+  it("labels done tasks as Completed", () => {
+    expect(getTaskStatusLabel({ status: "done", completedAt: undefined })).toBe("Completed");
+  });
+
+  it("labels archived+completedAt tasks as Completed", () => {
+    expect(getTaskStatusLabel({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toBe("Completed");
+  });
+
+  it("labels manually archived tasks as Archived", () => {
+    expect(getTaskStatusLabel({ status: "archived", completedAt: undefined })).toBe("Archived");
+  });
+
+  it("labels active tasks as Active", () => {
+    expect(getTaskStatusLabel({ status: "active", completedAt: undefined })).toBe("Active");
+  });
+});
+
+describe("getTaskLifecycleBadgeClass", () => {
+  it("uses accent colour for completed tasks", () => {
+    expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toContain("text-accent");
+  });
+
+  it("uses muted colour for archived tasks", () => {
+    expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: undefined })).toContain("text-text-muted");
+  });
+
+  it("uses success colour for active tasks", () => {
+    expect(getTaskLifecycleBadgeClass({ status: "active", completedAt: undefined })).toContain("text-success");
+  });
+});
+
+describe("getTaskStatusTextClass", () => {
+  it("returns faint class for archived tasks", () => {
+    expect(getTaskStatusTextClass({ status: "archived", completedAt: undefined })).toBe("text-text-faint");
+  });
+
+  it("returns muted class for completed tasks", () => {
+    expect(getTaskStatusTextClass({ status: "done", completedAt: undefined })).toBe("text-text-muted");
+  });
+
+  it("returns success class for active tasks", () => {
+    expect(getTaskStatusTextClass({ status: "active", completedAt: undefined })).toBe("text-success");
   });
 });

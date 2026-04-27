@@ -258,9 +258,9 @@ export default function TaskList({
             onClick={() => setShowArchived(!showArchived)}
             className="w-full px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
           >
-            {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Archived ({grouped.archived.length})
+            {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Closed ({grouped.archived.length})
           </button>
-          {showArchived && renderGroup("Archived", grouped.archived)}
+          {showArchived && renderGroup("Closed", grouped.archived)}
         </>
       )}
       {tasks.length === 0 && (

@@ -7,12 +7,9 @@ import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import { getFollowUpState } from "../TaskMomentumFields";
 import TaskKindBadge from "../TaskKindBadge";
+import { getTaskStatusLabel, getTaskStatusTextClass } from "../../task-completion-helpers";
 
-const STATUS_TEXT: Record<Task["status"], string> = {
-  active: "text-success",
-  done: "text-text-muted",
-  archived: "text-text-faint",
-};
+
 
 interface SortableTaskItemProps {
   task: Task;
@@ -89,8 +86,8 @@ export default function SortableTaskItem({
             </span>
           )}
           {isRail && (
-            <span className={`text-[10px] ml-1 ${STATUS_TEXT[task.status]}`}>
-              {task.status !== "active" ? task.status : ""}
+            <span className={`text-[10px] ml-1 ${getTaskStatusTextClass(task)}`}>
+              {getTaskStatusLabel(task) !== "Active" ? getTaskStatusLabel(task) : ""}
             </span>
           )}
         </div>
