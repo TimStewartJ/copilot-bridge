@@ -17,6 +17,8 @@ import {
   Calendar,
   Repeat,
   Globe,
+  ExternalLink,
+  MessageSquare,
 } from "lucide-react";
 import EmptyState from "./shared/EmptyState";
 
