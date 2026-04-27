@@ -95,9 +95,50 @@ describe("session workspace routes", () => {
     expect(listSessionsFromDisk).toHaveBeenNthCalledWith(2, { includeArchived: true });
   });
 
-  it("invalidates the session list cache across busy and idle events", async () => {
+  it("keeps the session list cache across busy and idle events", async () => {
     const copilotHome = createCopilotHome();
+    let runState = "idle";
     const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
+    const sessionManager = {
+      ...createMockSessionManager(),
+      getSessionRunState: vi.fn(() => runState),
+      listSessionsFromDisk,
+    } as any;
+    const testApp = createTestApp({ copilotHome, sessionManager });
+    app = testApp.app;
+    ctx = testApp.ctx;
+
+    const firstRes = await request(app).get("/api/sessions");
+    runState = "busy";
+    ctx.globalBus.emit({ type: "session:busy", sessionId: "session-1" });
+    const secondRes = await request(app).get("/api/sessions");
+    runState = "idle";
+    ctx.globalBus.emit({ type: "session:idle", sessionId: "session-1" });
+    const thirdRes = await request(app).get("/api/sessions");
+
+    expect(firstRes.status).toBe(200);
+    expect(secondRes.status).toBe(200);
+    expect(thirdRes.status).toBe(200);
+    expect(firstRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle", busy: false });
+    expect(secondRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "busy", busy: true });
+    expect(thirdRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle", busy: false });
+    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps in-flight session list builds cacheable when run-state events arrive", async () => {
+    const copilotHome = createCopilotHome();
+    let resolveSessions: (sessions: any[]) => void = () => {};
+    let markStarted: () => void = () => {};
+    const sessionsReady = new Promise<any[]>((resolve) => {
+      resolveSessions = resolve;
+    });
+    const buildStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const listSessionsFromDisk = vi.fn(() => {
+      markStarted();
+      return sessionsReady;
+    });
     const sessionManager = {
       ...createMockSessionManager(),
       listSessionsFromDisk,
@@ -106,16 +147,17 @@ describe("session workspace routes", () => {
     app = testApp.app;
     ctx = testApp.ctx;
 
-    const firstRes = await request(app).get("/api/sessions");
+    const firstRequest = request(app).get("/api/sessions").then((res) => res);
+    await buildStarted;
     ctx.globalBus.emit({ type: "session:busy", sessionId: "session-1" });
+    resolveSessions([{ sessionId: "session-1", summary: "Cached session" }]);
+    const firstRes = await firstRequest;
     const secondRes = await request(app).get("/api/sessions");
-    ctx.globalBus.emit({ type: "session:idle", sessionId: "session-1" });
-    const thirdRes = await request(app).get("/api/sessions");
 
     expect(firstRes.status).toBe(200);
     expect(secondRes.status).toBe(200);
-    expect(thirdRes.status).toBe(200);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(3);
+    expect(secondRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["session-1"]);
+    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
   it("avoids arbitrary task workspace defaults in the session list for multi-task sessions", async () => {

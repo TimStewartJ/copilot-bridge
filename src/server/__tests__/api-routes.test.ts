@@ -1846,7 +1846,7 @@ describe("Session routes (mocked)", () => {
     ]);
   });
 
-  it("GET /api/sessions rebuilds the warm cache when an untitled session becomes busy", async () => {
+  it("GET /api/sessions keeps the warm cache when an untitled session becomes busy", async () => {
     const sessionManager = createMockSessionManager();
     let runState = "idle";
     sessionManager.getSessionRunState = vi.fn(() => runState);
@@ -1877,7 +1877,7 @@ describe("Session routes (mocked)", () => {
         busy: true,
       }),
     ]);
-    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(2);
+    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
   it("GET /api/sessions includes runState while keeping busy derived for stalled sessions", async () => {

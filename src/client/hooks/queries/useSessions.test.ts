@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Session } from "../../api";
-import { mergeOptimisticSessions } from "./useSessions";
+import { mergeActiveAndArchivedSessions, mergeOptimisticSessions } from "./useSessions";
 
 function createSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -60,5 +60,40 @@ describe("mergeOptimisticSessions", () => {
     ];
 
     expect(mergeOptimisticSessions(serverSessions, cachedSessions, 1_000)).toEqual(serverSessions);
+  });
+});
+
+describe("mergeActiveAndArchivedSessions", () => {
+  it("uses only active-query sessions until archives are requested", () => {
+    const activeSession = createSession({ sessionId: "active-session" });
+    const archivedSession = createSession({ sessionId: "archived-session", archived: true });
+
+    expect(mergeActiveAndArchivedSessions([activeSession], [activeSession, archivedSession], false))
+      .toEqual([activeSession]);
+  });
+
+  it("adds archived-query archived sessions without duplicating active sessions", () => {
+    const activeSession = createSession({ sessionId: "active-session" });
+    const archivedSession = createSession({ sessionId: "archived-session", archived: true });
+    const staleActiveSession = createSession({ sessionId: "stale-active-session" });
+
+    expect(mergeActiveAndArchivedSessions(
+      [activeSession],
+      [activeSession, staleActiveSession, archivedSession],
+      true,
+    )).toEqual([activeSession, archivedSession]);
+  });
+
+  it("keeps restoring unarchived sessions until the active query contains them", () => {
+    const activeSession = createSession({ sessionId: "active-session" });
+    const restoringSession = createSession({ sessionId: "restoring-session", archived: false });
+    const staleActiveSession = createSession({ sessionId: "stale-active-session", archived: false });
+
+    expect(mergeActiveAndArchivedSessions(
+      [activeSession],
+      [restoringSession, staleActiveSession],
+      true,
+      new Set(["restoring-session"]),
+    )).toEqual([activeSession, restoringSession]);
   });
 });
