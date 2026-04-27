@@ -361,6 +361,8 @@ describe("TaskPanel", () => {
     } finally {
       dom.cleanup();
     }
+  });
+
   it("shows the TaskPanel completion button only when completion or reopen is actionable", async () => {
     await expect(renderTaskPanelHtml(createTask())).resolves.toContain("Complete &amp; archive");
     await expect(renderTaskPanelHtml(createTask({
