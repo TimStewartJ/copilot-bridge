@@ -95,7 +95,7 @@ describe("session workspace routes", () => {
     expect(listSessionsFromDisk).toHaveBeenNthCalledWith(2, { includeArchived: true });
   });
 
-  it("keeps the session list cache across busy and idle events", async () => {
+  it("invalidates the session list cache across busy and idle events", async () => {
     const copilotHome = createCopilotHome();
     const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
     const sessionManager = {
@@ -108,12 +108,14 @@ describe("session workspace routes", () => {
 
     const firstRes = await request(app).get("/api/sessions");
     ctx.globalBus.emit({ type: "session:busy", sessionId: "session-1" });
-    ctx.globalBus.emit({ type: "session:idle", sessionId: "session-1" });
     const secondRes = await request(app).get("/api/sessions");
+    ctx.globalBus.emit({ type: "session:idle", sessionId: "session-1" });
+    const thirdRes = await request(app).get("/api/sessions");
 
     expect(firstRes.status).toBe(200);
     expect(secondRes.status).toBe(200);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
+    expect(thirdRes.status).toBe(200);
+    expect(listSessionsFromDisk).toHaveBeenCalledTimes(3);
   });
 
   it("avoids arbitrary task workspace defaults in the session list for multi-task sessions", async () => {

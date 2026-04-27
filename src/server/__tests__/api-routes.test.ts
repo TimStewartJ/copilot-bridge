@@ -1727,6 +1727,65 @@ describe("Session routes (mocked)", () => {
     ]);
   });
 
+  it("GET /api/sessions keeps linked untitled task sessions visible", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "new-task-session",
+        summary: "Generate a concise 3-6 word title for this conversation.",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = ctx.taskStore.createTask("Task with new session");
+    ctx.taskStore.linkSession(task.id, "new-task-session");
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "new-task-session",
+        summary: "New session",
+      }),
+    ]);
+  });
+
+  it("GET /api/sessions rebuilds the warm cache when an untitled session becomes busy", async () => {
+    const sessionManager = createMockSessionManager();
+    let runState = "idle";
+    sessionManager.getSessionRunState = vi.fn(() => runState);
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "untitled-session",
+        summary: "Generate a concise 3-6 word title for this conversation.",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const idleRes = await request(app).get("/api/sessions");
+    expect(idleRes.status).toBe(200);
+    expect(idleRes.body.sessions).toEqual([]);
+
+    runState = "busy";
+    ctx.globalBus.emit({ type: "session:busy", sessionId: "untitled-session" });
+    const busyRes = await request(app).get("/api/sessions");
+
+    expect(busyRes.status).toBe(200);
+    expect(busyRes.body.sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "untitled-session",
+        summary: "New session",
+        runState: "busy",
+        busy: true,
+      }),
+    ]);
+    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(2);
+  });
+
   it("GET /api/sessions includes runState while keeping busy derived for stalled sessions", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
