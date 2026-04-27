@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { Task, TaskGroup, Session } from "../api";
-import { unlinkResource, patchTask } from "../api";
+import { patchTask } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
@@ -12,10 +12,8 @@ import {
 } from "../task-detail-focus";
 import {
   getTaskPanelChecklistPreview,
-  sortTaskPanelSessions,
-  TASK_PANEL_SESSION_PREVIEW_LIMIT,
 } from "../task-panel-preview";
-import SessionList from "./SessionList";
+import TaskSessionList from "./TaskSessionList";
 import PullToRefresh from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
@@ -95,6 +93,7 @@ interface TaskPanelProps {
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  archivedLoading?: boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
 }
 
@@ -127,6 +126,7 @@ export default function TaskPanel({
   onBulkAction,
   onRequestArchived,
   archivedLoaded,
+  archivedLoading,
   onSetTaskTags,
 }: TaskPanelProps) {
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
@@ -250,11 +250,6 @@ export default function TaskPanel({
     });
   }, [activeSessionId, currentTask, enrichedPRs, isUnread, linkedSessions]);
 
-  const recentSessions = useMemo(
-    () => sortTaskPanelSessions(linkedSessions, activeSessionId, isUnread),
-    [activeSessionId, isUnread, linkedSessions],
-  );
-
   const checklistPreview = useMemo(
     () => getTaskPanelChecklistPreview(checklistItems, { highlightId: highlightChecklistItemId }),
     [checklistItems, highlightChecklistItemId],
@@ -267,8 +262,6 @@ export default function TaskPanel({
       </div>
     );
   }
-  const inlineSessions = recentSessions.slice(0, TASK_PANEL_SESSION_PREVIEW_LIMIT);
-  const hiddenSessionCount = Math.max(linkedSessions.length - inlineSessions.length, 0);
   const checklistSummary = [
     checklistPreview.overdueCount > 0
       ? { label: `${checklistPreview.overdueCount} overdue`, className: "text-error" }
@@ -442,51 +435,30 @@ export default function TaskPanel({
           className="absolute inset-0 overflow-x-hidden p-2 space-y-3"
         >
           <div>
-            <SectionLabel label="Sessions" count={linkedSessions.length} />
-            <SessionList
-              key={task.id}
-              variant="compact"
-              sessions={inlineSessions}
+            <SectionLabel label="Sessions" count={task.sessionIds.length} />
+            <TaskSessionList
+              task={task}
+              linkedSessions={linkedSessions}
               activeSessionId={activeSessionId}
               onSelectSession={onSelectSession}
-              onNewSession={() => onNewSession(task.id)}
-              newButtonLabel="+ New Chat"
+              onNewSession={onNewSession}
               showEmptyState={linkedSessions.length === 0}
               isUnread={isUnread}
               onArchiveSession={onArchiveSession}
               archivingIds={archivingIds}
               exitingIds={exitingIds}
-              taskContext={task}
-              onUnlinkFromTask={
-                onUnlinkFromTask
-                  ? onUnlinkFromTask
-                  : async (sessionId, taskId) => {
-                      await unlinkResource(taskId, {
-                        type: "session",
-                        sessionId,
-                      });
-                      onTasksChanged?.();
-                    }
-              }
+              onUnlinkFromTask={onUnlinkFromTask}
+              onTasksChanged={onTasksChanged}
               onDeleteSession={onDeleteSession}
               onDuplicateSession={onDuplicateSession}
               onReloadSession={onReloadSession}
               onMarkUnread={onMarkUnread}
+              onBulkAction={onBulkAction}
               hasDraft={hasDraft}
+              onRequestArchived={onRequestArchived}
+              archivedLoaded={archivedLoaded}
+              archivedLoading={archivedLoading}
             />
-            {inlineSessions.length === 0 && linkedSessions.length > 0 && (
-              <div className="px-3 py-1 text-[11px] text-text-faint">
-                Older session history lives in Task Overview.
-              </div>
-            )}
-            {hiddenSessionCount > 0 && onViewDashboard && (
-              <button
-                onClick={() => openTaskOverview("sessions")}
-                className="px-3 pt-1 text-[11px] text-accent transition-colors hover:text-accent-hover"
-              >
-                View all {linkedSessions.length} session{linkedSessions.length === 1 ? "" : "s"}
-              </button>
-            )}
           </div>
 
           <div>

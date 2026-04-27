@@ -87,7 +87,11 @@ export default function App() {
 
   // ── React Query data ────────────────────────────────────────
   const [archivedLoaded, setArchivedLoaded] = useState(false);
-  const { data: sessions = [] } = useSessionsQuery(archivedLoaded);
+  const {
+    data: sessions = [],
+    isFetched: sessionsFetched,
+  } = useSessionsQuery(archivedLoaded);
+  const archivedLoading = archivedLoaded && !sessionsFetched;
   const { data: tasks = [] } = useTasksQuery();
   const { data: taskGroups = [] } = useTaskGroupsQuery();
   const { data: openChecklistItems = [] } = useOpenChecklistItemsQuery();
@@ -1162,6 +1166,7 @@ export default function App() {
         onMarkAllQuickChatsRead={handleMarkAllRead}
         onRequestArchived={requestArchivedSessions}
         archivedLoaded={archivedLoaded}
+        archivedLoading={archivedLoading}
         archivingIds={archivingIds}
         exitingIds={exitingIds}
         hasDraft={hasDraft}
@@ -1222,6 +1227,7 @@ export default function App() {
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
                   archivedLoaded={archivedLoaded}
+                  archivedLoading={archivedLoading}
                   scrollRestoration={mobileTaskListScrollRestoration}
                 />
               </div>
@@ -1260,6 +1266,7 @@ export default function App() {
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
                   archivedLoaded={archivedLoaded}
+                  archivedLoading={archivedLoading}
                   onSetTaskTags={handleSetTaskTags}
                 />
               </div>
@@ -1346,6 +1353,7 @@ export default function App() {
                     hasDraft={hasDraft}
                     onRequestArchived={requestArchivedSessions}
                     archivedLoaded={archivedLoaded}
+                    archivedLoading={archivedLoading}
                     scrollRestoration={mobileTaskDashboardScrollRestoration}
                   />
                 ) : taskNotFound ? (
@@ -1471,6 +1479,7 @@ function MobileTaskListView({
   onBulkAction,
   onRequestArchived,
   archivedLoaded,
+  archivedLoading,
   scrollRestoration,
 }: {
   tasks: Task[];
@@ -1517,6 +1526,7 @@ function MobileTaskListView({
   onBulkAction?: (action: import("./api").BatchAction, sessionIds: string[]) => void;
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
+  archivedLoading?: boolean;
   scrollRestoration?: PullToRefreshScrollRestoration;
 }){
   return (
@@ -1558,6 +1568,7 @@ function MobileTaskListView({
             onBulkAction={onBulkAction}
             onRequestArchived={onRequestArchived}
             archivedLoaded={archivedLoaded}
+            archivedLoading={archivedLoading}
             className="min-w-0 overflow-x-hidden p-2 space-y-0.5"
           />
         ) : (
