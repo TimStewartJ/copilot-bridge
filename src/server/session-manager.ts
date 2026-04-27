@@ -420,34 +420,42 @@ function resolveRestartStatePath(runtimePaths?: RuntimePaths): string {
   return join(runtimePaths?.dataDir ?? join(REPO_ROOT, "data"), "restart-state.json");
 }
 
-type RestartStateStoreBinding = {
+type RestartStateWriteTarget = {
   path: string;
   generation: number;
 };
 
-function getRestartStateStoreBinding(): RestartStateStoreBinding {
+function captureRestartStateWriteTarget(): RestartStateWriteTarget {
   return {
     path: _restartStatePath,
     generation: _restartStateStoreGeneration,
   };
 }
 
-function isCurrentRestartStateStore(binding: RestartStateStoreBinding): boolean {
-  return binding.path === _restartStatePath && binding.generation === _restartStateStoreGeneration;
+function isCurrentRestartStateWriteTarget(target: RestartStateWriteTarget): boolean {
+  return target.path === _restartStatePath && target.generation === _restartStateStoreGeneration;
 }
 
-function queueRestartStateMutation(mutation: () => Promise<void>): void {
+function queueRestartStateWrite(write: () => Promise<void>): void {
   _restartStateWriteQueue = _restartStateWriteQueue
     .catch(() => undefined)
-    .then(mutation)
+    .then(write)
     .catch((error) => {
       console.error("[restart] Failed to persist restart state:", error);
     });
 }
 
-function cacheRestartState(state: RestartState): RestartState {
+function setCachedRestartState(state: RestartState): RestartState {
   _restartState = state;
   return state;
+}
+
+function shouldPreserveServerOwnedRestartState(persisted: RestartState): boolean {
+  return isRestartActive(_restartState)
+    && _restartState.requestId !== null
+    && persisted.requestId === _restartState.requestId
+    && persisted.phase !== "idle"
+    && !hasLauncherTakenRestartOwnership(persisted);
 }
 
 function hasLauncherTakenRestartOwnership(state: RestartState): boolean {
@@ -469,6 +477,8 @@ export function configureRestartStateStore(runtimePaths?: RuntimePaths): void {
   _restartStatePath = nextPath;
   _restartStateStoreGeneration += 1;
   _restartState = createDefaultRestartState();
+  // Detach from writes already queued for the previous path. Their captured
+  // targets keep the file path stable, and the generation guard protects this cache.
   _restartStateWriteQueue = Promise.resolve();
 }
 
@@ -486,16 +496,10 @@ function emitRestartEvent(event: Parameters<GlobalBus["emit"]>[0]): void {
 export async function refreshRestartState(): Promise<RestartState> {
   await _restartStateWriteQueue;
   const persisted = await readRestartState(_restartStatePath);
-  if (
-    isRestartActive(_restartState)
-    && _restartState.requestId !== null
-    && persisted.requestId === _restartState.requestId
-    && persisted.phase !== "idle"
-    && !hasLauncherTakenRestartOwnership(persisted)
-  ) {
+  if (shouldPreserveServerOwnedRestartState(persisted)) {
     return _restartState;
   }
-  return cacheRestartState(persisted);
+  return setCachedRestartState(persisted);
 }
 
 export function isRestartPending(): boolean {
@@ -503,10 +507,10 @@ export function isRestartPending(): boolean {
 }
 export function clearRestartPending(): void {
   const wasPending = isRestartActive(_restartState);
-  const restartStateStore = getRestartStateStoreBinding();
-  cacheRestartState(createDefaultRestartState());
-  queueRestartStateMutation(async () => {
-    await clearRestartState(restartStateStore.path);
+  const writeTarget = captureRestartStateWriteTarget();
+  setCachedRestartState(createDefaultRestartState());
+  queueRestartStateWrite(async () => {
+    await clearRestartState(writeTarget.path);
   });
   if (wasPending) {
     emitRestartEvent({ type: "server:restart-cleared" });
@@ -541,18 +545,18 @@ export function triggerRestartPending(): number {
   // The calling session is still counted as active; subtract 1 since it will
   // finish momentarily and should not count as "blocking" the restart.
   const waitingCount = _instance ? Math.max(0, _instance.getActiveSessions().length - 1) : 0;
-  const restartStateStore = getRestartStateStoreBinding();
-  const nextState: RestartState = cacheRestartState({
+  const writeTarget = captureRestartStateWriteTarget();
+  const nextState: RestartState = setCachedRestartState({
     requestId: randomUUID(),
     phase: getRestartPhaseForWaitingSessions("queued", waitingCount),
     requestedAt: new Date().toISOString(),
     waitingSessions: waitingCount,
     launcherHeartbeatAt: null,
   });
-  queueRestartStateMutation(async () => {
-    const persistedState = await writeRestartState(restartStateStore.path, nextState);
-    if (isCurrentRestartStateStore(restartStateStore)) {
-      cacheRestartState(persistedState);
+  queueRestartStateWrite(async () => {
+    const persistedState = await writeRestartState(writeTarget.path, nextState);
+    if (isCurrentRestartStateWriteTarget(writeTarget)) {
+      setCachedRestartState(persistedState);
     }
   });
   emitRestartEvent({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
@@ -575,7 +579,7 @@ function syncRestartWaitingSessions(waitingSessions: number): void {
     phase: nextPhase,
     waitingSessions,
   };
-  cacheRestartState(nextState);
+  setCachedRestartState(nextState);
   // The persisted restart-state file is only used to publish the initial restart
   // request. After that, waiting-session countdown stays in memory/SSE so the
   // launcher is the sole writer once it picks up the request.

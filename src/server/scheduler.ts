@@ -13,6 +13,7 @@ import {
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
 } from "./session-manager.js";
+import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
@@ -29,10 +30,6 @@ const retainedSessionReuseClaims = new Map<
 >();
 let sessionMgr: SessionManager | null = null;
 let busUnsubscribe: (() => void) | undefined;
-let missedRunCatchUpInFlight: Promise<void> | undefined;
-let missedRunCatchUpRequested = false;
-let missedRunCatchUpRetryTimer: ReturnType<typeof setTimeout> | undefined;
-const deferredMissedRunCandidates = new Map<string, MissedRunCandidate>();
 
 // Injected stores (set via initialize)
 let scheduleStore: ScheduleStore;
@@ -49,10 +46,18 @@ let _globalPause = false;
 const MIN_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes minimum between runs
 const MAX_CONCURRENT = 3;
 const MAX_CONSECUTIVE_FAILURES = 5;
-const MISSED_RUN_GRACE_WINDOW_MS = 60 * 60 * 1000; // 1 hour grace for catch-up
 const AUTOMATIC_CLAIM_RENEW_INTERVAL_MS = 30 * 1000;
 const ONE_SHOT_RETRY_DELAY_MS = 30 * 1000;
-const MISSED_RUN_CATCH_UP_RETRY_DELAY_MS = 5 * 1000;
+
+const missedRunCatchUp = createMissedRunCatchUpController({
+  scheduleStore: () => scheduleStore,
+  computeNextRunAt,
+  unregisterSchedule,
+  triggerSchedule,
+  isRestartPending,
+  refreshRestartState,
+  getRestartPendingMessage: () => RESTART_PENDING_MESSAGE,
+});
 
 // ── Public API ────────────────────────────────────────────────────
 
@@ -77,11 +82,11 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
       return;
     }
     if (event.type === "server:restart-cleared") {
-      checkMissedRuns();
+      missedRunCatchUp.check();
     }
   });
   registerAllSchedules();
-  checkMissedRuns();
+  missedRunCatchUp.check();
   console.log("[scheduler] Initialized");
 }
 
@@ -95,7 +100,7 @@ export function shutdown(): void {
     oneShotTimers.delete(id);
   }
   clearAutomaticRetryTimers();
-  clearMissedRunCatchUpRetryTimer();
+  missedRunCatchUp.reset();
   busUnsubscribe?.();
   busUnsubscribe = undefined;
   for (const { renewTimer } of retainedScheduleRunClaims.values()) {
@@ -108,17 +113,7 @@ export function shutdown(): void {
   retainedSessionReuseClaims.clear();
   activeRuns.clear();
   _globalPause = false;
-  missedRunCatchUpInFlight = undefined;
-  missedRunCatchUpRequested = false;
-  deferredMissedRunCandidates.clear();
   console.log("[scheduler] Shut down — all jobs stopped");
-}
-
-interface MissedRunCandidate {
-  id: string;
-  name: string;
-  source: "once" | "catchup";
-  scheduledFor: string;
 }
 
 export interface TriggerScheduleOptions {
@@ -792,178 +787,6 @@ function registerAllSchedules(): void {
     }
   }
   console.log(`[scheduler] Registered ${cronJobs.size} cron job(s) and ${oneShotCount} one-shot timer(s)`);
-}
-
-function checkMissedRuns(): void {
-  clearMissedRunCatchUpRetryTimer();
-  if (missedRunCatchUpInFlight) {
-    missedRunCatchUpRequested = true;
-    return;
-  }
-  if (isRestartPending()) {
-    rememberDeferredMissedRunCandidates(collectMissedRunCandidates({
-      now: Date.now(),
-      disableStaleOneShots: false,
-    }));
-    scheduleMissedRunCatchUpRetry();
-  }
-  missedRunCatchUpInFlight = catchUpMissedRuns()
-    .catch((err) => {
-      console.error("[scheduler] Failed missed-run catch-up:", err);
-    })
-    .finally(() => {
-      missedRunCatchUpInFlight = undefined;
-      if (missedRunCatchUpRequested) {
-        missedRunCatchUpRequested = false;
-        checkMissedRuns();
-      }
-    });
-}
-
-function clearMissedRunCatchUpRetryTimer(): void {
-  if (!missedRunCatchUpRetryTimer) return;
-  clearTimeout(missedRunCatchUpRetryTimer);
-  missedRunCatchUpRetryTimer = undefined;
-}
-
-function scheduleMissedRunCatchUpRetry(): void {
-  if (missedRunCatchUpRetryTimer) return;
-  missedRunCatchUpRetryTimer = setTimeout(() => {
-    missedRunCatchUpRetryTimer = undefined;
-    checkMissedRuns();
-  }, MISSED_RUN_CATCH_UP_RETRY_DELAY_MS);
-}
-
-function getMissedRunCandidateKey(candidate: MissedRunCandidate): string {
-  return `${candidate.id}:${candidate.source}:${candidate.scheduledFor}`;
-}
-
-function rememberDeferredMissedRunCandidates(candidates: Iterable<MissedRunCandidate>): void {
-  for (const candidate of candidates) {
-    deferredMissedRunCandidates.set(getMissedRunCandidateKey(candidate), candidate);
-  }
-}
-
-function isEligibleMissedRunTime(
-  scheduledTime: number,
-  now: number,
-  restartRequestedAt?: string | null,
-): boolean {
-  if (scheduledTime >= now) return false;
-  if ((now - scheduledTime) < MISSED_RUN_GRACE_WINDOW_MS) return true;
-
-  if (!restartRequestedAt) return false;
-  const restartRequestedTime = Date.parse(restartRequestedAt);
-  if (Number.isNaN(restartRequestedTime)) return false;
-  return scheduledTime >= (restartRequestedTime - MISSED_RUN_GRACE_WINDOW_MS);
-}
-
-function revalidateDeferredMissedRunCandidate(candidate: MissedRunCandidate, now: number): MissedRunCandidate | undefined {
-  const schedule = scheduleStore.getSchedule(candidate.id);
-  if (!schedule || !schedule.enabled) return undefined;
-
-  if (candidate.source === "once") {
-    if (schedule.type !== "once" || !schedule.runAt) return undefined;
-    const scheduledFor = new Date(schedule.runAt).toISOString();
-    if (scheduledFor !== candidate.scheduledFor) return undefined;
-    if (Date.parse(scheduledFor) >= now) return undefined;
-    return { id: schedule.id, name: schedule.name, source: "once", scheduledFor };
-  }
-
-  if (schedule.type !== "cron" || !schedule.cron || !schedule.lastRunAt) return undefined;
-  const nextExpected = computeNextRunAt(schedule.cron, schedule.timezone, new Date(schedule.lastRunAt));
-  if (!nextExpected || nextExpected !== candidate.scheduledFor) return undefined;
-  if (Date.parse(nextExpected) >= now) return undefined;
-  return { id: schedule.id, name: schedule.name, source: "catchup", scheduledFor: nextExpected };
-}
-
-function collectMissedRunCandidates(options: {
-  now: number;
-  disableStaleOneShots: boolean;
-  preservedCandidateKeys?: ReadonlySet<string>;
-  restartRequestedAt?: string | null;
-}): MissedRunCandidate[] {
-  const enabled = scheduleStore.getEnabledSchedules();
-  const missedRuns: MissedRunCandidate[] = [];
-
-  for (const schedule of enabled) {
-    if (schedule.type === "once") {
-      if (!schedule.runAt) continue;
-      const candidate: MissedRunCandidate = {
-        id: schedule.id,
-        name: schedule.name,
-        source: "once",
-        scheduledFor: new Date(schedule.runAt).toISOString(),
-      };
-      const candidateKey = getMissedRunCandidateKey(candidate);
-      const runAtTime = new Date(schedule.runAt).getTime();
-      if (runAtTime >= options.now) continue;
-      if (isEligibleMissedRunTime(runAtTime, options.now, options.restartRequestedAt)) {
-        missedRuns.push(candidate);
-      } else if (options.disableStaleOneShots && !options.preservedCandidateKeys?.has(candidateKey)) {
-        console.log(`[scheduler] One-shot "${schedule.name}" is stale — disabling without replay`);
-        scheduleStore.updateSchedule(schedule.id, { enabled: false });
-        unregisterSchedule(schedule.id);
-      }
-      continue;
-    }
-
-    if (!schedule.cron || !schedule.lastRunAt) continue; // never ran — don't catch up on first boot
-    const nextExpected = computeNextRunAt(schedule.cron, schedule.timezone, new Date(schedule.lastRunAt));
-    if (!nextExpected) continue;
-
-    const nextExpectedTime = new Date(nextExpected).getTime();
-    if (isEligibleMissedRunTime(nextExpectedTime, options.now, options.restartRequestedAt)) {
-      missedRuns.push({ id: schedule.id, name: schedule.name, source: "catchup", scheduledFor: nextExpected });
-    }
-  }
-
-  return missedRuns;
-}
-
-async function catchUpMissedRuns(): Promise<void> {
-  const restartState = await refreshRestartState();
-  const restartPending = restartState.phase !== "idle";
-  const preservedCandidateKeys = new Set(deferredMissedRunCandidates.keys());
-  const currentMissedRuns = collectMissedRunCandidates({
-    now: Date.now(),
-    disableStaleOneShots: !restartPending,
-    preservedCandidateKeys,
-    restartRequestedAt: restartState.requestedAt,
-  });
-  if (restartPending) {
-    rememberDeferredMissedRunCandidates(currentMissedRuns);
-    scheduleMissedRunCatchUpRetry();
-    console.log("[scheduler] Skipping missed-run catch-up while restart is pending");
-    return;
-  }
-  clearMissedRunCatchUpRetryTimer();
-
-  const missedRuns = new Map<string, MissedRunCandidate>();
-  for (const deferredCandidate of deferredMissedRunCandidates.values()) {
-    const revalidatedCandidate = revalidateDeferredMissedRunCandidate(deferredCandidate, Date.now());
-    if (revalidatedCandidate) {
-      missedRuns.set(getMissedRunCandidateKey(revalidatedCandidate), revalidatedCandidate);
-    }
-  }
-  for (const schedule of currentMissedRuns) {
-    missedRuns.set(getMissedRunCandidateKey(schedule), schedule);
-  }
-  deferredMissedRunCandidates.clear();
-
-  for (const schedule of missedRuns.values()) {
-    const currentSchedule = scheduleStore.getSchedule(schedule.id);
-    if (!currentSchedule || !currentSchedule.enabled) continue;
-    console.log(`[scheduler] Missed run detected for "${schedule.name}" — catching up`);
-    try {
-      const result = await triggerSchedule(schedule.id, { source: schedule.source, scheduledFor: schedule.scheduledFor });
-      if ("skipped" in result && result.skipped === RESTART_PENDING_MESSAGE) {
-        deferredMissedRunCandidates.set(getMissedRunCandidateKey(schedule), schedule);
-      }
-    } catch (err) {
-      console.error(`[scheduler] Catch-up trigger failed for "${schedule.name}":`, err);
-    }
-  }
 }
 
 /**
