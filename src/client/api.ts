@@ -66,6 +66,8 @@ export interface Session {
     branch?: string;
   };
   workspace?: SessionWorkspaceSummary;
+  isOptimistic?: boolean;
+  optimisticUntil?: number;
 }
 
 export type SessionRunState = "busy" | "stalled" | "idle";

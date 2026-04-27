@@ -71,6 +71,7 @@ import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
+const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
 
 function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<string, string>): string[] {
   const failedIds = new Set(Object.keys(errors));
@@ -123,9 +124,6 @@ export default function App() {
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
   useFavicon(settings?.favicon);
-
-  // Track optimistic sessions that the server doesn't know about yet
-  const optimisticIdsRef = useRef(new Set<string>());
 
   // Buffer task:changed SSE invalidations during optimistic task mutations so
   // concurrent server-side checklist changes are flushed instead of dropped.
@@ -456,17 +454,20 @@ export default function App() {
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
-    optimisticIdsRef.current.add(sessionId);
+    const now = new Date();
+    const timestamp = now.toISOString();
     queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) => {
       if (!prev || prev.some((s) => s.sessionId === sessionId)) return prev;
       return [{
         sessionId,
         summary: "New session",
-        modifiedTime: new Date().toISOString(),
-        lastVisibleActivityAt: new Date().toISOString(),
+        modifiedTime: timestamp,
+        lastVisibleActivityAt: timestamp,
         runState: "idle",
         busy: false,
         diskSizeBytes: 0,
+        isOptimistic: true,
+        optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
       }, ...prev];
     });
   }, [queryClient]);

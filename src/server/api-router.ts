@@ -331,11 +331,12 @@ function resolveWorkspaceTask(ctx: AppContext, sessionId: string, requestedTaskI
 function resolveSessionSummary(
   ctx: AppContext,
   session: { sessionId: string; summary?: string | null },
+  opts: { fallbackSummary?: string } = {},
 ): string | undefined {
   const title = ctx.sessionTitles.getTitle(session.sessionId);
   if (title) return title;
   const summary = session.summary ?? undefined;
-  if (!summary || summary.startsWith("Generate a concise")) return undefined;
+  if (!summary || summary.startsWith("Generate a concise")) return opts.fallbackSummary;
   return summary;
 }
 
@@ -642,13 +643,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Invalidated by session create/delete/archive and globalBus events.
   // Disk sizes are stored separately so skipDiskSize requests don't zero them out.
   let enrichedSessionCache: { data: any[]; timestamp: number; includesArchived: boolean } | null = null;
-  let activeSessionCacheBuild: Promise<any[]> | null = null;
-  let allSessionCacheBuild: Promise<any[]> | null = null;
+  type SessionCacheBuild = { generation: number; promise: Promise<any[]> };
+  let activeSessionCacheBuild: SessionCacheBuild | null = null;
+  let allSessionCacheBuild: SessionCacheBuild | null = null;
   const diskSizeCache = new Map<string, number>();
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
+  let enrichedSessionCacheGeneration = 0;
 
   function invalidateEnrichedCache() {
     enrichedSessionCache = null;
+    enrichedSessionCacheGeneration += 1;
   }
 
   function setSessionArchived(sessionId: string, archived: boolean) {
@@ -660,6 +664,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // Invalidate on session lifecycle events
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
+      case "session:busy":
+      case "session:stalled":
+      case "session:idle":
       case "session:title":
       case "session:archived":
       case "task:changed":
@@ -692,11 +699,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
 
       const startCacheBuild = (buildIncludesArchived: boolean): Promise<any[]> => {
+        const getReusableBuild = (build: SessionCacheBuild | null) =>
+          build?.generation === enrichedSessionCacheGeneration ? build.promise : null;
         const existingBuild = buildIncludesArchived
-          ? allSessionCacheBuild
-          : (allSessionCacheBuild ?? activeSessionCacheBuild);
+          ? getReusableBuild(allSessionCacheBuild)
+          : (getReusableBuild(allSessionCacheBuild) ?? getReusableBuild(activeSessionCacheBuild));
         if (existingBuild) return existingBuild;
 
+        const buildGeneration = enrichedSessionCacheGeneration;
         const build = (async () => {
           const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
           const sessionStateDir = join(getCopilotHome(ctx), "session-state");
@@ -704,9 +714,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
           const enriched = await Promise.all(
             sessions
-              .map((s: any) => ({ session: s, summary: resolveSessionSummary(ctx, s) }))
-              .filter((entry): entry is { session: any; summary: string } => !!entry.summary)
-              .map(async ({ session: s, summary }) => {
+              .map((s: any) => {
+                const id = s.sessionId;
+                const status = getSessionStatus(ctx, id);
+                const linkedTask = resolveWorkspaceTask(ctx, id);
+                const summary = resolveSessionSummary(ctx, s, {
+                  fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
+                });
+                return { session: s, summary, linkedTask, status };
+              })
+              .filter((entry): entry is { session: any; summary: string; linkedTask: Task | undefined; status: { runState: SessionRunState; busy: boolean } } => !!entry.summary)
+              .map(async ({ session: s, summary, linkedTask, status }) => {
                 const id = s.sessionId;
                 const archived = meta[id]?.archived === true;
 
@@ -720,8 +738,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
                 const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
                 const archivedAt = meta[id]?.archivedAt ?? null;
-                const status = getSessionStatus(ctx, id);
-                const linkedTask = resolveWorkspaceTask(ctx, id);
                 const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
                 const context = {
                   ...(s.context ?? {}),
@@ -747,15 +763,21 @@ export function createApiRouter(ctx: AppContext): express.Router {
               }),
           );
 
-          enrichedSessionCache = { data: enriched, timestamp: Date.now(), includesArchived: buildIncludesArchived };
+          if (buildGeneration === enrichedSessionCacheGeneration) {
+            enrichedSessionCache = { data: enriched, timestamp: Date.now(), includesArchived: buildIncludesArchived };
+          }
           return enriched;
         })().finally(() => {
-          if (buildIncludesArchived) allSessionCacheBuild = null;
-          else activeSessionCacheBuild = null;
+          if (buildIncludesArchived) {
+            if (allSessionCacheBuild?.promise === build) allSessionCacheBuild = null;
+          } else if (activeSessionCacheBuild?.promise === build) {
+            activeSessionCacheBuild = null;
+          }
         });
 
-        if (buildIncludesArchived) allSessionCacheBuild = build;
-        else activeSessionCacheBuild = build;
+        const buildRecord = { generation: buildGeneration, promise: build };
+        if (buildIncludesArchived) allSessionCacheBuild = buildRecord;
+        else activeSessionCacheBuild = buildRecord;
         return build;
       };
 
@@ -1863,12 +1885,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
       // Enrich sessions (lightweight — skip disk size for dashboard)
       const enrichedSessions = (await Promise.all(
         sessions
-          .map((s: any) => ({ session: s, summary: resolveSessionSummary(ctx, s) }))
-          .filter((entry): entry is { session: any; summary: string } => !!entry.summary)
-          .map(async ({ session: s, summary }) => {
+          .map((s: any) => {
+            const id = s.sessionId;
+            const status = getSessionStatus(ctx, id);
+            const linkedTask = tasks.find((task) => task.sessionIds.includes(id));
+            const summary = resolveSessionSummary(ctx, s, {
+              fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
+            });
+            return { session: s, summary, status };
+          })
+          .filter((entry): entry is { session: any; summary: string; status: { runState: SessionRunState; busy: boolean } } => !!entry.summary)
+          .map(async ({ session: s, summary, status }) => {
             const id = s.sessionId;
             const archived = meta[id]?.archived === true;
-            const status = getSessionStatus(ctx, id);
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
             return { ...s, summary, ...status, hasPlan, archived };
           }),
