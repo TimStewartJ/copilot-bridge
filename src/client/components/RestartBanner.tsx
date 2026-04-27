@@ -43,8 +43,8 @@ export default function RestartBanner({ phase, waitingSessions }: Props) {
           </div>
           <div className="opacity-90">
             {waitingOnSessions
-              ? `Waiting for ${waitingSessions} active session${waitingSessions !== 1 ? "s" : ""} to go idle before restarting.`
-              : "All blocking sessions are idle. The server is about to restart and this view may disconnect briefly."}
+              ? `Restart will wait for ${waitingSessions} active session${waitingSessions !== 1 ? "s" : ""} to go idle; you can keep using Bridge.`
+              : "The server is about to restart and this view may disconnect briefly."}
           </div>
         </div>
         <RefreshCw size={14} className="mt-0.5 ml-auto shrink-0 animate-spin opacity-80" />

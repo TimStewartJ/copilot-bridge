@@ -11,6 +11,7 @@ import { openDatabase, type DatabaseSync } from "./db.js";
 import {
   clearRestartPending,
   configureRestartStateStore,
+  isRestartCutoverInProgress,
   isRestartPendingError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
@@ -958,7 +959,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/sessions", async (req, res) => {
-    if ((await refreshRestartState()).phase !== "idle") {
+    if (isRestartCutoverInProgress(await refreshRestartState())) {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -976,7 +977,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.post("/sessions/:id/duplicate", async (req, res) => {
     const sourceId = req.params.id;
     try {
-      if ((await refreshRestartState()).phase !== "idle") {
+      if (isRestartCutoverInProgress(await refreshRestartState())) {
         res.set("Retry-After", "5");
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
@@ -1016,7 +1017,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(400).json({ error: "sessionId and prompt are required" });
     }
 
-    if ((await refreshRestartState()).phase !== "idle") {
+    if (isRestartCutoverInProgress(await refreshRestartState())) {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -1057,7 +1058,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!ctx.sessionManager.hasPlan(sessionId)) {
       return res.status(409).json({ error: "Session has no plan to run with Fleet" });
     }
-    if ((await refreshRestartState()).phase !== "idle") {
+    if (isRestartCutoverInProgress(await refreshRestartState())) {
       res.set("Retry-After", "5");
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
@@ -1746,7 +1747,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!task) return res.status(404).json({ error: "Task not found" });
 
     try {
-      if ((await refreshRestartState()).phase !== "idle") {
+      if (isRestartCutoverInProgress(await refreshRestartState())) {
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
       const prDescriptions = task.pullRequests.map(

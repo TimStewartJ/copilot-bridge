@@ -68,6 +68,7 @@ import {
   clearRestartState,
   createDefaultRestartState,
   readRestartState,
+  readRestartStateSync,
   writeRestartState,
   type RestartPhase,
   type RestartState,
@@ -502,9 +503,29 @@ export async function refreshRestartState(): Promise<RestartState> {
   return setCachedRestartState(persisted);
 }
 
+export function refreshRestartStateSync(): RestartState {
+  const persisted = readRestartStateSync(_restartStatePath);
+  if (shouldPreserveServerOwnedRestartState(persisted)) {
+    return _restartState;
+  }
+  if (
+    isRestartActive(_restartState)
+    && !hasLauncherTakenRestartOwnership(_restartState)
+    && persisted.phase === "idle"
+  ) {
+    return _restartState;
+  }
+  return setCachedRestartState(persisted);
+}
+
 export function isRestartPending(): boolean {
   return isRestartActive(_restartState);
 }
+
+export function isRestartCutoverInProgress(state: RestartState = _restartState): boolean {
+  return isRestartActive(state) && hasLauncherTakenRestartOwnership(state);
+}
+
 export function clearRestartPending(): void {
   const wasPending = isRestartActive(_restartState);
   const writeTarget = captureRestartStateWriteTarget();
@@ -2540,6 +2561,9 @@ export class SessionManager {
 
   async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
 
     const t0 = Date.now();
     const sessionConfig = this.buildSessionConfig();
@@ -2557,6 +2581,9 @@ export class SessionManager {
 
   async duplicateSession(sourceSessionId: string): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
 
     const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
     const sessionStateDir = join(copilotHome, "session-state");
@@ -2619,6 +2646,9 @@ export class SessionManager {
 
   async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
 
     const isPlaceholder = taskTitle === "New Task";
 
@@ -2775,7 +2805,7 @@ export class SessionManager {
 
   private startWorkRun(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): SessionRunController {
     if (!this.client) throw new Error("SessionManager not initialized");
-    if (isRestartPending()) {
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
@@ -2810,7 +2840,7 @@ export class SessionManager {
     if (!this.hasPlan(sessionId)) {
       throw new Error("Session has no plan to run with Fleet");
     }
-    if (isRestartPending()) {
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
     if (this.isSessionBusy(sessionId)) {

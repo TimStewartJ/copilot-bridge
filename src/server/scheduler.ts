@@ -8,10 +8,12 @@ import type { SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
 import {
+  isRestartCutoverInProgress,
   isRestartPending,
   isRestartPendingError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
+  refreshRestartStateSync,
 } from "./session-manager.js";
 import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 
@@ -378,7 +380,7 @@ export async function triggerSchedule(
   // Check global pause
   if (_globalPause) return retryWithoutClaim("Scheduling is globally paused", triggerSource === "once");
 
-  if (isRestartPending()) {
+  if (isRestartCutoverInProgress(refreshRestartStateSync())) {
     return retryWithoutClaim(RESTART_PENDING_MESSAGE, triggerSource === "once");
   }
 
