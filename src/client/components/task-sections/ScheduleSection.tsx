@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
 import type { Schedule } from "../../api";
 import { timeAgo } from "../../time";
 import { Clock, Plus } from "lucide-react";
 import CollapsibleCompleted from "../shared/CollapsibleCompleted";
 import EmptyState from "../shared/EmptyState";
-import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
+import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
+import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 import ScheduleRow from "./ScheduleRow";
 
 // ── Props ────────────────────────────────────────────────────────
@@ -79,18 +79,12 @@ export default function ScheduleSection({
   const activeSchedules = schedules.filter((s) => s.enabled);
   const disabledSchedules = schedules.filter((s) => !s.enabled);
   const isCompact = variant === "compact";
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-
-  useEffect(() => {
-    setSummaryExpanded(false);
-  }, [resetKey]);
 
   if (variant === "summary") {
     if (schedules.length === 0) return null;
 
     const sortedSchedules = [...schedules].sort(compareSchedules);
     const primarySchedule = sortedSchedules[0];
-    const hasMultipleSchedules = schedules.length > 1;
     const chips: TaskPanelSummaryChip[] = [];
 
     if (activeSchedules.length > 0) {
@@ -115,51 +109,41 @@ export default function ScheduleSection({
         : `All paused · ${primarySchedule.name}`;
 
     return (
-      <div className="space-y-1">
-        <TaskPanelSummaryRow
-          label="Schedules"
-          icon={<Clock size={14} className={primarySchedule.enabled ? "text-accent" : "text-text-faint"} />}
-          title={title}
-          subtitle={subtitle}
-          chips={chips}
-          expanded={hasMultipleSchedules && summaryExpanded}
-          onClick={() => {
-            if (hasMultipleSchedules) {
-              setSummaryExpanded((expanded) => !expanded);
-            } else {
-              onOpen(primarySchedule);
-            }
-          }}
-          trailing={onAdd ? (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onAdd();
-              }}
-              className="p-1 text-text-faint hover:text-accent transition-colors"
-              title="Add schedule"
-            >
-              <Plus size={12} />
-            </button>
-          ) : undefined}
-        />
-        {hasMultipleSchedules && summaryExpanded && (
-          <div className="space-y-0.5 rounded-md bg-bg-surface px-1.5 py-1">
-            {sortedSchedules.map((schedule) => (
-              <ScheduleRow
-                key={schedule.id}
-                schedule={schedule}
-                variant="compact"
-                onOpen={onOpen}
-                onTrigger={onTrigger}
-                onToggle={onToggle}
-                onEdit={onEdit}
-                onDelete={onDelete}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <TaskPanelSummaryDisclosure
+        label="Schedules"
+        icon={<Clock size={14} className={primarySchedule.enabled ? "text-accent" : "text-text-faint"} />}
+        title={title}
+        subtitle={subtitle}
+        chips={chips}
+        itemCount={schedules.length}
+        resetKey={resetKey}
+        onOpenSingle={() => onOpen(primarySchedule)}
+        trailing={onAdd ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdd();
+            }}
+            className="p-1 text-text-faint hover:text-accent transition-colors"
+            title="Add schedule"
+          >
+            <Plus size={12} />
+          </button>
+        ) : undefined}
+      >
+        {sortedSchedules.map((schedule) => (
+          <ScheduleRow
+            key={schedule.id}
+            schedule={schedule}
+            variant="compact"
+            onOpen={onOpen}
+            onTrigger={onTrigger}
+            onToggle={onToggle}
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
+        ))}
+      </TaskPanelSummaryDisclosure>
     );
   }
 
