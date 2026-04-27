@@ -9,6 +9,7 @@ import type { ProviderName } from "./providers/types.js";
 export class InvalidTaskUpdateError extends Error {}
 type TaskStatus = "active" | "done" | "archived";
 const ACTIVE_TASK_MOMENTUM_ERROR = "nextAction, waitingOn, and nextTouchAt can only be set on active tasks";
+const ARCHIVED_TASK_RECOMPLETE_ERROR = "Archived tasks cannot be completed again; reopen the task first";
 
 const ISO_TIMESTAMP_WITH_TIMEZONE_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):(\d{2}))$/;
 
@@ -41,11 +42,14 @@ export interface Task {
   priority: number;
   order: number;
   createdAt: string;
+  completedAt?: string;
   updatedAt: string;
   sessionIds: string[];
   workItems: WorkItemRef[];
   pullRequests: PRRef[];
 }
+
+export type TaskCompletionAction = "complete-and-archive";
 
 type TaskUpdate = {
   title?: string;
@@ -59,6 +63,7 @@ type TaskUpdate = {
   nextAction?: string | null;
   waitingOn?: string | null;
   nextTouchAt?: string | null;
+  completionAction?: TaskCompletionAction;
 };
 
 const STATUS_ORDER: Record<Task["status"], number> = {
@@ -104,6 +109,12 @@ function assertTaskInvariants(task: Pick<Task, "kind" | "status" | "doneWhen">):
   if (task.kind !== "ongoing") return;
   if (task.status === "done") throw new InvalidTaskUpdateError("Ongoing tasks cannot be marked done");
   if (task.doneWhen !== undefined) throw new InvalidTaskUpdateError("Ongoing tasks cannot keep doneWhen");
+}
+
+function normalizeCompletionAction(value: unknown): TaskCompletionAction | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "complete-and-archive") return value;
+  throw new InvalidTaskUpdateError("completionAction must be 'complete-and-archive'");
 }
 
 function isLeapYear(year: number): boolean {
@@ -206,6 +217,7 @@ export function createTaskStore(
       priority: row.priority,
       order: row.order,
       createdAt: row.createdAt,
+      completedAt: normalizeOptionalTimestamp(row.completedAt),
       updatedAt: row.updatedAt,
       sessionIds: sessions.map((s) => s.sessionId),
       workItems: workItems.map((w) => ({ id: w.id, provider: w.provider as ProviderName })),
@@ -266,6 +278,12 @@ export function createTaskStore(
     if (!row) throw new Error(`Task ${id} not found`);
 
     const oldStatus = normalizeStoredTaskStatus(row.status);
+    const oldCompletedAt = normalizeOptionalTimestamp(row.completedAt);
+    const completionAction = normalizeCompletionAction(updates.completionAction);
+    const legacyDoneRequested = updates.status === "done";
+    if (completionAction && updates.status !== undefined) {
+      throw new InvalidTaskUpdateError("completionAction cannot be combined with status");
+    }
     const now = new Date().toISOString();
     const hasDoneWhenUpdate = updates.doneWhen !== undefined;
     const hasNextActionUpdate = updates.nextAction !== undefined;
@@ -275,15 +293,29 @@ export function createTaskStore(
     const nextKind = updates.kind !== undefined
       ? normalizeTaskKind(updates.kind, { strict: true })
       : currentKind;
+    if (nextKind === "ongoing" && legacyDoneRequested) {
+      throw new InvalidTaskUpdateError("Ongoing tasks cannot be marked done");
+    }
+    if (nextKind === "ongoing" && completionAction === "complete-and-archive") {
+      throw new InvalidTaskUpdateError("Ongoing tasks cannot be completed");
+    }
+    if ((completionAction === "complete-and-archive" || legacyDoneRequested) && oldStatus === "archived") {
+      throw new InvalidTaskUpdateError(ARCHIVED_TASK_RECOMPLETE_ERROR);
+    }
+    const completeAndArchiveRequested = completionAction === "complete-and-archive" || legacyDoneRequested;
     const switchingToOngoing = nextKind === "ongoing" && currentKind !== "ongoing";
     const requestedStatus = updates.status !== undefined
       ? normalizeUpdatedTaskStatus(updates.status)
       : undefined;
-    const targetStatus = requestedStatus
-      ?? (switchingToOngoing && oldStatus === "done"
+    const targetStatus = completeAndArchiveRequested
+      ? "archived"
+      : (requestedStatus
+      ?? (switchingToOngoing && (oldStatus === "done" || oldCompletedAt !== undefined)
         ? "active"
-        : oldStatus);
-    const shouldPersistStatus = requestedStatus !== undefined || (switchingToOngoing && oldStatus === "done");
+        : oldStatus));
+    const shouldPersistStatus = completeAndArchiveRequested
+      || requestedStatus !== undefined
+      || (switchingToOngoing && (oldStatus === "done" || oldCompletedAt !== undefined));
     const shouldPersistDoneWhen = hasDoneWhenUpdate
       || (switchingToOngoing && row.doneWhen !== null && row.doneWhen !== undefined);
     const doneWhen = hasDoneWhenUpdate ? normalizeOptionalText(updates.doneWhen) ?? null : undefined;
@@ -298,7 +330,6 @@ export function createTaskStore(
       status: targetStatus,
       doneWhen: nextDoneWhen,
     });
-
     const fields: string[] = ["updatedAt = ?"];
     const values: any[] = [now];
 
@@ -338,6 +369,21 @@ export function createTaskStore(
       db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
       fields.push('"order" = ?');
       values.push(0);
+    }
+
+    if (completeAndArchiveRequested) {
+      fields.push("completedAt = ?");
+      values.push(oldCompletedAt ?? now);
+    } else if (switchingToOngoing) {
+      fields.push("completedAt = ?");
+      values.push(null);
+    } else if (shouldPersistStatus && targetStatus !== oldStatus) {
+      let nextCompletedAt = oldCompletedAt;
+      if (targetStatus === "active") {
+        nextCompletedAt = undefined;
+      }
+      fields.push("completedAt = ?");
+      values.push(nextCompletedAt ?? null);
     }
 
     values.push(id);

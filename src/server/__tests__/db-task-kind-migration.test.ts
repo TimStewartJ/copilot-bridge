@@ -106,6 +106,7 @@ describe("database task kind migration", () => {
         cwd TEXT,
         notes TEXT NOT NULL DEFAULT '',
         doneWhen TEXT,
+        completedAt TEXT,
         priority INTEGER NOT NULL DEFAULT 0,
         pinned INTEGER NOT NULL DEFAULT 0,
         "order" INTEGER NOT NULL DEFAULT 0,
@@ -114,8 +115,8 @@ describe("database task kind migration", () => {
       );
     `);
     legacyDb.prepare(`
-      INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, priority, pinned, "order", createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, NULL, NULL, '', ?, 0, 0, ?, ?, ?)
+      INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, completedAt, priority, pinned, "order", createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, NULL, NULL, '', ?, NULL, 0, 0, ?, ?, ?)
     `).run(
       "legacy-ongoing-done",
       "Legacy ongoing done",
@@ -127,8 +128,8 @@ describe("database task kind migration", () => {
       "2026-04-02T00:00:00.000Z",
     );
     legacyDb.prepare(`
-      INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, priority, pinned, "order", createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, NULL, NULL, '', ?, 0, 0, ?, ?, ?)
+      INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, completedAt, priority, pinned, "order", createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, NULL, NULL, '', ?, NULL, 0, 0, ?, ?, ?)
     `).run(
       "legacy-ongoing-paused",
       "Legacy ongoing paused",
@@ -139,18 +140,32 @@ describe("database task kind migration", () => {
       "2026-04-03T00:00:00.000Z",
       "2026-04-03T00:00:00.000Z",
     );
+    legacyDb.prepare(`
+      INSERT INTO tasks (id, title, kind, status, groupId, cwd, notes, doneWhen, completedAt, priority, pinned, "order", createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, NULL, NULL, '', NULL, ?, 0, 0, ?, ?, ?)
+    `).run(
+      "legacy-ongoing-archived-completed",
+      "Legacy ongoing archived completed",
+      "ongoing",
+      "archived",
+      "2026-04-04T00:00:00.000Z",
+      5,
+      "2026-04-04T00:00:00.000Z",
+      "2026-04-04T00:00:00.000Z",
+    );
     legacyDb.close();
 
     const db = openDatabase(dataDir);
     const repairedRows = db.prepare(`
-      SELECT id, status, doneWhen
+      SELECT id, status, doneWhen, completedAt
       FROM tasks
-      WHERE id IN ('legacy-ongoing-done', 'legacy-ongoing-paused')
+      WHERE id IN ('legacy-ongoing-archived-completed', 'legacy-ongoing-done', 'legacy-ongoing-paused')
       ORDER BY id
-    `).all() as Array<{ id: string; status: string; doneWhen: string | null }>;
+    `).all() as Array<{ id: string; status: string; doneWhen: string | null; completedAt: string | null }>;
     expect(repairedRows).toEqual([
-      { id: "legacy-ongoing-done", status: "active", doneWhen: null },
-      { id: "legacy-ongoing-paused", status: "active", doneWhen: null },
+      { id: "legacy-ongoing-archived-completed", status: "archived", doneWhen: null, completedAt: null },
+      { id: "legacy-ongoing-done", status: "active", doneWhen: null, completedAt: null },
+      { id: "legacy-ongoing-paused", status: "active", doneWhen: null, completedAt: null },
     ]);
 
     const store = createTaskStore(db, createGlobalBus());

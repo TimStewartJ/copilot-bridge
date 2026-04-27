@@ -1,12 +1,15 @@
+import { useEffect, useRef, useState } from "react";
 import type { ChecklistItem } from "../../api";
+import { shouldSurfaceReadyToCompleteCue } from "../../task-completion-helpers";
 import { getTaskPanelChecklistPreview } from "../../task-panel-preview";
 import ChecklistItemRow from "../ChecklistItemRow";
 import CollapsibleCompleted from "../shared/CollapsibleCompleted";
-import { Plus } from "lucide-react";
+import { CheckCircle2, Plus } from "lucide-react";
 
 // ── Props ────────────────────────────────────────────────────────
 
 export interface TaskChecklistSectionProps {
+  taskId: string;
   checklistItems: ChecklistItem[];
   newChecklistItemText: string;
   onNewChecklistItemTextChange: (text: string) => void;
@@ -16,11 +19,13 @@ export interface TaskChecklistSectionProps {
   variant?: "panel" | "card";
   highlightId?: string | null;
   onViewAll?: () => void;
+  isReadyToComplete?: boolean;
 }
 
 // ── Component ────────────────────────────────────────────────────
 
 export default function TaskChecklistSection({
+  taskId,
   checklistItems,
   newChecklistItemText,
   onNewChecklistItemTextChange,
@@ -30,6 +35,7 @@ export default function TaskChecklistSection({
   variant = "panel",
   highlightId,
   onViewAll,
+  isReadyToComplete = false,
 }: TaskChecklistSectionProps) {
   const openChecklistItems = checklistItems.filter((t) => !t.done);
   const completedChecklistItems = checklistItems.filter((t) => t.done);
@@ -46,6 +52,47 @@ export default function TaskChecklistSection({
   const hasOverflow = overflowSummary.length > 0;
   const highlightedCompletedItem = panelPreview.highlightedCompletedItem;
   const hasHighlightedCompletedItem = completedChecklistItems.some((item) => item.id === highlightId);
+  const [showReadyCue, setShowReadyCue] = useState(false);
+  const previousOpenChecklistItemsRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    previousOpenChecklistItemsRef.current = null;
+    setShowReadyCue(false);
+  }, [taskId]);
+
+  useEffect(() => {
+    const previousOpenChecklistItems = previousOpenChecklistItemsRef.current;
+    const nextOpenChecklistItems = openChecklistItems.length;
+
+    if (shouldSurfaceReadyToCompleteCue({
+      previousOpenChecklistItems,
+      nextOpenChecklistItems,
+      isReadyToComplete,
+    })) {
+      setShowReadyCue(true);
+    } else if (nextOpenChecklistItems > 0 || !isReadyToComplete) {
+      setShowReadyCue(false);
+    }
+
+    previousOpenChecklistItemsRef.current = nextOpenChecklistItems;
+  }, [isReadyToComplete, openChecklistItems.length]);
+
+  useEffect(() => {
+    if (!showReadyCue) return;
+    const timer = window.setTimeout(() => setShowReadyCue(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [showReadyCue]);
+
+  const readyCue = showReadyCue && (
+    <div className={`mx-3 rounded-md border border-success/25 bg-success/8 px-3 py-2 text-xs text-success ${
+      isCard ? "mb-2" : "mb-1.5"
+    }`}>
+      <div className="flex items-start gap-2">
+        <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+        <span>Ready to complete — the checklist is finished. Use Complete &amp; archive when you&apos;re ready.</span>
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -80,6 +127,7 @@ export default function TaskChecklistSection({
               </div>
             </CollapsibleCompleted>
           )}
+          {readyCue}
           <form
             className="flex items-center gap-2 px-3 py-1.5"
             onSubmit={async (e) => {
@@ -130,6 +178,7 @@ export default function TaskChecklistSection({
               />
             </div>
           )}
+          {readyCue}
           <div className="px-3 py-1">
             <input
               className="w-full text-xs bg-transparent border-none outline-none text-text-secondary placeholder:text-text-faint"

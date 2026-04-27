@@ -118,7 +118,7 @@ export function openMemoryDatabase(): DatabaseSync {
   return db;
 }
 
-function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync): void {
+function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: boolean): void {
   const foreignKeysRow = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number } | undefined;
   const restoreForeignKeys = foreignKeysRow?.foreign_keys !== 0;
   let inTransaction = false;
@@ -143,12 +143,13 @@ function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync): void {
         priority INTEGER NOT NULL DEFAULT 0,
         "order" INTEGER NOT NULL DEFAULT 0,
         createdAt TEXT NOT NULL,
+        completedAt TEXT,
         updatedAt TEXT NOT NULL
       );
 
       INSERT INTO tasks_new (
         id, title, kind, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-        priority, "order", createdAt, updatedAt
+        priority, "order", createdAt, completedAt, updatedAt
       )
       SELECT
         id,
@@ -159,7 +160,7 @@ function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync): void {
           ELSE 'task'
         END,
         status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-        priority, "order", createdAt, updatedAt
+        priority, "order", createdAt, ${hasCompletedAt ? "completedAt" : "NULL"}, updatedAt
       FROM tasks;
 
       DROP TABLE tasks;
@@ -600,6 +601,9 @@ function initSchema(db: DatabaseSync): void {
   if (!taskCols.some((c: any) => c.name === "nextTouchAt")) {
     db.exec("ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT");
   }
+  if (!taskCols.some((c: any) => c.name === "completedAt")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN completedAt TEXT");
+  }
   db.exec("UPDATE tasks SET status = 'active' WHERE status = 'paused'");
   db.exec(`
     UPDATE tasks
@@ -608,14 +612,24 @@ function initSchema(db: DatabaseSync): void {
       AND (nextAction IS NOT NULL OR waitingOn IS NOT NULL OR nextTouchAt IS NOT NULL)
   `);
   taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
-  if (taskCols.some((c: any) => c.name === "pinned")) rebuildTasksWithoutLegacyTaskColumn(db);
+  const hasCompletedAt = taskCols.some((c: any) => c.name === "completedAt");
+  if (taskCols.some((c: any) => c.name === "pinned")) rebuildTasksWithoutLegacyTaskColumn(db, hasCompletedAt);
+  db.exec(`
+    UPDATE tasks
+    SET
+      status = 'archived',
+      completedAt = COALESCE(NULLIF(completedAt, ''), updatedAt, createdAt)
+    WHERE kind != 'ongoing'
+      AND status = 'done';
+  `);
   db.exec(`
     UPDATE tasks
     SET
       status = CASE WHEN status = 'done' THEN 'active' ELSE status END,
-      doneWhen = NULL
+      doneWhen = NULL,
+      completedAt = NULL
     WHERE kind = 'ongoing'
-      AND (status = 'done' OR doneWhen IS NOT NULL);
+      AND (status = 'done' OR doneWhen IS NOT NULL OR completedAt IS NOT NULL);
   `);
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt)");

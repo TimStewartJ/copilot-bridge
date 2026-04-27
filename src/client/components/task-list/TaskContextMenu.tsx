@@ -1,15 +1,24 @@
 import { useState, useCallback, useMemo } from "react";
-import { getSessionActivityTime, type Task, type TaskGroup, type Session } from "../../api";
+import { useQueryClient } from "@tanstack/react-query";
+import { getSessionActivityTime, type EnrichedTaskData, type Task, type TaskGroup, type Session, type TaskPatch } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
 import { Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
+import { queryKeys } from "../../queryClient";
+import { useTaskChecklistItemsQuery } from "../../hooks/queries/useChecklistItems";
+import {
+  getTaskCompletionCounts,
+  getTaskCompletionState,
+  shouldShowTaskArchiveToggle,
+} from "../../task-completion-helpers";
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 import { isOngoingTask } from "../../task-kind";
 
 type TaskMenuUpdates = {
-  title?: Task["title"];
-  status?: Task["status"];
-  nextTouchAt?: Task["nextTouchAt"] | null;
+  title?: TaskPatch["title"];
+  status?: TaskPatch["status"];
+  nextTouchAt?: TaskPatch["nextTouchAt"];
+  completionAction?: TaskPatch["completionAction"];
 };
 
 interface TaskContextMenuActions {
@@ -42,6 +51,8 @@ export default function TaskContextMenu({
   onClose,
 }: TaskContextMenuProps) {
   const { markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup } = actions;
+  const queryClient = useQueryClient();
+  const checklistItemsQuery = useTaskChecklistItemsQuery(task.id);
 
   const [copied, setCopied] = useState(false);
   const closeMenu = useCallback(() => { setCopied(false); onClose(); }, [onClose]);
@@ -50,6 +61,26 @@ export default function TaskContextMenu({
     if (!isUnread) return 0;
     return countTaskUnread(task, sessionMap, isUnread, activeSessionId);
   }, [task, sessionMap, isUnread, activeSessionId]);
+  const completionState = useMemo(() => {
+    const checklistItems = checklistItemsQuery.data ?? [];
+    const enriched = queryClient.getQueryData<EnrichedTaskData>(queryKeys.taskEnriched(task.id));
+    const linkedSessions = task.sessionIds
+      .map((sessionId) => sessionMap.get(sessionId))
+      .filter((session): session is Session => Boolean(session));
+
+    const counts = getTaskCompletionCounts({
+      checklistItems,
+      linkedSessions,
+      pullRequests: enriched?.pullRequests?.length
+        ? enriched.pullRequests
+        : task.pullRequests.map(() => ({ status: null })),
+    });
+
+    return getTaskCompletionState(task, counts, {
+      checklistLoaded: checklistItemsQuery.data !== undefined,
+    });
+  }, [checklistItemsQuery.data, queryClient, sessionMap, task]);
+  const showArchiveToggle = shouldShowTaskArchiveToggle(task, completionState);
 
   return (
     <ContextMenu position={position} onClose={closeMenu}>
@@ -87,21 +118,33 @@ export default function TaskContextMenu({
       <CtxDivider />
 
       {/* Status changes */}
-      {onUpdateTask && task.status !== "active" && (
+      {onUpdateTask && task.status !== "active" && completionState.ctaState !== "completed" && (
         <CtxItem
           icon={<Play size={14} />}
           label="Set Active"
           onClick={() => { onUpdateTask(task.id, { status: "active" }); closeMenu(); }}
         />
       )}
-      {onUpdateTask && !isOngoingTask(task) && task.status !== "done" && task.status !== "archived" && (
+      {onUpdateTask && !isOngoingTask(task) && (task.status !== "archived" || completionState.ctaState === "completed") && (
         <CtxItem
           icon={<CheckCircle size={14} />}
-          label="Mark done"
-          onClick={() => { onUpdateTask(task.id, { status: "done" }); closeMenu(); }}
+          label={completionState.ctaLabel}
+          disabled={!completionState.ctaNextStatus && !completionState.ctaCompletionAction}
+          title={completionState.ctaDescription}
+          onClick={() => {
+            if (completionState.ctaCompletionAction) {
+              onUpdateTask(task.id, { completionAction: completionState.ctaCompletionAction });
+              closeMenu();
+              return;
+            }
+            const nextStatus = completionState.ctaNextStatus;
+            if (!nextStatus) return;
+            onUpdateTask(task.id, { status: nextStatus });
+            closeMenu();
+          }}
         />
       )}
-      {onUpdateTask && (
+      {onUpdateTask && showArchiveToggle && (
         <CtxItem
           icon={task.status === "archived" ? <ArchiveRestore size={14} /> : <Archive size={14} />}
           label={task.status === "archived" ? "Unarchive" : "Archive"}

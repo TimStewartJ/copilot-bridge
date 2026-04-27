@@ -186,11 +186,29 @@ export interface Task {
   priority: number;
   order: number;
   createdAt: string;
+  completedAt?: string;
   updatedAt: string;
   sessionIds: string[];
   workItems: WorkItemRef[];
   pullRequests: PRRef[];
   tags?: Tag[];
+}
+
+export type TaskCompletionAction = "complete-and-archive";
+
+export interface TaskPatch {
+  title?: Task["title"];
+  kind?: Task["kind"];
+  status?: Task["status"];
+  notes?: Task["notes"];
+  priority?: Task["priority"];
+  cwd?: Task["cwd"];
+  groupId?: Task["groupId"];
+  doneWhen?: Task["doneWhen"] | null;
+  nextAction?: Task["nextAction"] | null;
+  waitingOn?: Task["waitingOn"] | null;
+  nextTouchAt?: Task["nextTouchAt"] | null;
+  completionAction?: TaskCompletionAction;
 }
 
 export interface TaskGroup {
@@ -547,18 +565,7 @@ export async function fetchTaskGitStatus(
 
 export async function updateTask(
   id: string,
-  updates: {
-    title?: Task["title"];
-    kind?: Task["kind"];
-    status?: Task["status"];
-    notes?: Task["notes"];
-    priority?: Task["priority"];
-    cwd?: Task["cwd"];
-    doneWhen?: Task["doneWhen"] | null;
-    nextAction?: Task["nextAction"] | null;
-    waitingOn?: Task["waitingOn"] | null;
-    nextTouchAt?: Task["nextTouchAt"] | null;
-  },
+  updates: TaskPatch,
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
     ...updates,
@@ -569,19 +576,7 @@ export async function updateTask(
 
 export async function patchTask(
   id: string,
-  updates: {
-    title?: Task["title"];
-    kind?: Task["kind"];
-    status?: Task["status"];
-    notes?: Task["notes"];
-    priority?: Task["priority"];
-    cwd?: Task["cwd"];
-    groupId?: Task["groupId"];
-    doneWhen?: Task["doneWhen"] | null;
-    nextAction?: Task["nextAction"] | null;
-    waitingOn?: Task["waitingOn"] | null;
-    nextTouchAt?: Task["nextTouchAt"] | null;
-  },
+  updates: TaskPatch,
 ): Promise<Task> {
   const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
     method: "PATCH",

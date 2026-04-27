@@ -1,4 +1,5 @@
 import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { Task, Session } from "../api";
@@ -91,52 +92,78 @@ function createSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
+function createWorkspace(overrides: Record<string, unknown> = {}) {
+  return {
+    enrichedWIs: [],
+    enrichedPRs: [],
+    reloadEnriched: async () => {},
+    sched: {
+      schedules: [],
+      reload: async () => {},
+      trigger: async () => {},
+      toggle: async () => {},
+      remove: async () => {},
+    },
+    schedDetail: {
+      isOpen: false,
+      schedule: null,
+      mode: "view",
+      openForCreate: () => {},
+      openSheet: () => {},
+      close: () => {},
+      switchToEdit: () => {},
+      switchToView: () => {},
+    },
+    notes: {
+      openToView: () => {},
+      openToEdit: () => {},
+      notesSheetOpen: false,
+      notesStartEdit: false,
+      close: () => {},
+    },
+    taskGitStatus: null,
+    checklistItems: [],
+    checklistItemsReady: true,
+    checklistLoaded: true,
+    createChecklistItemMutation: {
+      mutateAsync: async () => {},
+    },
+    onChecklistItemUpdate: () => {},
+    onChecklistItemDelete: () => {},
+    newChecklistItemText: "",
+    setNewChecklistItemText: () => {},
+    linkedSessions: [],
+    taskOwnTags: [],
+    inheritedTagIds: new Set(),
+    effectiveTags: [],
+    relatedDocs: [],
+    refresh: async () => {},
+    ...overrides,
+  };
+}
+
+async function renderTaskPanelHtml(task: Task, workspaceOverrides: Record<string, unknown> = {}) {
+  useTaskWorkspaceMock.mockReturnValue(createWorkspace(workspaceOverrides));
+  useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
+  const { default: TaskPanel } = await import("./TaskPanel");
+  return renderToStaticMarkup(createElement(
+    MemoryRouter,
+    null,
+    createElement(TaskPanel, {
+      task,
+      taskGroups: [],
+      sessions: [],
+      activeSessionId: null,
+      onSelectSession: () => {},
+      onNewSession: () => {},
+      onUpdateTask: async () => null,
+    }),
+  ));
+}
+
 describe("TaskPanel", () => {
   it("supports transitioning from no task to a selected task without a hook-order error", async () => {
-    useTaskWorkspaceMock.mockReturnValue({
-      enrichedWIs: [],
-      enrichedPRs: [],
-      reloadEnriched: async () => {},
-      sched: {
-        schedules: [],
-        reload: async () => {},
-        trigger: async () => {},
-        toggle: async () => {},
-        remove: async () => {},
-      },
-      schedDetail: {
-        isOpen: false,
-        schedule: null,
-        mode: "view",
-        openForCreate: () => {},
-        openSheet: () => {},
-        close: () => {},
-        switchToEdit: () => {},
-        switchToView: () => {},
-      },
-      notes: {
-        openToView: () => {},
-        openToEdit: () => {},
-        notesSheetOpen: false,
-        notesStartEdit: false,
-        close: () => {},
-      },
-      taskGitStatus: null,
-      checklistItems: [],
-      createChecklistItemMutation: {
-        mutateAsync: async () => {},
-      },
-      onChecklistItemUpdate: () => {},
-      onChecklistItemDelete: () => {},
-      newChecklistItemText: "",
-      setNewChecklistItemText: () => {},
-      linkedSessions: [],
-      taskOwnTags: [],
-      inheritedTagIds: new Set(),
-      effectiveTags: [],
-      relatedDocs: [],
-      refresh: async () => {},
-    });
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace());
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
     const dom = installDomShim();
@@ -213,50 +240,7 @@ describe("TaskPanel", () => {
       createSession({ sessionId: "session-4", lastVisibleActivityAt: "2026-01-01T13:00:00.000Z" }),
       createSession({ sessionId: "session-5", archived: true, lastVisibleActivityAt: "2026-01-01T11:00:00.000Z" }),
     ];
-    useTaskWorkspaceMock.mockReturnValue({
-      enrichedWIs: [],
-      enrichedPRs: [],
-      reloadEnriched: async () => {},
-      sched: {
-        schedules: [],
-        reload: async () => {},
-        trigger: async () => {},
-        toggle: async () => {},
-        remove: async () => {},
-      },
-      schedDetail: {
-        isOpen: false,
-        schedule: null,
-        mode: "view",
-        openForCreate: () => {},
-        openSheet: () => {},
-        close: () => {},
-        switchToEdit: () => {},
-        switchToView: () => {},
-      },
-      notes: {
-        openToView: () => {},
-        openToEdit: () => {},
-        notesSheetOpen: false,
-        notesStartEdit: false,
-        close: () => {},
-      },
-      taskGitStatus: null,
-      checklistItems: [],
-      createChecklistItemMutation: {
-        mutateAsync: async () => {},
-      },
-      onChecklistItemUpdate: () => {},
-      onChecklistItemDelete: () => {},
-      newChecklistItemText: "",
-      setNewChecklistItemText: () => {},
-      linkedSessions,
-      taskOwnTags: [],
-      inheritedTagIds: new Set(),
-      effectiveTags: [],
-      relatedDocs: [],
-      refresh: async () => {},
-    });
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
     const dom = installDomShim();
@@ -322,50 +306,7 @@ describe("TaskPanel", () => {
     const loadedSessions = [
       createSession({ sessionId: "session-1" }),
     ];
-    useTaskWorkspaceMock.mockReturnValue({
-      enrichedWIs: [],
-      enrichedPRs: [],
-      reloadEnriched: async () => {},
-      sched: {
-        schedules: [],
-        reload: async () => {},
-        trigger: async () => {},
-        toggle: async () => {},
-        remove: async () => {},
-      },
-      schedDetail: {
-        isOpen: false,
-        schedule: null,
-        mode: "view",
-        openForCreate: () => {},
-        openSheet: () => {},
-        close: () => {},
-        switchToEdit: () => {},
-        switchToView: () => {},
-      },
-      notes: {
-        openToView: () => {},
-        openToEdit: () => {},
-        notesSheetOpen: false,
-        notesStartEdit: false,
-        close: () => {},
-      },
-      taskGitStatus: null,
-      checklistItems: [],
-      createChecklistItemMutation: {
-        mutateAsync: async () => {},
-      },
-      onChecklistItemUpdate: () => {},
-      onChecklistItemDelete: () => {},
-      newChecklistItemText: "",
-      setNewChecklistItemText: () => {},
-      linkedSessions: loadedSessions,
-      taskOwnTags: [],
-      inheritedTagIds: new Set(),
-      effectiveTags: [],
-      relatedDocs: [],
-      refresh: async () => {},
-    });
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: loadedSessions }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
     const dom = installDomShim();
@@ -420,5 +361,30 @@ describe("TaskPanel", () => {
     } finally {
       dom.cleanup();
     }
+  it("shows the TaskPanel completion button only when completion or reopen is actionable", async () => {
+    await expect(renderTaskPanelHtml(createTask())).resolves.toContain("Complete &amp; archive");
+    await expect(renderTaskPanelHtml(createTask({
+      status: "archived",
+      completedAt: "2026-04-27T20:00:00.000Z",
+    }))).resolves.toContain("Reopen task");
+
+    await expect(renderTaskPanelHtml(createTask(), {
+      checklistItems: [{ id: "item-1", taskId: "task-1", text: "Open item", done: false }],
+    })).resolves.not.toContain("Complete &amp; archive");
+    await expect(renderTaskPanelHtml(createTask({ kind: "ongoing" }))).resolves.not.toContain("Complete &amp; archive");
+    await expect(renderTaskPanelHtml(createTask({ status: "archived" }))).resolves.not.toContain("Archived</button>");
+  });
+
+  it("hides completion metadata for manually archived tasks", async () => {
+    const html = await renderTaskPanelHtml(createTask({
+      status: "archived",
+      doneWhen: "QA signs off",
+    }));
+
+    expect(html).not.toContain("Complete &amp; archive");
+    expect(html).not.toContain("Reopen task");
+    expect(html).not.toContain("Archived tasks cannot be completed");
+    expect(html).not.toContain("Done when");
+    expect(html).not.toContain("QA signs off");
   });
 });

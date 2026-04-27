@@ -29,6 +29,8 @@ import {
   markSessionReadOnPageHide,
   API_BASE,
   sendChatMessage,
+  type ChecklistItem,
+  type EnrichedTaskData,
   type Session,
   type Task,
   type TaskGroup,
@@ -64,14 +66,21 @@ import DocsView from "./components/DocsView";
 import SessionList from "./components/SessionList";
 import RestartBanner from "./components/RestartBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
+import TaskCompletionToast from "./components/TaskCompletionToast";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
+import { createTaskCompletionFeedback, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
+const TASK_COMPLETION_TOAST_MS = 6_000;
+
+function isTaskCompleted(task: Pick<Task, "status" | "completedAt">): boolean {
+  return task.status === "done" || Boolean(task.completedAt);
+}
 
 function getSuccessfulBatchSessionIds(sessionIds: string[], errors: Record<string, string>): string[] {
   const failedIds = new Set(Object.keys(errors));
@@ -117,6 +126,8 @@ export default function App() {
     reconnectedSincePending: false,
   });
   const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
+  const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
+  const [undoingTaskCompletionId, setUndoingTaskCompletionId] = useState<string | null>(null);
   // Incremented per-session when an external source (e.g. schedule) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
   const sessionBusyHintExpiresAtRef = useRef<Record<string, number>>({});
@@ -265,6 +276,21 @@ export default function App() {
   const patchSessionInCache = useCallback((sessionId: string, patch: Partial<Session>) => {
     patchSessionsInCache([sessionId], patch);
   }, [patchSessionsInCache]);
+  const buildTaskCompletionFeedback = useCallback((
+    task: Task,
+    previousStatus: Exclude<Task["status"], "done">,
+  ) => {
+    const checklistItems = queryClient.getQueryData<ChecklistItem[]>(queryKeys.taskChecklistItems(task.id)) ?? [];
+    const enriched = queryClient.getQueryData<EnrichedTaskData>(queryKeys.taskEnriched(task.id));
+
+    return createTaskCompletionFeedback({
+      task,
+      previousStatus,
+      checklistItems,
+      linkedSessions: sessions.filter((session) => task.sessionIds.includes(session.sessionId)),
+      pullRequests: enriched?.pullRequests,
+    });
+  }, [queryClient, sessions]);
   const bumpSessionBusySignal = useCallback((sessionId?: string) => {
     if (!sessionId) return;
     sessionBusyHintExpiresAtRef.current[sessionId] = Date.now() + SESSION_BUSY_SIGNAL_GRACE_MS;
@@ -363,6 +389,53 @@ export default function App() {
     const timer = window.setTimeout(() => window.location.reload(), 1000);
     return () => clearTimeout(timer);
   }, [restartBanner.shouldReload]);
+
+  const previousTasksRef = useRef<Map<string, Task>>(new Map());
+
+  useEffect(() => {
+    const previousTasks = previousTasksRef.current;
+    const reopenedTaskIds = new Set<string>();
+    const completedTasks: Array<{ feedback: TaskCompletionFeedback; sortTime: number }> = [];
+
+    for (const task of tasks) {
+      const previousTask = previousTasks.get(task.id);
+      if (!previousTask) continue;
+
+      if (!isTaskCompleted(previousTask) && isTaskCompleted(task)) {
+        completedTasks.push({
+          feedback: buildTaskCompletionFeedback(task, previousTask.status),
+          sortTime: new Date(task.completedAt ?? task.updatedAt).getTime(),
+        });
+        continue;
+      }
+
+      if (isTaskCompleted(previousTask) && !isTaskCompleted(task)) {
+        reopenedTaskIds.add(task.id);
+      }
+    }
+
+    if (reopenedTaskIds.size > 0) {
+      setTaskCompletionFeedback((current) => (current && reopenedTaskIds.has(current.taskId) ? null : current));
+      setUndoingTaskCompletionId((current) => (current && reopenedTaskIds.has(current) ? null : current));
+    }
+
+    if (completedTasks.length > 0) {
+      completedTasks.sort((left, right) => right.sortTime - left.sortTime);
+      setTaskCompletionFeedback(completedTasks[0].feedback);
+      setUndoingTaskCompletionId(null);
+    }
+
+    previousTasksRef.current = new Map(tasks.map((task) => [task.id, task]));
+  }, [tasks, buildTaskCompletionFeedback]);
+
+  useEffect(() => {
+    if (!taskCompletionFeedback) return;
+    const timer = window.setTimeout(() => {
+      setTaskCompletionFeedback((current) => current?.taskId === taskCompletionFeedback.taskId ? null : current);
+      setUndoingTaskCompletionId((current) => current === taskCompletionFeedback.taskId ? null : current);
+    }, TASK_COMPLETION_TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [taskCompletionFeedback]);
 
   const previousActiveSessionIdRef = useRef<string | null>(null);
   const dwelledSessionIdRef = useRef<string | null>(null);
@@ -698,11 +771,11 @@ export default function App() {
   const handleUpdateTask = async (
     taskId: string,
     updates: Parameters<typeof patchTask>[1],
-  ) => {
+  ): Promise<Task | null> => {
     try {
       const updated = await patchTask(taskId, updates);
-      if (updates.status || updates.kind !== undefined) {
-        // When status or kind changes, refetch all tasks since ordering can shift
+      if (updates.status || updates.kind !== undefined || updates.completionAction) {
+        // When status, kind, or completion changes, refetch all tasks since ordering can shift
         await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
       } else {
         queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
@@ -710,8 +783,10 @@ export default function App() {
         );
       }
       setSelectedTask((prev) => (prev?.id === taskId ? updated : prev));
+      return updated;
     } catch (err) {
       console.error("Failed to update task:", err);
+      return null;
     }
   };
 
@@ -826,6 +901,28 @@ export default function App() {
       taskChangeInvalidator.endTaskMutation();
     }
   };
+
+  const dismissTaskCompletionFeedback = useCallback((taskId?: string) => {
+    setTaskCompletionFeedback((current) => {
+      if (!current) return current;
+      if (taskId && current.taskId !== taskId) return current;
+      return null;
+    });
+    setUndoingTaskCompletionId((current) => (taskId ? (current === taskId ? null : current) : null));
+  }, []);
+
+  const handleUndoTaskCompletion = useCallback(async () => {
+    if (!taskCompletionFeedback) return;
+    setUndoingTaskCompletionId(taskCompletionFeedback.taskId);
+    const updated = await handleUpdateTask(taskCompletionFeedback.taskId, {
+      status: taskCompletionFeedback.previousStatus,
+    });
+    if (updated) {
+      dismissTaskCompletionFeedback(taskCompletionFeedback.taskId);
+    } else {
+      setUndoingTaskCompletionId(null);
+    }
+  }, [dismissTaskCompletionFeedback, handleUpdateTask, taskCompletionFeedback]);
 
   const handleMoveAndReorder = async (taskId: string, groupId: string | undefined, taskIds: string[]) => {
     // Single optimistic update: group move + reorder combined
@@ -1424,6 +1521,15 @@ export default function App() {
         </main>
       </div>
       </div>{/* ← close row wrapper */}
+
+      {taskCompletionFeedback && (
+        <TaskCompletionToast
+          feedback={taskCompletionFeedback}
+          undoing={undoingTaskCompletionId === taskCompletionFeedback.taskId}
+          onUndo={() => { void handleUndoTaskCompletion(); }}
+          onDismiss={() => dismissTaskCompletionFeedback(taskCompletionFeedback.taskId)}
+        />
+      )}
 
       {/* ── Mobile bottom navigation ──────────────────────── */}
       {isMobile && mobileRouteMeta.showBottomNav && (

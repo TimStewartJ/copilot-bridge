@@ -59,6 +59,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   clearRestartPending();
   scheduler.shutdown();
 });
@@ -916,6 +917,99 @@ describe("Task routes", () => {
     expect(get.body.task.doneWhen).toBeUndefined();
   });
 
+  it("PATCH /api/tasks/:id derives completedAt from explicit completion and reopening only", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Complete via route" });
+    const id = create.body.task.id;
+
+    vi.setSystemTime(new Date("2026-04-01T12:34:56.000Z"));
+    const completed = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ completionAction: "complete-and-archive", completedAt: "1999-01-01T00:00:00.000Z" });
+    expect(completed.status).toBe(200);
+    expect(completed.body.task.status).toBe("archived");
+    expect(completed.body.task.completedAt).toBe("2026-04-01T12:34:56.000Z");
+
+    vi.setSystemTime(new Date("2026-04-01T13:00:00.000Z"));
+    const preserved = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ notes: "done already", completedAt: "2030-01-01T00:00:00.000Z" });
+    expect(preserved.status).toBe(200);
+    expect(preserved.body.task.completedAt).toBe("2026-04-01T12:34:56.000Z");
+
+    vi.setSystemTime(new Date("2026-04-01T14:00:00.000Z"));
+    const reopened = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "active", completedAt: "2030-01-01T00:00:00.000Z" });
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.task.completedAt).toBeUndefined();
+  });
+
+  it("PATCH /api/tasks/:id normalizes legacy done updates into complete-and-archive", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Legacy complete via route" });
+    const id = create.body.task.id;
+
+    vi.setSystemTime(new Date("2026-04-01T12:34:56.000Z"));
+    const completed = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "done", completedAt: "1999-01-01T00:00:00.000Z" });
+
+    expect(completed.status).toBe(200);
+    expect(completed.body.task.status).toBe("archived");
+    expect(completed.body.task.completedAt).toBe("2026-04-01T12:34:56.000Z");
+  });
+
+  it("PATCH /api/tasks/:id rejects re-completing archived tasks", async () => {
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Archive protection via route" });
+    const id = create.body.task.id;
+
+    const archived = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "archived" });
+    expect(archived.status).toBe(200);
+
+    const completionAction = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ completionAction: "complete-and-archive" });
+    expect(completionAction.status).toBe(400);
+    expect(completionAction.body.error).toContain("Archived tasks cannot be completed again");
+
+    const legacyDone = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "done" });
+    expect(legacyDone.status).toBe(400);
+    expect(legacyDone.body.error).toContain("Archived tasks cannot be completed again");
+  });
+
+  it("PATCH /api/tasks/:id archiving an incomplete task does not set completedAt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+
+    const create = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Archive via route" });
+    const id = create.body.task.id;
+
+    vi.setSystemTime(new Date("2026-04-01T12:34:56.000Z"));
+    const archived = await request(app)
+      .patch(`/api/tasks/${id}`)
+      .send({ status: "archived", completedAt: "1999-01-01T00:00:00.000Z" });
+    expect(archived.status).toBe(200);
+    expect(archived.body.task.status).toBe("archived");
+    expect(archived.body.task.completedAt).toBeUndefined();
+  });
+
   it("DELETE /api/tasks/:id removes a task", async () => {
     const create = await request(app)
       .post("/api/tasks")
@@ -1043,7 +1137,7 @@ describe("Task routes", () => {
 
     const done = await request(app).patch(`/api/tasks/${id}`).send({ status: "done" });
     expect(done.status).toBe(200);
-    expect(done.body.task.status).toBe("done");
+    expect(done.body.task.status).toBe("archived");
     expect(done.body.task.doneWhen).toBe("Rolled out to all tenants");
     expect(done.body.task.nextAction).toBeUndefined();
     expect(done.body.task.waitingOn).toBeUndefined();
@@ -1051,7 +1145,7 @@ describe("Task routes", () => {
 
     const get = await request(app).get(`/api/tasks/${id}`);
     expect(get.status).toBe(200);
-    expect(get.body.task.status).toBe("done");
+    expect(get.body.task.status).toBe("archived");
     expect(get.body.task.doneWhen).toBe("Rolled out to all tenants");
     expect(get.body.task.nextAction).toBeUndefined();
     expect(get.body.task.waitingOn).toBeUndefined();
@@ -1098,7 +1192,7 @@ describe("Task routes", () => {
 
     const get = await request(app).get(`/api/tasks/${id}`);
     expect(get.status).toBe(200);
-    expect(get.body.task.status).toBe("done");
+    expect(get.body.task.status).toBe("archived");
     expect(get.body.task.nextAction).toBeUndefined();
   });
 

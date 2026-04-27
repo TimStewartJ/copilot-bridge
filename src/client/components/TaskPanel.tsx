@@ -5,6 +5,7 @@ import { patchTask } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
+import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
 import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
 import {
   resolveTaskPanelChecklistHighlight,
@@ -23,6 +24,8 @@ import {
   FolderOpen,
   LayoutDashboard,
   AlertTriangle,
+  CheckCircle2,
+  RotateCcw,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
@@ -71,7 +74,7 @@ interface TaskPanelProps {
   onUpdateTask: (
     taskId: string,
     updates: Parameters<typeof patchTask>[1],
-  ) => void;
+  ) => Promise<Task | null>;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onArchiveSession?: (id: string, archived: boolean) => void;
@@ -139,6 +142,7 @@ export default function TaskPanel({
     taskGitStatus,
     checklistItems,
     checklistItemsReady,
+    checklistLoaded,
     createChecklistItemMutation,
     onChecklistItemUpdate,
     onChecklistItemDelete,
@@ -165,7 +169,9 @@ export default function TaskPanel({
   const [handoffChecklistItemId, setHandoffChecklistItemId] = useState<string | null>(null);
   const [panelHighlightRequest, setPanelHighlightRequest] = useState<{ highlightId: string | null } | null>(null);
   const [momentumTask, setMomentumTask] = useState(task);
+  const [isUpdatingCompletion, setIsUpdatingCompletion] = useState(false);
   const highlightTimerRef = useRef<number | null>(null);
+  const latestTaskIdRef = useRef(task?.id ?? null);
   const pendingChecklistItemId = searchParams.get("checklistItem");
 
   useEffect(() => {
@@ -235,7 +241,9 @@ export default function TaskPanel({
   }, []);
 
   useEffect(() => {
+    latestTaskIdRef.current = task?.id ?? null;
     setMomentumTask(task);
+    setIsUpdatingCompletion(false);
   }, [task]);
 
   const currentTask = task && momentumTask && momentumTask.id === task.id ? momentumTask : task;
@@ -253,6 +261,17 @@ export default function TaskPanel({
   const checklistPreview = useMemo(
     () => getTaskPanelChecklistPreview(checklistItems, { highlightId: highlightChecklistItemId }),
     [checklistItems, highlightChecklistItemId],
+  );
+  const completionCounts = useMemo(() => getTaskCompletionCounts({
+    checklistItems,
+    linkedSessions,
+    pullRequests: enrichedPRs.length > 0
+      ? enrichedPRs
+      : (task?.pullRequests ?? []).map(() => ({ status: null })),
+  }), [checklistItems, linkedSessions, enrichedPRs, task?.pullRequests]);
+  const completionState = useMemo(
+    () => currentTask ? getTaskCompletionState(currentTask, completionCounts, { checklistLoaded }) : null,
+    [currentTask, completionCounts, checklistLoaded],
   );
 
   if (!task) {
@@ -321,7 +340,37 @@ export default function TaskPanel({
   const handleKindChange = (nextKind: Task["kind"]) => {
     const updates = getTaskKindUpdate(currentTask, nextKind);
     if (!updates) return;
-    onUpdateTask(task.id, updates);
+    void onUpdateTask(task.id, updates);
+  };
+  const showCompletionButton = currentTask.kind !== "ongoing"
+    && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
+  const completionDisabled = !showCompletionButton || isUpdatingCompletion;
+  const completionDescription = currentTask.kind === "ongoing"
+    ? "Ongoing tasks stay active and cannot be completed."
+    : completionState.ctaDescription;
+  const showCompletionDetails = completionState.ctaState !== "archived";
+  const showMomentumFields = completionState.ctaState !== "archived";
+  const showCompletionArea = showCompletionButton || showCompletionDetails || showMomentumFields;
+  const handleCompletionAction = async () => {
+    if (completionDisabled) return;
+    const requestedTaskId = task.id;
+
+    setIsUpdatingCompletion(true);
+    try {
+      const updated = await onUpdateTask(
+        requestedTaskId,
+        completionState.ctaCompletionAction
+          ? { completionAction: completionState.ctaCompletionAction }
+          : { status: completionState.ctaNextStatus! },
+      );
+      if (updated && latestTaskIdRef.current === requestedTaskId) {
+        setMomentumTask(updated);
+      }
+    } finally {
+      if (latestTaskIdRef.current === requestedTaskId) {
+        setIsUpdatingCompletion(false);
+      }
+    }
   };
 
   return (
@@ -419,13 +468,35 @@ export default function TaskPanel({
           </div>
         )}
 
-        <TaskMomentumFields
-          task={currentTask}
-          onPatched={setMomentumTask}
-          onSaved={() => {
-            void onTasksChanged?.();
-          }}
-        />
+        {showCompletionArea && (
+          <div className="space-y-2">
+            {showCompletionButton && (
+              <button
+                onClick={() => { void handleCompletionAction(); }}
+                disabled={completionDisabled}
+                title={completionDescription}
+                className="w-full px-3 py-2 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 disabled:bg-bg-hover disabled:text-text-faint disabled:hover:bg-bg-hover"
+              >
+                {completionState.ctaState === "completed" ? <RotateCcw size={12} /> : <CheckCircle2 size={12} />}
+                {completionState.ctaLabel}
+              </button>
+            )}
+            {showCompletionDetails && (
+              <p className="text-[11px] text-text-muted leading-relaxed">
+                {completionDescription}
+              </p>
+            )}
+            {showMomentumFields && (
+              <TaskMomentumFields
+                task={currentTask}
+                onPatched={setMomentumTask}
+                onSaved={() => {
+                  void onTasksChanged?.();
+                }}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       <div className="relative min-h-0 flex-1">
@@ -476,6 +547,7 @@ export default function TaskPanel({
               </div>
             )}
             <TaskChecklistSection
+              taskId={task.id}
               checklistItems={checklistItems}
               newChecklistItemText={newChecklistItemText}
               onNewChecklistItemTextChange={setNewChecklistItemText}
@@ -485,6 +557,7 @@ export default function TaskPanel({
               variant="panel"
               highlightId={highlightChecklistItemId}
               onViewAll={onViewDashboard ? () => openTaskOverview("checklist") : undefined}
+              isReadyToComplete={currentTask.kind !== "ongoing" && completionState.isReadyToComplete}
             />
           </div>
 
@@ -629,10 +702,8 @@ function getStatusBadgeClass(status: Task["status"]): string {
   return `rounded-full px-1.5 py-0.5 text-[10px] capitalize ${
     status === "active"
       ? "bg-success/15 text-success"
-      : status === "paused"
-        ? "bg-warning/15 text-warning"
-        : status === "done"
-          ? "bg-accent/15 text-accent"
-          : "bg-text-muted/15 text-text-muted"
+      : status === "done"
+        ? "bg-accent/15 text-accent"
+        : "bg-text-muted/15 text-text-muted"
   }`;
 }

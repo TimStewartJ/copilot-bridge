@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import { createTaskStore } from "../task-store.js";
@@ -12,6 +12,10 @@ let store: TaskStore;
 beforeEach(() => {
   db = setupTestDb();
   store = createTaskStore(db, createTestBus());
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("task-store", () => {
@@ -219,7 +223,7 @@ describe("task-store", () => {
         .toThrow("Ongoing tasks cannot be marked done");
 
       const converted = store.updateTask(task.id, { kind: "task", status: "done" });
-      expect(converted).toMatchObject({ kind: "task", status: "done" });
+      expect(converted).toMatchObject({ kind: "task", status: "archived" });
     });
 
     it("updateTask clears doneWhen when switching to ongoing unless explicitly preserved", () => {
@@ -336,13 +340,75 @@ describe("task-store", () => {
       expect(() => store.updateTask("nope", { title: "x" })).toThrow("not found");
     });
 
-    it("updateTask status change puts task at top of new group", () => {
+    it("updateTask legacy done status archives the task at the top of the archived group", () => {
       const t1 = store.createTask("Task 1");
       const t2 = store.createTask("Task 2");
-      store.updateTask(t1.id, { status: "done" });
-      const done = store.listTasks().filter((t) => t.status === "done");
-      expect(done).toHaveLength(1);
-      expect(done[0].order).toBe(0);
+      const archived = store.updateTask(t1.id, { status: "done" });
+      expect(archived.status).toBe("archived");
+      expect(store.listTasks().filter((t) => t.status === "archived")).toEqual([
+        expect.objectContaining({ id: t1.id, order: 0 }),
+      ]);
+      const raw = db.prepare("SELECT status FROM tasks WHERE id = ?").get(t1.id) as any;
+      expect(raw.status).toBe("archived");
+    });
+
+    it("updateTask complete-and-archive sets completedAt and reopening clears it", () => {
+      vi.useFakeTimers();
+      const task = store.createTask("Complete me");
+
+      vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+      const archived = store.updateTask(task.id, { completionAction: "complete-and-archive" });
+      expect(archived.status).toBe("archived");
+      expect(archived.completedAt).toBe("2026-04-01T10:00:00.000Z");
+
+      vi.setSystemTime(new Date("2026-04-01T11:00:00.000Z"));
+      const active = store.updateTask(task.id, { status: "active" });
+      expect(active.completedAt).toBeUndefined();
+    });
+
+    it("updateTask rejects completion for archived tasks, including legacy done requests", () => {
+      const task = store.createTask("Archived already");
+      store.updateTask(task.id, { status: "archived" });
+
+      expect(() => store.updateTask(task.id, { completionAction: "complete-and-archive" }))
+        .toThrow("Archived tasks cannot be completed again; reopen the task first");
+      expect(() => store.updateTask(task.id, { status: "done" }))
+        .toThrow("Archived tasks cannot be completed again; reopen the task first");
+    });
+
+    it("updateTask archiving an incomplete task does not set completedAt", () => {
+      const task = store.createTask("Archive me");
+      const archived = store.updateTask(task.id, { status: "archived" });
+      expect(archived.status).toBe("archived");
+      expect(archived.completedAt).toBeUndefined();
+    });
+
+    it("updateTask archiving a completed task preserves completedAt", () => {
+      vi.useFakeTimers();
+      const task = store.createTask("Already complete");
+
+      vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+      store.updateTask(task.id, { completionAction: "complete-and-archive" });
+
+      vi.setSystemTime(new Date("2026-04-01T11:00:00.000Z"));
+      const archived = store.updateTask(task.id, { status: "archived" });
+      expect(archived.status).toBe("archived");
+      expect(archived.completedAt).toBe("2026-04-01T10:00:00.000Z");
+    });
+
+    it("updateTask preserves completedAt across non-status updates", () => {
+      vi.useFakeTimers();
+      const task = store.createTask("Preserve completion");
+
+      vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+      const done = store.updateTask(task.id, { completionAction: "complete-and-archive" });
+
+      vi.setSystemTime(new Date("2026-04-01T11:00:00.000Z"));
+      const updated = store.updateTask(task.id, { notes: "Still done" });
+
+      expect(updated.completedAt).toBe(done.completedAt);
+      const raw = db.prepare("SELECT completedAt FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw.completedAt).toBe("2026-04-01T10:00:00.000Z");
     });
 
     it("updateTask normalizes paused status updates to active", () => {
@@ -367,7 +433,7 @@ describe("task-store", () => {
       const updated = store.updateTask(task.id, { status: "done" });
 
       expect(updated).toMatchObject({
-        status: "done",
+        status: "archived",
         doneWhen: "Feature flag is enabled everywhere",
         nextAction: undefined,
         waitingOn: undefined,
@@ -416,7 +482,7 @@ describe("task-store", () => {
         .toThrow("nextAction, waitingOn, and nextTouchAt can only be set on active tasks");
 
       expect(store.getTask(task.id)).toMatchObject({
-        status: "done",
+        status: "archived",
         nextAction: undefined,
         waitingOn: undefined,
         nextTouchAt: undefined,
@@ -434,8 +500,8 @@ describe("task-store", () => {
       const active = store.listTasks().filter((candidate) => candidate.status === "active");
       expect(active.map((candidate) => candidate.id)).toEqual([task.id, existingActive.id]);
 
-      const raw = db.prepare('SELECT status, doneWhen, "order" FROM tasks WHERE id = ?').get(task.id) as any;
-      expect(raw).toEqual({ status: "active", doneWhen: null, order: 0 });
+      const raw = db.prepare('SELECT status, doneWhen, completedAt, "order" FROM tasks WHERE id = ?').get(task.id) as any;
+      expect(raw).toEqual({ status: "active", doneWhen: null, completedAt: null, order: 0 });
     });
 
     it("updateTask preserves explicit status updates when switching to ongoing", () => {
@@ -443,7 +509,10 @@ describe("task-store", () => {
       store.updateTask(task.id, { status: "done" });
 
       const updated = store.updateTask(task.id, { kind: "ongoing", status: "archived" });
-      expect(updated).toMatchObject({ kind: "ongoing", status: "archived" });
+      expect(updated).toMatchObject({ kind: "ongoing", status: "archived", completedAt: undefined });
+
+      const raw = db.prepare("SELECT completedAt FROM tasks WHERE id = ?").get(task.id) as any;
+      expect(raw.completedAt).toBeNull();
 
       expect(() => store.updateTask(task.id, { kind: "ongoing", status: "done" }))
         .toThrow("Ongoing tasks cannot be marked done");

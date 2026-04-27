@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "./api";
 import { useTagsQuery } from "./hooks/queries/useTags";
@@ -136,6 +137,22 @@ function renderTaskDashboard(task: Task): string {
   ));
 }
 
+function renderTaskContextMenu(task: Task): string {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient },
+    createElement(TaskContextMenu, {
+      task,
+      position: { x: 32, y: 48 },
+      taskGroups: [],
+      sessionMap: new Map(),
+      actions: { onUpdateTask: vi.fn() },
+      onClose: vi.fn(),
+    }),
+  ));
+}
+
 beforeEach(() => {
   vi.mocked(useTagsQuery).mockReturnValue({ data: [] } as any);
   vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace() as any);
@@ -158,28 +175,15 @@ describe("kind-aware task UI", () => {
   });
 
   it("TaskContextMenu suppresses Mark done for ongoing items", () => {
-    const html = renderToStaticMarkup(createElement(TaskContextMenu, {
-      task: createTask({ kind: "ongoing" }),
-      position: { x: 32, y: 48 },
-      taskGroups: [],
-      sessionMap: new Map(),
-      actions: { onUpdateTask: vi.fn() },
-      onClose: vi.fn(),
-    }));
+    const html = renderTaskContextMenu(createTask({ kind: "ongoing" }));
 
     expect(html).not.toContain("Mark done");
+    expect(html).not.toContain("Complete &amp; archive");
     expect(html).toContain("Follow up tomorrow");
   });
 
   it("TaskContextMenu has no manual pin action for normal tasks", () => {
-    const html = renderToStaticMarkup(createElement(TaskContextMenu, {
-      task: createTask({ kind: "task" }),
-      position: { x: 32, y: 48 },
-      taskGroups: [],
-      sessionMap: new Map(),
-      actions: { onUpdateTask: vi.fn() },
-      onClose: vi.fn(),
-    }));
+    const html = renderTaskContextMenu(createTask({ kind: "task" }));
 
     expect(html).not.toContain("lucide-pin");
   });
