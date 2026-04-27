@@ -88,6 +88,53 @@ export function isTaskCompleted(task: Pick<Task, "status" | "completedAt">): boo
   return task.status === "done" || Boolean(task.completedAt);
 }
 
+// ── Lifecycle display helpers ─────────────────────────────────────────────────
+
+/** Three mutually-exclusive user-facing states derived from status + completedAt. */
+export type TaskLifecycleDisplayState = "completed" | "archived" | "active";
+
+/**
+ * Derives the user-facing lifecycle state:
+ * - "completed" when completedAt exists OR status is the legacy "done"
+ * - "archived"  when status is "archived" without completedAt
+ * - "active"    otherwise
+ */
+export function getTaskLifecycleDisplayState(
+  task: Pick<Task, "status" | "completedAt">,
+): TaskLifecycleDisplayState {
+  if (isTaskCompleted(task)) return "completed";
+  if (task.status === "archived") return "archived";
+  return "active";
+}
+
+/** Human-readable label for the task lifecycle state. */
+export function getTaskStatusLabel(task: Pick<Task, "status" | "completedAt">): string {
+  const state = getTaskLifecycleDisplayState(task);
+  if (state === "completed") return "Completed";
+  if (state === "archived") return "Archived";
+  return "Active";
+}
+
+/** Tailwind colour classes for a small status badge (rounded pill). */
+export function getTaskLifecycleBadgeClass(task: Pick<Task, "status" | "completedAt">): string {
+  const state = getTaskLifecycleDisplayState(task);
+  const colours =
+    state === "completed"
+      ? "bg-accent/15 text-accent"
+      : state === "archived"
+        ? "bg-text-muted/15 text-text-muted"
+        : "bg-success/15 text-success";
+  return `rounded-full px-1.5 py-0.5 text-[10px] ${colours}`;
+}
+
+/** Tailwind text-colour class for a small inline status label. */
+export function getTaskStatusTextClass(task: Pick<Task, "status" | "completedAt">): string {
+  const state = getTaskLifecycleDisplayState(task);
+  if (state === "completed") return "text-text-muted";
+  if (state === "archived") return "text-text-faint";
+  return "text-success";
+}
+
 export function getTaskCompletionAction(task: Pick<Task, "status" | "completedAt">): {
   ctaLabel: string;
   ctaNextStatus: Task["status"] | null;

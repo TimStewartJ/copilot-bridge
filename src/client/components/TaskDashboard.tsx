@@ -7,7 +7,7 @@ import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { hasTaskDashboardFocusParams } from "../lib/mobile-scroll-restoration";
 import { resolveTaskDashboardFocus, type TaskFocusRequest } from "../task-detail-focus";
-import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
+import { getTaskCompletionCounts, getTaskCompletionState, getTaskLifecycleBadgeClass, getTaskStatusLabel } from "../task-completion-helpers";
 import EmptyState from "./shared/EmptyState";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import TaskSessionList from "./TaskSessionList";
@@ -350,8 +350,8 @@ export default function TaskDashboard({
       <div className="max-w-4xl mx-auto px-4 md:px-8 py-6 space-y-6">
         {/* ── Task Header ─────────────────────────────────── */}
         <div>
-          <div className="flex items-start gap-3">
-            <div className="flex-1 min-w-0">
+          <div className="flex items-start gap-3 flex-col sm:flex-row">
+            <div className="flex-1 min-w-0 w-full">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <LayoutDashboard size={16} className="text-text-muted shrink-0" />
                 {group && (
@@ -360,12 +360,8 @@ export default function TaskDashboard({
                     <span>{group.name}</span>
                   </div>
                 )}
-                <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${
-                  momentumTask.status === "active" ? "bg-success/15 text-success" :
-                  momentumTask.status === "done" ? "bg-accent/15 text-accent" :
-                  "bg-text-muted/15 text-text-muted"
-                }`}>
-                  {momentumTask.status}
+                <span className={getTaskLifecycleBadgeClass(momentumTask)}>
+                  {getTaskStatusLabel(momentumTask)}
                 </span>
                 <TaskKindSwitcher kind={momentumTask.kind} onChange={handleKindChange} />
               </div>
@@ -433,24 +429,17 @@ export default function TaskDashboard({
                 />
               </div>
             </div>
-            <div className="flex flex-col items-stretch gap-2 shrink-0 min-w-[11rem]">
+            <div className="flex flex-row sm:flex-col items-stretch gap-2 shrink-0 sm:min-w-[11rem] w-full sm:w-auto">
               <button
                 onClick={() => { void handleCompletionAction(); }}
                 disabled={completionDisabled}
                 title={completionDescription}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 disabled:bg-bg-hover disabled:text-text-faint disabled:hover:bg-bg-hover"
+                className="flex-1 sm:flex-none px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 disabled:bg-bg-hover disabled:text-text-faint disabled:hover:bg-bg-hover"
               >
                 {completionState.ctaState === "completed" ? <RotateCcw size={12} /> : <CheckCircle2 size={12} />}
                 {completionState.ctaLabel}
               </button>
-              <button
-                onClick={() => onNewSession(task.id)}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-bg-hover text-text-primary hover:bg-border transition-colors flex items-center justify-center gap-1.5"
-              >
-                <Plus size={12} />
-                New Chat
-              </button>
-              <p className="text-[11px] text-text-muted text-right leading-relaxed">
+              <p className="hidden sm:block text-[11px] text-text-muted text-right leading-relaxed">
                 {completionDescription}
               </p>
             </div>
@@ -480,7 +469,13 @@ export default function TaskDashboard({
                 }
               >
                 {task.sessionIds.length === 0 ? (
-                  <EmptyState message="No sessions yet" sub="Start a chat to begin working" />
+                  <button
+                    onClick={() => onNewSession(task.id)}
+                    className="w-full mt-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Plus size={14} />
+                    Start a chat
+                  </button>
                 ) : (
                   <TaskSessionList
                     task={task}
@@ -489,6 +484,7 @@ export default function TaskDashboard({
                     onSelectSession={onSelectSession}
                     onNewSession={onNewSession}
                     showEmptyState={false}
+                    showNewButton={false}
                     isUnread={isUnread}
                     onArchiveSession={onArchiveSession}
                     archivingIds={archivingIds}

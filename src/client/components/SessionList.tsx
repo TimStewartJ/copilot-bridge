@@ -153,6 +153,8 @@ interface SessionListProps {
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
   archivedLoading?: boolean;
+  // Hide the new-session button (e.g. when the parent already provides one)
+  showNewButton?: boolean;
 }
 
 export default function SessionList({
@@ -182,6 +184,7 @@ export default function SessionList({
   onRequestArchived,
   archivedLoaded,
   archivedLoading = false,
+  showNewButton = true,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
@@ -408,12 +411,14 @@ export default function SessionList({
         </div>
       ) : showQuickChatHeader ? (
         <div className="flex items-center gap-1 mb-1">
-          <button
-            onClick={onNewSession}
-            className="flex-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
-          >
-            {newButtonLabel}
-          </button>
+          {showNewButton && (
+            <button
+              onClick={onNewSession}
+              className="flex-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
+            >
+              {newButtonLabel}
+            </button>
+          )}
           {unreadCount > 0 && (
             <button
               onClick={onMarkAllRead}
@@ -424,11 +429,11 @@ export default function SessionList({
             </button>
           )}
         </div>
-      ) : (
+      ) : showNewButton ? (
         <button onClick={onNewSession} className={s.newButton}>
           {newButtonLabel}
         </button>
-      )}
+      ) : null}
       {selectMode && onBulkAction && (
         <BulkActionBar
           activeSessions={activeSessions}

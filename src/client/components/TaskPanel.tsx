@@ -5,7 +5,7 @@ import { patchTask } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
-import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
+import { getTaskCompletionCounts, getTaskCompletionState, getTaskLifecycleBadgeClass, getTaskStatusLabel } from "../task-completion-helpers";
 import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
 import {
   resolveTaskPanelChecklistHighlight,
@@ -388,8 +388,8 @@ export default function TaskPanel({
           ) : <span />}
           <div className="flex shrink-0 items-center gap-1.5">
             <TaskKindSwitcher kind={currentTask.kind} onChange={handleKindChange} />
-            <span className={getStatusBadgeClass(currentTask.status)}>
-              {currentTask.status}
+            <span className={getTaskLifecycleBadgeClass(currentTask)}>
+              {getTaskStatusLabel(currentTask)}
             </span>
           </div>
         </div>
@@ -698,12 +698,3 @@ const ALERT_TONE_CLASS: Record<TaskAlertTone, string> = {
   danger: "bg-error/15 text-error",
 };
 
-function getStatusBadgeClass(status: Task["status"]): string {
-  return `rounded-full px-1.5 py-0.5 text-[10px] capitalize ${
-    status === "active"
-      ? "bg-success/15 text-success"
-      : status === "done"
-        ? "bg-accent/15 text-accent"
-        : "bg-text-muted/15 text-text-muted"
-  }`;
-}
