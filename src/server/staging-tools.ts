@@ -395,54 +395,18 @@ function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {
   const productionDataDir = options.productionDataDir ?? PRODUCTION_DATA_DIR;
   const dbSrc = join(productionDataDir, "bridge.db");
 
-  if (existsSync(dbSrc)) {
-    try {
-      snapshotProductionDatabase(dbSrc, dataDir);
-    } catch (err) {
-      log(`Warning: SQLite VACUUM INTO failed, falling back to file copy: ${err}`);
-      copySqliteSnapshot(dbSrc, join(dataDir, "bridge.db"));
-    }
-    disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
-  } else {
+  if (!existsSync(dbSrc)) {
     clearSeededSqliteFiles(dataDir);
-    const legacyJsonFiles = [
-      "tasks.json",
-      "task-groups.json",
-      "sessions-meta.json",
-      "settings.json",
-      "session-titles.json",
-      "read-state.json",
-    ];
-    let copiedLegacyState = false;
-    for (const file of legacyJsonFiles) {
-      const src = join(productionDataDir, file);
-      if (!existsSync(src)) continue;
-      copyFileSync(src, join(dataDir, file));
-      copiedLegacyState = true;
-    }
-
-    const schedulesSrc = join(productionDataDir, "schedules.json");
-    if (existsSync(schedulesSrc)) {
-      copiedLegacyState = true;
-      try {
-        const schedules = JSON.parse(readFileSync(schedulesSrc, "utf-8"));
-        if (Array.isArray(schedules)) {
-          for (const schedule of schedules) {
-            if (schedule && typeof schedule === "object") {
-              schedule.enabled = false;
-            }
-          }
-        }
-        writeFileSync(join(dataDir, "schedules.json"), JSON.stringify(schedules, null, 2));
-      } catch {
-        writeFileSync(join(dataDir, "schedules.json"), "[]");
-      }
-    }
-
-    if (!copiedLegacyState) {
-      throw new Error(`Production SQLite database not found at ${dbSrc}`);
-    }
+    throw new Error(`Production SQLite database not found at ${dbSrc}`);
   }
+
+  try {
+    snapshotProductionDatabase(dbSrc, dataDir);
+  } catch (err) {
+    log(`Warning: SQLite VACUUM INTO failed, falling back to file copy: ${err}`);
+    copySqliteSnapshot(dbSrc, join(dataDir, "bridge.db"));
+  }
+  disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
 
   // Copy docs directory (source of truth is filesystem, not SQLite)
   const docsSrc = join(productionDataDir, "docs");
@@ -525,7 +489,7 @@ async function createStagingContext(
   const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
 
   // Dynamic imports from the staging worktree
-  const [globalBusMod, eventBusMod, dbMod, migrateMod,
+  const [globalBusMod, eventBusMod, dbMod,
     taskStoreMod, taskGroupStoreMod,
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod, sessionWorkspaceStoreMod,
     sessionTitlesMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
@@ -541,7 +505,6 @@ async function createStagingContext(
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
     import(ts("db.ts")),
-    import(ts("migrate-json-to-sqlite.ts")),
     import(ts("task-store.ts")),
     import(ts("task-group-store.ts")),
     import(ts("schedule-store.ts")),
@@ -567,8 +530,6 @@ async function createStagingContext(
   // Open isolated staging database
   const db = dbMod.openDatabase(runtimePaths.dataDir);
   try {
-    migrateMod.migrateJsonToSqlite(db, runtimePaths.dataDir);
-
     // Create isolated instances
     const globalBus = globalBusMod.createGlobalBus();
     const eventBusRegistry = eventBusMod.createEventBusRegistry();

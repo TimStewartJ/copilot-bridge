@@ -2,20 +2,105 @@
 // Uses Node.js built-in node:sqlite (DatabaseSync)
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+const LEGACY_JSON_STATE_FILES = [
+  "tasks.json",
+  "task-groups.json",
+  "sessions-meta.json",
+  "settings.json",
+  "session-titles.json",
+  "schedules.json",
+  "read-state.json",
+] as const;
+const SQLITE_STATE_TABLES = [
+  "tasks",
+  "task_sessions",
+  "task_work_items",
+  "task_pull_requests",
+  "task_groups",
+  "session_meta",
+  "session_workspace",
+  "settings",
+  "session_titles",
+  "schedules",
+  "schedule_runs",
+  "schedule_run_claims",
+  "schedule_session_claims",
+  "read_state",
+  "checklist_items",
+  "voice_jobs",
+  "tags",
+  "entity_tags",
+  "tag_mcp_servers",
+  "deferred_prompts",
+] as const;
+type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
+
+function legacyJsonFileHasState(dataDir: string, file: typeof LEGACY_JSON_STATE_FILES[number]): boolean {
+  const content = readFileSync(join(dataDir, file), "utf-8").trim();
+  if (content === "") return false;
+
+  let value: unknown;
+  try {
+    value = JSON.parse(content) as unknown;
+  } catch {
+    return true;
+  }
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function getLegacyJsonFilesWithState(dataDir: string): string[] {
+  return LEGACY_JSON_STATE_FILES.filter((file) =>
+    existsSync(join(dataDir, file)) && legacyJsonFileHasState(dataDir, file)
+  );
+}
+
+function formatLegacyJsonStateError(action: string, legacyStateFiles: string[]): Error {
+  return new Error(
+    `Refusing to ${action} because legacy JSON state files contain data without migrated SQLite state: ${legacyStateFiles.join(", ")}. Restore a current ${DB_FILENAME} or remove the legacy JSON files before starting.`,
+  );
+}
+
+function tableExists(db: DatabaseSync, table: SqliteStateTable): boolean {
+  const row = db.prepare(
+    "SELECT 1 as found FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) as { found?: number } | undefined;
+  return row?.found === 1;
+}
+
+function tableHasRows(db: DatabaseSync, table: SqliteStateTable): boolean {
+  const row = db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get() as { count: number };
+  return row.count > 0;
+}
+
+function hasPersistedSqliteState(db: DatabaseSync): boolean {
+  return SQLITE_STATE_TABLES.some((table) => tableExists(db, table) && tableHasRows(db, table));
+}
 
 /** Open (or create) the bridge database and initialize schema */
 export function openDatabase(dataDir: string): DatabaseSync {
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
   const dbPath = join(dataDir, DB_FILENAME);
+  const dbExists = existsSync(dbPath);
+  const legacyStateFiles = getLegacyJsonFilesWithState(dataDir);
+  if (!dbExists && legacyStateFiles.length > 0) {
+    throw formatLegacyJsonStateError(`create an empty ${DB_FILENAME}`, legacyStateFiles);
+  }
+
   const db = new DatabaseSync(dbPath);
+  if (dbExists && legacyStateFiles.length > 0 && !hasPersistedSqliteState(db)) {
+    db.close();
+    throw formatLegacyJsonStateError(`use ${DB_FILENAME}`, legacyStateFiles);
+  }
 
   // Enable WAL mode for better concurrency and performance
   db.exec("PRAGMA journal_mode = WAL");
