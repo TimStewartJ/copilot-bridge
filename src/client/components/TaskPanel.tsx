@@ -35,6 +35,7 @@ import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import { getTaskKindUpdate } from "../task-kind";
+import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonRow, SkeletonText } from "./shared/Skeleton";
 import {
   WorkItemList,
   PullRequestList,
@@ -99,6 +100,60 @@ interface TaskPanelProps {
   archivedLoading?: boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   scrollRestoration?: PullToRefreshScrollRestoration;
+}
+
+export function TaskPanelRouteSkeleton() {
+  return (
+    <LoadingSkeletonRegion
+      isLoading
+      label="Loading task cockpit"
+      delayMs={160}
+      className="flex-1 min-h-0"
+    >
+      <div className="h-full w-full overflow-hidden bg-bg-secondary">
+        <div className="h-full overflow-x-hidden">
+          <div className="space-y-2.5 border-b border-border bg-bg-secondary p-3">
+            <div className="flex items-center justify-between gap-2">
+              <Skeleton width={56} height={10} shape="pill" />
+              <Skeleton width={76} height={20} shape="pill" />
+            </div>
+            <div className="space-y-2">
+              <Skeleton width="82%" height={18} shape="pill" />
+              <div className="flex flex-wrap gap-1.5">
+                <Skeleton width={72} height={18} shape="pill" />
+                <Skeleton width={48} height={18} shape="pill" />
+                <Skeleton width={54} height={18} shape="pill" />
+              </div>
+              <SkeletonCard className="space-y-2 p-3">
+                <Skeleton width="42%" height={10} shape="pill" />
+                <SkeletonText lines={2} widths={["100%", "68%"]} />
+              </SkeletonCard>
+              <Skeleton width="100%" height={32} shape="rounded" />
+            </div>
+          </div>
+
+          <div className="space-y-4 p-2">
+            <section className="space-y-1">
+              <Skeleton width={88} height={10} shape="pill" className="mx-3 my-2" />
+              <SkeletonRow />
+              <SkeletonRow />
+            </section>
+            <section className="space-y-1">
+              <Skeleton width={96} height={10} shape="pill" className="mx-3 my-2" />
+              <SkeletonCard className="space-y-3 p-3">
+                <SkeletonText lines={3} widths={["100%", "94%", "72%"]} />
+              </SkeletonCard>
+            </section>
+            <section className="space-y-1">
+              <Skeleton width={72} height={10} shape="pill" className="mx-3 my-2" />
+              <SkeletonRow leading="square" />
+              <SkeletonRow leading="square" />
+            </section>
+          </div>
+        </div>
+      </div>
+    </LoadingSkeletonRegion>
+  );
 }
 
 export default function TaskPanel({

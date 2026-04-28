@@ -8,6 +8,7 @@ import { fetchDocPage } from "../api";
 import type { DocPage } from "../api";
 import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 interface DocPreviewSheetProps {
   docPath: string;
@@ -69,7 +70,13 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {loading && (
-            <div className="text-center py-8 text-text-faint text-sm">Loading…</div>
+            <LoadingSkeletonRegion isLoading label="Loading document preview" className="space-y-5 py-2">
+              <div className="space-y-3">
+                <Skeleton height={22} width="56%" shape="pill" />
+                <SkeletonText lines={2} widths={["78%", "44%"]} />
+              </div>
+              <SkeletonText lines={6} widths="paragraph" />
+            </LoadingSkeletonRegion>
           )}
           {error && (
             <div className="text-center py-8 text-error text-sm">{error}</div>

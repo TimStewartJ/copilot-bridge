@@ -23,8 +23,9 @@ import CollapsibleCompleted from "./shared/CollapsibleCompleted";
 import ChecklistItemRow from "./ChecklistItemRow";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
-import { Loader2, MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Play, Pause, Bell, HelpCircle, Archive, AlertTriangle, Hourglass } from "lucide-react";
+import { MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Bell, HelpCircle, Archive, AlertTriangle, Hourglass } from "lucide-react";
 import { ScheduleRow } from "./task-sections";
+import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 
 type ChecklistSort = "deadline" | "task";
 
@@ -34,6 +35,91 @@ const SORT_LABELS: Record<ChecklistSort, string> = {
 };
 
 const SORT_STORAGE_KEY = "dashboard-checklist-sort";
+
+function DashboardSkeleton() {
+  return (
+    <LoadingSkeletonRegion
+      isLoading
+      label="Loading dashboard"
+      className="flex-1 min-h-0 overflow-y-auto"
+    >
+      <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
+        <SkeletonCard className="flex items-center gap-4">
+          <div className="flex-1 min-w-0 space-y-2">
+            <Skeleton height={10} width="28%" shape="pill" />
+            <Skeleton height={18} width="54%" shape="pill" />
+            <div className="flex gap-3">
+              <Skeleton height={10} width={80} shape="pill" />
+              <Skeleton height={10} width={96} shape="pill" />
+              <Skeleton height={10} width={64} shape="pill" />
+            </div>
+          </div>
+          <div className="hidden shrink-0 gap-2 sm:flex">
+            <Skeleton height={28} width={94} shape="rounded" />
+            <Skeleton height={28} width={82} shape="rounded" />
+          </div>
+        </SkeletonCard>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-3">
+            <div className="flex items-center justify-between">
+              <Skeleton height={12} width={132} shape="pill" />
+              <Skeleton height={12} width={88} shape="pill" />
+            </div>
+            <Skeleton height={38} className="w-full" />
+            <SkeletonCard className="divide-y divide-border p-0">
+              {Array.from({ length: 5 }, (_, index) => (
+                <div key={index} className="flex items-center gap-3 px-4 py-3">
+                  <Skeleton shape="circle" width={18} height={18} className="shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <SkeletonText
+                      lines={2}
+                      widths={index % 2 === 0 ? ["76%", "42%"] : ["62%", "34%"]}
+                    />
+                  </div>
+                  <Skeleton height={18} width={72} shape="pill" className="hidden sm:block" />
+                </div>
+              ))}
+            </SkeletonCard>
+          </div>
+
+          <div className="space-y-6">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Skeleton height={12} width={104} shape="pill" />
+                <Skeleton height={12} width={68} shape="pill" />
+              </div>
+              <div className="space-y-1.5">
+                {Array.from({ length: 3 }, (_, index) => (
+                  <SkeletonCard key={index} className="px-3 py-2.5">
+                    <SkeletonText
+                      lines={2}
+                      widths={index === 0 ? ["70%", "48%"] : ["56%", "36%"]}
+                    />
+                  </SkeletonCard>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <Skeleton height={12} width={120} shape="pill" />
+              <div className="space-y-1.5">
+                {Array.from({ length: 2 }, (_, index) => (
+                  <SkeletonCard key={index} className="px-3 py-2.5">
+                    <SkeletonText
+                      lines={2}
+                      widths={index === 0 ? ["64%", "48%"] : ["72%", "38%"]}
+                    />
+                  </SkeletonCard>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </LoadingSkeletonRegion>
+  );
+}
 
 function getSavedSort(): ChecklistSort {
   try {
@@ -255,13 +341,7 @@ export default function Dashboard({
 
   const handleRefresh = async () => { await refetch(); };
 
-  if (loading) {
-    return (
-      <div className="flex-1 min-h-0 flex items-center justify-center">
-        <Loader2 className="animate-spin text-text-muted" size={24} />
-      </div>
-    );
-  }
+  if (loading && !data) return <DashboardSkeleton />;
 
   if (!data) {
     return (

@@ -7,6 +7,7 @@ import { ClipboardList, Loader2, RefreshCw, X } from "lucide-react";
 import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
 import EmptyState from "./shared/EmptyState";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 interface PlanSheetProps {
   sessionId: string;
@@ -104,7 +105,16 @@ export default function PlanSheet({
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {loading && (
-            <div className="text-accent italic animate-pulse">Loading plan...</div>
+            <LoadingSkeletonRegion isLoading label="Loading session plan" className="space-y-5">
+              <div className="space-y-3">
+                <Skeleton height={18} width="42%" shape="pill" />
+                <SkeletonText lines={4} widths="paragraph" />
+              </div>
+              <div className="space-y-3">
+                <Skeleton height={16} width="34%" shape="pill" />
+                <SkeletonText lines={3} widths={["94%", "82%", "58%"]} />
+              </div>
+            </LoadingSkeletonRegion>
           )}
           {error && (
             <div className="text-error text-sm">Failed to load plan: {error}</div>

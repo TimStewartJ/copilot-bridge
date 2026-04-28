@@ -19,9 +19,11 @@ import {
 import { McpServersSection } from "./settings/McpServersSection";
 import {
   DEFAULT_CATEGORY,
+  SETTINGS_CATEGORIES,
   normalizeCategory,
   type CategoryId,
 } from "./settings/settings-layout";
+import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 
 function CategoryPanel({
   category,
@@ -51,6 +53,80 @@ function CategoryPanel({
     >
       {hasBeenActive ? children : null}
     </div>
+  );
+}
+
+function SettingsShellSkeleton() {
+  return (
+    <LoadingSkeletonRegion
+      isLoading
+      label="Loading settings"
+      className="flex-1 flex flex-col min-h-0"
+    >
+      <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-secondary">
+        <div className="flex items-center gap-1.5">
+          <Settings size={16} className="text-text-muted" />
+          <Skeleton height={18} width={76} shape="pill" />
+        </div>
+        <Skeleton height={30} width={64} shape="rounded" />
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6 md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:items-start">
+          <div className="min-w-0">
+            <div className="md:hidden">
+              <div className="-mx-1 overflow-x-auto pb-1">
+                <div className="inline-flex min-w-full gap-1 rounded-xl border border-border bg-bg-elevated p-1">
+                  {SETTINGS_CATEGORIES.map((category, index) => (
+                    <Skeleton
+                      key={category.id}
+                      height={36}
+                      width={`${34 - index * 4}%`}
+                      className="flex-1"
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="hidden rounded-xl border border-border bg-bg-elevated p-2 md:block">
+              <Skeleton height={10} width={74} shape="pill" className="mx-2 mb-3" />
+              <div className="space-y-1">
+                {SETTINGS_CATEGORIES.map((category, index) => (
+                  <div key={category.id} className="rounded-lg px-3 py-2.5">
+                    <SkeletonText
+                      lines={2}
+                      widths={index === 0 ? ["58%", "40%"] : ["68%", "34%"]}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="min-w-0 space-y-6">
+            {Array.from({ length: 4 }, (_, index) => (
+              <SkeletonCard key={index} className="space-y-4">
+                <div className="space-y-2">
+                  <Skeleton height={18} width={index === 0 ? "34%" : "28%"} shape="pill" />
+                  <SkeletonText lines={2} widths={["82%", "58%"]} />
+                </div>
+                <div className="rounded-md border border-border bg-bg-elevated p-4">
+                  <Skeleton height={34} className="w-full" />
+                  {index < 2 && (
+                    <SkeletonText
+                      lines={2}
+                      widths={["44%", "66%"]}
+                      className="mt-3"
+                      lineClassName="h-2.5"
+                    />
+                  )}
+                </div>
+              </SkeletonCard>
+            ))}
+          </div>
+        </div>
+      </div>
+    </LoadingSkeletonRegion>
   );
 }
 
@@ -148,13 +224,7 @@ export default function SettingsView() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  if (loading || settingsLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-text-muted">
-        Loading settings…
-      </div>
-    );
-  }
+  if ((loading || settingsLoading) && !draft) return <SettingsShellSkeleton />;
 
   if (!draft) {
     return (

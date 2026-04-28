@@ -19,6 +19,7 @@ import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import { TagPillList } from "./TagPill";
 import TaskKindBadge from "./TaskKindBadge";
 import { getFollowUpState } from "./TaskMomentumFields";
+import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -95,6 +96,83 @@ const ZERO_USAGE_TOTALS: CopilotUsageTotals = {
   reasoningTokens: 0,
   totalTokens: 0,
 };
+
+export function TaskDashboardRouteSkeleton() {
+  return (
+    <LoadingSkeletonRegion
+      isLoading
+      label="Loading task overview"
+      delayMs={160}
+      className="flex-1 min-h-0"
+    >
+      <div className="h-full min-h-0 relative">
+        <div className="absolute inset-0 overflow-y-auto">
+          <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
+            <header className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Skeleton width={14} height={14} shape="circle" />
+                <Skeleton width={116} height={10} shape="pill" />
+              </div>
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  <Skeleton width={72} height={18} shape="pill" />
+                  <Skeleton width={56} height={18} shape="pill" />
+                  <Skeleton width={90} height={18} shape="pill" />
+                </div>
+                <Skeleton width="58%" height={28} shape="pill" />
+                <SkeletonText lines={2} widths={["72%", "52%"]} className="max-w-3xl" />
+              </div>
+            </header>
+
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+              <section className="space-y-2">
+                <Skeleton width={96} height={10} shape="pill" />
+                <SkeletonCard className="space-y-4">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {Array.from({ length: 6 }, (_, index) => (
+                      <SkeletonCard key={index} className="space-y-2 p-3">
+                        <Skeleton width="62%" height={9} shape="pill" />
+                        <Skeleton width="36%" height={14} shape="pill" />
+                      </SkeletonCard>
+                    ))}
+                  </div>
+                  <SkeletonText lines={5} widths={["100%", "94%", "88%", "78%", "64%"]} />
+                </SkeletonCard>
+              </section>
+
+              <section className="space-y-2">
+                <Skeleton width={132} height={10} shape="pill" />
+                <SkeletonCard className="space-y-4">
+                  <SkeletonCard className="space-y-2 border-info/25 bg-info/10">
+                    <Skeleton width="48%" height={14} shape="pill" />
+                    <SkeletonText lines={2} widths={["92%", "68%"]} />
+                  </SkeletonCard>
+                  <SkeletonText lines={6} widths={["100%", "74%", "100%", "68%", "100%", "82%"]} />
+                </SkeletonCard>
+              </section>
+            </div>
+
+            <section className="space-y-2">
+              <Skeleton width={104} height={10} shape="pill" />
+              <SkeletonCard className="space-y-5">
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+                  {Array.from({ length: 6 }, (_, index) => (
+                    <SkeletonCard key={index} className="space-y-2 p-3">
+                      <Skeleton width="54%" height={9} shape="pill" />
+                      <Skeleton width="44%" height={14} shape="pill" />
+                      <Skeleton width="64%" height={9} shape="pill" />
+                    </SkeletonCard>
+                  ))}
+                </div>
+                <SkeletonText lines={4} widths={["100%", "94%", "82%", "70%"]} />
+              </SkeletonCard>
+            </section>
+          </div>
+        </div>
+      </div>
+    </LoadingSkeletonRegion>
+  );
+}
 
 export default function TaskDashboard({
   task,
