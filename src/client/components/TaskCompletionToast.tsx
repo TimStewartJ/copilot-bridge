@@ -24,7 +24,7 @@ export default function TaskCompletionToast({ feedback, undoing = false, onUndo,
         <div className="flex items-start gap-3 px-4 py-3">
           <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-success" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-text-primary">{feedback.taskTitle} completed and archived</div>
+            <div className="text-sm font-medium text-text-primary">{feedback.taskTitle} completed</div>
             <div className="mt-1 text-xs text-text-muted">{feedback.summary}</div>
             {feedback.doneWhenCopy && (
               <div className="mt-1 text-xs text-text-faint">{feedback.doneWhenCopy}</div>

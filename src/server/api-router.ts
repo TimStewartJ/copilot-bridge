@@ -370,6 +370,18 @@ function isScheduleSessionMode(value: unknown): value is ScheduleSessionMode {
 }
 
 function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
+  const serializeModelRow = (row: CopilotUsageSummary["models"][number]) => ({
+    model: row.model,
+    sessions: row.sessions,
+    requests: row.requests,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    reasoningTokens: row.reasoningTokens,
+    totalTokens: row.totalTokens,
+  });
+
   return {
     generatedAt: summary.generatedAt,
     totals: { ...summary.totals },
@@ -377,9 +389,10 @@ function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
       ...summary.coverage,
       skippedByReason: { ...summary.coverage.skippedByReason },
     },
-    models: summary.models.map((row) => ({
-      model: row.model,
-      sessions: row.sessions,
+    models: (summary.models ?? []).map(serializeModelRow),
+    sessions: (summary.sessions ?? []).map((row) => ({
+      sessionId: row.sessionId,
+      shutdownAt: row.shutdownAt,
       requests: row.requests,
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
@@ -387,6 +400,7 @@ function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
       cacheWriteTokens: row.cacheWriteTokens,
       reasoningTokens: row.reasoningTokens,
       totalTokens: row.totalTokens,
+      models: (row.models ?? []).map(serializeModelRow),
     })),
   };
 }
@@ -1025,10 +1039,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       invalidateEnrichedCache();
       res.json(result);
     } catch (err) {
-      if (isRestartPendingError(err)) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
       res.status(500).json({ error: String(err) });
     }
   });
@@ -1057,16 +1067,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (originalTitle) {
         ctx.sessionTitles.setTitle(result.sessionId, `Copy of ${originalTitle}`);
       }
+
       // Copy all task links from the source session
       for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
         ctx.taskStore.linkSession(linkedTask.id, result.sessionId);
       }
+
       res.json(result);
     } catch (err) {
-      if (isRestartPendingError(err)) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -1811,7 +1819,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     try {
       if (isRestartCutoverInProgress(await refreshRestartState())) {
-        res.set("Retry-After", "5");
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
       const prDescriptions = task.pullRequests.map(
@@ -1836,10 +1843,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       res.json(result);
     } catch (err) {
-      if (isRestartPendingError(err)) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
       res.status(500).json({ error: String(err) });
     }
   });

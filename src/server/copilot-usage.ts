@@ -20,6 +20,12 @@ export interface CopilotUsageModelRow extends CopilotUsageTotals {
   sessions: number;
 }
 
+export interface CopilotUsageSessionRow extends CopilotUsageTotals {
+  sessionId: string;
+  shutdownAt: string | null;
+  models: CopilotUsageModelRow[];
+}
+
 export interface CopilotUsageCoverage {
   sessionsSeen: number;
   sessionsWithEvents: number;
@@ -37,6 +43,7 @@ export interface CopilotUsageSummary {
   totals: CopilotUsageTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
+  sessions: CopilotUsageSessionRow[];
 }
 
 export interface ReadCopilotUsageSummaryOptions {
@@ -59,10 +66,17 @@ interface SessionScanResult {
   hasEvents: boolean;
   included: boolean;
   reason?: CopilotUsageSkipReason;
-  includedShutdownAts: string[];
+  includedUsageAts: string[];
   skippedAt: string | null;
   modelRows: CopilotUsageModelRow[];
   totals: CopilotUsageTotals;
+  sessionRow?: CopilotUsageSessionRow;
+}
+
+interface AssistantUsageAccumulator {
+  model: string;
+  outputTokens: number;
+  timestamp: string | null;
 }
 
 const DEFAULT_SCAN_CONCURRENCY = 8;
@@ -112,10 +126,13 @@ export async function readCopilotUsageSummary({
 
       if (result.included) {
         summary.coverage.sessionsIncluded += 1;
-        for (const shutdownAt of result.includedShutdownAts) {
-          updateCoverageWindow(summary.coverage, "included", shutdownAt);
+        for (const usageAt of result.includedUsageAts) {
+          updateCoverageWindow(summary.coverage, "included", usageAt);
         }
         addTotals(summary.totals, result.totals);
+        if (result.sessionRow) {
+          summary.sessions.push(result.sessionRow);
+        }
 
         for (const row of result.modelRows) {
           const existing = modelTotals.get(row.model) ?? { ...createZeroTotals(), model: row.model, sessions: 0 };
@@ -138,6 +155,11 @@ export async function readCopilotUsageSummary({
       || right.requests - left.requests
       || right.sessions - left.sessions
       || left.model.localeCompare(right.model)
+    ));
+    summary.sessions.sort((left, right) => (
+      compareNullableTimestampsDesc(left.shutdownAt, right.shutdownAt)
+      || right.totalTokens - left.totalTokens
+      || left.sessionId.localeCompare(right.sessionId)
     ));
 
     return summary;
@@ -214,7 +236,10 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
 
   let sawShutdown = false;
   let latestShutdownAt: string | null = null;
+  let selectedModel = "unknown";
   const usableShutdowns: Array<{ shutdownAt: string | null; modelMetrics: Record<string, unknown> }> = [];
+  const assistantUsageByRequest = new Map<string, AssistantUsageAccumulator>();
+  let fallbackEventIndex = 0;
   const stream = createReadStream(eventsPath, { encoding: "utf-8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -230,18 +255,42 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
       }
 
       const eventRecord = asRecord(event);
-      const shutdownAt = normalizeTimestamp(eventRecord?.timestamp);
+      const eventAt = normalizeTimestamp(eventRecord?.timestamp);
+      const data = asRecord(eventRecord?.data);
+      if (eventRecord?.type === "session.start") {
+        selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
+        continue;
+      }
+
+      if (eventRecord?.type === "assistant.message") {
+        const outputTokens = toNumber(data?.outputTokens);
+        if (outputTokens > 0) {
+          const requestId = typeof data?.requestId === "string" && data.requestId.trim()
+            ? data.requestId.trim()
+            : `event:${fallbackEventIndex++}`;
+          const key = `${selectedModel}\u0000${requestId}`;
+          const existing = assistantUsageByRequest.get(key);
+          if (!existing || outputTokens > existing.outputTokens) {
+            assistantUsageByRequest.set(key, {
+              model: selectedModel,
+              outputTokens,
+              timestamp: eventAt,
+            });
+          }
+        }
+        continue;
+      }
+
       if (eventRecord?.type !== "session.shutdown") {
         continue;
       }
 
       sawShutdown = true;
-      latestShutdownAt = shutdownAt ?? latestShutdownAt;
+      latestShutdownAt = eventAt ?? latestShutdownAt;
 
-      const data = asRecord(eventRecord.data);
       const modelMetrics = asRecord(data?.modelMetrics);
       if (modelMetrics && Object.keys(modelMetrics).length > 0) {
-        usableShutdowns.push({ shutdownAt, modelMetrics });
+        usableShutdowns.push({ shutdownAt: eventAt, modelMetrics });
       }
     }
   } catch {
@@ -249,6 +298,10 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
   } finally {
     lines.close();
     stream.destroy();
+  }
+
+  if (usableShutdowns.length === 0 && assistantUsageByRequest.size > 0) {
+    return createIncludedResult(sessionId, buildAssistantUsageRows(assistantUsageByRequest));
   }
 
   if (!sawShutdown) {
@@ -276,7 +329,42 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
     }
   }
 
-  const modelRows = [...modelTotals.values()];
+  return createIncludedResult(sessionId, {
+    modelRows: [...modelTotals.values()],
+    includedUsageAts: includedShutdownAts,
+  });
+}
+
+function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccumulator>) {
+  const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const includedUsageAts: string[] = [];
+
+  for (const usage of usageByRequest.values()) {
+    const existing = modelTotals.get(usage.model) ?? { ...createZeroTotals(), model: usage.model, sessions: 1 };
+    existing.requests += 1;
+    existing.outputTokens += usage.outputTokens;
+    existing.totalTokens += usage.outputTokens;
+    modelTotals.set(usage.model, existing);
+    if (usage.timestamp) {
+      includedUsageAts.push(usage.timestamp);
+    }
+  }
+
+  return {
+    modelRows: [...modelTotals.values()],
+    includedUsageAts,
+  };
+}
+
+function createIncludedResult(
+  sessionId: string,
+  usage: { modelRows: CopilotUsageModelRow[]; includedUsageAts: string[] },
+): SessionScanResult {
+  const modelRows = usage.modelRows.sort((left, right) => (
+    right.totalTokens - left.totalTokens
+    || right.requests - left.requests
+    || left.model.localeCompare(right.model)
+  ));
   const totals = createZeroTotals();
   for (const row of modelRows) {
     addTotals(totals, row);
@@ -285,10 +373,16 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
   return {
     hasEvents: true,
     included: true,
-    includedShutdownAts,
+    includedUsageAts: usage.includedUsageAts,
     skippedAt: null,
     modelRows,
     totals,
+    sessionRow: {
+      sessionId,
+      shutdownAt: maxTimestampFromList(usage.includedUsageAts),
+      models: modelRows,
+      ...totals,
+    },
   };
 }
 
@@ -313,6 +407,7 @@ function createEmptySummary(now: () => number): CopilotUsageSummary {
       latestSkippedAt: null,
     },
     models: [],
+    sessions: [],
   };
 }
 
@@ -337,7 +432,7 @@ function createSkippedResult(
     hasEvents,
     included: false,
     reason,
-    includedShutdownAts: [],
+    includedUsageAts: [],
     skippedAt: shutdownAt,
     modelRows: [],
     totals: createZeroTotals(),
@@ -399,6 +494,17 @@ function maxTimestamp(current: string | null, candidate: string): string {
   return !current || candidate > current ? candidate : current;
 }
 
+function maxTimestampFromList(values: string[]): string | null {
+  return values.reduce<string | null>((latest, value) => maxTimestamp(latest, value), null);
+}
+
+function compareNullableTimestampsDesc(left: string | null, right: string | null): number {
+  if (left && right) return right.localeCompare(left);
+  if (left) return -1;
+  if (right) return 1;
+  return 0;
+}
+
 function toNumber(value: unknown): number {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : 0;
@@ -408,6 +514,12 @@ function toNumber(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function normalizeModelName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized || null;
 }
 
 function normalizeTimestamp(value: unknown): string | null {

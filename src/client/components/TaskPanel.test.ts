@@ -8,6 +8,7 @@ import { installDomShim } from "../test-dom-shim";
 const useTaskWorkspaceMock = vi.hoisted(() => vi.fn());
 const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
 const sessionListMock = vi.hoisted(() => vi.fn(() => null));
+const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 
 vi.mock("../hooks/queries/useTags", () => ({
   useTagsQuery: () => ({ data: [] }),
@@ -26,7 +27,7 @@ vi.mock("./SessionList", () => ({
 }));
 
 vi.mock("./PullToRefresh", () => ({
-  default: ({ children }: { children: unknown }) => children,
+  default: (props: { children: unknown }) => pullToRefreshMock(props),
 }));
 
 vi.mock("./ScheduleDetailSheet", () => ({
@@ -363,8 +364,50 @@ describe("TaskPanel", () => {
     }
   });
 
+  it("passes scroll restoration to the scroll container", async () => {
+    pullToRefreshMock.mockClear();
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace());
+    useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
+    const scrollRestoration = {
+      key: "mobile:task-cockpit:task-1",
+      restore: true,
+    };
+
+    const { default: TaskPanel } = await import("./TaskPanel");
+    const html = renderToStaticMarkup(createElement(
+      MemoryRouter,
+      null,
+      createElement(TaskPanel, {
+        task: createTask(),
+        taskGroups: [],
+        sessions: [],
+        activeSessionId: null,
+        onSelectSession: () => {},
+        onNewSession: () => {},
+        onUpdateTask: async () => null,
+        scrollRestoration,
+      }),
+    ));
+
+    const scrollContainerCall = pullToRefreshMock.mock.calls.find(([props]) => {
+      const className = (props as { className?: string }).className;
+      return className?.includes("h-full overflow-x-hidden");
+    });
+    if (!scrollContainerCall) throw new Error("TaskPanel PullToRefresh was not rendered");
+    expect((scrollContainerCall[0] as { scrollRestoration?: typeof scrollRestoration }).scrollRestoration).toBe(scrollRestoration);
+    expect(html).toContain("md:sticky");
+  });
+
+  it("omits lifecycle status labels from the header", async () => {
+    await expect(renderTaskPanelHtml(createTask())).resolves.not.toContain(">Active</span>");
+    await expect(renderTaskPanelHtml(createTask({
+      status: "archived",
+      completedAt: "2026-04-27T20:00:00.000Z",
+    }))).resolves.not.toContain(">Completed</span>");
+  });
+
   it("shows the TaskPanel completion button only when completion or reopen is actionable", async () => {
-    await expect(renderTaskPanelHtml(createTask())).resolves.toContain("Complete &amp; archive");
+    await expect(renderTaskPanelHtml(createTask())).resolves.toContain("Complete task");
     await expect(renderTaskPanelHtml(createTask({
       status: "archived",
       completedAt: "2026-04-27T20:00:00.000Z",
@@ -372,8 +415,8 @@ describe("TaskPanel", () => {
 
     await expect(renderTaskPanelHtml(createTask(), {
       checklistItems: [{ id: "item-1", taskId: "task-1", text: "Open item", done: false }],
-    })).resolves.not.toContain("Complete &amp; archive");
-    await expect(renderTaskPanelHtml(createTask({ kind: "ongoing" }))).resolves.not.toContain("Complete &amp; archive");
+    })).resolves.not.toContain("Complete task");
+    await expect(renderTaskPanelHtml(createTask({ kind: "ongoing" }))).resolves.not.toContain("Complete task");
     await expect(renderTaskPanelHtml(createTask({ status: "archived" }))).resolves.not.toContain("Archived</button>");
   });
 
@@ -383,7 +426,7 @@ describe("TaskPanel", () => {
       doneWhen: "QA signs off",
     }));
 
-    expect(html).not.toContain("Complete &amp; archive");
+    expect(html).not.toContain("Complete task");
     expect(html).not.toContain("Reopen task");
     expect(html).not.toContain("Archived tasks cannot be completed");
     expect(html).not.toContain("Done when");

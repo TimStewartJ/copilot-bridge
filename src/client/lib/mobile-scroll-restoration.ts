@@ -6,6 +6,7 @@ export type MobileScrollRestorationKey =
   | "mobile:dashboard"
   | "mobile:tasks:list"
   | "mobile:chats:list"
+  | `mobile:task-cockpit:${string}`
   | `mobile:task-dashboard:${string}`;
 
 export type MobileScrollNavigationType = "POP" | "PUSH" | "REPLACE";
@@ -72,7 +73,7 @@ export function getMobileScrollRestorationPolicy(
     return { key: ROOT_ROUTE_KEYS[routeMeta.route], restore: true };
   }
 
-  if (routeMeta.route !== "task-dashboard" || !routeMeta.taskId) {
+  if ((routeMeta.route !== "task-dashboard" && routeMeta.route !== "task-cockpit") || !routeMeta.taskId) {
     return null;
   }
 
@@ -80,7 +81,9 @@ export function getMobileScrollRestorationPolicy(
     && (isPopNavigation(options) || hasBridgeMobileScrollRestoreState(options.locationState));
 
   return {
-    key: `mobile:task-dashboard:${routeMeta.taskId}`,
+    key: routeMeta.route === "task-cockpit"
+      ? `mobile:task-cockpit:${routeMeta.taskId}`
+      : `mobile:task-dashboard:${routeMeta.taskId}`,
     restore,
   };
 }

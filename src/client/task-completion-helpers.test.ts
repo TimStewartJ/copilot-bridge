@@ -60,7 +60,7 @@ describe("getTaskCompletionState", () => {
     expect(state.isReadyToComplete).toBe(true);
     expect(state.isStrongCloseCandidate).toBe(true);
     expect(state.ctaState).toBe("ready");
-    expect(state.ctaLabel).toBe("Complete & archive");
+    expect(state.ctaLabel).toBe("Complete task");
     expect(state.ctaCompletionAction).toBe("complete-and-archive");
     expect(state.ctaDescription).toBe("Merged and deployed");
     expect(state.blockers).toEqual([]);
@@ -84,7 +84,7 @@ describe("getTaskCompletionState", () => {
     expect(state.isReadyToComplete).toBe(true);
     expect(state.isStrongCloseCandidate).toBe(false);
     expect(state.ctaState).toBe("ready");
-    expect(state.ctaLabel).toBe("Complete & archive");
+    expect(state.ctaLabel).toBe("Complete task");
     expect(state.ctaCompletionAction).toBe("complete-and-archive");
     expect(state.ctaDescription).toBe("No open checklist items, busy sessions, or unresolved PRs");
   });
@@ -107,7 +107,7 @@ describe("getTaskCompletionState", () => {
     expect(state.isReadyToComplete).toBe(false);
     expect(state.isStrongCloseCandidate).toBe(false);
     expect(state.ctaState).toBe("default");
-    expect(state.ctaLabel).toBe("Complete & archive");
+    expect(state.ctaLabel).toBe("Complete task");
     expect(state.ctaNextStatus).toBeNull();
     expect(state.ctaCompletionAction).toBeNull();
     expect(state.blockers).toEqual([

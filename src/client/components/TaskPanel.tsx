@@ -5,7 +5,7 @@ import { patchTask } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
-import { getTaskCompletionCounts, getTaskCompletionState, getTaskLifecycleBadgeClass, getTaskStatusLabel } from "../task-completion-helpers";
+import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
 import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
 import {
   resolveTaskPanelChecklistHighlight,
@@ -15,7 +15,7 @@ import {
   getTaskPanelChecklistPreview,
 } from "../task-panel-preview";
 import TaskSessionList from "./TaskSessionList";
-import PullToRefresh from "./PullToRefresh";
+import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
 import { TagPillList } from "./TagPill";
@@ -98,6 +98,7 @@ interface TaskPanelProps {
   archivedLoaded?: boolean;
   archivedLoading?: boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
+  scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
 export default function TaskPanel({
@@ -131,6 +132,7 @@ export default function TaskPanel({
   archivedLoaded,
   archivedLoading,
   onSetTaskTags,
+  scrollRestoration,
 }: TaskPanelProps) {
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
   const {
@@ -374,23 +376,26 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col overflow-hidden border-r border-border bg-bg-secondary md:w-64">
-      <div className="space-y-2.5 border-b border-border p-3">
+    <div className="h-full w-full min-w-0 overflow-hidden bg-bg-secondary">
+      <PullToRefresh
+        onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }}
+        className="h-full overflow-x-hidden"
+        scrollRestoration={scrollRestoration}
+      >
+        <div className="space-y-2.5 border-b border-border bg-bg-secondary p-3 md:sticky md:top-0 md:z-20">
         <div className="flex items-center justify-between gap-2">
           {onViewDashboard ? (
             <button
               onClick={() => openTaskOverview()}
               className="inline-flex items-center gap-1.5 text-[10px] text-text-muted transition-colors hover:text-accent"
+              title="Open task overview"
             >
               <LayoutDashboard size={10} />
-              <span>Task Overview</span>
+              <span>Overview</span>
             </button>
           ) : <span />}
           <div className="flex shrink-0 items-center gap-1.5">
             <TaskKindSwitcher kind={currentTask.kind} onChange={handleKindChange} />
-            <span className={getTaskLifecycleBadgeClass(currentTask)}>
-              {getTaskStatusLabel(currentTask)}
-            </span>
           </div>
         </div>
 
@@ -499,11 +504,7 @@ export default function TaskPanel({
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1">
-        <PullToRefresh
-          onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }}
-          className="absolute inset-0 overflow-x-hidden p-2 space-y-3"
-        >
+        <div className="space-y-3 p-2">
           <div>
             <SectionLabel label="Sessions" count={task.sessionIds.length} />
             <TaskSessionList
@@ -684,8 +685,8 @@ export default function TaskPanel({
               onTaskUpdated={onTasksChanged}
             />
           )}
-        </PullToRefresh>
-      </div>
+        </div>
+      </PullToRefresh>
     </div>
   );
 }
@@ -697,4 +698,3 @@ const ALERT_TONE_CLASS: Record<TaskAlertTone, string> = {
   warning: "bg-warning/15 text-warning",
   danger: "bg-error/15 text-error",
 };
-

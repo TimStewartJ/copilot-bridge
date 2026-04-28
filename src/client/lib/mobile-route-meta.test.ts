@@ -102,9 +102,9 @@ describe("getMobileRouteMeta", () => {
     });
   });
 
-  it("classifies task dashboard routes as detail routes that go Up to the task list", () => {
+  it("classifies task cockpit routes as detail routes that go Up to the task list", () => {
     expect(getMobileRouteMeta("/tasks/task-123")).toMatchObject({
-      route: "task-dashboard",
+      route: "task-cockpit",
       activeTab: "tasks",
       taskId: "task-123",
       showBottomNav: true,
@@ -112,6 +112,19 @@ describe("getMobileRouteMeta", () => {
       isRoot: false,
       isDetail: true,
       upTarget: { to: "/", label: "Tasks" },
+    });
+  });
+
+  it("classifies task overview routes as detail routes that go Up to the task cockpit", () => {
+    expect(getMobileRouteMeta("/tasks/task-123/overview")).toMatchObject({
+      route: "task-dashboard",
+      activeTab: "tasks",
+      taskId: "task-123",
+      showBottomNav: true,
+      showSharedHeader: true,
+      isRoot: false,
+      isDetail: true,
+      upTarget: { to: "/tasks/task-123", label: "Task" },
     });
   });
 

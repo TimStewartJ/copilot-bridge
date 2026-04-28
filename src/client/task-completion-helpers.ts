@@ -157,7 +157,7 @@ export function getTaskCompletionAction(task: Pick<Task, "status" | "completedAt
   }
 
   return {
-    ctaLabel: "Complete & archive",
+    ctaLabel: "Complete task",
     ctaNextStatus: null,
     ctaCompletionAction: "complete-and-archive",
   };
