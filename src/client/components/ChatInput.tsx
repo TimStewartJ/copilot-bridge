@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Square, Paperclip, FileText, X, Loader2, Mic } from "lucide-react";
+import { Square, Paperclip, FileText, X, Loader2, Mic, SendHorizontal } from "lucide-react";
 import type { BlobAttachment, Attachment } from "../api";
 import { uploadFile } from "../api";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
@@ -490,15 +490,15 @@ export default function ChatInput({
         </div>
       )}
 
-      <div className="flex gap-2 md:gap-3">
+      <div className="flex items-center gap-2 md:gap-3">
         <div
-          className="flex-1 flex items-end gap-1 bg-bg-primary border border-border rounded-md focus-within:border-accent"
+          className="flex-1 flex items-center gap-1 bg-bg-primary border border-border rounded-md focus-within:border-accent"
           onDrop={handleDrop}
           onDragOver={handleDragOver}
         >
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="p-3 text-text-faint hover:text-text-secondary transition-colors flex-shrink-0"
+            className="h-12 px-3 text-text-faint hover:text-text-secondary transition-colors flex flex-shrink-0 items-center justify-center"
             title="Attach file"
             type="button"
           >
@@ -528,7 +528,7 @@ export default function ChatInput({
                 }
               }}
               disabled={voiceUi.buttonDisabled}
-              className={`p-3 transition-colors flex-shrink-0 ${
+              className={`h-12 px-3 transition-colors flex flex-shrink-0 items-center justify-center ${
                 voice.phase === "recording"
                   ? "text-error hover:text-error-hover"
                   : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
@@ -563,13 +563,13 @@ export default function ChatInput({
             onPaste={handlePaste}
             placeholder="Type a message, use the mic, or attach a file..."
             rows={1}
-            className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
+            className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
           />
         </div>
         {onAbort ? (
           <button
             onClick={onAbort}
-            className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-end transition-colors flex items-center justify-center"
+            className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-center transition-colors flex items-center justify-center"
             title="Stop generating"
             type="button"
           >
@@ -579,11 +579,12 @@ export default function ChatInput({
           <button
             onClick={handleSend}
             disabled={!canSend}
-            className="px-4 md:px-6 py-3 bg-accent hover:bg-accent-hover disabled:bg-bg-elevated disabled:text-text-faint disabled:cursor-not-allowed text-white rounded-md text-sm font-medium self-end transition-colors"
-            title={disabled ? disabledHint : undefined}
+            className="h-10 w-10 rounded-md text-text-secondary hover:bg-bg-elevated hover:text-text-primary disabled:text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint self-center transition-colors flex items-center justify-center"
+            title={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
+            aria-label={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
             type="button"
           >
-            {disabled ? (disabledHint ?? "Warming up…") : "Send"}
+            <SendHorizontal size={18} />
           </button>
         )}
       </div>
