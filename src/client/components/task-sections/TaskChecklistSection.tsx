@@ -89,7 +89,7 @@ export default function TaskChecklistSection({
     }`}>
       <div className="flex items-start gap-2">
         <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
-        <span>Ready to complete — the checklist is finished. Use Complete &amp; archive when you&apos;re ready.</span>
+        <span>Ready to complete — the checklist is finished. Use Complete task when you&apos;re ready.</span>
       </div>
     </div>
   );

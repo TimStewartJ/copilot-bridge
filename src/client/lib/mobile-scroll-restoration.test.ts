@@ -26,31 +26,41 @@ describe("getMobileScrollRestorationPolicy", () => {
     expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/sessions/session-123"))).toBeNull();
   });
 
-  it("keys task dashboards by task id", () => {
+  it("keys task cockpits by task id", () => {
     expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123"))).toEqual({
+      key: "mobile:task-cockpit:task-123",
+      restore: false,
+    });
+  });
+
+  it("keys task dashboards by task id", () => {
+    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123/overview"))).toEqual({
       key: "mobile:task-dashboard:task-123",
       restore: false,
     });
   });
 
-  it("restores task dashboards on browser POP navigation", () => {
-    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123"), {
+  it.each([
+    ["/tasks/task-123", "mobile:task-cockpit:task-123"],
+    ["/tasks/task-123/overview", "mobile:task-dashboard:task-123"],
+  ])("restores %s on browser POP navigation", (pathname, key) => {
+    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta(pathname), {
       navigationType: "POP",
-    })).toMatchObject({ restore: true });
+    })).toMatchObject({ key, restore: true });
 
-    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123"), {
+    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta(pathname), {
       isPopNavigation: true,
-    })).toMatchObject({ restore: true });
+    })).toMatchObject({ key, restore: true });
   });
 
   it("restores task dashboards for explicit Bridge mobile up navigation state", () => {
-    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123"), {
+    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123/overview"), {
       locationState: createBridgeMobileScrollRestoreState({ from: "detail" }),
-    })).toMatchObject({ restore: true });
+    })).toMatchObject({ key: "mobile:task-dashboard:task-123", restore: true });
   });
 
   it("does not restore task dashboard visits that request focus", () => {
-    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123"), {
+    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123/overview"), {
       isPopNavigation: true,
       locationState: { [BRIDGE_MOBILE_SCROLL_RESTORE_STATE]: true },
       suppressTaskDashboardRestore: true,
@@ -63,7 +73,7 @@ describe("getMobileScrollRestorationPolicy", () => {
   it.each(["?section=sessions", "?checklistItem=item-1"])(
     "lets task dashboard focus params beat restoration for %s",
     (search) => {
-      expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123"), {
+      expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123/overview"), {
         isPopNavigation: true,
         locationState: createBridgeMobileScrollRestoreState({ from: "detail" }),
         suppressTaskDashboardRestore: hasTaskDashboardFocusParams(search),

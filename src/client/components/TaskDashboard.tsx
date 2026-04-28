@@ -1,54 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { Task, TaskGroup, Session } from "../api";
-import { patchTask, getSessionActivityTime } from "../api";
+import type { BatchAction, CopilotUsageModelRow, CopilotUsageSessionRow, CopilotUsageTotals, Session, Task, TaskGroup, TaskPatch } from "../api";
+import { getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
+import { useCopilotUsageQuery } from "../hooks/queries/useCopilotUsage";
 import { hasTaskDashboardFocusParams } from "../lib/mobile-scroll-restoration";
-import { resolveTaskDashboardFocus, type TaskFocusRequest } from "../task-detail-focus";
-import { getTaskCompletionCounts, getTaskCompletionState, getTaskLifecycleBadgeClass, getTaskStatusLabel } from "../task-completion-helpers";
-import EmptyState from "./shared/EmptyState";
+import {
+  getTaskCompletionCounts,
+  getTaskCompletionState,
+  getTaskLifecycleBadgeClass,
+  getTaskLifecycleDisplayState,
+  getTaskStatusLabel,
+} from "../task-completion-helpers";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
-import TaskSessionList from "./TaskSessionList";
-import NotesSheet from "./NotesSheet";
-import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import TaskGitStatusSummary from "./TaskGitStatusSummary";
-import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { TagPillList } from "./TagPill";
-import TagPicker from "./TagPicker";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
-import TaskMomentumFields, { getFollowUpState } from "./TaskMomentumFields";
-import TaskKindSwitcher from "./TaskKindSwitcher";
+import TaskKindBadge from "./TaskKindBadge";
+import { getFollowUpState } from "./TaskMomentumFields";
 import {
-  MessageSquare,
-  Plus,
-  GitPullRequest,
-  ClipboardList,
-  Clock,
-  FolderOpen,
-  Pencil,
-  StickyNote,
-  CheckSquare,
-  LayoutDashboard,
-  BookOpen,
-  FileText,
+  AlertTriangle,
   CheckCircle2,
-  RotateCcw,
+  CircleDot,
+  ClipboardCheck,
+  FileText,
+  FolderOpen,
+  Info,
+  MessageSquare,
+  Milestone,
+  StickyNote,
+  Tags,
+  TimerReset,
 } from "lucide-react";
-import {
-  WorkItemList,
-  PullRequestList,
-  TaskChecklistSection,
-  TaskNotesSection,
-  RelatedDocsSection,
-  ScheduleSection,
-} from "./task-sections";
-import { getTaskKindUpdate, isOngoingTask } from "../task-kind";
-
-// ── Props ────────────────────────────────────────────────────────
 
 interface TaskDashboardProps {
   task: Task;
@@ -56,175 +40,100 @@ interface TaskDashboardProps {
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
-  onUpdateTask: (taskId: string, updates: Parameters<typeof patchTask>[1]) => Promise<Task | null>;
+  onUpdateTask: (taskId: string, updates: TaskPatch) => Promise<Task | null>;
   onUpdateGroup?: (groupId: string, updates: Partial<Pick<TaskGroup, "name" | "color" | "collapsed" | "notes">>) => void;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   onRefresh?: () => Promise<void>;
-  // Session actions (for context menu)
   onDeleteSession?: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
-  onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
+  onBulkAction?: (action: BatchAction, sessionIds: string[]) => void;
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   hasDraft?: (sessionId: string) => boolean;
-  // Lazy-load archived sessions
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
   archivedLoading?: boolean;
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
-// ── Component ────────────────────────────────────────────────────
+type FocusSection = "readiness" | "session-usage";
+type SignalTone = "success" | "warning" | "danger" | "info" | "muted";
+
+interface ReadinessSignal {
+  label: string;
+  detail: string;
+  tone: SignalTone;
+}
+
+interface ReadinessInsight {
+  title: string;
+  description: string;
+  tone: SignalTone;
+  signals: ReadinessSignal[];
+}
+
+const SIGNAL_TONE_CLASS: Record<SignalTone, string> = {
+  success: "border-success/30 bg-success/10 text-success",
+  warning: "border-warning/30 bg-warning/10 text-warning",
+  danger: "border-error/30 bg-error/10 text-error",
+  info: "border-info/30 bg-info/10 text-info",
+  muted: "border-border bg-bg-surface text-text-muted",
+};
+
+const ZERO_USAGE_TOTALS: CopilotUsageTotals = {
+  requests: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  reasoningTokens: 0,
+  totalTokens: 0,
+};
 
 export default function TaskDashboard({
   task,
   taskGroups = [],
   sessions,
   onSelectSession,
-  onNewSession,
-  onUpdateTask,
-  onUpdateGroup,
-  onTasksChanged,
-  isUnread,
-  onSetTaskTags,
   onRefresh,
-  onDeleteSession,
-  onDuplicateSession,
-  onReloadSession,
-  onArchiveSession,
-  archivingIds,
-  exitingIds,
-  onBulkAction,
-  onUnlinkFromTask,
-  onMarkUnread,
-  hasDraft,
-  onRequestArchived,
-  archivedLoaded,
-  archivedLoading,
   scrollRestoration,
 }: TaskDashboardProps) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const scrollRestorationSuppressionRef = useRef<{ taskId: string; suppress: boolean } | null>(null);
-  let scrollRestorationSuppression = scrollRestorationSuppressionRef.current;
-  if (scrollRestorationSuppression?.taskId !== task.id) {
-    scrollRestorationSuppression = {
-      taskId: task.id,
-      suppress: hasTaskDashboardFocusParams(searchParams),
-    };
-    scrollRestorationSuppressionRef.current = scrollRestorationSuppression;
-  }
+  const [highlightedSection, setHighlightedSection] = useState<FocusSection | null>(null);
+  const [pendingFocusSection, setPendingFocusSection] = useState<FocusSection | null>(null);
+  const readinessRef = useRef<HTMLDivElement>(null);
+  const sessionUsageRef = useRef<HTMLDivElement>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const suppressScrollRestore = hasTaskDashboardFocusParams(searchParams);
   const scrollRestorationForVisit = scrollRestoration
     ? {
         ...scrollRestoration,
-        restore: scrollRestoration.restore !== false && !scrollRestorationSuppression.suppress,
+        restore: scrollRestoration.restore !== false && !suppressScrollRestore,
       }
     : undefined;
 
-  // ── Consolidated workspace hook ─────────────────────────────
   const ws = useTaskWorkspace(task, taskGroups, sessions);
   const {
-    enrichedWIs, enrichedPRs,
-    sched, schedDetail,
-    notes,
+    enrichedWIs,
+    enrichedPRs,
+    sched,
     taskGitStatus,
-    checklistItems, checklistItemsReady, checklistLoaded, createChecklistItemMutation, onChecklistItemUpdate, onChecklistItemDelete,
-    newChecklistItemText, setNewChecklistItemText,
+    checklistItems,
+    checklistLoaded,
     linkedSessions,
-    taskOwnTags, taskGroup: group, inheritedTagIds, effectiveTags,
+    taskGroup: group,
+    inheritedTagIds,
+    effectiveTags,
     relatedDocs,
     refresh,
   } = ws;
-  const [groupNotesOpen, setGroupNotesOpen] = useState(false);
-  const [groupNotesStartEdit, setGroupNotesStartEdit] = useState(false);
-  const [momentumTask, setMomentumTask] = useState(task);
-  const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
-  const [highlightedSection, setHighlightedSection] = useState<"sessions" | "checklist" | null>(null);
-  const [highlightedChecklistItemId, setHighlightedChecklistItemId] = useState<string | null>(null);
-  const [focusRequest, setFocusRequest] = useState<TaskFocusRequest | null>(null);
-  const highlightTimerRef = useRef<number | null>(null);
-  const sessionsSectionRef = useRef<HTMLDivElement>(null);
-  const checklistSectionRef = useRef<HTMLDivElement>(null);
-  const latestTaskIdRef = useRef(task.id);
-  const [isUpdatingCompletion, setIsUpdatingCompletion] = useState(false);
-  const focusedSection = searchParams.get("section");
-  const focusedChecklistItemId = searchParams.get("checklistItem");
-
-  useEffect(() => {
-    latestTaskIdRef.current = task.id;
-    setMomentumTask(task);
-    setIsUpdatingCompletion(false);
-  }, [task]);
-
-  useEffect(() => {
-    setWorkspaceSheetOpen(false);
-    if (highlightTimerRef.current !== null) {
-      window.clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = null;
-    }
-    setHighlightedSection(null);
-    setHighlightedChecklistItemId(null);
-    setFocusRequest(null);
-  }, [task.id]);
-
-  useEffect(() => {
-    const resolvedFocus = resolveTaskDashboardFocus({
-      focusedSection,
-      focusedChecklistItemId,
-      checklistItems,
-      checklistItemsReady,
-    });
-
-    if (!resolvedFocus.request || !resolvedFocus.consumeParams) return;
-
-    setFocusRequest(resolvedFocus.request);
-
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete("section");
-      next.delete("checklistItem");
-      return next;
-    }, { replace: true });
-  }, [checklistItems, checklistItemsReady, focusedChecklistItemId, focusedSection, setSearchParams]);
-
-  useEffect(() => {
-    if (!focusRequest) return;
-
-    if (highlightTimerRef.current !== null) {
-      window.clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = null;
-    }
-
-    setHighlightedSection(null);
-    setHighlightedChecklistItemId(null);
-
-    const frameId = requestAnimationFrame(() => {
-      const target = focusRequest.section === "sessions"
-        ? sessionsSectionRef.current
-        : checklistSectionRef.current;
-
-      setHighlightedSection(focusRequest.section);
-      setHighlightedChecklistItemId(focusRequest.checklistItemId ?? null);
-      target?.scrollIntoView({ behavior: "smooth", block: "start" });
-
-      highlightTimerRef.current = window.setTimeout(() => {
-        setHighlightedSection((current) => (
-          current === focusRequest.section ? null : current
-        ));
-        setHighlightedChecklistItemId((current) => (
-          current === (focusRequest.checklistItemId ?? null) ? null : current
-        ));
-        highlightTimerRef.current = null;
-      }, 1600);
-    });
-
-    return () => cancelAnimationFrame(frameId);
-  }, [focusRequest]);
+  const { data: copilotUsage, refresh: refreshCopilotUsage } = useCopilotUsageQuery();
 
   useEffect(() => {
     return () => {
@@ -234,26 +143,42 @@ export default function TaskDashboard({
     };
   }, []);
 
-  const handleRefresh = async () => {
-    await Promise.all([refresh(), onRefresh?.()]);
-  };
+  useEffect(() => {
+    if (!hasTaskDashboardFocusParams(searchParams)) return;
 
-  const handleKindChange = (nextKind: Task["kind"]) => {
-    const updates = getTaskKindUpdate(momentumTask, nextKind);
-    if (!updates) return;
-    void onUpdateTask(task.id, updates);
-  };
+    const targetSection: FocusSection = searchParams.get("section") === "sessions"
+      ? "session-usage"
+      : "readiness";
+    setPendingFocusSection(targetSection);
 
-  const lastActivity = useMemo(() => {
-    let latest = momentumTask.updatedAt;
-    for (const s of linkedSessions) {
-      const t = getSessionActivityTime(s);
-      if (t && t > latest) latest = t;
-    }
-    return latest;
-  }, [momentumTask.updatedAt, linkedSessions]);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("section");
+      next.delete("checklistItem");
+      return next;
+    }, { replace: true });
+  }, [searchParams, setSearchParams]);
 
-  const completedChecklistItems = checklistItems.filter((t) => t.done);
+  useEffect(() => {
+    if (!pendingFocusSection) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const target = pendingFocusSection === "session-usage" ? sessionUsageRef.current : readinessRef.current;
+      setHighlightedSection(pendingFocusSection);
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightedSection(null);
+        highlightTimerRef.current = null;
+      }, 1600);
+      setPendingFocusSection(null);
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [pendingFocusSection]);
+
   const completionCounts = useMemo(() => getTaskCompletionCounts({
     checklistItems,
     linkedSessions,
@@ -261,498 +186,755 @@ export default function TaskDashboard({
       ? enrichedPRs
       : task.pullRequests.map(() => ({ status: null })),
   }), [checklistItems, linkedSessions, enrichedPRs, task.pullRequests]);
+
   const completionState = useMemo(
-    () => getTaskCompletionState(momentumTask, completionCounts, { checklistLoaded }),
-    [momentumTask, completionCounts, checklistLoaded],
+    () => getTaskCompletionState(task, completionCounts, { checklistLoaded }),
+    [task, completionCounts, checklistLoaded],
   );
-  const momentumChips = useMemo(() => {
-    const chips: Array<{ label: string; className: string; title?: string }> = [];
-    const followUpState = getFollowUpState(momentumTask.nextTouchAt);
 
-    if (
-      momentumTask.status === "active"
-      && !momentumTask.nextAction
-      && !momentumTask.waitingOn
-      && !momentumTask.nextTouchAt
-    ) {
-      chips.push({
-        label: "Needs decision",
-        className: "bg-accent/15 text-accent",
-        title: "No next action, waiting reason, or follow-up is set",
-      });
-    }
-    if (followUpState === "overdue") {
-      chips.push({
-        label: "Follow up overdue",
-        className: "bg-error/15 text-error",
-        title: "This task is due for follow-up",
-      });
-    } else if (followUpState === "due") {
-      chips.push({
-        label: "Follow up now",
-        className: "bg-warning/15 text-warning",
-        title: "This task should be revisited now",
-      });
-    }
-    if (momentumTask.status === "active" && momentumTask.waitingOn) {
-      chips.push({
-        label: "Waiting",
-        className: "bg-info/15 text-info",
-        title: momentumTask.waitingOn,
-      });
-    }
-    if (!isOngoingTask(momentumTask) && completionState.isStrongCloseCandidate) {
-      chips.push({
-        label: "Candidate to close",
-        className: "bg-success/15 text-success",
-        title: completionState.ctaDescription,
-      });
-    }
+  const lastActivity = useMemo(() => getLatestActivity([
+    task.updatedAt,
+    task.completedAt,
+    ...linkedSessions.map(getSessionActivityTime),
+    ...checklistItems.flatMap((item) => [item.completedAt, item.createdAt]),
+    ...sched.schedules.flatMap((schedule) => [schedule.lastRunAt, schedule.updatedAt, schedule.createdAt]),
+  ]), [checklistItems, linkedSessions, sched.schedules, task.completedAt, task.updatedAt]);
 
-    return chips;
-  }, [completionState, momentumTask]);
+  const readiness = useMemo(() => buildReadinessInsight({
+    task,
+    checklistLoaded,
+    counts: completionCounts,
+    completionState,
+  }), [checklistLoaded, completionCounts, completionState, task]);
 
-  const completionDisabled = isOngoingTask(momentumTask)
-    || (!completionState.ctaNextStatus && !completionState.ctaCompletionAction)
-    || isUpdatingCompletion;
-  const completionDescription = isOngoingTask(momentumTask)
-    ? "Ongoing tasks stay active and cannot be completed."
-    : completionState.ctaDescription;
-  const handleCompletionAction = async () => {
-    if (completionDisabled) return;
-    const requestedTaskId = task.id;
+  const sessionUsage = useMemo(() => buildSessionUsageAnalytics({
+    taskSessionIds: task.sessionIds,
+    linkedSessions,
+    usageSessions: copilotUsage?.sessions ?? [],
+  }), [copilotUsage?.sessions, linkedSessions, task.sessionIds]);
 
-    setIsUpdatingCompletion(true);
-    try {
-      const updated = await onUpdateTask(
-        requestedTaskId,
-        completionState.ctaCompletionAction
-          ? { completionAction: completionState.ctaCompletionAction }
-          : { status: completionState.ctaNextStatus! },
-      );
-      if (updated && latestTaskIdRef.current === requestedTaskId) {
-        setMomentumTask(updated);
-      }
-    } finally {
-      if (latestTaskIdRef.current === requestedTaskId) {
-        setIsUpdatingCompletion(false);
-      }
-    }
+  const inheritedTagSet = inheritedTagIds instanceof Set
+    ? inheritedTagIds
+    : new Set<string>(inheritedTagIds ?? []);
+  const notesExcerpt = summarizeMarkdown(task.notes);
+  const contextStats = [
+    { label: "Sessions", value: task.sessionIds.length },
+    { label: "Checklist", value: checklistItems.length > 0 ? `${completionCounts.completedChecklistItems}/${checklistItems.length}` : "0" },
+    { label: "PRs", value: task.pullRequests.length },
+    { label: "Work items", value: task.workItems.length },
+    { label: "Schedules", value: sched.schedules.length },
+    { label: "Docs", value: relatedDocs.length },
+  ];
+
+  const handleRefresh = async () => {
+    await Promise.all([refresh(), refreshCopilotUsage(), onRefresh?.()]);
   };
-  
+
   return (
     <div className="flex-1 min-h-0 relative">
-    <PullToRefresh
-      onRefresh={handleRefresh}
-      className="absolute inset-0"
-      scrollRestoration={scrollRestorationForVisit}
-    >
-      <div className="max-w-4xl mx-auto px-4 md:px-8 py-6 space-y-6">
-        {/* ── Task Header ─────────────────────────────────── */}
-        <div>
-          <div className="flex items-start gap-3 flex-col sm:flex-row">
-            <div className="flex-1 min-w-0 w-full">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <LayoutDashboard size={16} className="text-text-muted shrink-0" />
+      <PullToRefresh
+        onRefresh={handleRefresh}
+        className="absolute inset-0"
+        scrollRestoration={scrollRestorationForVisit}
+      >
+        <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
+          <header className="space-y-3">
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+              <CircleDot size={14} className="text-accent" />
+              Task intelligence
+            </div>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {group && (
-                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted bg-bg-hover shrink-0">
-                    <span className={`w-2 h-2 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
-                    <span>{group.name}</span>
-                  </div>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-bg-hover px-2 py-0.5 text-[10px] text-text-muted">
+                    <span className={`h-2 w-2 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
+                    {group.name}
+                  </span>
                 )}
-                <span className={getTaskLifecycleBadgeClass(momentumTask)}>
-                  {getTaskStatusLabel(momentumTask)}
+                <span className={getTaskLifecycleBadgeClass(task)}>
+                  {getTaskStatusLabel(task)}
                 </span>
-                <TaskKindSwitcher kind={momentumTask.kind} onChange={handleKindChange} />
+                <TaskKindBadge kind={task.kind} showTask />
+                <span className="text-[10px] text-text-faint">
+                  Last activity {timeAgo(lastActivity)}
+                </span>
               </div>
-              <h1 className="text-xl font-semibold text-text-primary leading-tight">
+              <h1 className="text-2xl font-semibold leading-tight text-text-primary">
                 {task.title}
               </h1>
-              {/* Tags */}
-              {(effectiveTags.length > 0 || onSetTaskTags) && (
-                <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  <TagPillList
-                    tags={effectiveTags}
-                    inheritedTagIds={inheritedTagIds}
-                    size="sm"
-                    onRemove={onSetTaskTags ? (tagId) => {
-                      const newIds = taskOwnTags.filter((t) => t.id !== tagId).map((t) => t.id);
-                      onSetTaskTags(task.id, newIds);
-                    } : undefined}
-                  />
-                  {onSetTaskTags && (
-                    <TagPicker
-                      selectedTagIds={taskOwnTags.map((t) => t.id)}
-                      inheritedTagIds={inheritedTagIds}
-                      onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
-                    />
-                  )}
-                </div>
-              )}
-              <button
-                onClick={() => setWorkspaceSheetOpen(true)}
-                className="-ml-1 mt-1.5 rounded-md px-1 py-1 text-left transition-colors hover:bg-bg-hover/70"
-              >
-                <div className="flex items-center gap-1.5 text-xs text-text-muted">
-                  <FolderOpen size={12} className="text-text-faint" />
-                  <span className="font-mono">{task.cwd ?? "Set workspace…"}</span>
-                </div>
-                <TaskGitStatusSummary
-                  gitStatus={taskGitStatus}
-                  className="mt-1 pl-[18px] text-[11px]"
-                />
-              </button>
-              <div className="text-xs text-text-faint mt-1">
-                Last activity {timeAgo(lastActivity)} · Created {timeAgo(momentumTask.createdAt)}
-              </div>
-              {momentumChips.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {momentumChips.map((chip) => (
-                    <span
-                      key={chip.label}
-                      className={`text-[10px] px-2 py-0.5 rounded-full ${chip.className}`}
-                      title={chip.title}
-                    >
-                      {chip.label}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="mt-3">
-                <TaskMomentumFields
-                  task={momentumTask}
-                  variant="dashboard"
-                  onPatched={setMomentumTask}
-                  onSaved={() => {
-                    void onTasksChanged?.();
-                  }}
-                />
-              </div>
-            </div>
-            <div className="flex flex-row sm:flex-col items-stretch gap-2 shrink-0 sm:min-w-[11rem] w-full sm:w-auto">
-              <button
-                onClick={() => { void handleCompletionAction(); }}
-                disabled={completionDisabled}
-                title={completionDescription}
-                className="flex-1 sm:flex-none px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 disabled:bg-bg-hover disabled:text-text-faint disabled:hover:bg-bg-hover"
-              >
-                {completionState.ctaState === "completed" ? <RotateCcw size={12} /> : <CheckCircle2 size={12} />}
-                {completionState.ctaLabel}
-              </button>
-              <p className="hidden sm:block text-[11px] text-text-muted text-right leading-relaxed">
-                {completionDescription}
+              <p className="max-w-3xl text-sm leading-relaxed text-text-muted">
+                A read-only overview of readiness, context, and recent activity. Use the task cockpit for edits and actions.
               </p>
             </div>
-          </div>
-        </div>
+          </header>
 
-        {/* ── Two-column grid ─────────────────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* ── Left Column ─────────────────────────────── */}
-          <div className="space-y-6">
-            {/* Sessions */}
-            <div
-              ref={sessionsSectionRef}
-              className={highlightedSection === "sessions" ? "animate-checklist-highlight rounded-lg" : ""}
-            >
-              <Section
-                icon={<MessageSquare size={14} />}
-                title="Sessions"
-                count={task.sessionIds.length}
-                action={
-                  <button
-                    onClick={() => onNewSession(task.id)}
-                    className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-                  >
-                    <Plus size={12} /> New
-                  </button>
-                }
-              >
-                {task.sessionIds.length === 0 ? (
-                  <button
-                    onClick={() => onNewSession(task.id)}
-                    className="w-full mt-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors flex items-center justify-center gap-1.5"
-                  >
-                    <Plus size={14} />
-                    Start a chat
-                  </button>
-                ) : (
-                  <TaskSessionList
-                    task={task}
-                    linkedSessions={linkedSessions}
-                    activeSessionId={null}
-                    onSelectSession={onSelectSession}
-                    onNewSession={onNewSession}
-                    showEmptyState={false}
-                    showNewButton={false}
-                    isUnread={isUnread}
-                    onArchiveSession={onArchiveSession}
-                    archivingIds={archivingIds}
-                    exitingIds={exitingIds}
-                    onUnlinkFromTask={onUnlinkFromTask}
-                    onTasksChanged={onTasksChanged}
-                    onDeleteSession={onDeleteSession}
-                    onDuplicateSession={onDuplicateSession}
-                    onReloadSession={onReloadSession}
-                    onMarkUnread={onMarkUnread}
-                    onBulkAction={onBulkAction}
-                    hasDraft={hasDraft}
-                    onRequestArchived={onRequestArchived}
-                    archivedLoaded={archivedLoaded}
-                    archivedLoading={archivedLoading}
-                    className=""
-                  />
-                )}
-              </Section>
-            </div>
-
-            {/* Work Items */}
-            {task.workItems.length > 0 && (
-              <Section
-                icon={<ClipboardList size={14} />}
-                title="Work Items"
-                count={task.workItems.length}
-              >
-                <WorkItemList
-                  enrichedWIs={enrichedWIs}
-                  rawWIs={task.workItems}
-                  variant="card"
-                />
-              </Section>
-            )}
-
-            {/* Pull Requests */}
-            {task.pullRequests.length > 0 && (
-              <Section
-                icon={<GitPullRequest size={14} />}
-                title="Pull Requests"
-                count={task.pullRequests.length}
-              >
-                <PullRequestList
-                  enrichedPRs={enrichedPRs}
-                  rawPRs={task.pullRequests}
-                  variant="card"
-                />
-              </Section>
-            )}
-          </div>
-
-          {/* ── Right Column ─────────────────────────────── */}
-          <div className="space-y-6">
-            {/* Checklist */}
-            <div
-              ref={checklistSectionRef}
-              className={highlightedSection === "checklist" ? "animate-checklist-highlight rounded-lg" : ""}
-            >
-              <Section
-                icon={<CheckSquare size={14} />}
-                title="Checklist"
-                count={checklistItems.length > 0 ? `${completedChecklistItems.length}/${checklistItems.length}` : undefined}
-              >
-                <TaskChecklistSection
-                  taskId={task.id}
-                  checklistItems={checklistItems}
-                  newChecklistItemText={newChecklistItemText}
-                  onNewChecklistItemTextChange={setNewChecklistItemText}
-                  onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
-                  onChecklistItemUpdate={onChecklistItemUpdate}
-                  onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
-                  variant="card"
-                  highlightId={highlightedChecklistItemId}
-                  isReadyToComplete={!isOngoingTask(momentumTask) && completionState.isReadyToComplete}
-                />
-              </Section>
-            </div>
-
-            {/* Schedules */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_0.95fr]">
             <Section
-              icon={<Clock size={14} />}
-              title="Schedules"
-              count={sched.schedules.length}
-              action={
-                <button
-                  onClick={() => schedDetail.openForCreate(task.id)}
-                  className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-                >
-                  <Plus size={12} /> Add
-                </button>
-              }
+              icon={<FileText size={14} />}
+              title="Task brief"
             >
-              {sched.schedules.length === 0 ? (
-                <EmptyState message="No schedules" sub="Automate recurring work with scheduled sessions" />
-              ) : (
-                <ScheduleSection
-                  schedules={sched.schedules}
-                  variant="card"
-                  onOpen={(s) => schedDetail.openSheet(s)}
-                  onTrigger={(id) => sched.trigger(id)}
-                  onToggle={(s) => sched.toggle(s)}
-                  onEdit={(s) => schedDetail.openSheet(s, "edit")}
-                  onDelete={(id) => sched.remove(id)}
-                />
-              )}
+              <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-4">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {contextStats.map((stat) => (
+                    <div key={stat.label} className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                        {stat.label}
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-text-primary">
+                        {stat.value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                  <BriefRow
+                    icon={<StickyNote size={13} />}
+                    label="Summary"
+                    value={notesExcerpt || "No notes captured yet."}
+                  />
+                  <BriefRow
+                    icon={<Milestone size={13} />}
+                    label="Done when"
+                    value={task.kind === "ongoing" ? "Ongoing item; no finish line required." : task.doneWhen || "No finish line defined."}
+                  />
+                  <BriefRow
+                    icon={<ClipboardCheck size={13} />}
+                    label="Next action"
+                    value={task.nextAction || "No next action captured."}
+                  />
+                  <BriefRow
+                    icon={<AlertTriangle size={13} />}
+                    label="Waiting on"
+                    value={task.waitingOn || "No blocker captured."}
+                  />
+                  <BriefRow
+                    icon={<TimerReset size={13} />}
+                    label="Follow-up"
+                    value={formatFollowUp(task.nextTouchAt)}
+                  />
+                  <BriefRow
+                    icon={<FolderOpen size={13} />}
+                    label="Workspace"
+                    value={task.cwd || "No workspace set."}
+                    valueClassName={task.cwd ? "font-mono text-[11px]" : undefined}
+                  />
+                  {taskGitStatus && (
+                    <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
+                      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                        <FolderOpen size={12} />
+                        Git status
+                      </div>
+                      <TaskGitStatusSummary gitStatus={taskGitStatus} className="text-[11px]" />
+                    </div>
+                  )}
+                  <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
+                    <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                      <Tags size={12} />
+                      Tags
+                    </div>
+                    {effectiveTags.length > 0 ? (
+                      <TagPillList tags={effectiveTags} inheritedTagIds={inheritedTagSet} size="sm" />
+                    ) : (
+                      <div className="text-xs text-text-muted">No tags attached.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </Section>
 
-            {/* Group Notes */}
-            {group && (
+            <div
+              ref={readinessRef}
+              className={highlightedSection === "readiness" ? "animate-checklist-highlight rounded-xl" : ""}
+            >
               <Section
-                icon={<FileText size={14} />}
-                title={`Group Notes — ${group.name}`}
-                action={
-                  <button
-                    onClick={() => { setGroupNotesOpen(true); setGroupNotesStartEdit(!group.notes); }}
-                    className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-                  >
-                    <Pencil size={12} /> {group.notes ? "Edit" : "Add"}
-                  </button>
-                }
+                icon={<CheckCircle2 size={14} />}
+                title="Readiness intelligence"
               >
-                {group.notes ? (
-                  <div
-                    onClick={() => { setGroupNotesOpen(true); setGroupNotesStartEdit(false); }}
-                    className="px-3 py-3 cursor-pointer rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
-                  >
-                    <div className="prose prose-invert prose-sm max-w-none text-text-secondary
-                      prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1
-                      prose-ul:my-1 prose-ol:my-1 prose-li:my-0
-                      prose-code:text-accent prose-code:text-xs
-                      prose-a:text-accent prose-a:no-underline">
-                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{group.notes}</ReactMarkdown>
+                <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-4">
+                  <div className={`rounded-lg border px-4 py-3 ${SIGNAL_TONE_CLASS[readiness.tone]}`}>
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5">
+                        {readiness.tone === "success" ? <CheckCircle2 size={18} /> : <Info size={18} />}
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold">
+                          {readiness.title}
+                        </div>
+                        <div className="mt-1 text-xs leading-relaxed opacity-90">
+                          {readiness.description}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                ) : (
-                  <EmptyState message="No group notes" sub="Add notes to capture project context and goals" />
-                )}
-              </Section>
-            )}
 
-            {/* Notes */}
+                  <div className="space-y-2">
+                    {readiness.signals.map((signal) => (
+                      <div
+                        key={signal.label}
+                        className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-xs font-medium text-text-primary">
+                            {signal.label}
+                          </div>
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] ${SIGNAL_TONE_CLASS[signal.tone]}`}>
+                            {signal.tone === "danger" ? "Blocking" : signal.tone === "warning" ? "Attention" : "Clear"}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs leading-relaxed text-text-muted">
+                          {signal.detail}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Section>
+            </div>
+          </div>
+
+          <div
+            ref={sessionUsageRef}
+            className={highlightedSection === "session-usage" ? "animate-checklist-highlight rounded-xl" : ""}
+          >
             <Section
-              icon={<StickyNote size={14} />}
-              title="Notes"
-              action={
-                <button
-                  onClick={notes.openToEdit}
-                  className="text-xs text-accent hover:text-accent-hover flex items-center gap-1"
-                >
-                  <Pencil size={12} /> {task.notes ? "Edit" : "Add"}
-                </button>
-              }
+              icon={<MessageSquare size={14} />}
+              title="Session usage"
+              count={`${sessionUsage.includedSessions.length}/${Math.max(task.sessionIds.length, sessionUsage.includedSessions.length)} tokenized`}
             >
-              {task.notes ? (
-                <TaskNotesSection
-                  notes={task.notes}
-                  onView={notes.openToView}
-                  onEdit={notes.openToEdit}
-                />
-              ) : (
-                <EmptyState message="No notes" sub="Add notes to keep track of context and decisions" />
-              )}
-            </Section>
+              <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5">
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+                  <MetricCard label="Tokens" value={formatNumber(sessionUsage.totals.totalTokens)} sub="posted" />
+                  <MetricCard label="Requests" value={formatNumber(sessionUsage.totals.requests)} sub="completed" />
+                  <MetricCard label="Tokenized" value={String(sessionUsage.includedSessions.length)} sub="sessions" />
+                  <MetricCard label="Pending" value={String(sessionUsage.sessionsWithoutUsage)} sub="no shutdown yet" />
+                  <MetricCard label="Busy" value={String(sessionUsage.busySessions)} sub="running/stalled" />
+                  <MetricCard label="Storage" value={formatBytes(sessionUsage.totalDiskSizeBytes)} sub="session files" />
+                </div>
 
-            {/* Related Docs */}
-            {relatedDocs.length > 0 && (
-              <Section
-                icon={<BookOpen size={14} />}
-                title="Related Docs"
-                count={relatedDocs.length}
-              >
-                <RelatedDocsSection
-                  docs={relatedDocs}
-                  variant="card"
-                  resetKey={task.id}
-                />
-              </Section>
-            )}
+                <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-xs font-semibold text-text-primary">Tokens by day</h3>
+                      <p className="mt-0.5 text-[11px] text-text-muted">
+                        Based on completed assistant turns and shutdown summaries linked to this task.
+                      </p>
+                    </div>
+                    {sessionUsage.latestUsageAt && (
+                      <span className="shrink-0 text-[11px] text-text-faint">
+                        Updated {timeAgo(sessionUsage.latestUsageAt)}
+                      </span>
+                    )}
+                  </div>
+                  {sessionUsage.dayBuckets.length > 0 ? (
+                    <div className="space-y-2">
+                      {sessionUsage.dayBuckets.map((bucket) => (
+                        <div key={bucket.key} className="grid grid-cols-[5.5rem_1fr_auto] items-center gap-3">
+                          <div className="text-[11px] text-text-muted">{bucket.label}</div>
+                          <div className="h-2 rounded-full bg-bg-hover">
+                            <div
+                              className="h-2 rounded-full bg-accent"
+                              style={{ width: `${Math.max(6, Math.round((bucket.totalTokens / sessionUsage.maxDayTokens) * 100))}%` }}
+                            />
+                          </div>
+                          <div className="text-right text-[11px] font-medium text-text-primary">
+                            {formatNumber(bucket.totalTokens)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-text-muted">
+                      No token totals yet. Tokens appear here after linked sessions complete assistant turns or write usage summaries.
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-text-primary">Heaviest sessions</h3>
+                    {sessionUsage.topSessions.length > 0 ? (
+                      <div className="space-y-2">
+                        {sessionUsage.topSessions.map((row) => (
+                          <div key={row.sessionId} className="rounded-md border border-border/60 bg-bg-secondary/60 px-3 py-2">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-xs font-medium text-text-primary">
+                                  {row.label}
+                                </div>
+                                <div className="mt-0.5 text-[11px] text-text-muted">
+                                  {row.shutdownAt ? `Usage posted ${timeAgo(row.shutdownAt)}` : "Usage posted without a timestamp"}
+                                  {row.models.length > 0 ? ` · ${row.models.map((model) => model.model).join(", ")}` : ""}
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-right">
+                                <div className="text-xs font-semibold text-text-primary">{formatNumber(row.totalTokens)}</div>
+                                <div className="text-[10px] text-text-faint">{formatNumber(row.requests)} req</div>
+                              </div>
+                            </div>
+                            {row.hasLoadedSession && (
+                              <button
+                                onClick={() => onSelectSession(row.sessionId)}
+                                className="mt-2 text-xs font-medium text-accent hover:text-accent-hover"
+                              >
+                                Open session
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-text-muted">
+                        Linked sessions do not have token summaries yet.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-text-primary">Models used</h3>
+                    {sessionUsage.modelRows.length > 0 ? (
+                      <div className="space-y-2">
+                        {sessionUsage.modelRows.map((row) => (
+                          <div key={row.model} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-md border border-border/60 bg-bg-secondary/60 px-3 py-2">
+                            <div className="min-w-0">
+                              <div className="truncate text-xs font-medium text-text-primary">{row.model}</div>
+                              <div className="text-[11px] text-text-muted">
+                                {row.sessions} {row.sessions === 1 ? "session" : "sessions"} · {formatNumber(row.requests)} requests
+                              </div>
+                            </div>
+                            <div className="text-right text-xs font-semibold text-text-primary">
+                              {formatNumber(row.totalTokens)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-text-muted">
+                        Model breakdown will appear after session usage is available.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {sessionUsage.sessionsWithoutUsage > 0 && (
+                  <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/10 px-3 py-2 text-xs text-info">
+                    <Info size={14} className="mt-0.5 shrink-0" />
+                    <p>
+                      {sessionUsage.sessionsWithoutUsage} linked {sessionUsage.sessionsWithoutUsage === 1 ? "session has" : "sessions have"} no token total yet.
+                      Running or recently active sessions usually post usage after assistant turns complete or after shutdown.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </Section>
           </div>
         </div>
-      </div>
-
-      {/* Notes Sheet */}
-      {notes.notesSheetOpen && (
-        <NotesSheet
-          notes={task.notes}
-          startInEditMode={notes.notesStartEdit}
-          onSave={async (newNotes) => {
-            await patchTask(task.id, { notes: newNotes });
-            onTasksChanged?.();
-          }}
-          onClose={notes.close}
-        />
-      )}
-
-      {/* Group Notes Sheet */}
-      {groupNotesOpen && group && (
-        <NotesSheet
-          notes={group.notes}
-          startInEditMode={groupNotesStartEdit}
-          onSave={(newNotes) => {
-            if (onUpdateGroup) onUpdateGroup(group.id, { notes: newNotes });
-          }}
-          onClose={() => setGroupNotesOpen(false)}
-        />
-      )}
-
-      {/* Schedule Detail Sheet (unified view/edit/create) */}
-      {schedDetail.isOpen && (
-        <ScheduleDetailSheet
-          schedule={schedDetail.schedule}
-          taskId={task.id}
-          taskTitle={task.title}
-          mode={schedDetail.mode}
-          onClose={schedDetail.close}
-          onSwitchToEdit={schedDetail.switchToEdit}
-          onSwitchToView={schedDetail.switchToView}
-          onTrigger={sched.trigger}
-          onToggle={sched.toggle}
-          onDelete={sched.remove}
-          onSaved={() => { schedDetail.close(); sched.reload(); }}
-          onSelectSession={onSelectSession}
-        />
-      )}
-      {workspaceSheetOpen && (
-        <WorkspaceDetailsSheet
-          task={task}
-          taskGitStatus={taskGitStatus}
-          onClose={() => setWorkspaceSheetOpen(false)}
-          onTaskUpdated={onTasksChanged}
-        />
-      )}
-    </PullToRefresh>
+      </PullToRefresh>
     </div>
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────
+function MetricCard({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-semibold text-text-primary">
+        {value}
+      </div>
+      <div className="text-[10px] text-text-muted">
+        {sub}
+      </div>
+    </div>
+  );
+}
 
 function Section({
   icon,
   title,
   count,
-  action,
   children,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   count?: number | string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+    <section>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
           {icon}
           {title}
           {count !== undefined && (
-            <span className="text-text-faint font-normal">({count})</span>
+            <span className="font-normal text-text-faint">({count})</span>
           )}
         </h2>
-        {action}
       </div>
       {children}
+    </section>
+  );
+}
+
+function BriefRow({
+  icon,
+  label,
+  value,
+  valueClassName = "",
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
+      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+        {icon}
+        {label}
+      </div>
+      <div className={`text-xs leading-relaxed text-text-secondary ${valueClassName}`.trim()}>
+        {value}
+      </div>
     </div>
   );
 }
 
+function buildReadinessInsight({
+  task,
+  checklistLoaded,
+  counts,
+  completionState,
+}: {
+  task: Task;
+  checklistLoaded?: boolean;
+  counts: ReturnType<typeof getTaskCompletionCounts>;
+  completionState: ReturnType<typeof getTaskCompletionState>;
+}): ReadinessInsight {
+  const lifecycle = getTaskLifecycleDisplayState(task);
+  const signals: ReadinessSignal[] = [];
 
+  if (lifecycle === "completed") {
+    signals.push({
+      label: "Completion",
+      detail: task.doneWhen ? `Finished against: ${task.doneWhen}` : "This task is already completed.",
+      tone: "success",
+    });
+    return {
+      title: "Completed",
+      description: task.completedAt ? `Completed ${timeAgo(task.completedAt)}.` : "This task is already complete.",
+      tone: "success",
+      signals,
+    };
+  }
+
+  if (lifecycle === "archived") {
+    signals.push({
+      label: "Lifecycle",
+      detail: "This task is manually archived, so completion readiness is not active.",
+      tone: "muted",
+    });
+    return {
+      title: "Archived",
+      description: "Archived tasks are hidden from active work until reopened from the cockpit or task list.",
+      tone: "muted",
+      signals,
+    };
+  }
+
+  if (task.kind === "ongoing") {
+    signals.push({
+      label: "Ongoing item",
+      detail: "Ongoing items stay active and do not use the one-off completion flow.",
+      tone: "info",
+    });
+    signals.push({
+      label: "Momentum",
+      detail: task.nextAction || task.waitingOn || task.nextTouchAt
+        ? "Momentum context is captured in the brief."
+        : "No next action, blocker, or follow-up is captured yet.",
+      tone: task.nextAction || task.waitingOn || task.nextTouchAt ? "success" : "warning",
+    });
+    return {
+      title: "Ongoing work",
+      description: "This dashboard tracks context and recent activity, but ongoing items are not completed.",
+      tone: "info",
+      signals,
+    };
+  }
+
+  if (checklistLoaded === false) {
+    signals.push({
+      label: "Checklist loading",
+      detail: "Checklist items have not finished loading, so readiness may change.",
+      tone: "warning",
+    });
+  }
+  if (counts.openChecklistItems > 0) {
+    signals.push({
+      label: "Open checklist",
+      detail: `${counts.openChecklistItems} checklist ${counts.openChecklistItems === 1 ? "item remains" : "items remain"}.`,
+      tone: "danger",
+    });
+  }
+  if (counts.busySessions > 0) {
+    signals.push({
+      label: "Busy sessions",
+      detail: `${counts.busySessions} linked ${counts.busySessions === 1 ? "session is" : "sessions are"} still running or stalled.`,
+      tone: "danger",
+    });
+  }
+  if (counts.activePullRequests > 0) {
+    signals.push({
+      label: "Active PRs",
+      detail: `${counts.activePullRequests} linked ${counts.activePullRequests === 1 ? "PR is" : "PRs are"} still active.`,
+      tone: "danger",
+    });
+  }
+  if (counts.unknownPullRequests > 0) {
+    signals.push({
+      label: "Unknown PR status",
+      detail: `${counts.unknownPullRequests} linked ${counts.unknownPullRequests === 1 ? "PR has" : "PRs have"} unknown status.`,
+      tone: "warning",
+    });
+  }
+  if (!task.doneWhen) {
+    signals.push({
+      label: "Finish line",
+      detail: "No Done when definition is captured for this task.",
+      tone: "warning",
+    });
+  }
+  if (task.waitingOn) {
+    signals.push({
+      label: "Explicit blocker",
+      detail: task.waitingOn,
+      tone: "danger",
+    });
+  }
+
+  const hasExplicitBlocker = Boolean(task.waitingOn);
+
+  if (completionState.isReadyToComplete && task.doneWhen && !hasExplicitBlocker) {
+    signals.push({
+      label: "Completion signals",
+      detail: completionState.ctaDescription,
+      tone: "success",
+    });
+    return {
+      title: "Ready to complete",
+      description: "No blocking checklist, session, or PR signals are left.",
+      tone: "success",
+      signals,
+    };
+  }
+
+  if (completionState.isReadyToComplete && !hasExplicitBlocker) {
+    return {
+      title: "Ready with a missing finish line",
+      description: "Operational blockers are clear, but the task brief has no Done when definition.",
+      tone: "warning",
+      signals,
+    };
+  }
+
+  return {
+    title: "Not ready",
+    description: completionState.blockers.length > 0
+      ? completionState.blockers.join(" • ")
+      : "One or more readiness signals need attention.",
+    tone: signals.some((signal) => signal.tone === "danger") ? "danger" : "warning",
+    signals,
+  };
+}
+
+interface SessionUsageDisplayRow extends CopilotUsageTotals {
+  sessionId: string;
+  label: string;
+  shutdownAt: string | null;
+  models: CopilotUsageModelRow[];
+  hasLoadedSession: boolean;
+}
+
+interface SessionUsageDayBucket extends CopilotUsageTotals {
+  key: string;
+  label: string;
+  sessionIds: Set<string>;
+}
+
+function buildSessionUsageAnalytics({
+  taskSessionIds,
+  linkedSessions,
+  usageSessions,
+}: {
+  taskSessionIds: string[];
+  linkedSessions: Session[];
+  usageSessions: CopilotUsageSessionRow[];
+}) {
+  const taskSessionIdSet = new Set(taskSessionIds);
+  const linkedSessionMap = new Map(linkedSessions.map((session) => [session.sessionId, session]));
+  const includedSessions = usageSessions.filter((row) => taskSessionIdSet.has(row.sessionId));
+  const includedSessionIds = new Set(includedSessions.map((row) => row.sessionId));
+  const totals = { ...ZERO_USAGE_TOTALS };
+  const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const dayBuckets = new Map<string, SessionUsageDayBucket>();
+
+  for (const row of includedSessions) {
+    addUsageTotals(totals, row);
+    for (const model of row.models) {
+      const existing = modelTotals.get(model.model) ?? { ...ZERO_USAGE_TOTALS, model: model.model, sessions: 0 };
+      existing.sessions += model.sessions;
+      addUsageTotals(existing, model);
+      modelTotals.set(model.model, existing);
+    }
+
+    const bucketKey = row.shutdownAt?.slice(0, 10);
+    if (bucketKey) {
+      const bucket = dayBuckets.get(bucketKey) ?? {
+        ...ZERO_USAGE_TOTALS,
+        key: bucketKey,
+        label: formatDateLabel(row.shutdownAt!),
+        sessionIds: new Set<string>(),
+      };
+      addUsageTotals(bucket, row);
+      bucket.sessionIds.add(row.sessionId);
+      dayBuckets.set(bucketKey, bucket);
+    }
+  }
+
+  const topSessions: SessionUsageDisplayRow[] = includedSessions
+    .map((row) => {
+      const session = linkedSessionMap.get(row.sessionId);
+      return {
+        ...row,
+        label: session?.summary || session?.intentText || `Session ${row.sessionId.slice(0, 8)}`,
+        hasLoadedSession: Boolean(session),
+      };
+    })
+    .sort((left, right) => (
+      right.totalTokens - left.totalTokens
+      || compareNullableTimestampStringsDesc(left.shutdownAt, right.shutdownAt)
+      || left.sessionId.localeCompare(right.sessionId)
+    ))
+    .slice(0, 5);
+
+  const modelRows = [...modelTotals.values()].sort((left, right) => (
+    right.totalTokens - left.totalTokens
+    || right.requests - left.requests
+    || left.model.localeCompare(right.model)
+  ));
+
+  const sortedDayBuckets = [...dayBuckets.values()]
+    .sort((left, right) => right.key.localeCompare(left.key));
+  const maxDayTokens = Math.max(1, ...sortedDayBuckets.map((bucket) => bucket.totalTokens));
+  const latestUsageAt = includedSessions.reduce<string | null>(
+    (latest, row) => row.shutdownAt ? maxNullableTimestamp(latest, row.shutdownAt) : latest,
+    null,
+  );
+  const sessionsWithoutUsage = Math.max(0, taskSessionIdSet.size - includedSessionIds.size);
+
+  return {
+    totals,
+    includedSessions,
+    sessionsWithoutUsage,
+    busySessions: linkedSessions.filter((session) => session.busy || session.runState === "busy" || session.runState === "stalled").length,
+    totalDiskSizeBytes: linkedSessions.reduce((sum, session) => sum + (session.diskSizeBytes ?? 0), 0),
+    dayBuckets: sortedDayBuckets,
+    maxDayTokens,
+    modelRows,
+    topSessions,
+    latestUsageAt,
+  };
+}
+
+function getLatestActivity(values: Array<string | undefined>): string {
+  const valid = values.filter((value): value is string => Boolean(value) && !Number.isNaN(Date.parse(value)));
+  if (valid.length === 0) return new Date().toISOString();
+  return valid.reduce((latest, value) => Date.parse(value) > Date.parse(latest) ? value : latest, valid[0]);
+}
+
+function summarizeMarkdown(value: string): string {
+  const plain = value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/[#>*_\-~]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (plain.length <= 180) return plain;
+  return `${plain.slice(0, 177).trim()}...`;
+}
+
+function formatFollowUp(value?: string): string {
+  if (!value) return "No follow-up scheduled.";
+  const state = getFollowUpState(value);
+  const prefix = state === "overdue" ? "Overdue" : state === "due" ? "Due now" : "Scheduled";
+  return `${prefix}: ${formatDateTime(value)} (${timeAgo(value)})`;
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatDateLabel(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatNumber(value: number): string {
+  return Math.round(value).toLocaleString();
+}
+
+function formatBytes(value: number): string {
+  if (value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"] as const;
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function addUsageTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {
+  target.requests += delta.requests;
+  target.inputTokens += delta.inputTokens;
+  target.outputTokens += delta.outputTokens;
+  target.cacheReadTokens += delta.cacheReadTokens;
+  target.cacheWriteTokens += delta.cacheWriteTokens;
+  target.reasoningTokens += delta.reasoningTokens;
+  target.totalTokens += delta.totalTokens;
+}
+
+function maxNullableTimestamp(current: string | null, candidate: string): string {
+  return !current || candidate > current ? candidate : current;
+}
+
+function compareNullableTimestampStringsDesc(left: string | null, right: string | null): number {
+  if (left && right) return right.localeCompare(left);
+  if (left) return -1;
+  if (right) return 1;
+  return 0;
+}

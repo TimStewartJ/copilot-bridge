@@ -176,6 +176,10 @@ export default function App() {
     || mobileScrollRestorationPolicy?.key === "mobile:chats:list"
     ? mobileScrollRestorationPolicy
     : undefined;
+  const mobileTaskCockpitScrollRestoration = activeTaskId
+    && mobileScrollRestorationPolicy?.key === `mobile:task-cockpit:${activeTaskId}`
+    ? mobileScrollRestorationPolicy
+    : undefined;
   const mobileTaskDashboardScrollRestoration = activeTaskId
     && mobileScrollRestorationPolicy?.key === `mobile:task-dashboard:${activeTaskId}`
     ? mobileScrollRestorationPolicy
@@ -1244,7 +1248,7 @@ export default function App() {
   const isMobileRoute = {
     dashboard: mobileRouteMeta.route === "dashboard",
     taskList: mobileRouteMeta.route === "task-list" || mobileRouteMeta.route === "chat-list",
-    taskDashboard: mobileRouteMeta.route === "task-dashboard",
+    taskDashboard: mobileRouteMeta.route === "task-dashboard" || mobileRouteMeta.route === "task-cockpit",
     taskPanel: mobileRouteMeta.route === "task-session",
     chat: mobileRouteMeta.route === "task-session" || mobileRouteMeta.route === "quick-chat",
     settings: mobileRouteMeta.route === "settings",
@@ -1369,7 +1373,7 @@ export default function App() {
 
             {/* Desktop panel (only when inside a session or quick chats) */}
             {showDesktopPanel && (
-              <div className="hidden md:flex md:shrink-0 min-w-0 min-h-0">
+              <div className="hidden md:flex md:w-64 md:shrink-0 min-w-0 min-h-0 border-r border-border bg-bg-secondary">
                 <TaskPanel
                   task={selectedTask}
                   taskGroups={taskGroups}
@@ -1394,7 +1398,7 @@ export default function App() {
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
                   onViewDashboard={(taskId, options) => navigate(
-                    `/tasks/${taskId}${buildTaskDashboardSearch(options)}`,
+                    `/tasks/${taskId}/overview${buildTaskDashboardSearch(options)}`,
                   )}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
@@ -1464,6 +1468,83 @@ export default function App() {
               path="tasks/:taskId"
               element={
                 selectedTask ? (
+                  <TaskPanel
+                    task={selectedTask}
+                    taskGroups={taskGroups}
+                    sessions={sessions}
+                    activeSessionId={activeSessionId}
+                    onSelectSession={handleSelectSession}
+                    onNewSession={handleNewSession}
+                    onUpdateTask={handleUpdateTask}
+                    onTasksChanged={invalidateTasks}
+                    isUnread={isUnread}
+                    onArchiveSession={handleArchiveSession}
+                    archivingIds={archivingIds}
+                    exitingIds={exitingIds}
+                    tasks={tasks}
+                    onLinkToTask={handleLinkToTask}
+                    onDeleteTask={handleDeleteTask}
+                    onDeleteSession={handleDeleteSession}
+                    onDuplicateSession={handleDuplicateSession}
+                    onReloadSession={handleReloadSession}
+                    onMarkUnread={markUnread}
+                    hasDraft={hasDraft}
+                    onMoveTaskToGroup={handleMoveTaskToGroup}
+                    onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
+                    onViewDashboard={(taskId, options) => navigate(
+                      `/tasks/${taskId}/overview${buildTaskDashboardSearch(options)}`,
+                    )}
+                    onMarkAllRead={handleMarkAllRead}
+                    onBulkAction={handleBulkAction}
+                    onRequestArchived={requestArchivedSessions}
+                    archivedLoaded={archivedLoaded}
+                    archivedLoading={archivedLoading}
+                    onSetTaskTags={handleSetTaskTags}
+                    scrollRestoration={mobileTaskCockpitScrollRestoration}
+                  />
+                ) : taskNotFound ? (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-3">
+                    <div className="text-text-muted text-sm">Task not found</div>
+                    <button
+                      onClick={() => navigate("/")}
+                      className="hidden text-xs text-accent hover:text-accent-hover md:inline-block"
+                    >
+                      ← Back to Home
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
+                    Loading…
+                  </div>
+                )
+              }
+            />
+            <Route
+              path="tasks/:taskId/sessions/:sessionId"
+              element={
+                <SessionRoute
+                  sessions={sessions}
+                  onMessageSent={invalidateSessions}
+                  getDraft={getDraft}
+                  getDraftSession={getDraftSession}
+                  setDraft={setDraft}
+                  clearDraft={clearDraft}
+                  clearDraftSession={clearDraftSession}
+                  clearDraftSessionBySessionId={clearDraftSessionBySessionId}
+                  materializeSession={materializeSession}
+                  getVoiceJob={getJobForComposer}
+                  startBackgroundVoiceJob={startBackgroundVoiceJob}
+                  reviewVoiceJob={reviewInstead}
+                  clearVoiceJobError={clearVoiceJobError}
+                  sessionReloads={sessionReloads}
+                  sessionBusySignals={sessionBusySignals}
+                />
+              }
+            />
+            <Route
+              path="tasks/:taskId/overview"
+              element={
+                selectedTask ? (
                   <TaskDashboard
                     task={selectedTask}
                     taskGroups={taskGroups}
@@ -1505,28 +1586,6 @@ export default function App() {
                     Loading…
                   </div>
                 )
-              }
-            />
-            <Route
-              path="tasks/:taskId/sessions/:sessionId"
-              element={
-                <SessionRoute
-                  sessions={sessions}
-                  onMessageSent={invalidateSessions}
-                  getDraft={getDraft}
-                  getDraftSession={getDraftSession}
-                  setDraft={setDraft}
-                  clearDraft={clearDraft}
-                  clearDraftSession={clearDraftSession}
-                  clearDraftSessionBySessionId={clearDraftSessionBySessionId}
-                  materializeSession={materializeSession}
-                  getVoiceJob={getJobForComposer}
-                  startBackgroundVoiceJob={startBackgroundVoiceJob}
-                  reviewVoiceJob={reviewInstead}
-                  clearVoiceJobError={clearVoiceJobError}
-                  sessionReloads={sessionReloads}
-                  sessionBusySignals={sessionBusySignals}
-                />
               }
             />
             <Route

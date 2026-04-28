@@ -64,6 +64,7 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
       reasoningTokens: 0,
       totalTokens,
     }],
+    sessions: [],
   };
 }
 

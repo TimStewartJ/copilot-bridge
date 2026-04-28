@@ -6,6 +6,7 @@ export type MobileRouteKind =
   | "dashboard"
   | "task-list"
   | "chat-list"
+  | "task-cockpit"
   | "task-dashboard"
   | "task-session"
   | "quick-chat"
@@ -138,14 +139,28 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
     });
   }
 
-  const taskDashboardMatch = matchPath("/tasks/:taskId", normalizedPath);
-  if (taskDashboardMatch) {
+  const taskOverviewMatch = matchPath("/tasks/:taskId/overview", normalizedPath);
+  if (taskOverviewMatch) {
     return buildMeta({
       route: "task-dashboard",
       activeTab: "tasks",
       showBottomNav: true,
       showSharedHeader: true,
-      taskId: taskDashboardMatch.params.taskId ?? null,
+      taskId: taskOverviewMatch.params.taskId ?? null,
+      upTarget: taskOverviewMatch.params.taskId
+        ? { to: `/tasks/${taskOverviewMatch.params.taskId}`, label: "Task" }
+        : undefined,
+    });
+  }
+
+  const taskCockpitMatch = matchPath("/tasks/:taskId", normalizedPath);
+  if (taskCockpitMatch) {
+    return buildMeta({
+      route: "task-cockpit",
+      activeTab: "tasks",
+      showBottomNav: true,
+      showSharedHeader: true,
+      taskId: taskCockpitMatch.params.taskId ?? null,
       upTarget: { to: "/", label: "Tasks" },
     });
   }

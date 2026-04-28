@@ -139,6 +139,78 @@ describe("readCopilotUsageSummary", () => {
           totalTokens: 0,
         },
       ],
+      sessions: [
+        {
+          sessionId: "session-2",
+          shutdownAt: "2026-01-03T11:00:00.000Z",
+          requests: 4,
+          inputTokens: 8,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 8,
+          models: [
+            {
+              model: "gpt-4o",
+              sessions: 1,
+              requests: 4,
+              inputTokens: 8,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+              totalTokens: 8,
+            },
+            {
+              model: "gemini-2.5",
+              sessions: 1,
+              requests: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+              totalTokens: 0,
+            },
+          ],
+        },
+        {
+          sessionId: "session-1",
+          shutdownAt: "2026-01-02T10:00:00.000Z",
+          requests: 3,
+          inputTokens: 10,
+          outputTokens: 12,
+          cacheReadTokens: 3,
+          cacheWriteTokens: 2,
+          reasoningTokens: 1,
+          totalTokens: 28,
+          models: [
+            {
+              model: "gpt-4o",
+              sessions: 1,
+              requests: 2,
+              inputTokens: 10,
+              outputTokens: 5,
+              cacheReadTokens: 3,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+              totalTokens: 18,
+            },
+            {
+              model: "claude-sonnet",
+              sessions: 1,
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 7,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 2,
+              reasoningTokens: 1,
+              totalTokens: 10,
+            },
+          ],
+        },
+      ],
     });
   });
 
@@ -176,6 +248,123 @@ describe("readCopilotUsageSummary", () => {
       latestSkippedAt: "2026-02-01T10:00:00.000Z",
     });
     expect(summary.models).toEqual([]);
+  });
+
+  it("uses assistant message output tokens before a session shutdown is written", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-live", [
+      {
+        type: "session.start",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        data: { selectedModel: "gpt-5.5" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:05.000Z",
+        data: { requestId: "request-1", outputTokens: 10 },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:06.000Z",
+        data: { requestId: "request-1", outputTokens: 12 },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:01:00.000Z",
+        data: { requestId: "request-2", outputTokens: 5 },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.coverage.sessionsIncluded).toBe(1);
+    expect(summary.coverage.sessionsSkipped).toBe(0);
+    expect(summary.coverage.skippedByReason.no_shutdown).toBe(0);
+    expect(summary.coverage.earliestIncludedAt).toBe("2026-02-02T09:00:06.000Z");
+    expect(summary.coverage.latestIncludedAt).toBe("2026-02-02T09:01:00.000Z");
+    expect(summary.totals).toEqual({
+      requests: 2,
+      inputTokens: 0,
+      outputTokens: 17,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 17,
+    });
+    expect(summary.models).toEqual([
+      {
+        model: "gpt-5.5",
+        sessions: 1,
+        requests: 2,
+        inputTokens: 0,
+        outputTokens: 17,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 17,
+      },
+    ]);
+    expect(summary.sessions).toEqual([
+      {
+        sessionId: "session-live",
+        shutdownAt: "2026-02-02T09:01:00.000Z",
+        requests: 2,
+        inputTokens: 0,
+        outputTokens: 17,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 17,
+        models: [
+          {
+            model: "gpt-5.5",
+            sessions: 1,
+            requests: 2,
+            inputTokens: 0,
+            outputTokens: 17,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 17,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("prefers shutdown model metrics over assistant message output tokens", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.start",
+        timestamp: "2026-02-03T09:00:00.000Z",
+        data: { selectedModel: "gpt-5.5" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-03T09:01:00.000Z",
+        data: { requestId: "request-1", outputTokens: 100 },
+      },
+      {
+        type: "session.shutdown",
+        timestamp: "2026-02-03T09:02:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { outputTokens: 20 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals.totalTokens).toBe(20);
+    expect(summary.totals.outputTokens).toBe(20);
+    expect(summary.totals.requests).toBe(1);
+    expect(summary.sessions[0].shutdownAt).toBe("2026-02-03T09:02:00.000Z");
   });
 
   it("accumulates usable shutdowns and ignores empty later shutdowns", async () => {
@@ -586,6 +775,7 @@ describe("createCopilotUsageReader", () => {
         latestSkippedAt: null,
       },
       models: [],
+      sessions: [],
     };
     const refreshedSummary: CopilotUsageSummary = {
       ...staleSummary,

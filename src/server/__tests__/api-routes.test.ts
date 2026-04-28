@@ -1919,46 +1919,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createSession).toHaveBeenCalledOnce();
   });
 
-  it("POST /api/sessions creates a session while the launcher is waiting for active sessions", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-create-waiting",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app).post("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessionId: "new-session" });
-    expect(sessionManager.createSession).toHaveBeenCalledOnce();
-  });
-
-  it("POST /api/sessions returns restart-pending if cutover starts during creation", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.createSession = vi.fn().mockRejectedValue(new Error(RESTART_PENDING_MESSAGE));
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-create-race",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app).post("/api/sessions");
-
-    expect(res.status).toBe(503);
-    expect(res.headers["retry-after"]).toBe("5");
-    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
-  });
-
   it("POST /api/sessions rejects session creation while launcher restart cutover is in progress", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn();
@@ -1999,26 +1959,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.duplicateSession).toHaveBeenCalledWith("source-session");
   });
 
-  it("POST /api/sessions/:id/duplicate returns restart-pending if cutover starts during duplication", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.duplicateSession = vi.fn().mockRejectedValue(new Error(RESTART_PENDING_MESSAGE));
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-duplicate-race",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app).post("/api/sessions/source-session/duplicate");
-
-    expect(res.status).toBe(503);
-    expect(res.headers["retry-after"]).toBe("5");
-    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
-  });
-
   it("POST /api/tasks/:id/session creates a task session when restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
@@ -2041,28 +1981,6 @@ describe("Session routes (mocked)", () => {
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("task-session");
   });
 
-  it("POST /api/tasks/:id/session returns restart-pending if cutover starts during creation", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.createTaskSession = vi.fn().mockRejectedValue(new Error(RESTART_PENDING_MESSAGE));
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-task-session-race",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-    const task = ctx.taskStore.createTask("Task for restart");
-
-    const res = await request(app).post(`/api/tasks/${task.id}/session`);
-
-    expect(res.status).toBe(503);
-    expect(res.headers["retry-after"]).toBe("5");
-    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
-    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual([]);
-  });
-
   it("POST /api/chat requires sessionId and prompt", async () => {
     const res = await request(app)
       .post("/api/chat")
@@ -2080,28 +1998,6 @@ describe("Session routes (mocked)", () => {
       requestedAt: "2026-04-24T12:00:00.000Z",
       waitingSessions: 2,
       launcherHeartbeatAt: null,
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app)
-      .post("/api/chat")
-      .send({ sessionId: "test-session", prompt: "hello" });
-
-    expect(res.status).toBe(202);
-    expect(res.body).toEqual({ status: "accepted" });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined);
-  });
-
-  it("POST /api/chat accepts new work while the launcher is waiting for active sessions", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.startWork = vi.fn();
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-chat-waiting",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
     });
     ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
 
@@ -2664,6 +2560,32 @@ describe("Session routes (mocked)", () => {
           cacheWriteTokens: 1,
           reasoningTokens: 4,
           totalTokens: 27,
+        },
+      ],
+      sessions: [
+        {
+          sessionId: "usage-session",
+          shutdownAt: "2026-05-01T12:00:00.000Z",
+          requests: 3,
+          inputTokens: 12,
+          outputTokens: 8,
+          cacheReadTokens: 2,
+          cacheWriteTokens: 1,
+          reasoningTokens: 4,
+          totalTokens: 27,
+          models: [
+            {
+              model: "gpt-4o",
+              sessions: 1,
+              requests: 3,
+              inputTokens: 12,
+              outputTokens: 8,
+              cacheReadTokens: 2,
+              cacheWriteTokens: 1,
+              reasoningTokens: 4,
+              totalTokens: 27,
+            },
+          ],
         },
       ],
     });

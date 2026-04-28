@@ -3,16 +3,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Task } from "./api";
+import type { CopilotUsageSummary, Task } from "./api";
+import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
 import { useTagsQuery } from "./hooks/queries/useTags";
 import { useTaskWorkspace } from "./hooks/useTaskWorkspace";
+import { installDomShim } from "./test-dom-shim";
 import TaskDashboard from "./components/TaskDashboard";
 import TaskKindBadge from "./components/TaskKindBadge";
 import TaskMomentumFields from "./components/TaskMomentumFields";
 import TaskContextMenu from "./components/task-list/TaskContextMenu";
 
+const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
+
 vi.mock("./hooks/queries/useTags", () => ({
   useTagsQuery: vi.fn(),
+}));
+
+vi.mock("./hooks/queries/useCopilotUsage", () => ({
+  useCopilotUsageQuery: vi.fn(),
 }));
 
 vi.mock("./hooks/useTaskWorkspace", () => ({
@@ -20,7 +28,7 @@ vi.mock("./hooks/useTaskWorkspace", () => ({
 }));
 
 vi.mock("./components/PullToRefresh", () => ({
-  default: ({ children }: any) => children,
+  default: (props: { children: unknown }) => pullToRefreshMock(props),
 }));
 
 vi.mock("./components/SessionList", () => ({
@@ -123,8 +131,42 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function renderTaskDashboard(task: Task): string {
-  vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace() as any);
+function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): CopilotUsageSummary {
+  return {
+    generatedAt: NOW,
+    totals: {
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+    },
+    coverage: {
+      sessionsSeen: 0,
+      sessionsWithEvents: 0,
+      sessionsIncluded: 0,
+      sessionsSkipped: 0,
+      skippedByReason: {
+        no_events: 0,
+        no_shutdown: 0,
+        empty_model_metrics: 0,
+        parse_error: 0,
+      },
+      earliestIncludedAt: null,
+      latestIncludedAt: null,
+      earliestSkippedAt: null,
+      latestSkippedAt: null,
+    },
+    models: [],
+    sessions: [],
+    ...overrides,
+  };
+}
+
+function renderTaskDashboard(task: Task, workspaceOverrides: Record<string, unknown> = {}): string {
+  vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace(workspaceOverrides) as any);
   return renderToStaticMarkup(createElement(MemoryRouter, null,
     createElement(TaskDashboard, {
       task,
@@ -155,7 +197,9 @@ function renderTaskContextMenu(task: Task): string {
 
 beforeEach(() => {
   vi.mocked(useTagsQuery).mockReturnValue({ data: [] } as any);
+  vi.mocked(useCopilotUsageQuery).mockReturnValue({ data: createUsageSummary() } as any);
   vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace() as any);
+  pullToRefreshMock.mockClear();
 });
 
 afterEach(() => {
@@ -178,7 +222,7 @@ describe("kind-aware task UI", () => {
     const html = renderTaskContextMenu(createTask({ kind: "ongoing" }));
 
     expect(html).not.toContain("Mark done");
-    expect(html).not.toContain("Complete &amp; archive");
+    expect(html).not.toContain("Complete task");
     expect(html).toContain("Follow up tomorrow");
   });
 
@@ -206,17 +250,276 @@ describe("kind-aware task UI", () => {
     expect(html).not.toContain(">ongoing<");
   });
 
-  it("TaskDashboard suppresses Candidate to close for ongoing items", () => {
+  it("TaskDashboard explains ongoing items instead of showing close-candidate copy", () => {
     const html = renderTaskDashboard(createTask({ kind: "ongoing" }));
 
-    expect(html).toContain("Needs decision");
+    expect(html).toContain("Ongoing work");
+    expect(html).toContain("Ongoing items stay active");
     expect(html).not.toContain("Candidate to close");
   });
 
-  it("TaskDashboard still shows Candidate to close for one-off tasks", () => {
+  it("TaskDashboard surfaces readiness intelligence for one-off tasks", () => {
     const html = renderTaskDashboard(createTask({ kind: "task" }));
 
-    expect(html).toContain("Needs decision");
-    expect(html).toContain("Candidate to close");
+    expect(html).toContain("Readiness intelligence");
+    expect(html).toContain("Ready with a missing finish line");
+    expect(html).toContain("Finish line");
+    expect(html).not.toContain("Candidate to close");
+  });
+});
+
+describe("TaskDashboard unique overview", () => {
+  it("renders the three dashboard-exclusive sections without cockpit chat controls", () => {
+    const html = renderTaskDashboard(createTask({ sessionIds: [] }));
+
+    expect(html).toContain("Task brief");
+    expect(html).toContain("Readiness intelligence");
+    expect(html).toContain("Session usage");
+    expect(html).not.toContain("Start a chat");
+    expect(html).not.toContain(" New</button>");
+    expect(html).not.toContain("Complete task");
+  });
+
+  it("uses the brief for read-only context instead of edit surfaces", () => {
+    const html = renderTaskDashboard(createTask({
+      notes: "## Context\nShip the mobile cockpit split.",
+      doneWhen: "Preview approved",
+      nextAction: "Review dashboard",
+      waitingOn: "Design feedback",
+      cwd: "/repo",
+      sessionIds: ["session-1"],
+      workItems: [{ provider: "github", id: "123" }],
+      pullRequests: [{ provider: "github", repoId: "repo", repoName: "bridge", prId: 42 }],
+    }), {
+      checklistLoaded: true,
+      checklistItems: [
+        { id: "c1", taskId: "task-1", text: "Open", done: false, order: 0, createdAt: NOW },
+      ],
+      sched: {
+        schedules: [
+          { id: "schedule-1", taskId: "task-1", name: "Daily check", prompt: "", type: "cron", cron: "0 8 * * *", enabled: true, sessionMode: "new", createdAt: NOW, updatedAt: NOW, runCount: 0 },
+        ],
+        trigger: vi.fn(),
+        toggle: vi.fn(),
+        remove: vi.fn(),
+        reload: vi.fn(),
+      },
+      relatedDocs: [{ path: "docs/task", title: "Task doc" }],
+    });
+
+    expect(html).toContain("Ship the mobile cockpit split.");
+    expect(html).toContain("Preview approved");
+    expect(html).toContain("Review dashboard");
+    expect(html).toContain("Design feedback");
+    expect(html).toContain("/repo");
+    expect(html).toContain("Sessions");
+    expect(html).toContain("Work items");
+    expect(html).toContain("Schedules");
+    expect(html).not.toContain("Set follow-up");
+    expect(html).not.toContain("Add blocker");
+    expect(html).not.toContain("Add notes");
+  });
+
+  it("shows readiness blockers without rendering a completion action", () => {
+    const html = renderTaskDashboard(createTask(), {
+      checklistLoaded: true,
+      checklistItems: [
+        { id: "c1", taskId: "task-1", text: "Open", done: false, order: 0, createdAt: NOW },
+        { id: "c2", taskId: "task-1", text: "Done", done: true, order: 1, createdAt: NOW, completedAt: NOW },
+      ],
+    });
+
+    expect(html).toContain("Not ready");
+    expect(html).toContain("Open checklist");
+    expect(html).toContain("1 checklist item remains");
+    expect(html).toContain("Blocking");
+    expect(html).not.toContain("Complete task");
+  });
+
+  it("treats waiting-on text as an explicit readiness blocker", () => {
+    const html = renderTaskDashboard(createTask({
+      doneWhen: "Preview approved",
+      waitingOn: "Design feedback",
+    }), {
+      checklistLoaded: true,
+    });
+
+    expect(html).toContain("Not ready");
+    expect(html).toContain("Explicit blocker");
+    expect(html).toContain("Design feedback");
+    expect(html).toContain("Blocking");
+    expect(html).not.toContain("Ready to complete");
+  });
+
+  it("keeps focus deep links active after consuming their URL params", async () => {
+    vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace({
+      checklistLoaded: true,
+      checklistItems: [
+        { id: "c1", taskId: "task-1", text: "Open", done: false, order: 0, createdAt: NOW },
+      ],
+    }) as any);
+
+    const dom = installDomShim();
+    const scrollIntoView = vi.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    document.createElement = ((tagName: string) => {
+      const element = originalCreateElement(tagName) as HTMLElement & { scrollIntoView: () => void };
+      element.scrollIntoView = scrollIntoView;
+      return element;
+    }) as typeof document.createElement;
+
+    try {
+      (window as any).setTimeout = setTimeout;
+      (window as any).clearTimeout = clearTimeout;
+      const [{ flushSync }, { createRoot }] = await Promise.all([
+        import("react-dom"),
+        import("react-dom/client"),
+      ]);
+      const root = createRoot(dom.container as any);
+
+      flushSync(() => {
+        root.render(createElement(MemoryRouter, { initialEntries: ["/tasks/task-1/overview?section=checklist"] },
+          createElement(TaskDashboard, {
+            task: createTask(),
+            taskGroups: [],
+            sessions: [],
+            onSelectSession: vi.fn(),
+            onNewSession: vi.fn(),
+            onUpdateTask: vi.fn(),
+          }),
+        ));
+      });
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+      expect(scrollIntoView).toHaveBeenCalled();
+
+      flushSync(() => {
+        root.unmount();
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    } finally {
+      dom.cleanup();
+    }
+  });
+
+  it("refreshes usage analytics when the overview is refreshed", async () => {
+    const workspaceRefresh = vi.fn(async () => {});
+    const usageRefresh = vi.fn(async () => createUsageSummary());
+    const parentRefresh = vi.fn(async () => {});
+    vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace({
+      refresh: workspaceRefresh,
+    }) as any);
+    vi.mocked(useCopilotUsageQuery).mockReturnValue({
+      data: createUsageSummary(),
+      refresh: usageRefresh,
+    } as any);
+
+    renderToStaticMarkup(createElement(MemoryRouter, null,
+      createElement(TaskDashboard, {
+        task: createTask(),
+        taskGroups: [],
+        sessions: [],
+        onSelectSession: vi.fn(),
+        onNewSession: vi.fn(),
+        onUpdateTask: vi.fn(),
+        onRefresh: parentRefresh,
+      }),
+    ));
+
+    const pullToRefreshProps = pullToRefreshMock.mock.calls.at(-1)?.[0] as { onRefresh?: () => Promise<void> } | undefined;
+    await pullToRefreshProps?.onRefresh?.();
+
+    expect(workspaceRefresh).toHaveBeenCalledOnce();
+    expect(usageRefresh).toHaveBeenCalledOnce();
+    expect(parentRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("builds session token analytics from linked session usage", () => {
+    vi.mocked(useCopilotUsageQuery).mockReturnValue({ data: createUsageSummary({
+      totals: {
+        requests: 5,
+        inputTokens: 1_500,
+        outputTokens: 900,
+        cacheReadTokens: 700,
+        cacheWriteTokens: 300,
+        reasoningTokens: 600,
+        totalTokens: 4_000,
+      },
+      sessions: [
+        {
+          sessionId: "session-1",
+          shutdownAt: "2026-05-01T14:00:00.000Z",
+          requests: 3,
+          inputTokens: 1_000,
+          outputTokens: 500,
+          cacheReadTokens: 300,
+          cacheWriteTokens: 100,
+          reasoningTokens: 100,
+          totalTokens: 2_000,
+          models: [
+            {
+              model: "gpt-5.5",
+              sessions: 1,
+              requests: 3,
+              inputTokens: 1_000,
+              outputTokens: 500,
+              cacheReadTokens: 300,
+              cacheWriteTokens: 100,
+              reasoningTokens: 100,
+              totalTokens: 2_000,
+            },
+          ],
+        },
+        {
+          sessionId: "session-2",
+          shutdownAt: "2026-05-02T10:00:00.000Z",
+          requests: 2,
+          inputTokens: 500,
+          outputTokens: 400,
+          cacheReadTokens: 400,
+          cacheWriteTokens: 200,
+          reasoningTokens: 500,
+          totalTokens: 2_000,
+          models: [
+            {
+              model: "claude-opus-4.7",
+              sessions: 1,
+              requests: 2,
+              inputTokens: 500,
+              outputTokens: 400,
+              cacheReadTokens: 400,
+              cacheWriteTokens: 200,
+              reasoningTokens: 500,
+              totalTokens: 2_000,
+            },
+          ],
+        },
+      ],
+    }) } as any);
+
+    const html = renderTaskDashboard(createTask({
+      sessionIds: ["session-1", "session-2", "session-pending"],
+    }), {
+      linkedSessions: [
+        { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", busy: false, archived: false, diskSizeBytes: 1024 },
+        { sessionId: "session-2", summary: "Review usage metrics", modifiedTime: "2026-05-02T10:00:00.000Z", busy: true, archived: false, diskSizeBytes: 2048, runState: "busy" },
+        { sessionId: "session-pending", summary: "Running session", modifiedTime: "2026-05-02T11:00:00.000Z", busy: false, archived: false },
+      ],
+    });
+
+    expect(html).toContain("Session usage");
+    expect(html).toContain("Tokens by day");
+    expect(html).toContain("Heaviest sessions");
+    expect(html).toContain("Models used");
+    expect(html).toContain("4,000");
+    expect(html).toContain("Pending");
+    expect(html).toContain("1");
+    expect(html).toContain("Build dashboard overview");
+    expect(html).toContain("Review usage metrics");
+    expect(html).toContain("gpt-5.5");
+    expect(html).toContain("claude-opus-4.7");
+    expect(html).not.toContain("Activity timeline");
   });
 });

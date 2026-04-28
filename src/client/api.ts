@@ -958,6 +958,12 @@ export interface CopilotUsageModelRow extends CopilotUsageTotals {
   sessions: number;
 }
 
+export interface CopilotUsageSessionRow extends CopilotUsageTotals {
+  sessionId: string;
+  shutdownAt: string | null;
+  models: CopilotUsageModelRow[];
+}
+
 export interface CopilotUsageCoverage {
   sessionsSeen: number;
   sessionsWithEvents: number;
@@ -975,6 +981,7 @@ export interface CopilotUsageSummary {
   totals: CopilotUsageTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
+  sessions: CopilotUsageSessionRow[];
 }
 
 export async function fetchCopilotUsage(options?: { refresh?: boolean; signal?: AbortSignal }): Promise<CopilotUsageSummary> {
