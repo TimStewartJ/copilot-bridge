@@ -523,7 +523,9 @@ export function isRestartPending(): boolean {
 }
 
 export function isRestartCutoverInProgress(state: RestartState = _restartState): boolean {
-  return isRestartActive(state) && hasLauncherTakenRestartOwnership(state);
+  // Waiting phases keep the current server available; only the actual restart
+  // phase should reject new work.
+  return state.phase === "restarting";
 }
 
 export function clearRestartPending(): void {
