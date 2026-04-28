@@ -197,6 +197,61 @@ describe("SessionManager run state", () => {
     }
   });
 
+  it("allows startWork while the launcher is waiting for active sessions", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
+    try {
+      const { manager } = createManager({
+        copilotHome,
+      });
+      const { session, getHandler, getReleaseSend } = makeSession();
+      manager.client = {
+        resumeSession: vi.fn().mockResolvedValue(session),
+      };
+
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: dataDir,
+          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
+        },
+      });
+      await writeRestartState(join(dataDir, "restart-state.json"), {
+        requestId: "req-run-state-launcher-waiting",
+        phase: "waiting-for-sessions",
+        requestedAt: "2026-04-24T12:00:00.000Z",
+        waitingSessions: 2,
+        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
+      });
+      await refreshRestartState();
+
+      expect(() => manager.startWork("session-1", "hello")).not.toThrow();
+      await flushMicrotasks();
+
+      expect(manager.client.resumeSession).toHaveBeenCalledWith("session-1", expect.anything());
+      expect(manager.getSessionRunState("session-1")).toBe("busy");
+      expect(getRestartWaitingCount()).toBe(2);
+
+      getReleaseSend()?.();
+      await flushMicrotasks();
+      getHandler()?.({
+        type: "session.idle",
+        data: {},
+        timestamp: new Date(Date.now() + 1).toISOString(),
+      });
+      await flushMicrotasks();
+      expect(manager.getSessionRunState("session-1")).toBe("idle");
+    } finally {
+      configureRestartStateStore(undefined);
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(copilotHome, { recursive: true, force: true });
+    }
+  });
+
   it("blocks startWork when persisted restart state advances to cutover after the cache was queued", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
@@ -238,6 +293,46 @@ describe("SessionManager run state", () => {
 
       expect(() => manager.startWork("session-1", "hello")).toThrow(RESTART_PENDING_MESSAGE);
       expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    } finally {
+      configureRestartStateStore(undefined);
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(copilotHome, { recursive: true, force: true });
+    }
+  });
+
+  it("allows session creation paths while the launcher is waiting for active sessions", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
+    try {
+      const { manager } = createManager({
+        copilotHome,
+      });
+      manager.client = {
+        createSession: vi.fn().mockResolvedValue({ sessionId: "created-session" }),
+      };
+
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: dataDir,
+          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
+        },
+      });
+      await writeRestartState(join(dataDir, "restart-state.json"), {
+        requestId: "req-create-launcher-waiting",
+        phase: "waiting-for-sessions",
+        requestedAt: "2026-04-24T12:00:00.000Z",
+        waitingSessions: 2,
+        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
+      });
+      await refreshRestartState();
+
+      await expect(manager.createSession()).resolves.toEqual({ sessionId: "created-session" });
+      expect(manager.client.createSession).toHaveBeenCalledOnce();
     } finally {
       configureRestartStateStore(undefined);
       rmSync(dataDir, { recursive: true, force: true });
