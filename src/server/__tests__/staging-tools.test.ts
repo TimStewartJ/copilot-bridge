@@ -171,13 +171,18 @@ const DEPLOY_VALIDATION_COMMANDS = [
   "npx vite build",
 ] as const;
 
-async function loadStagingToolsModule() {
+type LoadStagingToolsOptions = {
+  previewParent?: string;
+};
+
+async function loadStagingToolsModule(options: LoadStagingToolsOptions = {}) {
   vi.resetModules();
+  vi.stubEnv("BRIDGE_STAGING_PREVIEW_DIR", options.previewParent ?? createTempDir("bridge-stage-preview-root-"));
   return import("../staging-tools.js");
 }
 
-async function loadStagingTools() {
-  const mod = await loadStagingToolsModule();
+async function loadStagingTools(options: LoadStagingToolsOptions = {}) {
+  const mod = await loadStagingToolsModule(options);
   return Object.fromEntries(mod.STAGING_TOOLS.map((tool: any) => [tool.name, tool])) as Record<string, any>;
 }
 
@@ -185,8 +190,6 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
-  // staging_preview tests write build artifacts here — clean up after each test
-  rmSync(join(process.cwd(), "dist", "staging"), { recursive: true, force: true });
   vi.unstubAllEnvs();
   triggerRestartPendingMock.mockReset();
   isRestartPendingMock.mockReset();
@@ -462,6 +465,38 @@ describe("staging tools", () => {
     expect(log).toHaveBeenCalledWith(
       "Skipping orphan staging prune because the staging branch snapshot is unavailable",
     );
+  });
+
+  it("restores preview dirs from configured preview roots and legacy preview roots", async () => {
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const legacyPreviewParent = createTempDir("bridge-stage-legacy-preview-root-");
+    const primaryPrefix = "preview-primary";
+    const legacyPrefix = "preview-legacy";
+    const previewMap = new Map<string, string>();
+    const restoreBackend = vi.fn();
+    const pruneGitWorktrees = vi.fn();
+
+    mkdirSync(join(stagingParent, primaryPrefix), { recursive: true });
+    mkdirSync(join(stagingParent, legacyPrefix), { recursive: true });
+    mkdirSync(join(previewParent, primaryPrefix), { recursive: true });
+    mkdirSync(join(legacyPreviewParent, legacyPrefix), { recursive: true });
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [previewParent, legacyPreviewParent],
+      activePreviewMap: previewMap,
+      expressApp: null,
+      listBranchPrefixes: () => new Set([primaryPrefix, legacyPrefix]),
+      restoreBackend,
+      pruneGitWorktrees,
+    });
+
+    expect(previewMap.get(primaryPrefix)).toBe(join(previewParent, primaryPrefix));
+    expect(previewMap.get(legacyPrefix)).toBe(join(legacyPreviewParent, legacyPrefix));
+    expect(restoreBackend).not.toHaveBeenCalled();
+    expect(pruneGitWorktrees).toHaveBeenCalledTimes(1);
   });
 
   it("queues a restart for dependency-changing deploys without syncing production dependencies in-process", async () => {
@@ -1022,6 +1057,29 @@ describe("staging tools", () => {
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.every((cmd) => !PREVIEW_VALIDATION_COMMANDS.includes(cmd as (typeof PREVIEW_VALIDATION_COMMANDS)[number]))).toBe(true);
     expect(commands.some((cmd) => cmd.startsWith("npx vite build --base"))).toBe(true);
+  });
+
+  it("builds previews under the configured runtime preview root", async () => {
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const tools = await loadStagingTools({ previewParent });
+    const stagingDir = createTempDir("bridge-stage-preview-rooted-");
+    const prefix = basename(stagingDir);
+
+    await tools.staging_preview.handler(
+      { stagingDir, validate: false },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    );
+
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).toContain(
+      `npx vite build --base "/staging/${prefix}/" --outDir "${join(previewParent, prefix)}" --emptyOutDir`,
+    );
+    expect(commands.join("\n")).not.toContain(join("dist", "staging"));
   });
 
   it("returns a normalized failure result when staging_deploy hits a rebase conflict", async () => {

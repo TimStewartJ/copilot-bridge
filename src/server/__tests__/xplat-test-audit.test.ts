@@ -213,6 +213,29 @@ describe("cross-platform test audit", () => {
     expect(result.violations.filter((v) => !v.advisory)).toEqual([]);
   });
 
+  it("reports destructive repo-runtime-path cleanup as a hard failure", () => {
+    writeFileSync(
+      join(srcDir, "destructive-cwd-path.test.ts"),
+      [
+        'rmSync(join(process.cwd(), "dist", "staging"), { recursive: true, force: true });',
+        'rmdirSync(join(process.cwd(), "data"), { recursive: true });',
+      ].join("\n"),
+    );
+
+    const result = auditCrossPlatformTests(rootDir);
+
+    expect(result.scannedFiles).toBe(1);
+    const hardViolations = result.violations.filter((v) => !v.advisory);
+    expect(hardViolations.map((v) => v.ruleId)).toEqual([
+      "destructive-repo-runtime-path",
+      "destructive-repo-runtime-path",
+    ]);
+    expect(result.violations.filter((v) => v.advisory).map((v) => v.ruleId)).toEqual([
+      "repo-runtime-path",
+      "repo-runtime-path",
+    ]);
+  });
+
   it("reports direct-mkdtemp as advisory", () => {
     writeFileSync(
       join(srcDir, "mkdtemp.test.ts"),

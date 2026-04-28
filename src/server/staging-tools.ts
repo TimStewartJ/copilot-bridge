@@ -5,7 +5,7 @@
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, copyFileSync, cpSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -31,10 +31,11 @@ import type express from "express";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
 const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
-const STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
 const SIGNAL_FILE= join(PRODUCTION_ROOT, "data", "restart.signal");
 const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
+const LEGACY_STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
+const STAGING_PREVIEW_DIR_ENV = "BRIDGE_STAGING_PREVIEW_DIR";
 const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
 const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
@@ -42,6 +43,10 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEMO_PREVIEW_SUFFIX = "-demo";
 const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
 const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
+  process.env[STAGING_PREVIEW_DIR_ENV],
+  join(PRODUCTION_DATA_DIR, "staging-previews"),
+);
 
 export type StagingPreviewProfile = "clone" | "demo";
 
@@ -74,6 +79,27 @@ type LegacyTodoStore = {
 };
 
 type StagingAppContext = AppContext & { todoStore?: LegacyTodoStore };
+
+function resolveConfiguredPath(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed ? resolve(PRODUCTION_ROOT, trimmed) : fallback;
+}
+
+function uniqueResolvedPaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of paths) {
+    const normalized = resolve(candidate);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function listStagingPreviewParents(): string[] {
+  return uniqueResolvedPaths([STAGING_PREVIEW_PARENT, LEGACY_STAGING_DIST_PARENT]);
+}
 
 function createNoopSessionWorkspaceStore() {
   return {
@@ -162,7 +188,7 @@ function createPreviewTarget(stagingDir: string, profile: StagingPreviewProfile 
     profile,
     stagingDir,
     basePath: `/staging/${prefix}/`,
-    outDir: join(STAGING_DIST_PARENT, prefix),
+    outDir: join(STAGING_PREVIEW_PARENT, prefix),
   };
 }
 
@@ -326,9 +352,11 @@ export function getActivePreviews(): ReadonlyMap<string, string> {
 }
 
 function removeStagingDist(prefix: string): void {
-  const distDir = join(STAGING_DIST_PARENT, prefix);
-  if (existsSync(distDir)) {
-    rmSync(distDir, { recursive: true, force: true });
+  for (const previewParent of listStagingPreviewParents()) {
+    const distDir = join(previewParent, prefix);
+    if (existsSync(distDir)) {
+      rmSync(distDir, { recursive: true, force: true });
+    }
   }
   activePreviews.delete(prefix);
 }
@@ -1006,6 +1034,7 @@ function removeWorktree(stagingDir: string, branch: string): void {
 type PruneOrphanedWorktreesOptions = {
   stagingParent?: string;
   stagingDistParent?: string;
+  stagingPreviewParents?: string[];
   activePreviewMap?: Map<string, string>;
   expressApp?: express.Application | null;
   listBranchPrefixes?: () => Set<string> | null;
@@ -1032,7 +1061,8 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   }
 
   const stagingParent = options.stagingParent ?? STAGING_PARENT;
-  const stagingDistParent = options.stagingDistParent ?? STAGING_DIST_PARENT;
+  const stagingPreviewParents = options.stagingPreviewParents
+    ?? (options.stagingDistParent ? [options.stagingDistParent] : listStagingPreviewParents());
   const previewMap = options.activePreviewMap ?? activePreviews;
   const expressApp = options.expressApp ?? _expressApp;
   const getBranchPrefixes = options.listBranchPrefixes ?? listStagingBranchPrefixes;
@@ -1044,7 +1074,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
 
   // Collect active staging prefixes (worktrees with valid branches)
   const activeWorktrees = new Set<string>();
-  const restorablePreviews: PreviewTarget[] = [];
+  const restorablePreviews = new Map<string, PreviewTarget>();
   const activeBranchPrefixes = getBranchPrefixes();
   const skipOrphanPrune = activeBranchPrefixes === null;
   let orphanedWorktreeDirs = 0;
@@ -1081,20 +1111,26 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
     }
   }
 
-  // Clean up orphaned staging dist directories, but keep ones with active worktrees
-  if (existsSync(stagingDistParent)) {
+  // Clean up orphaned staging preview directories, but keep ones with active worktrees.
+  for (const stagingPreviewParent of uniqueResolvedPaths(stagingPreviewParents)) {
+    if (!existsSync(stagingPreviewParent)) continue;
     try {
-      const distEntries = readdirSync(stagingDistParent, { withFileTypes: true });
+      const distEntries = readdirSync(stagingPreviewParent, { withFileTypes: true });
       for (const entry of distEntries) {
         if (!entry.isDirectory()) continue;
         const parsed = parsePreviewPrefix(entry.name, activeWorktrees);
         if (parsed) {
-          const distDir = join(stagingDistParent, entry.name);
-          previewMap.set(entry.name, distDir);
-          restorablePreviews.push(createPreviewTarget(join(stagingParent, parsed.stagingName), parsed.profile));
-          restoredPreviewDirs++;
+          const distDir = join(stagingPreviewParent, entry.name);
+          if (!restorablePreviews.has(entry.name)) {
+            previewMap.set(entry.name, distDir);
+            restorablePreviews.set(entry.name, {
+              ...createPreviewTarget(join(stagingParent, parsed.stagingName), parsed.profile),
+              outDir: distDir,
+            });
+            restoredPreviewDirs++;
+          }
         } else if (!skipOrphanPrune) {
-          rmSync(join(stagingDistParent, entry.name), { recursive: true, force: true });
+          rmSync(join(stagingPreviewParent, entry.name), { recursive: true, force: true });
           orphanedPreviewDirs++;
         }
       }
@@ -1118,7 +1154,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
 
   // Restore staged backends for surviving previews
   if (expressApp) {
-    for (const target of restorablePreviews) {
+    for (const target of restorablePreviews.values()) {
       if (!previewMap.has(target.prefix)) continue;
       writeLog(`Restoring staged backend for preview: ${target.prefix}`);
       const restoreResult = await restoreBackend(target.prefix, target.stagingDir, { profile: target.profile });
@@ -1147,6 +1183,8 @@ export const __testing = {
   restoreStagingBackendWithRetry,
   listStagingBranchPrefixes,
   pruneOrphanedWorktreesImpl,
+  getStagingPreviewParent: () => STAGING_PREVIEW_PARENT,
+  listStagingPreviewParents,
 };
 
 export const STAGING_TOOLS = [
@@ -1272,8 +1310,9 @@ export const STAGING_TOOLS = [
 
       log(`Building ${profile} staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
 
-      if (!existsSync(STAGING_DIST_PARENT)) {
-        mkdirSync(STAGING_DIST_PARENT, { recursive: true });
+      const previewParent = dirname(outDir);
+      if (!existsSync(previewParent)) {
+        mkdirSync(previewParent, { recursive: true });
       }
 
       // Install deps if staging package.json diverged from production

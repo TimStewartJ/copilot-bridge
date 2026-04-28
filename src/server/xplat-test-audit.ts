@@ -76,6 +76,12 @@ export const CROSS_PLATFORM_TEST_RULES: ReadonlyArray<CrossPlatformTestRule> = [
       "Tests must not shell out to npm, npx, vite, or tsc. Mock the exec call or test behavior through the module API.",
   },
   {
+    id: "destructive-repo-runtime-path",
+    pattern: /\b(?:rmSync|rmdirSync)\s*\([^;\n]*join\s*\(\s*process\.cwd\s*\(\s*\)\s*,\s*["'`](?:data|\.test-data|dist)["'`]/,
+    message:
+      "Never delete repo-local runtime paths derived from process.cwd(); use an isolated temp runtime directory.",
+  },
+  {
     id: "repo-runtime-path",
     // Catches join(process.cwd(), "data"|".test-data"|"dist") — writing to repo-local runtime dirs in tests.
     pattern: /join\s*\(\s*process\.cwd\s*\(\s*\)\s*,\s*["'`](?:data|\.test-data|dist)["'`]/,
