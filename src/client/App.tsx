@@ -56,8 +56,8 @@ import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
 import { getHomeChecklistIndicator } from "./checklist-helpers";
 import TaskRail from "./components/TaskRail";
-import TaskPanel from "./components/TaskPanel";
-import TaskDashboard from "./components/TaskDashboard";
+import TaskPanel, { TaskPanelRouteSkeleton } from "./components/TaskPanel";
+import TaskDashboard, { TaskDashboardRouteSkeleton } from "./components/TaskDashboard";
 import TaskList from "./components/TaskList";
 import ChatView from "./components/ChatView";
 import Dashboard from "./components/Dashboard";
@@ -1513,9 +1513,7 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
-                    Loading…
-                  </div>
+                  <TaskPanelRouteSkeleton />
                 )
               }
             />
@@ -1582,9 +1580,7 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex-1 flex items-center justify-center text-text-muted text-sm">
-                    Loading…
-                  </div>
+                  <TaskDashboardRouteSkeleton />
                 )
               }
             />

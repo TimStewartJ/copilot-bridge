@@ -14,6 +14,7 @@ import {
   type BridgeStatusDescriptor,
   type BridgeStatusTone,
 } from "../../lib/bridge-commit-status";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
 
 const LAUNCHER_LOG_LINE_COUNT = 8;
@@ -235,7 +236,16 @@ function CommitCard({
         </span>
       </div>
 
-      {snapshot?.status === "ok" ? (
+      {loading && !snapshot ? (
+        <LoadingSkeletonRegion
+          isLoading
+          label={`Loading ${title.toLowerCase()} commit metadata`}
+          className="space-y-2"
+        >
+          <Skeleton height={24} width="56%" />
+          <SkeletonText lines={2} widths={["88%", "64%"]} />
+        </LoadingSkeletonRegion>
+      ) : snapshot?.status === "ok" ? (
         <div className="space-y-2">
           <code className="inline-flex max-w-full rounded bg-bg-primary px-2 py-1 text-[11px] text-text-secondary">
             {snapshot.ref}
@@ -293,7 +303,19 @@ function LauncherLogCard({
         </span>
       </div>
 
-      {launcherLog?.status === "ok" ? (
+      {loading && !launcherLog ? (
+        <LoadingSkeletonRegion
+          isLoading
+          label="Loading launcher log tail"
+          className="space-y-2"
+        >
+          {Array.from({ length: 3 }, (_, index) => (
+            <div key={index} className="rounded-md border border-border bg-bg-primary px-3 py-2">
+              <SkeletonText lines={1} widths={[index === 0 ? "92%" : index === 1 ? "76%" : "84%"]} />
+            </div>
+          ))}
+        </LoadingSkeletonRegion>
+      ) : launcherLog?.status === "ok" ? (
         launcherLog.lines.length > 0 ? (
           <pre className="overflow-x-auto rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary whitespace-pre-wrap break-words">
             {launcherLog.lines.join("\n")}

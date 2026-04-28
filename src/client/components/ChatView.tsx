@@ -16,6 +16,7 @@ import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import { ArrowUpCircle, ClipboardList, Loader2 } from "lucide-react";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const INITIAL_PAGE_SIZE = 50;
 const MANUAL_LOAD_PAGE_SIZE = 200;
@@ -841,9 +842,27 @@ export default function ChatView({
       {/* MCP server status */}
       <McpStatusBar servers={effectiveMcpServers} />
       {loading && entries.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-accent italic">
-          Loading history...
-        </div>
+        <LoadingSkeletonRegion
+          isLoading
+          label="Loading chat history"
+          className="flex-1 flex items-end overflow-hidden px-3 pb-6 md:px-5"
+        >
+          <div className="w-full space-y-4">
+            <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
+              <SkeletonText lines={3} widths={["88%", "72%", "46%"]} />
+            </div>
+            <div className="ml-auto max-w-md rounded-2xl border border-accent/20 bg-accent/10 px-4 py-3">
+              <SkeletonText lines={2} widths={["78%", "52%"]} />
+            </div>
+            <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
+              <div className="mb-3 flex items-center gap-2">
+                <Skeleton shape="circle" width={18} height={18} />
+                <Skeleton height={10} width="32%" shape="pill" />
+              </div>
+              <SkeletonText lines={3} widths={["94%", "80%", "60%"]} />
+            </div>
+          </div>
+        </LoadingSkeletonRegion>
       ) : entries.length === 0 && !isStreaming && !creating ? (
         <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
           Send a message to get started

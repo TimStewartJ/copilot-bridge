@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
+import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -465,7 +466,21 @@ export default function SessionList({
               {showArchived && (
                 <div className={s.listGap}>
                   {archivedSessions.length === 0 && (archivedLoading || !archivedLoaded) ? (
-                    <div className="text-xs text-text-faint px-3 py-1">Loading…</div>
+                    <LoadingSkeletonRegion
+                      isLoading
+                      label="Loading archived sessions"
+                      className="px-1 py-1"
+                    >
+                      <div className="space-y-0.5">
+                        {Array.from({ length: 3 }, (_, index) => (
+                          <SkeletonRow
+                            key={index}
+                            leading={false}
+                            className={`px-2 ${s.itemPadding}`}
+                          />
+                        ))}
+                      </div>
+                    </LoadingSkeletonRegion>
                   ) : (
                     archivedSessions.map(renderItem)
                   )}

@@ -37,6 +37,7 @@ import { useIsMobile } from "../useIsMobile";
 import remarkWikilink from "../lib/remark-wikilink";
 import CodeBlock from "./CodeBlock";
 import { DOCS_PROSE } from "./shared/prose-classes";
+import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import {
   fetchDocsTree,
   fetchDocPage,
@@ -523,6 +524,99 @@ function TreeNode({
       <FileText size={15} className="shrink-0 text-text-secondary" />
       <span className="truncate">{node.name}</span>
     </button>
+  );
+}
+
+function DocsTreeSkeleton() {
+  return (
+    <LoadingSkeletonRegion
+      isLoading
+      label="Loading documentation tree"
+      className="space-y-1 px-1 py-1"
+    >
+      {Array.from({ length: 9 }, (_, index) => (
+        <div
+          key={index}
+          className="flex items-center gap-2 rounded-xl px-2 py-2"
+          style={{ paddingLeft: `${(index % 3) * 16 + 8}px` }}
+        >
+          <Skeleton
+            shape={index % 4 === 0 ? "rounded" : "circle"}
+            width={15}
+            height={15}
+            className="shrink-0"
+          />
+          <Skeleton
+            height={12}
+            width={index % 3 === 0 ? "62%" : index % 3 === 1 ? "48%" : "70%"}
+            shape="pill"
+          />
+        </div>
+      ))}
+    </LoadingSkeletonRegion>
+  );
+}
+
+function DocsPageSkeleton() {
+  return (
+    <LoadingSkeletonRegion
+      isLoading
+      label="Loading documentation page"
+      className="flex min-h-0 flex-1 overflow-hidden"
+    >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="shrink-0 border-b border-border bg-gradient-to-b from-bg-secondary to-bg-primary">
+          <div className="mx-auto max-w-4xl px-5 py-6 sm:px-8">
+            <div className="flex items-center gap-2">
+              <Skeleton height={10} width={48} shape="pill" />
+              <Skeleton height={10} width={72} shape="pill" />
+              <Skeleton height={10} width={56} shape="pill" />
+            </div>
+            <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 flex-1 space-y-3">
+                <Skeleton height={36} width="68%" shape="pill" />
+                <div className="flex flex-wrap gap-2">
+                  <Skeleton height={28} width={128} shape="pill" />
+                  <Skeleton height={28} width={112} shape="pill" />
+                  <Skeleton height={28} width={92} shape="pill" />
+                </div>
+              </div>
+              <div className="hidden shrink-0 gap-2 sm:flex">
+                <Skeleton height={38} width={72} shape="rounded" />
+                <Skeleton height={38} width={82} shape="rounded" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <article className="mx-auto w-full max-w-4xl px-5 py-8 sm:px-8 sm:py-10">
+          <div className="space-y-8">
+            <SkeletonText lines={5} widths={["100%", "96%", "88%", "94%", "62%"]} />
+            <SkeletonCard className="space-y-3">
+              <Skeleton height={18} width="42%" shape="pill" />
+              <SkeletonText lines={4} widths="paragraph" />
+            </SkeletonCard>
+            <div className="space-y-3">
+              <Skeleton height={24} width="36%" shape="pill" />
+              <SkeletonText lines={7} widths={["96%", "100%", "82%", "94%", "76%", "88%", "52%"]} />
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <aside className="hidden w-[300px] shrink-0 overflow-hidden xl:block">
+        <div className="sticky top-0 flex h-full flex-col gap-4 overflow-y-auto px-4 py-6">
+          <SkeletonCard className="space-y-3">
+            <Skeleton height={12} width="36%" shape="pill" />
+            <SkeletonText lines={4} widths={["74%", "58%", "66%", "42%"]} />
+          </SkeletonCard>
+          <SkeletonCard className="space-y-3">
+            <Skeleton height={12} width="32%" shape="pill" />
+            <SkeletonText lines={5} widths={["68%", "88%", "54%", "72%", "48%"]} />
+          </SkeletonCard>
+        </div>
+      </aside>
+    </LoadingSkeletonRegion>
   );
 }
 
@@ -1172,7 +1266,7 @@ export default function DocsView() {
             </div>
           )
         ) : treeLoading ? (
-          <div className="px-3 py-6 text-center text-sm text-text-faint">Loading...</div>
+          <DocsTreeSkeleton />
         ) : tree.length === 0 ? (
           <div className="px-3 py-6 text-center text-sm text-text-faint">No docs yet</div>
         ) : (
@@ -1666,7 +1760,7 @@ export default function DocsView() {
   ) : null;
 
   const mainContent = pageLoading ? (
-    <div className="flex flex-1 items-center justify-center text-sm text-text-faint">Loading...</div>
+    <DocsPageSkeleton />
   ) : (
     createView || editView || pageContent || dbCollectionView || emptyView
   );

@@ -19,6 +19,7 @@ import {
   getGitWorkspaceKind,
   getGitWorktreePath,
 } from "../lib/workspace-presentation";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const TASK_WORKSPACE_NOT_CONFIGURED = "Task workspace is not configured.";
 
@@ -89,6 +90,32 @@ function WorkspaceChoice({
         {selected && <Check size={14} className="mt-0.5 shrink-0 text-accent" />}
       </div>
     </button>
+  );
+}
+
+function WorkspaceFieldSkeleton() {
+  return (
+    <LoadingSkeletonRegion isLoading label="Loading session workspace details" className="space-y-2">
+      <Skeleton height={14} width="72%" shape="pill" />
+      <Skeleton height={12} width="38%" shape="pill" />
+    </LoadingSkeletonRegion>
+  );
+}
+
+function WorktreeListSkeleton() {
+  return (
+    <LoadingSkeletonRegion isLoading label="Loading available worktrees" className="space-y-2">
+      {Array.from({ length: 2 }, (_, index) => (
+        <div key={index} className="rounded-lg border border-border bg-bg-secondary px-3 py-2">
+          <Skeleton height={14} width={index === 0 ? "78%" : "64%"} shape="pill" />
+          <div className="mt-2 flex items-center gap-2">
+            <Skeleton height={10} width="24%" shape="pill" />
+            <Skeleton height={10} width="18%" shape="pill" />
+            <Skeleton height={10} width="16%" shape="pill" />
+          </div>
+        </div>
+      ))}
+    </LoadingSkeletonRegion>
   );
 }
 
@@ -255,34 +282,38 @@ export default function WorkspaceDetailsSheet({
                 Current session workspace
               </div>
               {sessionId ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="break-all font-mono text-xs text-text-primary">
-                      {pathLabel(sessionWorkspace?.effectiveCwd)}
-                    </span>
-                    {sessionWorkspace?.overridesTaskWorkspace && (
-                      <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
-                        Overrides task workspace
+                loading ? (
+                  <WorkspaceFieldSkeleton />
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="break-all font-mono text-xs text-text-primary">
+                        {pathLabel(sessionWorkspace?.effectiveCwd)}
                       </span>
-                    )}
-                    {sessionWorkspace?.pathState === "missing" && (
-                      <span className="rounded-full bg-error/15 px-1.5 py-0.5 text-[10px] font-medium text-error">
-                        Missing
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[11px] text-text-muted">
-                    {sessionWorkspace?.source === "session_workspace"
-                      ? "Pinned for this session"
-                      : sessionWorkspace?.source === "task"
-                        ? "Using task default"
-                        : sessionWorkspace?.source === "workspace_yaml"
-                          ? "Using legacy workspace.yaml value"
-                          : sessionWorkspace?.source === "default"
-                            ? "Using app default workspace"
-                            : "Not configured"}
-                  </div>
-                </>
+                      {sessionWorkspace?.overridesTaskWorkspace && (
+                        <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                          Overrides task workspace
+                        </span>
+                      )}
+                      {sessionWorkspace?.pathState === "missing" && (
+                        <span className="rounded-full bg-error/15 px-1.5 py-0.5 text-[10px] font-medium text-error">
+                          Missing
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-[11px] text-text-muted">
+                      {sessionWorkspace?.source === "session_workspace"
+                        ? "Pinned for this session"
+                        : sessionWorkspace?.source === "task"
+                          ? "Using task default"
+                          : sessionWorkspace?.source === "workspace_yaml"
+                            ? "Using legacy workspace.yaml value"
+                            : sessionWorkspace?.source === "default"
+                              ? "Using app default workspace"
+                              : "Not configured"}
+                    </div>
+                  </>
+                )
               ) : (
                 <div className="text-xs text-text-muted">
                   No session selected. Open a task chat to manage a session workspace.
@@ -330,6 +361,14 @@ export default function WorkspaceDetailsSheet({
                   <div className="break-all font-mono text-text-primary">{gitWorktreePath}</div>
                 </div>
               </div>
+            ) : loading ? (
+              <LoadingSkeletonRegion isLoading label="Loading Git workspace details" className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Skeleton height={14} width="30%" shape="pill" />
+                  <Skeleton height={18} width={82} shape="pill" />
+                </div>
+                <SkeletonText lines={3} widths={["86%", "68%", "54%"]} />
+              </LoadingSkeletonRegion>
             ) : (
               <div className="text-xs text-text-muted">
                 {gitStatus?.status === "not_repo"
@@ -338,9 +377,7 @@ export default function WorkspaceDetailsSheet({
                     ? gitStatus.error
                     : gitStatus?.status === "not_configured"
                       ? gitStatus.error
-                      : loading
-                        ? "Loading session workspace details…"
-                        : "No Git workspace details available."}
+                      : "No Git workspace details available."}
               </div>
             )}
           </div>
@@ -349,7 +386,9 @@ export default function WorkspaceDetailsSheet({
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
               Available worktrees
             </div>
-            {availableWorktrees.length > 0 ? (
+            {loading && availableWorktrees.length === 0 ? (
+              <WorktreeListSkeleton />
+            ) : availableWorktrees.length > 0 ? (
               <div className="space-y-2">
                 {availableWorktrees.map((worktree) => (
                   <WorkspaceChoice

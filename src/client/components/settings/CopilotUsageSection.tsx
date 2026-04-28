@@ -3,6 +3,7 @@ import { AlertTriangle, BarChart3, Loader2, RotateCw } from "lucide-react";
 import type { CopilotUsageCoverage, CopilotUsageModelRow, CopilotUsageSkipReason } from "../../api";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import EmptyState from "../shared/EmptyState";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
 
 const NUMBER_FORMATTER = new Intl.NumberFormat();
@@ -77,12 +78,29 @@ export function CopilotUsageSection() {
         </div>
 
         {isLoading && !data && (
-          <div className="rounded-md border border-border bg-bg-elevated p-4">
-            <div className="flex items-center gap-2 text-sm text-text-muted">
-              <Loader2 size={15} className="animate-spin" />
-              Scanning local Copilot session history…
+          <LoadingSkeletonRegion
+            isLoading
+            label="Scanning local Copilot session history"
+            className="rounded-md border border-border bg-bg-elevated p-4 space-y-3"
+          >
+            <div>
+              <p className="text-sm font-medium text-text-secondary">Scanning local Copilot session history…</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Usage totals will appear after local shutdown summaries are scanned.
+              </p>
             </div>
-          </div>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {["Total tokens", "Requests", "Included sessions", "Coverage window"].map((label) => (
+                <div key={label} className="rounded-md border border-border bg-bg-primary px-4 py-3">
+                  <Skeleton height={10} width="54%" shape="pill" />
+                  <Skeleton height={16} width="72%" shape="pill" className="mt-2" />
+                </div>
+              ))}
+            </div>
+            <div className="rounded-md border border-warning/20 bg-bg-primary p-3">
+              <SkeletonText lines={2} widths={["64%", "86%"]} />
+            </div>
+          </LoadingSkeletonRegion>
         )}
 
         {!isLoading && !data && error && (

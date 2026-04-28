@@ -1,6 +1,7 @@
 import type { AppSettings } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
 
 export function ModelSection({
@@ -25,10 +26,14 @@ export function ModelSection({
     >
       <div className="bg-bg-elevated border border-border rounded-md p-4">
         {isLoading ? (
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            Loading available models…
-          </div>
+          <LoadingSkeletonRegion
+            isLoading
+            label="Loading available models"
+            className="space-y-2"
+          >
+            <Skeleton height={34} className="w-full" />
+            <SkeletonText lines={1} widths={["42%"]} lineClassName="h-2.5" />
+          </LoadingSkeletonRegion>
         ) : error ? (
           <div className="flex items-center gap-2 text-xs text-error">
             <AlertTriangle className="w-3 h-3" />
