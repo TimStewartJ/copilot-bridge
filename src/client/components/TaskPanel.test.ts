@@ -432,4 +432,19 @@ describe("TaskPanel", () => {
     expect(html).not.toContain("Done when");
     expect(html).not.toContain("QA signs off");
   });
+
+  it("does not render the redundant checklist open/done summary row", async () => {
+    const html = await renderTaskPanelHtml(createTask({ kind: "ongoing" }), {
+      checklistItems: [
+        { id: "open-1", taskId: "task-1", text: "Open item 1", done: false, order: 0, createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "open-2", taskId: "task-1", text: "Open item 2", done: false, order: 1, createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "done-1", taskId: "task-1", text: "Done item", done: true, order: 2, createdAt: "2026-01-01T00:00:00.000Z" },
+      ],
+    });
+
+    expect(html).toContain("Checklist");
+    expect(html).toContain("(1/3)");
+    expect(html).not.toContain("2 open");
+    expect(html).not.toContain("1 done");
+  });
 });

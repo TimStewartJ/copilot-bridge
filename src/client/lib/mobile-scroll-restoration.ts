@@ -24,7 +24,6 @@ export interface MobileScrollRestorationOptions {
   navigationType?: MobileScrollNavigationType | null;
   isPopNavigation?: boolean;
   locationState?: unknown;
-  suppressTaskDashboardRestore?: boolean;
 }
 
 const ROOT_ROUTE_KEYS = {
@@ -56,11 +55,6 @@ export function hasBridgeMobileScrollRestoreState(state: unknown): boolean {
   return isRecord(state) && state[BRIDGE_MOBILE_SCROLL_RESTORE_STATE] === true;
 }
 
-export function hasTaskDashboardFocusParams(search: string | URLSearchParams): boolean {
-  const params = typeof search === "string" ? new URLSearchParams(search) : search;
-  return params.has("section") || params.has("checklistItem");
-}
-
 function isPopNavigation({ navigationType, isPopNavigation }: MobileScrollRestorationOptions): boolean {
   return isPopNavigation ?? navigationType === "POP";
 }
@@ -77,8 +71,7 @@ export function getMobileScrollRestorationPolicy(
     return null;
   }
 
-  const restore = !options.suppressTaskDashboardRestore
-    && (isPopNavigation(options) || hasBridgeMobileScrollRestoreState(options.locationState));
+  const restore = isPopNavigation(options) || hasBridgeMobileScrollRestoreState(options.locationState);
 
   return {
     key: routeMeta.route === "task-cockpit"

@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useMemo, type ReactNode } from "react";
 import type { BatchAction, CopilotUsageModelRow, CopilotUsageSessionRow, CopilotUsageTotals, Session, Task, TaskGroup, TaskPatch } from "../api";
 import { getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useCopilotUsageQuery } from "../hooks/queries/useCopilotUsage";
-import { hasTaskDashboardFocusParams } from "../lib/mobile-scroll-restoration";
 import {
   getTaskCompletionCounts,
   getTaskCompletionState,
@@ -63,7 +61,6 @@ interface TaskDashboardProps {
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
-type FocusSection = "readiness" | "session-usage";
 type SignalTone = "success" | "warning" | "danger" | "info" | "muted";
 
 interface ReadinessSignal {
@@ -182,20 +179,6 @@ export default function TaskDashboard({
   onRefresh,
   scrollRestoration,
 }: TaskDashboardProps) {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [highlightedSection, setHighlightedSection] = useState<FocusSection | null>(null);
-  const [pendingFocusSection, setPendingFocusSection] = useState<FocusSection | null>(null);
-  const readinessRef = useRef<HTMLDivElement>(null);
-  const sessionUsageRef = useRef<HTMLDivElement>(null);
-  const highlightTimerRef = useRef<number | null>(null);
-  const suppressScrollRestore = hasTaskDashboardFocusParams(searchParams);
-  const scrollRestorationForVisit = scrollRestoration
-    ? {
-        ...scrollRestoration,
-        restore: scrollRestoration.restore !== false && !suppressScrollRestore,
-      }
-    : undefined;
-
   const ws = useTaskWorkspace(task, taskGroups, sessions);
   const {
     enrichedWIs,
@@ -211,51 +194,7 @@ export default function TaskDashboard({
     relatedDocs,
     refresh,
   } = ws;
-  const { data: copilotUsage, refresh: refreshCopilotUsage } = useCopilotUsageQuery();
-
-  useEffect(() => {
-    return () => {
-      if (highlightTimerRef.current !== null) {
-        window.clearTimeout(highlightTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hasTaskDashboardFocusParams(searchParams)) return;
-
-    const targetSection: FocusSection = searchParams.get("section") === "sessions"
-      ? "session-usage"
-      : "readiness";
-    setPendingFocusSection(targetSection);
-
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete("section");
-      next.delete("checklistItem");
-      return next;
-    }, { replace: true });
-  }, [searchParams, setSearchParams]);
-
-  useEffect(() => {
-    if (!pendingFocusSection) return;
-
-    const frameId = window.requestAnimationFrame(() => {
-      const target = pendingFocusSection === "session-usage" ? sessionUsageRef.current : readinessRef.current;
-      setHighlightedSection(pendingFocusSection);
-      target?.scrollIntoView({ behavior: "smooth", block: "start" });
-      if (highlightTimerRef.current !== null) {
-        window.clearTimeout(highlightTimerRef.current);
-      }
-      highlightTimerRef.current = window.setTimeout(() => {
-        setHighlightedSection(null);
-        highlightTimerRef.current = null;
-      }, 1600);
-      setPendingFocusSection(null);
-    });
-
-    return () => window.cancelAnimationFrame(frameId);
-  }, [pendingFocusSection]);
+  const { data: copilotUsage, isLoading: copilotUsageLoading, refresh: refreshCopilotUsage } = useCopilotUsageQuery();
 
   const completionCounts = useMemo(() => getTaskCompletionCounts({
     checklistItems,
@@ -290,6 +229,7 @@ export default function TaskDashboard({
     linkedSessions,
     usageSessions: copilotUsage?.sessions ?? [],
   }), [copilotUsage?.sessions, linkedSessions, task.sessionIds]);
+  const isSessionUsageLoading = copilotUsageLoading && !copilotUsage;
 
   const inheritedTagSet = inheritedTagIds instanceof Set
     ? inheritedTagIds
@@ -313,7 +253,7 @@ export default function TaskDashboard({
       <PullToRefresh
         onRefresh={handleRefresh}
         className="absolute inset-0"
-        scrollRestoration={scrollRestorationForVisit}
+        scrollRestoration={scrollRestoration}
       >
         <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
           <header className="space-y-3">
@@ -421,10 +361,7 @@ export default function TaskDashboard({
               </div>
             </Section>
 
-            <div
-              ref={readinessRef}
-              className={highlightedSection === "readiness" ? "animate-checklist-highlight rounded-xl" : ""}
-            >
+            <div>
               <Section
                 icon={<CheckCircle2 size={14} />}
                 title="Readiness intelligence"
@@ -471,16 +408,24 @@ export default function TaskDashboard({
             </div>
           </div>
 
-          <div
-            ref={sessionUsageRef}
-            className={highlightedSection === "session-usage" ? "animate-checklist-highlight rounded-xl" : ""}
-          >
+          <div>
             <Section
               icon={<MessageSquare size={14} />}
               title="Session usage"
-              count={`${sessionUsage.includedSessions.length}/${Math.max(task.sessionIds.length, sessionUsage.includedSessions.length)} tokenized`}
+              count={isSessionUsageLoading
+                ? undefined
+                : `${sessionUsage.includedSessions.length}/${Math.max(task.sessionIds.length, sessionUsage.includedSessions.length)} tokenized`}
             >
-              <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5">
+              {isSessionUsageLoading ? (
+                <LoadingSkeletonRegion
+                  isLoading
+                  label="Loading session usage"
+                  className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5"
+                >
+                  <SessionUsageSkeleton />
+                </LoadingSkeletonRegion>
+              ) : (
+                <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5">
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
                   <MetricCard label="Tokens" value={formatNumber(sessionUsage.totals.totalTokens)} sub="posted" />
                   <MetricCard label="Requests" value={formatNumber(sessionUsage.totals.requests)} sub="completed" />
@@ -603,7 +548,8 @@ export default function TaskDashboard({
                     </p>
                   </div>
                 )}
-              </div>
+                </div>
+              )}
             </Section>
           </div>
         </div>
@@ -633,6 +579,60 @@ function MetricCard({
         {sub}
       </div>
     </div>
+  );
+}
+
+function SessionUsageSkeleton() {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+        {Array.from({ length: 6 }, (_, index) => (
+          <SkeletonCard key={index} className="space-y-2 px-3 py-2">
+            <Skeleton height={9} width="58%" shape="pill" />
+            <Skeleton height={16} width="44%" shape="pill" />
+            <Skeleton height={9} width="72%" shape="pill" />
+          </SkeletonCard>
+        ))}
+      </div>
+
+      <SkeletonCard className="space-y-4 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton height={12} width={96} shape="pill" />
+            <Skeleton height={9} width="62%" shape="pill" />
+          </div>
+          <Skeleton height={9} width={84} shape="pill" className="shrink-0" />
+        </div>
+        <div className="space-y-3">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="grid grid-cols-[5.5rem_1fr_auto] items-center gap-3">
+              <Skeleton height={9} width={52} shape="pill" />
+              <Skeleton height={8} width="100%" shape="pill" />
+              <Skeleton height={9} width={42} shape="pill" />
+            </div>
+          ))}
+        </div>
+      </SkeletonCard>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {["Heaviest sessions", "Models used"].map((label) => (
+          <SkeletonCard key={label} className="space-y-3 p-3">
+            <Skeleton height={12} width={label === "Models used" ? 78 : 110} shape="pill" />
+            {Array.from({ length: 3 }, (_, index) => (
+              <div key={index} className="rounded-md border border-border/60 bg-bg-secondary/60 px-3 py-2">
+                <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+                  <div className="min-w-0 space-y-2">
+                    <Skeleton height={10} width="74%" shape="pill" />
+                    <Skeleton height={9} width="52%" shape="pill" />
+                  </div>
+                  <Skeleton height={12} width={48} shape="pill" />
+                </div>
+              </div>
+            ))}
+          </SkeletonCard>
+        ))}
+      </div>
+    </>
   );
 }
 

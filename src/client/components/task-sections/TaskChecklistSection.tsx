@@ -18,7 +18,6 @@ export interface TaskChecklistSectionProps {
   onChecklistItemDelete: (id: string) => void;
   variant?: "panel" | "card";
   highlightId?: string | null;
-  onViewAll?: () => void;
   isReadyToComplete?: boolean;
 }
 
@@ -34,30 +33,23 @@ export default function TaskChecklistSection({
   onChecklistItemDelete,
   variant = "panel",
   highlightId,
-  onViewAll,
   isReadyToComplete = false,
 }: TaskChecklistSectionProps) {
   const openChecklistItems = checklistItems.filter((t) => !t.done);
   const completedChecklistItems = checklistItems.filter((t) => t.done);
   const isCard = variant === "card";
   const panelPreview = getTaskPanelChecklistPreview(checklistItems, { highlightId });
-  const overflowSummary = [
-    panelPreview.hiddenOpenCount > 0
-      ? `${panelPreview.hiddenOpenCount} more open`
-      : null,
-    panelPreview.completedCount > 0
-      ? `${panelPreview.completedCount} done`
-      : null,
-  ].filter((item): item is string => item !== null);
-  const hasOverflow = overflowSummary.length > 0;
-  const highlightedCompletedItem = panelPreview.highlightedCompletedItem;
+  const [showAllOpen, setShowAllOpen] = useState(false);
   const hasHighlightedCompletedItem = completedChecklistItems.some((item) => item.id === highlightId);
+  const panelOpenItems = showAllOpen ? openChecklistItems : panelPreview.openPreviewItems;
+  const shouldShowOpenExpansion = panelPreview.hiddenOpenCount > 0;
   const [showReadyCue, setShowReadyCue] = useState(false);
   const previousOpenChecklistItemsRef = useRef<number | null>(null);
 
   useEffect(() => {
     previousOpenChecklistItemsRef.current = null;
     setShowReadyCue(false);
+    setShowAllOpen(false);
   }, [taskId]);
 
   useEffect(() => {
@@ -150,9 +142,9 @@ export default function TaskChecklistSection({
         </div>
       ) : (
         <>
-          {panelPreview.openPreviewItems.length > 0 && (
+          {panelOpenItems.length > 0 && (
             <div className="space-y-0">
-              {panelPreview.openPreviewItems.map((checklistItem) => (
+              {panelOpenItems.map((checklistItem) => (
                 <ChecklistItemRow
                   key={checklistItem.id}
                   variant="panel"
@@ -164,20 +156,6 @@ export default function TaskChecklistSection({
               ))}
             </div>
           )}
-          {highlightedCompletedItem && (
-            <div className="pt-1">
-              <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-text-faint">
-                From history
-              </div>
-              <ChecklistItemRow
-                variant="panel"
-                checklistItem={highlightedCompletedItem}
-                highlight
-                onUpdate={onChecklistItemUpdate}
-                onDelete={() => onChecklistItemDelete(highlightedCompletedItem.id)}
-              />
-            </div>
-          )}
           {readyCue}
           <div className="px-3 py-1">
             <input
@@ -186,27 +164,46 @@ export default function TaskChecklistSection({
               value={newChecklistItemText}
               onChange={(e) => onNewChecklistItemTextChange(e.target.value)}
               onKeyDown={async (e) => {
-                if (e.key === "Enter" && newChecklistItemText.trim()) {
+                const text = newChecklistItemText.trim();
+                if (e.key === "Enter" && text) {
                   onNewChecklistItemTextChange("");
-                  await onCreateChecklistItem(newChecklistItemText.trim());
+                  await onCreateChecklistItem(text);
+                  setShowAllOpen(true);
                 }
               }}
             />
           </div>
-          {hasOverflow && (
-            onViewAll ? (
-              <button
-                onClick={onViewAll}
-                className="px-3 pb-1 text-[11px] text-accent hover:text-accent-hover transition-colors"
-              >
-                View full checklist
-                <span className="text-text-faint ml-1">· {overflowSummary.join(" · ")}</span>
-              </button>
-            ) : (
-              <div className="px-3 pb-1 text-[10px] text-text-faint">
-                {overflowSummary.join(" · ")}
+          {shouldShowOpenExpansion && (
+            <button
+              onClick={() => setShowAllOpen((value) => !value)}
+              className="px-3 pb-1 text-[11px] text-accent hover:text-accent-hover transition-colors"
+            >
+              {showAllOpen ? "Show fewer open items" : "View full checklist"}
+              <span className="text-text-faint ml-1">
+                · {showAllOpen ? `${openChecklistItems.length} open` : `${panelPreview.hiddenOpenCount} more open`}
+              </span>
+            </button>
+          )}
+          {completedChecklistItems.length > 0 && (
+            <CollapsibleCompleted
+              key={`panel-done-${taskId}`}
+              count={completedChecklistItems.length}
+              label="done"
+              forceOpen={hasHighlightedCompletedItem}
+            >
+              <div className="pt-1 space-y-0">
+                {completedChecklistItems.map((checklistItem) => (
+                  <ChecklistItemRow
+                    key={checklistItem.id}
+                    variant="panel"
+                    checklistItem={checklistItem}
+                    highlight={checklistItem.id === highlightId}
+                    onUpdate={onChecklistItemUpdate}
+                    onDelete={() => onChecklistItemDelete(checklistItem.id)}
+                  />
+                ))}
               </div>
-            )
+            </CollapsibleCompleted>
           )}
         </>
       )}

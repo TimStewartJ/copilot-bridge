@@ -47,7 +47,6 @@ import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy 
 import { getSessionPath, type SessionNavigationTarget } from "./lib/session-path";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
-import { buildTaskDashboardSearch } from "./task-detail-focus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
@@ -1313,10 +1312,12 @@ export default function App() {
       />
 
       {/* ── Task Panel / Mobile Task List ─────────────────── */}
-      {/* Desktop: visible when a session is active or quick chats (not on task dashboard or home) */}
+      {/* Desktop: visible for active task sessions and the non-duplicative task overview. */}
       {/* Mobile: show task list at / only */}
       {(() => {
-        const showDesktopPanel = !!activeSessionId && !!activeTaskId;
+        const showDesktopPanel = !!selectedTask
+          && !!activeTaskId
+          && (!!activeSessionId || mobileRouteMeta.route === "task-dashboard");
         const showMobileTaskList = isMobileRoute.taskList;
         const showOuterContainer = showDesktopPanel || showMobileTaskList;
         return showOuterContainer ? (
@@ -1397,9 +1398,7 @@ export default function App() {
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
-                  onViewDashboard={(taskId, options) => navigate(
-                    `/tasks/${taskId}/overview${buildTaskDashboardSearch(options)}`,
-                  )}
+                  onViewDashboard={(taskId) => navigate(`/tasks/${taskId}/overview`)}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
                   onRequestArchived={requestArchivedSessions}
@@ -1491,9 +1490,7 @@ export default function App() {
                     hasDraft={hasDraft}
                     onMoveTaskToGroup={handleMoveTaskToGroup}
                     onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
-                    onViewDashboard={(taskId, options) => navigate(
-                      `/tasks/${taskId}/overview${buildTaskDashboardSearch(options)}`,
-                    )}
+                    onViewDashboard={(taskId) => navigate(`/tasks/${taskId}/overview`)}
                     onMarkAllRead={handleMarkAllRead}
                     onBulkAction={handleBulkAction}
                     onRequestArchived={requestArchivedSessions}

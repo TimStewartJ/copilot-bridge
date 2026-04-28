@@ -7,7 +7,6 @@ import type { CopilotUsageSummary, Task } from "./api";
 import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
 import { useTagsQuery } from "./hooks/queries/useTags";
 import { useTaskWorkspace } from "./hooks/useTaskWorkspace";
-import { installDomShim } from "./test-dom-shim";
 import TaskDashboard from "./components/TaskDashboard";
 import TaskKindBadge from "./components/TaskKindBadge";
 import TaskMomentumFields from "./components/TaskMomentumFields";
@@ -351,59 +350,6 @@ describe("TaskDashboard unique overview", () => {
     expect(html).not.toContain("Ready to complete");
   });
 
-  it("keeps focus deep links active after consuming their URL params", async () => {
-    vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace({
-      checklistLoaded: true,
-      checklistItems: [
-        { id: "c1", taskId: "task-1", text: "Open", done: false, order: 0, createdAt: NOW },
-      ],
-    }) as any);
-
-    const dom = installDomShim();
-    const scrollIntoView = vi.fn();
-    const originalCreateElement = document.createElement.bind(document);
-    document.createElement = ((tagName: string) => {
-      const element = originalCreateElement(tagName) as HTMLElement & { scrollIntoView: () => void };
-      element.scrollIntoView = scrollIntoView;
-      return element;
-    }) as typeof document.createElement;
-
-    try {
-      (window as any).setTimeout = setTimeout;
-      (window as any).clearTimeout = clearTimeout;
-      const [{ flushSync }, { createRoot }] = await Promise.all([
-        import("react-dom"),
-        import("react-dom/client"),
-      ]);
-      const root = createRoot(dom.container as any);
-
-      flushSync(() => {
-        root.render(createElement(MemoryRouter, { initialEntries: ["/tasks/task-1/overview?section=checklist"] },
-          createElement(TaskDashboard, {
-            task: createTask(),
-            taskGroups: [],
-            sessions: [],
-            onSelectSession: vi.fn(),
-            onNewSession: vi.fn(),
-            onUpdateTask: vi.fn(),
-          }),
-        ));
-      });
-
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      await new Promise<void>((resolve) => setTimeout(resolve, 20));
-
-      expect(scrollIntoView).toHaveBeenCalled();
-
-      flushSync(() => {
-        root.unmount();
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    } finally {
-      dom.cleanup();
-    }
-  });
-
   it("refreshes usage analytics when the overview is refreshed", async () => {
     const workspaceRefresh = vi.fn(async () => {});
     const usageRefresh = vi.fn(async () => createUsageSummary());
@@ -521,5 +467,26 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("gpt-5.5");
     expect(html).toContain("claude-opus-4.7");
     expect(html).not.toContain("Activity timeline");
+  });
+
+  it("shows a skeleton while session usage is loading from the backend", () => {
+    vi.mocked(useCopilotUsageQuery).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      refresh: vi.fn(),
+    } as any);
+
+    const html = renderTaskDashboard(createTask({
+      sessionIds: ["session-1"],
+    }), {
+      linkedSessions: [
+        { sessionId: "session-1", summary: "Loading usage", modifiedTime: "2026-05-01T13:00:00.000Z", busy: false, archived: false },
+      ],
+    });
+
+    expect(html).toContain("Loading session usage");
+    expect(html).not.toContain("0/1 tokenized");
+    expect(html).not.toContain("Model breakdown will appear after session usage is available.");
+    expect(html).not.toContain("Linked sessions do not have token summaries yet.");
   });
 });
