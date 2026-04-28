@@ -5,7 +5,6 @@ import {
   createBridgeMobileScrollRestoreState,
   getMobileScrollRestorationPolicy,
   hasBridgeMobileScrollRestoreState,
-  hasTaskDashboardFocusParams,
 } from "./mobile-scroll-restoration";
 
 describe("getMobileScrollRestorationPolicy", () => {
@@ -59,30 +58,6 @@ describe("getMobileScrollRestorationPolicy", () => {
     })).toMatchObject({ key: "mobile:task-dashboard:task-123", restore: true });
   });
 
-  it("does not restore task dashboard visits that request focus", () => {
-    expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123/overview"), {
-      isPopNavigation: true,
-      locationState: { [BRIDGE_MOBILE_SCROLL_RESTORE_STATE]: true },
-      suppressTaskDashboardRestore: true,
-    })).toEqual({
-      key: "mobile:task-dashboard:task-123",
-      restore: false,
-    });
-  });
-
-  it.each(["?section=sessions", "?checklistItem=item-1"])(
-    "lets task dashboard focus params beat restoration for %s",
-    (search) => {
-      expect(getMobileScrollRestorationPolicy(getMobileRouteMeta("/tasks/task-123/overview"), {
-        isPopNavigation: true,
-        locationState: createBridgeMobileScrollRestoreState({ from: "detail" }),
-        suppressTaskDashboardRestore: hasTaskDashboardFocusParams(search),
-      })).toEqual({
-        key: "mobile:task-dashboard:task-123",
-        restore: false,
-      });
-    },
-  );
 });
 
 describe("mobile scroll restoration helpers", () => {
@@ -92,14 +67,4 @@ describe("mobile scroll restoration helpers", () => {
     expect(hasBridgeMobileScrollRestoreState(null)).toBe(false);
   });
 
-  it.each(["?section=checklist", "?checklistItem=item-1", new URLSearchParams("section=sessions")])(
-    "detects task dashboard focus params in %s",
-    (search) => {
-      expect(hasTaskDashboardFocusParams(search)).toBe(true);
-    },
-  );
-
-  it("ignores unrelated search params", () => {
-    expect(hasTaskDashboardFocusParams("?foo=bar")).toBe(false);
-  });
 });

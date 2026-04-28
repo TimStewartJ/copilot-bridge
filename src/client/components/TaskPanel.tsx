@@ -9,11 +9,7 @@ import { getTaskCompletionCounts, getTaskCompletionState } from "../task-complet
 import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
 import {
   resolveTaskPanelChecklistHighlight,
-  type TaskDashboardNavigationOptions,
 } from "../task-detail-focus";
-import {
-  getTaskPanelChecklistPreview,
-} from "../task-panel-preview";
 import TaskSessionList from "./TaskSessionList";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
@@ -92,7 +88,7 @@ interface TaskPanelProps {
   hasDraft?: (sessionId: string) => boolean;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onRefresh?: () => Promise<void>;
-  onViewDashboard?: (taskId: string, options?: TaskDashboardNavigationOptions) => void;
+  onViewDashboard?: (taskId: string) => void;
   onMarkAllRead?: () => void;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
   onRequestArchived?: () => void;
@@ -222,8 +218,6 @@ export default function TaskPanel({
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const [highlightChecklistItemId, setHighlightChecklistItemId] = useState<string | null>(null);
-  const [hasChecklistHandoff, setHasChecklistHandoff] = useState(false);
-  const [handoffChecklistItemId, setHandoffChecklistItemId] = useState<string | null>(null);
   const [panelHighlightRequest, setPanelHighlightRequest] = useState<{ highlightId: string | null } | null>(null);
   const [momentumTask, setMomentumTask] = useState(task);
   const [isUpdatingCompletion, setIsUpdatingCompletion] = useState(false);
@@ -240,8 +234,6 @@ export default function TaskPanel({
     setPreviewDocPath(null);
     setWorkspaceSheetOpen(false);
     setHighlightChecklistItemId(null);
-    setHasChecklistHandoff(false);
-    setHandoffChecklistItemId(null);
     setPanelHighlightRequest(null);
   }, [task?.id]);
 
@@ -254,8 +246,6 @@ export default function TaskPanel({
 
     if (!pendingChecklistItemId || !resolvedHighlight.consumeParam) return;
 
-    setHasChecklistHandoff(true);
-    setHandoffChecklistItemId(resolvedHighlight.highlightId);
     setPanelHighlightRequest({ highlightId: resolvedHighlight.highlightId });
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -315,10 +305,6 @@ export default function TaskPanel({
     });
   }, [activeSessionId, currentTask, enrichedPRs, isUnread, linkedSessions]);
 
-  const checklistPreview = useMemo(
-    () => getTaskPanelChecklistPreview(checklistItems, { highlightId: highlightChecklistItemId }),
-    [checklistItems, highlightChecklistItemId],
-  );
   const completionCounts = useMemo(() => getTaskCompletionCounts({
     checklistItems,
     linkedSessions,
@@ -338,31 +324,9 @@ export default function TaskPanel({
       </div>
     );
   }
-  const checklistSummary = [
-    checklistPreview.overdueCount > 0
-      ? { label: `${checklistPreview.overdueCount} overdue`, className: "text-error" }
-      : null,
-    checklistPreview.dueSoonCount > 0
-      ? { label: `${checklistPreview.dueSoonCount} due soon`, className: "text-warning" }
-      : null,
-    checklistPreview.openCount > 0
-      ? { label: `${checklistPreview.openCount} open`, className: "text-text-faint" }
-      : null,
-    checklistPreview.completedCount > 0
-      ? { label: `${checklistPreview.completedCount} done`, className: "text-text-faint" }
-      : null,
-  ].filter((item): item is { label: string; className: string } => item !== null);
-
   const hasNotesSummary = Boolean(task.notes?.trim());
-  const openTaskOverview = (section?: "sessions" | "checklist") => {
-    const checklistItemId = section === "sessions"
-      ? undefined
-      : pendingChecklistItemId ?? handoffChecklistItemId ?? highlightChecklistItemId ?? undefined;
-    const nextSection = section ?? (checklistItemId || hasChecklistHandoff ? "checklist" : undefined);
-    const options = nextSection || checklistItemId
-      ? { section: nextSection, checklistItemId }
-      : undefined;
-    onViewDashboard?.(task.id, options);
+  const openTaskOverview = () => {
+    onViewDashboard?.(task.id);
   };
   const { data: sessionWorkspace } = sessionWorkspaceQuery;
   const activeWorkspacePath = sessionWorkspace?.effectiveCwd ?? activeSession?.workspace?.effectiveCwd ?? task.cwd;
@@ -593,15 +557,6 @@ export default function TaskPanel({
               count={checklistItems.length > 0 ? undefined : 0}
               progress={checklistItems.length > 0 ? `${checklistItems.filter((item) => item.done).length}/${checklistItems.length}` : undefined}
             />
-            {checklistSummary.length > 0 && (
-              <div className="flex flex-wrap gap-x-2 gap-y-1 px-3 pb-1 text-[10px]">
-                {checklistSummary.map((item) => (
-                  <span key={item.label} className={item.className}>
-                    {item.label}
-                  </span>
-                ))}
-              </div>
-            )}
             <TaskChecklistSection
               taskId={task.id}
               checklistItems={checklistItems}
@@ -612,7 +567,6 @@ export default function TaskPanel({
               onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
               variant="panel"
               highlightId={highlightChecklistItemId}
-              onViewAll={onViewDashboard ? () => openTaskOverview("checklist") : undefined}
               isReadyToComplete={currentTask.kind !== "ongoing" && completionState.isReadyToComplete}
             />
           </div>

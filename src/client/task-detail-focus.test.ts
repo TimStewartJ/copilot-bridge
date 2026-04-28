@@ -1,23 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildTaskDashboardSearch,
   isChecklistItemsReadyForFocus,
-  resolveTaskDashboardFocus,
   resolveTaskPanelChecklistHighlight,
 } from "./task-detail-focus";
-
-describe("buildTaskDashboardSearch", () => {
-  it("returns an empty search string when no options are provided", () => {
-    expect(buildTaskDashboardSearch()).toBe("");
-  });
-
-  it("serializes section and checklist item options", () => {
-    expect(buildTaskDashboardSearch({
-      section: "checklist",
-      checklistItemId: "item-123",
-    })).toBe("?section=checklist&checklistItem=item-123");
-  });
-});
 
 describe("isChecklistItemsReadyForFocus", () => {
   it("treats fresh cached data as ready", () => {
@@ -58,63 +43,6 @@ describe("isChecklistItemsReadyForFocus", () => {
       isFetching: false,
       isSuccess: false,
     })).toBe(false);
-  });
-});
-
-describe("resolveTaskDashboardFocus", () => {
-  it("waits for checklist items before consuming a checklist deep link", () => {
-    expect(resolveTaskDashboardFocus({
-      focusedSection: null,
-      focusedChecklistItemId: "item-123",
-      checklistItems: [],
-      checklistItemsReady: false,
-    })).toEqual({
-      request: null,
-      consumeParams: false,
-    });
-  });
-
-  it("preserves checklist item focus once the target item is available", () => {
-    expect(resolveTaskDashboardFocus({
-      focusedSection: null,
-      focusedChecklistItemId: "item-123",
-      checklistItems: [{ id: "item-123" }],
-      checklistItemsReady: true,
-    })).toEqual({
-      request: {
-        section: "checklist",
-        checklistItemId: "item-123",
-      },
-      consumeParams: true,
-    });
-  });
-
-  it("falls back to the checklist section after checklist data loads without the item", () => {
-    expect(resolveTaskDashboardFocus({
-      focusedSection: null,
-      focusedChecklistItemId: "item-123",
-      checklistItems: [{ id: "item-999" }],
-      checklistItemsReady: true,
-    })).toEqual({
-      request: {
-        section: "checklist",
-      },
-      consumeParams: true,
-    });
-  });
-
-  it("handles section-only deep links immediately", () => {
-    expect(resolveTaskDashboardFocus({
-      focusedSection: "sessions",
-      focusedChecklistItemId: null,
-      checklistItems: [],
-      checklistItemsReady: false,
-    })).toEqual({
-      request: {
-        section: "sessions",
-      },
-      consumeParams: true,
-    });
   });
 });
 
