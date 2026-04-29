@@ -943,7 +943,7 @@ function startTunnel(): Promise<string> {
   return new Promise((resolve, reject) => {
     const port = currentServerPort;
     log(`Starting dev tunnel for local port ${port}...`);
-    tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME, "--port", String(port)], {
+    tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME], {
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
     });
