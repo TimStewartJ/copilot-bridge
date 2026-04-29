@@ -44,7 +44,7 @@ import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
-import { getSessionPath, type SessionNavigationTarget } from "./lib/session-path";
+import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath, type SessionNavigationTarget } from "./lib/session-path";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
@@ -625,13 +625,12 @@ export default function App() {
     const checklistItemParam = opts?.checklistItemId ? `?checklistItem=${opts.checklistItemId}` : "";
     if (!isMobile) {
       const task = tasks.find((t) => t.id === id);
-      if (task && task.sessionIds.length > 0) {
-        const lastViewed = getLastViewedSession(id);
-        const targetSessionId =
-          lastViewed && task.sessionIds.includes(lastViewed)
-            ? lastViewed
-            : task.sessionIds[task.sessionIds.length - 1];
-        navigate(`/tasks/${id}/sessions/${targetSessionId}${checklistItemParam}`);
+      if (task) {
+        navigate(`${getTaskChatPath({
+          task,
+          sessions,
+          lastViewedSessionId: getLastViewedSession(id),
+        })}${checklistItemParam}`);
         return;
       }
     }
@@ -727,7 +726,7 @@ export default function App() {
   };
 
   const handleNewSession = (taskId: string) => {
-    navigate(`/tasks/${taskId}/sessions/new`);
+    navigate(getTaskDraftSessionPath(taskId));
   };
 
   const handleNewQuickChat = () => {
@@ -1440,6 +1439,7 @@ export default function App() {
                   onSelectSession={handleSelectDashboardSession}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
+                  sessions={sessions}
                 />
               }
             />
@@ -1451,6 +1451,7 @@ export default function App() {
                   onSelectSession={handleSelectDashboardSession}
                   onNewSession={handleNewQuickChat}
                   onResumeTask={handleResumeTask}
+                  sessions={sessions}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }

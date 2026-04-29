@@ -9,11 +9,12 @@ import {
   type DashboardChecklistItem,
   type DashboardSchedule,
   type DashboardTaskMomentum,
+  type Session,
 } from "../api";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useScheduleDetail } from "../hooks/useScheduleDetail";
 import { useTriggerScheduleMutation, useToggleScheduleMutation, useDeleteScheduleMutation } from "../hooks/queries/useSchedules";
-import { type SessionNavigationTarget } from "../lib/session-path";
+import { getTaskActiveChatSessionId, type SessionNavigationTarget } from "../lib/session-path";
 import { getLastViewedSession } from "../last-viewed";
 import { getTaskCompletionState } from "../task-completion-helpers";
 import { timeAgo } from "../time";
@@ -159,9 +160,9 @@ function sortChecklistItems(
 interface DashboardProps {
   onSelectSession: (target: SessionNavigationTarget) => void;
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
-  onSelectSession: (target: SessionNavigationTarget) => void;
   onNewSession: () => void;
   onResumeTask: (taskId: string, sessionId?: string) => void;
+  sessions: Session[];
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
@@ -262,6 +263,7 @@ export default function Dashboard({
   onSelectSession,
   onNewSession,
   onResumeTask,
+  sessions,
   scrollRestoration,
 }: DashboardProps) {
   const { data, isLoading: loading, refetch } = useDashboardQuery();
@@ -456,6 +458,7 @@ export default function Dashboard({
         {lastActiveTask && (
           <ResumeStrip
             activeTask={lastActiveTask}
+            sessions={sessions}
             onResume={onResumeTask}
             onSelect={onSelectTask}
           />
@@ -794,18 +797,21 @@ export default function Dashboard({
 
 function ResumeStrip({
   activeTask,
+  sessions,
   onResume,
   onSelect,
 }: {
   activeTask: DashboardActiveTask;
+  sessions: Session[];
   onResume: (taskId: string, sessionId?: string) => void;
   onSelect: (taskId: string) => void;
 }) {
   const t = activeTask.task;
-  const lastViewed = getLastViewedSession(t.id);
-  const lastSessionId = t.sessionIds.length > 0
-    ? (lastViewed && t.sessionIds.includes(lastViewed) ? lastViewed : t.sessionIds[t.sessionIds.length - 1])
-    : undefined;
+  const lastSessionId = getTaskActiveChatSessionId({
+    task: t,
+    sessions,
+    lastViewedSessionId: getLastViewedSession(t.id),
+  });
 
   return (
     <div className="bg-bg-surface border border-border rounded-lg p-4 flex items-center gap-4">
