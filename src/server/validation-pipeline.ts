@@ -19,6 +19,12 @@ type RunValidationGateOptions<Result extends ValidationCommandResult> = {
   log?: (message: string) => void;
 };
 
+type RunValidationGateAsyncOptions<Result extends ValidationCommandResult> = {
+  cwd: string;
+  run: (command: string, options?: { timeoutMs?: number }) => Promise<Result>;
+  log?: (message: string) => void;
+};
+
 export type ValidationGateSuccess<Result extends ValidationCommandResult> = {
   ok: true;
   gate: ValidationGate;
@@ -90,6 +96,25 @@ export function runValidationGate<Result extends ValidationCommandResult>(
   for (const [stepIndex, step] of gate.steps.entries()) {
     options.log?.(`Running ${gate.label.toLowerCase()} step ${stepIndex + 1}/${gate.steps.length}: ${step.command}`);
     const result = options.run(step.command, { timeoutMs: step.timeoutMs });
+    results.push({ step, result });
+    if (!result.ok) {
+      return { ok: false, gate, step, stepIndex, result, results };
+    }
+  }
+
+  options.log?.(`Completed ${gate.label.toLowerCase()} in ${options.cwd}`);
+  return { ok: true, gate, results };
+}
+
+export async function runValidationGateAsync<Result extends ValidationCommandResult>(
+  gate: ValidationGate,
+  options: RunValidationGateAsyncOptions<Result>,
+): Promise<ValidationGateRunResult<Result>> {
+  const results: Array<{ step: ValidationStep; result: Result }> = [];
+
+  for (const [stepIndex, step] of gate.steps.entries()) {
+    options.log?.(`Running ${gate.label.toLowerCase()} step ${stepIndex + 1}/${gate.steps.length}: ${step.command}`);
+    const result = await options.run(step.command, { timeoutMs: step.timeoutMs });
     results.push({ step, result });
     if (!result.ok) {
       return { ok: false, gate, step, stepIndex, result, results };

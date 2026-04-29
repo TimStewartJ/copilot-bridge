@@ -3,7 +3,7 @@
 // and deploy only after validation passes.
 
 import { defineTool } from "@github/copilot-sdk";
-import { execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, copyFileSync, cpSync } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,16 +12,15 @@ import { DatabaseSync } from "node:sqlite";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartPending, triggerRestartPending } from "./session-manager.js";
-import { createDirectoryLink, removeDirectoryLink } from "./platform.js";
+import { createDirectoryLink, killProcessTree, removeDirectoryLink } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
-import { DEPLOY_GATE, PREVIEW_GATE, runValidationGate } from "./validation-pipeline.js";
+import { DEPLOY_GATE, PREVIEW_GATE, runValidationGateAsync } from "./validation-pipeline.js";
 import { config } from "./config.js";
 import { toolFailure } from "./tool-results.js";
 import {
   buildCommandFailureOutput,
   extractCommandFailureLogPath,
   extractCommandFailureLogWriteError,
-  isCommandTimeoutError,
   writeValidationCommandLog,
 } from "./validation-command-log.js";
 import type { AppContext } from "./app-context.js";
@@ -40,6 +39,7 @@ const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MO
 const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
 const DEMO_PREVIEW_SUFFIX = "-demo";
 const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
 const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -279,7 +279,7 @@ async function importOptionalStagingModule(specifier: string) {
  * If package files or patch-package files differ, replace the node_modules
  * symlink with a real npm install so builds use the correct dependency state.
  */
-function ensureStagingDeps(stagingDir: string): { ok: boolean; command?: string; output?: string } {
+async function ensureStagingDeps(stagingDir: string): Promise<{ ok: boolean; command?: string; output?: string }> {
   if (dependencySyncHash(stagingDir) === dependencySyncHash(PRODUCTION_ROOT)) {
     return { ok: true };
   }
@@ -308,7 +308,7 @@ function ensureStagingDeps(stagingDir: string): { ok: boolean; command?: string;
     log(`Prepared patched packages for staging install: ${prepared.packages.join(", ")}`);
   }
 
-  const installResult = run(STAGING_INSTALL_COMMAND, stagingDir, {
+  const installResult = await run(STAGING_INSTALL_COMMAND, stagingDir, {
     timeoutMs: STAGING_INSTALL_TIMEOUT_MS,
   });
   if (installResult.ok) {
@@ -870,11 +870,44 @@ function log(msg: string) {
   console.log(`[staging] ${msg}`);
 }
 
-function run(
+type CapturedCommandOutput = {
+  output: string;
+  truncatedChars: number;
+};
+
+function appendCapturedCommandOutput(capture: CapturedCommandOutput, chunk: unknown): void {
+  const text = String(chunk);
+  if (!text) return;
+
+  if (text.length >= COMMAND_OUTPUT_CAPTURE_LIMIT) {
+    capture.truncatedChars += capture.output.length + text.length - COMMAND_OUTPUT_CAPTURE_LIMIT;
+    capture.output = text.slice(-COMMAND_OUTPUT_CAPTURE_LIMIT);
+    return;
+  }
+
+  const combinedLength = capture.output.length + text.length;
+  if (combinedLength <= COMMAND_OUTPUT_CAPTURE_LIMIT) {
+    capture.output += text;
+    return;
+  }
+
+  const droppedChars = combinedLength - COMMAND_OUTPUT_CAPTURE_LIMIT;
+  capture.truncatedChars += droppedChars;
+  capture.output = (capture.output + text).slice(droppedChars);
+}
+
+function renderCapturedCommandOutput(label: string, capture: CapturedCommandOutput): string {
+  if (capture.truncatedChars === 0) return capture.output;
+  const notice =
+    `[${label} truncated: kept last ${capture.output.length} characters, dropped ${capture.truncatedChars} characters.]`;
+  return joinFailureSections(capture.output, notice) ?? notice;
+}
+
+async function run(
   cmd: string,
   cwd: string,
   options: { timeoutMs?: number } = {},
-): { ok: boolean; output: string } {
+): Promise<{ ok: boolean; output: string }> {
   // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
   // resolve the correct Node binary (v22+ required for node:sqlite) instead of
   // whatever older `node` happens to be first on the system PATH.
@@ -885,41 +918,89 @@ function run(
     PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
   };
   const startedAt = Date.now();
-  try {
-    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs, env });
-    return { ok: true, output };
-  } catch (err: any) {
-    const elapsedMs = Date.now() - startedAt;
-    const timedOut = isCommandTimeoutError(err);
-    const rawOutput = err.stderr || err.stdout || String(err);
-    const annotatedOutput = buildCommandFailureOutput({
-      output: rawOutput,
-      elapsedMs,
-      timedOut,
-      timeoutMs,
-    });
-    const logResult = writeValidationCommandLog({
-      rootDir: PRODUCTION_ROOT,
-      source: "staging",
-      command: cmd,
-      cwd,
-      output: annotatedOutput,
-      elapsedMs,
-      timedOut,
-      timeoutMs,
-    });
-    return {
-      ok: false,
-      output: buildCommandFailureOutput({
+
+  return await new Promise((resolve) => {
+    const child = spawn(cmd, { cwd, env, shell: true, windowsHide: true });
+    const stdout: CapturedCommandOutput = { output: "", truncatedChars: 0 };
+    const stderr: CapturedCommandOutput = { output: "", truncatedChars: 0 };
+    let spawnError: Error | undefined;
+    let timedOut = false;
+    let settled = false;
+
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+
+      const stdoutOutput = renderCapturedCommandOutput("stdout", stdout);
+      const stderrOutput = renderCapturedCommandOutput("stderr", stderr);
+
+      if (code === 0 && !timedOut && !spawnError) {
+        resolve({ ok: true, output: stdoutOutput });
+        return;
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      const fallbackOutput = timedOut
+        ? `Command timed out after ${Math.ceil(timeoutMs / 1_000)} seconds.`
+        : signal
+          ? `Command exited with signal ${signal}.`
+          : `Command exited with code ${code ?? "unknown"}.`;
+      const rawOutput = joinFailureSections(
+        stderrOutput,
+        stdoutOutput,
+        spawnError ? spawnError.message : undefined,
+      ) ?? fallbackOutput;
+      const annotatedOutput = buildCommandFailureOutput({
         output: rawOutput,
         elapsedMs,
         timedOut,
         timeoutMs,
-        logPath: logResult.path,
-        logWriteError: logResult.error,
-      }),
+      });
+      const logResult = writeValidationCommandLog({
+        rootDir: PRODUCTION_ROOT,
+        source: "staging",
+        command: cmd,
+        cwd,
+        output: annotatedOutput,
+        elapsedMs,
+        timedOut,
+        timeoutMs,
+      });
+      resolve({
+        ok: false,
+        output: buildCommandFailureOutput({
+          output: rawOutput,
+          elapsedMs,
+          timedOut,
+          timeoutMs,
+          logPath: logResult.path,
+          logWriteError: logResult.error,
+        }),
+      });
     };
-  }
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) {
+        killProcessTree(child.pid);
+      } else {
+        child.kill("SIGKILL");
+      }
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      appendCapturedCommandOutput(stdout, chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      appendCapturedCommandOutput(stderr, chunk);
+    });
+    child.on("error", (err) => {
+      spawnError = err;
+      finish(null, null);
+    });
+    child.on("close", finish);
+  });
 }
 
 function normalizeFailureText(text: string | undefined): string | undefined {
@@ -980,8 +1061,8 @@ function commandFailure(
   });
 }
 
-function listStagingBranchPrefixes(): Set<string> | null {
-  const branchList = run('git branch --format="%(refname:short)" --list "staging/*"', PRODUCTION_ROOT);
+async function listStagingBranchPrefixes(): Promise<Set<string> | null> {
+  const branchList = await run('git branch --format="%(refname:short)" --list "staging/*"', PRODUCTION_ROOT);
   if (!branchList.ok) {
     log(`Warning: could not list staging branches: ${branchList.output.slice(-200)}`);
     return null;
@@ -1011,7 +1092,7 @@ function ensureNodeModulesIgnored(stagingDir: string): void {
 }
 
 /** Remove a staging worktree and its branch. Handles node_modules cleanup. */
-function removeWorktree(stagingDir: string, branch: string): void {
+async function removeWorktree(stagingDir: string, branch: string): Promise<void> {
   // Remove node_modules first — git worktree remove can't handle symlinks or large dirs
   const junctionPath = join(stagingDir, "node_modules");
   if (existsSync(junctionPath)) {
@@ -1026,9 +1107,9 @@ function removeWorktree(stagingDir: string, branch: string): void {
       if (err.code !== "ENOENT") log(`Warning: failed to remove node_modules: ${err.message}`);
     }
   }
-  run(`git worktree remove "${stagingDir}" --force`, PRODUCTION_ROOT);
-  run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
-  run("git worktree prune", PRODUCTION_ROOT);
+  await run(`git worktree remove "${stagingDir}" --force`, PRODUCTION_ROOT);
+  await run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
+  await run("git worktree prune", PRODUCTION_ROOT);
 }
 
 type PruneOrphanedWorktreesOptions = {
@@ -1037,15 +1118,15 @@ type PruneOrphanedWorktreesOptions = {
   stagingPreviewParents?: string[];
   activePreviewMap?: Map<string, string>;
   expressApp?: express.Application | null;
-  listBranchPrefixes?: () => Set<string> | null;
-  removeWorktree?: (stagingDir: string, branch: string) => void;
+  listBranchPrefixes?: () => Set<string> | null | Promise<Set<string> | null>;
+  removeWorktree?: (stagingDir: string, branch: string) => void | Promise<void>;
   restoreBackend?: (
     prefix: string,
     stagingDir: string,
     options?: RestoreStagingBackendWithRetryOptions,
   ) => Promise<{ restored: boolean; attempts: number; error?: string }>;
   log?: (msg: string) => void;
-  pruneGitWorktrees?: () => void;
+  pruneGitWorktrees?: () => void | Promise<void>;
 };
 
 /**
@@ -1068,14 +1149,14 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   const getBranchPrefixes = options.listBranchPrefixes ?? listStagingBranchPrefixes;
   const removeOrphanedWorktree = options.removeWorktree ?? removeWorktree;
   const restoreBackend = options.restoreBackend ?? restoreStagingBackendWithRetry;
-  const pruneGitWorktrees = options.pruneGitWorktrees ?? (() => {
-    run("git worktree prune", PRODUCTION_ROOT);
+  const pruneGitWorktrees = options.pruneGitWorktrees ?? (async () => {
+    await run("git worktree prune", PRODUCTION_ROOT);
   });
 
   // Collect active staging prefixes (worktrees with valid branches)
   const activeWorktrees = new Set<string>();
   const restorablePreviews = new Map<string, PreviewTarget>();
-  const activeBranchPrefixes = getBranchPrefixes();
+  const activeBranchPrefixes = await getBranchPrefixes();
   const skipOrphanPrune = activeBranchPrefixes === null;
   let orphanedWorktreeDirs = 0;
   let restoredPreviewDirs = 0;
@@ -1095,7 +1176,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
         }
 
         if (!activeBranchPrefixes.has(entry.name)) {
-          removeOrphanedWorktree(stagingDir, branch);
+          await removeOrphanedWorktree(stagingDir, branch);
           orphanedWorktreeDirs++;
           continue;
         }
@@ -1104,7 +1185,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
       }
 
       if (!skipOrphanPrune) {
-        pruneGitWorktrees();
+        await pruneGitWorktrees();
       }
     } catch (err) {
       writeLog(`Warning: orphan pruning failed: ${err}`);
@@ -1202,9 +1283,9 @@ export const STAGING_TOOLS = [
       log(`Creating staging worktree: ${stagingDir} (branch: ${branch})`);
 
       // Pull latest from origin so the worktree starts from the newest remote state
-      const currentBranch = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+      const currentBranch = await run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
       const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
-      const pullResult = run(`git pull --rebase origin ${branchName}`, PRODUCTION_ROOT);
+      const pullResult = await run(`git pull --rebase origin ${branchName}`, PRODUCTION_ROOT);
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {
@@ -1216,7 +1297,7 @@ export const STAGING_TOOLS = [
       }
 
       // Create branch from current HEAD
-      const branchResult = run(`git branch "${branch}"`, PRODUCTION_ROOT);
+      const branchResult = await run(`git branch "${branch}"`, PRODUCTION_ROOT);
       if (!branchResult.ok) {
         return commandFailure(
           "Failed to create staging branch.",
@@ -1229,9 +1310,9 @@ export const STAGING_TOOLS = [
       }
 
       // Create worktree
-      const wtResult = run(`git worktree add "${stagingDir}" "${branch}"`, PRODUCTION_ROOT);
+      const wtResult = await run(`git worktree add "${stagingDir}" "${branch}"`, PRODUCTION_ROOT);
       if (!wtResult.ok) {
-        run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
+        await run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
         return commandFailure(
           "Failed to create staging worktree.",
           `Failed to create worktree ${stagingDir} from branch ${branch}.`,
@@ -1316,7 +1397,7 @@ export const STAGING_TOOLS = [
       }
 
       // Install deps if staging package.json diverged from production
-      const depsResult = ensureStagingDeps(stagingDir);
+      const depsResult = await ensureStagingDeps(stagingDir);
       if (!depsResult.ok) {
         return commandFailure(
           "Staging dependency install failed.",
@@ -1329,7 +1410,7 @@ export const STAGING_TOOLS = [
       }
 
       if (shouldValidate) {
-        const validationResult = runValidationGate(PREVIEW_GATE, {
+        const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
           cwd: stagingDir,
           run: (command, options) => run(command, stagingDir, options),
         });
@@ -1348,7 +1429,7 @@ export const STAGING_TOOLS = [
       }
 
       // Build the client with the staging base path
-      const buildResult = run(
+      const buildResult = await run(
         `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
         stagingDir,
       );
@@ -1457,8 +1538,8 @@ export const STAGING_TOOLS = [
       ensureNodeModulesIgnored(stagingDir);
 
       // Stage and commit if there are uncommitted changes (skip on retry after conflict resolution)
-      run("git add -A", stagingDir);
-      const status = run("git --no-pager status --porcelain", stagingDir);
+      await run("git add -A", stagingDir);
+      const status = await run("git --no-pager status --porcelain", stagingDir);
       const hasUncommittedChanges = status.ok && !!status.output.trim();
 
       if (hasUncommittedChanges) {
@@ -1468,7 +1549,7 @@ export const STAGING_TOOLS = [
             msgFile,
             `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
           );
-          const commitResult = run(`git commit -F "${msgFile}"`, stagingDir);
+          const commitResult = await run(`git commit -F "${msgFile}"`, stagingDir);
           if (!commitResult.ok) {
             return commandFailure(
               "Failed to commit staged changes.",
@@ -1485,11 +1566,11 @@ export const STAGING_TOOLS = [
       }
 
       // Determine production branch
-      const prodBranchResult = run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+      const prodBranchResult = await run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
       const prodBranch = prodBranchResult.ok ? prodBranchResult.output.trim() : "main";
 
       // Verify there are commits to merge
-      const aheadCheck = run(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
+      const aheadCheck = await run(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
       if (!aheadCheck.ok) {
         return commandFailure(
           "Failed to compare staging changes with production.",
@@ -1517,20 +1598,20 @@ export const STAGING_TOOLS = [
       }
 
       // Stash any uncommitted changes so they don't block pull/push
-      const stashResult = run("git stash --include-untracked", PRODUCTION_ROOT);
+      const stashResult = await run("git stash --include-untracked", PRODUCTION_ROOT);
       const didStash = stashResult.ok && !stashResult.output.includes("No local changes");
       if (didStash) {
         log("Stashed uncommitted production changes");
       }
-      const unstashProduction = () => {
+      const unstashProduction = async () => {
         if (didStash) {
-          run("git stash pop", PRODUCTION_ROOT);
+          await run("git stash pop", PRODUCTION_ROOT);
           log("Restored stashed production changes");
         }
       };
 
       // Pull latest production so the rebase target is current
-      const pullResult = run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+      const pullResult = await run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
       if (pullResult.ok) {
         log("Pulled latest production from origin");
       } else {
@@ -1538,10 +1619,10 @@ export const STAGING_TOOLS = [
       }
 
       // Rebase staging branch onto updated production HEAD for a clean merge
-      const rebaseResult = run(`git rebase ${prodBranch}`, stagingDir);
+      const rebaseResult = await run(`git rebase ${prodBranch}`, stagingDir);
       if (!rebaseResult.ok) {
-        run("git rebase --abort", stagingDir);
-        unstashProduction();
+        await run("git rebase --abort", stagingDir);
+        await unstashProduction();
         log(`Staging rebase failed — manual conflict resolution needed`);
         return commandFailure(
           "Staging branch conflicts with production.",
@@ -1562,9 +1643,9 @@ export const STAGING_TOOLS = [
       }
       log("Staging branch rebased onto production");
 
-      const depsResult = ensureStagingDeps(stagingDir);
+      const depsResult = await ensureStagingDeps(stagingDir);
       if (!depsResult.ok) {
-        unstashProduction();
+        await unstashProduction();
         return commandFailure(
           "Staging dependency install failed.",
           "Staging dependency inputs changed after rebase and npm install failed. The rebased staging worktree is still intact for retry-after-fix.",
@@ -1575,12 +1656,12 @@ export const STAGING_TOOLS = [
         );
       }
 
-      const validationResult = runValidationGate(DEPLOY_GATE, {
+      const validationResult = await runValidationGateAsync(DEPLOY_GATE, {
         cwd: stagingDir,
         run: (command, options) => run(command, stagingDir, options),
       });
       if (!validationResult.ok) {
-        unstashProduction();
+        await unstashProduction();
         return commandFailure(
           "Staging deploy validation failed.",
           "The rebased staging worktree did not pass the deploy validation gate. The staging worktree is still intact for retry-after-fix.",
@@ -1592,7 +1673,7 @@ export const STAGING_TOOLS = [
       }
 
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
-      const headResult = run("git rev-parse HEAD", PRODUCTION_ROOT);
+      const headResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
       const preDeploySha = headResult.ok ? headResult.output.trim() : "";
       let rollbackCheckpoint = { sha: "", createdByCurrentOperation: false };
       if (preDeploySha) {
@@ -1606,10 +1687,10 @@ export const STAGING_TOOLS = [
         );
       }
       // Merge into production (should be fast-forward after rebase)
-      const mergeResult = run(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
+      const mergeResult = await run(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
       if (!mergeResult.ok) {
-        run("git merge --abort", PRODUCTION_ROOT);
-        unstashProduction();
+        await run("git merge --abort", PRODUCTION_ROOT);
+        await unstashProduction();
         removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
         return commandFailure(
           "Merge into production failed after rebase.",
@@ -1623,25 +1704,25 @@ export const STAGING_TOOLS = [
         );
       }
 
-      const newHead = run("git rev-parse --short HEAD", PRODUCTION_ROOT);
+      const newHead = await run("git rev-parse --short HEAD", PRODUCTION_ROOT);
       const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
       log(`Merged to production: ${commitSha}`);
 
       // Let the launcher own production dependency sync during restart.
-      const pkgChanged = run(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
+      const pkgChanged = await run(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
       if (pkgChanged.ok && pkgChanged.output.trim()) {
         log("Dependency inputs changed — launcher will sync production dependencies during restart");
       }
 
       // Push to origin so other deployments can pick up the change
-      let pushResult = run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+      let pushResult = await run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
       let retryRebaseFailed = false;
       if (!pushResult.ok) {
         // Push may fail if remote has new commits — pull --rebase and retry once
         log("Push failed, attempting pull --rebase before retry...");
-        const retryRebase = run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+        const retryRebase = await run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
         if (retryRebase.ok) {
-          pushResult = run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+          pushResult = await run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
         } else {
           retryRebaseFailed = true;
         }
@@ -1651,13 +1732,13 @@ export const STAGING_TOOLS = [
           const resetCommand = `git reset --hard ${preDeploySha}`;
           if (retryRebaseFailed) {
             log("Push retry rebase failed — aborting any in-progress production rebase before reset");
-            const abortRebase = run("git rebase --abort", PRODUCTION_ROOT);
+            const abortRebase = await run("git rebase --abort", PRODUCTION_ROOT);
             if (!abortRebase.ok) {
               log(`Warning: git rebase --abort failed before push-failure reset: ${abortRebase.output.slice(-200)}`);
             }
           }
           log(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
-          const resetResult = run(resetCommand, PRODUCTION_ROOT);
+          const resetResult = await run(resetCommand, PRODUCTION_ROOT);
           if (!resetResult.ok) {
             return commandFailure(
               "Push to origin failed and production reset failed.",
@@ -1673,7 +1754,7 @@ export const STAGING_TOOLS = [
           removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
           log(`Production checkout reset to pre-deploy SHA after push failure: ${preDeploySha}`);
         }
-        unstashProduction();
+        await unstashProduction();
         return commandFailure(
           preDeploySha
             ? "Push to origin failed; production merge reverted and restart blocked."
@@ -1689,7 +1770,7 @@ export const STAGING_TOOLS = [
       }
       log("Pushed to origin");
 
-      unstashProduction();
+      await unstashProduction();
 
       // Signal launcher to restart
       const dataDir = join(PRODUCTION_ROOT, "data");
@@ -1701,7 +1782,7 @@ export const STAGING_TOOLS = [
       // Cleanup staging worktree and branch (best-effort — deploy already succeeded)
       try {
         await cleanupPreviewArtifactsForStagingDir(stagingDir);
-        removeWorktree(stagingDir, branch);
+        await removeWorktree(stagingDir, branch);
         log("Staging worktree cleaned up");
       } catch (err) {
         log(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
@@ -1737,7 +1818,7 @@ export const STAGING_TOOLS = [
       log(`Cleaning up staging worktree: ${stagingDir}`);
 
       await cleanupPreviewArtifactsForStagingDir(stagingDir);
-      removeWorktree(stagingDir, branch);
+      await removeWorktree(stagingDir, branch);
 
       log("Staging worktree cleaned up");
       return { success: true, message: `Staging worktree removed: ${stagingDir}` };

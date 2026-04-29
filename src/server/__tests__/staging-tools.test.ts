@@ -19,6 +19,66 @@ type ToolInvocation = {
 const execSyncMock = vi.hoisted(() => vi.fn<
   (cmd: string, options?: { cwd?: string; timeout?: number; encoding?: string; env?: NodeJS.ProcessEnv }) => string
 >(() => ""));
+const spawnMock = vi.hoisted(() => {
+  type Listener = (...args: any[]) => void;
+  type MockSpawnOptions = { cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean };
+
+  return vi.fn((cmd: string, options?: MockSpawnOptions) => {
+    const listeners = new Map<string, Listener[]>();
+    const stdoutListeners: Listener[] = [];
+    const stderrListeners: Listener[] = [];
+    const child = {
+      pid: 12345,
+      kill: vi.fn(),
+      stdout: {
+        on(event: string, listener: Listener) {
+          if (event === "data") stdoutListeners.push(listener);
+          return this;
+        },
+      },
+      stderr: {
+        on(event: string, listener: Listener) {
+          if (event === "data") stderrListeners.push(listener);
+          return this;
+        },
+      },
+      on(event: string, listener: Listener) {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+        return child;
+      },
+    };
+    const emit = (event: string, ...args: unknown[]) => {
+      for (const listener of listeners.get(event) ?? []) {
+        listener(...args);
+      }
+    };
+    const emitOutput = (outputListeners: Listener[], value: unknown) => {
+      if (value === undefined || value === null || value === "") return;
+      for (const listener of outputListeners) {
+        listener(value);
+      }
+    };
+
+    queueMicrotask(() => {
+      try {
+        const output = execSyncMock(cmd, {
+          cwd: options?.cwd,
+          encoding: "utf-8",
+          env: options?.env,
+        });
+        emitOutput(stdoutListeners, output);
+        emit("close", 0, null);
+      } catch (error) {
+        const failure = error as { stderr?: unknown; stdout?: unknown; status?: number; signal?: NodeJS.Signals };
+        emitOutput(stdoutListeners, failure.stdout);
+        emitOutput(stderrListeners, failure.stderr);
+        emit("close", typeof failure.status === "number" ? failure.status : 1, failure.signal ?? null);
+      }
+    });
+
+    return child;
+  });
+});
 const triggerRestartPendingMock = vi.fn();
 const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
 const dependencySyncHashMock = vi.fn<(path: string) => string>(() => "same-hash");
@@ -33,6 +93,13 @@ const preparePatchedPackagesForInstallMock = vi.fn(() => ({
 }));
 const createDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
 const removeDirectoryLinkMock = vi.fn(() => ({ ok: true, output: "" }));
+const killProcessTreeMock = vi.fn(() => ({
+  rootPid: 12345,
+  processGroupId: 12345,
+  descendantPids: [],
+  trackedPids: [12345],
+  killRequested: true,
+}));
 const buildPublicUrlMock = vi.fn(() => undefined);
 
 function isDataFilePath(path: string, filename: string): boolean {
@@ -65,7 +132,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execSync: execSyncMock,
+    spawn: spawnMock,
   };
 });
 
@@ -123,6 +190,7 @@ vi.mock("../dependency-sync.js", () => ({
 vi.mock("../platform.js", () => ({
   createDirectoryLink: createDirectoryLinkMock,
   removeDirectoryLink: removeDirectoryLinkMock,
+  killProcessTree: killProcessTreeMock,
 }));
 
 vi.mock("../tunnel.js", () => ({
@@ -212,6 +280,15 @@ afterEach(() => {
   buildPublicUrlMock.mockReturnValue(undefined);
   execSyncMock.mockReset();
   execSyncMock.mockReturnValue("");
+  spawnMock.mockClear();
+  killProcessTreeMock.mockReset();
+  killProcessTreeMock.mockReturnValue({
+    rootPid: 12345,
+    processGroupId: 12345,
+    descendantPids: [],
+    trackedPids: [12345],
+    killRequested: true,
+  });
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
@@ -423,7 +500,7 @@ describe("staging tools", () => {
     });
     const mod = await loadStagingToolsModule();
 
-    expect(mod.__testing.listStagingBranchPrefixes()).toBeNull();
+    await expect(mod.__testing.listStagingBranchPrefixes()).resolves.toBeNull();
   });
 
   it("preserves staging worktrees and preview dirs when the branch snapshot fails", async () => {
@@ -977,6 +1054,41 @@ describe("staging tools", () => {
     expect(result).not.toHaveProperty("error");
   });
 
+  it("caps noisy staging command output while preserving the diagnostic tail", async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "npx vitest run") {
+        const error = new Error("tests failed") as Error & { stderr: string };
+        error.stderr = "dropped-prefix\n" + "x".repeat(1024 * 1024 + 100) + "\nkept-tail-marker\n";
+        throw error;
+      }
+      return "";
+    });
+
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-preview-noisy-");
+    const result = await tools.staging_preview.handler(
+      { stagingDir },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      toolTelemetry: {
+        command: "npx vitest run",
+        cwd: stagingDir,
+        stagingDir,
+      },
+    });
+    expect(result.textResultForLlm).toContain("kept-tail-marker");
+    expect(result.textResultForLlm).toContain("stderr truncated: kept last");
+    expect(result.textResultForLlm).not.toContain("dropped-prefix");
+  });
+
   it("fails staging_preview when dependency installation fails instead of relinking production modules", async () => {
     const tools = await loadStagingTools();
     const stagingDir = createTempDir("bridge-stage-preview-deps-");
@@ -1035,8 +1147,12 @@ describe("staging tools", () => {
     );
 
     expect(previewValidationCalls).toHaveLength(PREVIEW_VALIDATION_COMMANDS.length);
-    expect(previewValidationCalls.every(([, options]) =>
-      options?.cwd === stagingDir && options?.timeout === 600_000,
+    expect(previewValidationCalls.every(([, options]) => options?.cwd === stagingDir)).toBe(true);
+    const previewValidationSpawnCalls = spawnMock.mock.calls.filter(([cmd]) =>
+      PREVIEW_VALIDATION_COMMANDS.includes(String(cmd) as (typeof PREVIEW_VALIDATION_COMMANDS)[number]),
+    );
+    expect(previewValidationSpawnCalls.every(([, options]) =>
+      options?.cwd === stagingDir && options?.shell === true && options?.windowsHide === true,
     )).toBe(true);
   });
 
