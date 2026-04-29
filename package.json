@@ -48,6 +48,7 @@
     "gray-matter": "^4.0.3",
     "lucide-react": "^0.577.0",
     "marked": "^17.0.4",
+    "mermaid": "^11.14.0",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
     "react": "^19.2.4",
@@ -56,6 +57,9 @@
     "react-router-dom": "^7.13.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "vega": "^6.2.0",
+    "vega-embed": "^7.1.0",
+    "vega-lite": "^6.4.3",
     "yaml": "^2.8.3"
   },
   "overrides": {

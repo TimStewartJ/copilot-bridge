@@ -1,12 +1,27 @@
 import { getToolExecutionDisplayText } from "./tool-results.js";
 
 // Shared event→entry transform logic
-// Produces a flat chronological list of text messages and tool calls.
+// Produces a flat chronological list of text messages, tool calls, and visual artifacts.
 // Used by both getSessionMessages (SDK path) and readMessagesFromDisk (fast path)
+
+export interface TransformedVisual {
+  artifactId: string;
+  kind: "image" | "mermaid" | "vega-lite" | "html";
+  title: string;
+  displayName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+  downloadUrl: string;
+  caption?: string;
+  altText?: string;
+  /** Kept for wire compatibility; history replay leaves source unset and clients fetch from url. */
+  source?: string;
+}
 
 export interface TransformedEntry {
   id: string;
-  type: "message" | "tool";
+  type: "message" | "tool" | "visual";
   // Message fields (when type === "message")
   role?: string;
   content?: string;
@@ -25,6 +40,8 @@ export interface TransformedEntry {
     startedAt?: string;
     completedAt?: string;
   };
+  // Visual fields (when type === "visual")
+  visual?: TransformedVisual;
 }
 
 // Keep backward compat alias — server API consumers still reference this
@@ -69,6 +86,45 @@ function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   }
 
   return false;
+}
+
+function parsePublishedVisualResult(rawResult: unknown): Record<string, unknown> | undefined {
+  if (rawResult && typeof rawResult === "object") {
+    const result = rawResult as Record<string, unknown>;
+    if (result.__kind === "visual.published") return result;
+    for (const key of ["detailedContent", "content", "textResultForLlm"]) {
+      const parsed = parsePublishedVisualResult(result[key]);
+      if (parsed) return parsed;
+    }
+    return undefined;
+  }
+  if (typeof rawResult !== "string") return undefined;
+  const trimmed = rawResult.trim();
+  if (!trimmed.startsWith("{") || !trimmed.includes("\"visual.published\"")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const VISUAL_ARTIFACT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isExpectedVisualArtifactUrl(value: unknown, sessionId: string | undefined, artifactId: string, suffix = ""): value is string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
+  if (!VISUAL_ARTIFACT_ID_RE.test(artifactId)) return false;
+  if (!sessionId) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value, "http://bridge.local");
+  } catch {
+    return false;
+  }
+  if (parsed.origin !== "http://bridge.local") return false;
+  if (parsed.search || parsed.hash) return false;
+  const expectedPath = `/api/sessions/${encodeURIComponent(sessionId)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
+  return parsed.pathname.endsWith(expectedPath);
 }
 
 export function getVisibleEventTimestamp(event: any, sessionId?: string): string | undefined {
@@ -120,11 +176,15 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
   const openToolCallIds = new Set<string>();
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
   const subAgentResponses = new Map<string, string>();
+  const toolNames = new Map<string, string>();
+  // Detect visual artifact publications from publish_visual tool completions
+  const visualResults = new Map<string, TransformedVisual>();
 
   for (const event of events) {
     const data = (event as any).data;
     if (event.type === "tool.execution_start" && data?.toolCallId) {
       openToolCallIds.add(data.toolCallId);
+      toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
     } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
       toolCompletes.set(data.toolCallId, {
         success: data.success,
@@ -132,6 +192,40 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
         timestamp: (event as any).timestamp,
       });
       openToolCallIds.delete(data.toolCallId);
+      // Detect visual.published result — set by publish_visual tool on success
+      const rawResult = parsePublishedVisualResult(data.result);
+      if (
+        toolNames.get(data.toolCallId) === "publish_visual"
+        && sessionId
+        &&
+        rawResult && typeof rawResult === "object"
+        && (rawResult as any).__kind === "visual.published"
+        && data.success !== false
+      ) {
+        const r = rawResult as any;
+        if (
+          typeof r.artifactId === "string"
+          && isExpectedVisualArtifactUrl(r.url, sessionId, r.artifactId)
+          && (
+            r.downloadUrl === undefined
+            || isExpectedVisualArtifactUrl(r.downloadUrl, sessionId, r.artifactId, "/download")
+          )
+        ) {
+          const kind: "image" | "mermaid" | "vega-lite" | "html" = r.kind === "mermaid" ? "mermaid" : r.kind === "vega-lite" ? "vega-lite" : r.kind === "html" ? "html" : "image";
+          visualResults.set(data.toolCallId, {
+            artifactId: r.artifactId,
+            kind,
+            title: r.title ?? r.displayName ?? r.artifactId,
+            displayName: r.displayName ?? r.artifactId,
+            mimeType: r.mimeType ?? (kind === "mermaid" ? "text/vnd.mermaid" : kind === "vega-lite" ? "application/vnd.vegalite+json" : kind === "html" ? "text/html" : "image/png"),
+            size: typeof r.size === "number" ? r.size : 0,
+            url: r.url,
+            downloadUrl: r.downloadUrl ?? r.url,
+            ...(r.caption ? { caption: r.caption } : {}),
+            ...(r.altText ? { altText: r.altText } : {}),
+          });
+        }
+      }
     } else if ((event.type === "tool.execution_progress" || event.type === "tool.execution_partial_result") && data?.toolCallId) {
       const nextText = event.type === "tool.execution_progress"
         ? data.progressMessage
@@ -214,6 +308,16 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
           completedAt: complete?.timestamp,
         },
       });
+      // Emit a visual entry immediately after the tool entry for publish_visual completions
+      const visual = visualResults.get(data.toolCallId);
+      if (visual) {
+        entries.push({
+          id: `entry-${idx++}`,
+          type: "visual",
+          visual,
+          timestamp: complete?.timestamp ?? (event as any).timestamp,
+        });
+      }
     }
   }
 

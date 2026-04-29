@@ -28,6 +28,7 @@ import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
+import { isCanonicalArtifactId, HTML_MIME_TYPE, loadVisualArtifactMeta, resolveVisualArtifact } from "./visual-artifacts.js";
 import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
@@ -971,6 +972,76 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.sendFile(attachment.value.filePath, { dotfiles: "allow" }, onSendError);
     }
     return res.download(attachment.value.filePath, attachment.value.displayName, { dotfiles: "allow" }, onSendError);
+  });
+
+  // Visual artifact routes — serve published visual artifacts by artifactId (UUID)
+  // GET /sessions/:id/visuals/:artifactId — serve artifact inline
+  router.get("/sessions/:id/visuals/:artifactId", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const artifactId = String(req.params.artifactId ?? "").trim();
+    if (!isCanonicalArtifactId(artifactId)) {
+      return res.status(400).json({ error: "artifactId must be a valid UUID" });
+    }
+    const resolved = resolveVisualArtifact(getCopilotHome(ctx), req.params.id, artifactId);
+    if (!resolved.ok) {
+      const status = resolved.error.includes("unsafe") ? 403 : 404;
+      return res.status(status).json({ error: resolved.error });
+    }
+    const onErr = (err: NodeJS.ErrnoException | null) => {
+      if (!err || res.headersSent) return;
+      res.status((err as any).statusCode ?? 500).json({ error: err.message });
+    };
+    res.type(resolved.value.mimeType);
+    // Strict headers for HTML artifacts served into sandboxed iframes
+    if (resolved.value.mimeType === HTML_MIME_TYPE) {
+      res.setHeader(
+        "Content-Security-Policy",
+        "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'",
+      );
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    }
+    return res.sendFile(resolved.value.filePath, { dotfiles: "allow" }, onErr);
+  });
+
+  // GET /sessions/:id/visuals/:artifactId/download — force-download the image
+  router.get("/sessions/:id/visuals/:artifactId/download", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const artifactId = String(req.params.artifactId ?? "").trim();
+    if (!isCanonicalArtifactId(artifactId)) {
+      return res.status(400).json({ error: "artifactId must be a valid UUID" });
+    }
+    const resolved = resolveVisualArtifact(getCopilotHome(ctx), req.params.id, artifactId);
+    if (!resolved.ok) {
+      const status = resolved.error.includes("unsafe") ? 403 : 404;
+      return res.status(status).json({ error: resolved.error });
+    }
+    const onErr = (err: NodeJS.ErrnoException | null) => {
+      if (!err || res.headersSent) return;
+      res.status((err as any).statusCode ?? 500).json({ error: err.message });
+    };
+    return res.download(resolved.value.filePath, resolved.value.displayName, { dotfiles: "allow" }, onErr);
+  });
+
+  // GET /sessions/:id/visuals/:artifactId/meta — return visual artifact metadata as JSON
+  router.get("/sessions/:id/visuals/:artifactId/meta", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const artifactId = String(req.params.artifactId ?? "").trim();
+    if (!isCanonicalArtifactId(artifactId)) {
+      return res.status(400).json({ error: "artifactId must be a valid UUID" });
+    }
+    const meta = loadVisualArtifactMeta(getCopilotHome(ctx), req.params.id, artifactId);
+    if (!meta.ok) {
+      return res.status(meta.error === "sessionId is invalid" || meta.error === "artifactId is invalid" ? 400 : 404)
+        .json({ error: meta.error });
+    }
+    return res.json(meta.value);
   });
 
   // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed

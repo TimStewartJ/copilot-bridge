@@ -4,6 +4,7 @@ import {
   buildTerminalToolEntries,
   bufferPendingToolPrelude,
   collectTerminalPendingTools,
+  createVisualEntryFromPublishedEvent,
   getKnownToolName,
   materializePendingTool,
   resolvePendingToolName,
@@ -121,5 +122,56 @@ describe("buffered pending tool helpers", () => {
         progressText: "Waiting for start",
       },
     ]);
+  });
+});
+
+describe("createVisualEntryFromPublishedEvent", () => {
+  it("preserves live Vega-Lite visual kind and source", () => {
+    const entry = createVisualEntryFromPublishedEvent({
+      artifactId: "artifact-1",
+      kind: "vega-lite",
+      title: "Chart",
+      displayName: "chart.vl.json",
+      mimeType: "application/vnd.vegalite+json",
+      size: 128,
+      url: "/api/sessions/s/visuals/artifact-1",
+      downloadUrl: "/api/sessions/s/visuals/artifact-1/download",
+      source: "{\"mark\":\"bar\"}",
+      timestamp: "2026-04-28T00:00:00.000Z",
+    });
+
+    expect(entry).toMatchObject({
+      id: "stream-visual-artifact-1",
+      type: "visual",
+      timestamp: "2026-04-28T00:00:00.000Z",
+      visual: {
+        artifactId: "artifact-1",
+        kind: "vega-lite",
+        title: "Chart",
+        source: "{\"mark\":\"bar\"}",
+      },
+    });
+  });
+
+  it("preserves live HTML visual kind and source", () => {
+    const entry = createVisualEntryFromPublishedEvent({
+      artifactId: "artifact-2",
+      kind: "html",
+      title: "Mockup",
+      url: "/api/sessions/s/visuals/artifact-2",
+      source: "<h1>Hello</h1>",
+    });
+
+    expect(entry?.visual).toMatchObject({
+      artifactId: "artifact-2",
+      kind: "html",
+      mimeType: "text/html",
+      source: "<h1>Hello</h1>",
+    });
+  });
+
+  it("returns null for malformed live visual events", () => {
+    expect(createVisualEntryFromPublishedEvent({ artifactId: "artifact-3" })).toBeNull();
+    expect(createVisualEntryFromPublishedEvent({ url: "/missing-id" })).toBeNull();
   });
 });

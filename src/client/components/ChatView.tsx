@@ -12,6 +12,7 @@ import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
 import ToolCallTree from "./ToolCallTree";
+import VisualArtifactCard from "./VisualArtifactCard";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
@@ -806,6 +807,16 @@ export default function ChatView({
                 defaultExpanded={node.children.length > 0}
               />
             ))}
+          </div>,
+        );
+        return;
+      }
+
+      if (segment.type === "visual-segment") {
+        const { entry } = segment;
+        result.push(
+          <div key={entry.id ?? `visual-${index}`} className="px-3 md:px-5 pt-3">
+            <VisualArtifactCard visual={entry.visual} />
           </div>,
         );
         return;

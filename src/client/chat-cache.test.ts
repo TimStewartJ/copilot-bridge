@@ -200,6 +200,17 @@ describe("mergeTailMessages", () => {
     expect(merged.entries[50]?.content).toBe("prompt");
     expect(merged.entries[50]?.id).toBeUndefined();
   });
+
+  it("normalizes committed live visual ids without reading message content", () => {
+    const normalized = normalizeCommittedClientEntries(
+      [{ ...createVisualEntry("id-visual"), id: "stream-visual-id-visual" }],
+      0,
+      1,
+    );
+
+    expect(normalized[0]?.type).toBe("visual");
+    expect(normalized[0]?.id).toBeUndefined();
+  });
 });
 
 describe("appendLiveEntries", () => {
@@ -332,6 +343,39 @@ describe("appendLiveEntries", () => {
     });
   });
 
+  it("merges live tool completion across an intervening visual artifact", () => {
+    const previousEntries = [
+      createToolEntry("tool-1"),
+      createVisualEntry("id-777"),
+    ];
+
+    const merged = appendLiveEntries(previousEntries, [
+      {
+        id: "stream-tool-1",
+        type: "tool",
+        toolCall: {
+          toolCallId: "tool-1",
+          name: "publish_visual",
+          result: "published",
+          success: true,
+          completedAt: "2026-04-22T20:00:02.000Z",
+        },
+      } satisfies ChatEntry,
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({
+      id: "tool-tool-1",
+      type: "tool",
+      toolCall: {
+        toolCallId: "tool-1",
+        result: "published",
+        success: true,
+      },
+    });
+    expect(merged[1]).toMatchObject({ type: "visual" });
+  });
+
   it("merges reconnect snapshot tool state into the existing row after an intervening message", () => {
     const previousEntries = [
       createToolEntry("tool-1"),
@@ -360,5 +404,60 @@ describe("appendLiveEntries", () => {
         progressText: "Still running",
       },
     });
+  });
+});
+
+function createVisualEntry(artifactId: string): ChatEntry {
+  return {
+    type: "visual",
+    visual: {
+      artifactId,
+      kind: "mermaid",
+      title: "Diagram",
+      displayName: "diagram.mmd",
+      mimeType: "text/vnd.mermaid",
+      size: 20,
+      url: `/api/sessions/test/visuals/${artifactId}`,
+      downloadUrl: `/api/sessions/test/visuals/${artifactId}/download`,
+      source: "graph TD\n  A-->B",
+    },
+  };
+}
+
+describe("appendLiveEntries: visual artifact de-duplication", () => {
+  it("appends a new visual entry when no matching artifactId exists", () => {
+    const base: ChatEntry[] = [];
+    const result = appendLiveEntries(base, [createVisualEntry("id-111")]);
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("visual");
+  });
+
+  it("skips a visual entry whose artifactId is already present", () => {
+    const existing = [createVisualEntry("id-222")];
+    const result = appendLiveEntries(existing, [createVisualEntry("id-222")]);
+    expect(result).toHaveLength(1);
+  });
+
+  it("appends a visual entry with a different artifactId even if another visual exists", () => {
+    const existing = [createVisualEntry("id-333")];
+    const result = appendLiveEntries(existing, [createVisualEntry("id-444")]);
+    expect(result).toHaveLength(2);
+  });
+
+  it("deduplicates when the same visual entry appears twice in the incoming batch", () => {
+    const base: ChatEntry[] = [];
+    const result = appendLiveEntries(
+      base,
+      [createVisualEntry("id-555"), createVisualEntry("id-555")],
+    );
+    expect(result).toHaveLength(1);
+  });
+
+  it("preserves surrounding message entries alongside a visual entry", () => {
+    const base: ChatEntry[] = [createMessage("msg-1")];
+    const result = appendLiveEntries(base, [createVisualEntry("id-666")]);
+    expect(result).toHaveLength(2);
+    expect(result[0].type).not.toBe("visual");
+    expect(result[1].type).toBe("visual");
   });
 });
