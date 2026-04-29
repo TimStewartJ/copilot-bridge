@@ -72,6 +72,114 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
     });
 
+    it("tracks pending native user input requests in snapshots", () => {
+      const bus = getOrCreateBus("test-user-input-pending-1");
+
+      bus.emitUserInputRequested({
+        requestId: "request-1",
+        question: "Pick one",
+        choices: ["yes", "no"],
+        allowFreeform: false,
+        requestedAt: "2026-04-25T00:00:00.000Z",
+        toolCallId: "tool-1",
+      }, "2026-04-25T00:00:00.100Z");
+
+      let snap = bus.getSnapshot();
+      expect(snap.pendingUserInputs).toHaveLength(1);
+      expect(snap.pendingUserInputs[0]).toMatchObject({
+        requestId: "request-1",
+        question: "Pick one",
+        choices: ["yes", "no"],
+        allowFreeform: false,
+        requestedAt: "2026-04-25T00:00:00.000Z",
+        toolCallId: "tool-1",
+      });
+
+      bus.emitUserInputRequested({
+        requestId: "request-1",
+        question: "Pick one again",
+        allowFreeform: true,
+        requestedAt: "2026-04-25T00:00:01.000Z",
+      });
+
+      snap = bus.getSnapshot();
+      expect(snap.pendingUserInputs).toHaveLength(1);
+      expect(snap.pendingUserInputs[0]).toMatchObject({
+        requestId: "request-1",
+        question: "Pick one again",
+        allowFreeform: true,
+        requestedAt: "2026-04-25T00:00:01.000Z",
+      });
+    });
+
+    it("removes pending user input requests when answered or canceled", () => {
+      const bus = getOrCreateBus("test-user-input-complete-1");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+
+      bus.emitUserInputRequested({
+        requestId: "request-1",
+        question: "First?",
+        allowFreeform: true,
+      });
+      bus.emitUserInputRequested({
+        requestId: "request-2",
+        question: "Second?",
+        allowFreeform: true,
+      });
+
+      bus.emitUserInputAnswered("request-1", { answer: "yes", wasFreeform: false }, "2026-04-25T00:00:02.000Z");
+
+      expect(bus.getSnapshot().pendingUserInputs.map((request) => request.requestId)).toEqual(["request-2"]);
+
+      bus.emitUserInputCanceled("request-2", {
+        reason: "session_ended",
+        message: "Session ended",
+        timestamp: "2026-04-25T00:00:03.000Z",
+      });
+
+      expect(bus.getSnapshot().pendingUserInputs).toEqual([]);
+      expect(events.map((event) => event.type)).toEqual([
+        "snapshot",
+        "user_input_requested",
+        "user_input_requested",
+        "user_input_answered",
+        "user_input_canceled",
+      ]);
+      expect(events[3]).toMatchObject({
+        requestId: "request-1",
+        answer: "yes",
+        wasFreeform: false,
+      });
+      expect(events[4]).toMatchObject({
+        requestId: "request-2",
+        reason: "session_ended",
+        message: "Session ended",
+      });
+    });
+
+    it("normalizes direct user input stream events for snapshots", () => {
+      const bus = getOrCreateBus("test-user-input-direct-1");
+
+      bus.emit({
+        type: "user_input_requested",
+        requestId: "request-direct",
+        question: "Direct?",
+        timestamp: "2026-04-25T00:00:04.000Z",
+      });
+
+      expect(bus.getSnapshot().pendingUserInputs[0]).toMatchObject({
+        requestId: "request-direct",
+        question: "Direct?",
+        allowFreeform: true,
+        requestedAt: "2026-04-25T00:00:04.000Z",
+      });
+
+      bus.emit({ type: "user_input_canceled", requestId: "request-direct" });
+
+      expect(bus.getSnapshot().pendingUserInputs).toEqual([]);
+    });
+
     it("tracks tool lifecycle", () => {
       const bus = getOrCreateBus("test-tool-1");
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep", timestamp: "2026-04-22T20:00:00.000Z" });
@@ -100,6 +208,7 @@ describe("event-bus", () => {
       const bus = getOrCreateBus("test-done-1");
       bus.emit({ type: "delta", content: "some text" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
+      bus.emitUserInputRequested({ requestId: "request-1", question: "Continue?", allowFreeform: true });
       bus.emit({ type: "done", content: "Final answer", timestamp: "2026-04-24T00:00:00.000Z" });
 
       const snap = bus.getSnapshot();
@@ -109,6 +218,7 @@ describe("event-bus", () => {
       expect(snap.finalContent).toBe("Final answer");
       expect(snap.accumulatedContent).toBe("");
       expect(snap.activeTools).toEqual([]);
+      expect(snap.pendingUserInputs).toEqual([]);
       expect(bus.complete).toBe(true);
     });
 
@@ -217,6 +327,7 @@ describe("event-bus", () => {
       bus.emit({ type: "intent", intent: "doing stuff" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
       bus.setPendingPrompt("prompt");
+      bus.emitUserInputRequested({ requestId: "request-1", question: "Continue?", allowFreeform: true });
 
       bus.reset();
       const snap = bus.getSnapshot();
@@ -228,6 +339,7 @@ describe("event-bus", () => {
       expect(snap.finalContent).toBeUndefined();
       expect(snap.errorMessage).toBeUndefined();
       expect(snap.pendingPrompt).toBeUndefined();
+      expect(snap.pendingUserInputs).toEqual([]);
     });
   });
 });

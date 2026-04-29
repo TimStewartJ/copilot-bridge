@@ -1,6 +1,20 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { fetchMessages, fetchMessagesFast, warmSession, fetchMcpStatus, reportTiming, type Attachment, type ChatEntry, type ChatMessage, type McpServerStatus, type ToolCall } from "../api";
+import {
+  fetchMessages,
+  fetchMessagesFast,
+  warmSession,
+  fetchMcpStatus,
+  reportTiming,
+  submitUserInputResponse,
+  type Attachment,
+  type ChatEntry,
+  type ChatMessage,
+  type McpServerStatus,
+  type PendingUserInputRequestView,
+  type ToolCall,
+  type UserInputAnswerEndpointPayload,
+} from "../api";
 import { appendLiveEntries, getCachedChatSnapshot, hasClientGeneratedEntries, hasOptimisticTail, mergeTailMessages, normalizeCommittedClientEntries, setCachedChatSnapshot } from "../chat-cache";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
@@ -90,6 +104,156 @@ function renderPendingStatusCard(
           <div className="text-sm font-medium">{title}</div>
           <div className="text-xs opacity-80">{detail}</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function sortPendingUserInputRequests(
+  requests: PendingUserInputRequestView[],
+): PendingUserInputRequestView[] {
+  return requests
+    .map((request, index) => {
+      const requestedAt = request.requestedAt ? Date.parse(request.requestedAt) : Number.NaN;
+      return { request, index, requestedAt };
+    })
+    .sort((a, b) => {
+      const aHasTime = Number.isFinite(a.requestedAt);
+      const bHasTime = Number.isFinite(b.requestedAt);
+      if (aHasTime && bHasTime && a.requestedAt !== b.requestedAt) {
+        return a.requestedAt - b.requestedAt;
+      }
+      if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map(({ request }) => request);
+}
+
+function getUserInputSubmitError(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  return "Failed to submit response.";
+}
+
+interface UserInputQuestionCardProps {
+  request: PendingUserInputRequestView;
+  onSubmit: (requestId: string, payload: UserInputAnswerEndpointPayload) => Promise<void>;
+}
+
+function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps) {
+  const [freeform, setFreeform] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const submittingRef = useRef(false);
+  const choices = request.choices?.filter((choice) => choice.trim().length > 0) ?? [];
+  const controlsDisabled = submitting || submitted;
+
+  const submitResponse = useCallback(async (payload: UserInputAnswerEndpointPayload) => {
+    if (submittingRef.current || submitted) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit(request.requestId, payload);
+      setSubmitted(true);
+    } catch (err) {
+      submittingRef.current = false;
+      setError(getUserInputSubmitError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [onSubmit, request.requestId, submitted]);
+
+  const handleChoiceClick = useCallback((choice: string) => {
+    if (!choice.trim()) {
+      setError("Choice response cannot be blank.");
+      return;
+    }
+    void submitResponse({ answer: choice, wasFreeform: false });
+  }, [submitResponse]);
+
+  const handleFreeformSubmit = useCallback((event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const answer = freeform.trim();
+    if (!answer) {
+      setError("Enter a response before submitting.");
+      return;
+    }
+    void submitResponse({ answer, wasFreeform: true });
+  }, [freeform, submitResponse]);
+
+  return (
+    <div className="px-3 md:px-5">
+      <div className="max-w-xl rounded-2xl border border-accent/30 bg-bg-secondary px-4 py-3 shadow-sm">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
+          Question
+        </div>
+        <div className="mt-1 whitespace-pre-wrap text-sm font-medium leading-6 text-text-primary">
+          {request.question}
+        </div>
+
+        {choices.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {choices.map((choice, index) => (
+              <button
+                key={`${choice}-${index}`}
+                type="button"
+                onClick={() => handleChoiceClick(choice)}
+                disabled={controlsDisabled}
+                className="rounded-full border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-accent/60 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {choice}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {request.allowFreeform && (
+          <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={handleFreeformSubmit}>
+            <input
+              value={freeform}
+              onChange={(event) => setFreeform(event.target.value)}
+              disabled={controlsDisabled}
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-faint focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              placeholder={choices.length > 0 ? "Or type a response..." : "Type a response..."}
+              aria-label="Answer question"
+            />
+            <button
+              type="submit"
+              disabled={controlsDisabled}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting && <Loader2 size={14} className="animate-spin" />}
+              {submitting ? "Submitting..." : submitted ? "Submitted" : "Submit"}
+            </button>
+          </form>
+        )}
+
+        {choices.length === 0 && !request.allowFreeform && (
+          <div className="mt-3 text-xs text-text-muted">
+            No response options are available for this question.
+          </div>
+        )}
+
+        {error && (
+          <div
+            className="mt-3 rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error"
+            role="alert"
+          >
+            {error}
+          </div>
+        )}
+        {!error && (submitting || submitted) && (
+          <div
+            className="mt-3 flex items-center gap-2 text-xs text-text-muted"
+            role="status"
+            aria-live="polite"
+          >
+            {submitting && <Loader2 size={12} className="animate-spin" />}
+            {submitting ? "Submitting response..." : "Response submitted. Waiting for the run to continue..."}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -217,6 +381,7 @@ export default function ChatView({
     streamStatus,
     hadVisibleOutput,
     pendingOrigin,
+    pendingUserInputs,
     mcpServers: streamMcpServers,
     sendMessage,
     startFleet,
@@ -700,6 +865,20 @@ export default function ChatView({
     await startFleet();
   }, [sessionId, isStreaming, creating, warming, invalidateHistoryRefresh, startFleet]);
 
+  const pendingUserInputRequests = useMemo(
+    () => sortPendingUserInputRequests(pendingUserInputs),
+    [pendingUserInputs],
+  );
+  const hasPendingUserInputs = pendingUserInputRequests.length > 0;
+
+  const handleSubmitUserInput = useCallback(async (
+    requestId: string,
+    payload: UserInputAnswerEndpointPayload,
+  ) => {
+    if (!sessionId) throw new Error("Session not available");
+    await submitUserInputResponse(sessionId, requestId, payload);
+  }, [sessionId]);
+
   const activeToolCalls = useMemo<ToolCall[]>(
     () => activeTools.map((tool) => ({
       toolCallId: tool.toolCallId,
@@ -735,7 +914,7 @@ export default function ChatView({
     if (!stickToBottomRef.current) return;
     const el = scrollContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [streamingContent, runHeaderState?.phase, isStreaming, creating]);
+  }, [streamingContent, runHeaderState?.phase, isStreaming, creating, pendingUserInputRequests.length]);
 
   // Build pending indicator content (run header + streaming text).
   const pendingContent = useMemo(() => {
@@ -761,9 +940,19 @@ export default function ChatView({
       );
     }
 
+    for (const request of pendingUserInputRequests) {
+      parts.push(
+        <UserInputQuestionCard
+          key={`user-input-${request.requestId}`}
+          request={request}
+          onSubmit={handleSubmitUserInput}
+        />,
+      );
+    }
+
     if (parts.length === 0) return null;
     return <div className="space-y-4 pb-4">{parts}</div>;
-  }, [runHeaderState, streamingContent]);
+  }, [handleSubmitUserInput, pendingUserInputRequests, runHeaderState, streamingContent]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
   const runFleetDisabledReason = !hasPlan
@@ -874,7 +1063,7 @@ export default function ChatView({
             </div>
           </div>
         </LoadingSkeletonRegion>
-      ) : entries.length === 0 && !isStreaming && !creating ? (
+      ) : entries.length === 0 && !isStreaming && !creating && !hasPendingUserInputs ? (
         <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
           Send a message to get started
         </div>

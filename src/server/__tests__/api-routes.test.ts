@@ -11,6 +11,7 @@ import { writeRestartState } from "../restart-state.js";
 import { clearRestartPending, RESTART_PENDING_MESSAGE } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
 import * as providers from "../providers/index.js";
+import { UserInputBrokerError } from "../user-input-broker.js";
 import { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 let app: Express;
@@ -208,6 +209,100 @@ describe("Fleet route", () => {
     expect(res.text).toContain('data: {"type":"shutdown","content":"Partial answer"}');
     expect(res.text).not.toContain('"type":"snapshot"');
   });
+
+  it("GET /api/sessions/:id/stream includes pending user input requests in live snapshots", async () => {
+    const snapshot = {
+      type: "snapshot",
+      accumulatedContent: "",
+      activeTools: [],
+      intentText: "",
+      complete: false,
+      pendingUserInputs: [
+        {
+          requestId: "request-1",
+          question: "Pick one",
+          choices: ["yes", "no"],
+          allowFreeform: false,
+          requestedAt: "2026-04-29T12:00:00.000Z",
+        },
+      ],
+    };
+    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
+      subscribe(listener: (event: unknown) => void) {
+        listener(snapshot);
+        listener({ type: "done", content: "" });
+        return () => {};
+      },
+    });
+
+    const res = await request(app)
+      .get("/api/sessions/session-123/stream");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain(`data: ${JSON.stringify(snapshot)}`);
+  });
+});
+
+describe("User input response route", () => {
+  it("POST /api/sessions/:sessionId/user-input/:requestId/respond submits an answer", async () => {
+    const submittedAt = "2026-04-29T12:34:56.000Z";
+    const submitUserInputResponse = vi.fn().mockResolvedValue({
+      requestId: "request-1",
+      answer: "yes",
+      wasFreeform: false,
+      timestamp: submittedAt,
+    });
+    ctx.sessionManager.submitUserInputResponse = submitUserInputResponse;
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/user-input/request-1/respond")
+      .send({ answer: "yes", wasFreeform: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      requestId: "request-1",
+      answer: "yes",
+      wasFreeform: false,
+      timestamp: submittedAt,
+    });
+    expect(submitUserInputResponse).toHaveBeenCalledWith(
+      "session-123",
+      "request-1",
+      { answer: "yes", wasFreeform: false },
+    );
+  });
+
+  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps broker validation errors", async () => {
+    ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(
+      new UserInputBrokerError("invalid_response", "Response answer cannot be blank"),
+    );
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/user-input/request-1/respond")
+      .send({ answer: " ", wasFreeform: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "Response answer cannot be blank",
+      code: "invalid_response",
+    });
+  });
+
+  it("POST /api/sessions/:sessionId/user-input/:requestId/respond maps missing requests", async () => {
+    ctx.sessionManager.submitUserInputResponse = vi.fn().mockRejectedValue(
+      new UserInputBrokerError("request_not_found", "Pending user input request not found", { statusCode: 404 }),
+    );
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/user-input/missing/respond")
+      .send({ answer: "yes", wasFreeform: false });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({
+      error: "Pending user input request not found",
+      code: "request_not_found",
+    });
+  });
 });
 
 describe("Status stream", () => {
@@ -240,6 +335,45 @@ describe("Status stream", () => {
       });
 
       expect(body).toContain('data: {"type":"session:stalled","sessionId":"session-123"}');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("GET /api/status-stream forwards user-input status events", async () => {
+    const server = app.listen(0);
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Unable to determine test server port");
+
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = get(`http://127.0.0.1:${address.port}/api/status-stream`, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            text += chunk;
+            if (text.includes('"type":"session:user-input","sessionId":"session-123"')) {
+              req.destroy();
+              resolve(text);
+            }
+          });
+          res.on("error", reject);
+          setTimeout(() => {
+            ctx.globalBus.emit({
+              type: "session:user-input",
+              sessionId: "session-123",
+              pendingUserInputCount: 1,
+              needsUserInput: true,
+            });
+          }, 10);
+        });
+        req.on("error", (error: NodeJS.ErrnoException) => {
+          if (error.code === "ECONNRESET") return;
+          reject(error);
+        });
+      });
+
+      expect(body).toContain('data: {"type":"session:user-input","sessionId":"session-123","pendingUserInputCount":1,"needsUserInput":true}');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
@@ -1921,6 +2055,25 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sessions[0]).toMatchObject({ sessionId: "s1", runState: "stalled", busy: true });
+  });
+
+  it("GET /api/sessions includes input-required status for sessions waiting on answers", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
+    ctx.sessionManager.getPendingUserInputCount = vi.fn().mockReturnValue(1);
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: "s1",
+      runState: "busy",
+      busy: true,
+      pendingUserInputCount: 1,
+      needsUserInput: true,
+    });
   });
 
   it("POST /api/sessions creates a session", async () => {

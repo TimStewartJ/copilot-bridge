@@ -32,6 +32,7 @@ import { isCanonicalArtifactId, HTML_MIME_TYPE, loadVisualArtifactMeta, resolveV
 import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
+import { UserInputBrokerError } from "./user-input-broker.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -112,9 +113,18 @@ type LegacyCompatibleOkGitStatus = Extract<TaskGitStatusResponse, { status: "ok"
   }>;
 };
 
-function getSessionStatus(ctx: AppContext, sessionId: string): { runState: SessionRunState; busy: boolean } {
+function getSessionStatus(
+  ctx: AppContext,
+  sessionId: string,
+): { runState: SessionRunState; busy: boolean; pendingUserInputCount: number; needsUserInput: boolean } {
   const runState = ctx.sessionManager.getSessionRunState(sessionId);
-  return { runState, busy: runState !== "idle" };
+  const pendingUserInputCount = ctx.sessionManager.getPendingUserInputCount(sessionId);
+  return {
+    runState,
+    busy: runState !== "idle",
+    pendingUserInputCount,
+    needsUserInput: pendingUserInputCount > 0,
+  };
 }
 
 function normalizeWorkspacePath(cwd?: string | null): string | undefined {
@@ -1214,6 +1224,22 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  router.post("/sessions/:sessionId/user-input/:requestId/respond", async (req, res) => {
+    try {
+      const response = await ctx.sessionManager.submitUserInputResponse(
+        req.params.sessionId,
+        req.params.requestId,
+        req.body,
+      );
+      res.json(response);
+    } catch (err) {
+      if (err instanceof UserInputBrokerError) {
+        return res.status(err.statusCode).json({ error: err.message, code: err.code });
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // POST /sessions/:id/abort — abort an in-progress session turn
   router.post("/sessions/:id/abort", async (req, res) => {
     const sessionId = req.params.id;
@@ -2020,7 +2046,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
             });
             return { session: s, summary, status };
           })
-          .filter((entry): entry is { session: any; summary: string; status: { runState: SessionRunState; busy: boolean } } => !!entry.summary)
+          .filter((entry): entry is {
+            session: any;
+            summary: string;
+            status: ReturnType<typeof getSessionStatus>;
+          } => !!entry.summary)
           .map(async ({ session: s, summary, status }) => {
             const id = s.sessionId;
             const archived = meta[id]?.archived === true;
@@ -2428,7 +2458,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const archived = meta[run.sessionId]?.archived === true;
           const generatedTitle = ctx.sessionTitles.getTitle(run.sessionId);
           const summary = generatedTitle ?? s?.summary ?? run.sessionId;
-          const status = s ? getSessionStatus(ctx, run.sessionId) : { runState: "idle" as const, busy: false };
+          const status = s
+            ? getSessionStatus(ctx, run.sessionId)
+            : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false };
           const hasPlan = await statAsync(join(sessionStateDir, run.sessionId, "plan.md")).then(() => true, () => false);
           let diskSize = 0;
           try { diskSize = getDirSize(join(sessionStateDir, run.sessionId)); } catch {}

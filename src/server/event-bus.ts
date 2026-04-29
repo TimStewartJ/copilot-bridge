@@ -1,6 +1,28 @@
 // Event bus for session streaming — decouples work from HTTP responses
 // Tracks snapshot of current in-flight turn, streams live events to subscribers
 
+import type {
+  NativeUserInputResponse,
+  PendingUserInputRequestView,
+  UserInputCancelReason,
+  UserInputRequestId,
+} from "./user-input-types.js";
+
+export type {
+  NativeUserInputRequest,
+  NativeUserInputResponse,
+  UserInputCancelReason,
+  UserInputAnsweredStreamEvent,
+  UserInputCanceledStreamEvent,
+  PendingUserInputRequestView,
+  UserInputAnswerEndpointPayload,
+  UserInputChoice,
+  UserInputRequestedStreamEvent,
+  UserInputRequestId,
+  UserInputSnapshotState,
+  UserInputStreamEvent,
+} from "./user-input-types.js";
+
 export interface StreamEvent {
   type: string;
   content?: string;
@@ -32,12 +54,20 @@ export interface BusSnapshot {
   errorMessage?: string;
   /** The user prompt that initiated this turn (for reconnect recovery) */
   pendingPrompt?: string;
+  /** Pending native user input requests only; answered/canceled requests are omitted. */
+  pendingUserInputs: PendingUserInputRequestView[];
   [key: string]: unknown;
 }
 
 type Listener = (event: StreamEvent) => void;
 
 const CLEANUP_DELAY = 60_000; // 60s after done before clearing
+
+interface UserInputCanceledOptions {
+  reason?: UserInputCancelReason;
+  message?: string;
+  timestamp?: string;
+}
 
 export class SessionEventBus {
   private listeners = new Set<Listener>();
@@ -55,6 +85,7 @@ export class SessionEventBus {
   private mcpServers: unknown[] = [];
   /** The user prompt that initiated this turn (for reconnect recovery) */
   private pendingPrompt?: string;
+  private pendingUserInputs = new Map<UserInputRequestId, PendingUserInputRequestView>();
 
   constructor(
     private sessionId: string,
@@ -73,6 +104,39 @@ export class SessionEventBus {
   /** Stop advertising reconnect recovery once the prompt is durably persisted */
   clearPendingPrompt(): void {
     this.pendingPrompt = undefined;
+  }
+
+  emitUserInputRequested(request: PendingUserInputRequestView, timestamp?: string): void {
+    this.emit({
+      type: "user_input_requested",
+      ...request,
+      allowFreeform: request.allowFreeform ?? true,
+      requestedAt: request.requestedAt ?? timestamp,
+      timestamp,
+    });
+  }
+
+  emitUserInputAnswered(
+    requestId: UserInputRequestId,
+    response: NativeUserInputResponse,
+    timestamp?: string,
+  ): void {
+    this.emit({
+      type: "user_input_answered",
+      requestId,
+      ...response,
+      timestamp,
+    });
+  }
+
+  emitUserInputCanceled(requestId: UserInputRequestId, options: UserInputCanceledOptions = {}): void {
+    this.emit({
+      type: "user_input_canceled",
+      requestId,
+      reason: options.reason,
+      message: options.message,
+      timestamp: options.timestamp,
+    });
   }
 
   emit(event: StreamEvent): void {
@@ -125,6 +189,21 @@ export class SessionEventBus {
         // Intermediate message boundary — reset content accumulator
         this.accumulatedContent = "";
         break;
+      case "user_input_requested": {
+        const pending = this.pendingUserInputFromEvent(event);
+        if (pending) {
+          this.pendingUserInputs.set(pending.requestId, pending);
+        }
+        break;
+      }
+      case "user_input_answered":
+      case "user_input_canceled": {
+        const requestId = this.userInputRequestIdFromEvent(event);
+        if (requestId) {
+          this.pendingUserInputs.delete(requestId);
+        }
+        break;
+      }
       case "done":
         this.terminalType = "done";
         this.terminalTimestamp = event.timestamp as string | undefined;
@@ -133,6 +212,7 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
+        this.pendingUserInputs.clear();
         this.scheduleCleanup();
         break;
       case "aborted":
@@ -143,6 +223,7 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
+        this.pendingUserInputs.clear();
         this.scheduleCleanup();
         break;
       case "shutdown":
@@ -153,6 +234,7 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
+        this.pendingUserInputs.clear();
         this.scheduleCleanup();
         break;
       case "error":
@@ -163,6 +245,7 @@ export class SessionEventBus {
         this.accumulatedContent = "";
         this.intentText = "";
         this.activeTools = [];
+        this.pendingUserInputs.clear();
         this.scheduleCleanup();
         break;
       case "mcp_status":
@@ -191,6 +274,7 @@ export class SessionEventBus {
       errorMessage: this.errorMessage,
       mcpServers: [...this.mcpServers],
       pendingPrompt: this.pendingPrompt,
+      pendingUserInputs: [...this.pendingUserInputs.values()],
     };
   }
 
@@ -230,6 +314,7 @@ export class SessionEventBus {
     this.finalContent = undefined;
     this.errorMessage = undefined;
     this.pendingPrompt = undefined;
+    this.pendingUserInputs.clear();
     this.cancelCleanup();
   }
 
@@ -244,6 +329,35 @@ export class SessionEventBus {
     this.cleanupTimer = setTimeout(() => {
       this.onCleanup?.(this.sessionId);
     }, CLEANUP_DELAY);
+  }
+
+  private pendingUserInputFromEvent(event: StreamEvent): PendingUserInputRequestView | undefined {
+    const requestId = this.userInputRequestIdFromEvent(event);
+    if (!requestId || typeof event.question !== "string") {
+      return undefined;
+    }
+
+    const choices = Array.isArray(event.choices)
+      ? event.choices.filter((choice): choice is string => typeof choice === "string")
+      : undefined;
+    const requestedAt = typeof event.requestedAt === "string"
+      ? event.requestedAt
+      : typeof event.timestamp === "string"
+        ? event.timestamp
+        : undefined;
+
+    return {
+      requestId,
+      question: event.question,
+      choices,
+      allowFreeform: typeof event.allowFreeform === "boolean" ? event.allowFreeform : true,
+      requestedAt,
+      toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+    };
+  }
+
+  private userInputRequestIdFromEvent(event: StreamEvent): UserInputRequestId | undefined {
+    return typeof event.requestId === "string" ? event.requestId : undefined;
   }
 }
 

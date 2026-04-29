@@ -65,6 +65,8 @@ import { err, getToolExecutionDisplayText, ok, toolFailure, type Result } from "
 import type { RuntimePaths } from "./runtime-paths.js";
 import { publishOutboundAttachment } from "./outbound-attachments.js";
 import { publishMermaidArtifact, publishHtmlArtifact, publishVegaLiteArtifact, publishVisualArtifact } from "./visual-artifacts.js";
+import { createUserInputBroker, UserInputBrokerError, type UserInputBroker } from "./user-input-broker.js";
+import type { NativeUserInputRequest, NativeUserInputResponse, UserInputCancelReason, UserInputRequestId } from "./user-input-types.js";
 import {
   clearRestartState,
   createDefaultRestartState,
@@ -1970,6 +1972,7 @@ export interface SessionManagerDeps {
   tools: ReturnType<typeof defineTool>[];
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
+  userInputBroker?: UserInputBroker;
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
   sessionMetaStore?: SessionMetaStore;
@@ -2053,6 +2056,7 @@ export class SessionManager {
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private pendingSessionEvictions = new Set<string>();
+  private readonly userInputBroker: UserInputBroker;
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
   private sessionListCache: { data: any[]; timestamp: number } | null = null;
@@ -2060,6 +2064,24 @@ export class SessionManager {
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
+    this.userInputBroker = deps.userInputBroker ?? createUserInputBroker();
+    this.userInputBroker.setEventHandlers({
+      onRequestCreated: (sessionId, request) => {
+        this.touchUserInputActivity(sessionId, request.requestedAt);
+        deps.eventBusRegistry.getOrCreateBus(sessionId).emitUserInputRequested(request, request.requestedAt);
+        this.emitUserInputStatus(sessionId);
+      },
+      onRequestAnswered: (sessionId, requestId, response, timestamp) => {
+        this.touchUserInputActivity(sessionId, timestamp);
+        deps.eventBusRegistry.getBus(sessionId)?.emitUserInputAnswered(requestId, response, timestamp);
+        this.emitUserInputStatus(sessionId);
+      },
+      onRequestCanceled: (sessionId, requestId, reason, message, timestamp) => {
+        this.touchUserInputActivity(sessionId, timestamp);
+        deps.eventBusRegistry.getBus(sessionId)?.emitUserInputCanceled(requestId, { reason, message, timestamp });
+        this.emitUserInputStatus(sessionId);
+      },
+    });
     configureRestartStateStore(deps.runtimePaths);
     configureRestartEventBus(deps.globalBus);
     void refreshRestartState();
@@ -2138,24 +2160,32 @@ export class SessionManager {
       completeDone: (content) => {
         settlePromptDelivery({ status: "accepted" });
         finish((timestamp) => {
+          this.cancelPendingUserInputRequests(
+            sessionId,
+            "session_ended",
+            "Session operation completed before the user input request was answered",
+          );
           bus.emit({ type: "done", content, timestamp });
         });
       },
       completeError: (message) => {
         settlePromptDelivery({ status: "failed", message });
         finish((timestamp) => {
+          this.cancelPendingUserInputRequests(sessionId, "error", message);
           bus.emit({ type: "error", message, timestamp });
         });
       },
       completeAborted: (content) => {
         settlePromptDelivery({ status: "failed", message: PROMPT_DELIVERY_ABORTED_MESSAGE });
         finish((timestamp) => {
+          this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
           bus.emit({ type: "aborted", content, timestamp });
         });
       },
       completeShutdown: (content) => {
         settlePromptDelivery({ status: "failed", message: PROMPT_DELIVERY_SHUTDOWN_MESSAGE });
         finish((timestamp) => {
+          this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_SHUTDOWN_MESSAGE);
           bus.emit({ type: "shutdown", content, timestamp });
         });
       },
@@ -2174,6 +2204,7 @@ export class SessionManager {
             }
             console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
             resolve(finish((timestamp) => {
+              this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
               bus.emit({ type: "aborted", content: getContent(), timestamp });
             }));
           }, delayMs);
@@ -2432,6 +2463,54 @@ export class SessionManager {
     }
   }
 
+  private handleUserInputRequest(
+    request: NativeUserInputRequest,
+    invocation: { sessionId: string },
+  ): Promise<NativeUserInputResponse> {
+    return this.userInputBroker.requestUserInput(invocation.sessionId, request);
+  }
+
+  private cancelPendingUserInputRequests(
+    sessionId: string,
+    reason: UserInputCancelReason,
+    message?: string,
+  ): void {
+    try {
+      const canceled = this.userInputBroker.cancelSessionRequests(sessionId, reason, message);
+      if (canceled > 0) {
+        console.log(`[sdk] [${sessionId.slice(0, 8)}] Canceled ${canceled} pending user input request(s): ${reason}`);
+      }
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to cancel pending user input request(s):`, err);
+    }
+  }
+
+  private cancelAllPendingUserInputRequests(reason: UserInputCancelReason, message?: string): void {
+    try {
+      const canceled = this.userInputBroker.cancelAllRequests(reason, message);
+      if (canceled > 0) {
+        console.log(`[sdk] Canceled ${canceled} pending user input request(s): ${reason}`);
+      }
+    } catch (err) {
+      console.warn("[sdk] Failed to cancel pending user input request(s):", err);
+    }
+  }
+
+  private touchUserInputActivity(sessionId: string, timestamp?: string): void {
+    const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+    this.touchSessionRun(sessionId, Number.isFinite(parsed) ? parsed : Date.now());
+  }
+
+  private emitUserInputStatus(sessionId: string): void {
+    const pendingUserInputCount = this.getPendingUserInputCount(sessionId);
+    this.deps.globalBus.emit({
+      type: "session:user-input",
+      sessionId,
+      pendingUserInputCount,
+      needsUserInput: pendingUserInputCount > 0,
+    });
+  }
+
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
     const runtimePaths = this.deps.runtimePaths;
@@ -2440,6 +2519,8 @@ export class SessionManager {
 
     const cfg: any = {
       onPermissionRequest: approveAll,
+      onUserInputRequest: (request: NativeUserInputRequest, invocation: { sessionId: string }) =>
+        this.handleUserInputRequest(request, invocation),
       tools: this.deps.tools,
       excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
       mcpServers: this.deps.settingsStore?.getMcpServers() ?? this.deps.config.sessionMcpServers,
@@ -2796,6 +2877,45 @@ export class SessionManager {
     return [];
   }
 
+  private normalizeUserInputIdentifier(value: string, fieldName: string): string {
+    const normalized = value.trim();
+    if (!normalized) {
+      throw new UserInputBrokerError("invalid_request", `${fieldName} is required`);
+    }
+    return normalized;
+  }
+
+  private async canAddressSession(sessionId: string): Promise<boolean> {
+    if (
+      this.sessionObjects.has(sessionId)
+      || this.sessionRuns.has(sessionId)
+      || this.resumingSessions.has(sessionId)
+      || this.userInputBroker.getPendingCount(sessionId) > 0
+    ) {
+      return true;
+    }
+
+    const sessions = await this.listSessionsFromDisk({ includeArchived: true });
+    return sessions.some((session: any) => session?.sessionId === sessionId);
+  }
+
+  async submitUserInputResponse(
+    sessionId: string,
+    requestId: UserInputRequestId,
+    payload: unknown,
+  ): Promise<{ requestId: UserInputRequestId; answer: string; wasFreeform: boolean; timestamp: string }> {
+    const normalizedSessionId = this.normalizeUserInputIdentifier(sessionId, "sessionId");
+    const normalizedRequestId = this.normalizeUserInputIdentifier(requestId, "requestId");
+
+    if (!(await this.canAddressSession(normalizedSessionId))) {
+      throw new UserInputBrokerError("request_not_found", "Session not found", { statusCode: 404 });
+    }
+
+    const response = this.userInputBroker.submitUserInputResponse(normalizedSessionId, normalizedRequestId, payload);
+    const timestamp = new Date().toISOString();
+    return { requestId: normalizedRequestId, ...response, timestamp };
+  }
+
   async createSession(): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
@@ -2943,6 +3063,7 @@ export class SessionManager {
     };
     if (!runController) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Missing run controller during abort — resolving locally`);
+      this.cancelPendingUserInputRequests(sessionId, "session_ended", PROMPT_DELIVERY_ABORTED_MESSAGE);
       bus?.emit({ type: "aborted", content: getAbortContent() });
       this.setSessionRunState(sessionId, "idle");
       this.flushPendingSessionEviction(sessionId);
@@ -3105,6 +3226,11 @@ export class SessionManager {
       runController.completeError(err instanceof Error ? err.message : String(err));
     }).finally(() => {
       runController.clearAbortWait();
+      this.cancelPendingUserInputRequests(
+        sessionId,
+        "session_ended",
+        "Session operation ended before the user input request was answered",
+      );
       if (this.activeRunControllers.get(sessionId) === runController) {
         this.activeRunControllers.delete(sessionId);
       }
@@ -3720,6 +3846,12 @@ export class SessionManager {
       }
       if (syncShellWaitUntil > now) return;
 
+      if (this.userInputBroker.getPendingCount(sessionId) > 0) {
+        lastEventTime = now;
+        this.touchSessionRun(sessionId, now);
+        return;
+      }
+
       if (now - lastEventTime < WATCHDOG_TIMEOUT) return;
 
       const currentState = this.getSessionRunState(sessionId);
@@ -3954,6 +4086,11 @@ export class SessionManager {
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot delete a busy session");
     }
+    this.cancelPendingUserInputRequests(
+      sessionId,
+      "session_ended",
+      "Session was deleted before the user input request was answered",
+    );
     this.evictCachedSession(sessionId);
     try {
       await this.client.deleteSession(sessionId);
@@ -3993,6 +4130,11 @@ export class SessionManager {
 
     this.resumingSessions.add(sessionId);
     try {
+      this.cancelPendingUserInputRequests(
+        sessionId,
+        "session_ended",
+        "Session was reloaded before the user input request was answered",
+      );
       this.evictCachedSession(sessionId);
       this.mcpStatus.delete(sessionId);
 
@@ -4023,6 +4165,10 @@ export class SessionManager {
 
   isSessionStalled(sessionId: string): boolean {
     return this.getSessionRunState(sessionId) === "stalled";
+  }
+
+  getPendingUserInputCount(sessionId: string): number {
+    return this.userInputBroker.getPendingCount(sessionId);
   }
 
   hasActiveTurns(): boolean {
@@ -4095,6 +4241,11 @@ export class SessionManager {
       }
     }
 
+    this.cancelAllPendingUserInputRequests(
+      "session_ended",
+      "Session manager shut down before the user input request was answered",
+    );
+
     if (this.deps.browserSessionStore) {
       await this.deps.browserSessionStore.closeAll();
     }
@@ -4115,6 +4266,10 @@ export class SessionManager {
   }
 
   async shutdown(): Promise<void> {
+    this.cancelAllPendingUserInputRequests(
+      "session_ended",
+      "Session manager shut down before the user input request was answered",
+    );
     if (this.client) {
       console.log("[sdk] Shutting down Copilot SDK client...");
       await this.client.stop();

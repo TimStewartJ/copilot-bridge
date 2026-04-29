@@ -273,9 +273,12 @@ export default function SessionList({
     const isArchiving = archivingIds?.has(id);
     const isExiting = exitingIds?.has(id);
     const isSelected = selectedIds?.has(id);
+    const needsUserInput = session.needsUserInput || (session.pendingUserInputCount ?? 0) > 0;
     const dotColor = isArchiving
       ? ""
-      : getSessionRunState(session) === "stalled"
+      : needsUserInput
+        ? "bg-warning animate-pulse"
+        : getSessionRunState(session) === "stalled"
         ? "bg-warning animate-pulse"
         : session.busy
           ? "bg-info animate-pulse"
@@ -378,7 +381,7 @@ export default function SessionList({
             </span>
           </div>
           <div className={`${s.metaClass} truncate`}>
-            {isArchiving ? "Archiving…" : timeAgo(getSessionActivityTime(session))}
+            {isArchiving ? "Archiving…" : needsUserInput ? "Needs answer" : timeAgo(getSessionActivityTime(session))}
             {session.context?.branch && ` · ${session.context.branch}`}
             {session.eventLogSizeBytes
               ? ` · ${formatSize(session.eventLogSizeBytes)}`

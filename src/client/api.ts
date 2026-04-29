@@ -1,6 +1,21 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
+import type {
+  NativeUserInputResponse as NativeUserInputResponseType,
+  UserInputAnswerEndpointPayload as UserInputAnswerEndpointPayloadType,
+  UserInputRequestId as UserInputRequestIdType,
+} from "../server/user-input-types.js";
 export type { McpServerConfig } from "../mcp-config";
+export type {
+  NativeUserInputRequest,
+  NativeUserInputResponse,
+  PendingUserInputRequestView,
+  UserInputAnswerEndpointPayload,
+  UserInputChoice,
+  UserInputRequestId,
+  UserInputSnapshotState,
+  UserInputStreamEvent,
+} from "../server/user-input-types.js";
 
 export interface SessionWorkspaceOverride {
   cwd: string;
@@ -54,6 +69,8 @@ export interface Session {
   eventLogSizeBytes?: number;
   runState?: SessionRunState;
   busy?: boolean;
+  pendingUserInputCount?: number;
+  needsUserInput?: boolean;
   hasPlan?: boolean;
   archived?: boolean;
   archivedAt?: string;
@@ -511,6 +528,19 @@ export interface ReloadSessionResult {
 /** Force a cached session to re-resume with fresh config */
 export async function reloadSession(sessionId: string): Promise<ReloadSessionResult> {
   return apiFetch<ReloadSessionResult>(`/api/sessions/${sessionId}/reload`, {});
+}
+
+// ── User Input API ─────────────────────────────────────────────────
+
+export async function submitUserInputResponse(
+  sessionId: string,
+  requestId: UserInputRequestIdType,
+  payload: UserInputAnswerEndpointPayloadType,
+): Promise<NativeUserInputResponseType> {
+  return apiFetch<NativeUserInputResponseType>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/user-input/${encodeURIComponent(requestId)}/respond`,
+    payload,
+  );
 }
 
 function buildSessionWorkspaceQuery(taskId?: string): string {

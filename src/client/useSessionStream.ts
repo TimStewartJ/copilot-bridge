@@ -1,5 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Attachment, ChatEntry, ChatVisualEntry, McpServerStatus, ToolArgs, ToolCall, VisualArtifact } from "./api";
+import type {
+  Attachment,
+  ChatEntry,
+  ChatVisualEntry,
+  McpServerStatus,
+  PendingUserInputRequestView,
+  ToolArgs,
+  ToolCall,
+  VisualArtifact,
+} from "./api";
 import { API_BASE, startFleetRun } from "./api";
 
 export interface PendingTool {
@@ -25,6 +34,7 @@ export type PendingOrigin = "message" | "fleet" | "reconnect" | null;
 export interface StreamState {
   streamingContent: string;
   activeTools: PendingTool[];
+  pendingUserInputs: PendingUserInputRequestView[];
   intentText: string;
   streamStatus: StreamStatus;
   isStreaming: boolean;
@@ -90,6 +100,58 @@ function patchPendingTool(tools: PendingTool[], toolCallId: string, patch: Parti
 
 function removePendingTool(tools: PendingTool[], toolCallId: string): PendingTool[] {
   return tools.filter((tool) => tool.toolCallId !== toolCallId);
+}
+
+function normalizePendingUserInputRequest(
+  input: unknown,
+  fallbackTimestamp?: string,
+): PendingUserInputRequestView | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  if (typeof record.requestId !== "string" || typeof record.question !== "string") {
+    return undefined;
+  }
+
+  const request: PendingUserInputRequestView = {
+    requestId: record.requestId,
+    question: record.question,
+    allowFreeform: typeof record.allowFreeform === "boolean" ? record.allowFreeform : true,
+  };
+  if (Array.isArray(record.choices)) {
+    request.choices = record.choices.filter((choice): choice is string => typeof choice === "string");
+  }
+  const requestedAt = typeof record.requestedAt === "string" ? record.requestedAt : fallbackTimestamp;
+  if (requestedAt) request.requestedAt = requestedAt;
+  if (typeof record.toolCallId === "string") request.toolCallId = record.toolCallId;
+  return request;
+}
+
+function normalizePendingUserInputRequests(input: unknown): PendingUserInputRequestView[] {
+  if (!Array.isArray(input)) return [];
+  return input.flatMap((request) => {
+    const normalized = normalizePendingUserInputRequest(request);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function upsertPendingUserInput(
+  requests: PendingUserInputRequestView[],
+  nextRequest: PendingUserInputRequestView,
+): PendingUserInputRequestView[] {
+  const existingIndex = requests.findIndex((request) => request.requestId === nextRequest.requestId);
+  if (existingIndex < 0) return [...requests, nextRequest];
+  return requests.map((request, index) => (
+    index === existingIndex
+      ? { ...request, ...nextRequest, requestId: request.requestId }
+      : request
+  ));
+}
+
+function removePendingUserInput(
+  requests: PendingUserInputRequestView[],
+  requestId: string,
+): PendingUserInputRequestView[] {
+  return requests.filter((request) => request.requestId !== requestId);
 }
 
 export function getKnownToolName(name: unknown): string | undefined {
@@ -227,6 +289,7 @@ export function useSessionStream(
   const mkState = (status: StreamStatus, partial?: Partial<StreamState>): StreamState => ({
     streamingContent: "",
     activeTools: [],
+    pendingUserInputs: [],
     intentText: "",
     hadVisibleOutput: false,
     mcpServers: [],
@@ -257,7 +320,11 @@ export function useSessionStream(
     if (pendingOrigin !== "reconnect") {
       renderedActiveToolsRef.current = [];
     }
-    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin }));
+    setStreamState((s) => mkState("sending", {
+      mcpServers: s.mcpServers,
+      pendingOrigin,
+      pendingUserInputs: pendingOrigin === "reconnect" ? s.pendingUserInputs : [],
+    }));
 
     fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
       .then(async (res) => {
@@ -332,6 +399,7 @@ export function useSessionStream(
                     onEntriesRef.current([{ role: "user", content: event.pendingPrompt }]);
                   }
                   accumulatedContent = event.accumulatedContent ?? "";
+                  const pendingUserInputs = normalizePendingUserInputRequests(event.pendingUserInputs);
                   const tools: PendingTool[] = (event.activeTools ?? [])
                     .filter((t: any) => !isHiddenTool(t.name ?? "unknown", t.args, sid))
                     .map((t: any) => ({
@@ -354,6 +422,7 @@ export function useSessionStream(
                     ...prev,
                     streamingContent: accumulatedContent,
                     activeTools: tools,
+                    pendingUserInputs,
                     intentText: event.intentText ?? "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
                     streamStatus: accumulatedContent || tools.length > 0 ? "streaming" : "thinking",
@@ -543,6 +612,31 @@ export function useSessionStream(
                   if (visualEntry) onEntriesRef.current([visualEntry]);
                   break;
                 }
+                case "user_input_requested": {
+                  const request = normalizePendingUserInputRequest(
+                    event,
+                    typeof event.timestamp === "string" ? event.timestamp : undefined,
+                  );
+                  if (!request) break;
+                  setStreamState((s) => ({
+                    ...s,
+                    pendingUserInputs: upsertPendingUserInput(s.pendingUserInputs, request),
+                    streamStatus: s.streamingContent || s.activeTools.length > 0 ? "streaming" : "thinking",
+                    isStreaming: true,
+                  }));
+                  break;
+                }
+                case "user_input_answered":
+                case "user_input_canceled":
+                  if (typeof event.requestId === "string") {
+                    setStreamState((s) => ({
+                      ...s,
+                      pendingUserInputs: removePendingUserInput(s.pendingUserInputs, event.requestId),
+                      streamStatus: s.streamStatus === "idle" ? "thinking" : s.streamStatus,
+                      isStreaming: true,
+                    }));
+                  }
+                  break;
                 case "title_changed":
                   onTitleChangedRef.current();
                   break;
