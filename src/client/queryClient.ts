@@ -32,6 +32,8 @@ export const queryKeys = {
   openChecklistItems: ["checklist-items", "open"] as const,
   taskGitStatus: (id: string) => ["task", id, "git-status"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
+  taskSessionStorage: (id: string, sessionIds: readonly string[]) =>
+    ["task", id, "session-storage", ...sessionIds] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
   allSchedules: ["schedules"] as const,
   scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,

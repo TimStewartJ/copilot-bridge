@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRef } from "react";
 import { fetchSessions, type Session } from "../../api";
 import { queryKeys } from "../../queryClient";
 
@@ -46,16 +45,10 @@ export function mergeActiveAndArchivedSessions(
 }
 
 export function useSessionsQuery(includeArchived: boolean, options: UseSessionsQueryOptions = {}) {
-  const hasFetchedOnce = useRef(false);
   return useQuery<Session[]>({
     queryKey: queryKeys.sessions({ includeArchived }),
     enabled: options.enabled ?? true,
-    queryFn: () => {
-      // Skip expensive disk size calculation on polling refetches
-      const skip = hasFetchedOnce.current;
-      hasFetchedOnce.current = true;
-      return fetchSessions(includeArchived, skip);
-    },
+    queryFn: () => fetchSessions(includeArchived),
     structuralSharing: (oldData, newData) =>
       mergeOptimisticSessions(newData, oldData),
     refetchInterval: options.refetchInterval ?? 30_000,
