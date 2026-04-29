@@ -35,6 +35,10 @@ function cloneChatEntry(entry: ChatEntry): ChatEntry {
     };
   }
 
+  if (entry.type === "visual") {
+    return { ...entry };
+  }
+
   return {
     ...entry,
     attachments: entry.attachments?.map((attachment) => cloneAttachment(attachment)),
@@ -104,7 +108,9 @@ export function hasClientGeneratedEntries(entries: ChatEntry[]): boolean {
 function isUnsafeCommittedClientEntry(entry: ChatEntry): boolean {
   if (!isClientGeneratedEntry(entry)) return false;
   if (entry.type === "tool") return false;
+  if (entry.type === "visual") return false;
   if (entry.role === "user") return false;
+  if (typeof entry.content !== "string") return false;
   return entry.content.startsWith("⚠️ Error:")
     || entry.content.includes("*(stopped)*")
     || entry.content.includes("*(interrupted)*");
@@ -125,7 +131,8 @@ export function normalizeCommittedClientEntries(
 function findLastMessage(entries: ChatEntry[]): ChatMessage | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry?.type !== "tool") return entry;
+    if (entry?.type === "visual" || entry?.type === "tool") continue;
+    return entry;
   }
   return undefined;
 }
@@ -142,7 +149,9 @@ function findLastToolEntryIndex(entries: ChatEntry[], toolCallId: string): numbe
 
 function hasMessageAfterIndex(entries: ChatEntry[], index: number): boolean {
   for (let currentIndex = index + 1; currentIndex < entries.length; currentIndex += 1) {
-    if (entries[currentIndex]?.type !== "tool") return true;
+    const entry = entries[currentIndex];
+    if (entry?.type === "visual") continue;
+    if (entry?.type !== "tool") return true;
   }
   return false;
 }
@@ -171,9 +180,9 @@ function mergeLiveToolEntry(existingEntry: Extract<ChatEntry, { type: "tool" }>,
 }
 
 function isDuplicateLiveMessageEntry(previousEntries: ChatEntry[], incomingEntry: ChatEntry): boolean {
-  if (incomingEntry.type === "tool") return false;
+  if (incomingEntry.type === "tool" || incomingEntry.type === "visual") return false;
   const lastMessage = findLastMessage(previousEntries);
-  return lastMessage?.role === incomingEntry.role && lastMessage.content === incomingEntry.content;
+  return lastMessage?.role === incomingEntry.role && lastMessage?.content === incomingEntry.content;
 }
 
 export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries: ChatEntry[]): ChatEntry[] {
@@ -192,6 +201,15 @@ export function appendLiveEntries(previousEntries: ChatEntry[], incomingEntries:
           nextEntries[existingToolIndex] = mergeLiveToolEntry(existingToolEntry, incomingEntry);
           continue;
         }
+      }
+    }
+    if (incomingEntry.type === "visual") {
+      const artifactId = incomingEntry.visual?.artifactId;
+      if (artifactId) {
+        const alreadyPresent = nextEntries.some(
+          (e) => e.type === "visual" && e.visual?.artifactId === artifactId,
+        );
+        if (alreadyPresent) continue;
       }
     }
     if (isDuplicateLiveMessageEntry(nextEntries, incomingEntry)) continue;

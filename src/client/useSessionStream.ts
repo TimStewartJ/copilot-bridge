@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Attachment, ChatEntry, McpServerStatus, ToolArgs, ToolCall } from "./api";
+import type { Attachment, ChatEntry, ChatVisualEntry, McpServerStatus, ToolArgs, ToolCall, VisualArtifact } from "./api";
 import { API_BASE, startFleetRun } from "./api";
 
 export interface PendingTool {
@@ -31,6 +31,43 @@ export interface StreamState {
   hadVisibleOutput: boolean;
   mcpServers: McpServerStatus[];
   pendingOrigin: PendingOrigin;
+}
+
+const VISUAL_KIND_MIME_TYPES: Record<VisualArtifact["kind"], string> = {
+  image: "image/png",
+  mermaid: "text/vnd.mermaid",
+  "vega-lite": "application/vnd.vegalite+json",
+  html: "text/html",
+};
+
+function isVisualArtifactKind(value: unknown): value is VisualArtifact["kind"] {
+  return value === "image" || value === "mermaid" || value === "vega-lite" || value === "html";
+}
+
+export function createVisualEntryFromPublishedEvent(event: Record<string, unknown>): ChatVisualEntry | null {
+  if (typeof event.artifactId !== "string" || typeof event.url !== "string") return null;
+  const kind = isVisualArtifactKind(event.kind) ? event.kind : "image";
+  const displayName = typeof event.displayName === "string" ? event.displayName : event.artifactId;
+  const visual: VisualArtifact = {
+    artifactId: event.artifactId,
+    kind,
+    title: typeof event.title === "string" ? event.title : displayName,
+    displayName,
+    mimeType: typeof event.mimeType === "string" ? event.mimeType : VISUAL_KIND_MIME_TYPES[kind],
+    size: typeof event.size === "number" ? event.size : 0,
+    url: event.url,
+    downloadUrl: typeof event.downloadUrl === "string" ? event.downloadUrl : event.url,
+    ...(typeof event.caption === "string" ? { caption: event.caption } : {}),
+    ...(typeof event.altText === "string" ? { altText: event.altText } : {}),
+    ...(kind !== "image" && typeof event.source === "string" ? { source: event.source } : {}),
+  };
+
+  return {
+    id: `stream-visual-${event.artifactId}`,
+    type: "visual",
+    visual,
+    ...(typeof event.timestamp === "string" ? { timestamp: event.timestamp } : {}),
+  };
 }
 
 function upsertPendingTool(tools: PendingTool[], nextTool: PendingTool): PendingTool[] {
@@ -498,6 +535,12 @@ export function useSessionStream(
                     activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
                     hadVisibleOutput: true,
                   }));
+                  break;
+                }
+                case "visual_published": {
+                  // Emitted by publish_visual tool handler; render inline artifact card
+                  const visualEntry = createVisualEntryFromPublishedEvent(event as Record<string, unknown>);
+                  if (visualEntry) onEntriesRef.current([visualEntry]);
                   break;
                 }
                 case "title_changed":

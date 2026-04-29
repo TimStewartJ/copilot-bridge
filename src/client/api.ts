@@ -155,8 +155,33 @@ export interface ChatToolEntry {
   liveSource?: "snapshot" | "event";
 }
 
-/** Union type for chronological chat rendering — either a text message or a tool call */
-export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry;
+/** A published visual artifact rendered as an inline card */
+export interface VisualArtifact {
+  artifactId: string;
+  kind: "image" | "mermaid" | "vega-lite" | "html";
+  title: string;
+  displayName: string;
+  mimeType: string;
+  size: number;
+  /** URL for inline rendering (image/html) or source retrieval (mermaid/vega-lite/html) */
+  url: string;
+  downloadUrl: string;
+  caption?: string;
+  altText?: string;
+  /** Optional live-stream source text; history replay fetches source from url. */
+  source?: string;
+}
+
+/** A visual artifact entry in the chronological chat list */
+export interface ChatVisualEntry {
+  id?: string;
+  type: "visual";
+  visual: VisualArtifact;
+  timestamp?: string;
+}
+
+/** Union type for chronological chat rendering — either a text message, a tool call, or a visual artifact */
+export type ChatEntry = (ChatMessage & { type?: "message" }) | ChatToolEntry | ChatVisualEntry;
 
 export type ProviderName = "ado" | "github" | "linear";
 
