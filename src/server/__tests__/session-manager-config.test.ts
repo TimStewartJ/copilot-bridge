@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -53,6 +53,179 @@ describe("SessionManager session config", () => {
       action: "append",
     });
     expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
+  });
+
+  it("injects compact task momentum for linked tasks", () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const taskStore = createTaskStore(db, globalBus);
+    const task = taskStore.createTask("Preview task");
+    const updatedTask = taskStore.updateTask(task.id, {
+      doneWhen: "Preview approved and deployed",
+      nextAction: "Run staging preview",
+      waitingOn: "User approval",
+      nextTouchAt: "9999-05-03T11:00:00.000Z",
+    });
+    const manager = new SessionManager({
+      tools: [],
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore,
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+
+    const cfg = manager.buildSessionConfig({ task: updatedTask });
+    const content = cfg.systemMessage.content;
+
+    expect(content).toContain("Task kind: task.");
+    expect(content).toContain("Task momentum:");
+    expect(content).toContain("- Done when: Preview approved and deployed");
+    expect(content).toContain("- Next action: Run staging preview");
+    expect(content).toContain("- Waiting on: User approval");
+    expect(content).toContain("- Follow up: 9999-05-03T11:00:00.000Z (upcoming)");
+  });
+
+  it("omits done-when momentum for ongoing task context", () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const taskStore = createTaskStore(db, globalBus);
+    const task = taskStore.createTask("Ongoing task", undefined, "ongoing");
+    const manager = new SessionManager({
+      tools: [],
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore,
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+
+    const cfg = manager.buildSessionConfig({
+      task: {
+        ...task,
+        doneWhen: "Should not be injected",
+        nextAction: "Review telemetry",
+      },
+    });
+    const content = cfg.systemMessage.content;
+
+    expect(content).toContain("Task kind: ongoing.");
+    expect(content).toContain("- Next action: Review telemetry");
+    expect(content).not.toContain("- Done when:");
+    expect(content).not.toContain("Should not be injected");
+  });
+
+  it("nudges active tasks with no next action, blocker, or follow-up", () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const taskStore = createTaskStore(db, globalBus);
+    const task = taskStore.createTask("Needs decision");
+    const manager = new SessionManager({
+      tools: [],
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore,
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+
+    const cfg = manager.buildSessionConfig({ task });
+    const content = cfg.systemMessage.content;
+
+    expect(content).toContain("Task momentum:");
+    expect(content).toContain("- Next action / waiting on / follow up: none set; update with task_update when clear.");
+  });
+
+  it("includes stored task momentum in newly created task sessions", async () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const taskStore = createTaskStore(db, globalBus);
+    const task = taskStore.createTask("Initial momentum");
+    const updatedTask = taskStore.updateTask(task.id, {
+      doneWhen: "Preview is approved",
+      nextAction: "Open the preview",
+      waitingOn: "Design review",
+      nextTouchAt: "9999-05-04T11:00:00.000Z",
+    });
+    const manager = new SessionManager({
+      tools: [],
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore,
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+    manager.client = {
+      createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
+    };
+
+    await manager.createTaskSession(
+      updatedTask.id,
+      updatedTask.title,
+      updatedTask.workItems,
+      [],
+      updatedTask.notes,
+      updatedTask.cwd,
+    );
+
+    const createSessionConfig = manager.client.createSession.mock.calls[0][0];
+    const content = createSessionConfig.systemMessage.content;
+    expect(content).toContain("- Done when: Preview is approved");
+    expect(content).toContain("- Next action: Open the preview");
+    expect(content).toContain("- Waiting on: Design review");
+    expect(content).toContain("- Follow up: 9999-05-04T11:00:00.000Z (upcoming)");
+  });
+
+  it("keeps stored non-active task status in newly created task sessions", async () => {
+    const db = setupTestDb();
+    const globalBus = createTestBus();
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
+    tempDirs.push(copilotHome);
+    const taskStore = createTaskStore(db, globalBus);
+    const task = taskStore.createTask("Completed task");
+    const completedTask = taskStore.updateTask(task.id, {
+      completionAction: "complete-and-archive",
+      doneWhen: "Preview shipped",
+    });
+    const manager = new SessionManager({
+      tools: [],
+      globalBus,
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore,
+      config: { sessionMcpServers: {} },
+      copilotHome,
+    }) as any;
+    manager.client = {
+      createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
+    };
+
+    await manager.createTaskSession(
+      completedTask.id,
+      completedTask.title,
+      completedTask.workItems,
+      [],
+      completedTask.notes,
+      completedTask.cwd,
+    );
+
+    const createSessionConfig = manager.client.createSession.mock.calls[0][0];
+    const content = createSessionConfig.systemMessage.content;
+    expect(content).toContain("Task status: archived.");
+    expect(content).toContain("- Done when: Preview shipped");
+    expect(content).not.toContain("- Next action / waiting on / follow up: none set");
   });
 
   it("injects enriched related docs metadata for tagged tasks", () => {
