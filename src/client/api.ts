@@ -51,6 +51,7 @@ export interface Session {
   modifiedTime?: string;
   lastVisibleActivityAt?: string;
   diskSizeBytes?: number;
+  eventLogSizeBytes?: number;
   runState?: SessionRunState;
   busy?: boolean;
   hasPlan?: boolean;
@@ -284,6 +285,12 @@ export interface EnrichedTaskData {
   pullRequests: EnrichedPR[];
 }
 
+export interface TaskSessionStorage {
+  taskId: string;
+  totalDiskSizeBytes: number;
+  sessions: Array<{ sessionId: string; diskSizeBytes: number }>;
+}
+
 export type TaskGitStatus = TaskGitStatusResponse;
 
 // Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/
@@ -361,13 +368,23 @@ export async function fetchTelemetryStats(since?: string): Promise<TelemetryStat
   return apiFetch<TelemetryStats[]>(`/api/telemetry/stats${qs}`);
 }
 
-export async function fetchSessions(includeArchived = false, skipDiskSize = false): Promise<Session[]> {
+export async function fetchSessions(includeArchived = false): Promise<Session[]> {
   const params = new URLSearchParams();
   if (includeArchived) params.set("includeArchived", "true");
-  if (skipDiskSize) params.set("skipDiskSize", "true");
   const qs = params.toString() ? `?${params}` : "";
   const data = await apiFetch<{ sessions: Session[] }>(`/api/sessions${qs}`);
   return data.sessions;
+}
+
+export async function fetchTaskSessionStorage(
+  taskId: string,
+  options?: { signal?: AbortSignal },
+): Promise<TaskSessionStorage> {
+  return apiFetch<TaskSessionStorage>(
+    `/api/tasks/${encodeURIComponent(taskId)}/session-storage`,
+    undefined,
+    options,
+  );
 }
 
 export async function createSession(): Promise<string> {

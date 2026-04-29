@@ -2477,9 +2477,11 @@ export class SessionManager {
         const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
         try {
           const st = await stat(eventsPath);
+          session.eventLogSizeBytes = st.size;
           session.lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt;
           session.modifiedTime = session.lastVisibleActivityAt ?? session.startTime ?? st.mtime.toISOString();
         } catch {
+          session.eventLogSizeBytes = 0;
           try {
             const st = await stat(yamlPath);
             session.modifiedTime = session.startTime ?? st.mtime.toISOString();

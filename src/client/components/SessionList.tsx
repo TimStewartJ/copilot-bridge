@@ -380,8 +380,8 @@ export default function SessionList({
           <div className={`${s.metaClass} truncate`}>
             {isArchiving ? "Archiving…" : timeAgo(getSessionActivityTime(session))}
             {session.context?.branch && ` · ${session.context.branch}`}
-            {session.diskSizeBytes
-              ? ` · ${formatSize(session.diskSizeBytes)}`
+            {session.eventLogSizeBytes
+              ? ` · ${formatSize(session.eventLogSizeBytes)}`
               : ""}
             {session.workspace?.overridesTaskWorkspace && (
               <>

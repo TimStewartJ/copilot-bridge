@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CopilotUsageSummary, Task } from "./api";
 import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
+import { useTaskSessionStorageQuery } from "./hooks/queries/useTaskSessionStorage";
 import { useTagsQuery } from "./hooks/queries/useTags";
 import { useTaskWorkspace } from "./hooks/useTaskWorkspace";
 import TaskDashboard from "./components/TaskDashboard";
@@ -20,6 +21,10 @@ vi.mock("./hooks/queries/useTags", () => ({
 
 vi.mock("./hooks/queries/useCopilotUsage", () => ({
   useCopilotUsageQuery: vi.fn(),
+}));
+
+vi.mock("./hooks/queries/useTaskSessionStorage", () => ({
+  useTaskSessionStorageQuery: vi.fn(),
 }));
 
 vi.mock("./hooks/useTaskWorkspace", () => ({
@@ -197,6 +202,7 @@ function renderTaskContextMenu(task: Task): string {
 beforeEach(() => {
   vi.mocked(useTagsQuery).mockReturnValue({ data: [] } as any);
   vi.mocked(useCopilotUsageQuery).mockReturnValue({ data: createUsageSummary() } as any);
+  vi.mocked(useTaskSessionStorageQuery).mockReturnValue({ data: { taskId: "task-1", totalDiskSizeBytes: 0, sessions: [] } } as any);
   vi.mocked(useTaskWorkspace).mockReturnValue(createWorkspace() as any);
   pullToRefreshMock.mockClear();
 });
@@ -449,8 +455,8 @@ describe("TaskDashboard unique overview", () => {
       sessionIds: ["session-1", "session-2", "session-pending"],
     }), {
       linkedSessions: [
-        { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", busy: false, archived: false, diskSizeBytes: 1024 },
-        { sessionId: "session-2", summary: "Review usage metrics", modifiedTime: "2026-05-02T10:00:00.000Z", busy: true, archived: false, diskSizeBytes: 2048, runState: "busy" },
+        { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", busy: false, archived: false },
+        { sessionId: "session-2", summary: "Review usage metrics", modifiedTime: "2026-05-02T10:00:00.000Z", busy: true, archived: false, runState: "busy" },
         { sessionId: "session-pending", summary: "Running session", modifiedTime: "2026-05-02T11:00:00.000Z", busy: false, archived: false },
       ],
     });

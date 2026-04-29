@@ -575,7 +575,7 @@ export default function App() {
         lastVisibleActivityAt: timestamp,
         runState: "idle",
         busy: false,
-        diskSizeBytes: 0,
+        eventLogSizeBytes: 0,
         isOptimistic: true,
         optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
       }, ...prev];

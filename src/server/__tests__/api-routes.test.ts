@@ -829,6 +829,36 @@ describe("Task routes", () => {
     expect(res.body.task.title).toBe("Lookup Task");
   });
 
+  it("GET /api/tasks/:id/session-storage returns recursive size for linked sessions only", async () => {
+    const task = ctx.taskStore.createTask("Storage task");
+    const linkedSessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    ctx.taskStore.linkSession(task.id, linkedSessionId);
+    ctx.taskStore.linkSession(task.id, "../not-a-session");
+    const linkedDir = join(ctx.copilotHome!, "session-state", linkedSessionId);
+    const unlinkedDir = join(ctx.copilotHome!, "session-state", "unlinked-session");
+    mkdirSync(join(linkedDir, "files"), { recursive: true });
+    mkdirSync(unlinkedDir, { recursive: true });
+    writeFileSync(join(linkedDir, "events.jsonl"), "event bytes\n");
+    writeFileSync(join(linkedDir, "files", "artifact.txt"), "artifact bytes");
+    writeFileSync(join(unlinkedDir, "events.jsonl"), "not counted");
+
+    const res = await request(app).get(`/api/tasks/${task.id}/session-storage`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.taskId).toBe(task.id);
+    expect(res.body.totalDiskSizeBytes).toBe("event bytes\n".length + "artifact bytes".length);
+    expect(res.body.sessions).toEqual(expect.arrayContaining([
+      {
+        sessionId: linkedSessionId,
+        diskSizeBytes: "event bytes\n".length + "artifact bytes".length,
+      },
+      {
+        sessionId: "../not-a-session",
+        diskSizeBytes: 0,
+      },
+    ]));
+  });
+
   it("GET /api/tasks/:id returns 404 for missing task", async () => {
     const res = await request(app).get("/api/tasks/nonexistent");
     expect(res.status).toBe(404);

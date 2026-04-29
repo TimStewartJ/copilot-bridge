@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
@@ -80,6 +80,7 @@ describe("SessionManager visible activity cache", () => {
 
     expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:00:00.000Z");
     expect(sessions[0]?.modifiedTime).toBe("2026-04-10T10:00:00.000Z");
+    expect(sessions[0]?.eventLogSizeBytes).toBe(statSync(eventsPath).size);
     expect(countReads(eventsPath)).toBe(0);
   });
 
@@ -94,6 +95,7 @@ describe("SessionManager visible activity cache", () => {
 
     expect(sessions[0]?.lastVisibleActivityAt).toBeUndefined();
     expect(sessions[0]?.modifiedTime).toBe("2026-04-10T09:59:00.000Z");
+    expect(sessions[0]?.eventLogSizeBytes).toBe(statSync(eventsPath).size);
     expect(countReads(eventsPath)).toBe(0);
   });
 

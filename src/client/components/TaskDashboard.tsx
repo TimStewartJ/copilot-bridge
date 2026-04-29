@@ -5,6 +5,7 @@ import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useCopilotUsageQuery } from "../hooks/queries/useCopilotUsage";
+import { useTaskSessionStorageQuery } from "../hooks/queries/useTaskSessionStorage";
 import {
   getTaskCompletionCounts,
   getTaskCompletionState,
@@ -195,6 +196,15 @@ export default function TaskDashboard({
     refresh,
   } = ws;
   const { data: copilotUsage, isLoading: copilotUsageLoading, refresh: refreshCopilotUsage } = useCopilotUsageQuery();
+  const {
+    data: sessionStorage,
+    isLoading: sessionStorageLoading,
+    refetch: refetchSessionStorage,
+  } = useTaskSessionStorageQuery(
+    task.id,
+    task.sessionIds,
+    task.sessionIds.length > 0,
+  );
 
   const completionCounts = useMemo(() => getTaskCompletionCounts({
     checklistItems,
@@ -228,7 +238,8 @@ export default function TaskDashboard({
     taskSessionIds: task.sessionIds,
     linkedSessions,
     usageSessions: copilotUsage?.sessions ?? [],
-  }), [copilotUsage?.sessions, linkedSessions, task.sessionIds]);
+    totalDiskSizeBytes: sessionStorage?.totalDiskSizeBytes ?? 0,
+  }), [copilotUsage?.sessions, linkedSessions, sessionStorage?.totalDiskSizeBytes, task.sessionIds]);
   const isSessionUsageLoading = copilotUsageLoading && !copilotUsage;
 
   const inheritedTagSet = inheritedTagIds instanceof Set
@@ -245,7 +256,12 @@ export default function TaskDashboard({
   ];
 
   const handleRefresh = async () => {
-    await Promise.all([refresh(), refreshCopilotUsage(), onRefresh?.()]);
+    await Promise.all([
+      refresh(),
+      refreshCopilotUsage(),
+      task.sessionIds.length > 0 ? refetchSessionStorage() : undefined,
+      onRefresh?.(),
+    ]);
   };
 
   return (
@@ -432,7 +448,11 @@ export default function TaskDashboard({
                   <MetricCard label="Tokenized" value={String(sessionUsage.includedSessions.length)} sub="sessions" />
                   <MetricCard label="Pending" value={String(sessionUsage.sessionsWithoutUsage)} sub="no shutdown yet" />
                   <MetricCard label="Busy" value={String(sessionUsage.busySessions)} sub="running/stalled" />
-                  <MetricCard label="Storage" value={formatBytes(sessionUsage.totalDiskSizeBytes)} sub="session files" />
+                  <MetricCard
+                    label="Storage"
+                    value={sessionStorageLoading && !sessionStorage ? "..." : formatBytes(sessionUsage.totalDiskSizeBytes)}
+                    sub="session files"
+                  />
                 </div>
 
                 <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
@@ -853,10 +873,12 @@ function buildSessionUsageAnalytics({
   taskSessionIds,
   linkedSessions,
   usageSessions,
+  totalDiskSizeBytes,
 }: {
   taskSessionIds: string[];
   linkedSessions: Session[];
   usageSessions: CopilotUsageSessionRow[];
+  totalDiskSizeBytes: number;
 }) {
   const taskSessionIdSet = new Set(taskSessionIds);
   const linkedSessionMap = new Map(linkedSessions.map((session) => [session.sessionId, session]));
@@ -925,7 +947,7 @@ function buildSessionUsageAnalytics({
     includedSessions,
     sessionsWithoutUsage,
     busySessions: linkedSessions.filter((session) => session.busy || session.runState === "busy" || session.runState === "stalled").length,
-    totalDiskSizeBytes: linkedSessions.reduce((sum, session) => sum + (session.diskSizeBytes ?? 0), 0),
+    totalDiskSizeBytes,
     dayBuckets: sortedDayBuckets,
     maxDayTokens,
     modelRows,

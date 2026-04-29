@@ -671,14 +671,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
   setSettingsGetter(() => ctx.settingsStore.getSettings());
 
   // ── Enriched session list cache ─────────────────────────────────
-  // Caches the expensive enriched session list (disk sizes, plan checks, metadata).
+  // Caches the enriched session list (plan checks, workspace summaries, metadata).
   // Invalidated by structural changes; volatile run-state fields are refreshed on read.
-  // Disk sizes are stored separately so skipDiskSize requests don't zero them out.
   let enrichedSessionCache: { data: any[]; timestamp: number; includesArchived: boolean } | null = null;
   type SessionCacheBuild = { generation: number; promise: Promise<any[]> };
   let activeSessionCacheBuild: SessionCacheBuild | null = null;
   let allSessionCacheBuild: SessionCacheBuild | null = null;
-  const diskSizeCache = new Map<string, number>();
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
   let enrichedSessionCacheGeneration = 0;
 
@@ -709,7 +707,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/sessions", async (req, res) => {
     try {
       const includeArchived = req.query.includeArchived === "true";
-      const skipDiskSize = req.query.skipDiskSize === "true";
 
       const materializeSessionList = (sessions: any[]): any[] => {
         const currentMeta = ctx.sessionMetaStore.listMeta();
@@ -733,7 +730,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
             summary,
             lastVisibleActivityAt,
             modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
-            diskSizeBytes: diskSizeCache.get(id) ?? 0,
             ...status,
             archived,
           }];
@@ -778,14 +774,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
                 const id = s.sessionId;
                 const archived = meta[id]?.archived === true;
 
-                // Compute disk size: skip on polling, use cached for archived, compute for active
-                if (!skipDiskSize && !archived) {
-                  try {
-                    const sessionDir = join(sessionStateDir, id);
-                    diskSizeCache.set(id, getDirSize(sessionDir));
-                  } catch { /* session dir may not exist */ }
-                }
-
                 const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
                 const archivedAt = meta[id]?.archivedAt ?? null;
                 const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
@@ -797,7 +785,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
                   ...s,
                   context: Object.keys(context).length > 0 ? context : undefined,
                   workspace,
-                  diskSizeBytes: diskSizeCache.get(id) ?? 0,
                   ...status,
                   hasPlan,
                   archived,
@@ -1729,6 +1716,25 @@ export function createApiRouter(ctx: AppContext): express.Router {
     } catch (err) {
       console.error("[enriched] Error:", err);
       res.json({ task, workItems: [], pullRequests: [] });
+    }
+  });
+
+  router.get("/tasks/:id/session-storage", (req, res) => {
+    try {
+      const task = ctx.taskStore.getTask(req.params.id);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+
+      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
+      const sessions = task.sessionIds.map((sessionId) => {
+        const diskSizeBytes = isCanonicalSessionId(sessionId)
+          ? getDirSize(join(sessionStateDir, sessionId))
+          : 0;
+        return { sessionId, diskSizeBytes };
+      });
+      const totalDiskSizeBytes = sessions.reduce((sum, session) => sum + session.diskSizeBytes, 0);
+      res.json({ taskId: task.id, totalDiskSizeBytes, sessions });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
     }
   });
 
