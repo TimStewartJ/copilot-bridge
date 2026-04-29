@@ -308,6 +308,49 @@ function formatRelatedDocManifestEntry(doc: {
   return line;
 }
 
+function formatTaskMomentumValue(value: string): string {
+  return escapePromptText(normalizeInlineText(value));
+}
+
+function getTaskFollowUpState(nextTouchAt: string, now = new Date()): "overdue" | "due" | "upcoming" | undefined {
+  const dueAt = Date.parse(nextTouchAt);
+  if (!Number.isFinite(dueAt)) return undefined;
+  if (dueAt > now.getTime()) return "upcoming";
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return dueAt < startOfToday ? "overdue" : "due";
+}
+
+function formatTaskFollowUp(nextTouchAt: string): string {
+  const state = getTaskFollowUpState(nextTouchAt);
+  const escapedValue = escapePromptLiteral(nextTouchAt);
+  return state ? `${escapedValue} (${state})` : escapedValue;
+}
+
+function formatTaskMomentumContext(task: Task): string | undefined {
+  const lines: string[] = [];
+  const hasNextAction = !!task.nextAction?.trim();
+  const hasWaitingOn = !!task.waitingOn?.trim();
+  const hasNextTouchAt = !!task.nextTouchAt?.trim();
+
+  if (task.kind !== "ongoing" && task.doneWhen?.trim()) {
+    lines.push(`- Done when: ${formatTaskMomentumValue(task.doneWhen)}`);
+  }
+  if (hasNextAction) {
+    lines.push(`- Next action: ${formatTaskMomentumValue(task.nextAction!)}`);
+  }
+  if (hasWaitingOn) {
+    lines.push(`- Waiting on: ${formatTaskMomentumValue(task.waitingOn!)}`);
+  }
+  if (hasNextTouchAt) {
+    lines.push(`- Follow up: ${formatTaskFollowUp(task.nextTouchAt!)}`);
+  }
+  if (task.status === "active" && !hasNextAction && !hasWaitingOn && !hasNextTouchAt) {
+    lines.push("- Next action / waiting on / follow up: none set; update with task_update when clear.");
+  }
+
+  return lines.length > 0 ? `Task momentum:\n${lines.join("\n")}` : undefined;
+}
+
 function isPromptEchoSummary(summary: string, firstUserPrompt?: string): boolean {
   const normalizedSummary = normalizeSessionTitle(summary);
   const normalizedPrompt = normalizeSessionTitle(firstUserPrompt);
@@ -2548,6 +2591,7 @@ export class SessionManager {
       contextParts.push(
         `You are helping with task "${task.title}" (taskId: ${task.id}).`,
         `Task status: ${task.status}.`,
+        `Task kind: ${task.kind}.`,
         "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
       );
       if (isNewTask) {
@@ -2564,6 +2608,10 @@ export class SessionManager {
           : []);
       if (prStrings.length > 0) {
         contextParts.push(`Currently linked PRs: ${prStrings.join(", ")}.`);
+      }
+      const momentumContext = formatTaskMomentumContext(task);
+      if (momentumContext) {
+        contextParts.push(momentumContext);
       }
       if (task.notes.trim()) {
         contextParts.push(`Task notes:\n${task.notes}`);
@@ -3009,17 +3057,21 @@ export class SessionManager {
 
     const isPlaceholder = taskTitle === "New Task";
 
-    // Look up the full task to get groupId for context injection
+    // Look up the full task so the initial session context matches later resumes.
     const fullTask = this.deps.taskStore.getTask(taskId);
 
     const task = {
       id: taskId,
       title: taskTitle,
       kind: fullTask?.kind ?? "task",
-      status: "active" as const,
+      status: fullTask?.status ?? "active" as const,
       groupId: fullTask?.groupId,
       cwd: fullTask?.cwd ?? cwd,
       notes: notes || "",
+      doneWhen: fullTask?.doneWhen,
+      nextAction: fullTask?.nextAction,
+      waitingOn: fullTask?.waitingOn,
+      nextTouchAt: fullTask?.nextTouchAt,
       priority: 0,
       order: 0,
       createdAt: new Date().toISOString(),
