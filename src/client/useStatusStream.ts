@@ -3,12 +3,14 @@ import { API_BASE } from "./api";
 
 export interface StatusEvent {
   type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent"
-      | "session:archived" | "server:restart-pending" | "server:restart-cleared"
+      | "session:archived" | "session:user-input" | "server:restart-pending" | "server:restart-cleared"
       | "status:connected" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
   sessionId?: string;
   title?: string;
   intent?: string;
   archived?: boolean;
+  pendingUserInputCount?: number;
+  needsUserInput?: boolean;
   waitingSessions?: number;
   taskId?: string;
   scheduleId?: string;

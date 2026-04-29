@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { installDomShim } from "./test-dom-shim";
+import type { PendingUserInputRequestView } from "./api";
 import type { PendingTool } from "./useSessionStream";
 import {
   buildTerminalToolEntries,
@@ -8,6 +11,7 @@ import {
   getKnownToolName,
   materializePendingTool,
   resolvePendingToolName,
+  useSessionStream,
 } from "./useSessionStream";
 
 function createPendingTool(toolCallId: string, partial: Partial<PendingTool> = {}): PendingTool {
@@ -17,6 +21,116 @@ function createPendingTool(toolCallId: string, partial: Partial<PendingTool> = {
     ...partial,
   };
 }
+
+type SessionStreamState = ReturnType<typeof useSessionStream>;
+
+type Act = (callback: () => void | Promise<void>) => Promise<void>;
+
+function waitTick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await waitTick();
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
+async function waitUntilAct(act: Act, predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await act(async () => {
+      await waitTick();
+    });
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
+function createControlledSseResponse() {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(nextController) {
+      controller = nextController;
+    },
+  });
+
+  return {
+    response: { ok: true, body } as unknown as Response,
+    emit(event: unknown) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+    },
+    close() {
+      controller.close();
+    },
+  };
+}
+
+async function withSessionStreamHarness(
+  run: (helpers: {
+    getState: () => SessionStreamState;
+    act: Act;
+  }) => Promise<void>,
+): Promise<void> {
+  const dom = installDomShim();
+  const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const [{ createRoot }, { act }] = await Promise.all([
+    import("react-dom/client"),
+    import("react"),
+  ]);
+  const root = createRoot(dom.container as unknown as Element);
+  let currentState: SessionStreamState | null = null;
+  const getState = () => {
+    if (!currentState) throw new Error("Stream harness has not rendered");
+    return currentState;
+  };
+
+  function StreamHarness() {
+    currentState = useSessionStream("session-1", vi.fn(), vi.fn());
+    return null;
+  }
+
+  try {
+    await act(async () => {
+      root.render(createElement(StreamHarness));
+    });
+    await waitUntil(() => currentState !== null);
+    await run({ getState, act });
+  } finally {
+    await act(async () => {
+      root.unmount();
+    });
+    await waitTick();
+    if (previousActEnvironment === undefined) {
+      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+    } else {
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+    dom.cleanup();
+  }
+}
+
+async function emitAndWait(
+  act: Act,
+  sse: ReturnType<typeof createControlledSseResponse>,
+  event: unknown,
+  predicate: () => boolean,
+) {
+  await act(async () => {
+    sse.emit(event);
+  });
+  await waitUntilAct(act, predicate);
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("buildTerminalToolEntries", () => {
   it("marks terminal tool rows done on successful turn completion", () => {
@@ -173,5 +287,77 @@ describe("createVisualEntryFromPublishedEvent", () => {
   it("returns null for malformed live visual events", () => {
     expect(createVisualEntryFromPublishedEvent({ artifactId: "artifact-3" })).toBeNull();
     expect(createVisualEntryFromPublishedEvent({ url: "/missing-id" })).toBeNull();
+  });
+});
+
+describe("useSessionStream user input state", () => {
+  it("hydrates pending requests from snapshots and removes answered or canceled requests", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.fn().mockResolvedValue(sse.response);
+      vi.stubGlobal("fetch", fetchMock);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      const firstRequest: PendingUserInputRequestView = {
+        requestId: "request-1",
+        question: "Pick a lane",
+        choices: ["fast", "safe"],
+        allowFreeform: false,
+        requestedAt: "2026-04-29T12:00:00.000Z",
+      };
+      await emitAndWait(act, sse, {
+        type: "snapshot",
+        accumulatedContent: "",
+        activeTools: [],
+        intentText: "",
+        complete: false,
+        pendingUserInputs: [firstRequest],
+      }, () => getState().pendingUserInputs.length === 1);
+
+      expect(getState().pendingUserInputs).toEqual([firstRequest]);
+
+      await emitAndWait(act, sse, {
+        type: "user_input_requested",
+        requestId: "request-2",
+        question: "Explain why",
+        allowFreeform: true,
+        timestamp: "2026-04-29T12:00:01.000Z",
+      }, () => getState().pendingUserInputs.length === 2);
+
+      expect(getState().pendingUserInputs).toMatchObject([
+        firstRequest,
+        {
+          requestId: "request-2",
+          question: "Explain why",
+          allowFreeform: true,
+          requestedAt: "2026-04-29T12:00:01.000Z",
+        },
+      ]);
+
+      await emitAndWait(act, sse, {
+        type: "user_input_answered",
+        requestId: "request-1",
+        answer: "fast",
+        wasFreeform: false,
+      }, () => getState().pendingUserInputs.length === 1);
+
+      expect(getState().pendingUserInputs.map((request) => request.requestId)).toEqual(["request-2"]);
+
+      await emitAndWait(act, sse, {
+        type: "user_input_canceled",
+        requestId: "request-2",
+        reason: "session_ended",
+      }, () => getState().pendingUserInputs.length === 0);
+
+      expect(getState().pendingUserInputs).toEqual([]);
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
   });
 });

@@ -382,6 +382,16 @@ export default function App() {
         }
         invalidateAllSessionQueries();
         break;
+      case "session:user-input":
+        if (event.sessionId) {
+          const pendingUserInputCount = event.pendingUserInputCount ?? 0;
+          patchSessionInCache(event.sessionId, {
+            pendingUserInputCount,
+            needsUserInput: event.needsUserInput ?? pendingUserInputCount > 0,
+          });
+        }
+        invalidateDashboard();
+        break;
       case "server:restart-pending":
         setRestartBanner((prev) => reduceRestartBannerState(prev, {
           type: "server:restart-pending",
