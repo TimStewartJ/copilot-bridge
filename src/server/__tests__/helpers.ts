@@ -32,12 +32,19 @@ import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
 
 const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "COPILOT_HOME"] as const;
+const TEST_CLEANUP_MAX_RETRIES = 5;
+const TEST_CLEANUP_RETRY_DELAY_MS = 25;
 const testCleanupPaths = new Set<string>();
 
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const dir of [...testCleanupPaths].sort((a, b) => b.length - a.length)) {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: TEST_CLEANUP_MAX_RETRIES,
+      retryDelay: TEST_CLEANUP_RETRY_DELAY_MS,
+    });
   }
   testCleanupPaths.clear();
 });
