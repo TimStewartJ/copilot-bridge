@@ -14,6 +14,7 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
 const RUNTIME_FILES = [...LOCK_FILES, "DevToolsActivePort", "lockfile"];
+const RUNTIME_FILE_NAMES = new Set(RUNTIME_FILES.map((name) => name.toLowerCase()));
 const LOCKED_COPY_ERROR_CODES = new Set(["EACCES", "EBUSY", "ENOENT", "EPERM"]);
 const RUNTIME_METRICS_FILE_RE = /^(?:CrashpadMetrics|BrowserMetrics).*\.pma$/i;
 const SQLITE_RUNTIME_FILE_RE = /(?:-journal|-shm|-wal)$/i;
@@ -204,11 +205,12 @@ function normalizedPathBasename(value: string): string {
 export function shouldExcludeBrowserProfileCopyPath(sourceDir: string, sourcePath: string): boolean {
   const rel = normalizedProfileRelativePath(sourceDir, sourcePath);
   if (!rel) return false;
-  const base = normalizedPathBasename(rel);
-  if (RUNTIME_FILES.includes(base)) return true;
+  const base = normalizedPathBasename(rel).toLowerCase();
+  const relLower = rel.toLowerCase();
+  if (RUNTIME_FILE_NAMES.has(base)) return true;
   if (RUNTIME_METRICS_FILE_RE.test(base)) return true;
   if (SQLITE_RUNTIME_FILE_RE.test(base)) return true;
-  return rel === "Crashpad" || rel.startsWith("Crashpad/");
+  return relLower === "crashpad" || relLower.startsWith("crashpad/");
 }
 
 function isKnownLockableBrowserProfilePath(sourceDir: string, sourcePath: string): boolean {
