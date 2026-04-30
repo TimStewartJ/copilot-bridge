@@ -1854,7 +1854,9 @@ function SessionRoute({
   const isDraft = sessionId === null;
   const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
-  const hasPlan = sessions.find((s) => s.sessionId === sessionId)?.hasPlan;
+  const activeSession = sessions.find((s) => s.sessionId === sessionId);
+  const hasPlan = activeSession?.hasPlan;
+  const activeSessionActivityAt = activeSession?.lastVisibleActivityAt;
   const draft = getDraft(composerKey);
   const voiceJob = getVoiceJob(composerKey);
 
@@ -1921,6 +1923,7 @@ function SessionRoute({
       reloadToken={sessionReload?.token ?? 0}
       reloadMcpServers={sessionReload?.servers}
       busySignal={busySignal}
+      activeSessionActivityAt={activeSessionActivityAt}
     />
   );
 }

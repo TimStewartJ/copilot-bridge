@@ -968,7 +968,7 @@ export class SessionManager {
     return this.sessionRunner.doWork(sessionId, prompt, bus, runController, attachments);
   }
 
-  async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean }> {
+  async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
 
     const t0 = Date.now();
@@ -1042,7 +1042,8 @@ export class SessionManager {
 
     const tTransform = Date.now();
     const messages = transformEventsToMessages(events, sessionId);
-    this.persistLastVisibleActivityAt(sessionId, getLastVisibleActivityAt(events, sessionId));
+    const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
+    this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     const transformMs = Date.now() - tTransform;
@@ -1063,10 +1064,10 @@ export class SessionManager {
       const end = opts.before != null ? opts.before : total;
       const start = Math.max(0, end - opts.limit);
       const sliced = messages.slice(start, end);
-      return { messages: sliced, total, hasMore: start > 0 };
+      return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt };
     }
 
-    return { messages, total, hasMore: false };
+    return { messages, total, hasMore: false, lastVisibleActivityAt };
   }
 
   /**
@@ -1074,7 +1075,7 @@ export class SessionManager {
    * Returns messages instantly for the fast-load path.
    * Async to avoid blocking the event loop.
    */
-  async readMessagesFromDisk(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: any[]; total: number; hasMore: boolean }> {
+  async readMessagesFromDisk(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: any[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
     return readMessagesFromDiskWithDeps({
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,

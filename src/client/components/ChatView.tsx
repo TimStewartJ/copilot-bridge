@@ -57,6 +57,7 @@ interface ChatViewProps {
   reloadMcpServers?: McpServerStatus[];
   /** Incremented when an external source (e.g. schedule) starts work on this session */
   busySignal?: number;
+  activeSessionActivityAt?: string;
 }
 
 function renderPendingStatusCard(
@@ -107,6 +108,49 @@ function renderPendingStatusCard(
       </div>
     </div>
   );
+}
+
+function renderRefreshingHistoryTailSkeleton(isLoading: boolean) {
+  return (
+    <LoadingSkeletonRegion
+      isLoading={isLoading}
+      label="Loading newer chat content"
+      className="pt-4"
+      delayMs={200}
+    >
+      <div className="space-y-3">
+        <div className="px-3 md:px-5">
+          <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
+            <SkeletonText lines={3} widths={["84%", "68%", "42%"]} />
+          </div>
+        </div>
+        <div className="px-3 md:px-5">
+          <div className="inline-flex w-full max-w-md items-center gap-3 rounded-xl border border-border/70 bg-bg-secondary/70 px-3 py-2">
+            <Skeleton shape="circle" width={16} height={16} className="shrink-0" />
+            <div className="min-w-0 flex-1">
+              <SkeletonText lines={2} widths={["62%", "38%"]} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </LoadingSkeletonRegion>
+  );
+}
+
+function isNewerActivityTimestamp(currentActivityAt?: string, cachedActivityAt?: string): boolean {
+  if (!currentActivityAt || !cachedActivityAt) return false;
+  const currentTime = Date.parse(currentActivityAt);
+  const cachedTime = Date.parse(cachedActivityAt);
+  return Number.isFinite(currentTime) && Number.isFinite(cachedTime) && currentTime > cachedTime;
+}
+
+function activityTimestampCovers(loadedActivityAt: string | undefined, markerActivityAt: string | undefined): boolean {
+  if (!markerActivityAt) return true;
+  const markerTime = Date.parse(markerActivityAt);
+  if (!Number.isFinite(markerTime)) return true;
+  if (!loadedActivityAt) return false;
+  const loadedTime = Date.parse(loadedActivityAt);
+  return Number.isFinite(loadedTime) && loadedTime >= markerTime;
 }
 
 function sortPendingUserInputRequests(
@@ -275,11 +319,13 @@ export default function ChatView({
   reloadToken = 0,
   reloadMcpServers,
   busySignal = 0,
+  activeSessionActivityAt,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
+  const [showRefreshingTailSkeleton, setShowRefreshingTailSkeleton] = useState(false);
   const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
@@ -292,8 +338,10 @@ export default function ChatView({
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
   const totalEntriesRef = useRef(0);
+  const historyLastVisibleActivityAtRef = useRef<string | undefined>(undefined);
   const entriesRef = useRef<ChatEntry[]>([]);
   const sessionIdRef = useRef<string | null>(sessionId);
+  const activeSessionActivityAtRef = useRef<string | undefined>(activeSessionActivityAt);
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
   const loadRequestIdRef = useRef(0);
@@ -302,6 +350,8 @@ export default function ChatView({
   const autoLoadArmedRef = useRef(false);
   const suppressAutoLoadRef = useRef(false);
   const topAutoFillConsumedRef = useRef(false);
+  const staleTailRefreshRetryRef = useRef<string | undefined>(undefined);
+  const tailSkeletonRefreshEligibleRef = useRef(false);
   const queuedSendRef = useRef<{
     sessionId: string | null;
     composerKey: string;
@@ -310,6 +360,7 @@ export default function ChatView({
   } | null>(null);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<(opts?: { background?: boolean }) => void>(() => {});
+  activeSessionActivityAtRef.current = activeSessionActivityAt;
 
   const applyHistory = useCallback((
     nextEntries: ChatEntry[],
@@ -319,6 +370,7 @@ export default function ChatView({
       total?: number;
       hasMore?: boolean;
       isCanonical?: boolean;
+      lastVisibleActivityAt?: string | null;
     } = {},
   ) => {
     const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
@@ -328,6 +380,10 @@ export default function ChatView({
 
     firstItemIndex.current = nextFirstItemIndex;
     totalEntriesRef.current = nextTotal;
+    const nextLastVisibleActivityAt = opts.lastVisibleActivityAt === null
+      ? undefined
+      : opts.lastVisibleActivityAt ?? historyLastVisibleActivityAtRef.current;
+    historyLastVisibleActivityAtRef.current = ownerSessionId ? nextLastVisibleActivityAt : undefined;
     entriesRef.current = nextEntries;
     setEntries(nextEntries);
     setHasMore(nextHasMore);
@@ -341,10 +397,13 @@ export default function ChatView({
       hasMore: nextHasMore,
       fetchedAt: Date.now(),
       isCanonical: opts.isCanonical ?? false,
+      lastVisibleActivityAt: nextLastVisibleActivityAt,
     });
   }, [queryClient]);
 
   const invalidateHistoryRefresh = useCallback(() => {
+    setShowRefreshingTailSkeleton(false);
+    tailSkeletonRefreshEligibleRef.current = false;
     if (!refreshingHistoryRef.current) return;
     loadRequestIdRef.current += 1;
     refreshingHistoryRef.current = false;
@@ -421,6 +480,8 @@ export default function ChatView({
       setLoading(false);
       refreshingHistoryRef.current = false;
       setRefreshingHistory(false);
+      setShowRefreshingTailSkeleton(false);
+      tailSkeletonRefreshEligibleRef.current = false;
       setWarming(false);
       setCreating(false);
       setLoadingMore(false);
@@ -429,6 +490,8 @@ export default function ChatView({
       setManualMcpOverride(null);
       firstItemIndex.current = 0;
       totalEntriesRef.current = 0;
+      historyLastVisibleActivityAtRef.current = undefined;
+      staleTailRefreshRetryRef.current = undefined;
       entriesRef.current = [];
       loadingMoreRef.current = false;
       autoLoadArmedRef.current = false;
@@ -467,36 +530,75 @@ export default function ChatView({
         refreshingHistoryRef.current = false;
         setLoading(true);
         setRefreshingHistory(false);
+        setShowRefreshingTailSkeleton(false);
+        tailSkeletonRefreshEligibleRef.current = false;
         setWarming(false);
       }
       const pageLoadStart = performance.now();
 
       // Phase 1: Fast load messages from disk — don't wait for MCP status
       fetchMessagesFast(sessionId, { limit: INITIAL_PAGE_SIZE })
-        .then(({ messages: msgs, busy, total, warm }) => {
-          if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
+        .then(({ messages: msgs, busy, total, warm, lastVisibleActivityAt }) => {
+          if (controller.signal.aborted) return;
+          if (requestId !== loadRequestIdRef.current) {
+            return;
+          }
           if (!background) {
+            staleTailRefreshRetryRef.current = undefined;
+            tailSkeletonRefreshEligibleRef.current = false;
             const nextFirstItemIndex = Math.max(0, total - msgs.length);
+            const activeActivityAt = activeSessionActivityAtRef.current;
+            const responseCoversActiveActivity = activityTimestampCovers(
+              lastVisibleActivityAt,
+              activeActivityAt,
+            );
+            const responseHasKnownActiveCoverage = !!activeActivityAt && responseCoversActiveActivity;
             applyHistory(msgs, {
               ownerSessionId: sessionId,
               firstItemIndex: nextFirstItemIndex,
               total,
               hasMore: nextFirstItemIndex > 0,
-              isCanonical: true,
+              isCanonical: responseHasKnownActiveCoverage,
+              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
             });
           } else {
             const merged = mergeTailMessages(entriesRef.current, firstItemIndex.current, total, msgs);
+            const activeActivityAt = activeSessionActivityAtRef.current;
+            const responseCoversActiveActivity = activityTimestampCovers(
+              lastVisibleActivityAt,
+              activeActivityAt,
+            );
+            const isCanonical = !merged.hasOptimisticTail
+              && !merged.hasClientGeneratedEntries
+              && !!activeActivityAt
+              && responseCoversActiveActivity;
             applyHistory(merged.entries, {
               ownerSessionId: sessionId,
               firstItemIndex: merged.firstItemIndex,
               total: merged.total,
               hasMore: merged.firstItemIndex > 0,
-              isCanonical: !merged.hasClientGeneratedEntries,
+              isCanonical,
+              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
             });
+            if (responseCoversActiveActivity) {
+              staleTailRefreshRetryRef.current = undefined;
+            } else if (activeActivityAt && staleTailRefreshRetryRef.current !== activeActivityAt) {
+              staleTailRefreshRetryRef.current = activeActivityAt;
+              setLoading(false);
+              setShowRefreshingTailSkeleton(
+                tailSkeletonRefreshEligibleRef.current
+                  && entriesRef.current.length > 0
+                  && isNewerActivityTimestamp(activeActivityAt, historyLastVisibleActivityAtRef.current),
+              );
+              loadAndReconnect({ background: true });
+              return;
+            }
           }
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
+          setShowRefreshingTailSkeleton(false);
+          tailSkeletonRefreshEligibleRef.current = false;
 
           // Report time from navigation to messages rendered
           const loadDuration = Math.round(performance.now() - pageLoadStart);
@@ -523,7 +625,10 @@ export default function ChatView({
           }
         })
         .catch((err) => {
-          if (controller.signal.aborted || requestId !== loadRequestIdRef.current) return;
+          if (controller.signal.aborted) return;
+          if (requestId !== loadRequestIdRef.current) {
+            return;
+          }
           if (!background) {
             applyHistory([
               { role: "assistant", content: `Error loading history: ${err.message}` },
@@ -538,6 +643,8 @@ export default function ChatView({
           setLoading(false);
           refreshingHistoryRef.current = false;
           setRefreshingHistory(false);
+          setShowRefreshingTailSkeleton(false);
+          tailSkeletonRefreshEligibleRef.current = false;
         });
 
       // MCP status loads independently — doesn't block message rendering
@@ -554,6 +661,9 @@ export default function ChatView({
 
     loadingMoreRef.current = false;
     setLoadingMore(false);
+    setShowRefreshingTailSkeleton(false);
+    staleTailRefreshRetryRef.current = undefined;
+    tailSkeletonRefreshEligibleRef.current = false;
     autoLoadArmedRef.current = false;
     suppressAutoLoadRef.current = false;
     topAutoFillConsumedRef.current = false;
@@ -566,10 +676,16 @@ export default function ChatView({
         total: cachedSnapshot.total,
         hasMore: cachedSnapshot.hasMore,
         isCanonical: cachedSnapshot.isCanonical,
+        lastVisibleActivityAt: cachedSnapshot.lastVisibleActivityAt,
       });
       setLoading(false);
       setRefreshingHistory(false);
       setWarming(false);
+      tailSkeletonRefreshEligibleRef.current = cachedSnapshot.entries.length > 0;
+      setShowRefreshingTailSkeleton(
+        cachedSnapshot.entries.length > 0
+          && isNewerActivityTimestamp(activeSessionActivityAtRef.current, cachedSnapshot.lastVisibleActivityAt),
+      );
       loadAndReconnect({ background: true });
     } else {
       applyHistory([], {
@@ -579,6 +695,8 @@ export default function ChatView({
         hasMore: false,
         isCanonical: false,
       });
+      setShowRefreshingTailSkeleton(false);
+      tailSkeletonRefreshEligibleRef.current = false;
       loadAndReconnect();
     }
 
@@ -595,6 +713,8 @@ export default function ChatView({
     return () => {
       controller.abort();
       refreshingHistoryRef.current = false;
+      setShowRefreshingTailSkeleton(false);
+      tailSkeletonRefreshEligibleRef.current = false;
       loadAndReconnectRef.current = () => {};
       clearPendingAutoLoad();
       document.removeEventListener("visibilitychange", onVisible);
@@ -641,6 +761,13 @@ export default function ChatView({
   }, [refreshingHistory]);
 
   useEffect(() => {
+    if (!tailSkeletonRefreshEligibleRef.current || !refreshingHistoryRef.current || entriesRef.current.length === 0) return;
+    if (isNewerActivityTimestamp(activeSessionActivityAt, historyLastVisibleActivityAtRef.current)) {
+      setShowRefreshingTailSkeleton(true);
+    }
+  }, [activeSessionActivityAt]);
+
+  useEffect(() => {
     if (!sessionId || reloadMcpServers === undefined) return;
     setManualMcpOverride(reloadMcpServers);
     setMcpStatus(reloadMcpServers);
@@ -682,11 +809,10 @@ export default function ChatView({
     const beforeIndex = firstItemIndex.current;
     const requestSessionId = sessionId;
     fetchMessages(sessionId, { limit, before: beforeIndex })
-      .then(({ messages: older, hasMore: more, total }) => {
+      .then(({ messages: older, hasMore: more, total, lastVisibleActivityAt }) => {
         if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
         const currentEntries = entriesRef.current;
         if (older.length > 0) {
-          invalidateHistoryRefresh();
           if (preserveScrollPosition) {
             // Save scroll height before prepending so the layout effect can preserve position.
             prevScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? null;
@@ -697,23 +823,46 @@ export default function ChatView({
             nextFirstItemIndex,
             total,
           );
+          const reachesLatestTail = nextFirstItemIndex + nextEntries.length >= total;
+          const hasOptimisticEntries = hasOptimisticTail(nextFirstItemIndex, nextEntries.length, total);
+          const hasClientEntries = hasClientGeneratedEntries(nextEntries);
+          const loadedTailActivityAt = historyLastVisibleActivityAtRef.current;
+          const activeActivityAt = activeSessionActivityAtRef.current;
+          const loadedTailMatchesKnownActivity = activityTimestampCovers(
+            loadedTailActivityAt,
+            activeActivityAt,
+          ) && activityTimestampCovers(loadedTailActivityAt, lastVisibleActivityAt);
+          const isCanonical = reachesLatestTail && !!activeActivityAt && loadedTailMatchesKnownActivity
+            && !hasOptimisticEntries && !hasClientEntries;
+          if (isCanonical) invalidateHistoryRefresh();
           applyHistory(nextEntries, {
             ownerSessionId: requestSessionId,
             firstItemIndex: nextFirstItemIndex,
             total: Math.max(total, nextFirstItemIndex + nextEntries.length),
             hasMore: more,
-            isCanonical: !hasOptimisticTail(nextFirstItemIndex, nextEntries.length, total)
-              && !hasClientGeneratedEntries(nextEntries),
+            isCanonical,
+            ...(isCanonical ? { lastVisibleActivityAt: loadedTailActivityAt ?? lastVisibleActivityAt } : {}),
           });
         } else if (!more) {
           const nextEntries = normalizeCommittedClientEntries(currentEntries, 0, total);
+          const reachesLatestTail = nextEntries.length >= total;
+          const hasOptimisticEntries = hasOptimisticTail(0, nextEntries.length, total);
+          const hasClientEntries = hasClientGeneratedEntries(nextEntries);
+          const loadedTailActivityAt = historyLastVisibleActivityAtRef.current;
+          const activeActivityAt = activeSessionActivityAtRef.current;
+          const loadedTailMatchesKnownActivity = activityTimestampCovers(
+            loadedTailActivityAt,
+            activeActivityAt,
+          ) && activityTimestampCovers(loadedTailActivityAt, lastVisibleActivityAt);
+          const isCanonical = reachesLatestTail && !!activeActivityAt && loadedTailMatchesKnownActivity
+            && !hasOptimisticEntries && !hasClientEntries;
           applyHistory(nextEntries, {
             ownerSessionId: requestSessionId,
             firstItemIndex: 0,
             total: Math.max(total, nextEntries.length),
             hasMore: false,
-            isCanonical: !hasOptimisticTail(0, nextEntries.length, total)
-              && !hasClientGeneratedEntries(nextEntries),
+            isCanonical,
+            ...(isCanonical ? { lastVisibleActivityAt: loadedTailActivityAt ?? lastVisibleActivityAt } : {}),
           });
         }
       })
@@ -1134,6 +1283,7 @@ export default function ChatView({
             </div>
           ) : null}
           {renderedEntries}
+          {renderRefreshingHistoryTailSkeleton(showRefreshingTailSkeleton)}
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           <div className="h-4" />
         </div>

@@ -14,6 +14,7 @@ export interface ChatHistorySnapshot {
   hasMore: boolean;
   fetchedAt: number;
   isCanonical: boolean;
+  lastVisibleActivityAt?: string;
 }
 
 function cloneAttachment(attachment: Attachment): Attachment {

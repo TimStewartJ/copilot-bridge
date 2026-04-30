@@ -982,11 +982,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore } = await ctx.sessionManager.getSessionMessages(
+      const { messages, total, hasMore, lastVisibleActivityAt } = await ctx.sessionManager.getSessionMessages(
         req.params.id,
         { limit, before },
       );
-      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore });
+      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, lastVisibleActivityAt });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -1100,12 +1100,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore } = await ctx.sessionManager.readMessagesFromDisk(
+      const { messages, total, hasMore, lastVisibleActivityAt } = await ctx.sessionManager.readMessagesFromDisk(
         req.params.id,
         { limit, before },
       );
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, warm });
+      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, lastVisibleActivityAt, warm });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

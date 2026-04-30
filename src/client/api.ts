@@ -534,12 +534,12 @@ export async function sendChatMessage(sessionId: string, prompt: string, attachm
 export async function fetchMessages(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean }> {
+): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  const data = await apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean }>(
+  const data = await apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; lastVisibleActivityAt?: string }>(
     `/api/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`,
   );
   return data;
@@ -549,12 +549,12 @@ export async function fetchMessages(
 export async function fetchMessagesFast(
   sessionId: string,
   opts?: { limit?: number; before?: number },
-): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean }> {
+): Promise<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string }> {
   const params = new URLSearchParams();
   if (opts?.limit != null) params.set("limit", String(opts.limit));
   if (opts?.before != null) params.set("before", String(opts.before));
   const qs = params.toString();
-  return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean }>(
+  return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string }>(
     `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
   );
 }

@@ -58,6 +58,17 @@ function createSnapshot(sessionId: string, entryIds: string[]): ChatHistorySnaps
   };
 }
 
+function createFreshSnapshot(
+  sessionId: string,
+  entryIds: string[],
+  lastVisibleActivityAt: string,
+): ChatHistorySnapshot {
+  return {
+    ...createSnapshot(sessionId, entryIds),
+    lastVisibleActivityAt,
+  };
+}
+
 describe("chat cache", () => {
   beforeEach(() => {
     resetCachedChatSnapshotState();
@@ -96,6 +107,44 @@ describe("chat cache", () => {
     });
 
     expect(getCachedChatSnapshot(queryClient, "session-1")?.entries[0]?.content).toBe("canonical-entry");
+  });
+
+  it("clones snapshot freshness metadata with cached snapshots", () => {
+    const queryClient = new QueryClient();
+
+    setCachedChatSnapshot(
+      queryClient,
+      createFreshSnapshot("session-1", ["entry-1"], "2026-04-29T12:00:00.000Z"),
+    );
+
+    const firstRead = getCachedChatSnapshot(queryClient, "session-1");
+    expect(firstRead?.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
+
+    firstRead!.lastVisibleActivityAt = "2026-04-29T12:05:00.000Z";
+
+    expect(getCachedChatSnapshot(queryClient, "session-1")?.lastVisibleActivityAt)
+      .toBe("2026-04-29T12:00:00.000Z");
+  });
+
+  it("preserves freshness metadata when updating canonical snapshots after loading older messages", () => {
+    const queryClient = new QueryClient();
+
+    setCachedChatSnapshot(
+      queryClient,
+      createFreshSnapshot("session-1", ["newer-entry"], "2026-04-29T12:00:00.000Z"),
+    );
+    setCachedChatSnapshot(queryClient, {
+      ...createFreshSnapshot(
+        "session-1",
+        ["older-entry", "newer-entry"],
+        "2026-04-29T12:00:00.000Z",
+      ),
+      total: 2,
+    });
+
+    const snapshot = getCachedChatSnapshot(queryClient, "session-1");
+    expect(snapshot?.entries.map((entry) => entry.content)).toEqual(["older-entry", "newer-entry"]);
+    expect(snapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
   });
 });
 
