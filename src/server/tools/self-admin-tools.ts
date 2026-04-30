@@ -3,14 +3,12 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "../dependency-sync.js";
+import { isBridgeReleaseMode } from "../distribution-mode.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "../pre-deploy-checkpoint.js";
 import { isRestartPending, triggerRestartPending } from "../restart-controller.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
-
-const SIGNAL_FILE = join(BRIDGE_TOOLS_REPO_ROOT, "data", "restart.signal");
-const PRE_DEPLOY_SHA_FILE = join(BRIDGE_TOOLS_REPO_ROOT, "data", "pre-deploy-sha");
 
 function run(cmd: string): { ok: boolean; output: string } {
   try {
@@ -21,20 +19,37 @@ function run(cmd: string): { ok: boolean; output: string } {
   }
 }
 
-export function createSelfAdminTools(_ctx: AppContext) {
+function getDataDir(ctx: AppContext): string {
+  return ctx.runtimePaths?.dataDir ?? join(BRIDGE_TOOLS_REPO_ROOT, "data");
+}
+
+function getSignalFile(ctx: AppContext): string {
+  return join(getDataDir(ctx), "restart.signal");
+}
+
+function getPreDeployShaFile(ctx: AppContext): string {
+  return join(getDataDir(ctx), "pre-deploy-sha");
+}
+
+function isReleaseMode(ctx: AppContext): boolean {
+  return ctx.runtimePaths?.distributionMode === "release" || isBridgeReleaseMode(process.env, BRIDGE_TOOLS_REPO_ROOT);
+}
+
+export function createSelfAdminTools(ctx: AppContext) {
   return [
   defineTool("self_restart", {
     description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will auto-checkpoint, rebuild, and swap processes. IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
+      const signalFile = getSignalFile(ctx);
       if (isRestartPending()) {
         return toolFailure("A restart is already pending. Wait for it to complete before restarting.");
       }
-      const dataDir = join(BRIDGE_TOOLS_REPO_ROOT, "data");
+      const dataDir = getDataDir(ctx);
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
       const otherBusy = triggerRestartPending();
-      writeFileSync(SIGNAL_FILE, new Date().toISOString());
+      writeFileSync(signalFile, new Date().toISOString());
 
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
@@ -54,12 +69,18 @@ export function createSelfAdminTools(_ctx: AppContext) {
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+      if (isReleaseMode(ctx)) {
+        return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
+      }
+
+      const signalFile = getSignalFile(ctx);
+      if (isRestartPending() || existsSync(signalFile)) {
         return toolFailure("A restart is already pending. Wait for it to complete before updating.");
       }
 
-      const dataDir = join(BRIDGE_TOOLS_REPO_ROOT, "data");
+      const dataDir = getDataDir(ctx);
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+      const preDeployShaFile = getPreDeployShaFile(ctx);
 
       // Determine current branch
       const branchResult = run("git rev-parse --abbrev-ref HEAD");
@@ -68,14 +89,14 @@ export function createSelfAdminTools(_ctx: AppContext) {
       // Save pre-update checkpoint so the launcher can roll back
       const headResult = run("git rev-parse HEAD");
       const preUpdateSha = headResult.ok ? headResult.output.trim() : "";
-      const rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(PRE_DEPLOY_SHA_FILE, preUpdateSha);
+      const rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(preDeployShaFile, preUpdateSha);
 
       // Pull latest
       const pullResult = run(`git pull --rebase origin ${branch}`);
       if (!pullResult.ok) {
         // Abort rebase if it left us in a conflicted state
         run("git rebase --abort");
-        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
+        removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);
         const message =
           `Git pull failed — likely due to merge conflicts or network issues. ` +
           `The working tree has been restored to its previous state.\n\n` +
@@ -89,7 +110,7 @@ export function createSelfAdminTools(_ctx: AppContext) {
 
       if (!changed) {
         // Clean up checkpoint — nothing changed
-        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
+        removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);
         return { success: true, message: "Already up to date — no restart needed." };
       }
 
@@ -100,7 +121,7 @@ export function createSelfAdminTools(_ctx: AppContext) {
           return diffResult.ok && !!diffResult.output.trim();
         })();
       const otherBusy = triggerRestartPending();
-      writeFileSync(SIGNAL_FILE, new Date().toISOString());
+      writeFileSync(signalFile, new Date().toISOString());
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";

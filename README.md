@@ -86,6 +86,56 @@ cp .env.example .env   # Edit .env with your settings if needed
 
 The launcher and direct server entrypoint load `.env` automatically at startup. Existing exported environment variables still win over values from the file.
 
+### Packaged Release Mode
+
+For teammate installs that should not require git history, build a release bundle:
+
+```powershell
+pwsh -NoProfile -File .\scripts\package-release.ps1 -IncludeNodeModules
+```
+
+That creates a `release\copilot-bridge-<version>-stable.zip` package with root-level `start.ps1`, `stop.ps1`, `update.ps1`, `install-startup-task.ps1`, and `uninstall-startup-task.ps1` scripts. Release mode starts the compiled launcher from `dist\launcher.js`, skips startup `git pull`, disables git-backed self-update/staging tools, and stores durable state outside the app folder.
+
+Use `-IncludeNodeModules` for teammate installs and update packages. Packages built without `node_modules` are source-light bundles for manual installs only; `update.ps1` rejects them because it cannot safely start and health-check the new app without dependencies.
+
+For remote updates, `update.ps1 -DownloadUrl` requires an HTTPS URL and a matching `-ExpectedSha256` so the downloaded package is verified before install. Local `-PackagePath` updates can omit the hash, though providing one is still recommended.
+
+Default release state lives under `%LOCALAPPDATA%\CopilotBridge`:
+
+```text
+%LOCALAPPDATA%\CopilotBridge\
+  data\       # tasks, sessions, docs, settings, schedules
+  config\     # release .env
+  logs\
+  backups\
+```
+
+The release boundary is intentional: app files can be replaced during updates, but user data stays in the per-user state folder. Use `BRIDGE_STATE_ROOT` to move that whole state root, or set `BRIDGE_DATA_DIR`, `BRIDGE_DOCS_DIR`, and `COPILOT_HOME` in `%LOCALAPPDATA%\CopilotBridge\config\.env` for finer control. Custom release paths must be absolute.
+
+Changing launcher-owned release settings after the release launcher is already running requires a full `stop.ps1` then `start.ps1`. This includes `BRIDGE_DATA_DIR`, tunnel/webhook settings such as `BRIDGE_ENABLE_TUNNEL`, `BRIDGE_TUNNEL_NAME`, and `BRIDGE_WEBHOOK_URL`, and launcher log paths. Server-child config values can be reloaded with `self_restart`.
+
+To start the packaged release automatically when you sign in, run this from the extracted release root:
+
+```powershell
+.\install-startup-task.ps1
+```
+
+That registers a per-user Windows Scheduled Task that runs `start.ps1` at logon. It does not require admin rights for a normal per-user task. If you use a custom `BRIDGE_STATE_ROOT`, set it before installing the task or pass it explicitly:
+
+```powershell
+.\install-startup-task.ps1 -StateRoot "D:\BridgeState"
+```
+
+When you pass `-StateRoot`, the release root records that state root so `start.ps1` and `update.ps1` use the same durable data location.
+
+If `.bridge-state-root` already exists, `update.ps1` and `install-startup-task.ps1` refuse to switch to a different `BRIDGE_STATE_ROOT` implicitly. Remove or edit `.bridge-state-root` intentionally before changing the active state root.
+
+To remove the startup task later:
+
+```powershell
+.\uninstall-startup-task.ps1
+```
+
 ### Demo Workspace
 
 If you want a guided sample workspace instead of a blank local workspace, use the seeded demo:
@@ -221,11 +271,11 @@ loginctl enable-linger "$USER"
 
 ### Auto-Start on Login (Windows, optional)
 
-You can register a Windows Task Scheduler entry to start the bridge on login:
+Packaged releases include root-level startup task scripts:
 
 ```powershell
-pwsh scripts\start-bridge.ps1   # Start
-pwsh scripts\stop-bridge.ps1    # Stop
+.\install-startup-task.ps1
+.\uninstall-startup-task.ps1
 ```
 
 ## Project Structure

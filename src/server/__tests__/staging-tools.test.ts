@@ -316,8 +316,16 @@ describe("staging tools", () => {
 
   it("manages staging artifacts normally outside demo mode", async () => {
     vi.stubEnv("BRIDGE_DEMO_MODE", undefined);
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     const mod = await loadStagingToolsModule();
     expect(mod.shouldManageStagingArtifacts()).toBe(true);
+  });
+
+  it("skips staging artifact management in release mode", async () => {
+    vi.stubEnv("BRIDGE_DEMO_MODE", undefined);
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
+    const mod = await loadStagingToolsModule();
+    expect(mod.shouldManageStagingArtifacts()).toBe(false);
   });
 
   it("builds and parses demo preview prefixes", async () => {

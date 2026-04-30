@@ -4,12 +4,13 @@ import { createBrowserFetchTools } from "./browser-fetch-tools.js";
 import { createBrowserExecTools } from "./browser-exec-tools.js";
 import { createBrowserSessionTools } from "./browser-session-tools.js";
 import { createComputerUseTools } from "./computer-use-tools.js";
+import { isBridgeReleaseMode } from "./distribution-mode.js";
 import type { AppContext } from "./app-context.js";
 import { createAttachmentTools } from "./tools/attachment-tools.js";
 import { createChecklistTools } from "./tools/checklist-tools.js";
 import { createDeferTools } from "./tools/defer-tools.js";
 import { createDocsTools } from "./tools/docs-tools.js";
-import { isDemoMode } from "./tools/helpers.js";
+import { BRIDGE_TOOLS_REPO_ROOT, isDemoMode } from "./tools/helpers.js";
 import { createScheduleTools } from "./tools/schedule-tools.js";
 import { createSelfAdminTools } from "./tools/self-admin-tools.js";
 import { createSessionTools } from "./tools/session-tools.js";
@@ -18,8 +19,13 @@ import { createTaskGroupTools } from "./tools/task-group-tools.js";
 import { createTaskTools } from "./tools/task-tools.js";
 import { createVisualTools } from "./tools/visual-tools.js";
 
+function isReleaseMode(ctx: AppContext): boolean {
+  return ctx.runtimePaths?.distributionMode === "release" || isBridgeReleaseMode(process.env, BRIDGE_TOOLS_REPO_ROOT);
+}
+
 export function createBridgeTools(ctx: AppContext) {
   const demoMode = isDemoMode(ctx.runtimePaths);
+  const releaseMode = isReleaseMode(ctx);
   const tools = [
     ...createTaskTools(ctx),
     ...createTaskGroupTools(ctx),
@@ -32,7 +38,7 @@ export function createBridgeTools(ctx: AppContext) {
     ...createScheduleTools(ctx),
     ...createDeferTools(ctx),
     ...createDocsTools(ctx),
-    ...(demoMode ? [] : STAGING_TOOLS),
+    ...(demoMode || releaseMode ? [] : STAGING_TOOLS),
     ...createWebSearchTools(ctx),
     ...createBrowserFetchTools(ctx),
     ...createBrowserExecTools(ctx),
@@ -40,12 +46,16 @@ export function createBridgeTools(ctx: AppContext) {
     ...createComputerUseTools(ctx),
   ];
 
-  if (!demoMode) return tools;
-
-  const hiddenTools = new Set<string>([
-    "self_restart",
-    "self_update",
-    ...STAGING_TOOLS.map((tool) => tool.name),
-  ]);
+  const hiddenTools = new Set<string>();
+  if (demoMode) {
+    hiddenTools.add("self_restart");
+    hiddenTools.add("self_update");
+    for (const tool of STAGING_TOOLS) hiddenTools.add(tool.name);
+  }
+  if (releaseMode) {
+    hiddenTools.add("self_update");
+    for (const tool of STAGING_TOOLS) hiddenTools.add(tool.name);
+  }
+  if (!hiddenTools.size) return tools;
   return tools.filter((tool) => !hiddenTools.has(tool.name));
 }

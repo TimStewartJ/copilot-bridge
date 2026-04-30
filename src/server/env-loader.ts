@@ -30,17 +30,36 @@ export function loadBridgeEnv(
   return loadedKeys;
 }
 
+export function loadBridgeEnvManagedKeys(
+  envPath = DEFAULT_ENV_PATH,
+  targetEnv: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const fileEnv = readBridgeEnvFile(envPath);
+
+  for (const [key, value] of Object.entries(fileEnv)) {
+    if (targetEnv[key] !== undefined) continue;
+    targetEnv[key] = value;
+  }
+
+  return Object.keys(fileEnv);
+}
+
 export function buildBridgeChildEnv(
   baseEnv: NodeJS.ProcessEnv,
   managedKeys: Iterable<string>,
   envPath = DEFAULT_ENV_PATH,
+  pinnedEnv: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
+  const fileEnv = readBridgeEnvFile(envPath);
+  const pinnedEntries = Object.entries(pinnedEnv).filter((entry): entry is [string, string] => entry[1] !== undefined);
+  const pinnedValues = Object.fromEntries(pinnedEntries);
   const childEnv: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const key of managedKeys) {
+  for (const key of new Set([...managedKeys, ...Object.keys(fileEnv), ...Object.keys(pinnedValues)])) {
     delete childEnv[key];
   }
   return {
-    ...readBridgeEnvFile(envPath),
+    ...fileEnv,
     ...childEnv,
+    ...pinnedValues,
   };
 }
