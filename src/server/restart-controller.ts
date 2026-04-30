@@ -71,6 +71,22 @@ function shouldPreserveServerOwnedRestartState(persisted: RestartState): boolean
     && !hasLauncherTakenRestartOwnership(persisted);
 }
 
+function shouldPreserveLauncherOwnedLiveWaitingCount(persisted: RestartState): boolean {
+  return isRestartActive(_restartState)
+    && _restartState.requestId !== null
+    && persisted.requestId === _restartState.requestId
+    && hasLauncherTakenRestartOwnership(_restartState)
+    && hasLauncherTakenRestartOwnership(persisted)
+    && persisted.phase === _restartState.phase
+    && persisted.launcherHeartbeatAt === _restartState.launcherHeartbeatAt;
+}
+
+function mergeLiveWaitingCount(persisted: RestartState): RestartState {
+  return shouldPreserveLauncherOwnedLiveWaitingCount(persisted)
+    ? { ...persisted, waitingSessions: _restartState.waitingSessions }
+    : persisted;
+}
+
 function hasLauncherTakenRestartOwnership(state: RestartState): boolean {
   return state.launcherHeartbeatAt !== null || state.phase === "restarting";
 }
@@ -116,7 +132,7 @@ export async function refreshRestartState(): Promise<RestartState> {
   if (shouldPreserveServerOwnedRestartState(persisted)) {
     return _restartState;
   }
-  return setCachedRestartState(persisted);
+  return setCachedRestartState(mergeLiveWaitingCount(persisted));
 }
 
 export function refreshRestartStateSync(): RestartState {
@@ -131,7 +147,7 @@ export function refreshRestartStateSync(): RestartState {
   ) {
     return _restartState;
   }
-  return setCachedRestartState(persisted);
+  return setCachedRestartState(mergeLiveWaitingCount(persisted));
 }
 
 export function isRestartPending(): boolean {
@@ -204,7 +220,16 @@ export function triggerRestartPending(): number {
 }
 
 export function syncRestartWaitingSessions(waitingSessions: number): void {
-  if (!isRestartActive(_restartState) || hasLauncherTakenRestartOwnership(_restartState)) return;
+  if (!isRestartActive(_restartState)) return;
+  if (hasLauncherTakenRestartOwnership(_restartState)) {
+    if (waitingSessions === _restartState.waitingSessions) return;
+    setCachedRestartState({
+      ..._restartState,
+      waitingSessions,
+    });
+    emitRestartEvent({ type: "server:restart-pending", waitingSessions });
+    return;
+  }
   const nextPhase = getRestartPhaseForWaitingSessions(_restartState.phase, waitingSessions);
   if (
     nextPhase === _restartState.phase

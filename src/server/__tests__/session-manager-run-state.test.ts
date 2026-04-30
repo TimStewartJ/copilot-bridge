@@ -416,7 +416,7 @@ describe("SessionManager run state", () => {
 
       expect(manager.client.resumeSession).toHaveBeenCalledWith("session-1", expect.anything());
       expect(manager.getSessionRunState("session-1")).toBe("busy");
-      expect(getRestartWaitingCount()).toBe(2);
+      expect(getRestartWaitingCount()).toBe(1);
 
       getReleaseSend()?.();
       await flushMicrotasks();
@@ -1684,6 +1684,77 @@ describe("SessionManager run state", () => {
         expect(diskState.launcherHeartbeatAt).toBe("2026-01-01T00:00:01.000Z");
         expect(diskState.requestId).toBe("req-handoff");
         expect(diskState.waitingSessions).toBe(1);
+      } finally {
+        configureRestartStateStore(undefined);
+        rmSync(dataDir, { recursive: true, force: true });
+        rmSync(copilotHome, { recursive: true, force: true });
+      }
+    });
+
+    it("emits live waiting-session updates after launcher handoff without rewriting disk", async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-handoff-events-"));
+      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-events-"));
+      try {
+        const { manager, globalBus } = createManager({ copilotHome });
+        configureRestartStateStore({
+          demoMode: false,
+          dataDir,
+          docsDir: join(dataDir, "docs"),
+          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
+        });
+        const restartStatePath = join(dataDir, "restart-state.json");
+        const restartEvents: Array<{ waitingSessions?: number }> = [];
+        globalBus.subscribe((event) => {
+          if (event.type === "server:restart-pending") {
+            restartEvents.push({ waitingSessions: event.waitingSessions });
+          }
+        });
+
+        const { session, getHandler, getReleaseSend } = makeSession();
+        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.startWork("session-handoff-event", "hello");
+        await flushMicrotasks();
+
+        await writeRestartState(restartStatePath, {
+          requestId: "req-handoff-events",
+          phase: "waiting-for-sessions",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          waitingSessions: 1,
+          launcherHeartbeatAt: "2026-01-01T00:00:01.000Z",
+        });
+        await refreshRestartState();
+
+        getReleaseSend()?.();
+        await flushMicrotasks();
+        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
+        await flushMicrotasks();
+
+        expect(restartEvents).toContainEqual({ waitingSessions: 0 });
+        expect(getRestartWaitingCount()).toBe(0);
+
+        await expect(refreshRestartState()).resolves.toMatchObject({
+          requestId: "req-handoff-events",
+          launcherHeartbeatAt: "2026-01-01T00:00:01.000Z",
+          waitingSessions: 0,
+        });
+        expect(getRestartWaitingCount()).toBe(0);
+
+        const diskState = await readRestartState(restartStatePath);
+        expect(diskState.phase).toBe("waiting-for-sessions");
+        expect(diskState.launcherHeartbeatAt).toBe("2026-01-01T00:00:01.000Z");
+        expect(diskState.requestId).toBe("req-handoff-events");
+        expect(diskState.waitingSessions).toBe(1);
+
+        await writeRestartState(restartStatePath, {
+          ...diskState,
+          waitingSessions: 2,
+          launcherHeartbeatAt: "2026-01-01T00:00:04.000Z",
+        });
+        await expect(refreshRestartState()).resolves.toMatchObject({
+          requestId: "req-handoff-events",
+          launcherHeartbeatAt: "2026-01-01T00:00:04.000Z",
+          waitingSessions: 2,
+        });
       } finally {
         configureRestartStateStore(undefined);
         rmSync(dataDir, { recursive: true, force: true });
