@@ -113,6 +113,11 @@ import {
 } from "./session-run-state-controller.js";
 import { SessionRunner, type McpServerStatus } from "./session-runner.js";
 export type { McpServerStatus } from "./session-runner.js";
+import {
+  deriveModelStateFromEventsFile,
+  type DerivedModelState,
+} from "./session-events-model.js";
+export type { DerivedModelState } from "./session-events-model.js";
 export {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
@@ -218,9 +223,11 @@ export class SessionManager {
   private client: CopilotClient | null = null;
   private deps: SessionManagerDeps;
   private activeRunControllers = new Map<string, SessionRunController>();
-  private resumingSessions = new Set<string>();
+  private resumingSessions = new Map<string, number>();
+  private modelSwitchingSessions = new Set<string>();
   private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
+  private liveSessionModelState = new Map<string, DerivedModelState>();
   private pendingSessionEvictions = new Set<string>();
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
@@ -259,7 +266,8 @@ export class SessionManager {
       globalBus: deps.globalBus,
       isRestartPending,
       syncRestartWaitingSessions,
-      isSessionResuming: (sessionId) => this.resumingSessions.has(sessionId),
+      getActiveSessionCount: () => this.getActiveSessions().length,
+      isSessionResuming: (sessionId) => this.isSessionResuming(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -289,8 +297,10 @@ export class SessionManager {
       hasStoredSessionTitle: (sessionId) => this.hasStoredSessionTitle(sessionId),
       hasExistingSessionTitle: (sessionId) => this.hasExistingSessionTitle(sessionId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
+      cacheResumedSession: (sessionId, session) => this.cacheResumedSession(sessionId, session),
+      replaceCachedSession: (sessionId, expectedSession, nextSession) =>
+        this.replaceCachedSession(sessionId, expectedSession, nextSession),
       probeMcpStatus: (sessionId, session) => this.probeMcpStatus(sessionId, session),
-      ensureSessionModelMatchesSettings: (session, sid) => this.ensureSessionModelMatchesSettings(session, sid),
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
@@ -349,6 +359,10 @@ export class SessionManager {
 
   private getSessionPlanPath(sessionId: string): string {
     return join(this.getSessionStateDir(sessionId), "plan.md");
+  }
+
+  private getSessionEventsPath(sessionId: string): string {
+    return join(this.getSessionStateDir(sessionId), "events.jsonl");
   }
 
   hasPlan(sessionId: string): boolean {
@@ -432,9 +446,34 @@ export class SessionManager {
   }
 
   private flushPendingSessionEviction(sessionId: string): void {
-    if (this.pendingSessionEvictions.delete(sessionId)) {
-      this.evictCachedSession(sessionId);
+    if (!this.pendingSessionEvictions.has(sessionId) || this.isSessionBusy(sessionId)) return;
+    this.pendingSessionEvictions.delete(sessionId);
+    this.evictCachedSession(sessionId);
+  }
+
+  private syncRestartWaitingIfPending(): void {
+    if (isRestartPending()) {
+      syncRestartWaitingSessions(this.getActiveSessions().length);
     }
+  }
+
+  private beginSessionResume(sessionId: string): void {
+    this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
+    this.syncRestartWaitingIfPending();
+  }
+
+  private endSessionResume(sessionId: string): void {
+    const count = this.resumingSessions.get(sessionId) ?? 0;
+    if (count <= 1) {
+      this.resumingSessions.delete(sessionId);
+    } else {
+      this.resumingSessions.set(sessionId, count - 1);
+    }
+    this.syncRestartWaitingIfPending();
+  }
+
+  private isSessionResuming(sessionId: string): boolean {
+    return (this.resumingSessions.get(sessionId) ?? 0) > 0;
   }
 
   private handleUserInputRequest(
@@ -559,6 +598,26 @@ export class SessionManager {
     } catch { /* session.rpc may not exist */ }
   }
 
+  private cacheResumedSession(sessionId: string, session: any): any {
+    const current = this.sessionObjects.get(sessionId);
+    if (current && current !== session) {
+      try { session.disconnect?.(); } catch { /* best-effort */ }
+      return current;
+    }
+    this.sessionObjects.set(sessionId, session);
+    return session;
+  }
+
+  private replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): any {
+    const current = this.sessionObjects.get(sessionId);
+    if (current && current !== expectedSession && current !== nextSession) {
+      try { nextSession.disconnect?.(); } catch { /* best-effort */ }
+      return current;
+    }
+    this.sessionObjects.set(sessionId, nextSession);
+    return nextSession;
+  }
+
   /** Get cached MCP status for a session, or probe live if session is cached */
   async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
     const session = this.sessionObjects.get(sessionId);
@@ -601,7 +660,8 @@ export class SessionManager {
     if (
       this.sessionObjects.has(sessionId)
       || this.runStateController.hasSessionRun(sessionId)
-      || this.resumingSessions.has(sessionId)
+      || this.isSessionResuming(sessionId)
+      || this.modelSwitchingSessions.has(sessionId)
       || this.userInputController.getPendingCount(sessionId) > 0
     ) {
       return true;
@@ -877,8 +937,33 @@ export class SessionManager {
         // Stale cache — CLI may have restarted. Evict and re-resume.
         cacheHit = false;
         console.log(`[sdk] [${sid}] Cached session stale (${err instanceof Error ? err.message : String(err)}), re-resuming...`);
-        this.sessionObjects.delete(sessionId);
+        this.beginSessionResume(sessionId);
         const tResume = Date.now();
+        try {
+          this.sessionObjects.delete(sessionId);
+          session = await Promise.race([
+            this.client.resumeSession(sessionId, msgResumeConfig),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+            ),
+          ]);
+          resumeMs = Date.now() - tResume;
+          session = this.cacheResumedSession(sessionId, session);
+          const tGm = Date.now();
+          events = await session.getMessages();
+          getMessagesMs = Date.now() - tGm;
+          console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
+        } finally {
+          this.endSessionResume(sessionId);
+          this.flushPendingSessionEviction(sessionId);
+        }
+      }
+    } else {
+      cacheHit = false;
+      console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
+      this.beginSessionResume(sessionId);
+      const tResume = Date.now();
+      try {
         session = await Promise.race([
           this.client.resumeSession(sessionId, msgResumeConfig),
           new Promise<never>((_, reject) =>
@@ -886,30 +971,15 @@ export class SessionManager {
           ),
         ]);
         resumeMs = Date.now() - tResume;
-        await this.ensureSessionModelMatchesSettings(session, sid);
-        this.sessionObjects.set(sessionId, session);
+        session = this.cacheResumedSession(sessionId, session);
         const tGm = Date.now();
         events = await session.getMessages();
         getMessagesMs = Date.now() - tGm;
-        console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
+        console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
+      } finally {
+        this.endSessionResume(sessionId);
+        this.flushPendingSessionEviction(sessionId);
       }
-    } else {
-      cacheHit = false;
-      console.log(`[sdk] [${sid}] Loading messages (resuming session)...`);
-      const tResume = Date.now();
-      session = await Promise.race([
-        this.client.resumeSession(sessionId, msgResumeConfig),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-        ),
-      ]);
-      resumeMs = Date.now() - tResume;
-      await this.ensureSessionModelMatchesSettings(session, sid);
-      this.sessionObjects.set(sessionId, session);
-      const tGm = Date.now();
-      events = await session.getMessages();
-      getMessagesMs = Date.now() - tGm;
-      console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
     }
 
     const tTransform = Date.now();
@@ -976,7 +1046,7 @@ export class SessionManager {
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
-    this.resumingSessions.add(sessionId);
+    this.beginSessionResume(sessionId);
     try {
       const session = await Promise.race([
         this.client.resumeSession(sessionId, resumeConfig),
@@ -984,15 +1054,15 @@ export class SessionManager {
           setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
         ),
       ]);
-      await this.ensureSessionModelMatchesSettings(session, sid);
-      this.sessionObjects.set(sessionId, session);
-      this.probeMcpStatus(sessionId, session);
+      const cachedSession = this.cacheResumedSession(sessionId, session);
+      this.probeMcpStatus(sessionId, cachedSession);
 
       const duration = Date.now() - t0;
       this.recordSpan("session.warm", duration, sessionId);
       console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
     } finally {
-      this.resumingSessions.delete(sessionId);
+      this.endSessionResume(sessionId);
+      this.flushPendingSessionEviction(sessionId);
     }
   }
 
@@ -1048,7 +1118,7 @@ export class SessionManager {
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
-    this.resumingSessions.add(sessionId);
+    this.beginSessionResume(sessionId);
     try {
       this.cancelPendingUserInputRequests(
         sessionId,
@@ -1065,20 +1135,24 @@ export class SessionManager {
           setTimeout(() => reject(new Error("reloadSession timed out after 60s")), 60_000),
         ),
       ]);
-      await this.ensureSessionModelMatchesSettings(session, sid);
-      this.sessionObjects.set(sessionId, session);
+      this.cacheResumedSession(sessionId, session);
 
       return this.getMcpStatus(sessionId);
     } finally {
-      this.resumingSessions.delete(sessionId);
+      this.endSessionResume(sessionId);
+      this.flushPendingSessionEviction(sessionId);
     }
   }
 
   isSessionBusy(sessionId: string): boolean {
-    return this.runStateController.isSessionBusy(sessionId);
+    return this.modelSwitchingSessions.has(sessionId)
+      || this.isSessionResuming(sessionId)
+      || this.runStateController.isSessionBusy(sessionId);
   }
 
   getSessionRunState(sessionId: string): SessionRunState {
+    if (this.modelSwitchingSessions.has(sessionId)) return "busy";
+    if (this.isSessionResuming(sessionId)) return "busy";
     return this.runStateController.getSessionRunState(sessionId);
   }
 
@@ -1095,7 +1169,11 @@ export class SessionManager {
   }
 
   getActiveSessions(): string[] {
-    return this.runStateController.getActiveSessions();
+    return Array.from(new Set([
+      ...this.runStateController.getActiveSessions(),
+      ...this.resumingSessions.keys(),
+      ...this.modelSwitchingSessions,
+    ]));
   }
 
   private evictCachedSession(sessionId: string): boolean {
@@ -1103,12 +1181,16 @@ export class SessionManager {
     if (!session) return false;
     try { session.disconnect?.(); } catch { /* best-effort */ }
     this.sessionObjects.delete(sessionId);
+    this.liveSessionModelState.delete(sessionId);
     return true;
   }
 
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
   evictAllCachedSessions(): void {
     const busy = new Set(this.getActiveSessions());
+    for (const id of busy) {
+      this.pendingSessionEvictions.add(id);
+    }
     let evicted = 0;
     for (const [id] of this.sessionObjects) {
       if (busy.has(id)) continue; // don't disrupt active turns
@@ -1118,76 +1200,134 @@ export class SessionManager {
   }
 
   /**
-   * After a fresh resumeSession(), make sure the SDK's selected model matches
-   * the user's current settings. We don't pass `model` on resume because the SDK
-   * silently overwrites _selectedModel via updateOptions() without sanitizing
-   * the replayed chat history, which corrupts cross-family tool_call shapes
-   * (Anthropic-`custom` vs OpenAI-`function`) and produces a CAPI 400.
+   * Explicitly switch the model for a single session.
    *
-   * Calling session.setModel() RPCs to model.switchTo, which emits a
-   * `session.model_change` event. The SDK's handler for that event runs
-   * Oyr/xyr to rewrite each tool_call shape, remap tool_call_id on tool
-   * messages, and strip family-specific reasoning artifacts. We own zero of
-   * that logic — just the trigger.
+   * Reuses the cached session object when available; otherwise resumes with
+   * forResume:true (no model/reasoningEffort in config) so the SDK loads
+   * the session's own persisted model state before we apply the new model.
+   * Rejects busy sessions to avoid racing with an in-progress turn.
    */
-  private async ensureSessionModelMatchesSettings(session: any, sid: string): Promise<void> {
-    const desiredModel = this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
-    if (!desiredModel) return;
-    const desiredReasoning = this.deps.settingsStore?.getSettings().reasoningEffort;
+  async setSessionModel(
+    sessionId: string,
+    model: string,
+    reasoningEffort?: string,
+  ): Promise<{ model: string; reasoningEffort?: string; modelId?: string }> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (isRestartPending()) throw new Error("Cannot switch model while a restart is pending");
+    if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
+
+    const sid = sessionId.slice(0, 8);
+    this.modelSwitchingSessions.add(sessionId);
+    this.syncRestartWaitingIfPending();
+
     try {
-      const current = await session?.rpc?.model?.getCurrent?.();
-      const currentModel = current?.modelId;
-      const action = currentModel === desiredModel
-        ? desiredReasoning
-          ? `Refreshing session model ${desiredModel} with reasoning effort ${desiredReasoning}`
-          : `Refreshing session model ${desiredModel} with default reasoning effort`
-        : `Migrating session model ${currentModel ?? "(unknown)"} -> ${desiredModel}`;
-      console.log(`[sdk] [${sid}] ${action}`);
-      await session.setModel(desiredModel, desiredReasoning ? { reasoningEffort: desiredReasoning } : undefined);
-    } catch (err) {
-      console.warn(`[sdk] [${sid}] ensureSessionModelMatchesSettings failed:`, err);
+      let session = this.sessionObjects.get(sessionId);
+      if (!session) {
+        const linkedTask = this.findLinkedTask(sessionId);
+        const resumeConfig = this.buildSessionConfig({
+          sessionId,
+          task: linkedTask,
+          groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
+          forResume: true,
+        });
+        this.beginSessionResume(sessionId);
+        try {
+          session = await Promise.race([
+            this.client.resumeSession(sessionId, resumeConfig),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+            ),
+          ]);
+          session = this.cacheResumedSession(sessionId, session);
+          this.probeMcpStatus(sessionId, session);
+        } finally {
+          this.endSessionResume(sessionId);
+        }
+      }
+
+      const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
+      const liveState = this.liveSessionModelState.get(sessionId);
+      let currentModelBeforeSwitch: string | undefined;
+      if (reasoningEffort === undefined && liveState?.reasoningEffort !== undefined) {
+        try {
+          const current = await session.rpc?.model?.getCurrent?.();
+          currentModelBeforeSwitch = current?.modelId;
+        } catch { /* best-effort */ }
+      }
+      const knownLiveReasoningEffort =
+        liveState && (!currentModelBeforeSwitch || liveState.model === currentModelBeforeSwitch)
+          ? liveState.reasoningEffort
+          : undefined;
+      const effectiveReasoningEffort = reasoningEffort
+        ?? knownLiveReasoningEffort
+        ?? eventsState.reasoningEffort;
+      const opts = effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : undefined;
+      await session.setModel(model, opts);
+      console.log(`[sdk] [${sid}] setSessionModel(${model}${effectiveReasoningEffort ? `, ${effectiveReasoningEffort}` : ""})`);
+
+      let modelId: string | undefined;
+      try {
+        const current = await session.rpc?.model?.getCurrent?.();
+        modelId = current?.modelId;
+      } catch { /* best-effort */ }
+
+      const liveModel = modelId ?? model;
+      this.liveSessionModelState.set(sessionId, {
+        model: liveModel,
+        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+      });
+
+      return {
+        model,
+        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(modelId ? { modelId } : {}),
+      };
+    } finally {
+      this.modelSwitchingSessions.delete(sessionId);
+      this.syncRestartWaitingIfPending();
+      this.flushPendingSessionEviction(sessionId);
     }
   }
 
   /**
-   * Apply the current settings model to every cached session via setModel.
-   * Used when the user changes model OR reasoningEffort in /settings instead of
-   * evicting cached sessions — preserves conversation continuity and lets the
-   * SDK's session.model_change handler sanitize history. The SDK queues the
-   * change internally on busy sessions (see setSelectedModel in the CLI bundle),
-   * so this is safe to call concurrently with active turns.
+   * Return the current model / reasoning effort for a session on demand.
    *
-   * Note: we deliberately do NOT short-circuit when the SDK's reported model
-   * already matches the target — `getCurrent()` only exposes modelId, not
-   * reasoningEffort, so a "model matches" check would silently drop reasoning-
-   * only changes. Always calling setModel costs at most one redundant
-   * model_change event per session per settings save, which is acceptable
-   * given that settings saves are rare.
-   *
-   * Caveat (out of scope for this fix): an in-flight cold resume that hasn't
-   * yet inserted its session into `sessionObjects` will be missed by this
-   * iteration. The session will end up cached on the pre-PATCH model. The next
-   * eviction (MCP change, restart, manual reload) re-syncs.
+   * - For active (cached) sessions, calls rpc.model.getCurrent() for the live
+   *   modelId, then uses the latest explicit switch state or events.jsonl for
+   *   reasoningEffort (the RPC only exposes modelId, not reasoningEffort).
+   * - For inactive sessions (not in cache), falls back entirely to events.jsonl.
+   * - Returns source='live' when the live RPC was used, 'events' when only the
+   *   event log was used, or 'unknown' if neither had useful data.
    */
-  async applyModelToCachedSessions(model: string, reasoningEffort?: string): Promise<{ updated: number; failed: number }> {
-    const opts = reasoningEffort ? { reasoningEffort: reasoningEffort as any } : undefined;
-    let updated = 0, failed = 0;
-    await Promise.allSettled(
-      Array.from(this.sessionObjects.entries()).map(async ([id, session]) => {
-        const sid = id.slice(0, 8);
-        try {
-          const wasBusy = this.isSessionBusy(id);
-          await session.setModel(model, opts);
-          updated++;
-          console.log(`[sdk] [${sid}] setModel(${model}) ${wasBusy ? "queued (busy)" : "applied"}`);
-        } catch (err) {
-          failed++;
-          console.warn(`[sdk] [${sid}] setModel failed:`, err);
+  async getSessionModelState(
+    sessionId: string,
+  ): Promise<{ model?: string; reasoningEffort?: string; source: "live" | "events" | "unknown" }> {
+    const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
+
+    const cached = this.sessionObjects.get(sessionId);
+    if (cached) {
+      try {
+        const current = await cached.rpc?.model?.getCurrent?.();
+        const liveModelId: string | undefined = current?.modelId;
+        if (liveModelId) {
+          const liveState = this.liveSessionModelState.get(sessionId);
+          const reasoningEffort = liveState?.model === liveModelId
+            ? liveState.reasoningEffort
+            : eventsState.reasoningEffort;
+          return {
+            model: liveModelId,
+            ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+            source: "live",
+          };
         }
-      }),
-    );
-    console.log(`[sdk] applyModelToCachedSessions(${model}): updated=${updated}, failed=${failed}`);
-    return { updated, failed };
+      } catch { /* best-effort */ }
+    }
+
+    if (eventsState.model !== undefined || eventsState.reasoningEffort !== undefined) {
+      return { ...eventsState, source: "events" };
+    }
+
+    return { source: "unknown" };
   }
 
   getSessionActivity(): SessionActivity[] {

@@ -332,6 +332,60 @@ describe("readCopilotUsageSummary", () => {
     ]);
   });
 
+  it("attributes live assistant usage after model changes to the switched model", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-live-switch", [
+      {
+        type: "session.start",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        data: { selectedModel: "gpt-5.5" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:05.000Z",
+        data: { requestId: "request-1", outputTokens: 10 },
+      },
+      {
+        type: "session.model_change",
+        timestamp: "2026-02-02T09:00:10.000Z",
+        data: { newModel: "claude-opus-4.7" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:15.000Z",
+        data: { requestId: "request-2", outputTokens: 7 },
+      },
+      {
+        type: "session.resume",
+        timestamp: "2026-02-02T09:00:20.000Z",
+        data: { selectedModel: "gpt-5.4" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:25.000Z",
+        data: { requestId: "request-3", outputTokens: 5 },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.totals).toMatchObject({
+      requests: 3,
+      outputTokens: 22,
+      totalTokens: 22,
+    });
+    expect(summary.models).toEqual([
+      expect.objectContaining({ model: "gpt-5.5", requests: 1, outputTokens: 10, totalTokens: 10 }),
+      expect.objectContaining({ model: "claude-opus-4.7", requests: 1, outputTokens: 7, totalTokens: 7 }),
+      expect.objectContaining({ model: "gpt-5.4", requests: 1, outputTokens: 5, totalTokens: 5 }),
+    ]);
+    expect(summary.sessions[0].models.map((row) => row.model)).toEqual([
+      "gpt-5.5",
+      "claude-opus-4.7",
+      "gpt-5.4",
+    ]);
+  });
+
   it("prefers shutdown model metrics over assistant message output tokens", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
