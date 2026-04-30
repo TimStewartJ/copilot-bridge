@@ -228,6 +228,7 @@ describe("agent-browser wrapper", () => {
   });
 
   it("creates and cleans up sanitized clone lanes", async () => {
+    setPlatform("win32");
     execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
       cb(null, { stdout: "ok", stderr: "" });
       return {} as any;
@@ -249,6 +250,7 @@ describe("agent-browser wrapper", () => {
     expect(options.filter(join(BROWSER_PROFILE, "SingletonLock"))).toBe(false);
     expect(options.filter(join(BROWSER_PROFILE, "DevToolsActivePort"))).toBe(false);
     expect(options.filter(join(BROWSER_PROFILE, "CrashpadMetrics-active.pma"))).toBe(false);
+    expect(options.filter(join(BROWSER_PROFILE, "Crashpad", "reports"))).toBe(false);
     expect(options.filter(join(BROWSER_PROFILE, "Default", "Network", "Cookies-wal"))).toBe(false);
     expect(options.filter(join(BROWSER_PROFILE, "Default", "Cookies"))).toBe(true);
     expect(options.filter(join(BROWSER_PROFILE, "Default", "Network", "Cookies"))).toBe(true);
