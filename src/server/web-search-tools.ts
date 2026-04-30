@@ -23,6 +23,37 @@ function hasResults(snapshot: string): boolean {
   return linkCount >= 3 && headingCount >= 2;
 }
 
+function isGoogleCaptchaUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)google\./i.test(parsed.hostname) && parsed.pathname.startsWith("/sorry");
+  } catch {
+    return /google\.[^/\s]+\/sorry/i.test(url);
+  }
+}
+
+function isGoogleCaptchaSnapshot(snapshot: string): boolean {
+  const lower = snapshot.toLowerCase();
+  return lower.includes("why did this happen")
+    || lower.includes("unusual traffic")
+    || lower.includes("google requires captcha")
+    || lower.includes("our systems have detected unusual traffic");
+}
+
+function isDuckDuckGoChallengeSnapshot(snapshot: string): boolean {
+  const lower = snapshot.toLowerCase();
+  const checkboxCount = (snapshot.match(/checkbox/gi) || []).length;
+  const linkCount = (snapshot.match(/^- link /gm) || []).length;
+  return linkCount < 3
+    && checkboxCount >= 2
+    && lower.includes("submit")
+    && (
+      lower.includes("images not loading")
+      || lower.includes("iframe")
+      || lower.includes("select all squares")
+    );
+}
+
 function queryFingerprint(query: string): string {
   return createHash("sha256").update(query).digest("hex").slice(0, 12);
 }
@@ -32,12 +63,13 @@ const AGENT_BROWSER_INSTALL_GUIDANCE =
 
 function webSearchFailure(
   summary: string,
-  context: { query: string; source?: string },
+  context: { query: string; source?: string; priorFailure?: string },
 ) {
   return toolFailure(summary, {
     sessionLog: joinFailureSections(
       context.source ? `Search engine: ${context.source}` : undefined,
       `Query: ${context.query}`,
+      context.priorFailure,
       summary,
     ),
   });
@@ -116,30 +148,55 @@ export function createWebSearchTools(ctx: AppContext) {
           const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
           const googleStart = Date.now();
           const googleOpen = await ab(["open", googleUrl], undefined, commandOptions);
+          let googleChallengeFailure: string | undefined;
 
           if (googleOpen.ok) {
             const googleWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
             if (googleWait.ok) {
-              const snapshot = await takeSnapshot("#rso", commandOptions);
-              const googleDuration = Date.now() - googleStart;
-              safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google", googleDuration, {
-                browserOpId,
-                browserSession: lane.browserTarget.sessionName,
-                browserLane: lane.laneType,
-                cloneId: lane.cloneId,
-                queryHash,
-                success: snapshot.ok && hasResults(snapshot.output),
-              });
+              const googleCurrentUrl = await ab(["get", "url"], undefined, commandOptions);
+              if (googleCurrentUrl.ok && isGoogleCaptchaUrl(googleCurrentUrl.output)) {
+                googleChallengeFailure = "Google requires captcha verification before search results can be returned.";
+                safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
+                  browserOpId,
+                  browserSession: lane.browserTarget.sessionName,
+                  browserLane: lane.laneType,
+                  cloneId: lane.cloneId,
+                  queryHash,
+                  failureCode: "search.google_captcha",
+                });
+              } else {
+                const snapshot = await takeSnapshot("#rso", commandOptions);
+                const googleDuration = Date.now() - googleStart;
+                safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google", googleDuration, {
+                  browserOpId,
+                  browserSession: lane.browserTarget.sessionName,
+                  browserLane: lane.laneType,
+                  cloneId: lane.cloneId,
+                  queryHash,
+                  success: snapshot.ok && hasResults(snapshot.output),
+                });
 
-              if (snapshot.ok && hasResults(snapshot.output)) {
-                source = "google";
-                success = true;
-                return {
-                  source,
-                  query,
-                  url: googleUrl,
-                  snapshot: snapshot.output,
-                };
+                if (snapshot.ok && hasResults(snapshot.output)) {
+                  source = "google";
+                  success = true;
+                  return {
+                    source,
+                    query,
+                    url: googleUrl,
+                    snapshot: snapshot.output,
+                  };
+                }
+                if (snapshot.ok && isGoogleCaptchaSnapshot(snapshot.output)) {
+                  googleChallengeFailure = "Google requires captcha verification before search results can be returned.";
+                  safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", googleDuration, {
+                    browserOpId,
+                    browserSession: lane.browserTarget.sessionName,
+                    browserLane: lane.laneType,
+                    cloneId: lane.cloneId,
+                    queryHash,
+                    failureCode: "search.google_captcha",
+                  });
+                }
               }
             } else {
               safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
@@ -199,7 +256,7 @@ export function createWebSearchTools(ctx: AppContext) {
               ddgOpen.output
                 ? `Failed to open search engine: ${ddgOpen.output.slice(0, 200)}`
                 : "Failed to open search engine",
-              { query, source: "duckduckgo" },
+              { query, source: "duckduckgo", priorFailure: googleChallengeFailure },
             );
           }
 
@@ -216,6 +273,7 @@ export function createWebSearchTools(ctx: AppContext) {
             return webSearchFailure(`Failed to wait for DuckDuckGo results: ${ddgWait.output.slice(0, 200)}`, {
               query,
               source: "duckduckgo",
+              priorFailure: googleChallengeFailure,
             });
           }
 
@@ -242,6 +300,39 @@ export function createWebSearchTools(ctx: AppContext) {
             return webSearchFailure(`Failed to capture results: ${snapshot.output.slice(0, 200)}`, {
               query,
               source: "duckduckgo",
+              priorFailure: googleChallengeFailure,
+            });
+          }
+
+          if (isDuckDuckGoChallengeSnapshot(snapshot.output)) {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
+              browserOpId,
+              browserSession: lane.browserTarget.sessionName,
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
+              queryHash,
+              failureCode: "search.ddg_challenge",
+            });
+            return webSearchFailure("DuckDuckGo requires challenge verification before search results can be returned.", {
+              query,
+              source: "duckduckgo",
+              priorFailure: googleChallengeFailure,
+            });
+          }
+
+          if (!hasResults(snapshot.output)) {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
+              browserOpId,
+              browserSession: lane.browserTarget.sessionName,
+              browserLane: lane.laneType,
+              cloneId: lane.cloneId,
+              queryHash,
+              failureCode: "search.ddg_no_results",
+            });
+            return webSearchFailure("DuckDuckGo did not return recognizable search results.", {
+              query,
+              source: "duckduckgo",
+              priorFailure: googleChallengeFailure,
             });
           }
 
