@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../api";
 import { installDomShim } from "../test-dom-shim";
 import {
@@ -45,22 +45,115 @@ async function renderSessionList(sessions: Session[]) {
   return { dom, cleanup };
 }
 
+function createSession(overrides: Partial<Session> & { sessionId: string }): Session {
+  return {
+    summary: "Test session",
+    deferSummary: { count: 0, nextRunAt: null },
+    ...overrides,
+  };
+}
+
+function minutesFromNow(minutes: number): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-04-27T12:00:00.000Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("SessionList input-required indicator", () => {
   it("renders a needs-answer marker for sessions waiting on user input", async () => {
     const { dom, cleanup } = await renderSessionList([
-      {
+      createSession({
         sessionId: "session-1",
         summary: "Waiting session",
         runState: "busy",
         busy: true,
         pendingUserInputCount: 1,
         needsUserInput: true,
-      },
+      }),
     ]);
 
     try {
       expect(dom.container.textContent).toContain("Waiting session");
       expect(dom.container.textContent).toContain("Needs answer");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("SessionList defer summary indicator", () => {
+  it("renders a single defer with the next run time", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Deferred session",
+        deferSummary: { count: 1, nextRunAt: minutesFromNow(5) },
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("Deferred session");
+      expect(dom.container.textContent).toContain("Deferred in 5m");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("renders multiple defers with the count and next run time", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Queued session",
+        deferSummary: { count: 2, nextRunAt: minutesFromNow(5) },
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("2 defers · next in 5m");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("does not render a defer label when the summary is cleared", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Cleared session",
+        deferSummary: { count: 0, nextRunAt: minutesFromNow(5) },
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("Cleared session");
+      expect(dom.container.textContent).not.toContain("Deferred");
+      expect(dom.container.textContent).not.toContain("defers");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("coexists with the needs-answer indicator", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({
+        sessionId: "session-1",
+        summary: "Waiting deferred session",
+        needsUserInput: true,
+        pendingUserInputCount: 1,
+        deferSummary: { count: 1, nextRunAt: minutesFromNow(5) },
+      }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).toContain("Needs answer");
+      expect(dom.container.textContent).toContain("Deferred in 5m");
     } finally {
       await cleanup();
     }

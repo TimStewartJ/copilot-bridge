@@ -3,6 +3,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
 import { toIntervalDeferId } from "./defer-ids.js";
+import { normalizeDeferSummary } from "./defer-summary.js";
+import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
 
 export type DeferLoopStatus = "active" | "running" | "cancelled" | "completed" | "failed" | "expired";
 
@@ -72,6 +74,15 @@ export function createDeferLoopStore(db: DatabaseSync) {
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL
     ORDER BY leaseExpiresAt ASC, updatedAt ASC
     LIMIT 1
+  `);
+  const selectExpiredRunningSessionIds = db.prepare(`
+    SELECT DISTINCT sessionId FROM defer_loops
+    WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
+  `);
+  const selectSummaryForSession = db.prepare(`
+    SELECT COUNT(*) as count, MIN(nextRunAt) as nextRunAt
+    FROM defer_loops
+    WHERE sessionId = ? AND status = 'active'
   `);
 
   const claimActive = db.prepare(`
@@ -211,6 +222,14 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return row ? toRow(row) : undefined;
   }
 
+  function getSummaryForSession(sessionId: string): DeferSummary {
+    return normalizeDeferSummary(selectSummaryForSession.get(sessionId) as DeferSummaryRow | undefined);
+  }
+
+  function listExpiredRunningSessionIds(now = new Date().toISOString()): string[] {
+    return (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>).map((row) => row.sessionId);
+  }
+
   function claimDue(id: string, leaseMs: number, now = new Date().toISOString()): { loop: DeferLoop; claimToken: string } | undefined {
     const claimToken = randomUUID();
     const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
@@ -314,6 +333,8 @@ export function createDeferLoopStore(db: DatabaseSync) {
     getNextActive,
     getNextFutureActive,
     getNextRunningLeaseExpiry,
+    getSummaryForSession,
+    listExpiredRunningSessionIds,
     claimDue,
     renewClaim,
     releaseClaimWithoutAttempt,

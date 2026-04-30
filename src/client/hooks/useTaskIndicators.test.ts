@@ -30,6 +30,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     busy: false,
     archived: false,
     diskSizeBytes: 0,
+    deferSummary: { count: 0, nextRunAt: null },
     ...overrides,
   };
 }

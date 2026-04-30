@@ -58,6 +58,12 @@ export interface SessionWorkspaceDetails extends SessionWorkspaceSummary {
   gitStatus: TaskGitStatus;
 }
 
+/** Content-free defer indicator data for a single session. */
+export interface DeferSummary {
+  count: number;
+  nextRunAt: string | null;
+}
+
 export interface Session {
   sessionId: string;
   summary?: string;
@@ -78,6 +84,7 @@ export interface Session {
   scheduleId?: string;
   scheduleName?: string;
   scheduleEnabled?: boolean;
+  deferSummary: DeferSummary;
   context?: {
     cwd?: string;
     gitRoot?: string;

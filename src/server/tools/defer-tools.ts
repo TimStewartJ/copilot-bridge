@@ -1,6 +1,7 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "../app-context.js";
 import { parseDeferId } from "../defer-ids.js";
+import { emitSessionDeferSummary } from "../defer-summary.js";
 import { toolFailure } from "../tool-results.js";
 
 const DEFER_MAX_PROMPT_BYTES = 32 * 1024; // 32 KB
@@ -130,6 +131,7 @@ export function createDeferTools(ctx: AppContext) {
           }
 
           const deferred = ctx.deferredPromptStore.create(sessionId, prompt, runAtIso);
+          emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
           ctx.deferredPromptRunner?.poke();
           return {
             success: true,
@@ -190,6 +192,7 @@ export function createDeferTools(ctx: AppContext) {
           ...(maxRuns !== undefined ? { maxRuns } : {}),
           ...(expiresAt ? { expiresAt } : {}),
         });
+        emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
         ctx.deferLoopRunner?.poke();
         return {
           success: true,
@@ -234,6 +237,7 @@ export function createDeferTools(ctx: AppContext) {
           }
           const cancelled = ctx.deferredPromptStore.cancelById(parsed.id);
           if (!cancelled) return toolFailure(`Failed to cancel defer ${deferId}.`);
+          emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
           return { success: true, deferId, kind: "once", message: `Defer ${deferId} cancelled.` };
         }
 
@@ -246,6 +250,7 @@ export function createDeferTools(ctx: AppContext) {
         }
         const cancelled = ctx.deferLoopStore.cancelById(parsed.id);
         if (!cancelled) return toolFailure(`Failed to cancel defer ${deferId}.`);
+        emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
         ctx.deferLoopRunner?.poke();
         return { success: true, deferId, kind: "interval", message: `Defer ${deferId} cancelled.` };
       },

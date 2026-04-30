@@ -1,14 +1,17 @@
 // Global event bus for cross-session status changes
 // Pushes run-state/title/intent events to all connected SSE clients
 
+import type { DeferSummary } from "./defer-summary.js";
+
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:user-input" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:user-input" | "session:defer-summary" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
   sessionId?: string;
   title?: string;
   intent?: string;
   archived?: boolean;
   pendingUserInputCount?: number;
   needsUserInput?: boolean;
+  deferSummary?: DeferSummary;
   waitingSessions?: number;
   scheduleId?: string;
   scheduleName?: string;

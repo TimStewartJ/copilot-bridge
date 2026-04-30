@@ -50,7 +50,7 @@ import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
-import { mergeActiveAndArchivedSessions, useSessionsQuery } from "./hooks/queries/useSessions";
+import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
 import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, { countChatTabUnread, countTaskTabUnread } from "./hooks/useTaskIndicators";
 import { getHomeChecklistIndicator } from "./checklist-helpers";
@@ -302,11 +302,7 @@ export default function App() {
 
   // Real-time status updates via SSE
   const patchSessionsInCache = useCallback((sessionIds: string[], patch: Partial<Session>) => {
-    if (sessionIds.length === 0) return;
-    const targetIds = new Set(sessionIds);
-    queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) =>
-      prev?.map((s) => targetIds.has(s.sessionId) ? { ...s, ...patch } : s),
-    );
+    patchSessionQueryData(queryClient, sessionIds, patch);
   }, [queryClient]);
   const patchSessionInCache = useCallback((sessionId: string, patch: Partial<Session>) => {
     patchSessionsInCache([sessionId], patch);
@@ -391,6 +387,11 @@ export default function App() {
           });
         }
         invalidateDashboard();
+        break;
+      case "session:defer-summary":
+        if (event.sessionId && event.deferSummary) {
+          patchSessionInCache(event.sessionId, { deferSummary: event.deferSummary });
+        }
         break;
       case "server:restart-pending":
         setRestartBanner((prev) => reduceRestartBannerState(prev, {
@@ -586,6 +587,7 @@ export default function App() {
         runState: "idle",
         busy: false,
         eventLogSizeBytes: 0,
+        deferSummary: { count: 0, nextRunAt: null },
         isOptimistic: true,
         optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
       }, ...prev];

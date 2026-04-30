@@ -44,6 +44,10 @@ describe("defer-loop-runner", () => {
   it("delivers one due occurrence with metadata and advances from acceptance time", async () => {
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
+    const summaryEvents: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type === "session:defer-summary") summaryEvents.push(event);
+    });
     const dueAt = new Date(Date.now() - 60_000).toISOString();
     const loop = store.create({
       sessionId: "session-1",
@@ -67,6 +71,10 @@ describe("defer-loop-runner", () => {
     expect(updated.status).toBe("active");
     expect(updated.runCount).toBe(1);
     expect(Date.parse(updated.nextRunAt)).toBe(Date.now() + 300_000);
+    expect(summaryEvents).toEqual([
+      { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
+      { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, nextRunAt: updated.nextRunAt } },
+    ]);
     runner.shutdown();
   });
 

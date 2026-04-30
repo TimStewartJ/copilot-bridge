@@ -157,6 +157,10 @@ describe("unified defer tools", () => {
     const tools = createBridgeTools(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
+    const summaryEvents: any[] = [];
+    const unsubscribe = ctx.globalBus.subscribe((event) => {
+      if (event.type === "session:defer-summary") summaryEvents.push(event);
+    });
 
     const once = await createTool.handler({ prompt: "cancel me", delaySeconds: 60 }, makeInvocation("session-A")) as any;
     const interval = await createTool.handler({ prompt: "cancel loop", intervalSeconds: 300 }, makeInvocation("session-A")) as any;
@@ -168,6 +172,22 @@ describe("unified defer tools", () => {
 
     expect(ctx.deferredPromptStore!.get(parseDeferId(once.deferId)!.id)!.status).toBe("cancelled");
     expect(ctx.deferLoopStore!.get(parseDeferId(interval.deferId)!.id)!.status).toBe("cancelled");
+    expect(summaryEvents).toHaveLength(4);
+    expect(summaryEvents.map((event) => event.deferSummary.count)).toEqual([1, 2, 1, 0]);
+    expect(summaryEvents[0]).toMatchObject({
+      type: "session:defer-summary",
+      sessionId: "session-A",
+      deferSummary: { count: 1, nextRunAt: once.nextRunAt },
+    });
+    expect(summaryEvents[1].deferSummary.nextRunAt).toBe(once.nextRunAt);
+    expect(summaryEvents[2].deferSummary.nextRunAt).toBe(interval.nextRunAt);
+    expect(summaryEvents[3].deferSummary.nextRunAt).toBeNull();
+    for (const event of summaryEvents) {
+      expect(event.prompt).toBeUndefined();
+      expect(event.name).toBeUndefined();
+      expect(event.content).toBeUndefined();
+    }
+    unsubscribe();
   });
 
   it("rejects legacy deferredPromptId and loopId surfaces", async () => {

@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<Session>): Session {
     busy: false,
     archived: false,
     modifiedTime: "2026-05-01T11:00:00.000Z",
+    deferSummary: { count: 0, nextRunAt: null },
     ...overrides,
   };
 }

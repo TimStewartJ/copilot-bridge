@@ -3,6 +3,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
 import { toOnceDeferId } from "./defer-ids.js";
+import { normalizeDeferSummary } from "./defer-summary.js";
+import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -70,6 +72,17 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL
     ORDER BY leaseExpiresAt ASC, updatedAt ASC
     LIMIT 1
+  `);
+
+  const selectExpiredRunningSessionIds = db.prepare(`
+    SELECT DISTINCT sessionId FROM deferred_prompts
+    WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
+  `);
+
+  const selectSummaryForSession = db.prepare(`
+    SELECT COUNT(*) as count, MIN(runAt) as nextRunAt
+    FROM deferred_prompts
+    WHERE sessionId = ? AND status = 'pending'
   `);
 
   // CAS claim: only succeeds when status is still 'pending'
@@ -198,6 +211,14 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return row ? toRow(row) : undefined;
   }
 
+  function getSummaryForSession(sessionId: string): DeferSummary {
+    return normalizeDeferSummary(selectSummaryForSession.get(sessionId) as DeferSummaryRow | undefined);
+  }
+
+  function listExpiredRunningSessionIds(now = new Date().toISOString()): string[] {
+    return (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>).map((row) => row.sessionId);
+  }
+
   /**
    * Atomically claim a pending prompt for execution.
    * Returns the claimed prompt + claimToken, or undefined if already claimed.
@@ -273,6 +294,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     getNextPending,
     getNextFuturePending,
     getNextRunningLeaseExpiry,
+    getSummaryForSession,
+    listExpiredRunningSessionIds,
     claimDue,
     markCompleted,
     markCompletedById,

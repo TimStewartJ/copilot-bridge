@@ -60,6 +60,10 @@ describe("deferred-prompt-runner", () => {
     it("processes due prompts on start", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
+      const summaryEvents: any[] = [];
+      bus.subscribe((event) => {
+        if (event.type === "session:defer-summary") summaryEvents.push(event);
+      });
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Do something", past);
 
@@ -74,6 +78,10 @@ describe("deferred-prompt-runner", () => {
       expect(sm._started[0]).toEqual({ sessionId: "session-1", prompt: "Do something" });
       const dp = store.listForSession("session-1")[0];
       expect(dp.status).toBe("completed");
+      expect(summaryEvents).toEqual([
+        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
+        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
+      ]);
 
       runner.shutdown();
     });
@@ -428,6 +436,10 @@ describe("deferred-prompt-runner", () => {
     it("retries on busy error with backoff", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
+      const summaryEvents: any[] = [];
+      bus.subscribe((event) => {
+        if (event.type === "session:defer-summary") summaryEvents.push(event);
+      });
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Prompt", past);
 
@@ -444,6 +456,12 @@ describe("deferred-prompt-runner", () => {
       // After one attempt the prompt should be re-queued pending with backoff
       expect(dp.status).toBe("pending");
       expect(dp.attempts).toBe(1);
+      expect(summaryEvents.map((event) => event.deferSummary.count)).toEqual([0, 1]);
+      expect(summaryEvents.at(-1)).toMatchObject({
+        type: "session:defer-summary",
+        sessionId: "session-1",
+        deferSummary: { count: 1, nextRunAt: dp.runAt },
+      });
       runner.shutdown();
     });
 

@@ -24,6 +24,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     lastVisibleActivityAt: NOW,
     busy: false,
     archived: false,
+    deferSummary: { count: 0, nextRunAt: null },
     ...overrides,
   };
 }
