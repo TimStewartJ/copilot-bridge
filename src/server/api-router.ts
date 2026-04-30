@@ -2555,24 +2555,39 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  router.patch("/settings", (req, res) => {
+  router.patch("/settings", async (req, res) => {
     try {
       const prev = ctx.settingsStore.getSettings();
       const updated = ctx.settingsStore.updateSettings(req.body);
       clearProviderCache();
 
-      // If MCP servers or model changed, evict cached sessions so they re-resume with new config
-      const configChanged =
-        JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers) ||
-        prev.model !== updated.model ||
-        prev.reasoningEffort !== updated.reasoningEffort;
-      if (configChanged) {
-        const reasons = [];
-        if (JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers)) reasons.push("MCP servers");
-        if (prev.model !== updated.model) reasons.push("model");
-        if (prev.reasoningEffort !== updated.reasoningEffort) reasons.push("reasoning effort");
-        console.log(`[settings] ${reasons.join(" & ")} changed — evicting cached sessions for re-resume`);
+      const mcpChanged = JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers);
+      const modelChanged = prev.model !== updated.model;
+      const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
+
+      // MCP server changes can't be hot-swapped on a live session — evict so the
+      // next resume rebuilds with the new MCP config. Eviction also forces a
+      // model re-sync via ensureSessionModelMatchesSettings on the next resume.
+      if (mcpChanged) {
+        console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
         ctx.sessionManager.evictAllCachedSessions();
+      } else if (modelChanged || reasoningChanged) {
+        // Apply model/reasoning changes via session.setModel() so the SDK emits
+        // session.model_change and sanitizes cross-family tool_call shapes
+        // instead of corrupting the next CAPI request with stale history.
+        const target = updated.model;
+        if (target) {
+          const reasons = [
+            modelChanged ? "model" : null,
+            reasoningChanged ? "reasoning effort" : null,
+          ].filter(Boolean).join(" & ");
+          console.log(`[settings] ${reasons} changed — applying ${target} to cached sessions via setModel`);
+          await ctx.sessionManager.applyModelToCachedSessions(target, updated.reasoningEffort);
+        } else {
+          // No model selected — fall back to eviction so cold resume picks up defaults.
+          console.log("[settings] Model cleared — evicting cached sessions");
+          ctx.sessionManager.evictAllCachedSessions();
+        }
       }
 
       console.log("[settings] Settings updated");

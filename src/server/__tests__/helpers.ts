@@ -168,6 +168,7 @@ export function createMockSessionManager() {
     deleteSession: async () => {},
     gracefulShutdown: async () => {},
     evictAllCachedSessions: () => {},
+    applyModelToCachedSessions: async () => ({ updated: 0, failed: 0 }),
     getMcpStatus: async () => [],
     getLatestMcpStatus: () => [],
     hasPlan: () => true,
