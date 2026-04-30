@@ -35,6 +35,9 @@ export {
 } from "./session-instructions.js";
 export type { ScheduleContext, SessionConfigOptions } from "./session-config-builder.js";
 export {
+  formatTaskMomentumContext,
+} from "./session-task-momentum.js";
+export {
   buildSessionAttachmentUrlPath,
   deriveFallbackSessionTitle,
   encodeAttachmentUrlSegment,
@@ -45,7 +48,6 @@ export {
   formatPromptTag,
   formatPromptTagList,
   formatRelatedDocManifestEntry,
-  formatTaskMomentumContext,
   isPromptEchoSummary,
   looksLikeExistingSessionTitle,
   normalizeInlineText,
@@ -1135,8 +1137,12 @@ export class SessionManager {
     try {
       const current = await session?.rpc?.model?.getCurrent?.();
       const currentModel = current?.modelId;
-      if (currentModel === desiredModel) return;
-      console.log(`[sdk] [${sid}] Migrating session model ${currentModel ?? "(unknown)"} -> ${desiredModel}`);
+      const action = currentModel === desiredModel
+        ? desiredReasoning
+          ? `Refreshing session model ${desiredModel} with reasoning effort ${desiredReasoning}`
+          : `Refreshing session model ${desiredModel} with default reasoning effort`
+        : `Migrating session model ${currentModel ?? "(unknown)"} -> ${desiredModel}`;
+      console.log(`[sdk] [${sid}] ${action}`);
       await session.setModel(desiredModel, desiredReasoning ? { reasoningEffort: desiredReasoning } : undefined);
     } catch (err) {
       console.warn(`[sdk] [${sid}] ensureSessionModelMatchesSettings failed:`, err);

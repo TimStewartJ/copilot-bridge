@@ -19,10 +19,10 @@ import {
   STAGING_INSTRUCTIONS,
 } from "./session-instructions.js";
 import {
-  formatTaskMomentumContext,
   formatPromptTagList,
   formatRelatedDocManifestEntry,
 } from "./session-formatting.js";
+import { formatTaskMomentumContext } from "./session-task-momentum.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");

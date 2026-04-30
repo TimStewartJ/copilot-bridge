@@ -56,12 +56,27 @@ describe("SessionManager model switching", () => {
       expect(session.setModel).not.toHaveBeenCalled();
     });
 
-    it("does not call setModel when current matches desired", async () => {
+    it("calls setModel when current matches desired and reasoningEffort is not configured", async () => {
       settingsStore.updateSettings({ model: "claude-opus-4.7" });
       const session = createMockSession("claude-opus-4.7");
       await manager.ensureSessionModelMatchesSettings(session, "abcd1234");
       expect(session.getCurrent).toHaveBeenCalledOnce();
-      expect(session.setModel).not.toHaveBeenCalled();
+      expect(session.setModel).toHaveBeenCalledWith("claude-opus-4.7", undefined);
+    });
+
+    it("calls setModel when current matches desired but reasoningEffort is configured", async () => {
+      settingsStore.updateSettings({ model: "claude-opus-4.7", reasoningEffort: "high" });
+      const session = createMockSession("claude-opus-4.7");
+      await manager.ensureSessionModelMatchesSettings(session, "abcd1234");
+      expect(session.setModel).toHaveBeenCalledWith("claude-opus-4.7", { reasoningEffort: "high" });
+    });
+
+    it("calls setModel when reasoningEffort was cleared", async () => {
+      settingsStore.updateSettings({ model: "claude-opus-4.7", reasoningEffort: "high" });
+      settingsStore.updateSettings({ reasoningEffort: undefined });
+      const session = createMockSession("claude-opus-4.7");
+      await manager.ensureSessionModelMatchesSettings(session, "abcd1234");
+      expect(session.setModel).toHaveBeenCalledWith("claude-opus-4.7", undefined);
     });
 
     it("calls setModel when current differs from desired", async () => {
