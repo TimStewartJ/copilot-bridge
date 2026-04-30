@@ -3356,6 +3356,37 @@ describe("Session manager routes", () => {
     expect(res.body).toMatchObject({ runState: "stalled", busy: true });
   });
 
+  it("GET /api/sessions/:id/messages includes visible activity metadata", async () => {
+    ctx.sessionManager.getSessionMessages = vi.fn().mockResolvedValue({
+      messages: [],
+      total: 0,
+      hasMore: false,
+      lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
+    });
+
+    const res = await request(app).get("/api/sessions/test-id/messages");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
+  });
+
+  it("GET /api/sessions/:id/messages-fast includes visible activity metadata", async () => {
+    ctx.sessionManager.readMessagesFromDisk = vi.fn().mockResolvedValue({
+      messages: [],
+      total: 0,
+      hasMore: false,
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+    });
+
+    const res = await request(app).get("/api/sessions/test-id/messages-fast");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      warm: false,
+    });
+  });
+
   it("POST /api/sessions/:id/duplicate duplicates a session", async () => {
     const res = await request(app).post("/api/sessions/test-id/duplicate");
     expect(res.status).toBe(200);

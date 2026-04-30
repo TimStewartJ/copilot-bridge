@@ -52,6 +52,7 @@ export interface ReadMessagesFromDiskResult {
   messages: TransformedEntry[];
   total: number;
   hasMore: boolean;
+  lastVisibleActivityAt?: string;
 }
 
 interface WorkspaceSessionRead {
@@ -372,7 +373,8 @@ async function readMessagesFromDiskFull(
   const tTransform = Date.now();
   const messages = transformEventsToMessages(events, sessionId);
   const transformMs = Date.now() - tTransform;
-  deps.persistLastVisibleActivityAt(sessionId, getLastVisibleActivityAt(events, sessionId));
+  const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
+  deps.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
 
   const total = messages.length;
   if (opts?.limit != null && opts.limit > 0) {
@@ -389,7 +391,7 @@ async function readMessagesFromDiskFull(
       transformMs,
       ...metadata,
     });
-    return { messages: sliced, total, hasMore: start > 0 };
+    return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt };
   }
 
   deps.recordSpan("session.readFromDisk", Date.now() - startedAt, sessionId, {
@@ -402,7 +404,7 @@ async function readMessagesFromDiskFull(
     transformMs,
     ...metadata,
   });
-  return { messages, total, hasMore: false };
+  return { messages, total, hasMore: false, lastVisibleActivityAt };
 }
 
 /**
@@ -633,5 +635,5 @@ export async function readMessagesFromDisk(
     readFullFile: tail.readFullFile,
   });
 
-  return { messages, total, hasMore: start > 0 };
+  return { messages, total, hasMore: start > 0, lastVisibleActivityAt: stats.lastVisibleActivityAt };
 }
