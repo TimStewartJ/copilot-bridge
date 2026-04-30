@@ -1,21 +1,26 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
+import type { DeferSummary } from "./api";
 
-export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent"
-      | "session:archived" | "session:user-input" | "server:restart-pending" | "server:restart-cleared"
-      | "status:connected" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed";
-  sessionId?: string;
-  title?: string;
-  intent?: string;
-  archived?: boolean;
-  pendingUserInputCount?: number;
-  needsUserInput?: boolean;
-  waitingSessions?: number;
-  taskId?: string;
-  scheduleId?: string;
-  readState?: Record<string, string>;
-}
+export type StatusEvent =
+  | { type: "session:busy" | "session:stalled" | "session:idle"; sessionId?: string }
+  | { type: "session:title"; sessionId?: string; title?: string }
+  | { type: "session:intent"; sessionId?: string; intent?: string }
+  | { type: "session:archived"; sessionId?: string; archived?: boolean }
+  | {
+      type: "session:user-input";
+      sessionId?: string;
+      pendingUserInputCount?: number;
+      needsUserInput?: boolean;
+    }
+  | { type: "session:defer-summary"; sessionId: string; deferSummary: DeferSummary }
+  | { type: "server:restart-pending"; waitingSessions?: number }
+  | { type: "server:restart-cleared" }
+  | { type: "status:connected" }
+  | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string }
+  | { type: "schedule:changed"; scheduleId?: string }
+  | { type: "task:changed"; taskId?: string }
+  | { type: "readstate:changed"; readState?: Record<string, string> };
 
 type StatusHandler = (event: StatusEvent) => void;
 

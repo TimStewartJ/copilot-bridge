@@ -23,6 +23,7 @@ function session(
     sessionId,
     summary: sessionId,
     lastVisibleActivityAt: activityTime,
+    deferSummary: { count: 0, nextRunAt: null },
     ...opts,
   };
 }

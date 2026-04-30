@@ -54,6 +54,18 @@ export function formatSessionModelLabel(
   return effortLabel ? `${modelLabel} · ${effortLabel}` : modelLabel;
 }
 
+export function formatDeferSummaryLabel(deferSummary?: Session["deferSummary"]): string | null {
+  const count = deferSummary?.count ?? 0;
+  if (count <= 0) return null;
+
+  const nextRun = deferSummary?.nextRunAt ? timeAgo(deferSummary.nextRunAt) : null;
+  if (count === 1) {
+    return nextRun ? `Deferred ${nextRun}` : "Deferred";
+  }
+
+  return nextRun ? `${count} defers · next ${nextRun}` : `${count} defers`;
+}
+
 function getSessionModelSourceLabel(source?: SessionModelState["source"]): string {
   switch (source) {
     case "live": return "Live session";
@@ -542,6 +554,7 @@ export default function SessionList({
     const isExiting = exitingIds?.has(id);
     const isSelected = selectedIds?.has(id);
     const needsUserInput = session.needsUserInput || (session.pendingUserInputCount ?? 0) > 0;
+    const deferLabel = formatDeferSummaryLabel(session.deferSummary);
     const dotColor = isArchiving
       ? ""
       : needsUserInput
@@ -650,6 +663,18 @@ export default function SessionList({
           </div>
           <div className={`${s.metaClass} truncate`}>
             {isArchiving ? "Archiving…" : needsUserInput ? "Needs answer" : timeAgo(getSessionActivityTime(session))}
+            {deferLabel && (
+              <>
+                {" · "}
+                <span
+                  className="inline-flex items-center gap-0.5 rounded-full border border-accent/15 bg-accent/5 px-1.5 py-0.5 align-middle text-[10px] font-medium text-accent"
+                  title={deferLabel}
+                >
+                  <Clock size={9} className="shrink-0" aria-hidden="true" />
+                  <span>{deferLabel}</span>
+                </span>
+              </>
+            )}
             {session.context?.branch && ` · ${session.context.branch}`}
             {session.eventLogSizeBytes
               ? ` · ${formatSize(session.eventLogSizeBytes)}`

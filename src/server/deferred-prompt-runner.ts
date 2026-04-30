@@ -6,6 +6,7 @@ import type { SessionManager } from "./session-manager.js";
 import { isPromptDeliveryInterruptedError, isRestartPendingError } from "./session-manager.js";
 import type { GlobalBus } from "./global-bus.js";
 import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-delivery-guard.js";
+import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summary.js";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ export function createDeferredPromptRunner(
   sessionManager: SessionManager,
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
+  summarySources: DeferSummarySources = { deferredPromptStore: store },
 ) {
   let nextTimer: ReturnType<typeof setTimeout> | undefined;
   let busUnsubscribe: (() => void) | undefined;
@@ -47,9 +49,12 @@ export function createDeferredPromptRunner(
   }
 
   function reclaimExpiredRunning(): void {
-    const reclaimed = store.reclaimExpiredRunning();
+    const now = new Date().toISOString();
+    const sessionIds = store.listExpiredRunningSessionIds(now);
+    const reclaimed = store.reclaimExpiredRunning(now);
     if (reclaimed > 0) {
       console.log(`[deferred-runner] Reclaimed ${reclaimed} expired running deferral(s)`);
+      emitDeferSummaries(sessionIds);
     }
   }
 
@@ -57,6 +62,14 @@ export function createDeferredPromptRunner(
     return store.listDue().some((prompt) =>
       !deliveryGuard.isActive(prompt.sessionId) && !sessionManager.isSessionBusy(prompt.sessionId)
     );
+  }
+
+  function emitDeferSummary(sessionId: string): void {
+    emitSessionDeferSummary(globalBus, sessionId, summarySources);
+  }
+
+  function emitDeferSummaries(sessionIds: Iterable<string>): void {
+    for (const sessionId of new Set(sessionIds)) emitDeferSummary(sessionId);
   }
 
   function armNext(): void {
@@ -133,6 +146,7 @@ export function createDeferredPromptRunner(
       // Can't claim (no valid token), just directly cancel
       const cancelled = store.cancelById(id);
       console.error(`[deferred-runner] Deferral ${id} exceeded max attempts; cancelling`);
+      if (cancelled) emitDeferSummary(item.sessionId);
       return cancelled ? "changed" : "unchanged";
     }
 
@@ -144,6 +158,7 @@ export function createDeferredPromptRunner(
     if (!sessionExists) {
       const cancelled = store.cancelForSession(item.sessionId);
       console.warn(`[deferred-runner] Session ${item.sessionId} no longer exists; cancelling ${cancelled} deferral(s)`);
+      if (cancelled > 0) emitDeferSummary(item.sessionId);
       return cancelled > 0 ? "changed" : "unchanged";
     }
 
@@ -160,6 +175,7 @@ export function createDeferredPromptRunner(
       deliveryGuard.release(item.sessionId);
       return "unchanged"; // someone else claimed it
     }
+    emitDeferSummary(item.sessionId);
 
     const { claimToken } = claimed;
     const renewalTimer = setInterval(() => {
@@ -195,9 +211,11 @@ export function createDeferredPromptRunner(
         if (!completedById) {
           console.error(`[deferred-runner] Delivery completed but failed to mark deferral ${id} completed`);
         } else {
+          emitDeferSummary(sessionId);
           shouldProcessNextDuePrompt = true;
         }
       } else {
+        emitDeferSummary(sessionId);
         shouldProcessNextDuePrompt = true;
       }
     } catch (err: any) {
@@ -212,6 +230,8 @@ export function createDeferredPromptRunner(
         const released = store.releaseClaimWithoutAttempt(id, claimToken);
         if (!released) {
           console.error(`[deferred-runner] Failed to pause deferral ${id} without consuming an attempt`);
+        } else {
+          emitDeferSummary(sessionId);
         }
         return;
       }
@@ -226,12 +246,15 @@ export function createDeferredPromptRunner(
         const retried = store.retry(id, claimToken, retryAt);
         if (!retried) {
           console.error(`[deferred-runner] Failed to re-queue deferral ${id}`);
+        } else {
+          emitDeferSummary(sessionId);
         }
       } else {
         const failed = store.markFailed(id, claimToken, msg);
         if (!failed) {
           console.error(`[deferred-runner] Failed to mark deferral ${id} failed`);
         } else {
+          emitDeferSummary(sessionId);
           shouldProcessNextDuePrompt = true;
         }
         console.error(`[deferred-runner] Deferral ${id} failed after ${nextAttempts} attempt(s): ${msg}`);
@@ -258,10 +281,7 @@ export function createDeferredPromptRunner(
     generation++;
 
     // Reclaim any running rows whose leases have expired
-    const reclaimed = store.reclaimExpiredRunning();
-    if (reclaimed > 0) {
-      console.log(`[deferred-runner] Reclaimed ${reclaimed} expired running deferral(s)`);
-    }
+    reclaimExpiredRunning();
 
     // Subscribe to global bus events
     busUnsubscribe = globalBus.subscribe((event) => {
@@ -281,6 +301,7 @@ export function createDeferredPromptRunner(
         const cancelled = store.cancelForSession(event.sessionId);
         if (cancelled > 0) {
           console.log(`[deferred-runner] Cancelled ${cancelled} deferral(s) for archived session ${event.sessionId}`);
+          emitDeferSummary(event.sessionId);
         }
         return;
       }

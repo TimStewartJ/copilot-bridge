@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { fetchSessions, type Session } from "../../api";
 import { queryKeys } from "../../queryClient";
 
@@ -42,6 +42,18 @@ export function mergeActiveAndArchivedSessions(
   return archivedSessions.length > 0
     ? [...activeSessions, ...archivedSessions]
     : activeSessions;
+}
+
+export function patchSessionQueryData(
+  queryClient: QueryClient,
+  sessionIds: readonly string[],
+  patch: Partial<Session>,
+): void {
+  if (sessionIds.length === 0) return;
+  const targetIds = new Set(sessionIds);
+  queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) =>
+    prev?.map((session) => targetIds.has(session.sessionId) ? { ...session, ...patch } : session),
+  );
 }
 
 export function useSessionsQuery(includeArchived: boolean, options: UseSessionsQueryOptions = {}) {

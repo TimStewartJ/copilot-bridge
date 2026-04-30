@@ -201,6 +201,7 @@ async function main(): Promise<void> {
     sessionManager,
     defaultGlobalBus,
     deferDeliveryGuard,
+    { deferredPromptStore, deferLoopStore },
   );
   defaultContext.deferredPromptRunner = deferredPromptRunner;
   const deferLoopRunner = createDeferLoopRunner(
@@ -208,6 +209,7 @@ async function main(): Promise<void> {
     sessionManager,
     defaultGlobalBus,
     deferDeliveryGuard,
+    { deferredPromptStore, deferLoopStore },
   );
   defaultContext.deferLoopRunner = deferLoopRunner;
   deferredPromptRunner.start();

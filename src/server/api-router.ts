@@ -34,6 +34,7 @@ import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-us
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
+import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -161,6 +162,15 @@ function getSessionStatus(
     pendingUserInputCount,
     needsUserInput: pendingUserInputCount > 0,
   };
+}
+
+function getSessionDeferSummary(ctx: AppContext, sessionId: string): DeferSummary {
+  const summaries: DeferSummary[] = [];
+  const oneShotSummary = ctx.deferredPromptStore?.getSummaryForSession(sessionId);
+  const intervalSummary = ctx.deferLoopStore?.getSummaryForSession(sessionId);
+  if (oneShotSummary) summaries.push(oneShotSummary);
+  if (intervalSummary) summaries.push(intervalSummary);
+  return mergeDeferSummaries(...summaries);
 }
 
 function normalizeWorkspacePath(cwd?: string | null): string | undefined {
@@ -775,6 +785,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const archived = sessionMeta?.archived ?? s.archived ?? false;
           if (!includeArchived && archived) return [];
 
+          const deferSummary = getSessionDeferSummary(ctx, id);
           const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
           return [{
             ...s,
@@ -782,6 +793,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             lastVisibleActivityAt,
             modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
             ...status,
+            deferSummary,
             archived,
           }];
         });

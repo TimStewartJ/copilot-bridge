@@ -648,6 +648,7 @@ async function createStagingContext(
         sm,
         globalBus,
         deferDeliveryGuard,
+        { deferredPromptStore, deferLoopStore },
       );
     }
     if (deferLoopStore && deferLoopRunnerMod?.createDeferLoopRunner) {
@@ -656,6 +657,7 @@ async function createStagingContext(
         sm,
         globalBus,
         deferDeliveryGuard,
+        { deferredPromptStore, deferLoopStore },
       );
     }
     ctx.voiceJobManager = voiceJobStoreMod && voiceJobManagerMod

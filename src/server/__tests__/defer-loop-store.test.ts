@@ -64,6 +64,32 @@ describe("defer-loop-store", () => {
     expect(retried.lastError).toBe("busy");
   });
 
+  it("summarizes active loops for a session with the earliest next run time", () => {
+    const earliest = "2030-01-01T00:01:00.000Z";
+    const later = "2030-01-01T00:02:00.000Z";
+    const runningAt = "2030-01-01T00:00:30.000Z";
+    store.create({ ...baseLoop, name: "later", prompt: "Later", nextRunAt: later });
+    store.create({ ...baseLoop, name: "earliest", prompt: "Earliest", nextRunAt: earliest });
+    const running = store.create({ ...baseLoop, name: "running", prompt: "Running", nextRunAt: runningAt });
+    store.claimDue(running.id, 60_000, runningAt);
+    store.create({
+      ...baseLoop,
+      sessionId: "session-2",
+      name: "other",
+      prompt: "Other",
+      nextRunAt: "2030-01-01T00:00:00.000Z",
+    });
+
+    expect(store.getSummaryForSession("session-1")).toEqual({
+      count: 2,
+      nextRunAt: earliest,
+    });
+    expect(store.getSummaryForSession("missing-session")).toEqual({
+      count: 0,
+      nextRunAt: null,
+    });
+  });
+
   it("completes occurrences and marks max-run loops completed", () => {
     const loop = store.create({ ...baseLoop, maxRuns: 1, nextRunAt: "2026-01-01T00:00:00.000Z" });
     const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
