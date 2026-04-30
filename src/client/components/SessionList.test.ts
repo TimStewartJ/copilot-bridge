@@ -2,6 +2,11 @@ import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../api";
 import { installDomShim } from "../test-dom-shim";
+import {
+  canKeepCurrentReasoningEffortForModel,
+  formatReasoningEffortLabel,
+  formatSessionModelLabel,
+} from "./SessionList";
 
 async function renderSessionList(sessions: Session[]) {
   const dom = installDomShim();
@@ -59,5 +64,83 @@ describe("SessionList input-required indicator", () => {
     } finally {
       await cleanup();
     }
+  });
+});
+
+describe("session model menu labels", () => {
+  it("formats model names with reasoning effort labels", () => {
+    expect(formatSessionModelLabel(
+      { model: "gpt-5.5", reasoningEffort: "high", source: "events" },
+      [{ id: "gpt-5.5", name: "GPT-5.5" }],
+    )).toBe("GPT-5.5 · High");
+  });
+
+  it("falls back to the model id when model metadata is unavailable", () => {
+    expect(formatSessionModelLabel({ model: "custom-model", source: "events" }, null))
+      .toBe("custom-model");
+  });
+
+  it("keeps unknown reasoning effort values visible", () => {
+    expect(formatReasoningEffortLabel("experimental")).toBe("experimental");
+  });
+
+  it("does not keep current reasoning effort before lookup completes for constrained models", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: ["max"],
+      currentEffortLookupReady: false,
+    })).toBe(false);
+  });
+
+  it("does not trust cached supported reasoning effort before lookup completes", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: ["xhigh"],
+      currentReasoningEffort: "xhigh",
+      currentEffortLookupReady: false,
+    })).toBe(false);
+  });
+
+  it("allows keeping current when lookup confirms no reasoning effort is set", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: ["max"],
+      currentEffortLookupReady: true,
+    })).toBe(true);
+  });
+
+  it("does not keep current while lookup is pending for models with no reasoning efforts", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: [],
+      currentEffortLookupReady: false,
+    })).toBe(false);
+  });
+
+  it("allows keeping current for models with no reasoning efforts only after lookup confirms none is set", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: [],
+      currentEffortLookupReady: true,
+    })).toBe(true);
+  });
+
+  it("does not keep a current effort for models with no reasoning efforts", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: [],
+      currentReasoningEffort: "high",
+      currentEffortLookupReady: true,
+    })).toBe(false);
+  });
+
+  it("does not keep unsupported current reasoning effort for constrained models", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: ["max"],
+      currentReasoningEffort: "xhigh",
+      currentEffortLookupReady: true,
+    })).toBe(false);
+  });
+
+  it("keeps supported current reasoning effort for constrained models", () => {
+    expect(canKeepCurrentReasoningEffortForModel({
+      supportedReasoningEfforts: ["xhigh"],
+      currentReasoningEffort: "xhigh",
+      currentEffortLookupReady: true,
+    })).toBe(true);
   });
 });

@@ -1,7 +1,19 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getSessionActivityTime, getSessionRunState, type Session, type Task, type BatchAction } from "../api";
+import {
+  fetchModels,
+  fetchSessionModelState,
+  getSessionActivityTime,
+  getSessionRunState,
+  patchSessionModel,
+  type BatchAction,
+  type ModelInfo,
+  type ReasoningEffort,
+  type Session,
+  type SessionModelState,
+  type Task,
+} from "../api";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, Square, SquareCheckBig, RotateCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -12,6 +24,87 @@ function formatSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
+  { value: "xhigh", label: "Extra High" },
+];
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function formatReasoningEffortLabel(effort?: string): string | undefined {
+  if (!effort) return undefined;
+  return REASONING_EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? effort;
+}
+
+export function formatSessionModelLabel(
+  state?: SessionModelState,
+  models?: readonly ModelInfo[] | null,
+): string {
+  if (!state) return "Loading...";
+  if (!state.model) return "Unknown";
+  const modelLabel = models?.find((model) => model.id === state.model)?.name ?? state.model;
+  const effortLabel = formatReasoningEffortLabel(state.reasoningEffort);
+  return effortLabel ? `${modelLabel} · ${effortLabel}` : modelLabel;
+}
+
+function getSessionModelSourceLabel(source?: SessionModelState["source"]): string {
+  switch (source) {
+    case "live": return "Live session";
+    case "events": return "Saved in session history";
+    case "unknown": return "No saved model state";
+    default: return "Checking session model";
+  }
+}
+
+function getAvailableModels(models: readonly ModelInfo[] | null): ModelInfo[] {
+  return [...(models ?? [])]
+    .filter((model) => !model.policy || model.policy.state !== "disabled")
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function isReasoningEffort(value: string): value is ReasoningEffort {
+  return REASONING_EFFORT_OPTIONS.some((option) => option.value === value);
+}
+
+function getPreferredReasoningEffort(model?: ModelInfo): ReasoningEffort | undefined {
+  const supported = model?.supportedReasoningEfforts;
+  if (!supported || supported.length === 0) return undefined;
+  if (model?.defaultReasoningEffort && supported.includes(model.defaultReasoningEffort)) {
+    return model.defaultReasoningEffort;
+  }
+  return supported[0];
+}
+
+export function canKeepCurrentReasoningEffortForModel({
+  supportedReasoningEfforts,
+  currentReasoningEffort,
+  currentEffortLookupReady,
+}: {
+  supportedReasoningEfforts?: readonly ReasoningEffort[];
+  currentReasoningEffort?: string;
+  currentEffortLookupReady: boolean;
+}): boolean {
+  if (!supportedReasoningEfforts) return true;
+  if (!currentEffortLookupReady) return false;
+  if (supportedReasoningEfforts.length === 0) {
+    return !currentReasoningEffort;
+  }
+  if (!currentReasoningEffort) return true;
+  return isReasoningEffort(currentReasoningEffort)
+    && supportedReasoningEfforts.includes(currentReasoningEffort);
+}
+
+interface SessionModelLookup {
+  data?: SessionModelState;
+  loading: boolean;
+  error?: string;
 }
 
 const styles = {
@@ -195,6 +288,16 @@ export default function SessionList({
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const anchorRef = useRef<string | null>(null);
+  const [sessionModelLookups, setSessionModelLookups] = useState<Record<string, SessionModelLookup>>({});
+  const [modelOptions, setModelOptions] = useState<ModelInfo[] | null>(null);
+  const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
+  const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
+  const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
+  const [modelDraft, setModelDraft] = useState("");
+  const [reasoningDraft, setReasoningDraft] = useState<"" | ReasoningEffort>("");
+  const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
+  const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
+  const sessionModelLookupVersionRef = useRef<Record<string, number>>({});
 
   const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
 
@@ -223,6 +326,39 @@ export default function SessionList({
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
+  const ctxModelLookup = ctxSession ? sessionModelLookups[ctxSession.sessionId] : undefined;
+  const modelDialogSession = modelDialogSessionId
+    ? sessions.find((session) => session.sessionId === modelDialogSessionId)
+    : null;
+  const modelDialogLookup = modelDialogSessionId ? sessionModelLookups[modelDialogSessionId] : undefined;
+  const availableModels = getAvailableModels(modelOptions);
+  const selectedDialogModel = modelOptions?.find((model) => model.id === modelDraft);
+  const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;
+  const currentReasoningEffort = modelDialogLookup?.data?.reasoningEffort;
+  const currentEffortLookupReady = !!modelDialogLookup
+    && !modelDialogLookup.loading
+    && !modelDialogLookup.error
+    && !!modelDialogLookup.data;
+  const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
+  const reasoningOptions = supportedReasoningEfforts
+    ? REASONING_EFFORT_OPTIONS.filter((option) => supportedReasoningEfforts.includes(option.value))
+    : REASONING_EFFORT_OPTIONS;
+  const canKeepCurrentReasoningEffort = canKeepCurrentReasoningEffortForModel({
+    supportedReasoningEfforts,
+    currentReasoningEffort,
+    currentEffortLookupReady,
+  });
+  const reasoningDraftCanBeSubmitted =
+    !!reasoningDraft
+    && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
+  const showDraftModelOption = !!modelDraft && !availableModels.some((model) => model.id === modelDraft);
+  const canSaveModelSwitch =
+    !!modelDialogSessionId
+    && !!modelDraft.trim()
+    && !modelSwitchSaving
+    && !modelOptionsLoading
+    && !modelDialogSession?.busy
+    && (canKeepCurrentReasoningEffort || reasoningDraftCanBeSubmitted || !supportedReasoningEfforts);
   const unreadCount = activeSessions.filter(
     (session) => !session.archived && isUnread?.(session.sessionId, getSessionActivityTime(session)),
   ).length;
@@ -245,6 +381,74 @@ export default function SessionList({
     });
   }, [activeSessions, selectMode, sessions]);
 
+  useEffect(() => {
+    if (!ctxSession) return;
+    const sessionId = ctxSession.sessionId;
+    const requestVersion = (sessionModelLookupVersionRef.current[sessionId] ?? 0) + 1;
+    sessionModelLookupVersionRef.current[sessionId] = requestVersion;
+    setSessionModelLookups((prev) => ({
+      ...prev,
+      [sessionId]: { data: prev[sessionId]?.data, loading: true },
+    }));
+
+    void fetchSessionModelState(sessionId)
+      .then((data) => {
+        if (sessionModelLookupVersionRef.current[sessionId] !== requestVersion) return;
+        setSessionModelLookups((prev) => ({
+          ...prev,
+          [sessionId]: { data, loading: false },
+        }));
+      })
+      .catch((error: unknown) => {
+        if (sessionModelLookupVersionRef.current[sessionId] !== requestVersion) return;
+        setSessionModelLookups((prev) => ({
+          ...prev,
+          [sessionId]: {
+            data: prev[sessionId]?.data,
+            loading: false,
+            error: getErrorMessage(error),
+          },
+        }));
+      });
+  }, [ctxSession?.sessionId]);
+
+  const loadModelOptions = useCallback(async () => {
+    setModelOptionsLoading(true);
+    setModelOptionsError(null);
+    try {
+      const models = await fetchModels();
+      setModelOptions(models);
+    } catch (error) {
+      setModelOptionsError(getErrorMessage(error));
+    } finally {
+      setModelOptionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!modelDialogSessionId || modelOptions || modelOptionsLoading || modelOptionsError) return;
+    void loadModelOptions();
+  }, [loadModelOptions, modelDialogSessionId, modelOptions, modelOptionsError, modelOptionsLoading]);
+
+  useEffect(() => {
+    if (!supportedReasoningEfforts) {
+      return;
+    }
+    if (reasoningDraft && !supportedReasoningEfforts.includes(reasoningDraft)) {
+      setReasoningDraft(preferredReasoningEffort ?? "");
+      return;
+    }
+    if (!reasoningDraft && !canKeepCurrentReasoningEffort) {
+      setReasoningDraft(preferredReasoningEffort ?? "");
+    }
+  }, [
+    canKeepCurrentReasoningEffort,
+    currentReasoningEffort,
+    preferredReasoningEffort,
+    reasoningDraft,
+    supportedReasoningEfforts,
+  ]);
+
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -259,6 +463,70 @@ export default function SessionList({
     setSelectedIds(new Set());
     anchorRef.current = null;
   }, []);
+
+  const openModelDialog = useCallback((sessionId: string) => {
+    const currentState = sessionModelLookups[sessionId]?.data;
+    setModelDialogSessionId(sessionId);
+    setModelDraft(currentState?.model ?? "");
+    setReasoningDraft("");
+    setModelSwitchError(null);
+    setModelOptionsError(null);
+    closeMenu();
+  }, [closeMenu, sessionModelLookups]);
+
+  const closeModelDialog = useCallback(() => {
+    if (modelSwitchSaving) return;
+    setModelDialogSessionId(null);
+    setModelSwitchError(null);
+  }, [modelSwitchSaving]);
+
+  const handleSaveModelSwitch = useCallback(async () => {
+    if (!modelDialogSessionId) return;
+    const model = modelDraft.trim();
+    if (!model) return;
+
+    setModelSwitchSaving(true);
+    setModelSwitchError(null);
+    try {
+      const submittedReasoningEffort = reasoningDraftCanBeSubmitted
+        ? reasoningDraft
+        : !canKeepCurrentReasoningEffort
+          ? preferredReasoningEffort
+        : undefined;
+      const result = await patchSessionModel(
+        modelDialogSessionId,
+        model,
+        submittedReasoningEffort,
+      );
+      const nextReasoningEffort = result.reasoningEffort
+        ?? (submittedReasoningEffort || modelDialogLookup?.data?.reasoningEffort);
+      const nextState: SessionModelState = {
+        model: result.modelId ?? result.model,
+        ...(nextReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
+        source: "live",
+      };
+      sessionModelLookupVersionRef.current[modelDialogSessionId] =
+        (sessionModelLookupVersionRef.current[modelDialogSessionId] ?? 0) + 1;
+      setSessionModelLookups((prev) => ({
+        ...prev,
+        [modelDialogSessionId]: { data: nextState, loading: false },
+      }));
+      setModelDialogSessionId(null);
+    } catch (error) {
+      setModelSwitchError(getErrorMessage(error));
+    } finally {
+      setModelSwitchSaving(false);
+    }
+  }, [
+    modelDialogLookup?.data?.reasoningEffort,
+    modelDialogSessionId,
+    modelDraft,
+    reasoningDraft,
+    reasoningDraftCanBeSubmitted,
+    canKeepCurrentReasoningEffort,
+    preferredReasoningEffort,
+    supportedReasoningEfforts,
+  ]);
 
   const handleBulkAction = useCallback((action: BatchAction, ids: string[]) => {
     onBulkAction?.(action, ids);
@@ -531,6 +799,39 @@ export default function SessionList({
               }}
             />
           )}
+          {ctxSession && (
+            <>
+              <CtxDivider />
+              <div className="px-3 py-2 flex items-start gap-2 text-xs">
+                <Bot size={14} className="shrink-0 text-text-muted mt-0.5" />
+                <div className="min-w-0">
+                  <div className="text-text-faint">Session model</div>
+                  <div
+                    className={`truncate ${ctxModelLookup?.error ? "text-error" : "text-text-secondary"}`}
+                    title={ctxModelLookup?.error ?? undefined}
+                  >
+                    {ctxModelLookup?.error
+                      ? "Unable to load model"
+                      : formatSessionModelLabel(ctxModelLookup?.data, modelOptions)}
+                  </div>
+                  <div className="text-[10px] text-text-faint">
+                    {ctxModelLookup?.loading && ctxModelLookup.data
+                      ? "Refreshing..."
+                      : getSessionModelSourceLabel(ctxModelLookup?.data?.source)}
+                  </div>
+                </div>
+              </div>
+              <CtxItem
+                icon={<Bot size={14} />}
+                label="Change Model..."
+                disabled={ctxSession.busy}
+                title={ctxSession.busy ? "This session is busy" : "Change only this session's model"}
+                onClick={() => {
+                  openModelDialog(ctxSession.sessionId);
+                }}
+              />
+            </>
+          )}
           {(hasEditSection || canDeleteFromMenu) && <CtxDivider />}
           {canDuplicateFromMenu && (
             <CtxItem
@@ -612,6 +913,140 @@ export default function SessionList({
             </>
           )}
         </ContextMenu>
+      )}
+
+      {modelDialogSessionId && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Change session model"
+          onClick={closeModelDialog}
+        >
+          <div
+            className="w-full max-w-md bg-bg-secondary border border-border rounded-lg shadow-xl p-4 space-y-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div>
+              <div className="text-sm font-semibold text-text-primary">Change Session Model</div>
+              <div className="text-xs text-text-muted mt-1">
+                Changes apply only to this session.
+                {modelDialogSession?.summary ? ` ${modelDialogSession.summary}` : ""}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs">
+              <div className="text-text-faint">Current model</div>
+              <div className="mt-0.5 text-text-secondary truncate">
+                {modelDialogLookup?.error
+                  ? "Unable to load current model"
+                  : formatSessionModelLabel(modelDialogLookup?.data, modelOptions)}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-text-secondary" htmlFor="session-model-select">
+                Model
+              </label>
+              {modelOptionsError ? (
+                <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                  <div>Failed to load models: {modelOptionsError}</div>
+                  <button
+                    type="button"
+                    className="mt-2 text-xs text-error underline"
+                    onClick={() => {
+                      void loadModelOptions();
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <select
+                  id="session-model-select"
+                  value={modelDraft}
+                  onChange={(event) => setModelDraft(event.target.value)}
+                  disabled={modelOptionsLoading}
+                  className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none disabled:opacity-50"
+                >
+                  <option value="" disabled>
+                    {modelOptionsLoading ? "Loading models..." : "Select a model"}
+                  </option>
+                  {showDraftModelOption && (
+                    <option value={modelDraft}>{modelDraft}</option>
+                  )}
+                  {availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}{model.billing && model.billing.multiplier !== 1 ? ` (${model.billing.multiplier}x)` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {modelDraft && (
+                <div className="text-[11px] text-text-faint truncate">
+                  Model ID: <code className="text-text-muted">{modelDraft}</code>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-text-secondary" htmlFor="session-reasoning-select">
+                Reasoning effort
+              </label>
+              <select
+                id="session-reasoning-select"
+                value={reasoningDraft}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setReasoningDraft(next && isReasoningEffort(next) ? next : "");
+                }}
+                className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none"
+              >
+                <option value="" disabled={!canKeepCurrentReasoningEffort}>
+                  {canKeepCurrentReasoningEffort ? "Keep current" : "Select a supported effort"}
+                </option>
+                {reasoningOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <div className="text-[11px] text-text-faint">
+                Current: {formatReasoningEffortLabel(modelDialogLookup?.data?.reasoningEffort) ?? "unknown"}
+                {!canKeepCurrentReasoningEffort && " (not supported by selected model)"}
+              </div>
+            </div>
+
+            {modelSwitchError && (
+              <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                {modelSwitchError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 text-xs rounded-md border border-border text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+                onClick={closeModelDialog}
+                disabled={modelSwitchSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 text-xs rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 flex items-center gap-1.5"
+                onClick={() => {
+                  void handleSaveModelSwitch();
+                }}
+                disabled={!canSaveModelSwitch}
+                title={modelDialogSession?.busy ? "This session is busy" : undefined}
+              >
+                {modelSwitchSaving && <Loader2 size={12} className="animate-spin" />}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Task picker dialog (global variant) */}
