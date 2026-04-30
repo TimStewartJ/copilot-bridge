@@ -448,6 +448,34 @@ describe("Session routes (mocked)", () => {
     ]);
   });
 
+  it("GET /api/dashboard treats tasks with input-waiting sessions as unread", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      {
+        sessionId: "ask-1",
+        summary: "Awaiting decision",
+        lastVisibleActivityAt: "2026-04-19T01:00:00.000Z",
+      } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockImplementation((sessionId: string) => (
+      sessionId === "ask-1" ? "busy" : "idle"
+    ));
+    ctx.sessionManager.getPendingUserInputCount = vi.fn().mockImplementation((sessionId: string) => (
+      sessionId === "ask-1" ? 1 : 0
+    ));
+    const task = ctx.taskStore.createTask("Needs user choice");
+    ctx.taskStore.linkSession(task.id, "ask-1");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastActiveTask).toEqual(expect.objectContaining({
+      task: expect.objectContaining({ id: task.id }),
+      hasUnread: true,
+      hasBusySession: true,
+    }));
+    expect(res.body.unreadSessions).toEqual([]);
+  });
+
   it("GET /api/dashboard returns derived task momentum queues", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));
@@ -1270,6 +1298,37 @@ describe("Session manager routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ runState: "stalled", busy: true });
+  });
+
+  it("GET /api/sessions/:id/messages includes visible activity metadata", async () => {
+    ctx.sessionManager.getSessionMessages = vi.fn().mockResolvedValue({
+      messages: [],
+      total: 0,
+      hasMore: false,
+      lastVisibleActivityAt: "2026-04-29T12:00:00.000Z",
+    });
+
+    const res = await request(app).get("/api/sessions/test-id/messages");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastVisibleActivityAt).toBe("2026-04-29T12:00:00.000Z");
+  });
+
+  it("GET /api/sessions/:id/messages-fast includes visible activity metadata", async () => {
+    ctx.sessionManager.readMessagesFromDisk = vi.fn().mockResolvedValue({
+      messages: [],
+      total: 0,
+      hasMore: false,
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+    });
+
+    const res = await request(app).get("/api/sessions/test-id/messages-fast");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      warm: false,
+    });
   });
 
   it("POST /api/sessions/:id/duplicate duplicates a session", async () => {
