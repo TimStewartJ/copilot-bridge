@@ -27,7 +27,7 @@ export interface ToolCallForest {
 
 export type ChatRenderSegment =
   | { type: "message"; entry: ChatMessage }
-  | { type: "tool-segment"; entries: ChatToolEntry[] }
+  | { type: "tool-segment"; entries: ChatToolEntry[]; turnId?: string }
   | { type: "visual-segment"; entry: ChatVisualEntry };
 
 export function buildToolCallForest(toolCalls: ToolCall[]): ToolCallForest {
@@ -212,6 +212,9 @@ export function buildRenderableSegmentRoots(
 
 export function segmentChatEntries(entries: ChatEntry[]): ChatRenderSegment[] {
   const segments: ChatRenderSegment[] = [];
+  const toolEntriesByTurnId = new Map<string, ChatToolEntry[]>();
+  const suppressedTurnIds = new Set<string>();
+  const renderedTurnIds = new Set<string>();
   let currentToolEntries: ChatToolEntry[] = [];
 
   const flushToolSegment = () => {
@@ -221,7 +224,32 @@ export function segmentChatEntries(entries: ChatEntry[]): ChatRenderSegment[] {
   };
 
   for (const entry of entries) {
+    if (entry.type !== "tool" || !entry.toolCall || !entry.turnId) continue;
+    const turnEntries = toolEntriesByTurnId.get(entry.turnId);
+    if (turnEntries) {
+      turnEntries.push(entry);
+    } else {
+      toolEntriesByTurnId.set(entry.turnId, [entry]);
+    }
+  }
+
+  mergeRootSubAgentTurnsWithDescendantTurns(toolEntriesByTurnId, suppressedTurnIds);
+
+  // TODO: Replace inferred turn/contiguous grouping with SDK-level run ids once they are available.
+  for (const entry of entries) {
     if (entry.type === "tool" && entry.toolCall) {
+      if (entry.turnId) {
+        flushToolSegment();
+        if (!suppressedTurnIds.has(entry.turnId) && !renderedTurnIds.has(entry.turnId)) {
+          renderedTurnIds.add(entry.turnId);
+          segments.push({
+            type: "tool-segment",
+            turnId: entry.turnId,
+            entries: toolEntriesByTurnId.get(entry.turnId) ?? [entry],
+          });
+        }
+        continue;
+      }
       currentToolEntries.push(entry);
       continue;
     }
@@ -238,6 +266,61 @@ export function segmentChatEntries(entries: ChatEntry[]): ChatRenderSegment[] {
 
   flushToolSegment();
   return segments;
+}
+
+function mergeRootSubAgentTurnsWithDescendantTurns(
+  toolEntriesByTurnId: Map<string, ChatToolEntry[]>,
+  suppressedTurnIds: Set<string>,
+): void {
+  const turnIds = [...toolEntriesByTurnId.keys()];
+  const toolCallById = new Map<string, ToolCall>();
+  for (const entries of toolEntriesByTurnId.values()) {
+    for (const entry of entries) {
+      toolCallById.set(entry.toolCall.toolCallId, entry.toolCall);
+    }
+  }
+
+  for (const [turnIndex, turnId] of turnIds.entries()) {
+    if (suppressedTurnIds.has(turnId)) continue;
+    const entries = toolEntriesByTurnId.get(turnId) ?? [];
+    if (!isRootSubAgentOnlyTurn(entries)) continue;
+
+    const rootIds = new Set(entries.map((entry) => entry.toolCall.toolCallId));
+    const descendantTurnIds = turnIds.slice(turnIndex + 1).filter((candidateTurnId) => {
+      if (suppressedTurnIds.has(candidateTurnId)) return false;
+      const candidateEntries = toolEntriesByTurnId.get(candidateTurnId) ?? [];
+      return candidateEntries.some((entry) =>
+        entry.toolCall.parentToolCallId
+        && rootIds.has(getRootToolCallId(entry.toolCall, toolCallById)));
+    });
+    if (descendantTurnIds.length === 0) continue;
+
+    const mergedEntries = [...entries];
+    for (const descendantTurnId of descendantTurnIds) {
+      mergedEntries.push(...(toolEntriesByTurnId.get(descendantTurnId) ?? []));
+      suppressedTurnIds.add(descendantTurnId);
+    }
+    toolEntriesByTurnId.set(turnId, mergedEntries);
+  }
+}
+
+function isRootSubAgentOnlyTurn(entries: ChatToolEntry[]): boolean {
+  return entries.length > 0 && entries.every((entry) =>
+    entry.toolCall.isSubAgent && !entry.toolCall.parentToolCallId);
+}
+
+function getRootToolCallId(toolCall: ToolCall, toolCallById: ReadonlyMap<string, ToolCall>): string {
+  const seenIds = new Set<string>();
+  let current = toolCall;
+
+  while (current.parentToolCallId && !seenIds.has(current.parentToolCallId)) {
+    seenIds.add(current.parentToolCallId);
+    const parent = toolCallById.get(current.parentToolCallId);
+    if (!parent) return current.parentToolCallId;
+    current = parent;
+  }
+
+  return current.toolCallId;
 }
 
 export function formatToolCallCounts(node: ToolCallTreeNode): string | null {

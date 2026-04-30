@@ -4,6 +4,7 @@ import { installDomShim } from "./test-dom-shim";
 import type { PendingUserInputRequestView } from "./api";
 import type { PendingTool } from "./useSessionStream";
 import {
+  buildSnapshotToolState,
   buildTerminalToolEntries,
   bufferPendingToolPrelude,
   collectTerminalPendingTools,
@@ -135,12 +136,13 @@ afterEach(() => {
 describe("buildTerminalToolEntries", () => {
   it("marks terminal tool rows done on successful turn completion", () => {
     const entries = buildTerminalToolEntries([
-      createPendingTool("tool-1", { progressText: "Finishing up" }),
+      createPendingTool("tool-1", { turnId: "turn-1", progressText: "Finishing up" }),
     ], "done", "2026-04-24T00:00:00.000Z");
 
     expect(entries).toMatchObject([
       {
         type: "tool",
+        turnId: "turn-1",
         liveSource: "event",
         toolCall: {
           toolCallId: "tool-1",
@@ -359,5 +361,181 @@ describe("useSessionStream user input state", () => {
         await waitTick();
       });
     });
+  });
+});
+
+describe("snapshot tool helpers", () => {
+  it("emits current-turn snapshot tools while activeTools drives active state", () => {
+    const state = buildSnapshotToolState({
+      turnId: "turn-1",
+      activeTools: [
+        {
+          toolCallId: "tool-active",
+          name: "bash",
+          progressText: "Running tests",
+        },
+      ],
+      currentTurnTools: [
+        {
+          toolCallId: "tool-done",
+          name: "view",
+          progressText: "Read file",
+          result: "contents",
+          success: true,
+          completedAt: "2026-04-24T00:00:00.000Z",
+          turnId: "turn-1",
+        },
+        {
+          toolCallId: "tool-active",
+          name: "bash",
+          progressText: "Running tests",
+        },
+      ],
+    }, "session-1");
+
+    expect(state.activeTools).toMatchObject([
+      {
+        toolCallId: "tool-active",
+        name: "bash",
+        progressText: "Running tests",
+      },
+    ]);
+    expect(state.currentTurnTools).toMatchObject([
+      {
+        toolCallId: "tool-done",
+        name: "view",
+        progressText: "Read file",
+        result: "contents",
+        success: true,
+        completedAt: "2026-04-24T00:00:00.000Z",
+      },
+      {
+        toolCallId: "tool-active",
+        name: "bash",
+        progressText: "Running tests",
+      },
+    ]);
+    expect(state.toolEntries).toMatchObject([
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        turnId: "turn-1",
+        toolCall: {
+          toolCallId: "tool-done",
+          name: "view",
+          progressText: "Read file",
+          result: "contents",
+          success: true,
+          completedAt: "2026-04-24T00:00:00.000Z",
+        },
+      },
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        turnId: "turn-1",
+        toolCall: {
+          toolCallId: "tool-active",
+          name: "bash",
+          progressText: "Running tests",
+        },
+      },
+    ]);
+  });
+
+  it("deduplicates repeated reconnect snapshot tools by tool call id", () => {
+    const state = buildSnapshotToolState({
+      turnId: "turn-1",
+      currentTurnTools: [
+        {
+          toolCallId: "tool-1",
+          name: "unknown",
+          progressText: "Starting",
+        },
+        {
+          toolCallId: "tool-1",
+          name: "bash",
+          progressText: "Still running",
+          result: "ok",
+          success: true,
+          completedAt: "2026-04-24T00:00:00.000Z",
+        },
+      ],
+    }, "session-1");
+
+    expect(state.currentTurnTools).toHaveLength(1);
+    expect(state.toolEntries).toHaveLength(1);
+    expect(state.currentTurnTools[0]).toMatchObject({
+      toolCallId: "tool-1",
+      name: "bash",
+      progressText: "Still running",
+      result: "ok",
+      success: true,
+      completedAt: "2026-04-24T00:00:00.000Z",
+    });
+  });
+
+  it("falls back to activeTools for older snapshots without currentTurnTools", () => {
+    const state = buildSnapshotToolState({
+      turnId: "turn-1",
+      activeTools: [
+        {
+          toolCallId: "tool-active",
+          name: "bash",
+          progressText: "Running",
+        },
+      ],
+    }, "session-1");
+
+    expect(state.activeTools).toHaveLength(1);
+    expect(state.currentTurnTools).toMatchObject([
+      {
+        toolCallId: "tool-active",
+        name: "bash",
+        progressText: "Running",
+      },
+    ]);
+    expect(state.toolEntries).toMatchObject([
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        turnId: "turn-1",
+        toolCall: {
+          toolCallId: "tool-active",
+          name: "bash",
+          progressText: "Running",
+        },
+      },
+    ]);
+  });
+
+  it("filters hidden tools from snapshot current-turn entries and active state", () => {
+    const state = buildSnapshotToolState({
+      activeTools: [
+        { toolCallId: "visible-active", name: "bash" },
+        { toolCallId: "intent-active", name: "report_intent" },
+      ],
+      currentTurnTools: [
+        { toolCallId: "intent", name: "report_intent" },
+        { toolCallId: "rename-local", name: "session_rename", args: { sessionId: "session-1" } },
+        { toolCallId: "visible", name: "bash" },
+      ],
+    }, "session-1");
+
+    expect(state.activeTools).toMatchObject([
+      { toolCallId: "visible-active", name: "bash" },
+    ]);
+    expect(state.currentTurnTools).toMatchObject([
+      { toolCallId: "visible", name: "bash" },
+    ]);
+    expect(state.toolEntries).toMatchObject([
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        toolCall: {
+          toolCallId: "visible",
+          name: "bash",
+        },
+      },
+    ]);
   });
 });

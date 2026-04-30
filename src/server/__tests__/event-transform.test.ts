@@ -430,3 +430,113 @@ describe("event-transform tool results", () => {
     ]);
   });
 });
+
+describe("event-transform turn grouping", () => {
+  it("assigns one turn id to assistant and tool entries even when assistant text interleaves", () => {
+    const entries = transformEventsToMessages([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: { content: "Check the repo" },
+      },
+      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:01.000Z", data: {} },
+      {
+        type: "assistant.message",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { content: "I'll inspect it." },
+      },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:03.000Z",
+        data: { toolCallId: "tool-1", toolName: "bash", arguments: { command: "git status" } },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-04-10T10:00:04.000Z",
+        data: { content: "Still checking." },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:05.000Z",
+        data: { toolCallId: "tool-1", success: true, result: { content: "clean" } },
+      },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:06.000Z",
+        data: { toolCallId: "tool-2", toolName: "view", arguments: { path: "src/server/event-transform.ts" } },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:07.000Z",
+        data: { toolCallId: "tool-2", success: true, result: { content: "source" } },
+      },
+      { type: "session.idle", timestamp: "2026-04-10T10:00:08.000Z", data: {} },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:09.000Z",
+        data: { toolCallId: "orphan-tool", toolName: "bash", arguments: { command: "echo late" } },
+      },
+      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:10.000Z", data: {} },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:11.000Z",
+        data: { toolCallId: "tool-3", toolName: "bash", arguments: { command: "echo next" } },
+      },
+    ]);
+
+    expect(entries[0]).not.toHaveProperty("turnId");
+    expect(entries.slice(1, 5)).toMatchObject([
+      { type: "message", role: "assistant", content: "I'll inspect it.", turnId: "turn-1" },
+      { type: "tool", turnId: "turn-1", toolCall: { toolCallId: "tool-1" } },
+      { type: "message", role: "assistant", content: "Still checking.", turnId: "turn-1" },
+      { type: "tool", turnId: "turn-1", toolCall: { toolCallId: "tool-2" } },
+    ]);
+    expect(entries[5]).toMatchObject({ type: "tool", toolCall: { toolCallId: "orphan-tool" } });
+    expect(entries[5]).not.toHaveProperty("turnId");
+    expect(entries[6]).toMatchObject({ type: "tool", turnId: "turn-2", toolCall: { toolCallId: "tool-3" } });
+  });
+
+  it("keeps sub-agent messages hidden without breaking the active turn id", () => {
+    const entries = transformEventsToMessages([
+      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:00.000Z", data: {} },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "agent-tool", toolName: "task", arguments: { prompt: "Investigate" } },
+      },
+      {
+        type: "subagent.started",
+        timestamp: "2026-04-10T10:00:02.000Z",
+        data: { toolCallId: "agent-tool", agentName: "explore", agentDisplayName: "Explore agent" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-04-10T10:00:03.000Z",
+        data: { parentToolCallId: "agent-tool", content: "Agent summary" },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:04.000Z",
+        data: { toolCallId: "agent-tool", success: true, result: { content: "raw result" } },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-04-10T10:00:05.000Z",
+        data: { content: "Done." },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        type: "tool",
+        turnId: "turn-1",
+        toolCall: {
+          toolCallId: "agent-tool",
+          name: "🤖 Explore agent",
+          result: "Agent summary",
+        },
+      },
+      { type: "message", role: "assistant", content: "Done.", turnId: "turn-1" },
+    ]);
+  });
+});

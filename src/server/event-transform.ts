@@ -22,6 +22,7 @@ export interface TransformedVisual {
 export interface TransformedEntry {
   id: string;
   type: "message" | "tool" | "visual";
+  turnId?: string;
   // Message fields (when type === "message")
   role?: string;
   content?: string;
@@ -169,6 +170,8 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
 export function transformEventsToMessages(events: any[], sessionId?: string): TransformedEntry[] {
   const entries: TransformedEntry[] = [];
   let idx = 0;
+  let turnIndex = 0;
+  let activeTurnId: string | undefined;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string }>();
@@ -253,7 +256,11 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
   for (const event of events) {
     const data = (event as any).data;
 
-    if (event.type === "user.message") {
+    if (event.type === "assistant.turn_start") {
+      activeTurnId = `turn-${++turnIndex}`;
+    } else if (isTurnTerminalEvent(event)) {
+      activeTurnId = undefined;
+    } else if (event.type === "user.message") {
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
       const blobAttachments = data.attachments
@@ -281,6 +288,7 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
           role: "assistant",
           content,
           timestamp: data.timestamp ?? (event as any).timestamp,
+          ...(activeTurnId ? { turnId: activeTurnId } : {}),
         });
       }
     } else if (event.type === "tool.execution_start") {
@@ -293,6 +301,7 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
       entries.push({
         id: `entry-${idx++}`,
         type: "tool",
+        ...(activeTurnId ? { turnId: activeTurnId } : {}),
         toolCall: {
           toolCallId: data.toolCallId,
           name: isSubAgent ? `🤖 ${subAgent!.agentDisplayName ?? subAgent!.agentName ?? "agent"}` : toolName,

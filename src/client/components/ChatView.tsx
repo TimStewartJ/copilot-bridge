@@ -25,8 +25,8 @@ import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
-import ToolCallTree from "./ToolCallTree";
 import VisualArtifactCard from "./VisualArtifactCard";
+import ToolCallNodeGroup from "./ToolCallNodeGroup";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
@@ -377,6 +377,7 @@ export default function ChatView({
     streamingContent,
     intentText,
     activeTools,
+    currentTurnTools,
     isStreaming,
     streamStatus,
     hadVisibleOutput,
@@ -891,12 +892,30 @@ export default function ChatView({
     })),
     [activeTools],
   );
+  const activeToolCallIds = useMemo(
+    () => new Set(activeTools.map((tool) => tool.toolCallId)),
+    [activeTools],
+  );
+  const liveToolCalls = currentTurnTools.length > 0 ? currentTurnTools : activeToolCalls;
+  const liveToolCallIds = useMemo(
+    () => new Set(liveToolCalls.map((tool) => tool.toolCallId)),
+    [liveToolCalls],
+  );
+  const historicalEntries = useMemo(() => {
+    if ((!isStreaming && !creating) || liveToolCallIds.size === 0) return entries;
+    return entries.filter((entry) => (
+      entry.type !== "tool"
+      || !entry.toolCall
+      || !liveToolCallIds.has(entry.toolCall.toolCallId)
+    ));
+  }, [creating, entries, isStreaming, liveToolCallIds]);
   const toolEntries = useMemo(
-    () => entries.flatMap((entry) => entry.type === "tool" && entry.toolCall ? [entry.toolCall] : []),
-    [entries],
+    () => historicalEntries.flatMap((entry) => entry.type === "tool" && entry.toolCall ? [entry.toolCall] : []),
+    [historicalEntries],
   );
   const toolForest = useMemo(() => buildToolCallForest(toolEntries), [toolEntries]);
   const activeToolForest = useMemo(() => buildToolCallForest(activeToolCalls), [activeToolCalls]);
+  const liveToolForest = useMemo(() => buildToolCallForest(liveToolCalls), [liveToolCalls]);
   const activeRootNodes = useMemo(() => getActiveToolCallRoots(activeToolForest.roots), [activeToolForest.roots]);
   const runHeaderState = useMemo(() => deriveLiveRunHeaderState({
     creating,
@@ -914,7 +933,7 @@ export default function ChatView({
     if (!stickToBottomRef.current) return;
     const el = scrollContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [streamingContent, runHeaderState?.phase, isStreaming, creating, pendingUserInputRequests.length]);
+  }, [streamingContent, runHeaderState?.phase, isStreaming, creating, currentTurnTools, pendingUserInputRequests.length]);
 
   // Build pending indicator content (run header + streaming text).
   const pendingContent = useMemo(() => {
@@ -929,6 +948,18 @@ export default function ChatView({
           runHeaderState.title,
           runHeaderState.detail,
         ),
+      );
+    }
+
+    if (liveToolForest.roots.length > 0) {
+      parts.push(
+        <div key="live-tools" className="px-3 md:px-5">
+          <ToolCallNodeGroup
+            nodes={liveToolForest.roots}
+            defaultExpanded={liveToolForest.roots.some((node) => node.children.length > 0)}
+            activeToolCallIds={activeToolCallIds}
+          />
+        </div>,
       );
     }
 
@@ -952,7 +983,7 @@ export default function ChatView({
 
     if (parts.length === 0) return null;
     return <div className="space-y-4 pb-4">{parts}</div>;
-  }, [handleSubmitUserInput, pendingUserInputRequests, runHeaderState, streamingContent]);
+  }, [activeToolCallIds, handleSubmitUserInput, liveToolForest.roots, pendingUserInputRequests, runHeaderState, streamingContent]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
   const runFleetDisabledReason = !hasPlan
@@ -978,24 +1009,24 @@ export default function ChatView({
     );
   }
 
-  /** Render messages in order, but group each contiguous tool block into real parallel root tracks. */
+  /** Render messages in order, but group each tool turn into real parallel root tracks. */
   const renderedEntries = useMemo(() => {
     const result: React.ReactNode[] = [];
-    const segments = segmentChatEntries(entries);
+    const segments = segmentChatEntries(historicalEntries);
 
     segments.forEach((segment, index) => {
       if (segment.type === "tool-segment") {
         const roots = buildRenderableSegmentRoots(segment.entries, toolForest);
-        const segmentKey = segment.entries[0]?.id ?? `tool-segment-${index}`;
+        if (roots.length === 0) return;
+        const segmentKey = segment.turnId
+          ? `tool-turn-${segment.turnId}`
+          : segment.entries[0]?.id ?? `tool-segment-${index}`;
         result.push(
-          <div key={segmentKey} className="px-3 md:px-5 pt-2 space-y-1">
-            {roots.map((node) => (
-              <ToolCallTree
-                key={node.toolCall.toolCallId}
-                node={node}
-                defaultExpanded={node.children.length > 0}
-              />
-            ))}
+          <div key={segmentKey} className="px-3 md:px-5 pt-2">
+            <ToolCallNodeGroup
+              nodes={roots}
+              defaultExpanded={roots.some((node) => node.children.length > 0)}
+            />
           </div>,
         );
         return;
@@ -1020,7 +1051,7 @@ export default function ChatView({
     });
 
     return result;
-  }, [entries, toolForest]);
+  }, [historicalEntries, toolForest]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

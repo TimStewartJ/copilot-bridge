@@ -157,6 +157,7 @@ export type Attachment = BlobAttachment | UploadedAttachment | FileRefAttachment
 
 export interface ChatMessage {
   id?: string;
+  turnId?: string;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
@@ -168,6 +169,7 @@ export interface ChatMessage {
 export interface ChatToolEntry {
   id?: string;
   type: "tool";
+  turnId?: string;
   toolCall: ToolCall;
   liveSource?: "snapshot" | "event";
 }

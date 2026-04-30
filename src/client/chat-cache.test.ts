@@ -29,14 +29,19 @@ function createUserMessage(id: string, content = id): ChatEntry {
   };
 }
 
-function createToolEntry(toolCallId: string, liveSource?: "snapshot" | "event"): ChatEntry {
+function createToolEntry(
+  toolCallId: string,
+  liveSource?: "snapshot" | "event",
+  partial: Partial<ToolCall> = {},
+): ChatEntry {
   return {
     id: `tool-${toolCallId}`,
     type: "tool",
     ...(liveSource ? { liveSource } : {}),
     toolCall: {
       toolCallId,
-      name: "view",
+      name: partial.name ?? "view",
+      ...partial,
     },
   };
 }
@@ -402,6 +407,68 @@ describe("appendLiveEntries", () => {
       toolCall: {
         toolCallId: "tool-1",
         progressText: "Still running",
+      },
+    });
+  });
+
+  it("merges reconnect snapshots for subagent roots and children without duplicating rows", () => {
+    const previousEntries = [
+      createToolEntry("agent-1", undefined, {
+        name: "🤖 Explore agent",
+        isSubAgent: true,
+        startedAt: "2026-04-22T20:00:00.000Z",
+      }),
+      createToolEntry("child-1", undefined, {
+        name: "bash",
+        parentToolCallId: "agent-1",
+        startedAt: "2026-04-22T20:00:01.000Z",
+      }),
+    ];
+
+    const merged = appendLiveEntries(previousEntries, [
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        toolCall: {
+          toolCallId: "agent-1",
+          name: "🤖 Explore agent",
+          isSubAgent: true,
+          progressText: "Wrapping up",
+        },
+      },
+      {
+        type: "tool",
+        liveSource: "snapshot",
+        toolCall: {
+          toolCallId: "child-1",
+          name: "bash",
+          parentToolCallId: "agent-1",
+          result: "ok",
+          success: true,
+          completedAt: "2026-04-22T20:00:05.000Z",
+        },
+      },
+    ] satisfies ChatEntry[]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({
+      id: "tool-agent-1",
+      type: "tool",
+      liveSource: "snapshot",
+      toolCall: {
+        toolCallId: "agent-1",
+        progressText: "Wrapping up",
+      },
+    });
+    expect(merged[1]).toMatchObject({
+      id: "tool-child-1",
+      type: "tool",
+      liveSource: "snapshot",
+      toolCall: {
+        toolCallId: "child-1",
+        parentToolCallId: "agent-1",
+        result: "ok",
+        success: true,
       },
     });
   });
