@@ -23,6 +23,7 @@ import {
   extractCommandFailureLogWriteError,
   writeValidationCommandLog,
 } from "./validation-command-log.js";
+import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import type { AppContext } from "./app-context.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import type express from "express";
@@ -944,17 +945,17 @@ function renderCapturedCommandOutput(label: string, capture: CapturedCommandOutp
 async function run(
   cmd: string,
   cwd: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; isolateRuntimeEnv?: boolean } = {},
 ): Promise<{ ok: boolean; output: string }> {
   // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
   // resolve the correct Node binary (v22+ required for node:sqlite) instead of
   // whatever older `node` happens to be first on the system PATH.
   const nodeDir = dirname(process.execPath);
   const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-  const env = {
-    ...process.env,
-    PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
-  };
+  const validationEnv = options.isolateRuntimeEnv
+    ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-staging-validation-" })
+    : undefined;
+  const env = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
   const startedAt = Date.now();
 
   return await new Promise((resolve) => {
@@ -969,6 +970,7 @@ async function run(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      validationEnv?.cleanup();
 
       const stdoutOutput = renderCapturedCommandOutput("stdout", stdout);
       const stderrOutput = renderCapturedCommandOutput("stderr", stderr);

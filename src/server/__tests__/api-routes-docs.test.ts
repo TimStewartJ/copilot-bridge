@@ -1,0 +1,413 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
+import {
+  createCopilotUsageTestHome,
+  createMockSessionManager,
+  createMockTranscriptionService,
+  createRestartRuntimePaths,
+  createTestApp,
+  createWavBuffer,
+  eventually,
+  get,
+  installApiRouteTestHooks,
+  join,
+  makeTestDir,
+  mkdirSync,
+  providers,
+  publishOutboundAttachment,
+  RESTART_PENDING_MESSAGE,
+  request,
+  scheduler,
+  UserInputBrokerError,
+  writeCopilotUsageEvents,
+  writeRawCopilotUsageEvents,
+  writeFileSync,
+  writeRestartState,
+} from "./api-routes-test-helpers.js";
+
+let app: ApiRouteTestState["app"];
+let ctx: ApiRouteTestState["ctx"];
+let db: ApiRouteTestState["db"];
+
+installApiRouteTestHooks((state) => {
+  ({ app, ctx, db } = state);
+});
+
+describe("Tag MCP server routes", () => {
+  let tagId: string;
+
+  beforeEach(async () => {
+    const tag = (await request(app).post("/api/tags").send({ name: "mcp-test" })).body.tag;
+    tagId = tag.id;
+  });
+
+  it("GET /api/tags/:id/mcp returns empty servers initially", async () => {
+    const res = await request(app).get(`/api/tags/${tagId}/mcp`);
+    expect(res.status).toBe(200);
+    expect(res.body.servers).toEqual(expect.any(Object));
+  });
+
+  it("PUT /api/tags/:id/mcp/:serverName sets an MCP server", async () => {
+    const res = await request(app)
+      .put(`/api/tags/${tagId}/mcp/test-server`)
+      .send({ command: "echo", args: ["hello"] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("PUT /api/tags/:id/mcp/:serverName stores remote MCP server configs", async () => {
+    const remoteConfig = {
+      type: "sse",
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer tag-token" },
+      tools: ["search"],
+    };
+
+    const put = await request(app)
+      .put(`/api/tags/${tagId}/mcp/remote-server`)
+      .send(remoteConfig);
+
+    expect(put.status).toBe(200);
+
+    const get = await request(app).get(`/api/tags/${tagId}/mcp`);
+    expect(get.body.servers).toEqual([
+      {
+        serverName: "remote-server",
+        config: remoteConfig,
+      },
+    ]);
+  });
+
+  it("DELETE /api/tags/:id/mcp/:serverName removes an MCP server", async () => {
+    await request(app)
+      .put(`/api/tags/${tagId}/mcp/to-delete`)
+      .send({ command: "echo" });
+
+    const res = await request(app).delete(`/api/tags/${tagId}/mcp/to-delete`);
+    expect(res.status).toBe(200);
+
+    const get = await request(app).get(`/api/tags/${tagId}/mcp`);
+    expect(get.body.servers["to-delete"]).toBeUndefined();
+  });
+});
+
+describe("Task group tag routes", () => {
+  it("PUT /api/task-groups/:id/tags assigns tags to a group", async () => {
+    const group = (await request(app).post("/api/task-groups").send({ name: "Tagged Group" })).body.group;
+    const tag = (await request(app).post("/api/tags").send({ name: "group-tag" })).body.tag;
+
+    const res = await request(app)
+      .put(`/api/task-groups/${group.id}/tags`)
+      .send({ tagIds: [tag.id] });
+    expect(res.status).toBe(200);
+
+    const list = await request(app).get("/api/task-groups");
+    const found = list.body.groups.find((g: any) => g.id === group.id);
+    expect(found.tags).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "group-tag" })]),
+    );
+  });
+});
+
+describe("Docs routes", () => {
+  it("GET /api/docs/tree returns empty tree initially", async () => {
+    const res = await request(app).get("/api/docs/tree");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("tree");
+    expect(res.body).toHaveProperty("hasRootIndex");
+  });
+
+  it("PUT /api/docs/pages writes a page", async () => {
+    const res = await request(app)
+      .put("/api/docs/pages/test-page")
+      .send({ content: "# Test Page\n\nHello world" });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.path).toBe("test-page");
+  });
+
+  it("PUT /api/docs/pages allows tagged pages without a description", async () => {
+    const res = await request(app)
+      .put("/api/docs/pages/tagged-page")
+      .send({
+        content: `---
+title: Tagged page
+tags:
+  - deploy
+---
+
+# Tagged page
+`,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(ctx.docsStore!.readPage("tagged-page")?.frontmatter.tags).toEqual(["deploy"]);
+    expect(ctx.docsStore!.readPage("tagged-page")?.frontmatter.description).toBeUndefined();
+  });
+
+  it("GET /api/docs/pages reads a written page", async () => {
+    await request(app)
+      .put("/api/docs/pages/read-me")
+      .send({ content: "# Read Me\n\nContent here" });
+
+    const res = await request(app).get("/api/docs/pages/read-me");
+    expect(res.status).toBe(200);
+    expect(res.body.body).toContain("Content here");
+    expect(res.body.title).toBe("read-me");
+    expect(res.body.isDbItem).toBe(false);
+  });
+
+  it("GET /api/docs/pages returns 404 for missing page", async () => {
+    const res = await request(app).get("/api/docs/pages/nonexistent");
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE /api/docs/pages deletes a page", async () => {
+    await request(app)
+      .put("/api/docs/pages/to-delete")
+      .send({ content: "# Delete Me" });
+
+    const res = await request(app).delete("/api/docs/pages/to-delete");
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(true);
+
+    const get = await request(app).get("/api/docs/pages/to-delete");
+    expect(get.status).toBe(404);
+  });
+
+  it("PUT /api/docs/pages overwrites an existing page", async () => {
+    // Write a page, then verify it can be read back
+    const write = await request(app)
+      .put("/api/docs/pages/overwrite-me")
+      .send({ content: "# First Version" });
+    expect(write.status).toBe(200);
+
+    const read = await request(app).get("/api/docs/pages/overwrite-me");
+    expect(read.status).toBe(200);
+    expect(read.body.body).toContain("First Version");
+  });
+
+  it("GET /api/docs/tree reflects created pages", async () => {
+    await request(app)
+      .put("/api/docs/pages/notes/first")
+      .send({ content: "# First Note" });
+
+    const res = await request(app).get("/api/docs/tree");
+    expect(res.status).toBe(200);
+    const tree = res.body.tree;
+    expect(tree.length).toBeGreaterThan(0);
+  });
+
+  it("GET /api/docs/search finds indexed pages", async () => {
+    await request(app)
+      .put("/api/docs/pages/searchable")
+      .send({ content: "# Unique Keyword\n\nThis page has xylophone content" });
+
+    const res = await request(app).get("/api/docs/search?q=xylophone");
+    expect(res.status).toBe(200);
+    expect(res.body.results.length).toBeGreaterThan(0);
+  });
+
+  it("POST /api/docs/reindex rebuilds the index", async () => {
+    const res = await request(app).post("/api/docs/reindex");
+    expect(res.status).toBe(200);
+    expect(typeof res.body.indexed).toBe("number");
+  });
+
+  it("GET /api/docs/search returns empty for no match", async () => {
+    const res = await request(app).get("/api/docs/search?q=nonexistentterm12345");
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([]);
+  });
+});
+
+describe("Docs DB routes", () => {
+  const folder = "incidents";
+
+  beforeEach(async () => {
+    await request(app)
+      .put(`/api/docs/schema/${folder}`)
+      .send({
+        name: "Incidents",
+        fields: [
+          { name: "severity", type: "select", options: ["sev1", "sev2", "sev3"] },
+          { name: "date", type: "date" },
+          { name: "resolved", type: "boolean" },
+        ],
+      });
+  });
+
+  it("PUT /api/docs/schema creates a collection schema", async () => {
+    const res = await request(app).get(`/api/docs/schema/${folder}`);
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("Incidents");
+    expect(res.body.fields.length).toBe(3);
+    expect(typeof res.body.entryCount).toBe("number");
+  });
+
+  it("POST /api/docs/db creates an entry", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        fields: { title: "March Outage", severity: "sev1", date: "2026-03-15" },
+        body: "The database went down.",
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.slug).toBeTruthy();
+  });
+
+  it("POST /api/docs/db normalizes top-level fields into a DB entry", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        title: "Top-level outage",
+        severity: "sev2",
+        body: "Normalized from top-level fields.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const page = ctx.docsStore!.readPage(`${folder}/${res.body.slug}`);
+    expect(page?.frontmatter.title).toBe("Top-level outage");
+    expect(page?.frontmatter.severity).toBe("sev2");
+    expect(page?.body).toBe("Normalized from top-level fields.");
+  });
+
+  it("GET /api/docs/pages marks DB entries", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        fields: { title: "Marked outage", severity: "sev1" },
+        body: "Body content",
+      });
+
+    const res = await request(app).get(`/api/docs/pages/${folder}/${create.body.slug}`);
+    expect(res.status).toBe(200);
+    expect(res.body.isDbItem).toBe(true);
+    expect(res.body.folder).toBe(folder);
+  });
+
+  it("POST /api/docs/db extracts DB fields from body frontmatter when fields are missing", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        body: "---\ntitle: Frontmatter outage\nseverity: sev1\nresolved: false\ncreated: 2026-04-09T00:00:00.000Z\nmodified: 2026-04-09T00:00:00.000Z\n---\n\nRecovered from pasted raw markdown.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const page = ctx.docsStore!.readPage(`${folder}/${res.body.slug}`);
+    expect(page?.frontmatter.title).toBe("Frontmatter outage");
+    expect(page?.frontmatter.severity).toBe("sev1");
+    expect(page?.frontmatter.resolved).toBe(false);
+    expect(page?.body).toBe("Recovered from pasted raw markdown.");
+  });
+
+  it("GET /api/docs/db queries entries", async () => {
+    await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Entry A", severity: "sev1" } });
+    await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Entry B", severity: "sev2" } });
+
+    const res = await request(app).get(`/api/docs/db/${folder}`);
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(2);
+    expect(typeof res.body.total).toBe("number");
+    expect(res.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
+  });
+
+  it("GET /api/docs/db can include markdown bodies", async () => {
+    await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Body entry", severity: "sev1" }, body: "Body text for query results." });
+
+    const res = await request(app).get(`/api/docs/db/${folder}?_includeBody=true`);
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toHaveLength(1);
+    expect(res.body.entries[0].body).toBe("Body text for query results.");
+  });
+
+  it("PATCH /api/docs/db updates an entry", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Patchable", severity: "sev3" } });
+    const slug = create.body.slug;
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ fields: { severity: "sev1" } });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("PATCH /api/docs/db normalizes top-level update fields", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Patch top-level", severity: "sev3" } });
+    const slug = create.body.slug;
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ severity: "sev1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.frontmatter.severity).toBe("sev1");
+  });
+
+  it("PATCH /api/docs/db allows body-only updates", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { title: "Body only patch", severity: "sev3" }, body: "Original body" });
+    const slug = create.body.slug;
+
+    const res = await request(app)
+      .patch(`/api/docs/db/${folder}/${slug}`)
+      .send({ body: "Updated body only" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(ctx.docsStore!.readPage(`${folder}/${slug}`)?.body).toBe("Updated body only");
+
+    const updatedSearch = await request(app).get("/api/docs/search?q=Updated%20body%20only");
+    expect(updatedSearch.status).toBe(200);
+    expect(updatedSearch.body.results.map((r: any) => r.path)).toContain(`${folder}/${slug}`);
+
+    const staleSearch = await request(app).get("/api/docs/search?q=Original%20body");
+    expect(staleSearch.status).toBe(200);
+    expect(staleSearch.body.results.map((r: any) => r.path)).not.toContain(`${folder}/${slug}`);
+  });
+
+  it("POST /api/docs/db validates required title", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ fields: { severity: "sev1" } });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/docs/db returns actionable guidance when no fields can be inferred", async () => {
+    const res = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({ body: "# Just markdown" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("docs_db_add expects");
+    expect(res.body.error).toContain(`folder: "${folder}"`);
+  });
+
+  it("PUT /api/docs/pages rejects DB-folder writes with docs_db_add guidance", async () => {
+    const res = await request(app)
+      .put(`/api/docs/pages/${folder}/manual-write`)
+      .send({ content: "# Raw write" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`Cannot write raw content to DB folder "${folder}"`);
+    expect(res.body.error).toContain("docs_db_add");
+    expect(res.body.error).toContain(`folder: "${folder}"`);
+  });
+});

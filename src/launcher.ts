@@ -22,6 +22,7 @@ import {
   isCommandTimeoutError,
   writeValidationCommandLog,
 } from "./server/validation-command-log.js";
+import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import {
   buildRestartStateWithReleaseFailure,
   clearRestartState,
@@ -161,7 +162,10 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
   // Prepend the launcher's Node v22 directory to PATH so npx/vitest use it
   const nodeDir = dirname(NODE_PATH);
   const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-  const env = { ...process.env, PATH: `${nodeDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
+  const validationEnv = options.isolateRuntimeEnv
+    ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-launcher-validation-" })
+    : undefined;
+  const env = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
   const startedAt = Date.now();
   try {
     const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: timeoutMs, env });
@@ -203,6 +207,8 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
         logWriteError: logResult.error,
       }),
     };
+  } finally {
+    validationEnv?.cleanup();
   }
 }
 

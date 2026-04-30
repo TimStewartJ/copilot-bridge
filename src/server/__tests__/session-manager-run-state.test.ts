@@ -16,13 +16,20 @@ import {
 } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import type { RuntimePaths } from "../runtime-paths.js";
+import { setupTestDb, createTestBus, makeTestRuntimePaths } from "./helpers.js";
 
 describe("SessionManager run state", () => {
-  function createManager(opts: { copilotHome?: string } = {}) {
+  function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths } = {}) {
     const db = setupTestDb();
     const globalBus = createTestBus();
     const eventBusRegistry = createEventBusRegistry();
+    const runtimePaths = opts.runtimePaths ?? makeTestRuntimePaths(
+      "run-state-manager",
+      opts.copilotHome ? { copilotHome: opts.copilotHome } : {},
+    );
+    const copilotHome = opts.copilotHome ?? runtimePaths.copilotHome;
+    configureRestartStateStore(runtimePaths);
     const manager = new SessionManager({
       tools: [],
       globalBus,
@@ -36,7 +43,9 @@ describe("SessionManager run state", () => {
         getSettings: () => ({ mcpServers: {} }),
       } as any,
       config: { sessionMcpServers: {} },
-      copilotHome: opts.copilotHome,
+      clientEnv: runtimePaths.env,
+      copilotHome,
+      runtimePaths,
     }) as any;
 
     return { manager, globalBus, eventBusRegistry };
@@ -97,6 +106,7 @@ describe("SessionManager run state", () => {
   });
 
   afterEach(() => {
+    configureRestartStateStore(undefined);
     vi.useRealTimers();
   });
 
@@ -474,6 +484,62 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-run-superseded")).toBe("idle");
+  });
+
+  it("keeps non-restart work isolated from live launcher restart state", async () => {
+    const liveDataDir = mkdtempSync(join(tmpdir(), "bridge-live-restart-state-"));
+    const liveDocsDir = join(liveDataDir, "docs");
+    try {
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir: liveDataDir,
+        docsDir: liveDocsDir,
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: liveDataDir,
+          BRIDGE_DOCS_DIR: liveDocsDir,
+        },
+      });
+      await writeRestartState(join(liveDataDir, "restart-state.json"), {
+        requestId: "req-live-launcher",
+        phase: "restarting",
+        requestedAt: "2026-04-30T19:20:51.000Z",
+        waitingSessions: 0,
+        launcherHeartbeatAt: "2026-04-30T19:20:51.000Z",
+      });
+      await refreshRestartState();
+      expect(isRestartPending()).toBe(true);
+
+      const { manager } = createManager();
+      const { session, getHandler, getReleaseSend } = makeSession();
+      manager.client = {
+        resumeSession: vi.fn().mockResolvedValue(session),
+      };
+
+      const accepted = manager.startWorkAndWaitForDelivery("session-isolated", "hello");
+      await flushMicrotasks();
+
+      expect(manager.client.resumeSession).toHaveBeenCalledOnce();
+      getHandler()?.({
+        type: "user.message",
+        data: {},
+        timestamp: new Date(Date.now() + 1).toISOString(),
+      });
+      await expect(accepted).resolves.toBeUndefined();
+
+      getReleaseSend()?.();
+      await flushMicrotasks();
+      getHandler()?.({
+        type: "session.idle",
+        data: {},
+        timestamp: new Date(Date.now() + 2).toISOString(),
+      });
+      await flushMicrotasks();
+      expect(manager.getSessionRunState("session-isolated")).toBe("idle");
+    } finally {
+      rmSync(liveDataDir, { recursive: true, force: true });
+    }
   });
 
   it("blocks startWork when persisted restart state advances to cutover after the cache was queued", async () => {
