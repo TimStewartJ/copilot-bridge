@@ -2,7 +2,7 @@
 // Registers node-cron jobs, handles triggering, missed-run catch-up
 
 import cron, { type ScheduledTask } from "node-cron";
-import type { AutomaticRunClaim, ScheduleStore, ScheduleTriggerSource, SessionReuseClaim } from "./schedule-store.js";
+import type { AutomaticRunClaim, ScheduleStore, ScheduleTriggerSource } from "./schedule-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -22,14 +22,6 @@ import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 const cronJobs = new Map<string, ScheduledTask>();
 const oneShotTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const automaticRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const retainedScheduleRunClaims = new Map<
-  string,
-  { scheduleId: string; scheduleName: string; claim: AutomaticRunClaim; renewTimer: ReturnType<typeof setInterval> }
->();
-const retainedSessionReuseClaims = new Map<
-  string,
-  { scheduleId: string; scheduleName: string; claim: SessionReuseClaim; renewTimer: ReturnType<typeof setInterval> }
->();
 let sessionMgr: SessionManager | null = null;
 let busUnsubscribe: (() => void) | undefined;
 
@@ -78,11 +70,6 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   bus = deps.globalBus;
   busUnsubscribe?.();
   busUnsubscribe = bus.subscribe((event) => {
-    if (event.type === "session:idle" && event.sessionId) {
-      releaseRetainedScheduleRunClaim(event.sessionId);
-      releaseRetainedSessionReuseClaim(event.sessionId);
-      return;
-    }
     if (event.type === "server:restart-cleared") {
       missedRunCatchUp.check();
     }
@@ -90,6 +77,10 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   registerAllSchedules();
   missedRunCatchUp.check();
   console.log("[scheduler] Initialized");
+}
+
+export function isInitialized(): boolean {
+  return sessionMgr !== null && scheduleStore !== undefined && taskStore !== undefined && sessionMetaStore !== undefined && bus !== undefined;
 }
 
 export function shutdown(): void {
@@ -105,14 +96,6 @@ export function shutdown(): void {
   missedRunCatchUp.reset();
   busUnsubscribe?.();
   busUnsubscribe = undefined;
-  for (const { renewTimer } of retainedScheduleRunClaims.values()) {
-    clearInterval(renewTimer);
-  }
-  retainedScheduleRunClaims.clear();
-  for (const { renewTimer } of retainedSessionReuseClaims.values()) {
-    clearInterval(renewTimer);
-  }
-  retainedSessionReuseClaims.clear();
   activeRuns.clear();
   _globalPause = false;
   console.log("[scheduler] Shut down — all jobs stopped");
@@ -239,88 +222,6 @@ function clearAutomaticRetryTimers(scheduleId?: string): void {
   }
 }
 
-function retainScheduleRunClaim(
-  scheduleId: string,
-  sessionId: string,
-  claim: AutomaticRunClaim,
-  scheduleName: string,
-): void {
-  const existing = retainedScheduleRunClaims.get(sessionId);
-  if (existing) clearInterval(existing.renewTimer);
-  const renewTimer = setInterval(() => {
-    const retained = retainedScheduleRunClaims.get(sessionId);
-    if (!retained || retained.claim !== claim) {
-      clearInterval(renewTimer);
-      return;
-    }
-    try {
-      const renewed = scheduleStore.renewClaimedAutomaticRun(scheduleId, claim);
-      if (!renewed) {
-        clearInterval(renewTimer);
-        retainedScheduleRunClaims.delete(sessionId);
-      }
-    } catch (err) {
-      console.warn(`[scheduler] Failed to renew retained schedule lock for "${scheduleName}":`, err);
-      clearInterval(renewTimer);
-      retainedScheduleRunClaims.delete(sessionId);
-    }
-  }, AUTOMATIC_CLAIM_RENEW_INTERVAL_MS);
-  retainedScheduleRunClaims.set(sessionId, { scheduleId, scheduleName, claim, renewTimer });
-}
-
-function releaseRetainedScheduleRunClaim(sessionId: string): void {
-  const retained = retainedScheduleRunClaims.get(sessionId);
-  if (!retained) return;
-  clearInterval(retained.renewTimer);
-  retainedScheduleRunClaims.delete(sessionId);
-  try {
-    scheduleStore.releaseClaimedAutomaticRun(retained.scheduleId, retained.claim);
-  } catch (err) {
-    console.warn(`[scheduler] Failed to release retained schedule run claim for session ${sessionId.slice(0, 8)}:`, err);
-  }
-}
-
-function retainSessionReuseClaim(
-  scheduleId: string,
-  sessionId: string,
-  claim: SessionReuseClaim,
-  scheduleName: string,
-): void {
-  const existing = retainedSessionReuseClaims.get(sessionId);
-  if (existing) clearInterval(existing.renewTimer);
-  const renewTimer = setInterval(() => {
-    const retained = retainedSessionReuseClaims.get(sessionId);
-    if (!retained || retained.claim !== claim) {
-      clearInterval(renewTimer);
-      return;
-    }
-    try {
-      const renewed = scheduleStore.renewClaimedSessionReuse(sessionId, claim);
-      if (!renewed) {
-        clearInterval(renewTimer);
-        retainedSessionReuseClaims.delete(sessionId);
-      }
-    } catch (err) {
-      console.warn(`[scheduler] Failed to renew retained session reuse lock for "${scheduleName}":`, err);
-      clearInterval(renewTimer);
-      retainedSessionReuseClaims.delete(sessionId);
-    }
-  }, AUTOMATIC_CLAIM_RENEW_INTERVAL_MS);
-  retainedSessionReuseClaims.set(sessionId, { scheduleId, scheduleName, claim, renewTimer });
-}
-
-function releaseRetainedSessionReuseClaim(sessionId: string): void {
-  const retained = retainedSessionReuseClaims.get(sessionId);
-  if (!retained) return;
-  clearInterval(retained.renewTimer);
-  retainedSessionReuseClaims.delete(sessionId);
-  try {
-    scheduleStore.releaseClaimedSessionReuse(sessionId, retained.claim);
-  } catch (err) {
-    console.warn(`[scheduler] Failed to release retained session reuse lock for session ${sessionId.slice(0, 8)}:`, err);
-  }
-}
-
 function armAutomaticRetry(
   scheduleId: string,
   source: Exclude<ScheduleTriggerSource, "manual">,
@@ -437,12 +338,7 @@ export async function triggerSchedule(
   activeRuns.add(scheduleId);
   let scheduleRunClaim: AutomaticRunClaim | undefined;
   let scheduleRunClaimResolved = false;
-  let retainScheduleRunLock = false;
   let scheduleRunClaimRenewTimer: ReturnType<typeof setInterval> | undefined;
-  let sessionReuseClaim: SessionReuseClaim | undefined;
-  let sessionReuseClaimResolved = false;
-  let retainSessionReuseLock = false;
-  let sessionReuseClaimRenewTimer: ReturnType<typeof setInterval> | undefined;
   let automaticSlotClaim: AutomaticRunClaim | undefined;
   let automaticSlotClaimResolved = false;
   let retryReleasedClaim = false;
@@ -452,14 +348,9 @@ export async function triggerSchedule(
     }
   };
   const releaseScheduleRunClaim = () => {
-    if (!scheduleRunClaim || scheduleRunClaimResolved || retainScheduleRunLock) return;
+    if (!scheduleRunClaim || scheduleRunClaimResolved) return;
     scheduleStore.releaseClaimedAutomaticRun(scheduleId, scheduleRunClaim);
     scheduleRunClaimResolved = true;
-  };
-  const releaseSessionReuseClaim = () => {
-    if (!sessionReuseClaim || sessionReuseClaimResolved || retainSessionReuseLock) return;
-    scheduleStore.releaseClaimedSessionReuse(sessionReuseClaim.sessionId, sessionReuseClaim);
-    sessionReuseClaimResolved = true;
   };
   const releaseAutomaticSlotClaim = (options: { retryAutomatic?: boolean } = {}) => {
     if (!automaticSlotClaim || automaticSlotClaimResolved) return;
@@ -473,12 +364,6 @@ export async function triggerSchedule(
       if (scheduleRunClaimRenewTimer) {
         clearInterval(scheduleRunClaimRenewTimer);
         scheduleRunClaimRenewTimer = undefined;
-      }
-    };
-    const stopSessionReuseClaimRenewal = () => {
-      if (sessionReuseClaimRenewTimer) {
-        clearInterval(sessionReuseClaimRenewTimer);
-        sessionReuseClaimRenewTimer = undefined;
       }
     };
 
@@ -513,105 +398,48 @@ export async function triggerSchedule(
       automaticSlotClaim = claim.claim;
     }
 
-    const skipClaimedRun = (
-      reason: string,
-      options: { retryAutomatic?: boolean; finalizeOneShot?: boolean } = {},
-    ) => {
-      if (
-        options.finalizeOneShot
-        && automaticSlotClaim
-        && !automaticSlotClaimResolved
-        && schedule.type === "once"
-        && triggerSource === "once"
-      ) {
-        scheduleStore.skipAutomaticRun(scheduleId, automaticSlotClaim);
-        automaticSlotClaimResolved = true;
-        bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
-      } else {
-        releaseAutomaticSlotClaim(options);
-      }
-      releaseSessionReuseClaim();
-      releaseScheduleRunClaim();
-      return { skipped: reason };
-    };
-
-    // Determine session: reuse-last or create new
+    // Create a fresh task session for every schedule run.
     let sessionId: string;
     let createdSession = false;
 
-    const reusableLastSessionId = schedule.sessionMode === "reuse-last"
-      && schedule.lastSessionId
-      && task.sessionIds.includes(schedule.lastSessionId)
-      ? schedule.lastSessionId
-      : undefined;
-
-    if (reusableLastSessionId) {
-      sessionId = reusableLastSessionId;
-      const reuseClaim = scheduleStore.claimSessionReuse(sessionId, scheduleId);
-      if (!reuseClaim.acquired) {
-        return skipClaimedRun("Reuse session is busy", { retryAutomatic: true });
-      }
-      sessionReuseClaim = reuseClaim.claim;
-      sessionReuseClaimRenewTimer = setInterval(() => {
-        if (!sessionReuseClaim || sessionReuseClaimResolved) {
-          stopSessionReuseClaimRenewal();
-          return;
-        }
-        try {
-          const renewed = scheduleStore.renewClaimedSessionReuse(sessionId, sessionReuseClaim);
-          if (!renewed) stopSessionReuseClaimRenewal();
-        } catch (err) {
-          console.warn(`[scheduler] Failed to renew reused-session lock for "${schedule.name}":`, err);
-          stopSessionReuseClaimRenewal();
-        }
-      }, AUTOMATIC_CLAIM_RENEW_INTERVAL_MS);
-      if (sessionMgr.isSessionBusy(sessionId)) {
-        return skipClaimedRun("Reuse session is busy", { retryAutomatic: true });
-      }
-      console.log(`[scheduler] Reusing session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
-    } else if (schedule.sessionMode === "reuse-last" && scheduleStore.requiresExistingReuseSession(schedule.id)) {
-      return skipClaimedRun("Reuse session is unavailable", { finalizeOneShot: true });
-    } else {
-      // Create new task session
-      const prDescriptions = task.pullRequests.map(
-        (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
+    const prDescriptions = task.pullRequests.map(
+      (pr) => `${pr.repoName || pr.repoId} PR #${pr.prId}`,
+    );
+    let result: Awaited<ReturnType<SessionManager["createTaskSession"]>>;
+    try {
+      result = await sessionMgr.createTaskSession(
+        task.id,
+        task.title,
+        task.workItems,
+        prDescriptions,
+        task.notes,
+        task.cwd,
+        { name: schedule.name, type: schedule.type, runCount: schedule.runCount, lastRunAt: schedule.lastRunAt },
       );
-      let result: Awaited<ReturnType<SessionManager["createTaskSession"]>>;
+    } catch (err) {
+      retryReleasedClaim = true;
+      throw err;
+    }
+    sessionId = result.sessionId;
+    createdSession = true;
+
+    console.log(`[scheduler] Created session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
+
+    // Link before launch so any later persistence failure still leaves the session visible on the task.
+    try {
+      taskStore.linkSession(task.id, sessionId);
+    } catch (linkErr) {
       try {
-        result = await sessionMgr.createTaskSession(
-          task.id,
-          task.title,
-          task.workItems,
-          prDescriptions,
-          task.notes,
-          task.cwd,
-          { name: schedule.name, type: schedule.type, runCount: schedule.runCount, lastRunAt: schedule.lastRunAt },
+        await sessionMgr.deleteSession(sessionId);
+      } catch (cleanupErr) {
+        const linkMessage = linkErr instanceof Error ? linkErr.message : String(linkErr);
+        const cleanupMessage = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+        throw new Error(
+          `[scheduler] Failed to roll back session ${sessionId.slice(0, 8)} after link rejection: link failed: ${linkMessage}; delete failed: ${cleanupMessage}`,
         );
-      } catch (err) {
-        retryReleasedClaim = true;
-        throw err;
       }
-      sessionId = result.sessionId;
-      createdSession = true;
-
-      console.log(`[scheduler] Created session ${sessionId.slice(0, 8)} for "${schedule.name}"`);
-
-      // Link before launch so any later persistence failure still leaves the session visible on the task.
-      try {
-        taskStore.linkSession(task.id, sessionId);
-      } catch (linkErr) {
-        try {
-          await sessionMgr.deleteSession(sessionId);
-        } catch (cleanupErr) {
-          const linkMessage = linkErr instanceof Error ? linkErr.message : String(linkErr);
-          const cleanupMessage = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-          throw new Error(
-            `[scheduler] Failed to roll back session ${sessionId.slice(0, 8)} after link rejection: link failed: ${linkMessage}; delete failed: ${cleanupMessage}`,
-          );
-        }
-        retryReleasedClaim = true;
-        throw linkErr;
-      }
+      retryReleasedClaim = true;
+      throw linkErr;
     }
 
     // Fire the prompt
@@ -644,7 +472,6 @@ export async function triggerSchedule(
         }
       }
       releaseAutomaticSlotClaim({ retryAutomatic: cleanupErrors.length === 0 });
-      releaseSessionReuseClaim();
       releaseScheduleRunClaim();
       if (cleanupErrors.length > 0) {
         throw new Error(
@@ -665,26 +492,9 @@ export async function triggerSchedule(
       automaticSlotClaimResolved = true;
       if (!finalized) {
         console.warn(`[scheduler] Lost automatic claim for "${schedule.name}" slot ${automaticSlotClaim.runKey} before finalizing`);
-        if (createdSession) {
-          releaseScheduleRunClaim();
-          await rollbackAcceptedScheduleRun(task.id, sessionId, `lost claim for slot ${automaticSlotClaim.runKey}`);
-          return { skipped: "This scheduled slot is already being processed" };
-        }
-        retainScheduleRunLock = true;
-        if (scheduleRunClaim) {
-          stopScheduleRunClaimRenewal();
-          retainScheduleRunClaim(scheduleId, sessionId, scheduleRunClaim, schedule.name);
-          scheduleRunClaimResolved = true;
-        }
-        retainSessionReuseLock = true;
-        if (sessionReuseClaim) {
-          stopSessionReuseClaimRenewal();
-          retainSessionReuseClaim(scheduleId, sessionId, sessionReuseClaim, schedule.name);
-          sessionReuseClaimResolved = true;
-        }
-        throw new Error(
-          `[scheduler] Lost automatic claim for reused session ${sessionId.slice(0, 8)} on slot ${automaticSlotClaim.runKey}; cannot safely roll back shared session state`,
-        );
+        releaseScheduleRunClaim();
+        await rollbackAcceptedScheduleRun(task.id, sessionId, `lost claim for slot ${automaticSlotClaim.runKey}`);
+        return { skipped: "This scheduled slot is already being processed" };
       }
     } else {
       scheduleStore.recordRun(scheduleId, sessionId, nextRunAt);
@@ -696,22 +506,7 @@ export async function triggerSchedule(
     // Record schedule ownership/association and append run history.
     sessionMetaStore.setScheduleMeta(sessionId, scheduleId, schedule.name);
     sessionMetaStore.recordScheduleRun(scheduleId, sessionId);
-    if (createdSession) {
-      releaseScheduleRunClaim();
-    } else {
-      retainScheduleRunLock = true;
-      if (scheduleRunClaim) {
-        stopScheduleRunClaimRenewal();
-        retainScheduleRunClaim(scheduleId, sessionId, scheduleRunClaim, schedule.name);
-        scheduleRunClaimResolved = true;
-      }
-      retainSessionReuseLock = true;
-      if (sessionReuseClaim) {
-        stopSessionReuseClaimRenewal();
-        retainSessionReuseClaim(scheduleId, sessionId, sessionReuseClaim, schedule.name);
-        sessionReuseClaimResolved = true;
-      }
-    }
+    releaseScheduleRunClaim();
 
     // Emit global event
     bus.emit({
@@ -741,21 +536,11 @@ export async function triggerSchedule(
         console.warn(`[scheduler] Failed to release schedule lock for "${schedule.name}":`, releaseErr);
       }
     }
-    if (sessionReuseClaim && !sessionReuseClaimResolved) {
-      try {
-        releaseSessionReuseClaim();
-      } catch (releaseErr) {
-        console.warn(`[scheduler] Failed to release reused-session lock for "${schedule.name}":`, releaseErr);
-      }
-    }
     console.error(`[scheduler] ❌ Failed to trigger "${schedule.name}":`, err);
     throw err;
   } finally {
     if (scheduleRunClaimRenewTimer) {
       clearInterval(scheduleRunClaimRenewTimer);
-    }
-    if (sessionReuseClaimRenewTimer) {
-      clearInterval(sessionReuseClaimRenewTimer);
     }
     // Clean up active run tracking after a delay
     // (the session itself runs async; we just track the trigger phase)

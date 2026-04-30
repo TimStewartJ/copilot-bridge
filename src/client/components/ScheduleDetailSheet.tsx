@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { Schedule, ScheduleCreateInput, ScheduleRun, ScheduleSessionMode } from "../api";
+import type { Schedule, ScheduleCreateInput, ScheduleRun } from "../api";
 import { createSchedule, patchSchedule, fetchServerTimezone, getSessionRunState } from "../api";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
@@ -13,7 +13,6 @@ import {
   Trash2,
   MoreVertical,
   ChevronDown,
-  RefreshCw,
   Calendar,
   Repeat,
   Globe,
@@ -33,23 +32,6 @@ const CRON_PRESETS = [
   { label: "Every Friday at 5 PM", cron: "0 17 * * 5" },
   { label: "Custom", cron: "" },
 ];
-
-const SESSION_MODE_OPTIONS: Array<{ value: ScheduleSessionMode; label: string; description: string }> = [
-  {
-    value: "new",
-    label: "New session every run",
-    description: "Create a fresh task session each time the schedule fires.",
-  },
-  {
-    value: "reuse-last",
-    label: "Reuse last schedule session",
-    description: "Continue the most recent session previously used by this schedule.",
-  },
-];
-
-function formatSessionMode(mode: ScheduleSessionMode): string {
-  return mode === "reuse-last" ? "Reuse last schedule session" : "New session every run";
-}
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -255,13 +237,6 @@ function ViewMode({
               <span className="text-text-faint block mb-0.5">Total runs</span>
               <span className="text-text-secondary">{schedule.runCount}</span>
             </div>
-            <div>
-              <span className="text-text-faint block mb-0.5">Session mode</span>
-              <span className="text-text-secondary flex items-center gap-1">
-                {schedule.sessionMode === "reuse-last" && <RefreshCw size={10} />}
-                {formatSessionMode(schedule.sessionMode)}
-              </span>
-            </div>
             {schedule.maxRuns && (
               <div>
                 <span className="text-text-faint block mb-0.5">Max runs</span>
@@ -388,7 +363,6 @@ function EditMode({
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
-  const [sessionMode, setSessionMode] = useState<ScheduleSessionMode>(schedule?.sessionMode ?? "new");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -411,7 +385,6 @@ function EditMode({
     setCronExpr(schedule?.cron ?? "0 8 * * 1-5");
     setRunAt(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
     setTimezone(schedule?.timezone ?? "");
-    setSessionMode(schedule?.sessionMode ?? "new");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
   }, [schedule]);
 
@@ -431,7 +404,6 @@ function EditMode({
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
-          sessionMode,
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
         };
         await createSchedule(input);
@@ -442,7 +414,6 @@ function EditMode({
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
-          sessionMode,
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
         });
       }
@@ -549,35 +520,6 @@ function EditMode({
                   />
                 </div>
               )}
-            </div>
-
-            {/* Session mode */}
-            <div className="col-span-2">
-              <span className="text-text-faint block mb-1">Session mode</span>
-              <div className="space-y-2">
-                {SESSION_MODE_OPTIONS.map((option) => (
-                  <label
-                    key={option.value}
-                    className={`flex items-start gap-2 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                      sessionMode === option.value
-                        ? "border-accent bg-accent/10"
-                        : "border-border hover:border-text-faint"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="sessionMode"
-                      checked={sessionMode === option.value}
-                      onChange={() => setSessionMode(option.value)}
-                      className="mt-0.5"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-text-secondary">{option.label}</span>
-                      <span className="block text-[10px] text-text-faint mt-0.5">{option.description}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
             </div>
 
             {/* Max runs */}

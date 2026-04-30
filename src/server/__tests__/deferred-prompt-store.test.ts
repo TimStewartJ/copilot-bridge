@@ -227,11 +227,11 @@ describe("deferred-prompt-store", () => {
       expect(store.get(dp.id)!.status).toBe("cancelled");
     });
 
-    it("does not cancel a running prompt", () => {
+    it("cancels a running prompt", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());
       store.claimDue(dp.id, 60_000);
-      expect(store.cancelById(dp.id)).toBe(false);
-      expect(store.get(dp.id)!.status).toBe("running");
+      expect(store.cancelById(dp.id)).toBe(true);
+      expect(store.get(dp.id)!.status).toBe("cancelled");
     });
 
     it("returns false for unknown id", () => {
@@ -240,17 +240,17 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("cancelForSession", () => {
-    it("cancels all pending deferrals for a session without cancelling running deliveries", () => {
+    it("cancels all pending and running deferrals for a session", () => {
       const dp1 = store.create("s1", "A", new Date().toISOString());
       const dp2 = store.create("s1", "B", new Date().toISOString());
       const running = store.create("s1", "Running", new Date().toISOString());
       store.claimDue(running.id, 60_000);
       store.create("s2", "Other", new Date().toISOString());
       const count = store.cancelForSession("s1");
-      expect(count).toBe(2);
+      expect(count).toBe(3);
       expect(store.get(dp1.id)!.status).toBe("cancelled");
       expect(store.get(dp2.id)!.status).toBe("cancelled");
-      expect(store.get(running.id)!.status).toBe("running");
+      expect(store.get(running.id)!.status).toBe("cancelled");
     });
 
     it("returns 0 when no rows match", () => {

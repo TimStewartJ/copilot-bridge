@@ -26,6 +26,7 @@ import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createApiRouter } from "../api-router.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
+import { createDeferLoopStore } from "../defer-loop-store.js";
 import type { AppContext } from "../app-context.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
@@ -263,6 +264,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     sessionManager,
     transcriptionService,
     deferredPromptStore: createDeferredPromptStore(db),
+    deferLoopStore: createDeferLoopStore(db),
     copilotHome,
     apiBasePath: "/api",
     runtimePaths,

@@ -431,7 +431,6 @@ This backlog task stays active but scheduled for later so it hints at future ide
       prompt: DEMO_REVIEW_SCHEDULE_PROMPT,
       type: "cron",
       cron: "0 9 * * 5",
-      sessionMode: "reuse-last",
     });
 
     seedDocs(docsStore);
@@ -468,14 +467,6 @@ function refreshSeededSchedules(repoRoot: string): void {
       }
     }
 
-    const demoReview = schedules.find((schedule) =>
-      schedule.type === "cron"
-      && schedule.name === DEMO_REVIEW_SCHEDULE_NAME
-      && schedule.prompt === DEMO_REVIEW_SCHEDULE_PROMPT,
-    );
-    if (demoReview && demoReview.sessionMode !== "reuse-last") {
-      scheduleStore.updateSchedule(demoReview.id, { sessionMode: "reuse-last" });
-    }
   } finally {
     db.close();
   }

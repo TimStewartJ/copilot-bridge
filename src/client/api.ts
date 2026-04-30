@@ -1391,8 +1391,6 @@ export async function fetchLauncherLogTail(lines = 8): Promise<LauncherLogTail> 
 
 // ── Schedule API ──────────────────────────────────────────────────
 
-export type ScheduleSessionMode = "new" | "reuse-last";
-
 export interface Schedule {
   id: string;
   taskId: string;
@@ -1403,7 +1401,6 @@ export interface Schedule {
   runAt?: string;
   timezone?: string;
   enabled: boolean;
-  sessionMode: ScheduleSessionMode;
   lastSessionId?: string;
   createdAt: string;
   updatedAt: string;
@@ -1412,14 +1409,13 @@ export interface Schedule {
   runCount: number;
   maxRuns?: number;
   expiresAt?: string;
-  reuseSession?: boolean;
 }
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "maxRuns" | "expiresAt">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "maxRuns" | "expiresAt">>;
 
 export type ScheduleUpdateInput = Partial<Pick<Schedule,
-  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "maxRuns" | "expiresAt"
+  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >>;
 
 export async function fetchSchedules(taskId?: string): Promise<Schedule[]> {

@@ -37,6 +37,9 @@ import { resolveRuntimePaths } from "./runtime-paths.js";
 import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
 import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
+import { createDeferLoopStore } from "./defer-loop-store.js";
+import { createDeferLoopRunner } from "./defer-loop-runner.js";
+import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -77,6 +80,8 @@ const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
 docsIndex.reindex();
 const deferredPromptStore = createDeferredPromptStore(db);
+const deferLoopStore = createDeferLoopStore(db);
+const deferDeliveryGuard = createDeferDeliveryGuard();
 
 // Wire config getter now that settings store is ready
 setMcpServersGetter(() => settingsStore.getMcpServers());
@@ -91,6 +96,8 @@ const defaultContext: AppContext = {
   transcriptionService: createTranscriptionService(),
   voiceJobManager: null as any, // assigned below after construction
   deferredPromptStore,
+  deferLoopStore,
+  scheduler,
   copilotHome,
   apiBasePath: "/api",
   runtimePaths,
@@ -193,9 +200,18 @@ async function main(): Promise<void> {
     deferredPromptStore,
     sessionManager,
     defaultGlobalBus,
+    deferDeliveryGuard,
   );
   defaultContext.deferredPromptRunner = deferredPromptRunner;
+  const deferLoopRunner = createDeferLoopRunner(
+    deferLoopStore,
+    sessionManager,
+    defaultGlobalBus,
+    deferDeliveryGuard,
+  );
+  defaultContext.deferLoopRunner = deferLoopRunner;
   deferredPromptRunner.start();
+  deferLoopRunner.start();
 
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();
@@ -246,6 +262,7 @@ async function gracefulExit(signal: string) {
   try {
     scheduler.setGlobalPause(true);
     defaultContext.deferredPromptRunner?.shutdown();
+    defaultContext.deferLoopRunner?.shutdown();
     await sessionManager.gracefulShutdown();
     scheduler.shutdown();
   } catch (err) {

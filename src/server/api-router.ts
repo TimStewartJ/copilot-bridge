@@ -4,8 +4,9 @@ import express from "express";
 import multer from "multer";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
-import { join, basename, dirname } from "node:path";
+import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
 import { openDatabase, type DatabaseSync } from "./db.js";
 import {
@@ -18,7 +19,7 @@ import {
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
-import type { Schedule, ScheduleSessionMode } from "./schedule-store.js";
+import type { Schedule } from "./schedule-store.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
@@ -58,6 +59,41 @@ function getCopilotHome(ctx: AppContext): string {
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 const TASK_GIT_STATUS_NOT_CONFIGURED_ERROR = "Task working directory is not configured.";
 const SESSION_WORKSPACE_NOT_CONFIGURED_ERROR = "Session workspace is not configured.";
+
+function isPathAtOrUnder(parent: string, candidate: string): boolean {
+  const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
+  return candidate === parent || candidate.startsWith(parentWithSeparator);
+}
+
+function isLocalStagingModule(ctx: AppContext): boolean {
+  const dataDir = ctx.runtimePaths?.dataDir;
+  if (!dataDir) return false;
+  const dataFolder = basename(dataDir);
+  if (dataFolder !== "data" && dataFolder !== "demo-data") return false;
+  try {
+    return isPathAtOrUnder(dirname(dataDir), fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+function getSchedulerModule(ctx: AppContext): typeof scheduler {
+  if (ctx.scheduler) return ctx.scheduler;
+  if (ctx.isStaging) {
+    if (!isLocalStagingModule(ctx)) {
+      throw new Error("Staging schedules require an isolated scheduler module.");
+    }
+    scheduler.shutdown();
+    scheduler.initialize(ctx.sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+    ctx.scheduler = scheduler;
+  }
+  return scheduler;
+}
 const SESSION_WORKSPACE_BUSY_ERROR = "Cannot change workspace for a busy session.";
 const SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR = "Linked task workspace is not configured.";
 const SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR = "No sibling worktrees are available for this session.";
@@ -370,14 +406,16 @@ function resolveSessionSummary(
 }
 
 function serializeSchedule(schedule: Schedule) {
-  return {
-    ...schedule,
-    reuseSession: schedule.sessionMode === "reuse-last",
-  };
+  const { sessionMode: _sessionMode, ...publicSchedule } = schedule;
+  return publicSchedule;
 }
 
-function isScheduleSessionMode(value: unknown): value is ScheduleSessionMode {
-  return value === "new" || value === "reuse-last";
+const SCHEDULE_REUSE_FIELDS = ["sessionMode", "reuseSession", "targetSessionId"] as const;
+const SCHEDULE_REUSE_UNSUPPORTED_MESSAGE =
+  "Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.";
+
+function hasScheduleReuseField(body: Record<string, unknown>): boolean {
+  return SCHEDULE_REUSE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(body, field));
 }
 
 function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
@@ -479,6 +517,7 @@ function parseWavDurationSeconds(buffer: Buffer): number {
 export function createApiRouter(ctx: AppContext): express.Router {
   configureRestartStateStore(ctx.runtimePaths);
   const router = express.Router();
+  const schedulerModule = () => getSchedulerModule(ctx);
   const transcriptionService =
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
@@ -870,10 +909,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
     console.log("[web] Graceful shutdown requested via API");
     res.json({ ok: true, message: "Shutting down..." });
     try {
-      scheduler.setGlobalPause(true);
+      schedulerModule().setGlobalPause(true);
       ctx.deferredPromptRunner?.shutdown();
+      ctx.deferLoopRunner?.shutdown();
       await ctx.sessionManager.gracefulShutdown();
-      scheduler.shutdown();
+      schedulerModule().shutdown();
     } catch (err) {
       console.error("[web] Error during graceful shutdown:", err);
     }
@@ -2368,17 +2408,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/schedules", async (req, res) => {
     try {
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, sessionMode, maxRuns, expiresAt } = req.body;
-      if (Object.prototype.hasOwnProperty.call(req.body, "targetSessionId")) {
-        return res.status(400).json({ error: "targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups" });
+      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt } = req.body;
+      if (hasScheduleReuseField(req.body)) {
+        return res.status(400).json({ error: SCHEDULE_REUSE_UNSUPPORTED_MESSAGE });
       }
-      if (sessionMode !== undefined && !isScheduleSessionMode(sessionMode)) {
-        return res.status(400).json({ error: `Invalid sessionMode: ${String(sessionMode)}` });
-      }
-      const resolvedSessionMode = sessionMode
-        ?? (typeof req.body.reuseSession === "boolean"
-          ? (req.body.reuseSession ? "reuse-last" : "new")
-          : "new");
       if (!taskId || !name || !prompt || !type) {
         return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
       }
@@ -2392,7 +2425,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(404).json({ error: "Task not found" });
       }
 
-      if (timezone && !scheduler.isValidTimezone(timezone)) {
+      if (timezone && !schedulerModule().isValidTimezone(timezone)) {
         return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
       }
 
@@ -2404,16 +2437,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
         cron: cronExpr,
         runAt,
         timezone,
-        sessionMode: resolvedSessionMode,
         maxRuns,
         expiresAt,
       });
 
       // Register cron job or arm one-shot timer
       if (schedule.type === "cron") {
-        scheduler.registerSchedule(schedule.id);
+        schedulerModule().registerSchedule(schedule.id);
       } else if (schedule.type === "once" && schedule.runAt) {
-        scheduler.armOneShot(schedule.id, schedule.runAt);
+        schedulerModule().armOneShot(schedule.id, schedule.runAt);
       }
 
       console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
@@ -2426,39 +2458,29 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.patch("/schedules/:id", async (req, res) => {
     try {
-      if (req.body.timezone && !scheduler.isValidTimezone(req.body.timezone)) {
+      if (req.body.timezone && !schedulerModule().isValidTimezone(req.body.timezone)) {
         return res.status(400).json({ error: `Invalid timezone: ${req.body.timezone}` });
       }
       const existing = ctx.scheduleStore.getSchedule(req.params.id);
       if (!existing) return res.status(404).json({ error: "Schedule not found" });
 
-      if (Object.prototype.hasOwnProperty.call(req.body, "targetSessionId")) {
-        return res.status(400).json({ error: "targetSessionId is no longer supported for schedules; use defer_session for same-session follow-ups" });
+      if (hasScheduleReuseField(req.body)) {
+        return res.status(400).json({ error: SCHEDULE_REUSE_UNSUPPORTED_MESSAGE });
       }
 
       const updates = { ...req.body };
-      if (req.body.sessionMode !== undefined && !isScheduleSessionMode(req.body.sessionMode)) {
-        return res.status(400).json({ error: `Invalid sessionMode: ${String(req.body.sessionMode)}` });
-      }
-      const resolvedSessionMode = req.body.sessionMode
-        ?? (typeof req.body.reuseSession === "boolean"
-          ? (req.body.reuseSession ? "reuse-last" : "new")
-          : undefined);
-      if (resolvedSessionMode !== undefined) {
-        updates.sessionMode = resolvedSessionMode;
-      }
 
       const schedule = ctx.scheduleStore.updateSchedule(req.params.id, updates);
 
       // Re-register cron job if timing or enabled state changed
       if (schedule.type === "cron") {
         if (schedule.enabled) {
-          scheduler.registerSchedule(schedule.id);
+          schedulerModule().registerSchedule(schedule.id);
         } else {
-          scheduler.unregisterSchedule(schedule.id);
+          schedulerModule().unregisterSchedule(schedule.id);
         }
       } else if (schedule.type === "once" && req.body.runAt && schedule.enabled) {
-        scheduler.armOneShot(schedule.id, schedule.runAt!);
+        schedulerModule().armOneShot(schedule.id, schedule.runAt!);
       }
 
       console.log(`[schedules] Updated schedule "${schedule.name}"`);
@@ -2473,7 +2495,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const schedule = ctx.scheduleStore.getSchedule(req.params.id);
       const taskId = schedule?.taskId;
-      scheduler.unregisterSchedule(req.params.id);
+      schedulerModule().unregisterSchedule(req.params.id);
       ctx.scheduleStore.deleteSchedule(req.params.id);
       console.log(`[schedules] Deleted schedule ${req.params.id}`);
       ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId: req.params.id });
@@ -2485,7 +2507,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/schedules/:id/trigger", async (req, res) => {
     try {
-      const result = await scheduler.triggerSchedule(req.params.id, { source: "manual" });
+      const result = await schedulerModule().triggerSchedule(req.params.id, { source: "manual" });
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: String(err) });
@@ -2549,7 +2571,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/schedules/status", (_req, res) => {
     res.json({
-      globalPause: scheduler.isGlobalPaused(),
+      globalPause: schedulerModule().isGlobalPaused(),
       scheduleCount: ctx.scheduleStore.listSchedules().length,
       enabledCount: ctx.scheduleStore.getEnabledSchedules().length,
     });
@@ -2557,8 +2579,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/schedules/pause", (req, res) => {
     const { paused } = req.body;
-    scheduler.setGlobalPause(paused !== false);
-    res.json({ globalPause: scheduler.isGlobalPaused() });
+    schedulerModule().setGlobalPause(paused !== false);
+    res.json({ globalPause: schedulerModule().isGlobalPaused() });
   });
 
   // ── Server info ─────────────────────────────────────────────────

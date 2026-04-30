@@ -22,6 +22,9 @@ import type { VoiceJobManager } from "./voice-job-manager.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type { DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { DeferredPromptRunner } from "./deferred-prompt-runner.js";
+import type { DeferLoopStore } from "./defer-loop-store.js";
+import type { DeferLoopRunner } from "./defer-loop-runner.js";
+import type * as SchedulerModule from "./scheduler.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -44,8 +47,14 @@ export interface AppContext {
   voiceJobManager: VoiceJobManager;
   /** Deferred prompt persistence */
   deferredPromptStore?: DeferredPromptStore;
+  /** Recurring defer loop persistence */
+  deferLoopStore?: DeferLoopStore;
   /** Deferred prompt dispatcher */
   deferredPromptRunner?: DeferredPromptRunner;
+  /** Recurring defer loop dispatcher */
+  deferLoopRunner?: DeferLoopRunner;
+  /** Scheduler module instance. Staging previews provide an isolated module. */
+  scheduler?: typeof SchedulerModule;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
   /** Public API mount path used for server-generated links (e.g. "/api" or "/staging/<prefix>/api") */
