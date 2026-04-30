@@ -262,6 +262,16 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
         continue;
       }
 
+      if (eventRecord?.type === "session.resume") {
+        selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
+        continue;
+      }
+
+      if (eventRecord?.type === "session.model_change") {
+        selectedModel = normalizeModelName(data?.newModel) ?? selectedModel;
+        continue;
+      }
+
       if (eventRecord?.type === "assistant.message") {
         const outputTokens = toNumber(data?.outputTokens);
         if (outputTokens > 0) {

@@ -78,6 +78,63 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
   });
 
+  it("includes model and reasoningEffort for new-session paths (forResume omitted/false)", () => {
+    const settingsStore = {
+      getSettings: () => ({ model: "gpt-new", reasoningEffort: "medium" }),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("gpt-new");
+    expect(cfg.reasoningEffort).toBe("medium");
+  });
+
+  it("falls back to config.model when settings.model is unset for new-session paths", () => {
+    const settingsStore = {
+      getSettings: () => ({ model: undefined, reasoningEffort: undefined }),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBe("config-fallback");
+    expect(cfg.reasoningEffort).toBeUndefined();
+  });
+
+  it("omits model and reasoningEffort when forResume is true", () => {
+    const settingsStore = {
+      getSettings: () => ({ model: "gpt-new", reasoningEffort: "high" }),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
+      options: { forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBeUndefined();
+    expect(cfg.reasoningEffort).toBeUndefined();
+  });
+
+  it("omits model and reasoningEffort when forResume is true even without settingsStore", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps({ config: { sessionMcpServers: {}, model: "config-fallback" } }),
+      options: { forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBeUndefined();
+    expect(cfg.reasoningEffort).toBeUndefined();
+  });
+
   it("renders task, schedule, staging, checklist, and self-rename prompt context", async () => {
     const userInputHandler = vi.fn(async () => ({ text: "provided input" }) as any);
     const checklistStore = {

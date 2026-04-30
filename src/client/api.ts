@@ -446,6 +446,48 @@ export async function patchSession(id: string, updates: { archived: boolean }): 
   }
 }
 
+// ── Session model ─────────────────────────────────────────────────
+
+export type SessionModelSource = "live" | "events" | "unknown";
+
+export interface SessionModelState {
+  model?: string;
+  reasoningEffort?: string;
+  source: SessionModelSource;
+}
+
+export interface SessionModelSwitchResult {
+  model: string;
+  reasoningEffort?: string;
+  modelId?: string;
+}
+
+/** Derive the current model / reasoning effort for a session on demand. */
+export async function fetchSessionModelState(sessionId: string): Promise<SessionModelState> {
+  return apiFetch<SessionModelState>(`/api/sessions/${sessionId}/model`);
+}
+
+/**
+ * Explicitly switch the model for a single session.
+ * Omit reasoningEffort to keep the session's current reasoning effort when known.
+ */
+export async function patchSessionModel(
+  sessionId: string,
+  model: string,
+  reasoningEffort?: string,
+): Promise<SessionModelSwitchResult> {
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/model`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
 export async function deleteSession(id: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) {

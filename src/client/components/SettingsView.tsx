@@ -206,7 +206,7 @@ export default function SettingsView() {
       const updated = await settingsMutation.mutateAsync(draft);
       setSettings(updated);
       setDraft(structuredClone(updated));
-      showToast("Settings saved — changes apply on next session interaction");
+      showToast("Settings saved");
     } catch (err) {
       showToast(`Save failed: ${err instanceof Error ? err.message : err}`);
     } finally {

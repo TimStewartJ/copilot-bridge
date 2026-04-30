@@ -115,8 +115,9 @@ export interface SessionRunnerDeps {
     sessionId: string,
     attachments?: StartWorkAttachment[],
   ): RoutedSdkAttachment[] | undefined;
+  cacheResumedSession(sessionId: string, session: any): any;
+  replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): any;
   probeMcpStatus(sessionId: string, session: any): void;
-  ensureSessionModelMatchesSettings(session: any, sid: string): Promise<void>;
   flushPendingSessionEviction(sessionId: string): void;
   cancelPendingUserInputRequests(
     sessionId: string,
@@ -331,8 +332,7 @@ export class SessionRunner {
             setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
           ),
         ]);
-        await this.deps.ensureSessionModelMatchesSettings(s, sid);
-        this.deps.sessionObjects.set(sessionId, s);
+        s = this.deps.cacheResumedSession(sessionId, s);
         this.deps.probeMcpStatus(sessionId, s);
         const resumeDuration = Date.now() - resumeStart;
         this.recordSpan("session.resume", resumeDuration, sessionId, { context: opts.resumeContext });
@@ -741,7 +741,6 @@ export class SessionRunner {
           setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
         ),
       ]);
-      await this.deps.ensureSessionModelMatchesSettings(recoveredSession, sid);
       const resumeDuration = Date.now() - resumeStart;
       this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
       console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
@@ -780,9 +779,10 @@ export class SessionRunner {
           return replayKey !== undefined && handledCurrentTurnEventKeys.has(replayKey);
         };
 
+        const recoverySession = this.deps.replaceCachedSession(sessionId, previousSession, recoveredSession);
         const bufferedRecoveredEvents: any[] = [];
         let acceptingRecoveredEvents = false;
-        const recoveredUnsub = recoveredSession.on((event: any) => {
+        const recoveredUnsub = recoverySession.on((event: any) => {
           if (!acceptingRecoveredEvents) {
             bufferedRecoveredEvents.push(event);
             return;
@@ -791,14 +791,13 @@ export class SessionRunner {
           handleEvent(event);
         });
 
-        session = recoveredSession;
+        session = recoverySession;
         unsub = recoveredUnsub;
-        this.deps.sessionObjects.set(sessionId, recoveredSession);
-        this.deps.probeMcpStatus(sessionId, recoveredSession);
+        this.deps.probeMcpStatus(sessionId, recoverySession);
         acceptingSessionEvents = true;
 
         try { previousUnsub(); } catch { /* best-effort */ }
-        if (previousSession !== recoveredSession) {
+        if (previousSession !== recoverySession) {
           try { previousSession.disconnect?.(); } catch { /* best-effort */ }
         }
 

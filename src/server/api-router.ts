@@ -1096,6 +1096,51 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "max", "xhigh"]);
+
+  // GET /sessions/:id/model — derive current model/reasoning for a session on demand
+  router.get("/sessions/:id/model", async (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    try {
+      const result = await ctx.sessionManager.getSessionModelState(sessionId);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // PATCH /sessions/:id/model — explicitly switch the model for a single session
+  router.patch("/sessions/:id/model", async (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const { model, reasoningEffort } = req.body ?? {};
+    const normalizedModel = typeof model === "string" ? model.trim() : "";
+
+    if (!normalizedModel) {
+      return res.status(400).json({ error: "model must be a non-empty string" });
+    }
+    if (reasoningEffort !== undefined && !VALID_REASONING_EFFORTS.has(reasoningEffort)) {
+      return res.status(400).json({
+        error: `reasoningEffort must be one of: ${[...VALID_REASONING_EFFORTS].join(", ")}`,
+      });
+    }
+
+    try {
+      const result = await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/busy/i.test(message)) return res.status(409).json({ error: message });
+      if (/restart/i.test(message)) return res.status(503).json({ error: message });
+      res.status(500).json({ error: message });
+    }
+  });
+
   router.post("/sessions", async (req, res) => {
     if (isRestartCutoverInProgress(await refreshRestartState())) {
       res.set("Retry-After", "5");
@@ -2566,28 +2611,18 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
 
       // MCP server changes can't be hot-swapped on a live session — evict so the
-      // next resume rebuilds with the new MCP config. Eviction also forces a
-      // model re-sync via ensureSessionModelMatchesSettings on the next resume.
+      // next resume rebuilds with the new MCP config.
       if (mcpChanged) {
         console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
         ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged) {
-        // Apply model/reasoning changes via session.setModel() so the SDK emits
-        // session.model_change and sanitizes cross-family tool_call shapes
-        // instead of corrupting the next CAPI request with stale history.
-        const target = updated.model;
-        if (target) {
-          const reasons = [
-            modelChanged ? "model" : null,
-            reasoningChanged ? "reasoning effort" : null,
-          ].filter(Boolean).join(" & ");
-          console.log(`[settings] ${reasons} changed — applying ${target} to cached sessions via setModel`);
-          await ctx.sessionManager.applyModelToCachedSessions(target, updated.reasoningEffort);
-        } else {
-          // No model selected — fall back to eviction so cold resume picks up defaults.
-          console.log("[settings] Model cleared — evicting cached sessions");
-          ctx.sessionManager.evictAllCachedSessions();
-        }
+        // Model/reasoning changes apply to future sessions only. Existing cached
+        // sessions keep the model already persisted in their SDK state.
+        const reasons = [
+          modelChanged ? "model" : null,
+          reasoningChanged ? "reasoning effort" : null,
+        ].filter(Boolean).join(" & ");
+        console.log(`[settings] ${reasons} changed — applies to new sessions only`);
       }
 
       console.log("[settings] Settings updated");

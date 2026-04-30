@@ -29,7 +29,7 @@ export function ReasoningEffortSection({
   return (
     <SettingsSection
       title="Reasoning Effort"
-      description="Control how much reasoning the model applies. Higher effort may produce better results but uses more tokens. Changes apply on next session interaction."
+      description="Control how much reasoning the model applies for new sessions. Higher effort may produce better results but uses more tokens. Existing sessions keep their current setting unless changed explicitly."
     >
       <div className="bg-bg-elevated border border-border rounded-md p-4">
         <div className="space-y-2">

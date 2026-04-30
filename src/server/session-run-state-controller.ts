@@ -46,6 +46,7 @@ export interface SessionRunStateControllerDeps {
   globalBus: GlobalBus;
   isRestartPending(): boolean;
   syncRestartWaitingSessions(activeSessionCount: number): void;
+  getActiveSessionCount?(): number;
   isSessionResuming?(sessionId: string): boolean;
   cancelPendingUserInputRequests(
     sessionId: string,
@@ -195,7 +196,7 @@ export class SessionRunStateController {
       this.sessionRuns.delete(sessionId);
       this.deps.globalBus.emit({ type: "session:idle", sessionId });
       if (this.deps.isRestartPending()) {
-        this.deps.syncRestartWaitingSessions(this.sessionRuns.size);
+        this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
       }
       return;
     }
@@ -212,8 +213,12 @@ export class SessionRunStateController {
 
     this.deps.globalBus.emit({ type: state === "stalled" ? "session:stalled" : "session:busy", sessionId });
     if (this.deps.isRestartPending() && !current) {
-      this.deps.syncRestartWaitingSessions(this.sessionRuns.size);
+      this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
     }
+  }
+
+  private getActiveSessionCount(): number {
+    return this.deps.getActiveSessionCount?.() ?? this.sessionRuns.size;
   }
 
   touchSessionRun(sessionId: string, at = Date.now()): void {

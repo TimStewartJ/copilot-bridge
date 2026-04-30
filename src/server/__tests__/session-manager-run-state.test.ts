@@ -197,6 +197,188 @@ describe("SessionManager run state", () => {
     }
   });
 
+  it("keeps restart waiting count nonzero when a normal run ends while a cold resume is active", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-resume-count-"));
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-resume-count-"));
+    try {
+      const { manager } = createManager({ copilotHome });
+      const restartStatePath = join(dataDir, "restart-state.json");
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: dataDir,
+          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
+        },
+      });
+
+      const messageSession = { getMessages: vi.fn().mockResolvedValue([]) };
+      let resolveMessageResume!: (session: typeof messageSession) => void;
+      const { session: runSession, getHandler, getReleaseSend } = makeSession();
+      manager.client = {
+        resumeSession: vi.fn((sessionId: string) => {
+          if (sessionId === "message-session") {
+            return new Promise<typeof messageSession>((resolve) => {
+              resolveMessageResume = resolve;
+            });
+          }
+          return Promise.resolve(runSession);
+        }),
+      };
+
+      const messageLoad = manager.getSessionMessages("message-session");
+      manager.startWork("run-session", "hello");
+      await flushMicrotasks();
+
+      await writeRestartState(restartStatePath, {
+        requestId: "req-run-and-resume",
+        phase: "waiting-for-sessions",
+        requestedAt: "2026-04-24T12:00:00.000Z",
+        waitingSessions: 2,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+
+      getReleaseSend()?.();
+      await flushMicrotasks();
+      getHandler()?.({
+        type: "session.idle",
+        data: {},
+        timestamp: new Date(Date.now() + 1).toISOString(),
+      });
+      await flushMicrotasks();
+
+      expect(getRestartWaitingCount()).toBe(1);
+
+      resolveMessageResume(messageSession);
+      await messageLoad;
+      expect(getRestartWaitingCount()).toBe(0);
+    } finally {
+      configureRestartStateStore(undefined);
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(copilotHome, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs restart waiting count when a cold resume starts and finishes during restart pending", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-resume-only-"));
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-resume-only-"));
+    try {
+      const { manager } = createManager({ copilotHome });
+      const restartStatePath = join(dataDir, "restart-state.json");
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: dataDir,
+          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
+        },
+      });
+      await writeRestartState(restartStatePath, {
+        requestId: "req-resume-only",
+        phase: "queued",
+        requestedAt: "2026-04-24T12:00:00.000Z",
+        waitingSessions: 0,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+
+      const resumedSession = { getMessages: vi.fn().mockResolvedValue([]) };
+      let resolveResume!: (session: typeof resumedSession) => void;
+      manager.client = {
+        resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
+          resolveResume = resolve;
+        })),
+      };
+
+      const messageLoad = manager.getSessionMessages("message-session");
+      await flushMicrotasks();
+
+      expect(getRestartWaitingCount()).toBe(1);
+
+      resolveResume(resumedSession);
+      await messageLoad;
+
+      expect(getRestartWaitingCount()).toBe(0);
+    } finally {
+      configureRestartStateStore(undefined);
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(copilotHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps restart waiting count nonzero when a normal run ends while a model switch is active", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-model-switch-count-"));
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-model-switch-count-"));
+    try {
+      const { manager } = createManager({ copilotHome });
+      const restartStatePath = join(dataDir, "restart-state.json");
+      configureRestartStateStore({
+        demoMode: false,
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: {
+          ...process.env,
+          BRIDGE_DEMO_MODE: "false",
+          BRIDGE_DATA_DIR: dataDir,
+          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
+        },
+      });
+
+      let resolveSetModel!: () => void;
+      const switchSession = {
+        setModel: vi.fn(() => new Promise<void>((resolve) => {
+          resolveSetModel = resolve;
+        })),
+        rpc: { model: { getCurrent: vi.fn().mockResolvedValue({ modelId: "gpt-5.5" }) } },
+        disconnect: vi.fn(),
+      };
+      const { session: runSession, getHandler, getReleaseSend } = makeSession();
+      manager.client = {
+        resumeSession: vi.fn().mockResolvedValue(runSession),
+      };
+      manager.sessionObjects.set("switch-session", switchSession);
+
+      const switching = manager.setSessionModel("switch-session", "gpt-5.5");
+      manager.startWork("run-session", "hello");
+      await flushMicrotasks();
+
+      await writeRestartState(restartStatePath, {
+        requestId: "req-run-and-switch",
+        phase: "waiting-for-sessions",
+        requestedAt: "2026-04-24T12:00:00.000Z",
+        waitingSessions: 2,
+        launcherHeartbeatAt: null,
+      });
+      await refreshRestartState();
+
+      getReleaseSend()?.();
+      await flushMicrotasks();
+      getHandler()?.({
+        type: "session.idle",
+        data: {},
+        timestamp: new Date(Date.now() + 1).toISOString(),
+      });
+      await flushMicrotasks();
+
+      expect(getRestartWaitingCount()).toBe(1);
+
+      resolveSetModel();
+      await switching;
+      expect(getRestartWaitingCount()).toBe(0);
+    } finally {
+      configureRestartStateStore(undefined);
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(copilotHome, { recursive: true, force: true });
+    }
+  });
+
   it("allows startWork while the launcher is waiting for active sessions", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
@@ -250,6 +432,48 @@ describe("SessionManager run state", () => {
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
+  });
+
+  it("does not let a superseded cold prompt resume overwrite a newer cached session", async () => {
+    const { manager } = createManager();
+    const stale = makeSession();
+    const current = makeSession();
+    let resolveResume!: (session: typeof stale.session) => void;
+    manager.client = {
+      resumeSession: vi.fn(() => new Promise<typeof stale.session>((resolve) => {
+        resolveResume = resolve;
+      })),
+    };
+
+    const accepted = manager.startWorkAndWaitForDelivery("session-run-superseded", "hello");
+    await flushMicrotasks();
+
+    manager.sessionObjects.set("session-run-superseded", current.session);
+    resolveResume(stale.session);
+    await flushMicrotasks();
+
+    expect(manager.sessionObjects.get("session-run-superseded")).toBe(current.session);
+    expect(stale.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(stale.session.send).not.toHaveBeenCalled();
+    expect(current.session.send).toHaveBeenCalledOnce();
+
+    current.getHandler()?.({
+      type: "user.message",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await expect(accepted).resolves.toBeUndefined();
+
+    current.getReleaseSend()?.();
+    await flushMicrotasks();
+    current.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 2).toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-run-superseded")).toBe("idle");
   });
 
   it("blocks startWork when persisted restart state advances to cutover after the cache was queued", async () => {
@@ -584,6 +808,57 @@ describe("SessionManager run state", () => {
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
     expect(events).toEqual(["session:busy", "session:stalled", "session:busy", "session:idle"]);
+  });
+
+  it("does not let a superseded stalled-recovery resume overwrite a newer cached session", async () => {
+    const { manager } = createManager();
+    const initial = makeSession();
+    const recovered = makeSession();
+    const current = makeSession();
+    let resolveRecovery!: (session: typeof recovered.session) => void;
+    manager.client = {
+      resumeSession: vi.fn()
+        .mockResolvedValueOnce(initial.session)
+        .mockReturnValueOnce(new Promise<typeof recovered.session>((resolve) => {
+          resolveRecovery = resolve;
+        })),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+
+    manager.sessionObjects.set("session-1", current.session);
+    resolveRecovery(recovered.session);
+    await flushMicrotasks();
+
+    expect(manager.sessionObjects.get("session-1")).toBe(current.session);
+    expect(recovered.session.disconnect).toHaveBeenCalledTimes(1);
+    expect(recovered.session.on).not.toHaveBeenCalled();
+    expect(current.session.on).toHaveBeenCalledOnce();
+    expect(initial.session.disconnect).toHaveBeenCalledTimes(1);
+
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+
+    current.getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+
+    current.getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 2_000).toISOString(),
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
   it("resolves a stalled turn from persisted terminal events without waiting for a new live event", async () => {

@@ -22,7 +22,7 @@ export function ModelSection({
   return (
     <SettingsSection
       title="Model"
-      description="Choose which AI model to use for new sessions. Changes apply on next session interaction."
+      description="Choose the default AI model for new sessions. Existing sessions keep their current model unless changed explicitly."
     >
       <div className="bg-bg-elevated border border-border rounded-md p-4">
         {isLoading ? (

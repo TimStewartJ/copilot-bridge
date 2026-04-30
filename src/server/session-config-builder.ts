@@ -50,8 +50,8 @@ export interface SessionConfigOptions {
    * When true, omit `model` and `reasoningEffort` from the config.
    * The SDK silently overwrites _selectedModel via updateOptions() without sanitizing
    * chat history, so passing those on resume would corrupt cross-family tool_call
-   * shapes. Resume callers should rely on ensureSessionModelMatchesSettings() to
-   * trigger the SDK's session.model_change handler instead.
+   * shapes. Resume trusts the SDK's persisted session model (recorded in session
+   * event logs) rather than re-applying the global settings default.
    */
   forResume?: boolean;
 }
@@ -137,7 +137,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   // Model + reasoningEffort only belong on createSession. On resume the SDK
   // overwrites _selectedModel without sanitizing chat history (which corrupts
-  // cross-family tool_call shapes — see ensureSessionModelMatchesSettings).
+  // cross-family tool_call shapes). Resume intentionally trusts the SDK's
+  // persisted session model; only Bridge-owned runtime config (tools, MCP,
+  // user-input handlers, system context) is refreshed on resume.
   if (!forResume) {
     // Model priority: settings store > deps.config > SDK default
     const model = settings?.model ?? deps.config.model;
