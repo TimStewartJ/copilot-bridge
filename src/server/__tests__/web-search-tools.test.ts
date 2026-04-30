@@ -121,4 +121,155 @@ describe("web_search tool", () => {
     expect(commandSessions.some((entry) => /:(?!.*-clone-).*copilot-bridge-/.test(entry))).toBe(false);
     expect(commandSessions.some((entry) => entry.includes("-clone-"))).toBe(true);
   });
+
+  it("falls back to DuckDuckGo after Google sorry redirects", async () => {
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
+      else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
+      else if (args[0] === "get" && args[1] === "url") {
+        cb(null, { stdout: "https://www.google.com/sorry/index?continue=https://www.google.com/search", stderr: "" });
+      } else if (args[0] === "snapshot") {
+        cb(null, {
+          stdout: [
+            "heading DuckDuckGo Result",
+            "- link DuckDuckGo Result",
+            "heading Another Result",
+            "- link Another Result",
+            "- link Third Result",
+          ].join("\n"),
+          stderr: "",
+        });
+      } else if (args[0] === "close") {
+        cb(null, { stdout: "closed", stderr: "" });
+      } else {
+        cb(null, { stdout: "ok", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../web-search-tools.js");
+    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+
+    expect(result).toMatchObject({
+      source: "duckduckgo",
+      query: "copilot bridge",
+      url: "https://html.duckduckgo.com/html/?q=copilot%20bridge",
+    });
+    expect(result.snapshot).toContain("heading DuckDuckGo Result");
+  });
+
+  it("reports Google captcha context when DuckDuckGo is also challenged", async () => {
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
+      else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
+      else if (args[0] === "get" && args[1] === "url") {
+        cb(null, { stdout: "https://www.google.com/sorry/index?continue=https://www.google.com/search", stderr: "" });
+      } else if (args[0] === "snapshot") {
+        cb(null, {
+          stdout: [
+            "- link DuckDuckGo",
+            "iframe",
+            "checkbox image challenge 1",
+            "checkbox image challenge 2",
+            "button Submit",
+            "Images not loading?",
+          ].join("\n"),
+          stderr: "",
+        });
+      } else if (args[0] === "close") {
+        cb(null, { stdout: "closed", stderr: "" });
+      } else {
+        cb(null, { stdout: "ok", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../web-search-tools.js");
+    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+
+    expect(result).toEqual({
+      textResultForLlm: "DuckDuckGo requires challenge verification before search results can be returned.",
+      resultType: "failure",
+      sessionLog: "Search engine: duckduckgo\n\nQuery: copilot bridge\n\nGoogle requires captcha verification before search results can be returned.\n\nDuckDuckGo requires challenge verification before search results can be returned.",
+    });
+  });
+
+  it("treats DuckDuckGo checkbox pages as challenge failures", async () => {
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
+      else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
+      else if (args[0] === "get" && args[1] === "url") {
+        cb(null, { stdout: "https://www.google.com/search?q=copilot%20bridge", stderr: "" });
+      } else if (args[0] === "snapshot" && args.includes("#rso")) {
+        cb(null, { stdout: "heading Search Results\n- link result one", stderr: "" });
+      } else if (args[0] === "snapshot") {
+        cb(null, {
+          stdout: [
+            "- link DuckDuckGo",
+            "iframe",
+            "checkbox image challenge 1",
+            "checkbox image challenge 2",
+            "checkbox image challenge 3",
+            "button Submit",
+            "Images not loading?",
+          ].join("\n"),
+          stderr: "",
+        });
+      } else if (args[0] === "close") {
+        cb(null, { stdout: "closed", stderr: "" });
+      } else {
+        cb(null, { stdout: "ok", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../web-search-tools.js");
+    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+
+    expect(result).toEqual({
+      textResultForLlm: "DuckDuckGo requires challenge verification before search results can be returned.",
+      resultType: "failure",
+      sessionLog: "Search engine: duckduckgo\n\nQuery: copilot bridge\n\nDuckDuckGo requires challenge verification before search results can be returned.",
+    });
+  });
+
+  it("still succeeds with normal Google results", async () => {
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
+      else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
+      else if (args[0] === "get" && args[1] === "url") {
+        cb(null, { stdout: "https://www.google.com/search?q=copilot%20bridge", stderr: "" });
+      } else if (args[0] === "snapshot" && args.includes("#rso")) {
+        cb(null, {
+          stdout: [
+            "heading Copilot Bridge",
+            "- link Copilot Bridge",
+            "heading GitHub Copilot",
+            "- link GitHub Copilot",
+            "- link Documentation",
+          ].join("\n"),
+          stderr: "",
+        });
+      } else if (args[0] === "close") {
+        cb(null, { stdout: "closed", stderr: "" });
+      } else {
+        cb(null, { stdout: "ok", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../web-search-tools.js");
+    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+
+    expect(result).toMatchObject({
+      source: "google",
+      query: "copilot bridge",
+      url: "https://www.google.com/search?q=copilot%20bridge",
+    });
+    expect(result.snapshot).toContain("heading Copilot Bridge");
+  });
 });

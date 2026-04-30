@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizePath, pathBasename, testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
@@ -17,6 +17,20 @@ const readlinkSyncMock = vi.fn();
 const readFileSyncMock = vi.fn();
 const unlinkSyncMock = vi.fn();
 const killMock = vi.spyOn(process, "kill");
+const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+}
+
+function restorePlatform(): void {
+  if (originalPlatformDescriptor) {
+    Object.defineProperty(process, "platform", originalPlatformDescriptor);
+  }
+}
 
 vi.mock("node:child_process", () => ({
   exec: execMock,
@@ -62,6 +76,10 @@ describe("agent-browser wrapper", () => {
     statMock.mockResolvedValue({ mtimeMs: Date.now() });
   });
 
+  afterEach(() => {
+    restorePlatform();
+  });
+
   it("passes explicit bridge session env to browser commands", async () => {
     execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
       cb(null, { stdout: "ok", stderr: "" });
@@ -100,7 +118,7 @@ describe("agent-browser wrapper", () => {
     const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(result.ok).toBe(true);
-    expect(unlinkSyncMock).toHaveBeenCalledTimes(3);
+    expect(unlinkSyncMock).toHaveBeenCalledTimes(5);
     expect(execFileMock).toHaveBeenCalledTimes(2);
   });
 
@@ -229,7 +247,11 @@ describe("agent-browser wrapper", () => {
     expect(cpMock).toHaveBeenCalledTimes(1);
     const [, , options] = cpMock.mock.calls[0];
     expect(options.filter(join(BROWSER_PROFILE, "SingletonLock"))).toBe(false);
+    expect(options.filter(join(BROWSER_PROFILE, "DevToolsActivePort"))).toBe(false);
+    expect(options.filter(join(BROWSER_PROFILE, "CrashpadMetrics-active.pma"))).toBe(false);
+    expect(options.filter(join(BROWSER_PROFILE, "Default", "Network", "Cookies-wal"))).toBe(false);
     expect(options.filter(join(BROWSER_PROFILE, "Default", "Cookies"))).toBe(true);
+    expect(options.filter(join(BROWSER_PROFILE, "Default", "Network", "Cookies"))).toBe(true);
     expect(execFileMock).toHaveBeenCalledWith(
       "agent-browser",
       ["close"],
@@ -245,6 +267,84 @@ describe("agent-browser wrapper", () => {
       recursive: true,
       force: true,
     });
+  });
+
+  it("retries clone copy while skipping locked cookie stores", async () => {
+    const lockedCookies = join(BROWSER_PROFILE, "Default", "Network", "Cookies");
+    cpMock
+      .mockRejectedValueOnce(Object.assign(new Error("busy"), {
+        code: "EBUSY",
+        path: lockedCookies,
+      }))
+      .mockResolvedValueOnce(undefined);
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const mod = await import("../agent-browser.js");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async () => "ok");
+
+    expect(cpMock).toHaveBeenCalledTimes(2);
+    const secondFilter = cpMock.mock.calls[1][2].filter;
+    expect(secondFilter(lockedCookies)).toBe(false);
+    expect(secondFilter(join(BROWSER_PROFILE, "Default", "Network", "Cookies2"))).toBe(true);
+  });
+
+  it("kills exact profile-bound Windows browser processes without a lock and retries", async () => {
+    setPlatform("win32");
+    const normalizedProfile = normalizePath(BROWSER_PROFILE);
+    const killed: number[] = [];
+    execFileMock
+      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any) => void) => {
+        cb({ stderr: "Chrome exited early (exit code: 21) without writing DevToolsActivePort" });
+        return {} as any;
+      })
+      .mockImplementationOnce((_file: string, args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+        expect(args[0]).toBe("-NoProfile");
+        cb(null, {
+          stdout: JSON.stringify([
+            {
+              ProcessId: 4242,
+              Name: "msedge.exe",
+              CommandLine: `"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --user-data-dir="${normalizedProfile}"`,
+            },
+            {
+              ProcessId: 4343,
+              Name: "msedge.exe",
+              CommandLine: `"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --user-data-dir="${normalizedProfile}-other"`,
+            },
+            {
+              ProcessId: 4444,
+              Name: "notedge.exe",
+              CommandLine: `"notedge.exe" --user-data-dir="${normalizedProfile}"`,
+            },
+          ]),
+          stderr: "",
+        });
+        return {} as any;
+      })
+      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      });
+    readlinkSyncMock.mockImplementation(() => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === 0) return true as never;
+      killed.push(pid);
+      return true as never;
+    }) as any);
+
+    const mod = await import("../agent-browser.js");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+    const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
+
+    expect(result.ok).toBe(true);
+    expect(killed).toEqual([4242]);
+    expect(unlinkSyncMock).toHaveBeenCalledWith(join(BROWSER_PROFILE, "DevToolsActivePort"));
+    expect(execFileMock).toHaveBeenCalledTimes(3);
   });
 
   it("keeps the primary lane pinned to the caller copilotHome", async () => {

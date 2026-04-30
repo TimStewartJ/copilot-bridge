@@ -4,7 +4,7 @@ import { exec, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { readFileSync, readlinkSync, unlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 import { promisify } from "node:util";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -13,6 +13,22 @@ const DEFAULT_TIMEOUT = 30_000;
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+const RUNTIME_FILES = [...LOCK_FILES, "DevToolsActivePort", "lockfile"];
+const LOCKED_COPY_ERROR_CODES = new Set(["EACCES", "EBUSY", "ENOENT", "EPERM"]);
+const RUNTIME_METRICS_FILE_RE = /^(?:CrashpadMetrics|BrowserMetrics).*\.pma$/i;
+const SQLITE_RUNTIME_FILE_RE = /(?:-journal|-shm|-wal)$/i;
+const COOKIE_STORE_RE = /(?:^|\/)Default\/Network\/Cookies$/i;
+const BROWSER_PROCESS_NAMES = new Set([
+  "chrome",
+  "chrome.exe",
+  "chromium",
+  "chromium.exe",
+  "google-chrome",
+  "google-chrome-stable",
+  "msedge",
+  "msedge.exe",
+  "microsoft-edge",
+]);
 const WEDGE_SIGNATURES = [
   "DevToolsActivePort",
   "Chrome exited early",
@@ -27,6 +43,12 @@ const laneQueues = new Map<string, Promise<void>>();
 const laneDepths = new Map<string, number>();
 const clonePoolStates = new Map<string, { available: number; waiters: Array<() => void> }>();
 const persistentCloneProfiles = new Set<string>();
+
+interface BrowserProcessInfo {
+  pid: number;
+  name: string;
+  commandLine: string;
+}
 
 export interface BrowserTarget {
   sessionName: string;
@@ -136,6 +158,177 @@ function failureCode(output: string): string {
   if (output.includes("Chrome exited early")) return "launch.chrome_exited_early";
   if (output.toLowerCase().includes("timed out")) return "launch.timeout";
   return "unknown";
+}
+
+function isLaunchProfileWedge(output: string): boolean {
+  const code = failureCode(output);
+  return code === "launch.devtools_active_port" || code === "launch.chrome_exited_early";
+}
+
+function stripWrappingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function looksLikeWindowsPath(value: string): boolean {
+  return /^[a-z]:[\\/]/i.test(value) || value.includes("\\");
+}
+
+function normalizeComparablePath(value: string): string {
+  const stripped = stripWrappingQuotes(value);
+  const resolved = looksLikeWindowsPath(stripped) ? stripped : resolve(stripped);
+  const normalized = resolved.replaceAll("\\", "/").replace(/\/+$/, "");
+  return platform() === "win32" || looksLikeWindowsPath(stripped) ? normalized.toLowerCase() : normalized;
+}
+
+function normalizedProfileRelativePath(sourceDir: string, sourcePath: string): string {
+  const root = normalizeComparablePath(sourceDir);
+  const source = normalizeComparablePath(sourcePath);
+  if (source === root) return "";
+  const prefix = `${root}/`;
+  if (source.startsWith(prefix)) return source.slice(prefix.length);
+  return relative(sourceDir, sourcePath).replaceAll("\\", "/");
+}
+
+function normalizedPathBasename(value: string): string {
+  const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+  return normalized.split("/").pop() ?? normalized;
+}
+
+export function shouldExcludeBrowserProfileCopyPath(sourceDir: string, sourcePath: string): boolean {
+  const rel = normalizedProfileRelativePath(sourceDir, sourcePath);
+  if (!rel) return false;
+  const base = normalizedPathBasename(rel);
+  if (RUNTIME_FILES.includes(base)) return true;
+  if (RUNTIME_METRICS_FILE_RE.test(base)) return true;
+  if (SQLITE_RUNTIME_FILE_RE.test(base)) return true;
+  return rel === "Crashpad" || rel.startsWith("Crashpad/");
+}
+
+function isKnownLockableBrowserProfilePath(sourceDir: string, sourcePath: string): boolean {
+  if (shouldExcludeBrowserProfileCopyPath(sourceDir, sourcePath)) return true;
+  return COOKIE_STORE_RE.test(normalizedProfileRelativePath(sourceDir, sourcePath));
+}
+
+function copyErrorPath(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const candidate = (err as { path?: unknown; dest?: unknown }).path ?? (err as { path?: unknown; dest?: unknown }).dest;
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function isSkippableBrowserProfileCopyError(err: unknown, sourceDir: string): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (!code || !LOCKED_COPY_ERROR_CODES.has(code)) return false;
+  const path = copyErrorPath(err);
+  return !!path && isKnownLockableBrowserProfilePath(sourceDir, path);
+}
+
+function splitCommandLine(commandLine: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+
+  for (let index = 0; index < commandLine.length; index++) {
+    const char = commandLine[index];
+    if ((char === '"' || char === "'") && (!quote || quote === char)) {
+      quote = quote ? null : char;
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (current) parts.push(current);
+  return parts;
+}
+
+function browserProcessNameMatches(name: string | undefined, commandLine: string): boolean {
+  const nameBase = normalizedPathBasename(name ?? "");
+  if (nameBase && BROWSER_PROCESS_NAMES.has(nameBase.toLowerCase())) return true;
+  const firstArg = splitCommandLine(commandLine)[0];
+  const firstArgBase = normalizedPathBasename(firstArg ?? "");
+  return !!firstArgBase && BROWSER_PROCESS_NAMES.has(firstArgBase.toLowerCase());
+}
+
+function extractUserDataDir(commandLine: string): string | undefined {
+  const parts = splitCommandLine(commandLine);
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part === "--user-data-dir") return parts[index + 1];
+    if (part.startsWith("--user-data-dir=")) return part.slice("--user-data-dir=".length);
+  }
+  return undefined;
+}
+
+function isBrowserProcessForProfile(processInfo: BrowserProcessInfo, profileDir: string): boolean {
+  if (!browserProcessNameMatches(processInfo.name, processInfo.commandLine)) return false;
+  const userDataDir = extractUserDataDir(processInfo.commandLine);
+  return !!userDataDir && normalizeComparablePath(userDataDir) === normalizeComparablePath(profileDir);
+}
+
+function parseWindowsBrowserProcessJson(output: string): BrowserProcessInfo[] {
+  const trimmed = output.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed) as unknown;
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const data = row as { ProcessId?: unknown; Name?: unknown; CommandLine?: unknown };
+    const pid = Number(data.ProcessId);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || typeof data.CommandLine !== "string") return [];
+    return [{
+      pid,
+      name: typeof data.Name === "string" ? data.Name : "",
+      commandLine: data.CommandLine,
+    }];
+  });
+}
+
+function parsePosixBrowserProcessList(output: string): BrowserProcessInfo[] {
+  const rows: BrowserProcessInfo[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    rows.push({ pid, name: match[2], commandLine: match[3] });
+  }
+  return rows;
+}
+
+async function listBrowserProcesses(): Promise<BrowserProcessInfo[]> {
+  if (platform() === "win32") {
+    const { stdout } = await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe' OR Name = 'msedge.exe'\" | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+    ], { encoding: "utf-8", timeout: 5_000, windowsHide: true });
+    return parseWindowsBrowserProcessJson(stdout);
+  }
+
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], {
+    encoding: "utf-8",
+    timeout: 5_000,
+  });
+  return parsePosixBrowserProcessList(stdout);
+}
+
+async function findBrowserProcessesForProfile(profileDir: string): Promise<BrowserProcessInfo[]> {
+  const processes = await listBrowserProcesses();
+  return processes.filter((processInfo) => isBrowserProcessForProfile(processInfo, profileDir));
 }
 
 function readLockOwner(
@@ -302,18 +495,43 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function copySanitizedProfile(sourceDir: string, targetDir: string): Promise<void> {
   await mkdir(dirname(targetDir), { recursive: true });
-  await rm(targetDir, { recursive: true, force: true });
-  try {
-    await cp(sourceDir, targetDir, {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-      filter: (src) => !LOCK_FILES.includes(basename(src)),
-    });
-  } catch (err) {
+  const skippedLockedPaths = new Set<string>();
+  const maxAttempts = 10;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await rm(targetDir, { recursive: true, force: true });
-    throw err;
+    try {
+      await cp(sourceDir, targetDir, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        filter: (src) => {
+          const rel = normalizedProfileRelativePath(sourceDir, src);
+          return !skippedLockedPaths.has(rel) && !shouldExcludeBrowserProfileCopyPath(sourceDir, src);
+        },
+      });
+      return;
+    } catch (err) {
+      if (isSkippableBrowserProfileCopyError(err, sourceDir)) {
+        const path = copyErrorPath(err);
+        if (path) {
+          const rel = normalizedProfileRelativePath(sourceDir, path);
+          if (!skippedLockedPaths.has(rel)) {
+            skippedLockedPaths.add(rel);
+            logBrowser("clone.copy.skip_locked_file", {
+              source: rel,
+              code: (err as NodeJS.ErrnoException).code,
+            });
+            continue;
+          }
+        }
+      }
+      await rm(targetDir, { recursive: true, force: true });
+      throw err;
+    }
   }
+  await rm(targetDir, { recursive: true, force: true });
+  throw new Error(`Failed to copy browser profile after skipping ${skippedLockedPaths.size} locked runtime files.`);
 }
 
 async function resolveCloneSourceProfile(primaryTarget: BrowserTarget): Promise<{ profileDir: string; sourceKind: string }> {
@@ -551,23 +769,62 @@ export async function isAgentBrowserInstalled(): Promise<boolean> {
   return (await run(cmd, 5_000)).ok;
 }
 
-/** Remove stale Chrome profile lock files if the owning process is gone. */
+function clearProfileRuntimeFiles(profileDir: string): number {
+  let removed = 0;
+  for (const name of RUNTIME_FILES) {
+    try {
+      unlinkSync(join(profileDir, name));
+      removed++;
+    } catch {
+      // may not exist
+    }
+  }
+  return removed;
+}
+
+/** Remove stale Chrome profile runtime files if the owning process is gone. */
 function clearStaleLocks(profileDir: string): boolean {
   try {
     const lock = readLockOwner(profileDir);
     if (!lock?.pid || lock.alive) return false;
 
-    for (const name of LOCK_FILES) {
-      try {
-        unlinkSync(join(profileDir, name));
-      } catch {
-        // may not exist
-      }
-    }
+    clearProfileRuntimeFiles(profileDir);
     return true;
   } catch {
     return false;
   }
+}
+
+async function killProfileBoundBrowserProcesses(
+  profileDir: string,
+  metadata: Record<string, unknown>,
+): Promise<number[]> {
+  let processes: BrowserProcessInfo[];
+  try {
+    processes = await findBrowserProcessesForProfile(profileDir);
+  } catch (err) {
+    logBrowser("recovery.profile_process_discovery_failed", {
+      ...metadata,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+
+  const killedPids: number[] = [];
+  for (const processInfo of processes) {
+    try {
+      process.kill(processInfo.pid);
+      killedPids.push(processInfo.pid);
+    } catch (err) {
+      logBrowser("recovery.kill_profile_process_failed", {
+        ...metadata,
+        pid: processInfo.pid,
+        processName: processInfo.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return killedPids;
 }
 
 /**
@@ -641,6 +898,57 @@ export async function ab(
           : "failed_new_signature",
     });
     return retry;
+  }
+
+  if (!lock && isLaunchProfileWedge(result.output)) {
+    const recoveryMetadata = {
+      browserOpId,
+      toolName: options.toolName,
+      browserSession: browserTarget.sessionName,
+      commandName,
+      signature,
+    };
+    logBrowser("recovery.no_lock_file", recoveryMetadata);
+
+    const killStartedAt = Date.now();
+    const killedPids = await killProfileBoundBrowserProcesses(browserTarget.profileDir, recoveryMetadata);
+    if (killedPids.length > 0) {
+      await delay(500);
+      const clearedRuntimeFiles = clearProfileRuntimeFiles(browserTarget.profileDir);
+      const killDuration = Date.now() - killStartedAt;
+      logBrowser("recovery.kill_profile_processes", {
+        ...recoveryMetadata,
+        killedPids,
+        clearedRuntimeFiles,
+        durationMs: killDuration,
+      });
+      recordBrowserSpan(options.telemetryStore, "browser.recovery.kill_profile_processes", killDuration, {
+        ...recoveryMetadata,
+        killedPids,
+        clearedRuntimeFiles,
+      });
+
+      const retryStartedAt = Date.now();
+      const retry = await runBrowserCommand(command, timeout, {
+        ...options,
+        browserTarget,
+        browserOpId,
+        attempt: 2,
+      });
+      recordBrowserSpan(options.telemetryStore, "browser.recovery.retry", Date.now() - retryStartedAt, {
+        ...recoveryMetadata,
+        retryOutcome: retry.ok
+          ? "succeeded"
+          : failureSignature(retry.output) === signature
+            ? "failed_same_signature"
+            : "failed_new_signature",
+      });
+      return retry;
+    }
+    recordBrowserSpan(options.telemetryStore, "browser.recovery.no_profile_processes", Date.now() - killStartedAt, {
+      ...recoveryMetadata,
+    });
+    return result;
   }
 
   if (lock?.alive && lock.pid) {
