@@ -43,6 +43,7 @@ export default function SortableTaskItem({
 
   const isRail = variant === "rail";
   const momentumBadges = getTaskListMomentumBadges(task);
+  const needsUserInputCount = indicator?.needsUserInputCount ?? 0;
 
   return (
     <div ref={setNodeRef} style={style} className="group">
@@ -103,6 +104,9 @@ export default function SortableTaskItem({
           ))}
           <span>{timeAgo(indicator?.lastActivity ?? task.updatedAt)}</span>
           {(indicator?.busyCount ?? 0) > 0 && <span>· {indicator!.busyCount} in flight</span>}
+          {needsUserInputCount > 0 && (
+            <span>· {needsUserInputCount} answer{needsUserInputCount === 1 ? "" : "s"} needed</span>
+          )}
           {(indicator?.unreadCount ?? 0) > 0 && <span>· {indicator!.unreadCount} unread</span>}
         </div>
       </button>

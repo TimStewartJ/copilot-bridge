@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Session, Task } from "../api";
-import { countChatTabUnread, countTaskTabUnread, countTaskUnread } from "./useTaskIndicators";
+import { countChatTabUnread, countTaskTabUnread, countTaskUnread, getTaskIndicator } from "./useTaskIndicators";
 
 const NOW = "2026-04-17T15:00:00.000Z";
 
@@ -91,5 +91,46 @@ describe("countTaskUnread", () => {
     const unread = countTaskUnread(task, sessionMap, (sessionId) => sessionId !== "stalled-1");
 
     expect(unread).toBe(1);
+  });
+
+  it("keeps pending user input out of mark-read counts", () => {
+    const task = createTask({ sessionIds: ["needs-answer"] });
+    const sessionMap = new Map<string, Session>([
+      ["needs-answer", createSession({
+        sessionId: "needs-answer",
+        runState: "busy",
+        busy: true,
+        needsUserInput: true,
+        pendingUserInputCount: 1,
+      })],
+    ]);
+
+    const unread = countTaskUnread(task, sessionMap, () => false, "needs-answer");
+
+    expect(unread).toBe(0);
+  });
+});
+
+describe("getTaskIndicator", () => {
+  it("marks a task unread when any linked session needs user input", () => {
+    const task = createTask({ sessionIds: ["needs-answer"] });
+    const sessionMap = new Map<string, Session>([
+      ["needs-answer", createSession({
+        sessionId: "needs-answer",
+        runState: "busy",
+        busy: true,
+        needsUserInput: true,
+        pendingUserInputCount: 1,
+      })],
+    ]);
+
+    const indicator = getTaskIndicator(task, sessionMap, () => false, "needs-answer");
+
+    expect(indicator).toMatchObject({
+      busy: true,
+      unread: true,
+      unreadCount: 0,
+      needsUserInputCount: 1,
+    });
   });
 });

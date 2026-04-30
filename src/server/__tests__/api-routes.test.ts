@@ -2532,6 +2532,34 @@ describe("Session routes (mocked)", () => {
     ]);
   });
 
+  it("GET /api/dashboard treats tasks with input-waiting sessions as unread", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      {
+        sessionId: "ask-1",
+        summary: "Awaiting decision",
+        lastVisibleActivityAt: "2026-04-19T01:00:00.000Z",
+      } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockImplementation((sessionId: string) => (
+      sessionId === "ask-1" ? "busy" : "idle"
+    ));
+    ctx.sessionManager.getPendingUserInputCount = vi.fn().mockImplementation((sessionId: string) => (
+      sessionId === "ask-1" ? 1 : 0
+    ));
+    const task = ctx.taskStore.createTask("Needs user choice");
+    ctx.taskStore.linkSession(task.id, "ask-1");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastActiveTask).toEqual(expect.objectContaining({
+      task: expect.objectContaining({ id: task.id }),
+      hasUnread: true,
+      hasBusySession: true,
+    }));
+    expect(res.body.unreadSessions).toEqual([]);
+  });
+
   it("GET /api/dashboard returns derived task momentum queues", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-01T12:00:00.000Z"));

@@ -2164,6 +2164,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         if (!lastRead) return true;
         return new Date(activityTime).getTime() > new Date(lastRead).getTime();
       };
+      const needsUserInput = (session: { needsUserInput?: boolean; pendingUserInputCount?: number }): boolean =>
+        session.needsUserInput === true || (session.pendingUserInputCount ?? 0) > 0;
 
       // Busy sessions
       const busySessions = enrichedSessions
@@ -2235,10 +2237,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
           else if (enriched?.status === null || enriched === undefined) prUnknown++;
         }
 
-        // Unread check — busy sessions excluded (busy is a separate signal)
+        // Unread check — busy sessions only count when they are waiting on user input.
         const hasUnread = task.sessionIds.some((sid) => {
           const session = sessionById.get(sid);
-          return session && !session.busy && isUnread(sid, session.lastVisibleActivityAt);
+          return !!session && (
+            needsUserInput(session)
+            || (!session.busy && isUnread(sid, session.lastVisibleActivityAt))
+          );
         });
 
         // Last activity across task sessions

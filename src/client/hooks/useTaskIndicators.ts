@@ -7,6 +7,7 @@ export interface TaskIndicator {
   unread: boolean;
   busyCount: number;
   unreadCount: number;
+  needsUserInputCount?: number;
   lastActivity: string;
 }
 
@@ -51,12 +52,52 @@ export function getTaskLastActivity(
   return latest;
 }
 
+export function sessionNeedsUserInput(session: Pick<Session, "needsUserInput" | "pendingUserInputCount">): boolean {
+  return session.needsUserInput === true || (session.pendingUserInputCount ?? 0) > 0;
+}
+
+export function getTaskIndicator(
+  task: Task,
+  sessionMap: Map<string, Session>,
+  isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
+  activeSessionId?: string | null,
+): TaskIndicator {
+  let busyCount = 0;
+  let stalledCount = 0;
+  let unreadCount = 0;
+  let needsUserInputCount = 0;
+
+  for (const sid of task.sessionIds) {
+    const session = sessionMap.get(sid);
+    if (!session || session.archived) continue;
+
+    if (sessionNeedsUserInput(session)) needsUserInputCount++;
+
+    if (isSessionActive(session)) {
+      busyCount++;
+      if (getSessionRunState(session) === "stalled") stalledCount++;
+      continue;
+    }
+    if (sid === activeSessionId) continue;
+    if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
+  }
+
+  const lastActivity = getTaskLastActivity(task, sessionMap);
+  return {
+    busy: busyCount > 0,
+    stalled: stalledCount > 0,
+    unread: unreadCount > 0 || needsUserInputCount > 0,
+    busyCount,
+    unreadCount,
+    needsUserInputCount,
+    lastActivity,
+  };
+}
+
 /**
- * Derives active/unread indicators per task from linked sessions.
- * Active sessions are excluded from the unread check — unread only applies
- * once a session goes idle with new content the user hasn't seen.
- * The actively-viewed session is excluded from the unread count to avoid
- * showing an unread dot for content the user is currently looking at.
+ * Derives active/unread indicators per task from linked sessions. Read-state
+ * unread still excludes active sessions, but pending user input keeps a task
+ * visibly unread until the prompt is answered.
  */
 export default function useTaskIndicators(
   tasks: Task[],
@@ -73,22 +114,7 @@ export default function useTaskIndicators(
   const indicators = useMemo(() => {
     const result = new Map<string, TaskIndicator>();
     for (const task of tasks) {
-      let busyCount = 0;
-      let stalledCount = 0;
-      let unreadCount = 0;
-      for (const sid of task.sessionIds) {
-        const session = sessionMap.get(sid);
-        if (!session || session.archived) continue;
-        if (isSessionActive(session)) {
-          busyCount++;
-          if (getSessionRunState(session) === "stalled") stalledCount++;
-          continue;
-        }
-        if (sid === activeSessionId) continue;
-        if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
-      }
-      const lastActivity = getTaskLastActivity(task, sessionMap);
-      result.set(task.id, { busy: busyCount > 0, stalled: stalledCount > 0, unread: unreadCount > 0, busyCount, unreadCount, lastActivity });
+      result.set(task.id, getTaskIndicator(task, sessionMap, isUnread, activeSessionId));
     }
     return result;
   }, [tasks, sessionMap, isUnread, activeSessionId]);
