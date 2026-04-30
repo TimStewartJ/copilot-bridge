@@ -6,26 +6,84 @@ import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, AdoProv
 // ── Token cache ───────────────────────────────────────────────────
 
 let cachedToken: { value: string; expiresAt: number } | null = null;
+const TOKEN_REFRESH_BUFFER_MS = 60_000;
+const TOKEN_CACHE_TTL = 50 * 60_000;
+const TOKEN_FETCH_TIMEOUT_MS = 30_000;
+const TOKEN_FETCH_ATTEMPTS = 2;
+
+class AdoRequestError extends Error {
+  readonly transient: boolean;
+
+  constructor(message: string, transient: boolean) {
+    super(message);
+    this.name = "AdoRequestError";
+    this.transient = transient;
+  }
+}
+
+function isTokenTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "ETIMEDOUT" || /timed? ?out/i.test(err.message);
+}
+
+function fetchAccessTokenOnce(): string {
+  const result = execSync(
+    // 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps public resource ID
+    // (used by all az CLI / MSAL integrations — not a secret)
+    'az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv',
+    { encoding: "utf-8", timeout: TOKEN_FETCH_TIMEOUT_MS },
+  ).trim();
+  if (!result) {
+    throw new Error("ADO access token command returned empty result");
+  }
+  return result;
+}
 
 function getAccessToken(): string {
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) {
+  if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
     return cachedToken.value;
   }
 
-  try {
-    const result = execSync(
-      // 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps public resource ID
-      // (used by all az CLI / MSAL integrations — not a secret)
-      'az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv',
-      { encoding: "utf-8", timeout: 15_000 },
-    ).trim();
-
-    cachedToken = { value: result, expiresAt: Date.now() + 50 * 60_000 };
-    return result;
-  } catch (err) {
-    console.error("[ado] Failed to get access token:", err);
-    throw new Error("Could not obtain ADO access token");
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TOKEN_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const result = fetchAccessTokenOnce();
+      cachedToken = { value: result, expiresAt: Date.now() + TOKEN_CACHE_TTL };
+      return result;
+    } catch (err) {
+      lastError = err;
+      const shouldRetry = attempt < TOKEN_FETCH_ATTEMPTS && isTokenTimeoutError(err);
+      console.error(`[ado] Failed to get access token${shouldRetry ? " (retrying once)" : ""}:`, err);
+      if (!shouldRetry) {
+        break;
+      }
+    }
   }
+
+  throw new AdoRequestError("Could not obtain ADO access token", isTokenTimeoutError(lastError));
+}
+
+function responseSnippet(body: string): string {
+  const compact = body.replace(/\s+/g, " ").trim();
+  return compact.slice(0, 200);
+}
+
+function describeResponse(contentType: string, body: string): string {
+  const parts = [`content-type: ${contentType || "unknown"}`];
+  const snippet = responseSnippet(body);
+  if (snippet) {
+    parts.push(`body starts with ${JSON.stringify(snippet)}`);
+  }
+  return parts.join(", ");
+}
+
+function isHtmlResponse(contentType: string, body: string): boolean {
+  const normalizedType = contentType.toLowerCase();
+  const normalizedBody = body.trimStart().slice(0, 64).toLowerCase();
+  return normalizedType.includes("text/html")
+    || normalizedBody.startsWith("<!doctype")
+    || normalizedBody.startsWith("<html");
 }
 
 async function adoFetch(url: string): Promise<any> {
@@ -36,10 +94,29 @@ async function adoFetch(url: string): Promise<any> {
       Accept: "application/json",
     },
   });
+  const contentType = res.headers.get("content-type") ?? "";
+  const body = await res.text();
   if (!res.ok) {
-    throw new Error(`ADO API ${res.status}: ${res.statusText}`);
+    const transient = res.status === 408 || res.status === 429 || res.status >= 500;
+    throw new AdoRequestError(
+      `ADO API ${res.status}: ${res.statusText} (${describeResponse(contentType, body)})`,
+      transient,
+    );
   }
-  return res.json();
+  if (isHtmlResponse(contentType, body)) {
+    throw new AdoRequestError(
+      `ADO API returned HTML instead of JSON (${describeResponse(contentType, body)})`,
+      true,
+    );
+  }
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new AdoRequestError(
+      `ADO API returned invalid JSON (${describeResponse(contentType, body)})`,
+      true,
+    );
+  }
 }
 
 // ── Enrichment cache ──────────────────────────────────────────────
@@ -47,11 +124,50 @@ async function adoFetch(url: string): Promise<any> {
 interface CacheEntry<T> {
   data: T;
   expiresAt: number;
+  staleUntil: number;
 }
 
 const workItemCache = new Map<string, CacheEntry<EnrichedWorkItem>>();
 const prCache = new Map<string, CacheEntry<EnrichedPR>>();
 const CACHE_TTL = 60_000;
+const STALE_CACHE_TTL = 24 * 60 * 60_000;
+
+function shouldUseStaleFallback(err: unknown): boolean {
+  if (err instanceof AdoRequestError) return err.transient;
+  return err instanceof TypeError;
+}
+
+export function clearAdoProviderState(): void {
+  cachedToken = null;
+  workItemCache.clear();
+  prCache.clear();
+}
+
+function readCachedValue<T>(
+  cache: Map<string, CacheEntry<T>>,
+  key: string,
+  now: number,
+  allowStale = false,
+): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (now < entry.expiresAt) return entry.data;
+  if (allowStale && now < entry.staleUntil) return entry.data;
+  return null;
+}
+
+function writeCachedValue<T>(
+  cache: Map<string, CacheEntry<T>>,
+  key: string,
+  data: T,
+  now: number,
+): void {
+  cache.set(key, {
+    data,
+    expiresAt: now + CACHE_TTL,
+    staleUntil: now + STALE_CACHE_TTL,
+  });
+}
 
 // ── Provider ──────────────────────────────────────────────────────
 
@@ -75,24 +191,75 @@ export class AdoProvider implements WorkTrackingProvider {
     return `https://${this.org}.visualstudio.com/${this.project}/_git/${pr.repoName ?? pr.repoId}/pullrequest/${pr.prId}`;
   }
 
+  private workItemCacheKey(id: string): string {
+    return `${this.org}:${id}`;
+  }
+
+  private prCacheKey(pr: Pick<PRRef, "repoId" | "prId">): string {
+    return `${this.org}:${pr.repoId}:${pr.prId}`;
+  }
+
+  private getCachedWorkItem(id: string, now: number, allowStale = false): EnrichedWorkItem | null {
+    return readCachedValue(workItemCache, this.workItemCacheKey(id), now, allowStale);
+  }
+
+  private getCachedPR(pr: PRRef, now: number, allowStale = false): EnrichedPR | null {
+    return readCachedValue(prCache, this.prCacheKey(pr), now, allowStale);
+  }
+
+  private cacheWorkItem(item: EnrichedWorkItem, now: number): void {
+    writeCachedValue(workItemCache, this.workItemCacheKey(item.id), item, now);
+  }
+
+  private cachePR(pr: EnrichedPR, now: number): void {
+    writeCachedValue(prCache, this.prCacheKey(pr), pr, now);
+  }
+
+  private buildWorkItemFallback(id: string): EnrichedWorkItem {
+    return {
+      id,
+      provider: "ado",
+      title: null,
+      state: null,
+      type: null,
+      assignedTo: null,
+      areaPath: null,
+      url: this.getWorkItemUrl(id),
+    };
+  }
+
+  private buildPRFallback(pr: PRRef): EnrichedPR {
+    return {
+      repoId: pr.repoId,
+      repoName: pr.repoName ?? null,
+      prId: pr.prId,
+      provider: "ado",
+      title: null,
+      status: null,
+      createdBy: null,
+      reviewerCount: 0,
+      url: this.getPullRequestUrl(pr),
+    };
+  }
+
   async fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]> {
     if (ids.length === 0) return [];
 
     const now = Date.now();
-    const results: EnrichedWorkItem[] = [];
+    const resultMap = new Map<string, EnrichedWorkItem>();
     const toFetch: string[] = [];
 
     for (const id of ids) {
-      const key = `${this.org}:${id}`;
-      const cached = workItemCache.get(key);
-      if (cached && now < cached.expiresAt) {
-        results.push(cached.data);
+      const cached = this.getCachedWorkItem(id, now);
+      if (cached) {
+        resultMap.set(id, cached);
       } else {
         toFetch.push(id);
       }
     }
 
     if (toFetch.length > 0) {
+      let fetchError: unknown = null;
       try {
         const idList = toFetch.join(",");
         const fields = "System.Title,System.State,System.WorkItemType,System.AssignedTo,System.AreaPath";
@@ -112,42 +279,37 @@ export class AdoProvider implements WorkTrackingProvider {
             areaPath: f["System.AreaPath"] ?? null,
             url: this.getWorkItemUrl(String(item.id)),
           };
-          const key = `${this.org}:${item.id}`;
-          workItemCache.set(key, { data: enriched, expiresAt: now + CACHE_TTL });
-          results.push(enriched);
+          this.cacheWorkItem(enriched, now);
+          resultMap.set(enriched.id, enriched);
         }
       } catch (err) {
+        fetchError = err;
         console.error("[ado] Failed to fetch work items:", err);
-        for (const id of toFetch) {
-          results.push({
-            id,
-            provider: "ado",
-            title: null,
-            state: null,
-            type: null,
-            assignedTo: null,
-            areaPath: null,
-            url: this.getWorkItemUrl(id),
-          });
-        }
+      }
+
+      for (const id of toFetch) {
+        if (resultMap.has(id)) continue;
+        const fallback = shouldUseStaleFallback(fetchError)
+          ? this.getCachedWorkItem(id, now, true) ?? this.buildWorkItemFallback(id)
+          : this.buildWorkItemFallback(id);
+        resultMap.set(id, fallback);
       }
     }
 
-    return ids.map((id) => results.find((r) => r.id === id)!);
+    return ids.map((id) => resultMap.get(id)!);
   }
 
   async fetchPullRequests(prs: PRRef[]): Promise<EnrichedPR[]> {
     if (prs.length === 0) return [];
 
     const now = Date.now();
-    const results: EnrichedPR[] = [];
+    const resultMap = new Map<string, EnrichedPR>();
     const toFetch: PRRef[] = [];
 
     for (const pr of prs) {
-      const key = `${this.org}:${pr.repoId}:${pr.prId}`;
-      const cached = prCache.get(key);
-      if (cached && now < cached.expiresAt) {
-        results.push(cached.data);
+      const cached = this.getCachedPR(pr, now);
+      if (cached) {
+        resultMap.set(this.prCacheKey(pr), cached);
       } else {
         toFetch.push(pr);
       }
@@ -177,25 +339,17 @@ export class AdoProvider implements WorkTrackingProvider {
           url: this.getPullRequestUrl({ ...pr, repoName: data.repository?.name ?? pr.repoName }),
         };
 
-        const key = `${this.org}:${pr.repoId}:${pr.prId}`;
-        prCache.set(key, { data: enriched, expiresAt: now + CACHE_TTL });
-        results.push(enriched);
+        this.cachePR(enriched, now);
+        resultMap.set(this.prCacheKey(pr), enriched);
       } catch (err) {
         console.error(`[ado] Failed to fetch PR ${pr.repoId}#${pr.prId}:`, err);
-        results.push({
-          repoId: pr.repoId,
-          repoName: pr.repoName ?? null,
-          prId: pr.prId,
-          provider: "ado",
-          title: null,
-          status: null,
-          createdBy: null,
-          reviewerCount: 0,
-          url: this.getPullRequestUrl(pr),
-        });
+        const fallback = shouldUseStaleFallback(err)
+          ? this.getCachedPR(pr, now, true) ?? this.buildPRFallback(pr)
+          : this.buildPRFallback(pr);
+        resultMap.set(this.prCacheKey(pr), fallback);
       }
     }
 
-    return prs.map((pr) => results.find((r) => r.repoId === pr.repoId && r.prId === pr.prId)!);
+    return prs.map((pr) => resultMap.get(this.prCacheKey(pr))!);
   }
 }

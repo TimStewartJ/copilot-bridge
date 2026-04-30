@@ -1,7 +1,7 @@
 // Provider registry — resolves providers by name, enriches items grouped by provider
 
 import type { AppSettings } from "../settings-store.js";
-import { AdoProvider } from "./ado.js";
+import { AdoProvider, clearAdoProviderState } from "./ado.js";
 import { GitHubProvider } from "./github.js";
 import { LinearProvider } from "./linear.js";
 import { NullProvider } from "./null.js";
@@ -59,6 +59,7 @@ export function getProvider(name: ProviderName): WorkTrackingProvider {
 /** Clear cached providers (call when settings change). */
 export function clearProviderCache(): void {
   providerCache.clear();
+  clearAdoProviderState();
 }
 
 // ── Batch enrichment — groups by provider, fetches in parallel ────
