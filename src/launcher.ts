@@ -6,7 +6,7 @@ import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/dependency-sync.js";
-import { buildBridgeChildEnv, loadBridgeEnv } from "./server/env-loader.js";
+import { buildBridgeChildEnv, loadBridgeEnvManagedKeys } from "./server/env-loader.js";
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
 import {
   killProcessTree as platformKillTree,
@@ -32,6 +32,8 @@ import {
   writeRestartState,
 } from "./server/restart-state.js";
 import { canUseDevtunnelCli, getDevtunnelCliStatus } from "./server/tunnel.js";
+import { resolveBridgeDistribution } from "./server/distribution-mode.js";
+import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
   clearPersistentRollbackFailureState,
   hasPersistentRollbackFailureState,
@@ -67,15 +69,25 @@ import { isChildProcessActive } from "./launcher-process.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
+const BRIDGE_ENV_PATH = process.env.BRIDGE_ENV_FILE?.trim() || undefined;
+const MANAGED_ENV_KEYS = new Set(loadBridgeEnvManagedKeys(BRIDGE_ENV_PATH));
+const RUNTIME_PATHS = resolveRuntimePaths(process.env);
+Object.assign(process.env, RUNTIME_PATHS.env);
+const DISTRIBUTION = resolveBridgeDistribution(process.env, ROOT);
+const DATA_DIR = RUNTIME_PATHS.dataDir;
 const NODE_PATH = process.execPath; // use the same node binary that's running the launcher
 const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
-const SIGNAL_FILE = join(ROOT, "data", "restart.signal");
-const RESTART_STATE_FILE = join(ROOT, "data", "restart-state.json");
-const PRE_DEPLOY_SHA_FILE = join(ROOT, "data", "pre-deploy-sha");
-const FAILED_ROLLBACK_STATE_FILE = join(ROOT, "data", "rollback-required");
-const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
+const SIGNAL_FILE = join(DATA_DIR, "restart.signal");
+const RESTART_STATE_FILE = join(DATA_DIR, "restart-state.json");
+const PRE_DEPLOY_SHA_FILE = join(DATA_DIR, "pre-deploy-sha");
+const FAILED_ROLLBACK_STATE_FILE = join(DATA_DIR, "rollback-required");
+const SOURCE_SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
+const COMPILED_SERVER_ENTRY = join(ROOT, "dist", "server", "index.js");
+const SERVER_ENTRY = DISTRIBUTION.mode === "release" ? COMPILED_SERVER_ENTRY : SOURCE_SERVER_ENTRY;
+if (!process.env.BRIDGE_LAUNCHER_LOG_PATH) {
+  process.env.BRIDGE_LAUNCHER_LOG_PATH = join(DATA_DIR, "launcher.log");
+}
 const LAUNCHER_LOG_PATH = getLauncherLogPath();
-const MANAGED_ENV_KEYS = new Set(loadBridgeEnv());
 const MAX_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 120_000;
@@ -212,7 +224,7 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
   }
 }
 
-const DEPS_HASH_FILE = join(ROOT, "data", "deps-hash");
+const DEPS_HASH_FILE = join(DATA_DIR, "deps-hash");
 
 /** Hash package files and patch-package inputs to detect dependency changes. */
 function depsHash(): string {
@@ -221,6 +233,11 @@ function depsHash(): string {
 
 /** Run npm install if dependency inputs have changed since last install. */
 function ensureDeps(): boolean {
+  if (DISTRIBUTION.mode === "release") {
+    log("Release mode - skipping source dependency sync");
+    return true;
+  }
+
   const current = depsHash();
   try {
     if (existsSync(DEPS_HASH_FILE) && readFileSync(DEPS_HASH_FILE, "utf-8").trim() === current) {
@@ -242,7 +259,7 @@ function ensureDeps(): boolean {
   }
   prepared.discard();
   // Update stored hash
-  const dataDir = join(ROOT, "data");
+  const dataDir = DATA_DIR;
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
   writeFileSync(DEPS_HASH_FILE, current);
   log("npm install succeeded — deps hash updated");
@@ -250,10 +267,18 @@ function ensureDeps(): boolean {
 }
 
 function build(): boolean {
+  if (DISTRIBUTION.mode === "release") {
+    log("Release mode - skipping source validation build");
+    return true;
+  }
   return runLauncherBuild({ ensureDeps, run, log });
 }
 
 function rollback(): boolean {
+  if (DISTRIBUTION.mode === "release") {
+    log("Release mode - git rollback is unavailable; packaged updater rollback must restore the previous app version");
+    return false;
+  }
   log("Rolling back to last checkpoint...");
   const preDeployFile = PRE_DEPLOY_SHA_FILE;
   let rollbackTarget = "HEAD";
@@ -651,13 +676,14 @@ function shouldUseDevtunnel(): boolean {
 }
 
 function startServer(): ChildProcess {
-  const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS);
+  const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, { BRIDGE_DATA_DIR: DATA_DIR });
   const port = resolveBridgePort(env);
   currentServerPort = port;
   log(`Starting server on port ${port}...`);
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
-  const child = spawn(NODE_PATH, [TSX_CLI, SERVER_ENTRY], {
+  const serverArgs = SERVER_ENTRY.endsWith(".ts") ? [TSX_CLI, SERVER_ENTRY] : [SERVER_ENTRY];
+  const child = spawn(NODE_PATH, serverArgs, {
     cwd: ROOT,
     stdio: ["ignore", "inherit", "inherit"],
     env,
@@ -1069,14 +1095,18 @@ async function main() {
   }
 
   if (startupDecision.startServer) {
-    // Pull latest from origin on startup
-    const currentBranch = run("git rev-parse --abbrev-ref HEAD");
-    const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
-    const pullResult = run(`git pull --rebase origin ${branchName}`);
-    if (pullResult.ok) {
-      log("Pulled latest from origin");
+    if (DISTRIBUTION.mode === "development" && DISTRIBUTION.gitAvailable) {
+      // Pull latest from origin on startup
+      const currentBranch = run("git rev-parse --abbrev-ref HEAD");
+      const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
+      const pullResult = run(`git pull --rebase origin ${branchName}`);
+      if (pullResult.ok) {
+        log("Pulled latest from origin");
+      } else {
+        log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+      }
     } else {
-      log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+      log(`${DISTRIBUTION.mode} mode - skipping startup git pull`);
     }
 
     // Ensure dependencies are in sync after pull

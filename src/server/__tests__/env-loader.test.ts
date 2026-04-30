@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildBridgeChildEnv, loadBridgeEnv } from "../env-loader.js";
+import { buildBridgeChildEnv, loadBridgeEnv, loadBridgeEnvManagedKeys } from "../env-loader.js";
 
 const TEST_KEYS = [
   "BRIDGE_TEST_ENV_ONLY",
@@ -69,6 +69,61 @@ describe("loadBridgeEnv", () => {
       writeFileSync(envPath, "BRIDGE_TEST_ENV_REFRESH=from-file-two\n");
       const childEnv = buildBridgeChildEnv(launcherEnv, managedKeys, envPath);
       expect(childEnv.BRIDGE_TEST_ENV_REFRESH).toBe("from-file-two");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tracks file keys as managed when a wrapper preloaded them into launcher env", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-env-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "BRIDGE_TEST_ENV_REFRESH=from-file-one\n");
+
+      const launcherEnv: NodeJS.ProcessEnv = { BRIDGE_TEST_ENV_REFRESH: "from-wrapper" };
+      const managedKeys = loadBridgeEnvManagedKeys(envPath, launcherEnv);
+      expect(managedKeys).toEqual(["BRIDGE_TEST_ENV_REFRESH"]);
+      expect(launcherEnv.BRIDGE_TEST_ENV_REFRESH).toBe("from-wrapper");
+
+      writeFileSync(envPath, "BRIDGE_TEST_ENV_REFRESH=from-file-two\n");
+      const childEnv = buildBridgeChildEnv(launcherEnv, managedKeys, envPath);
+      expect(childEnv.BRIDGE_TEST_ENV_REFRESH).toBe("from-file-two");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes keys newly added to the .env file after launcher startup", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-env-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "");
+
+      const launcherEnv: NodeJS.ProcessEnv = { BRIDGE_TEST_ENV_REFRESH: "from-launcher-default" };
+      const managedKeys = loadBridgeEnvManagedKeys(envPath, launcherEnv);
+      expect(managedKeys).toEqual([]);
+
+      writeFileSync(envPath, "BRIDGE_TEST_ENV_REFRESH=from-file-two\n");
+      const childEnv = buildBridgeChildEnv(launcherEnv, managedKeys, envPath);
+      expect(childEnv.BRIDGE_TEST_ENV_REFRESH).toBe("from-file-two");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the launcher pin env keys that require a full launcher restart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-env-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "BRIDGE_TEST_ENV_REFRESH=from-file\n");
+
+      const childEnv = buildBridgeChildEnv(
+        { BRIDGE_TEST_ENV_REFRESH: "from-launcher-default" },
+        [],
+        envPath,
+        { BRIDGE_TEST_ENV_REFRESH: "from-launcher-owned" },
+      );
+      expect(childEnv.BRIDGE_TEST_ENV_REFRESH).toBe("from-launcher-owned");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

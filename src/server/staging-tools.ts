@@ -16,6 +16,7 @@ import { createDirectoryLink, killProcessTree, removeDirectoryLink } from "./pla
 import { buildPublicUrl } from "./tunnel.js";
 import { DEPLOY_GATE, PREVIEW_GATE, runValidationGateAsync } from "./validation-pipeline.js";
 import { config } from "./config.js";
+import { isBridgeReleaseMode } from "./distribution-mode.js";
 import { toolFailure } from "./tool-results.js";
 import {
   buildCommandFailureOutput,
@@ -233,7 +234,7 @@ export async function cleanupPreviewTarget(
 }
 
 export function shouldManageStagingArtifacts(): boolean {
-  return process.env.BRIDGE_DEMO_MODE !== "true";
+  return process.env.BRIDGE_DEMO_MODE !== "true" && !isBridgeReleaseMode(process.env, PRODUCTION_ROOT);
 }
 
 function isMissingOptionalStagingModule(error: unknown, specifier: string): boolean {
