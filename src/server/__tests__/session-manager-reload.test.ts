@@ -127,6 +127,45 @@ describe("SessionManager warmSession", () => {
     expect(resumedSession.setModel).not.toHaveBeenCalled();
     expect(manager.sessionObjects.get("session-warm-1")).toBe(resumedSession);
   });
+
+  it("coalesces concurrent warm resumes for the same session", async () => {
+    const manager = createManager();
+    const resumedSession = {
+      setModel: vi.fn(),
+      rpc: {
+        mcp: { list: vi.fn().mockResolvedValue({ servers: [] }) },
+      },
+    };
+    let resolveResume!: (session: typeof resumedSession) => void;
+    const resumeSession = vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
+      resolveResume = resolve;
+    }));
+    manager.client = { resumeSession };
+
+    const firstWarm = manager.warmSession("session-warm-race");
+    const secondWarm = manager.warmSession("session-warm-race");
+
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    resolveResume(resumedSession);
+    await Promise.all([firstWarm, secondWarm]);
+
+    expect(manager.sessionObjects.get("session-warm-race")).toBe(resumedSession);
+  });
+
+  it("skips warm when the session is already running", async () => {
+    const manager = createManager();
+    const resumeSession = vi.fn();
+    manager.client = { resumeSession };
+    manager.sessionRuns.set("session-running", {
+      state: "busy",
+      startedAt: Date.now(),
+      lastEventAt: Date.now(),
+    });
+
+    await expect(manager.warmSession("session-running")).resolves.toBeUndefined();
+
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("SessionManager getSessionMessages resume", () => {

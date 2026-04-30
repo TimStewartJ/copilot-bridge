@@ -89,6 +89,10 @@ function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   return false;
 }
 
+export function isVisibleTransformedEntryEvent(event: any, sessionId?: string): boolean {
+  return isVisibleMessageEvent(event, sessionId);
+}
+
 function parsePublishedVisualResult(rawResult: unknown): Record<string, unknown> | undefined {
   if (rawResult && typeof rawResult === "object") {
     const result = rawResult as Record<string, unknown>;
@@ -128,6 +132,62 @@ function isExpectedVisualArtifactUrl(value: unknown, sessionId: string | undefin
   return parsed.pathname.endsWith(expectedPath);
 }
 
+export function getVisualArtifactFromToolCompletion(
+  event: any,
+  toolName: string | undefined,
+  sessionId?: string,
+): TransformedVisual | undefined {
+  const data = event?.data;
+  if (toolName !== "publish_visual" || !sessionId || data?.success === false) return undefined;
+  const rawResult = parsePublishedVisualResult(data?.result);
+  if (!rawResult || rawResult.__kind !== "visual.published") return undefined;
+
+  const artifactId = rawResult.artifactId;
+  if (
+    typeof artifactId !== "string"
+    || !isExpectedVisualArtifactUrl(rawResult.url, sessionId, artifactId)
+    || (
+      rawResult.downloadUrl !== undefined
+      && !isExpectedVisualArtifactUrl(rawResult.downloadUrl, sessionId, artifactId, "/download")
+    )
+  ) {
+    return undefined;
+  }
+
+  const kind: "image" | "mermaid" | "vega-lite" | "html" =
+    rawResult.kind === "mermaid"
+      ? "mermaid"
+      : rawResult.kind === "vega-lite"
+        ? "vega-lite"
+        : rawResult.kind === "html"
+          ? "html"
+          : "image";
+  return {
+    artifactId,
+    kind,
+    title: typeof rawResult.title === "string"
+      ? rawResult.title
+      : typeof rawResult.displayName === "string"
+        ? rawResult.displayName
+        : artifactId,
+    displayName: typeof rawResult.displayName === "string" ? rawResult.displayName : artifactId,
+    mimeType: typeof rawResult.mimeType === "string"
+      ? rawResult.mimeType
+      : kind === "mermaid"
+        ? "text/vnd.mermaid"
+        : kind === "vega-lite"
+          ? "application/vnd.vegalite+json"
+          : kind === "html"
+            ? "text/html"
+            : "image/png",
+    size: typeof rawResult.size === "number" ? rawResult.size : 0,
+    url: rawResult.url,
+    downloadUrl: typeof rawResult.downloadUrl === "string" ? rawResult.downloadUrl : rawResult.url,
+    ...(typeof rawResult.caption === "string" ? { caption: rawResult.caption } : {}),
+    ...(typeof rawResult.altText === "string" ? { altText: rawResult.altText } : {}),
+  };
+}
+
 export function getVisibleEventTimestamp(event: any, sessionId?: string): string | undefined {
   if (!isVisibleMessageEvent(event, sessionId)) return undefined;
   return event?.data?.timestamp ?? event?.timestamp;
@@ -163,15 +223,24 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
   return lastVisibleActivityAt;
 }
 
+export interface TransformEventsToMessagesOptions {
+  initialTurnIndex?: number;
+  initialActiveTurnId?: string;
+}
+
 /**
  * Transform raw SDK/JSONL events into a chronological list of entries.
  * Pass 1 indexes tool completion results, pass 2 emits entries in event order.
  */
-export function transformEventsToMessages(events: any[], sessionId?: string): TransformedEntry[] {
+export function transformEventsToMessages(
+  events: any[],
+  sessionId?: string,
+  options: TransformEventsToMessagesOptions = {},
+): TransformedEntry[] {
   const entries: TransformedEntry[] = [];
   let idx = 0;
-  let turnIndex = 0;
-  let activeTurnId: string | undefined;
+  let turnIndex = options.initialTurnIndex ?? 0;
+  let activeTurnId = options.initialActiveTurnId;
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, { success: boolean; result?: string; timestamp?: string }>();
@@ -195,40 +264,8 @@ export function transformEventsToMessages(events: any[], sessionId?: string): Tr
         timestamp: (event as any).timestamp,
       });
       openToolCallIds.delete(data.toolCallId);
-      // Detect visual.published result — set by publish_visual tool on success
-      const rawResult = parsePublishedVisualResult(data.result);
-      if (
-        toolNames.get(data.toolCallId) === "publish_visual"
-        && sessionId
-        &&
-        rawResult && typeof rawResult === "object"
-        && (rawResult as any).__kind === "visual.published"
-        && data.success !== false
-      ) {
-        const r = rawResult as any;
-        if (
-          typeof r.artifactId === "string"
-          && isExpectedVisualArtifactUrl(r.url, sessionId, r.artifactId)
-          && (
-            r.downloadUrl === undefined
-            || isExpectedVisualArtifactUrl(r.downloadUrl, sessionId, r.artifactId, "/download")
-          )
-        ) {
-          const kind: "image" | "mermaid" | "vega-lite" | "html" = r.kind === "mermaid" ? "mermaid" : r.kind === "vega-lite" ? "vega-lite" : r.kind === "html" ? "html" : "image";
-          visualResults.set(data.toolCallId, {
-            artifactId: r.artifactId,
-            kind,
-            title: r.title ?? r.displayName ?? r.artifactId,
-            displayName: r.displayName ?? r.artifactId,
-            mimeType: r.mimeType ?? (kind === "mermaid" ? "text/vnd.mermaid" : kind === "vega-lite" ? "application/vnd.vegalite+json" : kind === "html" ? "text/html" : "image/png"),
-            size: typeof r.size === "number" ? r.size : 0,
-            url: r.url,
-            downloadUrl: r.downloadUrl ?? r.url,
-            ...(r.caption ? { caption: r.caption } : {}),
-            ...(r.altText ? { altText: r.altText } : {}),
-          });
-        }
-      }
+      const visual = getVisualArtifactFromToolCompletion(event, toolNames.get(data.toolCallId), sessionId);
+      if (visual) visualResults.set(data.toolCallId, visual);
     } else if ((event.type === "tool.execution_progress" || event.type === "tool.execution_partial_result") && data?.toolCallId) {
       const nextText = event.type === "tool.execution_progress"
         ? data.progressMessage
