@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, memo, useMemo } from "react";
+import { useEffect, useRef, useState, memo, useMemo, type ReactNode } from "react";
 import type { ToolCall } from "../api";
 import type { ToolCallTreeNode } from "../lib/tool-call-tree";
 import { CheckCircle2, Loader2, Settings, XCircle, ChevronDown, ChevronRight } from "lucide-react";
@@ -21,12 +21,12 @@ function formatToolTime(tc: ToolCall): string | null {
 interface ToolCallBlockProps {
   toolCall: ToolCall;
   childNodes?: ToolCallTreeNode[];
-  renderChildNode?: (childNode: ToolCallTreeNode) => React.ReactNode;
+  renderChildNodes?: (childNodes: ToolCallTreeNode[]) => ReactNode;
   defaultExpanded?: boolean;
   contextOnly?: boolean;
 }
 
-export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderChildNode, defaultExpanded = false, contextOnly = false }: ToolCallBlockProps) {
+export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderChildNodes, defaultExpanded = false, contextOnly = false }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(defaultExpanded && childNodes.length > 0);
   const [showFullModal, setShowFullModal] = useState(false);
   const autoExpandedRef = useRef(defaultExpanded && childNodes.length > 0);
@@ -116,9 +116,9 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
               )}
             </div>
           )}
-          {childNodes.length > 0 && renderChildNode && (
+          {childNodes.length > 0 && renderChildNodes && (
             <div className="pl-3 pr-1 py-1.5 space-y-1 border-l-2" style={{ borderLeftColor: "var(--color-agent-border)" }}>
-              {childNodes.map((childNode) => renderChildNode(childNode))}
+              {renderChildNodes(childNodes)}
             </div>
           )}
         </div>

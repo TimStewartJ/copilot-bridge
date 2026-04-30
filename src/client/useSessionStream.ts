@@ -14,6 +14,7 @@ import { API_BASE, startFleetRun } from "./api";
 export interface PendingTool {
   toolCallId: string;
   name: string;
+  turnId?: string;
   args?: ToolArgs;
   parentToolCallId?: string;
   isSubAgent?: boolean;
@@ -21,8 +22,15 @@ export interface PendingTool {
   progressText?: string;
 }
 
+interface SnapshotTool extends PendingTool {
+  result?: string;
+  success?: boolean;
+  completedAt?: string;
+}
+
 export interface PendingToolPrelude {
   toolCallId: string;
+  turnId?: string;
   name?: string;
   progressText?: string;
   isSubAgent?: boolean;
@@ -35,6 +43,7 @@ export interface StreamState {
   streamingContent: string;
   activeTools: PendingTool[];
   pendingUserInputs: PendingUserInputRequestView[];
+  currentTurnTools: ToolCall[];
   intentText: string;
   streamStatus: StreamStatus;
   isStreaming: boolean;
@@ -154,6 +163,43 @@ function removePendingUserInput(
   return requests.filter((request) => request.requestId !== requestId);
 }
 
+function pendingToolToToolCall(tool: PendingTool, partial: Partial<ToolCall> = {}): ToolCall {
+  return {
+    toolCallId: tool.toolCallId,
+    name: tool.name,
+    args: tool.args,
+    parentToolCallId: tool.parentToolCallId,
+    isSubAgent: tool.isSubAgent,
+    startedAt: tool.startedAt,
+    progressText: tool.progressText,
+    ...partial,
+  };
+}
+
+function upsertToolCall(tools: ToolCall[], nextTool: ToolCall): ToolCall[] {
+  const existingIndex = tools.findIndex((tool) => tool.toolCallId === nextTool.toolCallId);
+  if (existingIndex < 0) return [...tools, nextTool];
+  return tools.map((tool, index) => (
+    index === existingIndex
+      ? {
+          ...tool,
+          ...nextTool,
+          toolCallId: tool.toolCallId,
+          name: getKnownToolName(nextTool.name) ?? getKnownToolName(tool.name) ?? nextTool.name,
+          args: nextTool.args ?? tool.args,
+          result: nextTool.result ?? tool.result,
+          progressText: nextTool.progressText ?? tool.progressText,
+          success: nextTool.success ?? tool.success,
+          parentToolCallId: nextTool.parentToolCallId ?? tool.parentToolCallId,
+          isSubAgent: nextTool.isSubAgent ?? tool.isSubAgent,
+          childToolCalls: nextTool.childToolCalls ?? tool.childToolCalls,
+          startedAt: nextTool.startedAt ?? tool.startedAt,
+          completedAt: nextTool.completedAt ?? tool.completedAt,
+        }
+      : tool
+  ));
+}
+
 export function getKnownToolName(name: unknown): string | undefined {
   if (typeof name !== "string") return undefined;
   const normalized = name.trim();
@@ -166,6 +212,7 @@ export function bufferPendingToolPrelude(
 ): PendingToolPrelude {
   return {
     toolCallId: patch.toolCallId,
+    turnId: patch.turnId ?? existing?.turnId,
     name: patch.name ?? existing?.name,
     progressText: patch.progressText ?? existing?.progressText,
     isSubAgent: patch.isSubAgent ?? existing?.isSubAgent,
@@ -176,13 +223,14 @@ export function resolvePendingToolName(name: unknown, prelude?: PendingToolPrelu
   return getKnownToolName(name) ?? prelude?.name ?? "unknown";
 }
 
-export function materializePendingTool<T extends Pick<PendingTool, "name" | "progressText" | "isSubAgent">>(
+export function materializePendingTool<T extends Pick<PendingTool, "name" | "progressText" | "isSubAgent"> & { turnId?: string }>(
   tool: T,
   prelude?: PendingToolPrelude,
 ): T {
   if (!prelude) return tool;
   return {
     ...tool,
+    turnId: tool.turnId ?? prelude.turnId,
     progressText: prelude.progressText ?? tool.progressText,
     isSubAgent: tool.isSubAgent ?? prelude.isSubAgent,
   };
@@ -211,6 +259,7 @@ export function collectTerminalPendingTools(
       args: tool.args ?? existing.args,
       parentToolCallId: tool.parentToolCallId ?? existing.parentToolCallId,
       isSubAgent: tool.isSubAgent ?? existing.isSubAgent,
+      turnId: tool.turnId ?? existing.turnId,
       startedAt: tool.startedAt ?? existing.startedAt,
       progressText: tool.progressText ?? existing.progressText,
     };
@@ -222,6 +271,7 @@ export function collectTerminalPendingTools(
     upsert(materializePendingTool({
       toolCallId: prelude.toolCallId,
       name: resolvePendingToolName(undefined, prelude),
+      turnId: prelude.turnId,
     }, prelude));
   }
 
@@ -229,12 +279,13 @@ export function collectTerminalPendingTools(
 }
 
 function createToolEntry(
-  tool: Pick<PendingTool, "toolCallId" | "name" | "args" | "parentToolCallId" | "isSubAgent" | "startedAt" | "progressText">,
+  tool: Pick<PendingTool, "toolCallId" | "name" | "turnId" | "args" | "parentToolCallId" | "isSubAgent" | "startedAt" | "progressText">,
   partial: Partial<ToolCall> = {},
   liveSource: "snapshot" | "event" = "event",
 ): ChatEntry {
   return {
     type: "tool",
+    ...(tool.turnId ? { turnId: tool.turnId } : {}),
     liveSource,
     toolCall: {
       toolCallId: tool.toolCallId,
@@ -270,6 +321,108 @@ function formatTerminalContent(content: string, terminalType?: string): string {
   return content;
 }
 
+function getEventTurnId(event: { turnId?: unknown }): string | undefined {
+  return typeof event.turnId === "string" && event.turnId ? event.turnId : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizeSnapshotTool(rawTool: unknown, activeTurnId: string | undefined): SnapshotTool | undefined {
+  if (!isRecord(rawTool)) return undefined;
+  return {
+    toolCallId: optionalString(rawTool.toolCallId) ?? "",
+    name: optionalString(rawTool.name) ?? "unknown",
+    turnId: optionalString(rawTool.turnId) ?? activeTurnId,
+    args: rawTool.args as ToolArgs | undefined,
+    startedAt: optionalString(rawTool.startedAt),
+    progressText: optionalString(rawTool.progressText),
+    parentToolCallId: optionalString(rawTool.parentToolCallId),
+    isSubAgent: optionalBoolean(rawTool.isSubAgent),
+    result: optionalString(rawTool.result),
+    success: optionalBoolean(rawTool.success),
+    completedAt: optionalString(rawTool.completedAt),
+  };
+}
+
+function mergeSnapshotTool(existing: SnapshotTool, nextTool: SnapshotTool): SnapshotTool {
+  return {
+    ...existing,
+    ...nextTool,
+    toolCallId: existing.toolCallId,
+    name: getKnownToolName(nextTool.name) ?? getKnownToolName(existing.name) ?? nextTool.name,
+    args: nextTool.args !== undefined ? nextTool.args : existing.args,
+    parentToolCallId: nextTool.parentToolCallId ?? existing.parentToolCallId,
+    isSubAgent: nextTool.isSubAgent ?? existing.isSubAgent,
+    turnId: nextTool.turnId ?? existing.turnId,
+    startedAt: nextTool.startedAt ?? existing.startedAt,
+    progressText: nextTool.progressText ?? existing.progressText,
+    result: nextTool.result ?? existing.result,
+    success: nextTool.success ?? existing.success,
+    completedAt: nextTool.completedAt ?? existing.completedAt,
+  };
+}
+
+function normalizeSnapshotTools(rawTools: unknown, activeTurnId: string | undefined, sessionId: string): SnapshotTool[] {
+  if (!Array.isArray(rawTools)) return [];
+  const tools: SnapshotTool[] = [];
+  const indexByToolCallId = new Map<string, number>();
+  for (const rawTool of rawTools) {
+    const tool = normalizeSnapshotTool(rawTool, activeTurnId);
+    if (!tool || isHiddenTool(tool.name, tool.args, sessionId)) continue;
+    const existingIndex = indexByToolCallId.get(tool.toolCallId);
+    if (existingIndex === undefined) {
+      indexByToolCallId.set(tool.toolCallId, tools.length);
+      tools.push(tool);
+    } else {
+      tools[existingIndex] = mergeSnapshotTool(tools[existingIndex], tool);
+    }
+  }
+  return tools;
+}
+
+function createSnapshotToolEntry(tool: SnapshotTool): ChatEntry {
+  return createToolEntry(tool, {
+    result: tool.result,
+    success: tool.success,
+    completedAt: tool.completedAt,
+  }, "snapshot");
+}
+
+function snapshotToolToToolCall(tool: SnapshotTool): ToolCall {
+  return pendingToolToToolCall(tool, {
+    result: tool.result,
+    success: tool.success,
+    completedAt: tool.completedAt,
+  });
+}
+
+export function buildSnapshotToolState(
+  event: { activeTools?: unknown; currentTurnTools?: unknown; turnId?: unknown },
+  sessionId: string,
+): { activeTools: PendingTool[]; currentTurnTools: ToolCall[]; toolEntries: ChatEntry[] } {
+  const activeTurnId = getEventTurnId(event);
+  const activeTools = normalizeSnapshotTools(event.activeTools, activeTurnId, sessionId);
+  const snapshotToolSource = Array.isArray(event.currentTurnTools)
+    ? event.currentTurnTools
+    : event.activeTools;
+  const snapshotTools = normalizeSnapshotTools(snapshotToolSource, activeTurnId, sessionId);
+  return {
+    activeTools,
+    currentTurnTools: snapshotTools.map((tool) => snapshotToolToToolCall(tool)),
+    toolEntries: snapshotTools.map((tool) => createSnapshotToolEntry(tool)),
+  };
+}
+
 export function buildTerminalToolEntries(
   tools: PendingTool[],
   terminalType: "done" | "error" | "aborted" | "shutdown",
@@ -290,6 +443,7 @@ export function useSessionStream(
     streamingContent: "",
     activeTools: [],
     pendingUserInputs: [],
+    currentTurnTools: [],
     intentText: "",
     hadVisibleOutput: false,
     mcpServers: [],
@@ -337,6 +491,7 @@ export function useSessionStream(
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedContent = "";
+        let activeTurnId: string | undefined;
         const refreshTitle = (withRetries = false) => {
           onTitleChangedRef.current();
           if (!withRetries) return;
@@ -356,8 +511,11 @@ export function useSessionStream(
             renderedActiveToolsRef.current,
             pendingToolPrelude.values(),
           ).filter((tool) => !isHiddenTool(tool.name, tool.args, sid));
-          if (tools.length > 0) {
-            onEntriesRef.current(buildTerminalToolEntries(tools, terminalType, completedAt));
+          const groupedTools = activeTurnId
+            ? tools.map((tool) => tool.turnId ? tool : { ...tool, turnId: activeTurnId })
+            : tools;
+          if (groupedTools.length > 0) {
+            onEntriesRef.current(buildTerminalToolEntries(groupedTools, terminalType, completedAt));
           }
           activeToolMeta.clear();
           pendingToolPrelude.clear();
@@ -381,16 +539,19 @@ export function useSessionStream(
               switch (event.type) {
                 case "snapshot": {
                   if (event.complete) {
+                    const turnId = getEventTurnId(event);
+                    activeTurnId = turnId;
                     emitTerminalToolEntries(
                       event.terminalType ?? (event.errorMessage ? "error" : "done"),
                       event.terminalTimestamp ?? event.timestamp,
                     );
                     if (event.errorMessage) {
-                      onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.errorMessage}` }]);
+                      onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.errorMessage}`, ...(turnId ? { turnId } : {}) }]);
                     } else if (typeof event.finalContent === "string" && event.finalContent.length > 0) {
                       const text = formatTerminalContent(event.finalContent, event.terminalType);
-                      onEntriesRef.current([{ role: "assistant", content: text }]);
+                      onEntriesRef.current([{ role: "assistant", content: text, ...(turnId ? { turnId } : {}) }]);
                     }
+                    activeTurnId = undefined;
                     setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                     refreshTitle(event.terminalType === "done");
                     break;
@@ -399,39 +560,34 @@ export function useSessionStream(
                     onEntriesRef.current([{ role: "user", content: event.pendingPrompt }]);
                   }
                   accumulatedContent = event.accumulatedContent ?? "";
+                  activeTurnId = getEventTurnId(event);
                   const pendingUserInputs = normalizePendingUserInputRequests(event.pendingUserInputs);
-                  const tools: PendingTool[] = (event.activeTools ?? [])
-                    .filter((t: any) => !isHiddenTool(t.name ?? "unknown", t.args, sid))
-                    .map((t: any) => ({
-                      toolCallId: t.toolCallId ?? "",
-                      name: t.name ?? "unknown",
-                      args: t.args,
-                      startedAt: t.startedAt,
-                      progressText: t.progressText,
-                      parentToolCallId: t.parentToolCallId,
-                      isSubAgent: t.isSubAgent,
-                    }));
+                  const snapshotToolState = buildSnapshotToolState(event, sid);
+                  const tools = snapshotToolState.activeTools;
                   activeToolMeta.clear();
                   pendingToolPrelude.clear();
                   for (const t of tools) activeToolMeta.set(t.toolCallId, t);
                   renderedActiveToolsRef.current = tools;
-                  if (tools.length > 0) {
-                    onEntriesRef.current(tools.map((tool) => createToolEntry(tool, {}, "snapshot")));
+                  if (snapshotToolState.toolEntries.length > 0) {
+                    onEntriesRef.current(snapshotToolState.toolEntries);
                   }
+                  const hasVisibleSnapshotOutput = Boolean(accumulatedContent || snapshotToolState.toolEntries.length > 0);
                   setStreamState((prev) => ({
                     ...prev,
                     streamingContent: accumulatedContent,
                     activeTools: tools,
                     pendingUserInputs,
+                    currentTurnTools: snapshotToolState.currentTurnTools,
                     intentText: event.intentText ?? "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
-                    streamStatus: accumulatedContent || tools.length > 0 ? "streaming" : "thinking",
+                    streamStatus: hasVisibleSnapshotOutput || tools.length > 0 ? "streaming" : "thinking",
                     isStreaming: true,
-                    hadVisibleOutput: prev.hadVisibleOutput || Boolean(accumulatedContent || tools.length > 0),
+                    hadVisibleOutput: prev.hadVisibleOutput || hasVisibleSnapshotOutput || tools.length > 0,
                   }));
                   break;
                 }
                 case "thinking":
+                  activeTurnId = getEventTurnId(event);
                   setStreamState((s) => ({ ...s, streamStatus: "thinking", isStreaming: true }));
                   break;
                 case "intent":
@@ -449,7 +605,8 @@ export function useSessionStream(
                   break;
                 case "assistant_partial":
                   if (event.content) {
-                    onEntriesRef.current([{ role: "assistant", content: event.content }]);
+                    const turnId = getEventTurnId(event);
+                    onEntriesRef.current([{ role: "assistant", content: event.content, ...(turnId ? { turnId } : {}) }]);
                   }
                   const partialHadVisibleOutput = Boolean(accumulatedContent || event.content);
                   accumulatedContent = "";
@@ -460,10 +617,12 @@ export function useSessionStream(
                   }));
                   break;
                 case "tool_start": {
+                  const turnId = getEventTurnId(event);
                   const prelude = event.toolCallId ? pendingToolPrelude.get(event.toolCallId) : undefined;
                   const tool = materializePendingTool<PendingTool>({
                     toolCallId: event.toolCallId ?? "",
                     name: resolvePendingToolName(event.name, prelude),
+                    turnId: turnId ?? prelude?.turnId,
                     args: event.args,
                     parentToolCallId: event.parentToolCallId,
                     isSubAgent: event.isSubAgent,
@@ -476,7 +635,8 @@ export function useSessionStream(
                   onEntriesRef.current([createToolEntry(tool)]);
                   setStreamState((s) => ({
                     ...s,
-                    activeTools: [...s.activeTools, tool],
+                    activeTools: upsertPendingTool(s.activeTools, tool),
+                    currentTurnTools: upsertToolCall(s.currentTurnTools, pendingToolToToolCall(tool)),
                     streamStatus: "streaming",
                     isStreaming: true,
                     hadVisibleOutput: true,
@@ -485,13 +645,18 @@ export function useSessionStream(
                 }
                 case "tool_progress":
                   if (typeof event.toolCallId === "string") {
+                    const turnId = getEventTurnId(event);
                     const meta = activeToolMeta.get(event.toolCallId);
+                    let nextCurrentTurnTool: ToolCall | undefined;
                     if (meta) {
+                      meta.turnId = meta.turnId ?? turnId;
                       meta.progressText = event.message ?? meta.progressText;
                       const nextTool = {
                         ...meta,
+                        turnId: meta.turnId ?? turnId,
                         progressText: event.message ?? meta.progressText,
                       };
+                      nextCurrentTurnTool = pendingToolToToolCall(nextTool);
                       renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, nextTool);
                       onEntriesRef.current([createToolEntry(nextTool)]);
                     } else {
@@ -499,6 +664,7 @@ export function useSessionStream(
                         event.toolCallId,
                         bufferPendingToolPrelude(pendingToolPrelude.get(event.toolCallId), {
                           toolCallId: event.toolCallId,
+                          turnId,
                           name: getKnownToolName(event.name),
                           progressText: event.message ?? "",
                         }),
@@ -508,21 +674,29 @@ export function useSessionStream(
                       ...s,
                       activeTools: s.activeTools.map((tool) =>
                         tool.toolCallId === event.toolCallId
-                          ? { ...tool, progressText: event.message ?? tool.progressText }
+                          ? { ...tool, turnId: tool.turnId ?? turnId, progressText: event.message ?? tool.progressText }
                           : tool,
                       ),
+                      currentTurnTools: nextCurrentTurnTool
+                        ? upsertToolCall(s.currentTurnTools, nextCurrentTurnTool)
+                        : s.currentTurnTools,
                     }));
                   }
                   break;
                 case "tool_output":
                   if (typeof event.toolCallId === "string") {
+                    const turnId = getEventTurnId(event);
                     const meta = activeToolMeta.get(event.toolCallId);
+                    let nextCurrentTurnTool: ToolCall | undefined;
                     if (meta) {
+                      meta.turnId = meta.turnId ?? turnId;
                       meta.progressText = event.content ?? meta.progressText;
                       const nextTool = {
                         ...meta,
+                        turnId: meta.turnId ?? turnId,
                         progressText: event.content ?? meta.progressText,
                       };
+                      nextCurrentTurnTool = pendingToolToToolCall(nextTool);
                       renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, nextTool);
                       onEntriesRef.current([createToolEntry(nextTool)]);
                     } else {
@@ -530,6 +704,7 @@ export function useSessionStream(
                         event.toolCallId,
                         bufferPendingToolPrelude(pendingToolPrelude.get(event.toolCallId), {
                           toolCallId: event.toolCallId,
+                          turnId,
                           name: getKnownToolName(event.name),
                           progressText: event.content ?? "",
                         }),
@@ -539,37 +714,50 @@ export function useSessionStream(
                       ...s,
                       activeTools: s.activeTools.map((tool) =>
                         tool.toolCallId === event.toolCallId
-                          ? { ...tool, progressText: event.content ?? tool.progressText }
+                          ? { ...tool, turnId: tool.turnId ?? turnId, progressText: event.content ?? tool.progressText }
                           : tool,
                       ),
+                      currentTurnTools: nextCurrentTurnTool
+                        ? upsertToolCall(s.currentTurnTools, nextCurrentTurnTool)
+                        : s.currentTurnTools,
                     }));
                   }
                   break;
                 case "tool_update": {
+                  const turnId = getEventTurnId(event);
                   const meta = activeToolMeta.get(event.toolCallId as string);
+                  let nextCurrentTurnTool: ToolCall | undefined;
                   if (meta) {
-                    meta.name = event.name ?? meta.name;
-                    meta.isSubAgent = (event.isSubAgent as boolean) ?? meta.isSubAgent;
-                    renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, {
+                    const nextTool = {
                       ...meta,
+                      turnId: meta.turnId ?? turnId,
                       name: event.name ?? meta.name,
                       isSubAgent: (event.isSubAgent as boolean) ?? meta.isSubAgent,
-                    });
-                    onEntriesRef.current([createToolEntry(meta)]);
+                    };
+                    meta.turnId = nextTool.turnId;
+                    meta.name = nextTool.name;
+                    meta.isSubAgent = nextTool.isSubAgent;
+                    nextCurrentTurnTool = pendingToolToToolCall(nextTool);
+                    renderedActiveToolsRef.current = upsertPendingTool(renderedActiveToolsRef.current, nextTool);
+                    onEntriesRef.current([createToolEntry(nextTool)]);
                   }
                   setStreamState((s) => ({
                     ...s,
                     activeTools: s.activeTools.map((t) =>
                       t.toolCallId === event.toolCallId
-                        ? { ...t, name: event.name ?? t.name, isSubAgent: event.isSubAgent ?? t.isSubAgent }
+                        ? { ...t, turnId: t.turnId ?? turnId, name: event.name ?? t.name, isSubAgent: event.isSubAgent ?? t.isSubAgent }
                         : t,
                     ),
+                    currentTurnTools: nextCurrentTurnTool
+                      ? upsertToolCall(s.currentTurnTools, nextCurrentTurnTool)
+                      : s.currentTurnTools,
                   }));
                   if (!meta && typeof event.toolCallId === "string") {
                     pendingToolPrelude.set(
                       event.toolCallId,
                       bufferPendingToolPrelude(pendingToolPrelude.get(event.toolCallId), {
                         toolCallId: event.toolCallId,
+                        turnId,
                         name: getKnownToolName(event.name),
                         isSubAgent: event.isSubAgent as boolean | undefined,
                       }),
@@ -578,6 +766,7 @@ export function useSessionStream(
                   break;
                 }
                 case "tool_done": {
+                  const turnId = getEventTurnId(event);
                   const meta = activeToolMeta.get(event.toolCallId);
                   const prelude = pendingToolPrelude.get(event.toolCallId);
                   const toolName = meta?.name ?? resolvePendingToolName(event.name, prelude);
@@ -598,10 +787,12 @@ export function useSessionStream(
                     startedAt: meta?.startedAt,
                     completedAt: event.timestamp,
                   };
-                  onEntriesRef.current([{ type: "tool", toolCall: tc }]);
+                  const entryTurnId = meta?.turnId ?? prelude?.turnId ?? turnId;
+                  onEntriesRef.current([{ type: "tool", ...(entryTurnId ? { turnId: entryTurnId } : {}), toolCall: tc }]);
                   setStreamState((s) => ({
                     ...s,
                     activeTools: s.activeTools.filter((t) => t.toolCallId !== event.toolCallId),
+                    currentTurnTools: upsertToolCall(s.currentTurnTools, tc),
                     hadVisibleOutput: true,
                   }));
                   break;
@@ -641,38 +832,46 @@ export function useSessionStream(
                   onTitleChangedRef.current();
                   break;
                 case "done":
+                  activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("done", event.timestamp);
                   if (event.content) {
-                    onEntriesRef.current([{ role: "assistant", content: event.content }]);
+                    onEntriesRef.current([{ role: "assistant", content: event.content, ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   refreshTitle(true);
                   accumulatedContent = "";
+                  activeTurnId = undefined;
                   break;
                 case "aborted": {
+                  activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("aborted", event.timestamp);
                   const text = event.content || accumulatedContent;
                   if (text) {
-                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "aborted") }]);
+                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "aborted"), ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";
+                  activeTurnId = undefined;
                   break;
                 }
                 case "shutdown": {
+                  activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("shutdown", event.timestamp);
                   const text = event.content || accumulatedContent;
                   if (text) {
-                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "shutdown") }]);
+                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "shutdown"), ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";
+                  activeTurnId = undefined;
                   break;
                 }
                 case "error":
+                  activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("error", event.timestamp);
-                  onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}` }]);
+                  onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}`, ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  activeTurnId = undefined;
                   break;
                 case "mcp_status":
                   setStreamState((s) => ({ ...s, mcpServers: event.servers ?? [] }));

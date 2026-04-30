@@ -1337,12 +1337,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (closed || res.writableEnded) return;
       const normalized = event.type === "snapshot" && event.complete
         ? event.terminalType === "error" || event.errorMessage
-          ? { type: "error", message: event.errorMessage ?? "Unknown session error", timestamp: event.terminalTimestamp }
+          ? { type: "error", message: event.errorMessage ?? "Unknown session error", timestamp: event.terminalTimestamp, turnId: event.turnId }
           : event.terminalType === "aborted"
-            ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp }
+            ? { type: "aborted", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
             : event.terminalType === "shutdown"
-              ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp }
-            : { type: "done", content: event.finalContent, timestamp: event.terminalTimestamp }
+              ? { type: "shutdown", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
+            : { type: "done", content: event.finalContent, timestamp: event.terminalTimestamp, turnId: event.turnId }
         : event;
       if (!firstEventSent) {
         firstEventSent = true;

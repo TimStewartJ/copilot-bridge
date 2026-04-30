@@ -77,6 +77,106 @@ describe("tool call tree helpers", () => {
     });
   });
 
+  it("groups same-turn tools once even when assistant text is interleaved", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "Starting work", turnId: "turn-1" },
+      { id: "tool-a-start", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-a", { progressText: "Running" }) },
+      { role: "assistant", content: "Checkpoint", turnId: "turn-1" },
+      { id: "tool-b", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-b") },
+      { id: "tool-a-done", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-a", { result: "Done", success: true }) },
+      { role: "assistant", content: "Finished", turnId: "turn-1" },
+    ];
+
+    const segments = segmentChatEntries(entries);
+
+    expect(segments).toHaveLength(4);
+    expect(segments[0]).toMatchObject({ type: "message", entry: { content: "Starting work" } });
+    expect(segments[1]).toMatchObject({
+      type: "tool-segment",
+      turnId: "turn-1",
+      entries: [
+        { id: "tool-a-start", toolCall: { toolCallId: "tool-a", progressText: "Running" } },
+        { id: "tool-b", toolCall: { toolCallId: "tool-b" } },
+        { id: "tool-a-done", toolCall: { toolCallId: "tool-a", result: "Done" } },
+      ],
+    });
+    expect(segments[2]).toMatchObject({ type: "message", entry: { content: "Checkpoint" } });
+    expect(segments[3]).toMatchObject({ type: "message", entry: { content: "Finished" } });
+  });
+
+  it("merges root-only subagent launch turns with later descendant tool turns", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "Delegating work", turnId: "turn-1" },
+      {
+        id: "agent-a",
+        type: "tool",
+        turnId: "turn-1",
+        toolCall: createToolCall("agent-a", { isSubAgent: true }),
+      },
+      {
+        id: "agent-b",
+        type: "tool",
+        turnId: "turn-1",
+        toolCall: createToolCall("agent-b", { isSubAgent: true }),
+      },
+      {
+        id: "child-a",
+        type: "tool",
+        turnId: "turn-2",
+        toolCall: createToolCall("child-a", { parentToolCallId: "agent-a" }),
+      },
+      { role: "assistant", content: "Agents are running", turnId: "turn-2" },
+      {
+        id: "read-agent",
+        type: "tool",
+        turnId: "turn-2",
+        toolCall: createToolCall("read-agent"),
+      },
+    ];
+
+    const segments = segmentChatEntries(entries);
+
+    expect(segments).toHaveLength(3);
+    expect(segments[0]).toMatchObject({ type: "message", entry: { content: "Delegating work" } });
+    expect(segments[1]).toMatchObject({
+      type: "tool-segment",
+      turnId: "turn-1",
+      entries: [
+        { id: "agent-a" },
+        { id: "agent-b" },
+        { id: "child-a" },
+        { id: "read-agent" },
+      ],
+    });
+    expect(segments[2]).toMatchObject({ type: "message", entry: { content: "Agents are running" } });
+  });
+
+  it("collapses repeated same-turn snapshots into one renderable root", () => {
+    const running = createToolCall("agent-1", {
+      name: "🤖 Explore agent",
+      isSubAgent: true,
+      progressText: "Running",
+    });
+    const complete = createToolCall("agent-1", {
+      name: "🤖 Explore agent",
+      isSubAgent: true,
+      result: "Done",
+      success: true,
+      completedAt: "2026-04-23T21:00:05.000Z",
+    });
+    const fullForest = buildToolCallForest([running, complete]);
+
+    const roots = buildRenderableSegmentRoots([
+      { id: "agent-running", type: "tool", turnId: "turn-1", toolCall: running },
+      { id: "agent-complete", type: "tool", turnId: "turn-1", toolCall: complete },
+    ], fullForest);
+
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.toolCall.toolCallId).toBe("agent-1");
+    expect(roots[0]?.toolCall.progressText).toBeUndefined();
+    expect(roots[0]?.toolCall.result).toBe("Done");
+  });
+
   it("keeps parent context when a later tool segment only contains child rows", () => {
     const allToolCalls = [
       createToolCall("subagent-1", { isSubAgent: true }),

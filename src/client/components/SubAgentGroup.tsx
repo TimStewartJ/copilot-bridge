@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, memo } from "react";
+import { useEffect, useRef, useState, memo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -11,12 +11,12 @@ import { Bot, ChevronDown, ChevronRight } from "lucide-react";
 interface SubAgentGroupProps {
   agentTool: ToolCall;
   childNodes?: ToolCallTreeNode[];
-  renderChildNode?: (childNode: ToolCallTreeNode) => React.ReactNode;
+  renderChildNodes?: (childNodes: ToolCallTreeNode[]) => ReactNode;
   defaultExpanded?: boolean;
   contextOnly?: boolean;
 }
 
-export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderChildNode, defaultExpanded = false, contextOnly = false }: SubAgentGroupProps) {
+export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderChildNodes, defaultExpanded = false, contextOnly = false }: SubAgentGroupProps) {
   const [expanded, setExpanded] = useState(defaultExpanded && childNodes.length > 0);
   const [showFullModal, setShowFullModal] = useState(false);
   const autoExpandedRef = useRef(defaultExpanded && childNodes.length > 0);
@@ -69,9 +69,9 @@ export default memo(function SubAgentGroup({ agentTool, childNodes = [], renderC
               </pre>
             </div>
           )}
-          {childNodes.length > 0 && renderChildNode && (
+          {childNodes.length > 0 && renderChildNodes && (
             <div className="pl-3 pr-1 py-1.5 space-y-1 border-l-2 ml-2 mr-1 mb-1" style={{ borderLeftColor: "var(--color-agent-border)" }}>
-              {childNodes.map((childNode) => renderChildNode(childNode))}
+              {renderChildNodes(childNodes)}
             </div>
           )}
           {hasResult && (

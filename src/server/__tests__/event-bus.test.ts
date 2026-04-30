@@ -71,7 +71,6 @@ describe("event-bus", () => {
 
       expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
     });
-
     it("tracks pending native user input requests in snapshots", () => {
       const bus = getOrCreateBus("test-user-input-pending-1");
 
@@ -195,6 +194,109 @@ describe("event-bus", () => {
       bus.emit({ type: "tool_done", toolCallId: "tc1" });
       expect(bus.getSnapshot().activeTools).toHaveLength(1);
       expect(bus.getSnapshot().activeTools[0].name).toBe("view");
+    });
+
+    it("keeps completed current-turn tools in snapshots after tool_done", () => {
+      const bus = getOrCreateBus("test-current-turn-tools-complete-1");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({
+        type: "tool_start",
+        toolCallId: "tc1",
+        name: "bash",
+        args: { command: "npm test" },
+        timestamp: "2026-04-22T20:00:00.000Z",
+        parentToolCallId: "parent-1",
+      });
+      bus.emit({ type: "tool_progress", toolCallId: "tc1", message: "Running tests" });
+      bus.emit({ type: "tool_output", toolCallId: "tc1", content: "Tests passed" });
+      bus.emit({ type: "tool_update", toolCallId: "tc1", name: "npm test", isSubAgent: true });
+      bus.emit({
+        type: "tool_done",
+        toolCallId: "tc1",
+        success: true,
+        result: "ok",
+        timestamp: "2026-04-22T20:00:05.000Z",
+      });
+
+      const snap = bus.getSnapshot();
+      expect(snap.activeTools).toEqual([]);
+      expect(snap.currentTurnTools).toMatchObject([
+        {
+          toolCallId: "tc1",
+          name: "npm test",
+          turnId: "turn-1",
+          args: { command: "npm test" },
+          startedAt: "2026-04-22T20:00:00.000Z",
+          progressText: "Tests passed",
+          parentToolCallId: "parent-1",
+          isSubAgent: true,
+          completedAt: "2026-04-22T20:00:05.000Z",
+          success: true,
+          result: "ok",
+        },
+      ]);
+    });
+
+    it("clears current-turn tools on terminal events", () => {
+      const terminalEvents: StreamEvent[] = [
+        { type: "done", content: "Done" },
+        { type: "aborted", content: "Stopped" },
+        { type: "shutdown", content: "Interrupted" },
+        { type: "error", message: "Boom" },
+      ];
+
+      terminalEvents.forEach((event, index) => {
+        const bus = getOrCreateBus(`test-terminal-current-turn-tools-${index}`);
+        bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
+        bus.emit({ type: "tool_done", toolCallId: "tc1", success: true });
+        expect(bus.getSnapshot().currentTurnTools).toHaveLength(1);
+
+        bus.emit(event);
+
+        expect(bus.getSnapshot().currentTurnTools).toEqual([]);
+      });
+    });
+
+    it("stamps live turn ids on turn-scoped stream events", () => {
+      const bus = getOrCreateBus("test-turn-id-1");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => {
+        if (event.type !== "snapshot") events.push(event);
+      });
+
+      bus.emit({ type: "thinking" });
+      bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
+      bus.emit({ type: "assistant_partial", content: "Interim" });
+      bus.emit({ type: "tool_done", toolCallId: "tc1" });
+      bus.emit({ type: "done", content: "Done" });
+
+      const turnId = events[0]?.turnId;
+      expect(turnId).toMatch(/^turn-[0-9a-f-]{36}$/);
+      expect(events).toMatchObject([
+        { type: "thinking", turnId },
+        { type: "tool_start", toolCallId: "tc1", turnId },
+        { type: "assistant_partial", content: "Interim", turnId },
+        { type: "tool_done", toolCallId: "tc1", turnId },
+        { type: "done", content: "Done", turnId },
+      ]);
+      expect(bus.getSnapshot()).toMatchObject({
+        complete: true,
+        turnId,
+      });
+    });
+
+    it("generates distinct synthetic turn ids across resets", () => {
+      const bus = getOrCreateBus("test-turn-id-reset-1");
+      bus.emit({ type: "thinking" });
+      const firstTurnId = bus.getSnapshot().turnId;
+
+      bus.reset();
+      bus.emit({ type: "thinking" });
+      const secondTurnId = bus.getSnapshot().turnId;
+
+      expect(firstTurnId).toMatch(/^turn-[0-9a-f-]{36}$/);
+      expect(secondTurnId).toMatch(/^turn-[0-9a-f-]{36}$/);
+      expect(secondTurnId).not.toBe(firstTurnId);
     });
 
     it("assistant_partial resets accumulated content", () => {
@@ -326,14 +428,18 @@ describe("event-bus", () => {
       bus.emit({ type: "delta", content: "text" });
       bus.emit({ type: "intent", intent: "doing stuff" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
+      bus.emit({ type: "tool_done", toolCallId: "tc1", success: true });
+      bus.emit({ type: "tool_start", toolCallId: "tc2", name: "view" });
       bus.setPendingPrompt("prompt");
       bus.emitUserInputRequested({ requestId: "request-1", question: "Continue?", allowFreeform: true });
+      expect(bus.getSnapshot().currentTurnTools).toHaveLength(2);
 
       bus.reset();
       const snap = bus.getSnapshot();
       expect(snap.accumulatedContent).toBe("");
       expect(snap.intentText).toBe("");
       expect(snap.activeTools).toEqual([]);
+      expect(snap.currentTurnTools).toEqual([]);
       expect(snap.complete).toBe(false);
       expect(snap.terminalType).toBeUndefined();
       expect(snap.finalContent).toBeUndefined();
