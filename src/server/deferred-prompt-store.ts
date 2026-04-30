@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
+import { toOnceDeferId } from "./defer-ids.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -9,6 +10,7 @@ export type DeferredPromptStatus = "pending" | "running" | "completed" | "failed
 
 export interface DeferredPrompt {
   id: string;
+  deferId: string;
   sessionId: string;
   prompt: string;
   /** ISO timestamp — when the prompt should be dispatched */
@@ -125,13 +127,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   const markCancelledById = db.prepare(`
     UPDATE deferred_prompts
     SET status = 'cancelled', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
-    WHERE id = ? AND status = 'pending'
+    WHERE id = ? AND status IN ('pending', 'running')
   `);
 
   const cancelForSessionStmt = db.prepare(`
     UPDATE deferred_prompts
     SET status = 'cancelled', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
-    WHERE sessionId = ? AND status = 'pending'
+    WHERE sessionId = ? AND status IN ('pending', 'running')
   `);
 
   const reclaimExpiredStmt = db.prepare(`
@@ -145,6 +147,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   function toRow(raw: any): DeferredPrompt {
     return {
       id: raw.id,
+      deferId: toOnceDeferId(raw.id),
       sessionId: raw.sessionId,
       prompt: raw.prompt,
       runAt: raw.runAt,

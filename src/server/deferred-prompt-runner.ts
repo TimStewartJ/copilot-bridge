@@ -5,6 +5,7 @@ import type { DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { SessionManager } from "./session-manager.js";
 import { isPromptDeliveryInterruptedError, isRestartPendingError } from "./session-manager.js";
 import type { GlobalBus } from "./global-bus.js";
+import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-delivery-guard.js";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -23,6 +24,7 @@ export function createDeferredPromptRunner(
   store: DeferredPromptStore,
   sessionManager: SessionManager,
   globalBus: GlobalBus,
+  deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
 ) {
   let nextTimer: ReturnType<typeof setTimeout> | undefined;
   let busUnsubscribe: (() => void) | undefined;
@@ -30,7 +32,6 @@ export function createDeferredPromptRunner(
   let generation = 0;
   let processDuePromise: Promise<void> | undefined;
   let rerunRequested = false;
-  const activeDeliverySessions = new Set<string>();
   const renewalTimers = new Set<ReturnType<typeof setInterval>>();
 
   // ── Internal helpers ──────────────────────────────────────────────
@@ -54,7 +55,7 @@ export function createDeferredPromptRunner(
 
   function hasDuePromptReadyForAnotherPass(): boolean {
     return store.listDue().some((prompt) =>
-      !activeDeliverySessions.has(prompt.sessionId) && !sessionManager.isSessionBusy(prompt.sessionId)
+      !deliveryGuard.isActive(prompt.sessionId) && !sessionManager.isSessionBusy(prompt.sessionId)
     );
   }
 
@@ -126,7 +127,7 @@ export function createDeferredPromptRunner(
     // Re-fetch prompt for fresh state
     const item = store.get(id);
     if (!item || item.status !== "pending") return "unchanged";
-    if (activeDeliverySessions.has(item.sessionId)) return "blocked";
+    if (deliveryGuard.isActive(item.sessionId)) return "blocked";
 
     if (item.attempts >= MAX_ATTEMPTS) {
       // Can't claim (no valid token), just directly cancel
@@ -138,7 +139,7 @@ export function createDeferredPromptRunner(
     // Check session exists
     const sessionList = await sessionManager.listSessionsFromDisk({ includeArchived: false });
     if (!started) return "unchanged";
-    if (activeDeliverySessions.has(item.sessionId)) return "blocked";
+    if (deliveryGuard.isActive(item.sessionId)) return "blocked";
     const sessionExists = sessionList.some((s: any) => s.sessionId === item.sessionId);
     if (!sessionExists) {
       const cancelled = store.cancelForSession(item.sessionId);
@@ -151,10 +152,14 @@ export function createDeferredPromptRunner(
       // Will retry when session:idle fires
       return "blocked";
     }
+    if (!deliveryGuard.tryClaim(item.sessionId)) return "blocked";
 
     // Claim the prompt (CAS)
     const claimed = store.claimDue(id, LEASE_MS);
-    if (!claimed) return "unchanged"; // someone else claimed it
+    if (!claimed) {
+      deliveryGuard.release(item.sessionId);
+      return "unchanged"; // someone else claimed it
+    }
 
     const { claimToken } = claimed;
     const renewalTimer = setInterval(() => {
@@ -164,7 +169,6 @@ export function createDeferredPromptRunner(
         console.warn(`[deferred-runner] Failed to renew lease for deferral ${id}`);
       }
     }, LEASE_RENEW_INTERVAL_MS);
-    activeDeliverySessions.add(item.sessionId);
     renewalTimers.add(renewalTimer);
 
     void finishDelivery(item.id, item.sessionId, item.prompt, item.attempts, claimToken, renewalTimer)
@@ -235,7 +239,7 @@ export function createDeferredPromptRunner(
     } finally {
       clearInterval(renewalTimer);
       renewalTimers.delete(renewalTimer);
-      activeDeliverySessions.delete(sessionId);
+      deliveryGuard.release(sessionId);
       if (started && shouldProcessNextDuePrompt && hasDuePromptReadyForAnotherPass()) {
         processDue().catch((err) => {
           console.error("[deferred-runner] processDue error after delivery settled:", err);
@@ -316,7 +320,7 @@ export function createDeferredPromptRunner(
     busUnsubscribe?.();
     busUnsubscribe = undefined;
     rerunRequested = false;
-    activeDeliverySessions.clear();
+    deliveryGuard.clear();
     for (const timer of renewalTimers) clearInterval(timer);
     renewalTimers.clear();
     started = false;

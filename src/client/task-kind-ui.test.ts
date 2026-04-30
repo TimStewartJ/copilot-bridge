@@ -302,7 +302,7 @@ describe("TaskDashboard unique overview", () => {
       ],
       sched: {
         schedules: [
-          { id: "schedule-1", taskId: "task-1", name: "Daily check", prompt: "", type: "cron", cron: "0 8 * * *", enabled: true, sessionMode: "new", createdAt: NOW, updatedAt: NOW, runCount: 0 },
+          { id: "schedule-1", taskId: "task-1", name: "Daily check", prompt: "", type: "cron", cron: "0 8 * * *", enabled: true, createdAt: NOW, updatedAt: NOW, runCount: 0 },
         ],
         trigger: vi.fn(),
         toggle: vi.fn(),

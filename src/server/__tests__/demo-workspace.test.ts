@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { openDatabase } from "../db.js";
 import { createDocsStore } from "../docs-store.js";
 import { createGlobalBus } from "../global-bus.js";
@@ -20,7 +19,7 @@ describe("demo workspace", () => {
   });
 
   it("seeds isolated demo data, docs, schedules, and sandbox files", () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), "bridge-demo-workspace-"));
+    const repoRoot = mkdtempSync(join(process.cwd(), ".bridge-demo-workspace-"));
     repoRoots.push(repoRoot);
 
     const workspace = resetDemoWorkspace(repoRoot);
@@ -63,7 +62,13 @@ describe("demo workspace", () => {
 
       const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(reviewSchedule).toBeDefined();
-      expect(reviewSchedule?.sessionMode).toBe("reuse-last");
+      expect(reviewSchedule?.sessionMode).toBe("new");
+      const reuseSeedRows = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM schedules
+        WHERE sessionMode != 'new' OR targetSessionId IS NOT NULL
+      `).get() as { count: number };
+      expect(reuseSeedRows.count).toBe(0);
 
       const startHereDoc = docsStore.readPage("acme/start-here");
       expect(startHereDoc?.title).toBe("Start Here");
@@ -77,7 +82,7 @@ describe("demo workspace", () => {
   });
 
   it("refreshes the seeded one-shot schedule when reusing an old demo workspace", () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), "bridge-demo-workspace-"));
+    const repoRoot = mkdtempSync(join(process.cwd(), ".bridge-demo-workspace-"));
     repoRoots.push(repoRoot);
 
     const workspace = resetDemoWorkspace(repoRoot);
@@ -93,9 +98,6 @@ describe("demo workspace", () => {
       scheduleStore.updateSchedule(followUp!.id, {
         enabled: true,
         runAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-      });
-      scheduleStore.updateSchedule(reviewSchedule!.id, {
-        sessionMode: "new",
       });
       settingsStore.updateSettings({ reasoningEffort: "medium" });
     } finally {
@@ -113,7 +115,7 @@ describe("demo workspace", () => {
       const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(followUp?.enabled).toBe(true);
       expect(new Date(followUp!.runAt!).getTime()).toBeGreaterThan(Date.now());
-      expect(reviewSchedule?.sessionMode).toBe("reuse-last");
+      expect(reviewSchedule?.sessionMode).toBe("new");
       expect(settingsStore.getSettings().reasoningEffort).toBeUndefined();
     } finally {
       refreshedDb.close();

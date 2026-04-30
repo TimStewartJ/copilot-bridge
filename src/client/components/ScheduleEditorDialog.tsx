@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Schedule, ScheduleCreateInput, ScheduleSessionMode } from "../api";
+import type { Schedule, ScheduleCreateInput } from "../api";
 import { createSchedule, patchSchedule } from "../api";
 import { X } from "lucide-react";
 
@@ -17,11 +17,6 @@ const CRON_PRESETS = [
   { label: "Custom", cron: "" },
 ];
 
-const SESSION_MODE_OPTIONS: Array<{ value: ScheduleSessionMode; label: string }> = [
-  { value: "new", label: "New session every run" },
-  { value: "reuse-last", label: "Reuse last schedule session" },
-];
-
 interface ScheduleEditorDialogProps {
   taskId: string;
   schedule: Schedule | null; // null = creating new
@@ -37,7 +32,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
   const [type, setType] = useState<"cron" | "once">(schedule?.type ?? "cron");
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : ""); // datetime-local format
-  const [sessionMode, setSessionMode] = useState<ScheduleSessionMode>(schedule?.sessionMode ?? "new");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -72,7 +66,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           prompt: prompt.trim(),
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
-          sessionMode,
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
         });
       } else {
@@ -82,7 +75,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           prompt: prompt.trim(),
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
-          sessionMode,
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
         };
         await createSchedule(input);
@@ -206,18 +198,6 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           </button>
             {showAdvanced && (
               <div className="space-y-3 pl-3 border-l-2 border-border">
-                <div>
-                  <label className="block text-xs text-text-muted mb-1">Session mode</label>
-                  <select
-                    className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
-                    value={sessionMode}
-                    onChange={(e) => setSessionMode(e.target.value as ScheduleSessionMode)}
-                  >
-                {SESSION_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </div>
                 <div>
                   <label className="block text-xs text-text-muted mb-1">Max runs (optional)</label>
                   <input

@@ -118,10 +118,6 @@ export function createScheduleStore(db: DatabaseSync) {
   `);
 
   function normalizeSessionMode(row: { sessionMode?: string | null; reuseSession?: number | null }): ScheduleSessionMode {
-    if (row.sessionMode === "reuse-last") return "reuse-last";
-    if (row.sessionMode === "new") return "new";
-    if (row.sessionMode === "reuse-target") return "reuse-last";
-    if (row.reuseSession === 1) return "reuse-last";
     return "new";
   }
 
@@ -163,7 +159,6 @@ export function createScheduleStore(db: DatabaseSync) {
   function createSchedule(input: ScheduleCreate): Schedule {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const sessionMode = input.sessionMode ?? "new";
 
     db.prepare(`
       INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
@@ -172,7 +167,7 @@ export function createScheduleStore(db: DatabaseSync) {
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
-      sessionMode, null, now, now,
+      "new", null, now, now,
       input.maxRuns ?? null, input.expiresAt ?? null,
     );
 
@@ -194,8 +189,9 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
     if (updates.sessionMode !== undefined) {
       fields.push("sessionMode = ?");
-      values.push(updates.sessionMode);
+      values.push("new");
       fields.push("reuseLastRequiresExistingSession = 0");
+      fields.push("targetSessionId = NULL");
     }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }
@@ -483,7 +479,7 @@ export function createScheduleStore(db: DatabaseSync) {
       FROM schedules
       WHERE id = ?
     `).get(id) as { sessionMode?: string | null; reuseLastRequiresExistingSession?: number | null } | undefined;
-    return row?.sessionMode === "reuse-target" || row?.reuseLastRequiresExistingSession === 1;
+    return false;
   }
 
   return {

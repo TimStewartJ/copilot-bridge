@@ -39,6 +39,7 @@ const SQLITE_STATE_TABLES = [
   "entity_tags",
   "tag_mcp_servers",
   "deferred_prompts",
+  "defer_loops",
 ] as const;
 type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
 
@@ -445,6 +446,30 @@ function initSchema(db: DatabaseSync): void {
       ON deferred_prompts(status, runAt);
     CREATE INDEX IF NOT EXISTS idx_deferred_prompts_sessionId_status_runAt
       ON deferred_prompts(sessionId, status, runAt);
+
+    -- Recurring same-session deferred execution loops
+    CREATE TABLE IF NOT EXISTS defer_loops (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      name TEXT,
+      prompt TEXT NOT NULL,
+      intervalSeconds INTEGER NOT NULL,
+      nextRunAt TEXT NOT NULL,
+      status TEXT NOT NULL,
+      runCount INTEGER NOT NULL DEFAULT 0,
+      maxRuns INTEGER,
+      expiresAt TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimToken TEXT,
+      leaseExpiresAt TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_defer_loops_status_nextRunAt
+      ON defer_loops(status, nextRunAt);
+    CREATE INDEX IF NOT EXISTS idx_defer_loops_sessionId_status_nextRunAt
+      ON defer_loops(sessionId, status, nextRunAt);
   `);
 
   // ── Migrations ──────────────────────────────────────────────────
@@ -484,11 +509,17 @@ function initSchema(db: DatabaseSync): void {
         reuseLastRequiresExistingSession = 1,
         targetSessionId = NULL
     WHERE sessionMode = 'reuse-target';
+  `);
 
-    DELETE FROM schedule_session_claims
-    WHERE scheduleId NOT IN (
-      SELECT id FROM schedules WHERE sessionMode = 'reuse-last'
-    );
+  // Schedules are now task-level automations that always create new sessions.
+  // Preserve lastSessionId as last-run metadata, but make legacy reuse state inert.
+  db.exec(`
+    UPDATE schedules
+    SET sessionMode = 'new',
+        targetSessionId = NULL,
+        reuseLastRequiresExistingSession = 0;
+
+    DELETE FROM schedule_session_claims;
   `);
 
   // Backfill schedule run history from prior metadata and latest schedule state

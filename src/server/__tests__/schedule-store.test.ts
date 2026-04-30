@@ -1,15 +1,22 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setupTestDb } from "./helpers.js";
 import { createScheduleStore } from "../schedule-store.js";
 import type { ScheduleStore } from "../schedule-store.js";
-import type { DatabaseSync } from "../db.js";
+import { openDatabase, type DatabaseSync as BridgeDatabaseSync } from "../db.js";
 
-let db: DatabaseSync;
+let db: BridgeDatabaseSync;
 let store: ScheduleStore;
 
 beforeEach(() => {
   db = setupTestDb();
   store = createScheduleStore(db);
+});
+
+afterEach(() => {
+  db.close();
 });
 
 describe("schedule-store", () => {
@@ -58,33 +65,131 @@ describe("schedule-store", () => {
       const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false, sessionMode: "reuse-last" });
       expect(updated.name).toBe("Renamed");
       expect(updated.enabled).toBe(false);
-      expect(updated.sessionMode).toBe("reuse-last");
+      expect(updated.sessionMode).toBe("new");
     });
 
-    it("normalizes legacy reuse-target rows to reuse-last without exposing targets", () => {
+    it("normalizes legacy reuse-target rows to new-session behavior without exposing targets", () => {
       const s = store.createSchedule(baseCron);
       db.prepare("UPDATE schedules SET sessionMode = ?, targetSessionId = ? WHERE id = ?")
         .run("reuse-target", "session-123", s.id);
       const hydrated = store.getSchedule(s.id)!;
-      expect(hydrated.sessionMode).toBe("reuse-last");
+      expect(hydrated.sessionMode).toBe("new");
       expect(hydrated.lastSessionId).toBe("session-123");
-      expect(store.requiresExistingReuseSession(s.id)).toBe(true);
+      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
       expect((hydrated as any).targetSessionId).toBeUndefined();
     });
 
-    it("explicit sessionMode update clears migrated reuse-target strictness", () => {
+    it("explicit sessionMode update keeps schedules new-session-only", () => {
       const s = store.createSchedule({ ...baseCron, sessionMode: "reuse-last" });
       db.prepare("UPDATE schedules SET lastSessionId = ?, reuseLastRequiresExistingSession = 1 WHERE id = ?")
         .run("session-123", s.id);
 
-      expect(store.requiresExistingReuseSession(s.id)).toBe(true);
+      expect(store.getSchedule(s.id)!.sessionMode).toBe("new");
+      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
       const renamed = store.updateSchedule(s.id, { name: "Still strict" });
-      expect(renamed.sessionMode).toBe("reuse-last");
-      expect(store.requiresExistingReuseSession(s.id)).toBe(true);
+      expect(renamed.sessionMode).toBe("new");
+      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
 
       const updated = store.updateSchedule(s.id, { sessionMode: "reuse-last" });
-      expect(updated.sessionMode).toBe("reuse-last");
+      expect(updated.sessionMode).toBe("new");
       expect(store.requiresExistingReuseSession(s.id)).toBe(false);
+    });
+
+    it("normalizes legacy reuse data during database migration", () => {
+      const dataDir = mkdtempSync(join(process.cwd(), ".schedule-migration-"));
+      try {
+        const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+        legacyDb.exec(`
+          CREATE TABLE schedules (
+            id TEXT PRIMARY KEY,
+            taskId TEXT NOT NULL,
+            name TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            type TEXT NOT NULL,
+            cron TEXT,
+            runAt TEXT,
+            timezone TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sessionMode TEXT NOT NULL DEFAULT 'new',
+            targetSessionId TEXT,
+            lastSessionId TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            lastRunAt TEXT,
+            nextRunAt TEXT,
+            runCount INTEGER NOT NULL DEFAULT 0,
+            maxRuns INTEGER,
+            expiresAt TEXT
+          );
+          CREATE TABLE schedule_session_claims (
+            sessionId TEXT PRIMARY KEY,
+            scheduleId TEXT NOT NULL,
+            claimedAt TEXT NOT NULL,
+            leaseExpiresAt TEXT NOT NULL
+          );
+        `);
+        const now = "2026-01-01T00:00:00.000Z";
+        legacyDb.prepare(`
+          INSERT INTO schedules (
+            id, taskId, name, prompt, type, cron, enabled, sessionMode, targetSessionId,
+            lastSessionId, createdAt, updatedAt, runCount
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          "reuse-target-schedule", "task-1", "Legacy target", "Run target", "cron", "0 8 * * *", 1,
+          "reuse-target", "target-session", null, now, now, 0,
+        );
+        legacyDb.prepare(`
+          INSERT INTO schedules (
+            id, taskId, name, prompt, type, cron, enabled, sessionMode, targetSessionId,
+            lastSessionId, createdAt, updatedAt, runCount
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          "reuse-last-schedule", "task-1", "Legacy last", "Run last", "cron", "0 9 * * *", 1,
+          "reuse-last", null, "last-session", now, now, 3,
+        );
+        legacyDb.prepare(`
+          INSERT INTO schedule_session_claims (sessionId, scheduleId, claimedAt, leaseExpiresAt)
+          VALUES (?, ?, ?, ?)
+        `).run("last-session", "reuse-last-schedule", now, "2026-01-01T00:02:00.000Z");
+        legacyDb.close();
+
+        const migratedDb = openDatabase(dataDir);
+        try {
+          const rows = migratedDb.prepare(`
+            SELECT id, sessionMode, targetSessionId, lastSessionId, reuseLastRequiresExistingSession
+            FROM schedules
+            ORDER BY id
+          `).all() as Array<{
+            id: string;
+            sessionMode: string;
+            targetSessionId: string | null;
+            lastSessionId: string | null;
+            reuseLastRequiresExistingSession: number;
+          }>;
+          expect(rows).toEqual([
+            {
+              id: "reuse-last-schedule",
+              sessionMode: "new",
+              targetSessionId: null,
+              lastSessionId: "last-session",
+              reuseLastRequiresExistingSession: 0,
+            },
+            {
+              id: "reuse-target-schedule",
+              sessionMode: "new",
+              targetSessionId: null,
+              lastSessionId: "target-session",
+              reuseLastRequiresExistingSession: 0,
+            },
+          ]);
+          const claims = migratedDb.prepare("SELECT COUNT(*) AS count FROM schedule_session_claims").get() as { count: number };
+          expect(claims.count).toBe(0);
+        } finally {
+          migratedDb.close();
+        }
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
     });
 
     it("updateSchedule throws for missing id", () => {

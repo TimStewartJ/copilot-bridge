@@ -528,7 +528,11 @@ async function createStagingContext(
     voiceJobStoreMod,
     voiceJobManagerMod,
     deferredPromptStoreMod,
+    deferLoopStoreMod,
     deferredPromptRunnerMod,
+    deferLoopRunnerMod,
+    deferDeliveryGuardMod,
+    schedulerMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
@@ -553,7 +557,11 @@ async function createStagingContext(
     importOptionalStagingModule(ts("voice-job-store.ts")),
     importOptionalStagingModule(ts("voice-job-manager.ts")),
     importOptionalStagingModule(ts("deferred-prompt-store.ts")),
+    importOptionalStagingModule(ts("defer-loop-store.ts")),
     importOptionalStagingModule(ts("deferred-prompt-runner.ts")),
+    importOptionalStagingModule(ts("defer-loop-runner.ts")),
+    importOptionalStagingModule(ts("defer-delivery-guard.ts")),
+    importOptionalStagingModule(ts("scheduler.ts")),
   ]);
   // Open isolated staging database
   const db = dbMod.openDatabase(runtimePaths.dataDir);
@@ -580,6 +588,8 @@ async function createStagingContext(
     const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
     if (docsIndex) docsIndex.reindex();
     const deferredPromptStore = deferredPromptStoreMod?.createDeferredPromptStore?.(db);
+    const deferLoopStore = deferLoopStoreMod?.createDeferLoopStore?.(db);
+    const deferDeliveryGuard = deferDeliveryGuardMod?.createDeferDeliveryGuard?.();
 
     // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
     const copilotHome = runtimePaths.copilotHome ?? join(runtimePaths.dataDir, ".copilot");
@@ -594,6 +604,8 @@ async function createStagingContext(
       ...(tagStore && { tagStore }),
       ...(telemetryStore && { telemetryStore }),
       ...(deferredPromptStore && { deferredPromptStore }),
+      ...(deferLoopStore && { deferLoopStore }),
+      ...(schedulerMod && { scheduler: schedulerMod }),
       globalBus, eventBusRegistry,
       sessionManager: null as any,
       transcriptionService: transcriptionService ?? {
@@ -635,6 +647,15 @@ async function createStagingContext(
         deferredPromptStore,
         sm,
         globalBus,
+        deferDeliveryGuard,
+      );
+    }
+    if (deferLoopStore && deferLoopRunnerMod?.createDeferLoopRunner) {
+      ctx.deferLoopRunner = deferLoopRunnerMod.createDeferLoopRunner(
+        deferLoopStore,
+        sm,
+        globalBus,
+        deferDeliveryGuard,
       );
     }
     ctx.voiceJobManager = voiceJobStoreMod && voiceJobManagerMod
@@ -711,12 +732,23 @@ function createStagingBackendCleanup(ctx: AppContext): () => Promise<void> {
   return async () => {
     try {
       ctx.deferredPromptRunner?.shutdown();
+      ctx.deferLoopRunner?.shutdown();
+      ctx.scheduler?.shutdown();
       await ctx.voiceJobManager.shutdown();
       await ctx.sessionManager.gracefulShutdown();
     } catch (err) {
       log(`Warning: staging SDK shutdown error: ${err}`);
     }
   };
+}
+
+function initializeStagingScheduler(ctx: AppContext): void {
+  ctx.scheduler?.initialize?.(ctx.sessionManager, {
+    scheduleStore: ctx.scheduleStore,
+    taskStore: ctx.taskStore,
+    sessionMetaStore: ctx.sessionMetaStore,
+    globalBus: ctx.globalBus,
+  });
 }
 
 async function initializeStagingBackend(
@@ -747,7 +779,9 @@ async function initializeStagingBackend(
 
     log("Initializing staging Copilot SDK...");
     await ctx.sessionManager.initialize();
+    initializeStagingScheduler(ctx);
     ctx.deferredPromptRunner?.start();
+    ctx.deferLoopRunner?.start();
     ctx.voiceJobManager.resumePendingJobs();
 
     const createRouter = (ctx as any)._createApiRouter;
@@ -806,7 +840,9 @@ async function restoreStagingBackend(
 
     log("Initializing staging Copilot SDK...");
     await ctx.sessionManager.initialize();
+    initializeStagingScheduler(ctx);
     ctx.deferredPromptRunner?.start();
+    ctx.deferLoopRunner?.start();
     ctx.voiceJobManager.resumePendingJobs();
 
     const createRouter = (ctx as any)._createApiRouter;
