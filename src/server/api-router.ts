@@ -694,6 +694,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   function invalidateEnrichedCache() {
     enrichedSessionCache = null;
     enrichedSessionCacheGeneration += 1;
+    ctx.sessionManager.invalidateSessionListCache();
   }
 
   function setSessionArchived(sessionId: string, archived: boolean) {
@@ -2098,9 +2099,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
           } => !!entry.summary)
           .map(async ({ session: s, summary, status }) => {
             const id = s.sessionId;
-            const archived = meta[id]?.archived === true;
+            const sessionMeta = meta[id];
+            const archived = sessionMeta?.archived === true;
+            const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
-            return { ...s, summary, ...status, hasPlan, archived };
+            return {
+              ...s,
+              summary,
+              ...status,
+              lastVisibleActivityAt,
+              modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
+              hasPlan,
+              archived,
+            };
           }),
       )).filter((s: any) => !s.archived);
 

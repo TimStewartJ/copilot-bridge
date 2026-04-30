@@ -237,7 +237,12 @@ export class SessionManager {
 
   // listSessions cache — avoids expensive SDK filesystem scan on every call
   private sessionListCache: { data: any[]; timestamp: number } | null = null;
+  private sessionDiskListCache = new Map<string, { data: any[]; timestamp: number; generation: number }>();
+  private sessionDiskListBuilds = new Map<string, { generation: number; promise: Promise<any[]> }>();
+  private sessionDiskListCacheGeneration = 0;
+  private warmSessionPromises = new Map<string, Promise<void>>();
   private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
+  private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps;
@@ -554,7 +559,41 @@ export class SessionManager {
    * Async to avoid blocking the event loop during filesystem I/O.
    */
   async listSessionsFromDisk(options: { includeArchived?: boolean } = {}): Promise<any[]> {
-    return listSessionsFromDiskWithDeps({
+    const includeArchived = options.includeArchived ?? true;
+    const cacheKey = includeArchived ? "all" : "active";
+    const now = Date.now();
+    const cached = this.sessionDiskListCache.get(cacheKey);
+    if (
+      cached
+      && cached.generation === this.sessionDiskListCacheGeneration
+      && (now - cached.timestamp) < SessionManager.SESSION_DISK_LIST_TTL
+    ) {
+      this.recordSpan("session.listFromDisk.cache", 0, undefined, {
+        result: "hit",
+        includeArchived,
+        count: cached.data.length,
+      });
+      return cached.data;
+    }
+
+    const existingBuild = this.sessionDiskListBuilds.get(cacheKey);
+    if (existingBuild?.generation === this.sessionDiskListCacheGeneration) {
+      const tWait = Date.now();
+      const sessions = await existingBuild.promise;
+      this.recordSpan("session.listFromDisk.cache", Date.now() - tWait, undefined, {
+        result: "coalesced",
+        includeArchived,
+        count: sessions.length,
+      });
+      return sessions;
+    }
+
+    this.recordSpan("session.listFromDisk.cache", 0, undefined, {
+      result: cached ? "stale" : "miss",
+      includeArchived,
+    });
+    const generation = this.sessionDiskListCacheGeneration;
+    const build = listSessionsFromDiskWithDeps({
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
       eventBusRegistry: this.deps.eventBusRegistry,
@@ -564,12 +603,31 @@ export class SessionManager {
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
       persistLastVisibleActivityAt: (sessionId, lastVisibleActivityAt) =>
         this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt),
-    }, options);
+    }, { includeArchived }).then((sessions) => {
+      if (generation === this.sessionDiskListCacheGeneration) {
+        this.sessionDiskListCache.set(cacheKey, {
+          data: sessions,
+          timestamp: Date.now(),
+          generation,
+        });
+      }
+      return sessions;
+    }).finally(() => {
+      const currentBuild = this.sessionDiskListBuilds.get(cacheKey);
+      if (currentBuild?.promise === build) {
+        this.sessionDiskListBuilds.delete(cacheKey);
+      }
+    });
+    this.sessionDiskListBuilds.set(cacheKey, { generation, promise: build });
+    return build;
   }
 
   /** Invalidate the listSessions cache (call after create/delete) */
   invalidateSessionListCache(): void {
     this.sessionListCache = null;
+    this.sessionDiskListCache.clear();
+    this.sessionDiskListBuilds.clear();
+    this.sessionDiskListCacheGeneration += 1;
   }
 
   async getSessionMetadata(sessionId: string) {
@@ -1035,9 +1093,32 @@ export class SessionManager {
    * Returns a promise that resolves when the session is ready for interaction.
    */
   async warmSession(sessionId: string): Promise<void> {
-    if (!this.client) throw new Error("SessionManager not initialized");
-    if (this.sessionObjects.has(sessionId)) return; // already warm
-    if (this.isSessionBusy(sessionId)) throw new Error("Cannot warm a busy session");
+    const client = this.client;
+    if (!client) throw new Error("SessionManager not initialized");
+    if (this.sessionObjects.has(sessionId)) {
+      this.recordSpan("session.warm.alreadyCached", 0, sessionId);
+      return;
+    }
+
+    const existingWarm = this.warmSessionPromises.get(sessionId);
+    if (existingWarm) {
+      const tWait = Date.now();
+      await existingWarm;
+      this.recordSpan("session.warm.coalesced", Date.now() - tWait, sessionId);
+      return;
+    }
+
+    const skipReason = this.modelSwitchingSessions.has(sessionId)
+      ? "model-switching"
+      : this.isSessionResuming(sessionId)
+        ? "resuming"
+        : this.runStateController.isSessionBusy(sessionId)
+          ? "running"
+          : undefined;
+    if (skipReason) {
+      this.recordSpan("session.warm.skipped", 0, sessionId, { reason: skipReason });
+      return;
+    }
 
     const sid = sessionId.slice(0, 8);
     const t0 = Date.now();
@@ -1046,23 +1127,34 @@ export class SessionManager {
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
-    this.beginSessionResume(sessionId);
-    try {
-      const session = await Promise.race([
-        this.client.resumeSession(sessionId, resumeConfig),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
-        ),
-      ]);
-      const cachedSession = this.cacheResumedSession(sessionId, session);
-      this.probeMcpStatus(sessionId, cachedSession);
+    const warmPromise = (async () => {
+      this.beginSessionResume(sessionId);
+      try {
+        const session = await Promise.race([
+          client.resumeSession(sessionId, resumeConfig),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
+          ),
+        ]);
+        const cachedSession = this.cacheResumedSession(sessionId, session);
+        this.probeMcpStatus(sessionId, cachedSession);
 
-      const duration = Date.now() - t0;
-      this.recordSpan("session.warm", duration, sessionId);
-      console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+        const duration = Date.now() - t0;
+        this.recordSpan("session.warm.coldResume", duration, sessionId);
+        this.recordSpan("session.warm", duration, sessionId);
+        console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+      } finally {
+        this.endSessionResume(sessionId);
+        this.flushPendingSessionEviction(sessionId);
+      }
+    })();
+    this.warmSessionPromises.set(sessionId, warmPromise);
+    try {
+      await warmPromise;
     } finally {
-      this.endSessionResume(sessionId);
-      this.flushPendingSessionEviction(sessionId);
+      if (this.warmSessionPromises.get(sessionId) === warmPromise) {
+        this.warmSessionPromises.delete(sessionId);
+      }
     }
   }
 
@@ -1104,6 +1196,7 @@ export class SessionManager {
     } catch (err) {
       console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
     }
+    this.invalidateSessionListCache();
 
     console.log(`[sdk] Deleted session ${sessionId}`);
   }
