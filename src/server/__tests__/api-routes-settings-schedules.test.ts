@@ -1,0 +1,481 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
+import {
+  createCopilotUsageTestHome,
+  createMockSessionManager,
+  createMockTranscriptionService,
+  createRestartRuntimePaths,
+  createTestApp,
+  createWavBuffer,
+  eventually,
+  get,
+  installApiRouteTestHooks,
+  join,
+  makeTestDir,
+  mkdirSync,
+  providers,
+  publishOutboundAttachment,
+  RESTART_PENDING_MESSAGE,
+  request,
+  scheduler,
+  UserInputBrokerError,
+  writeCopilotUsageEvents,
+  writeRawCopilotUsageEvents,
+  writeFileSync,
+  writeRestartState,
+} from "./api-routes-test-helpers.js";
+
+let app: ApiRouteTestState["app"];
+let ctx: ApiRouteTestState["ctx"];
+let db: ApiRouteTestState["db"];
+
+installApiRouteTestHooks((state) => {
+  ({ app, ctx, db } = state);
+});
+
+describe("Settings routes", () => {
+  it("GET /api/settings returns default settings", async () => {
+    const res = await request(app).get("/api/settings");
+    expect(res.status).toBe(200);
+    expect(typeof res.body).toBe("object");
+    expect(res.body).toHaveProperty("mcpServers");
+  });
+
+  it("PATCH /api/settings updates settings", async () => {
+    const res = await request(app)
+      .patch("/api/settings")
+      .send({ mcpServers: { test: { command: "echo", args: [] } } });
+    expect(res.status).toBe(200);
+    expect(res.body.mcpServers).toHaveProperty("test");
+
+    const get = await request(app).get("/api/settings");
+    expect(get.body.mcpServers).toHaveProperty("test");
+  });
+
+  it("PATCH /api/settings stores remote MCP server configs", async () => {
+    const remoteConfig = {
+      type: "http",
+      url: "https://mcp.linear.app/mcp",
+      headers: { Authorization: "Bearer test-token" },
+      tools: ["linear_search"],
+    };
+
+    const res = await request(app)
+      .patch("/api/settings")
+      .send({ mcpServers: { linear: remoteConfig } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mcpServers.linear).toEqual(remoteConfig);
+
+    const get = await request(app).get("/api/settings");
+    expect(get.body.mcpServers.linear).toEqual(remoteConfig);
+  });
+
+  it("PATCH /api/settings model change does NOT evict cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "claude-opus-4.7-1m-internal" });
+
+    expect(res.status).toBe(200);
+    // Model changes are future-only — no eviction, no setModel on cached sessions.
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings reasoningEffort change does NOT evict cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    await request(local.app).patch("/api/settings").send({ model: "claude-opus-4.7" });
+    evictSpy.mockClear();
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ reasoningEffort: "high" });
+
+    expect(res.status).toBe(200);
+    // Reasoning changes are future-only — existing sessions are not touched
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings model cleared does NOT evict cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    // First set a model, then clear it
+    await request(local.app).patch("/api/settings").send({ model: "claude-opus-4.7" });
+    evictSpy.mockClear();
+
+    const res = await request(local.app).patch("/api/settings").send({ model: "" });
+
+    expect(res.status).toBe(200);
+    // Clearing model is future-only — no eviction
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings MCP change still evicts cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ mcpServers: { test: { command: "echo", args: [] } } });
+
+    expect(res.status).toBe(200);
+    expect(evictSpy).toHaveBeenCalledOnce();
+  });
+});
+
+// ── Read State ───────────────────────────────────────────────────
+
+describe("Read state routes", () => {
+  it("GET /api/read-state returns empty state initially", async () => {
+    const res = await request(app).get("/api/read-state");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({});
+  });
+
+  it("POST /api/read-state/:sessionId marks a session as read", async () => {
+    const res = await request(app).post("/api/read-state/sess-1");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+
+    const state = await request(app).get("/api/read-state");
+    expect(state.body).toHaveProperty("sess-1");
+  });
+
+  it("DELETE /api/read-state/:sessionId marks a session as unread", async () => {
+    await request(app).post("/api/read-state/sess-2");
+
+    const del = await request(app).delete("/api/read-state/sess-2");
+    expect(del.status).toBe(200);
+    expect(del.body.ok).toBe(true);
+
+    const state = await request(app).get("/api/read-state");
+    expect(state.body["sess-2"]).toBeUndefined();
+  });
+});
+
+// ── Schedule CRUD ────────────────────────────────────────────────
+
+describe("Schedule routes", () => {
+  let taskId: string;
+
+  beforeEach(async () => {
+    const task = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Schedule Host" });
+    taskId = task.body.task.id;
+    scheduler.initialize(ctx.sessionManager as any, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+  });
+
+  it("GET /api/schedules returns empty list initially", async () => {
+    const res = await request(app).get("/api/schedules");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("POST /api/schedules validates required fields", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({ name: "Missing fields" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/required/);
+  });
+
+  it("POST /api/schedules validates task exists", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({ taskId: "no-such-task", name: "X", prompt: "Y", type: "cron", cron: "0 0 * * *" });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/schedules requires cron for cron type", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({ taskId, name: "X", prompt: "Y", type: "cron" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/cron/);
+  });
+
+  it("POST /api/schedules serializes new schedules without reuse fields", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Fresh schedule",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).not.toHaveProperty("sessionMode");
+    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.body).not.toHaveProperty("targetSessionId");
+  });
+
+  it("GET /api/schedules omits legacy reuse fields", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Legacy response",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    db.prepare(`
+      UPDATE schedules
+      SET sessionMode = 'reuse-last',
+          targetSessionId = 'target-session',
+          lastSessionId = 'last-session'
+      WHERE id = ?
+    `).run(schedule.id);
+
+    const res = await request(app).get("/api/schedules");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      id: schedule.id,
+      taskId,
+      name: "Legacy response",
+      lastSessionId: "last-session",
+    });
+    expect(res.body[0]).not.toHaveProperty("sessionMode");
+    expect(res.body[0]).not.toHaveProperty("reuseSession");
+    expect(res.body[0]).not.toHaveProperty("targetSessionId");
+  });
+
+  it("POST /api/schedules rejects reuseSession input", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Legacy reuse",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        reuseSession: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+  });
+
+  it("POST /api/schedules rejects sessionMode input", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Wrong mode",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        sessionMode: "new",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+  });
+
+  it("POST /api/schedules rejects legacy targetSessionId input", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Wrong target field",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        targetSessionId: "linked-session",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+  });
+
+  it("PATCH /api/schedules rejects sessionMode input", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Keep target",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ sessionMode: "new" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+  });
+
+  it("PATCH /api/schedules rejects legacy targetSessionId input", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Ignore target field",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ name: "Renamed", targetSessionId: "linked-session" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+  });
+
+  it("PATCH /api/schedules rejects reuseSession input", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Legacy patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+      sessionMode: "reuse-last",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ reuseSession: false });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+  });
+
+  it("PATCH /api/schedules serializes updated schedules without reuse fields", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Legacy successful patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    db.prepare(`
+      UPDATE schedules
+      SET sessionMode = 'reuse-last',
+          targetSessionId = 'target-session',
+          lastSessionId = 'last-session'
+      WHERE id = ?
+    `).run(schedule.id);
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ name: "Renamed schedule" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: schedule.id,
+      name: "Renamed schedule",
+      lastSessionId: "last-session",
+    });
+    expect(res.body).not.toHaveProperty("sessionMode");
+    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.body).not.toHaveProperty("targetSessionId");
+  });
+
+  it("GET /api/schedules/:id/sessions returns sessions for a schedule", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Test Sched", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-1");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-2");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.total).toBe(2);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: expect.any(String),
+      runId: expect.any(Number),
+      recordedAt: expect.any(String),
+      missing: true,
+    });
+    expect(res.body).toHaveProperty("offset", 0);
+    expect(res.body).toHaveProperty("limit");
+  });
+
+  it("GET /api/schedules/:id/sessions returns 404 for unknown schedule", async () => {
+    const res = await request(app).get("/api/schedules/no-such-id/sessions");
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /api/schedules/:id/sessions respects limit and offset params", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Paged", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s2");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s3");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=2&offset=1`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.offset).toBe(1);
+    expect(res.body.limit).toBe(2);
+    expect(res.body.sessions).toHaveLength(2);
+  });
+
+  it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Repeated target", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "shared-session", summary: "Shared session" } as any,
+    ];
+
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.sessions).toHaveLength(2);
+    expect(res.body.sessions[0].sessionId).toBe("shared-session");
+    expect(res.body.sessions[1].sessionId).toBe("shared-session");
+    expect(res.body.sessions[0].runId).not.toBe(res.body.sessions[1].runId);
+    expect(res.body.sessions[0].recordedAt).toEqual(expect.any(String));
+    expect(res.body.sessions[1].recordedAt).toEqual(expect.any(String));
+  });
+
+  it("GET /api/schedules/:id/sessions includes runState while keeping busy compatibility", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId, name: "Run states", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+    });
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "shared-session", summary: "Shared session" } as any,
+    ];
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: "shared-session",
+      runState: "stalled",
+      busy: true,
+    });
+  });
+});

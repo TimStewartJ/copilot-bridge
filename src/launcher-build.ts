@@ -1,7 +1,7 @@
-import { DEPLOY_GATE, ROLLBACK_GATE, runValidationGate } from "./server/validation-pipeline.js";
+import { DEPLOY_GATE, ROLLBACK_GATE, runValidationGate, type ValidationCommandOptions } from "./server/validation-pipeline.js";
 
 export type LauncherCommandResult = { ok: boolean; output: string };
-export type LauncherCommandOptions = { timeoutMs?: number };
+export type LauncherCommandOptions = ValidationCommandOptions;
 
 interface LauncherBuildOptions {
   ensureDeps: () => boolean;

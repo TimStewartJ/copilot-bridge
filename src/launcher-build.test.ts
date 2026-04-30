@@ -29,10 +29,10 @@ describe("runLauncherBuild", () => {
     expect(runLauncherBuild({ ensureDeps, run, log })).toBe(true);
 
     expect(run.mock.calls).toEqual([
-      ["npm run test:xplat-audit", { timeoutMs: 600_000 }],
-      ["npx tsc --noEmit", { timeoutMs: 600_000 }],
-      ["npx vitest run", { timeoutMs: 600_000 }],
-      ["npx vite build", { timeoutMs: 600_000 }],
+      ["npm run test:xplat-audit", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npx tsc --noEmit", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npx vitest run", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npx vite build", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
     ]);
   });
 
@@ -68,7 +68,7 @@ describe("rebuildAfterRollback", () => {
     expect(rebuildAfterRollback({ ensureDeps, run, log })).toBe(true);
 
     expect(run.mock.calls).toEqual([
-      ["npx vite build", { timeoutMs: 480_000 }],
+      ["npx vite build", { timeoutMs: 480_000, isolateRuntimeEnv: true }],
     ]);
   });
 });

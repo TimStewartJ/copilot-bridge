@@ -13,15 +13,20 @@ type ValidationCommandResult = {
   ok: boolean;
 };
 
+export type ValidationCommandOptions = {
+  timeoutMs?: number;
+  isolateRuntimeEnv?: boolean;
+};
+
 type RunValidationGateOptions<Result extends ValidationCommandResult> = {
   cwd: string;
-  run: (command: string, options?: { timeoutMs?: number }) => Result;
+  run: (command: string, options?: ValidationCommandOptions) => Result;
   log?: (message: string) => void;
 };
 
 type RunValidationGateAsyncOptions<Result extends ValidationCommandResult> = {
   cwd: string;
-  run: (command: string, options?: { timeoutMs?: number }) => Promise<Result>;
+  run: (command: string, options?: ValidationCommandOptions) => Promise<Result>;
   log?: (message: string) => void;
 };
 
@@ -95,7 +100,7 @@ export function runValidationGate<Result extends ValidationCommandResult>(
 
   for (const [stepIndex, step] of gate.steps.entries()) {
     options.log?.(`Running ${gate.label.toLowerCase()} step ${stepIndex + 1}/${gate.steps.length}: ${step.command}`);
-    const result = options.run(step.command, { timeoutMs: step.timeoutMs });
+    const result = options.run(step.command, { timeoutMs: step.timeoutMs, isolateRuntimeEnv: true });
     results.push({ step, result });
     if (!result.ok) {
       return { ok: false, gate, step, stepIndex, result, results };
@@ -114,7 +119,7 @@ export async function runValidationGateAsync<Result extends ValidationCommandRes
 
   for (const [stepIndex, step] of gate.steps.entries()) {
     options.log?.(`Running ${gate.label.toLowerCase()} step ${stepIndex + 1}/${gate.steps.length}: ${step.command}`);
-    const result = await options.run(step.command, { timeoutMs: step.timeoutMs });
+    const result = await options.run(step.command, { timeoutMs: step.timeoutMs, isolateRuntimeEnv: true });
     results.push({ step, result });
     if (!result.ok) {
       return { ok: false, gate, step, stepIndex, result, results };

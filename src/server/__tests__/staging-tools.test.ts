@@ -239,6 +239,18 @@ const DEPLOY_VALIDATION_COMMANDS = [
   "npx vite build",
 ] as const;
 
+function expectIsolatedValidationEnv(env: NodeJS.ProcessEnv | undefined) {
+  expect(env?.BRIDGE_DEMO_MODE).toBe("false");
+  expect(env?.BRIDGE_DATA_DIR).toBeTruthy();
+  expect(env?.BRIDGE_DOCS_DIR).toBeTruthy();
+  expect(env?.COPILOT_HOME).toBeTruthy();
+  expect(basename(env!.BRIDGE_DATA_DIR!)).toBe("data");
+  expect(basename(env!.BRIDGE_DOCS_DIR!)).toBe("docs");
+  expect(basename(env!.COPILOT_HOME!)).toBe(".copilot");
+  expect(dirname(env!.BRIDGE_DATA_DIR!)).toBe(dirname(env!.BRIDGE_DOCS_DIR!));
+  expect(dirname(env!.BRIDGE_DATA_DIR!)).toBe(dirname(env!.COPILOT_HOME!));
+}
+
 type LoadStagingToolsOptions = {
   previewParent?: string;
 };
@@ -1154,6 +1166,9 @@ describe("staging tools", () => {
     expect(previewValidationSpawnCalls.every(([, options]) =>
       options?.cwd === stagingDir && options?.shell === true && options?.windowsHide === true,
     )).toBe(true);
+    for (const [, options] of previewValidationSpawnCalls) {
+      expectIsolatedValidationEnv(options?.env);
+    }
   });
 
   it("skips staging_preview validation when validate is false", async () => {
@@ -1302,6 +1317,13 @@ describe("staging tools", () => {
       const idx = commands.indexOf(validationCmd);
       expect(idx, `${validationCmd} must appear before git merge`).toBeGreaterThan(-1);
       expect(idx, `${validationCmd} must appear before git merge`).toBeLessThan(mergeIndex);
+    }
+    const deployValidationSpawnCalls = spawnMock.mock.calls.filter(([cmd]) =>
+      DEPLOY_VALIDATION_COMMANDS.includes(String(cmd) as (typeof DEPLOY_VALIDATION_COMMANDS)[number]),
+    );
+    expect(deployValidationSpawnCalls).toHaveLength(DEPLOY_VALIDATION_COMMANDS.length);
+    for (const [, options] of deployValidationSpawnCalls) {
+      expectIsolatedValidationEnv(options?.env);
     }
 
     // pre-deploy-sha checkpoint must be written before restart.signal
