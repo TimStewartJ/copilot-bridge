@@ -449,6 +449,14 @@ interface SessionConfigOptions {
   scheduleContext?: ScheduleContext;
   /** Group notes to inject into context (looked up by caller) */
   groupNotes?: { groupName: string; notes: string } | null;
+  /**
+   * When true, omit `model` and `reasoningEffort` from the config.
+   * The SDK silently overwrites _selectedModel via updateOptions() without sanitizing
+   * chat history, so passing those on resume would corrupt cross-family tool_call
+   * shapes. Resume callers should rely on ensureSessionModelMatchesSettings() to
+   * trigger the SDK's session.model_change handler instead.
+   */
+  forResume?: boolean;
 }
 
 // Module-level ref so universal tools can query session state
@@ -2555,7 +2563,7 @@ export class SessionManager {
   }
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
-    const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes } = opts;
+    const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes, forResume } = opts;
     const runtimePaths = this.deps.runtimePaths;
     const demoMode = isDemoMode(runtimePaths);
     const workingDirectory = this.resolveEffectiveSessionCwd({ sessionId, task });
@@ -2573,13 +2581,16 @@ export class SessionManager {
       ],
     };
 
-    // Model priority: settings store > deps.config > SDK default
-    const model = this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
-    if (model) cfg.model = model;
+    // Model + reasoningEffort only belong on createSession. On resume the SDK
+    // overwrites _selectedModel without sanitizing chat history (which corrupts
+    // cross-family tool_call shapes — see ensureSessionModelMatchesSettings).
+    if (!forResume) {
+      const model = this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
+      if (model) cfg.model = model;
 
-    // Reasoning effort: settings store > SDK default
-    const reasoningEffort = this.deps.settingsStore?.getSettings().reasoningEffort;
-    if (reasoningEffort) cfg.reasoningEffort = reasoningEffort;
+      const reasoningEffort = this.deps.settingsStore?.getSettings().reasoningEffort;
+      if (reasoningEffort) cfg.reasoningEffort = reasoningEffort;
+    }
 
     if (workingDirectory) {
       cfg.workingDirectory = workingDirectory;
@@ -3341,7 +3352,7 @@ export class SessionManager {
 
     // Build resume config with optional task context
     const linkedTask = this.findLinkedTask(sessionId);
-    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -3364,6 +3375,7 @@ export class SessionManager {
             setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
           ),
         ]);
+        await this.ensureSessionModelMatchesSettings(s, sid);
         this.sessionObjects.set(sessionId, s);
         this.probeMcpStatus(sessionId, s);
         const resumeDuration = Date.now() - resumeStart;
@@ -3792,6 +3804,7 @@ export class SessionManager {
           setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
         ),
       ]);
+      await this.ensureSessionModelMatchesSettings(recoveredSession, sid);
       const resumeDuration = Date.now() - resumeStart;
       this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
       console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
@@ -3967,7 +3980,7 @@ export class SessionManager {
     const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.findLinkedTask(sessionId);
-    const msgResumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const msgResumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
     const tConfig = Date.now();
 
     // Reuse cached session object — avoids overwriting the active one in the SDK
@@ -3997,6 +4010,7 @@ export class SessionManager {
           ),
         ]);
         resumeMs = Date.now() - tResume;
+        await this.ensureSessionModelMatchesSettings(session, sid);
         this.sessionObjects.set(sessionId, session);
         const tGm = Date.now();
         events = await session.getMessages();
@@ -4014,6 +4028,7 @@ export class SessionManager {
         ),
       ]);
       resumeMs = Date.now() - tResume;
+      await this.ensureSessionModelMatchesSettings(session, sid);
       this.sessionObjects.set(sessionId, session);
       const tGm = Date.now();
       events = await session.getMessages();
@@ -4107,7 +4122,7 @@ export class SessionManager {
     console.log(`[sdk] [${sid}] Warming session...`);
 
     const linkedTask = this.findLinkedTask(sessionId);
-    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
     this.resumingSessions.add(sessionId);
     try {
@@ -4117,6 +4132,7 @@ export class SessionManager {
           setTimeout(() => reject(new Error("warmSession timed out after 60s")), 60_000),
         ),
       ]);
+      await this.ensureSessionModelMatchesSettings(session, sid);
       this.sessionObjects.set(sessionId, session);
       this.probeMcpStatus(sessionId, session);
 
@@ -4178,7 +4194,7 @@ export class SessionManager {
 
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.findLinkedTask(sessionId);
-    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId) });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
 
     this.resumingSessions.add(sessionId);
     try {
@@ -4197,6 +4213,7 @@ export class SessionManager {
           setTimeout(() => reject(new Error("reloadSession timed out after 60s")), 60_000),
         ),
       ]);
+      await this.ensureSessionModelMatchesSettings(session, sid);
       this.sessionObjects.set(sessionId, session);
 
       return this.getMcpStatus(sessionId);
@@ -4248,6 +4265,75 @@ export class SessionManager {
       if (this.evictCachedSession(id)) evicted++;
     }
     console.log(`[sdk] Evicted ${evicted} cached session(s) (${busy.size} busy, skipped)`);
+  }
+
+  /**
+   * After a fresh resumeSession(), make sure the SDK's selected model matches
+   * the user's current settings. We don't pass `model` on resume because the SDK
+   * silently overwrites _selectedModel via updateOptions() without sanitizing
+   * the replayed chat history, which corrupts cross-family tool_call shapes
+   * (Anthropic-`custom` vs OpenAI-`function`) and produces a CAPI 400.
+   *
+   * Calling session.setModel() RPCs to model.switchTo, which emits a
+   * `session.model_change` event. The SDK's handler for that event runs
+   * Oyr/xyr to rewrite each tool_call shape, remap tool_call_id on tool
+   * messages, and strip family-specific reasoning artifacts. We own zero of
+   * that logic — just the trigger.
+   */
+  private async ensureSessionModelMatchesSettings(session: any, sid: string): Promise<void> {
+    const desiredModel = this.deps.settingsStore?.getSettings().model ?? this.deps.config.model;
+    if (!desiredModel) return;
+    const desiredReasoning = this.deps.settingsStore?.getSettings().reasoningEffort;
+    try {
+      const current = await session?.rpc?.model?.getCurrent?.();
+      const currentModel = current?.modelId;
+      if (currentModel === desiredModel) return;
+      console.log(`[sdk] [${sid}] Migrating session model ${currentModel ?? "(unknown)"} -> ${desiredModel}`);
+      await session.setModel(desiredModel, desiredReasoning ? { reasoningEffort: desiredReasoning } : undefined);
+    } catch (err) {
+      console.warn(`[sdk] [${sid}] ensureSessionModelMatchesSettings failed:`, err);
+    }
+  }
+
+  /**
+   * Apply the current settings model to every cached session via setModel.
+   * Used when the user changes model OR reasoningEffort in /settings instead of
+   * evicting cached sessions — preserves conversation continuity and lets the
+   * SDK's session.model_change handler sanitize history. The SDK queues the
+   * change internally on busy sessions (see setSelectedModel in the CLI bundle),
+   * so this is safe to call concurrently with active turns.
+   *
+   * Note: we deliberately do NOT short-circuit when the SDK's reported model
+   * already matches the target — `getCurrent()` only exposes modelId, not
+   * reasoningEffort, so a "model matches" check would silently drop reasoning-
+   * only changes. Always calling setModel costs at most one redundant
+   * model_change event per session per settings save, which is acceptable
+   * given that settings saves are rare.
+   *
+   * Caveat (out of scope for this fix): an in-flight cold resume that hasn't
+   * yet inserted its session into `sessionObjects` will be missed by this
+   * iteration. The session will end up cached on the pre-PATCH model. The next
+   * eviction (MCP change, restart, manual reload) re-syncs.
+   */
+  async applyModelToCachedSessions(model: string, reasoningEffort?: string): Promise<{ updated: number; failed: number }> {
+    const opts = reasoningEffort ? { reasoningEffort: reasoningEffort as any } : undefined;
+    let updated = 0, failed = 0;
+    await Promise.allSettled(
+      Array.from(this.sessionObjects.entries()).map(async ([id, session]) => {
+        const sid = id.slice(0, 8);
+        try {
+          const wasBusy = this.isSessionBusy(id);
+          await session.setModel(model, opts);
+          updated++;
+          console.log(`[sdk] [${sid}] setModel(${model}) ${wasBusy ? "queued (busy)" : "applied"}`);
+        } catch (err) {
+          failed++;
+          console.warn(`[sdk] [${sid}] setModel failed:`, err);
+        }
+      }),
+    );
+    console.log(`[sdk] applyModelToCachedSessions(${model}): updated=${updated}, failed=${failed}`);
+    return { updated, failed };
   }
 
   getSessionActivity(): SessionActivity[] {

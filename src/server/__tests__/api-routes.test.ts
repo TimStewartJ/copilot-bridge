@@ -1667,6 +1667,64 @@ describe("Settings routes", () => {
     const get = await request(app).get("/api/settings");
     expect(get.body.mcpServers.linear).toEqual(remoteConfig);
   });
+
+  it("PATCH /api/settings model change calls applyModelToCachedSessions and does NOT evict", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    const applySpy = vi.fn().mockResolvedValue({ updated: 1, skipped: 0, failed: 0 });
+    sessionManager.evictAllCachedSessions = evictSpy;
+    sessionManager.applyModelToCachedSessions = applySpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ model: "claude-opus-4.7-1m-internal" });
+
+    expect(res.status).toBe(200);
+    expect(applySpy).toHaveBeenCalledWith("claude-opus-4.7-1m-internal", undefined);
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings reasoningEffort change calls applyModelToCachedSessions when model is set", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    const applySpy = vi.fn().mockResolvedValue({ updated: 1, failed: 0 });
+    sessionManager.evictAllCachedSessions = evictSpy;
+    sessionManager.applyModelToCachedSessions = applySpy;
+    const local = createTestApp({ sessionManager });
+
+    await request(local.app).patch("/api/settings").send({ model: "claude-opus-4.7" });
+    applySpy.mockClear();
+    evictSpy.mockClear();
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ reasoningEffort: "high" });
+
+    expect(res.status).toBe(200);
+    // Regression guard: reasoning-only changes must propagate to cached sessions
+    // even when the model didn't change. Earlier code skipped setModel when
+    // modelId already matched, silently dropping the new reasoning effort.
+    expect(applySpy).toHaveBeenCalledWith("claude-opus-4.7", "high");
+    expect(evictSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/settings MCP change still evicts cached sessions", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    const applySpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    sessionManager.applyModelToCachedSessions = applySpy;
+    const local = createTestApp({ sessionManager });
+
+    const res = await request(local.app)
+      .patch("/api/settings")
+      .send({ mcpServers: { test: { command: "echo", args: [] } } });
+
+    expect(res.status).toBe(200);
+    expect(evictSpy).toHaveBeenCalledOnce();
+    expect(applySpy).not.toHaveBeenCalled();
+  });
 });
 
 // ── Read State ───────────────────────────────────────────────────
