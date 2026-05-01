@@ -260,9 +260,6 @@ export default function TaskMomentumFields({
                         }>
                           {displayValue}
                         </span>
-                        <span className="mt-1 block text-[10px] font-medium text-accent">
-                          {isExpanded ? "Less" : "More"}
-                        </span>
                       </button>
                     ) : (
                       <div
