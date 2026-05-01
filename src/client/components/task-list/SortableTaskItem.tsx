@@ -2,7 +2,6 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
 import { timeAgo } from "../../time";
-import { TAG_COLOR_DOT as TAG_DOT } from "../../tag-colors";
 import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import { getFollowUpState } from "../TaskMomentumFields";
@@ -19,7 +18,7 @@ interface SortableTaskItemProps {
   isLongPressTarget: boolean;
   bindLongPress: (id: string, onClick: () => void) => Record<string, unknown>;
   onSelectTask: (id: string) => void;
-  /** "rail" shows tag dots + status text and uses tighter padding; "list" is the mobile/simple variant */
+  /** "rail" shows status text and uses tighter padding; "list" is the mobile/simple variant */
   variant?: "rail" | "list";
 }
 
@@ -78,14 +77,6 @@ export default function SortableTaskItem({
             {task.title}
           </span>
           <TaskKindBadge kind={task.kind} iconOnly className="ml-1 shrink-0" />
-          {/* Rail variant: tag dots + status label */}
-          {isRail && (task.tags?.length ?? 0) > 0 && (
-            <span className="flex gap-0.5 shrink-0 ml-1">
-              {task.tags!.slice(0, 3).map((tag) => (
-                <span key={tag.id} className={`w-1.5 h-1.5 rounded-full ${TAG_DOT[tag.color] ?? "bg-slate-500"}`} title={tag.name} />
-              ))}
-            </span>
-          )}
           {isRail && (
             <span className={`text-[10px] ml-1 ${getTaskStatusTextClass(task)}`}>
               {getTaskStatusLabel(task) !== "Active" ? getTaskStatusLabel(task) : ""}
