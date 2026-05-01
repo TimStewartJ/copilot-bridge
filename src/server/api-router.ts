@@ -36,6 +36,8 @@ import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
 import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
+import { createPushNotificationService, getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
+import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -181,6 +183,19 @@ type LegacyCompatibleOkGitStatus = Extract<TaskGitStatusResponse, { status: "ok"
     head?: GitWorktreeHead;
   }>;
 };
+
+function normalizePushSubscriptionBody(body: unknown): PushSubscriptionInput | undefined {
+  if (isPushSubscriptionInput(body)) return body;
+  if (!body || typeof body !== "object") return undefined;
+  const subscription = (body as Record<string, unknown>).subscription;
+  return isPushSubscriptionInput(subscription) ? subscription : undefined;
+}
+
+function normalizeEndpointBody(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const endpoint = (body as Record<string, unknown>).endpoint;
+  return typeof endpoint === "string" && endpoint.startsWith("https://") ? endpoint : undefined;
+}
 
 function getSessionStatus(
   ctx: AppContext,
@@ -564,6 +579,8 @@ type RouterCompatContext = Omit<AppContext, "voiceJobManager"> & {
   __voiceJobFallbackDb?: DatabaseSync;
   __voiceJobFallbackCleanupInstalled?: boolean;
   __voiceJobFallbackResumed?: boolean;
+  __pushFallbackDb?: DatabaseSync;
+  __pushFallbackCleanupInstalled?: boolean;
 };
 
 class InvalidWavError extends Error {}
@@ -995,6 +1012,72 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  router.get("/push/status", (_req, res) => {
+    try {
+      res.json(getPushPublicStatus(ensurePushSubscriptionStore(ctx)));
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.post("/push/subscriptions", (req, res) => {
+    const subscription = normalizePushSubscriptionBody(req.body);
+    if (!subscription) {
+      return res.status(400).json({ error: "Valid push subscription is required." });
+    }
+
+    try {
+      const saved = ensurePushSubscriptionStore(ctx).upsertSubscription(subscription, req.get("user-agent") ?? undefined);
+      res.status(201).json({
+        ok: true,
+        subscription: {
+          id: saved.id,
+          endpoint: saved.endpoint,
+          createdAt: saved.createdAt,
+          updatedAt: saved.updatedAt,
+          lastSeenAt: saved.lastSeenAt,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.delete("/push/subscriptions", (req, res) => {
+    const endpoint = normalizeEndpointBody(req.body);
+    if (!endpoint) {
+      return res.status(400).json({ error: "Valid push subscription endpoint is required." });
+    }
+
+    try {
+      res.json({ ok: true, deleted: ensurePushSubscriptionStore(ctx).deleteSubscription(endpoint) });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.post("/push/test", async (req, res) => {
+    const endpoint = normalizeEndpointBody(req.body);
+    const payload: BridgePushPayload = {
+      title: "Copilot Bridge test",
+      body: "Push notifications are working.",
+      url: "./",
+      tag: "bridge-test-notification",
+      data: { eventType: "push:test" },
+      suppressIfFocused: false,
+    };
+
+    try {
+      const pushNotificationService = ensurePushNotificationService(ctx);
+      const result = endpoint
+        ? await pushNotificationService.sendToEndpoint(endpoint, payload)
+        : await pushNotificationService.sendToAll(payload);
+      res.json({ ok: true, result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get("/copilot-usage", async (req, res) => {
@@ -3104,4 +3187,44 @@ function ensureVoiceJobManager(ctx: AppContext, transcriptionService: Transcript
   }
 
   return compatCtx.voiceJobManager;
+}
+
+function ensurePushSubscriptionStore(ctx: AppContext): PushSubscriptionStore {
+  const compatCtx = ctx as RouterCompatContext;
+  if (compatCtx.pushSubscriptionStore) {
+    return compatCtx.pushSubscriptionStore;
+  }
+
+  const dataDir = ctx.runtimePaths?.dataDir ?? dirname(getCopilotHome(ctx));
+  compatCtx.__pushFallbackDb ??= openDatabase(dataDir);
+  compatCtx.pushSubscriptionStore = createPushSubscriptionStore(compatCtx.__pushFallbackDb);
+
+  if (!compatCtx.__pushFallbackCleanupInstalled) {
+    const originalShutdown = ctx.sessionManager.gracefulShutdown.bind(ctx.sessionManager);
+    ctx.sessionManager.gracefulShutdown = async () => {
+      try {
+        await originalShutdown();
+      } finally {
+        try {
+          compatCtx.__pushFallbackDb?.close();
+        } catch {
+          // Best-effort close for preview compatibility; the primary DB handle is managed elsewhere.
+        }
+        compatCtx.__pushFallbackDb = undefined;
+        compatCtx.__pushFallbackCleanupInstalled = false;
+      }
+    };
+    compatCtx.__pushFallbackCleanupInstalled = true;
+  }
+
+  return compatCtx.pushSubscriptionStore;
+}
+
+function ensurePushNotificationService(ctx: AppContext): PushNotificationService {
+  const compatCtx = ctx as RouterCompatContext;
+  compatCtx.pushNotificationService ??= createPushNotificationService({
+    subscriptionStore: ensurePushSubscriptionStore(ctx),
+    env: ctx.runtimePaths?.env ?? process.env,
+  });
+  return compatCtx.pushNotificationService;
 }

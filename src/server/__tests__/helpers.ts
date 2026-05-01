@@ -21,6 +21,8 @@ import { createChecklistStore } from "../checklist-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
+import { createPushNotificationService } from "../push-notification-service.js";
+import { createPushSubscriptionStore } from "../push-subscription-store.js";
 import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
@@ -245,6 +247,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   const sessionManager = createMockSessionManager();
   const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, { runtimePaths });
   const taskGroupStore = createTaskGroupStore(db);
+  const pushSubscriptionStore = createPushSubscriptionStore(db);
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
     taskStore,
@@ -264,6 +267,8 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     eventBusRegistry,
     sessionManager,
     transcriptionService,
+    pushSubscriptionStore,
+    pushNotificationService: createPushNotificationService({ subscriptionStore: pushSubscriptionStore }),
     deferredPromptStore: createDeferredPromptStore(db),
     deferLoopStore: createDeferLoopStore(db),
     copilotHome,

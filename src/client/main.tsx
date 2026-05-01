@@ -5,7 +5,16 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./queryClient";
 import { ThemeProvider } from "./useTheme";
 import App from "./App";
+import { initPushSubscriptionReconciliation, registerPushServiceWorker } from "./push-notifications";
 import "./index.css";
+
+initPushSubscriptionReconciliation();
+void registerPushServiceWorker().catch(() => {});
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", () => {
+    void registerPushServiceWorker().catch(() => {});
+  });
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

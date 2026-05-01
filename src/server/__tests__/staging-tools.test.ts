@@ -219,6 +219,31 @@ function createProductionDataDir(): string {
       enabled INTEGER NOT NULL
     );
     INSERT INTO schedules (id, enabled) VALUES ('daily', 1);
+
+    CREATE TABLE push_subscriptions (
+      id TEXT PRIMARY KEY,
+      endpoint TEXT NOT NULL UNIQUE,
+      expirationTime INTEGER,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      userAgent TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastSeenAt TEXT NOT NULL
+    );
+    INSERT INTO push_subscriptions (
+      id, endpoint, expirationTime, p256dh, auth, userAgent, createdAt, updatedAt, lastSeenAt
+    ) VALUES (
+      'sub-1',
+      'https://push.example.test/send/sub-1',
+      NULL,
+      'p256dh',
+      'auth',
+      'agent',
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z'
+    );
   `);
   db.close();
 
@@ -458,6 +483,8 @@ describe("staging tools", () => {
     try {
       const schedules = stagingDb.prepare("SELECT enabled FROM schedules").all() as Array<{ enabled: number }>;
       expect(schedules).toEqual([{ enabled: 0 }]);
+      const pushSubscriptions = stagingDb.prepare("SELECT COUNT(*) AS count FROM push_subscriptions").get() as { count: number };
+      expect(pushSubscriptions.count).toBe(0);
     } finally {
       stagingDb.close();
     }
