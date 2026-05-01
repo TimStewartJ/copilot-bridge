@@ -6,6 +6,7 @@ import { toWebPushSubscription } from "./push-subscription-store.js";
 import { buildPublicUrl } from "./tunnel.js";
 
 const PUSH_TTL_SECONDS = 10 * 60;
+const NOTIFICATION_NAME_MAX_LENGTH = 48;
 const PUSH_ENV = {
   publicKey: "BRIDGE_PUSH_VAPID_PUBLIC_KEY",
   privateKey: "BRIDGE_PUSH_VAPID_PRIVATE_KEY",
@@ -186,10 +187,10 @@ export function initPushEventNotifications(
     if (event.type === "session:user-input" && event.sessionId && event.needsUserInput) {
       const target = buildSessionNotificationTarget(ctx, event.sessionId);
       await service.sendToAll({
-        title: "Bridge needs your input",
-        body: target.label,
+        title: target.sessionName,
+        body: withTaskContext(target.taskName, "Needs input - tap to respond in Bridge."),
         url: target.url,
-        tag: `bridge-user-input-${event.sessionId}`,
+        tag: `bridge-session-${event.sessionId}`,
         data: { eventType: "session:user-input", sessionId: event.sessionId },
       });
     }
@@ -197,10 +198,10 @@ export function initPushEventNotifications(
     if (event.type === "session:idle" && event.sessionId) {
       const target = buildSessionNotificationTarget(ctx, event.sessionId);
       await service.sendToAll({
-        title: "Bridge run finished",
-        body: target.label,
+        title: target.sessionName,
+        body: withTaskContext(target.taskName, event.assistantPreview ?? "Finished. Tap to review the latest result."),
         url: target.url,
-        tag: `bridge-session-idle-${event.sessionId}`,
+        tag: `bridge-session-${event.sessionId}`,
         data: { eventType: "session:idle", sessionId: event.sessionId },
       });
     }
@@ -232,10 +233,11 @@ function subscribeToPushEvents(
 function buildSessionNotificationTarget(
   ctx: Pick<AppContext, "taskStore" | "sessionTitles" | "apiBasePath">,
   sessionId: string,
-): { label: string; url: string } {
+): { sessionName: string; taskName?: string; url: string } {
   const task = ctx.taskStore.findTaskBySessionId(sessionId);
   const sessionTitle = ctx.sessionTitles.getTitle(sessionId);
-  const label = task?.title ?? sessionTitle ?? "Open the session to review the latest result.";
+  const sessionName = normalizeNotificationName(sessionTitle) ?? `Session ${sessionId.slice(0, 8)}`;
+  const taskName = normalizeNotificationName(task?.title);
   const appPath = task
     ? `/tasks/${encodeURIComponent(task.id)}/sessions/${encodeURIComponent(sessionId)}`
     : `/sessions/${encodeURIComponent(sessionId)}`;
@@ -243,7 +245,19 @@ function buildSessionNotificationTarget(
   const appBasePath = apiBasePath.endsWith("/api") ? apiBasePath.slice(0, -4) : "";
   const routedPath = `${appBasePath}${appPath}`;
   return {
-    label,
+    sessionName,
+    ...(taskName ? { taskName } : {}),
     url: buildPublicUrl(routedPath) ?? routedPath,
   };
+}
+
+function withTaskContext(taskName: string | undefined, body: string): string {
+  return taskName ? `${taskName}: ${body}` : body;
+}
+
+function normalizeNotificationName(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= NOTIFICATION_NAME_MAX_LENGTH) return normalized;
+  return `${normalized.slice(0, NOTIFICATION_NAME_MAX_LENGTH - 3).trimEnd()}...`;
 }

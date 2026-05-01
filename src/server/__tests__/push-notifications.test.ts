@@ -3,7 +3,7 @@ import request from "supertest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPushNotificationService } from "../push-notification-service.js";
+import { createPushNotificationService, initPushEventNotifications } from "../push-notification-service.js";
 import { createPushSubscriptionStore, type PushSubscriptionInput } from "../push-subscription-store.js";
 import { createTestApp, setupTestDb, withTestEnv } from "./helpers.js";
 
@@ -23,6 +23,12 @@ const PUSH_ENV = {
 };
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+function getSentPayload(sendNotification: ReturnType<typeof vi.fn>): Record<string, unknown> {
+  const payload = sendNotification.mock.calls[0]?.[1];
+  if (typeof payload !== "string") throw new Error("Expected push payload to be a string");
+  return JSON.parse(payload) as Record<string, unknown>;
+}
 
 describe("push service worker freshness", () => {
   it("does not intercept fetches or delete origin-wide caches", () => {
@@ -110,6 +116,177 @@ describe("push notification service", () => {
         },
       }),
     );
+  });
+});
+
+describe("push event notification copy", () => {
+  it("uses the session title and puts linked task context in needs-input bodies", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createTestApp();
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      const task = ctx.taskStore.createTask("Copilot Bridge Local Deployment");
+      ctx.taskStore.linkSession(task.id, "session-input");
+      ctx.sessionTitles.setTitle("session-input", "Message-style push notifications");
+
+      ctx.globalBus.emit({ type: "session:user-input", sessionId: "session-input", needsUserInput: true });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      const payload = getSentPayload(sendNotification);
+      expect(payload).toMatchObject({
+        title: "Message-style push notifications",
+        body: "Copilot Bridge Local Deployment: Needs input - tap to respond in Bridge.",
+        tag: "bridge-session-session-input",
+        data: { eventType: "session:user-input", sessionId: "session-input" },
+      });
+      expect(String(payload.url)).toContain(`/tasks/${encodeURIComponent(task.id)}/sessions/session-input`);
+      unsubscribe();
+    });
+  });
+
+  it("uses the session title and prefixes linked task context to assistant previews", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createTestApp();
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      const task = ctx.taskStore.createTask("Copilot Bridge Local Deployment");
+      ctx.taskStore.linkSession(task.id, "session-with-task");
+      ctx.sessionTitles.setTitle("session-with-task", "Message-style push notifications");
+
+      ctx.globalBus.emit({ type: "session:busy", sessionId: "session-with-task" });
+      ctx.globalBus.emit({
+        type: "session:idle",
+        sessionId: "session-with-task",
+        assistantPreview: "Implemented the final notification copy change.",
+      });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      const payload = getSentPayload(sendNotification);
+      expect(payload).toMatchObject({
+        title: "Message-style push notifications",
+        body: "Copilot Bridge Local Deployment: Implemented the final notification copy change.",
+        tag: "bridge-session-session-with-task",
+        data: { eventType: "session:idle", sessionId: "session-with-task" },
+      });
+      expect(String(payload.url)).toContain(`/tasks/${encodeURIComponent(task.id)}/sessions/session-with-task`);
+      unsubscribe();
+    });
+  });
+
+  it("puts the session title in finished notification titles", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createTestApp();
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      ctx.sessionTitles.setTitle("session-finished", "  Push   notification\ncopy polish  ");
+
+      ctx.globalBus.emit({ type: "session:busy", sessionId: "session-finished" });
+      ctx.globalBus.emit({
+        type: "session:idle",
+        sessionId: "session-finished",
+        assistantPreview: "Implemented the notification copy updates and added coverage.",
+      });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      expect(getSentPayload(sendNotification)).toMatchObject({
+        title: "Push notification copy polish",
+        body: "Implemented the notification copy updates and added coverage.",
+        tag: "bridge-session-session-finished",
+        data: { eventType: "session:idle", sessionId: "session-finished" },
+      });
+      unsubscribe();
+    });
+  });
+
+  it("falls back to a short session id when no task or title is available", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createTestApp();
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+
+      ctx.globalBus.emit({ type: "session:user-input", sessionId: "abcdef123456", needsUserInput: true });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      expect(getSentPayload(sendNotification)).toMatchObject({
+        title: "Session abcdef12",
+        body: "Needs input - tap to respond in Bridge.",
+      });
+      unsubscribe();
+    });
+  });
+
+  it("truncates long notification names", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createTestApp();
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      ctx.sessionTitles.setTitle("long-session", "This is a very long session title that should be shortened for notification displays");
+
+      ctx.globalBus.emit({ type: "session:busy", sessionId: "long-session" });
+      ctx.globalBus.emit({ type: "session:idle", sessionId: "long-session", assistantPreview: "Done." });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      expect(getSentPayload(sendNotification)).toMatchObject({
+        title: "This is a very long session title that should...",
+        body: "Done.",
+      });
+      unsubscribe();
+    });
+  });
+
+  it("uses a fallback completion body when no assistant preview is available", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createTestApp();
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      ctx.sessionTitles.setTitle("no-preview", "No Preview Session");
+
+      ctx.globalBus.emit({ type: "session:busy", sessionId: "no-preview" });
+      ctx.globalBus.emit({ type: "session:idle", sessionId: "no-preview" });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      expect(getSentPayload(sendNotification)).toMatchObject({
+        title: "No Preview Session",
+        body: "Finished. Tap to review the latest result.",
+      });
+      unsubscribe();
+    });
   });
 });
 

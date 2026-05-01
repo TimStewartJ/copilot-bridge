@@ -11,6 +11,7 @@ export interface StatusEvent {
   archived?: boolean;
   pendingUserInputCount?: number;
   needsUserInput?: boolean;
+  assistantPreview?: string;
   deferSummary?: DeferSummary;
   waitingSessions?: number;
   scheduleId?: string;
