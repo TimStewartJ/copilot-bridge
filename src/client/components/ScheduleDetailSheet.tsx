@@ -32,6 +32,7 @@ const CRON_PRESETS = [
   { label: "Every Friday at 5 PM", cron: "0 17 * * 5" },
   { label: "Custom", cron: "" },
 ];
+const MAX_AUTO_ARCHIVE_KEEP = 1000;
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -243,6 +244,12 @@ function ViewMode({
                 <span className="text-text-secondary">{schedule.runCount}/{schedule.maxRuns}</span>
               </div>
             )}
+            {schedule.autoArchiveKeep && (
+              <div>
+                <span className="text-text-faint block mb-0.5">Auto-archive</span>
+                <span className="text-text-secondary">Keep latest {schedule.autoArchiveKeep} sessions</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -364,6 +371,7 @@ function EditMode({
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
+  const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -386,12 +394,20 @@ function EditMode({
     setRunAt(schedule?.runAt ? schedule.runAt.slice(0, 16) : "");
     setTimezone(schedule?.timezone ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
+    setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");
   }, [schedule]);
 
   const handleSave = async () => {
     if (!name.trim() || !prompt.trim()) { setError("Name and prompt are required"); return; }
     if (type === "cron" && !cronExpr.trim()) { setError("Cron expression is required"); return; }
     if (type === "once" && !runAt) { setError("Run time is required"); return; }
+    const autoArchiveKeepValue = autoArchiveKeep.trim();
+    const parsedAutoArchiveKeep = autoArchiveKeepValue ? Number(autoArchiveKeepValue) : null;
+    if (parsedAutoArchiveKeep !== null
+      && (!Number.isInteger(parsedAutoArchiveKeep) || parsedAutoArchiveKeep < 1 || parsedAutoArchiveKeep > MAX_AUTO_ARCHIVE_KEEP)) {
+      setError(`Auto-archive keep count must be between 1 and ${MAX_AUTO_ARCHIVE_KEEP}`);
+      return;
+    }
 
     setSaving(true);
     setError(null);
@@ -405,6 +421,7 @@ function EditMode({
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
+          ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
         await createSchedule(input);
       } else {
@@ -415,6 +432,7 @@ function EditMode({
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
+          autoArchiveKeep: parsedAutoArchiveKeep,
         });
       }
       onSaved();
@@ -533,6 +551,21 @@ function EditMode({
                 value={maxRuns}
                 onChange={(e) => setMaxRuns(e.target.value)}
               />
+            </div>
+            <div>
+              <span className="text-text-faint block mb-1">Auto-archive</span>
+              <input
+                type="number"
+                min="1"
+                max={MAX_AUTO_ARCHIVE_KEEP}
+                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                placeholder="Off"
+                value={autoArchiveKeep}
+                onChange={(e) => setAutoArchiveKeep(e.target.value)}
+              />
+            </div>
+            <div className="col-span-2 text-[10px] text-text-faint leading-relaxed">
+              When set, old run sessions are archived after the latest N. Busy sessions and sessions with active defers are skipped.
             </div>
           </div>
         </div>

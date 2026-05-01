@@ -318,6 +318,7 @@ function initSchema(db: DatabaseSync): void {
       runCount INTEGER NOT NULL DEFAULT 0,
       maxRuns INTEGER,
       expiresAt TEXT,
+      autoArchiveKeep INTEGER,
       reuseLastRequiresExistingSession INTEGER NOT NULL DEFAULT 0
     );
 
@@ -511,6 +512,9 @@ function initSchema(db: DatabaseSync): void {
   }
   if (!scheduleCols.some((c: any) => c.name === "reuseLastRequiresExistingSession")) {
     db.exec("ALTER TABLE schedules ADD COLUMN reuseLastRequiresExistingSession INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!scheduleCols.some((c: any) => c.name === "autoArchiveKeep")) {
+    db.exec("ALTER TABLE schedules ADD COLUMN autoArchiveKeep INTEGER");
   }
 
   // Migrate reuse-target → reuse-last using the former target as the last session.

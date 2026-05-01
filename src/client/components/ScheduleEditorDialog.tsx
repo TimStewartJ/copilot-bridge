@@ -16,6 +16,7 @@ const CRON_PRESETS = [
   { label: "Every Friday at 5 PM", cron: "0 17 * * 5" },
   { label: "Custom", cron: "" },
 ];
+const MAX_AUTO_ARCHIVE_KEEP = 1000;
 
 interface ScheduleEditorDialogProps {
   taskId: string;
@@ -33,6 +34,7 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? schedule.runAt.slice(0, 16) : ""); // datetime-local format
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
+  const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +58,13 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
       setError("Run time is required");
       return;
     }
+    const autoArchiveKeepValue = autoArchiveKeep.trim();
+    const parsedAutoArchiveKeep = autoArchiveKeepValue ? Number(autoArchiveKeepValue) : null;
+    if (parsedAutoArchiveKeep !== null
+      && (!Number.isInteger(parsedAutoArchiveKeep) || parsedAutoArchiveKeep < 1 || parsedAutoArchiveKeep > MAX_AUTO_ARCHIVE_KEEP)) {
+      setError(`Auto-archive keep count must be between 1 and ${MAX_AUTO_ARCHIVE_KEEP}`);
+      return;
+    }
     setSaving(true);
     setError(null);
 
@@ -67,6 +76,7 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
+          autoArchiveKeep: parsedAutoArchiveKeep,
         });
       } else {
         const input: ScheduleCreateInput = {
@@ -76,6 +86,7 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
+          ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
         await createSchedule(input);
       }
@@ -208,6 +219,21 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
                   value={maxRuns}
                   onChange={(e) => setMaxRuns(e.target.value)}
                 />
+              </div>
+              <div>
+                <label className="block text-xs text-text-muted mb-1">Auto-archive old runs (optional)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={MAX_AUTO_ARCHIVE_KEEP}
+                  className="w-24 text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                  placeholder="Off"
+                  value={autoArchiveKeep}
+                  onChange={(e) => setAutoArchiveKeep(e.target.value)}
+                />
+                <div className="text-[10px] text-text-faint mt-1">
+                  Keep the latest N run sessions active. Busy sessions and active defers are skipped.
+                </div>
               </div>
             </div>
           )}

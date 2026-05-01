@@ -2,6 +2,8 @@ import { defineTool } from "@github/copilot-sdk";
 import { basename, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schedulerModule from "../scheduler.js";
+import { enforceScheduleSessionRetention } from "../schedule-session-retention.js";
+import { normalizeScheduleAutoArchiveKeep } from "../schedule-validation.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTask } from "./helpers.js";
@@ -39,6 +41,8 @@ function getScheduler(ctx: AppContext): typeof schedulerModule {
       taskStore: ctx.taskStore,
       sessionMetaStore: ctx.sessionMetaStore,
       globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
     });
     ctx.scheduler = schedulerModule;
   }
@@ -47,6 +51,21 @@ function getScheduler(ctx: AppContext): typeof schedulerModule {
 
 function hasScheduleReuseField(args: Record<string, unknown>): boolean {
   return SCHEDULE_REUSE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(args, field));
+}
+
+async function enforceRetentionForSchedule(ctx: AppContext, schedule: Parameters<typeof enforceScheduleSessionRetention>[0]["schedule"]): Promise<void> {
+  try {
+    await enforceScheduleSessionRetention({
+      schedule,
+      sessionMetaStore: ctx.sessionMetaStore,
+      sessionManager: ctx.sessionManager,
+      globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
+    });
+  } catch (err) {
+    console.warn(`[schedule-tools] Failed to apply retention for "${schedule.name}" (${schedule.id}):`, err);
+  }
 }
 
 export function createScheduleTools(ctx: AppContext) {
@@ -65,6 +84,7 @@ export function createScheduleTools(ctx: AppContext) {
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
         maxRuns: { type: "number", description: "Auto-disable after N runs (optional)" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
+        autoArchiveKeep: { type: "number", description: "Auto-archive older run sessions after keeping the latest N sessions active (optional)" },
       },
       required: ["taskId", "name", "prompt", "type"],
     },
@@ -76,6 +96,9 @@ export function createScheduleTools(ctx: AppContext) {
       if (args.type === "once" && !args.runAt) return toolFailure("runAt is required for one-shot schedules");
       const scheduler = getScheduler(ctx);
       if (args.timezone && !scheduler.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
+      const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(args, "autoArchiveKeep");
+      const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(args.autoArchiveKeep);
+      if (!normalizedAutoArchiveKeep.ok) return toolFailure(normalizedAutoArchiveKeep.error);
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
 
@@ -89,7 +112,11 @@ export function createScheduleTools(ctx: AppContext) {
         timezone: args.timezone,
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
+        autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
       });
+      if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
+        await enforceRetentionForSchedule(ctx, schedule);
+      }
 
       if (schedule.type === "cron") {
         scheduler.registerSchedule(schedule.id);
@@ -115,6 +142,7 @@ export function createScheduleTools(ctx: AppContext) {
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
         maxRuns: { type: "number", description: "Auto-disable after N runs" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables" },
+        autoArchiveKeep: { type: ["number", "null"], description: "Auto-archive older run sessions after keeping the latest N sessions active. Null disables auto-archive." },
       },
       required: ["scheduleId"],
     },
@@ -126,10 +154,19 @@ export function createScheduleTools(ctx: AppContext) {
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       const scheduler = getScheduler(ctx);
       if (args.timezone && !scheduler.isValidTimezone(args.timezone)) return toolFailure(`Invalid timezone: ${args.timezone}`);
+      const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(updates, "autoArchiveKeep");
+      if (autoArchiveKeepProvided) {
+        const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(updates.autoArchiveKeep);
+        if (!normalizedAutoArchiveKeep.ok) return toolFailure(normalizedAutoArchiveKeep.error);
+        updates.autoArchiveKeep = normalizedAutoArchiveKeep.value;
+      }
       const existing = ctx.scheduleStore.getSchedule(scheduleId);
       if (!existing) return toolFailure(`Schedule ${scheduleId} not found`);
 
       const schedule = ctx.scheduleStore.updateSchedule(scheduleId, updates);
+      if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
+        await enforceRetentionForSchedule(ctx, schedule);
+      }
 
       if (schedule.type === "cron") {
         if (schedule.enabled) scheduler.registerSchedule(schedule.id);
@@ -187,6 +224,7 @@ export function createScheduleTools(ctx: AppContext) {
           prompt: s.prompt,
           maxRuns: s.maxRuns,
           expiresAt: s.expiresAt,
+          autoArchiveKeep: s.autoArchiveKeep,
         })),
       };
     },

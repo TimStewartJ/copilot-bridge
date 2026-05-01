@@ -53,14 +53,17 @@ export interface Schedule {
   // Limits
   maxRuns?: number;
   expiresAt?: string;
+  autoArchiveKeep?: number;
 }
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "maxRuns" | "expiresAt">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
 
 export type ScheduleUpdate = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "maxRuns" | "expiresAt"
->>;
+>> & {
+  autoArchiveKeep?: number | null;
+};
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -141,6 +144,7 @@ export function createScheduleStore(db: DatabaseSync) {
       runCount: row.runCount,
       maxRuns: row.maxRuns ?? undefined,
       expiresAt: row.expiresAt ?? undefined,
+      autoArchiveKeep: row.autoArchiveKeep ?? undefined,
     };
   }
 
@@ -162,13 +166,13 @@ export function createScheduleStore(db: DatabaseSync) {
 
     db.prepare(`
       INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
-        enabled, sessionMode, targetSessionId, createdAt, updatedAt, runCount, maxRuns, expiresAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?)
+        enabled, sessionMode, targetSessionId, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
       "new", null, now, now,
-      input.maxRuns ?? null, input.expiresAt ?? null,
+      input.maxRuns ?? null, input.expiresAt ?? null, input.autoArchiveKeep ?? null,
     );
 
     return getSchedule(id)!;
@@ -195,6 +199,7 @@ export function createScheduleStore(db: DatabaseSync) {
     }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }
+    if (updates.autoArchiveKeep !== undefined) { fields.push("autoArchiveKeep = ?"); values.push(updates.autoArchiveKeep); }
 
     values.push(id);
     db.prepare(`UPDATE schedules SET ${fields.join(", ")} WHERE id = ?`).run(...values);

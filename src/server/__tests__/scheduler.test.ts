@@ -337,6 +337,46 @@ describe("scheduler restart gating", () => {
     });
   });
 
+  it("archives older schedule sessions after a retained run", async () => {
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      listSessionsFromDisk: vi.fn().mockResolvedValue([
+        { sessionId: "old-session", summary: "Old run" },
+        { sessionId: "new-session", summary: "New run" },
+      ]),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Retained schedule",
+      prompt: "run now",
+      type: "cron",
+      cron: "0 0 * * *",
+      autoArchiveKeep: 1,
+    });
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "old-session", "2026-01-01T00:00:00.000Z");
+
+    const result = await scheduler.triggerSchedule(schedule.id);
+
+    expect(result).toEqual({ sessionId: "new-session" });
+    expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
+    expect(ctx.sessionMetaStore.isArchived("old-session")).toBe(true);
+  });
+
   it("allows manual triggers even when the last run was recent", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {

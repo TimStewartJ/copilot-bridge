@@ -7,6 +7,8 @@ import type { TaskStore } from "./task-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
+import type { DeferredPromptStore } from "./deferred-prompt-store.js";
+import type { DeferLoopStore } from "./defer-loop-store.js";
 import {
   isRestartCutoverInProgress,
   isRestartPending,
@@ -16,6 +18,7 @@ import {
   refreshRestartStateSync,
 } from "./session-manager.js";
 import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
+import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
@@ -30,6 +33,8 @@ let scheduleStore: ScheduleStore;
 let taskStore: TaskStore;
 let sessionMetaStore: SessionMetaStore;
 let bus: GlobalBus;
+let deferredPromptStore: DeferredPromptStore | undefined;
+let deferLoopStore: DeferLoopStore | undefined;
 
 // Safety: track in-flight schedule runs to prevent overlap
 const activeRuns = new Set<string>();
@@ -60,6 +65,8 @@ export interface SchedulerDeps {
   taskStore: TaskStore;
   sessionMetaStore: SessionMetaStore;
   globalBus: GlobalBus;
+  deferredPromptStore?: DeferredPromptStore;
+  deferLoopStore?: DeferLoopStore;
 }
 
 export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
@@ -68,6 +75,8 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   taskStore = deps.taskStore;
   sessionMetaStore = deps.sessionMetaStore;
   bus = deps.globalBus;
+  deferredPromptStore = deps.deferredPromptStore;
+  deferLoopStore = deps.deferLoopStore;
   busUnsubscribe?.();
   busUnsubscribe = bus.subscribe((event) => {
     if (event.type === "server:restart-cleared") {
@@ -96,6 +105,8 @@ export function shutdown(): void {
   missedRunCatchUp.reset();
   busUnsubscribe?.();
   busUnsubscribe = undefined;
+  deferredPromptStore = undefined;
+  deferLoopStore = undefined;
   activeRuns.clear();
   _globalPause = false;
   console.log("[scheduler] Shut down — all jobs stopped");
@@ -506,6 +517,18 @@ export async function triggerSchedule(
     // Record schedule ownership/association and append run history.
     sessionMetaStore.setScheduleMeta(sessionId, scheduleId, schedule.name);
     sessionMetaStore.recordScheduleRun(scheduleId, sessionId);
+    try {
+      await enforceScheduleSessionRetention({
+        schedule,
+        sessionMetaStore,
+        sessionManager: sessionMgr,
+        globalBus: bus,
+        deferredPromptStore,
+        deferLoopStore,
+      });
+    } catch (err) {
+      console.warn(`[scheduler] Failed to apply retention for "${schedule.name}" (${schedule.id}):`, err);
+    }
     releaseScheduleRunClaim();
 
     // Emit global event
