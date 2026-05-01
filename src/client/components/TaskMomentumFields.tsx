@@ -41,11 +41,16 @@ const FIELD_CONFIG_BY_KEY = FIELD_CONFIGS.reduce<Record<MomentumFieldKey, FieldC
 });
 
 const PANEL_FIELD_ORDER: MomentumFieldKey[] = ["nextAction", "waitingOn", "nextTouchAt", "doneWhen"];
+const PANEL_EXPAND_THRESHOLD = 96;
 
 export function getVisibleMomentumFieldKeys(kind: Task["kind"]): MomentumFieldKey[] {
   return kind === "ongoing"
     ? ["nextAction", "waitingOn", "nextTouchAt"]
     : FIELD_CONFIGS.map((field) => field.key);
+}
+
+export function isExpandablePanelValue(value: string): boolean {
+  return value.length > PANEL_EXPAND_THRESHOLD || /\r?\n/.test(value);
 }
 
 export default function TaskMomentumFields({
@@ -58,6 +63,7 @@ export default function TaskMomentumFields({
   const [drafts, setDrafts] = useState<FieldValues>(() => toFieldValues(task));
   const [editingField, setEditingField] = useState<MomentumFieldKey | null>(null);
   const [savingField, setSavingField] = useState<MomentumFieldKey | null>(null);
+  const [expandedFields, setExpandedFields] = useState<Set<MomentumFieldKey>>(() => new Set());
 
   useEffect(() => {
     const next = toFieldValues(task);
@@ -65,6 +71,7 @@ export default function TaskMomentumFields({
     setDrafts(next);
     setEditingField(null);
     setSavingField(null);
+    setExpandedFields(new Set());
   }, [task.id, task.kind, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
 
   const isDashboard = variant === "dashboard";
@@ -115,6 +122,39 @@ export default function TaskMomentumFields({
     }
   };
 
+  const startEditingField = (field: MomentumFieldKey) => {
+    setDrafts(values);
+    setEditingField(field);
+    setExpandedFields((current) => {
+      if (!current.has(field)) return current;
+      const next = new Set(current);
+      next.delete(field);
+      return next;
+    });
+  };
+
+  const toggleExpandedField = (field: MomentumFieldKey) => {
+    setExpandedFields((current) => {
+      const next = new Set(current);
+      if (next.has(field)) {
+        next.delete(field);
+      } else {
+        next.add(field);
+      }
+      return next;
+    });
+  };
+
+  const clearField = (field: MomentumFieldKey) => {
+    setExpandedFields((current) => {
+      if (!current.has(field)) return current;
+      const next = new Set(current);
+      next.delete(field);
+      return next;
+    });
+    void persistField(field, "");
+  };
+
   if (!isDashboard) {
     return (
       <div className="rounded-md border border-border bg-bg-surface overflow-hidden">
@@ -144,6 +184,9 @@ export default function TaskMomentumFields({
                 : tone === "warning"
                   ? "text-warning"
                   : "text-text-muted";
+              const displayValue = formatFieldDisplay(field.key, currentValue);
+              const isExpanded = expandedFields.has(field.key);
+              const isExpandable = isExpandablePanelValue(displayValue);
 
               return (
                 <div key={field.key} className={`px-3 py-2 ${rowClassName}`}>
@@ -154,13 +197,24 @@ export default function TaskMomentumFields({
                     {isSaving ? (
                       <span className="text-[10px] text-text-faint">Saving…</span>
                     ) : currentValue && !isEditing ? (
-                      <button
-                        type="button"
-                        onClick={() => void persistField(field.key, "")}
-                        className="text-[10px] text-text-faint hover:text-text-primary transition-colors"
-                      >
-                        Clear
-                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditingField(field.key)}
+                          className="text-[10px] text-text-faint transition-colors hover:text-text-primary"
+                          aria-label={`Edit ${field.label}`}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => clearField(field.key)}
+                          className="text-[10px] text-text-faint transition-colors hover:text-text-primary"
+                          aria-label={`Clear ${field.label}`}
+                        >
+                          Clear
+                        </button>
+                      </div>
                     ) : null}
                   </div>
 
@@ -190,19 +244,34 @@ export default function TaskMomentumFields({
                       placeholder={field.placeholder}
                     />
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDrafts(values);
-                        setEditingField(field.key);
-                      }}
-                      className="mt-1 w-full text-left text-xs leading-5 text-text-primary transition-colors hover:text-accent"
-                      title={currentValue || field.placeholder}
-                    >
-                      <span className="line-clamp-2">
-                        {formatFieldDisplay(field.key, currentValue)}
-                      </span>
-                    </button>
+                    isExpandable ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleExpandedField(field.key)}
+                        className="mt-1 block w-full text-left text-xs leading-5 text-text-primary transition-colors hover:text-accent"
+                        title={currentValue || field.placeholder}
+                        aria-expanded={isExpanded}
+                        aria-label={`${isExpanded ? "Collapse" : "Expand"} ${field.label}`}
+                      >
+                        <span className={
+                          isExpanded
+                            ? "block whitespace-pre-wrap break-words"
+                            : "block max-h-[3.75rem] overflow-hidden break-words line-clamp-3 md:max-h-10 md:line-clamp-2"
+                        }>
+                          {displayValue}
+                        </span>
+                        <span className="mt-1 block text-[10px] font-medium text-accent">
+                          {isExpanded ? "Less" : "More"}
+                        </span>
+                      </button>
+                    ) : (
+                      <div
+                        className="mt-1 text-xs leading-5 text-text-primary break-words"
+                        title={currentValue || field.placeholder}
+                      >
+                        {displayValue}
+                      </div>
+                    )
                   )}
                 </div>
               );
@@ -216,10 +285,7 @@ export default function TaskMomentumFields({
               <button
                 key={field.key}
                 type="button"
-                onClick={() => {
-                  setDrafts(values);
-                  setEditingField(field.key);
-                }}
+                onClick={() => startEditingField(field.key)}
                 className="rounded-full border border-border bg-bg-secondary px-2 py-1 text-[10px] font-medium text-text-muted transition-colors hover:border-text-muted/40 hover:text-text-primary"
               >
                 {field.actionLabel}
