@@ -2,6 +2,14 @@ import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import {
+  COPILOT_TOKEN_PRICING_UNIT,
+  resolveCopilotPricingModel,
+  usdToCopilotAiCredits,
+  type CopilotModelMetadataForPricing,
+  type CopilotPricingModelResolutionStatus,
+  type PublicCopilotPricingCatalogEntry,
+} from "../shared/copilot-pricing.js";
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
 
@@ -15,15 +23,57 @@ export interface CopilotUsageTotals {
   totalTokens: number;
 }
 
-export interface CopilotUsageModelRow extends CopilotUsageTotals {
+export type CopilotUsageReasoningPricingAssumption = "reasoning_tokens_priced_at_output_rate";
+
+export interface CopilotUsageCostBreakdownUsd {
+  input: number;
+  cachedInput: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+  total: number;
+}
+
+export interface CopilotUsageCostEstimate {
+  estimatedCostUsd: number;
+  estimatedAiCredits: number;
+  costBreakdownUsd: CopilotUsageCostBreakdownUsd;
+  billableOutputTokens: number;
+  reasoningPricingAssumption: CopilotUsageReasoningPricingAssumption;
+}
+
+export interface CopilotUsageSummaryTotals extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  unpricedModelCount: number;
+  unpricedTokens: CopilotUsageTotals;
+}
+
+export interface CopilotUsageModelPricingMetadata {
+  pricingKey: string | null;
+  pricedAs: string | null;
+  pricingStatus: CopilotPricingModelResolutionStatus;
+  pricingSource: CopilotPricingModelResolutionStatus;
+  normalizedPricingModel: string | null;
+}
+
+export interface CopilotUsageUnpricedModelRow extends CopilotUsageTotals, CopilotUsageModelPricingMetadata {
+  model: string;
+  sessions: number;
+  pricingKey: null;
+  pricedAs: null;
+  pricingStatus: "unpriced";
+  pricingSource: "unpriced";
+}
+
+export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCostEstimate, CopilotUsageModelPricingMetadata {
   model: string;
   sessions: number;
 }
 
-export interface CopilotUsageSessionRow extends CopilotUsageTotals {
+export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
   sessionId: string;
   shutdownAt: string | null;
   models: CopilotUsageModelRow[];
+  unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
 export interface CopilotUsageCoverage {
@@ -40,21 +90,26 @@ export interface CopilotUsageCoverage {
 
 export interface CopilotUsageSummary {
   generatedAt: string;
-  totals: CopilotUsageTotals;
+  totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
   sessions: CopilotUsageSessionRow[];
+  unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
 export interface ReadCopilotUsageSummaryOptions {
   copilotHome: string;
   now?: () => number;
   concurrency?: number;
+  sdkModels?: readonly CopilotModelMetadataForPricing[];
 }
+
+export type CopilotUsageModelMetadataProvider = () => Promise<readonly CopilotModelMetadataForPricing[]>;
 
 export interface CopilotUsageReaderOptions extends ReadCopilotUsageSummaryOptions {
   ttlMs?: number;
   loadSummary?: (options: ReadCopilotUsageSummaryOptions) => Promise<CopilotUsageSummary>;
+  modelMetadataProvider?: CopilotUsageModelMetadataProvider;
 }
 
 export interface CopilotUsageReader {
@@ -82,6 +137,7 @@ interface AssistantUsageAccumulator {
 const DEFAULT_SCAN_CONCURRENCY = 8;
 const DEFAULT_CACHE_TTL_MS = 30_000;
 const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage history.";
+const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -94,6 +150,7 @@ export async function readCopilotUsageSummary({
   copilotHome,
   now = Date.now,
   concurrency = DEFAULT_SCAN_CONCURRENCY,
+  sdkModels,
 }: ReadCopilotUsageSummaryOptions): Promise<CopilotUsageSummary> {
   const summary = createEmptySummary(now);
   const sessionStateDir = join(copilotHome, "session-state");
@@ -135,7 +192,7 @@ export async function readCopilotUsageSummary({
         }
 
         for (const row of result.modelRows) {
-          const existing = modelTotals.get(row.model) ?? { ...createZeroTotals(), model: row.model, sessions: 0 };
+          const existing = modelTotals.get(row.model) ?? createZeroModelRow(row.model, 0);
           existing.sessions += row.sessions;
           addTotals(existing, row);
           modelTotals.set(row.model, existing);
@@ -161,6 +218,7 @@ export async function readCopilotUsageSummary({
       || right.totalTokens - left.totalTokens
       || left.sessionId.localeCompare(right.sessionId)
     ));
+    applyCopilotUsageCostEstimates(summary, sdkModels);
 
     return summary;
   } catch (error) {
@@ -175,8 +233,10 @@ export function createCopilotUsageReader({
   copilotHome,
   now = Date.now,
   concurrency = DEFAULT_SCAN_CONCURRENCY,
+  sdkModels: staticSdkModels,
   ttlMs = DEFAULT_CACHE_TTL_MS,
   loadSummary: loadSummaryImpl = readCopilotUsageSummary,
+  modelMetadataProvider,
 }: CopilotUsageReaderOptions): CopilotUsageReader {
   let cached: { summary: CopilotUsageSummary; expiresAt: number } | null = null;
   let inflight: { generation: number; promise: Promise<CopilotUsageSummary> } | null = null;
@@ -193,7 +253,19 @@ export function createCopilotUsageReader({
 
     const generation = latestGeneration + 1;
     latestGeneration = generation;
-    const promise = loadSummaryImpl({ copilotHome, now, concurrency })
+    const createLoadOptions = (
+      sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
+    ): ReadCopilotUsageSummaryOptions => ({
+      copilotHome,
+      now,
+      concurrency,
+      ...(sdkModels ? { sdkModels } : {}),
+    });
+    const sdkModelsResult = loadModelMetadataForPricing(modelMetadataProvider, staticSdkModels);
+    const loadPromise = isPromiseLike(sdkModelsResult)
+      ? sdkModelsResult.then((sdkModels) => loadSummaryImpl(createLoadOptions(sdkModels)))
+      : loadSummaryImpl(createLoadOptions(sdkModelsResult));
+    const promise = loadPromise
       .then((summary) => {
         if (generation === latestGeneration) {
           cached = { summary, expiresAt: now() + Math.max(0, ttlMs) };
@@ -216,6 +288,29 @@ export function createCopilotUsageReader({
       cached = null;
     },
   };
+}
+
+function loadModelMetadataForPricing(
+  provider: CopilotUsageModelMetadataProvider | undefined,
+  fallback: readonly CopilotModelMetadataForPricing[] | undefined,
+): readonly CopilotModelMetadataForPricing[] | undefined | Promise<readonly CopilotModelMetadataForPricing[] | undefined> {
+  if (!provider) return fallback;
+  try {
+    return Promise.resolve(provider()).catch((error) => {
+      console.warn("[copilot-usage] Failed to load Copilot model metadata; pricing may be incomplete.", error);
+      return fallback;
+    });
+  } catch (error) {
+    console.warn("[copilot-usage] Failed to load Copilot model metadata; pricing may be incomplete.", error);
+    return fallback;
+  }
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof value === "object"
+    && value !== null
+    && "then" in value
+    && typeof (value as { then?: unknown }).then === "function";
 }
 
 async function scanSession(sessionStateDir: string, sessionId: string): Promise<SessionScanResult> {
@@ -330,7 +425,7 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
     }
     for (const [modelName, metrics] of Object.entries(usableShutdown.modelMetrics)) {
       const model = modelName.trim() || "unknown";
-      const existing = modelTotals.get(model) ?? { ...createZeroTotals(), model, sessions: 0 };
+      const existing = modelTotals.get(model) ?? createZeroModelRow(model, 0);
       if (existing.sessions === 0) {
         existing.sessions = 1;
       }
@@ -350,7 +445,7 @@ function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccum
   const includedUsageAts: string[] = [];
 
   for (const usage of usageByRequest.values()) {
-    const existing = modelTotals.get(usage.model) ?? { ...createZeroTotals(), model: usage.model, sessions: 1 };
+    const existing = modelTotals.get(usage.model) ?? createZeroModelRow(usage.model, 1);
     existing.requests += 1;
     existing.outputTokens += usage.outputTokens;
     existing.totalTokens += usage.outputTokens;
@@ -391,15 +486,152 @@ function createIncludedResult(
       sessionId,
       shutdownAt: maxTimestampFromList(usage.includedUsageAts),
       models: modelRows,
+      unpricedModels: [],
       ...totals,
+      ...createZeroCostEstimate(),
     },
+  };
+}
+
+function applyCopilotUsageCostEstimates(
+  summary: CopilotUsageSummary,
+  sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
+): void {
+  const summaryCost = createZeroCostEstimate();
+  const summaryUnpricedTokens = createZeroTotals();
+  const summaryUnpricedModels: CopilotUsageUnpricedModelRow[] = [];
+
+  for (const row of summary.models) {
+    applyCostEstimateToModelRow(row, sdkModels);
+    addCostEstimate(summaryCost, row);
+    if (row.pricingStatus === "unpriced") {
+      addTotals(summaryUnpricedTokens, row);
+      summaryUnpricedModels.push(createUnpricedModelReportRow(row));
+    }
+  }
+
+  assignCostEstimate(summary.totals, summaryCost);
+  summary.totals.unpricedModelCount = summaryUnpricedModels.length;
+  summary.totals.unpricedTokens = summaryUnpricedTokens;
+  summary.unpricedModels = summaryUnpricedModels;
+
+  for (const session of summary.sessions) {
+    const sessionCost = createZeroCostEstimate();
+    const sessionUnpricedModels: CopilotUsageUnpricedModelRow[] = [];
+
+    for (const row of session.models) {
+      applyCostEstimateToModelRow(row, sdkModels);
+      addCostEstimate(sessionCost, row);
+      if (row.pricingStatus === "unpriced") {
+        sessionUnpricedModels.push(createUnpricedModelReportRow(row));
+      }
+    }
+
+    assignCostEstimate(session, sessionCost);
+    session.unpricedModels = sessionUnpricedModels;
+  }
+}
+
+function applyCostEstimateToModelRow(
+  row: CopilotUsageModelRow,
+  sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
+): void {
+  const resolution = resolveCopilotPricingModel(row.model, { sdkModels });
+  Object.assign(row, {
+    pricingKey: resolution.sku,
+    pricedAs: resolution.sku,
+    pricingStatus: resolution.status,
+    pricingSource: resolution.source,
+    normalizedPricingModel: resolution.normalizedModel,
+  } satisfies CopilotUsageModelPricingMetadata);
+
+  const billableOutputTokens = Math.max(0, row.outputTokens) + Math.max(0, row.reasoningTokens);
+  if (!resolution.entry) {
+    assignCostEstimate(row, {
+      ...createZeroCostEstimate(),
+      billableOutputTokens,
+    });
+    return;
+  }
+
+  const costBreakdownUsd = calculateCostBreakdownUsd(resolution.entry, row);
+  assignCostEstimate(row, {
+    estimatedCostUsd: costBreakdownUsd.total,
+    estimatedAiCredits: usdToCopilotAiCredits(costBreakdownUsd.total),
+    costBreakdownUsd,
+    billableOutputTokens,
+    reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
+  });
+}
+
+function calculateCostBreakdownUsd(
+  entry: PublicCopilotPricingCatalogEntry,
+  usage: CopilotUsageTotals,
+): CopilotUsageCostBreakdownUsd {
+  const rates = entry.rates;
+  const breakdown = {
+    input: calculateTokenCostUsd(usage.inputTokens, rates.input),
+    cachedInput: calculateTokenCostUsd(usage.cacheReadTokens, rates.cachedInput),
+    cacheWrite: calculateTokenCostUsd(usage.cacheWriteTokens, rates.cacheWrite ?? 0),
+    output: calculateTokenCostUsd(usage.outputTokens, rates.output),
+    reasoning: calculateTokenCostUsd(usage.reasoningTokens, rates.output),
+    total: 0,
+  };
+  breakdown.total = breakdown.input
+    + breakdown.cachedInput
+    + breakdown.cacheWrite
+    + breakdown.output
+    + breakdown.reasoning;
+  return breakdown;
+}
+
+function calculateTokenCostUsd(tokens: number, usdPerMillionTokens: number): number {
+  return (Math.max(0, tokens) / COPILOT_TOKEN_PRICING_UNIT) * usdPerMillionTokens;
+}
+
+function addCostEstimate(target: CopilotUsageCostEstimate, delta: CopilotUsageCostEstimate): void {
+  target.estimatedCostUsd += delta.estimatedCostUsd;
+  target.estimatedAiCredits += delta.estimatedAiCredits;
+  target.billableOutputTokens += delta.billableOutputTokens;
+  target.costBreakdownUsd.input += delta.costBreakdownUsd.input;
+  target.costBreakdownUsd.cachedInput += delta.costBreakdownUsd.cachedInput;
+  target.costBreakdownUsd.cacheWrite += delta.costBreakdownUsd.cacheWrite;
+  target.costBreakdownUsd.output += delta.costBreakdownUsd.output;
+  target.costBreakdownUsd.reasoning += delta.costBreakdownUsd.reasoning;
+  target.costBreakdownUsd.total += delta.costBreakdownUsd.total;
+}
+
+function assignCostEstimate(target: CopilotUsageCostEstimate, source: CopilotUsageCostEstimate): void {
+  target.estimatedCostUsd = source.estimatedCostUsd;
+  target.estimatedAiCredits = source.estimatedAiCredits;
+  target.billableOutputTokens = source.billableOutputTokens;
+  target.reasoningPricingAssumption = source.reasoningPricingAssumption;
+  target.costBreakdownUsd = { ...source.costBreakdownUsd };
+}
+
+function createUnpricedModelReportRow(row: CopilotUsageModelRow): CopilotUsageUnpricedModelRow {
+  return {
+    model: row.model,
+    sessions: row.sessions,
+    requests: row.requests,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    reasoningTokens: row.reasoningTokens,
+    totalTokens: row.totalTokens,
+    pricingKey: null,
+    pricedAs: null,
+    pricingStatus: "unpriced",
+    pricingSource: "unpriced",
+    normalizedPricingModel: row.normalizedPricingModel,
   };
 }
 
 function createEmptySummary(now: () => number): CopilotUsageSummary {
   return {
     generatedAt: new Date(now()).toISOString(),
-    totals: createZeroTotals(),
+    totals: createZeroSummaryTotals(),
     coverage: {
       sessionsSeen: 0,
       sessionsWithEvents: 0,
@@ -418,6 +650,7 @@ function createEmptySummary(now: () => number): CopilotUsageSummary {
     },
     models: [],
     sessions: [],
+    unpricedModels: [],
   };
 }
 
@@ -430,6 +663,56 @@ function createZeroTotals(): CopilotUsageTotals {
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
+  };
+}
+
+function createZeroSummaryTotals(): CopilotUsageSummaryTotals {
+  return {
+    ...createZeroTotals(),
+    ...createZeroCostEstimate(),
+    unpricedModelCount: 0,
+    unpricedTokens: createZeroTotals(),
+  };
+}
+
+function createZeroCostBreakdownUsd(): CopilotUsageCostBreakdownUsd {
+  return {
+    input: 0,
+    cachedInput: 0,
+    cacheWrite: 0,
+    output: 0,
+    reasoning: 0,
+    total: 0,
+  };
+}
+
+function createZeroCostEstimate(): CopilotUsageCostEstimate {
+  return {
+    estimatedCostUsd: 0,
+    estimatedAiCredits: 0,
+    costBreakdownUsd: createZeroCostBreakdownUsd(),
+    billableOutputTokens: 0,
+    reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
+  };
+}
+
+function createUnpricedPricingMetadata(normalizedPricingModel: string | null = null): CopilotUsageModelPricingMetadata {
+  return {
+    pricingKey: null,
+    pricedAs: null,
+    pricingStatus: "unpriced",
+    pricingSource: "unpriced",
+    normalizedPricingModel,
+  };
+}
+
+function createZeroModelRow(model: string, sessions: number): CopilotUsageModelRow {
+  return {
+    ...createZeroTotals(),
+    ...createZeroCostEstimate(),
+    ...createUnpricedPricingMetadata(null),
+    model,
+    sessions,
   };
 }
 

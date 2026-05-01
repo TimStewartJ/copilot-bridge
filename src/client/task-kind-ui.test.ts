@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CopilotUsageSummary, Task } from "./api";
+import type { CopilotUsageCostEstimate, CopilotUsageSummary, Task } from "./api";
 import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
 import { useTaskSessionStorageQuery } from "./hooks/queries/useTaskSessionStorage";
 import { useTagsQuery } from "./hooks/queries/useTags";
@@ -135,17 +135,72 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createUsageTotals(overrides: Partial<CopilotUsageSummary["totals"]["unpricedTokens"]> = {}) {
+  return {
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    ...overrides,
+  };
+}
+
+function createZeroCostEstimate(overrides: Partial<CopilotUsageCostEstimate> = {}) {
+  const base = {
+    estimatedCostUsd: 0,
+    estimatedAiCredits: 0,
+    costBreakdownUsd: {
+      input: 0,
+      cachedInput: 0,
+      cacheWrite: 0,
+      output: 0,
+      reasoning: 0,
+      total: 0,
+    },
+    billableOutputTokens: 0,
+    reasoningPricingAssumption: "reasoning_tokens_priced_at_output_rate" as const,
+  };
+  return {
+    ...base,
+    ...overrides,
+    costBreakdownUsd: {
+      ...base.costBreakdownUsd,
+      ...overrides.costBreakdownUsd,
+    },
+  };
+}
+
+function createPricedModelMetadata(model: string) {
+  return {
+    pricingKey: model,
+    pricedAs: model,
+    pricingStatus: "exact" as const,
+    pricingSource: "exact" as const,
+    normalizedPricingModel: model,
+  };
+}
+
+function createUnpricedModelMetadata() {
+  return {
+    pricingKey: null,
+    pricedAs: null,
+    pricingStatus: "unpriced" as const,
+    pricingSource: "unpriced" as const,
+    normalizedPricingModel: null,
+  };
+}
+
 function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): CopilotUsageSummary {
   return {
     generatedAt: NOW,
     totals: {
-      requests: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 0,
+      ...createUsageTotals(),
+      ...createZeroCostEstimate(),
+      unpricedModelCount: 0,
+      unpricedTokens: createUsageTotals(),
     },
     coverage: {
       sessionsSeen: 0,
@@ -165,6 +220,7 @@ function createUsageSummary(overrides: Partial<CopilotUsageSummary> = {}): Copil
     },
     models: [],
     sessions: [],
+    unpricedModels: [],
     ...overrides,
   };
 }
@@ -391,14 +447,49 @@ describe("TaskDashboard unique overview", () => {
   it("builds session token analytics from linked session usage", () => {
     vi.mocked(useCopilotUsageQuery).mockReturnValue({ data: createUsageSummary({
       totals: {
-        requests: 5,
-        inputTokens: 1_500,
-        outputTokens: 900,
-        cacheReadTokens: 700,
-        cacheWriteTokens: 300,
-        reasoningTokens: 600,
-        totalTokens: 4_000,
+        ...createUsageTotals({
+          requests: 6,
+          inputTokens: 1_800,
+          outputTokens: 1_000,
+          cacheReadTokens: 500,
+          cacheWriteTokens: 200,
+          reasoningTokens: 500,
+          totalTokens: 4_000,
+        }),
+        ...createZeroCostEstimate({
+          estimatedCostUsd: 0.20,
+          estimatedAiCredits: 20,
+          costBreakdownUsd: {
+            input: 0.06,
+            cachedInput: 0.01,
+            cacheWrite: 0.01,
+            output: 0.09,
+            reasoning: 0.03,
+            total: 0.20,
+          },
+          billableOutputTokens: 1_500,
+        }),
+        unpricedModelCount: 1,
+        unpricedTokens: createUsageTotals({
+          requests: 1,
+          inputTokens: 300,
+          outputTokens: 200,
+          totalTokens: 500,
+        }),
       },
+      unpricedModels: [
+        {
+          model: "mystery-model",
+          sessions: 1,
+          ...createUsageTotals({
+            requests: 1,
+            inputTokens: 300,
+            outputTokens: 200,
+            totalTokens: 500,
+          }),
+          ...createUnpricedModelMetadata(),
+        },
+      ],
       sessions: [
         {
           sessionId: "session-1",
@@ -410,6 +501,19 @@ describe("TaskDashboard unique overview", () => {
           cacheWriteTokens: 100,
           reasoningTokens: 100,
           totalTokens: 2_000,
+          ...createZeroCostEstimate({
+            estimatedCostUsd: 0.12,
+            estimatedAiCredits: 12,
+            costBreakdownUsd: {
+              input: 0.04,
+              cachedInput: 0.01,
+              cacheWrite: 0.01,
+              output: 0.05,
+              reasoning: 0.01,
+              total: 0.12,
+            },
+            billableOutputTokens: 600,
+          }),
           models: [
             {
               model: "gpt-5.5",
@@ -421,30 +525,99 @@ describe("TaskDashboard unique overview", () => {
               cacheWriteTokens: 100,
               reasoningTokens: 100,
               totalTokens: 2_000,
+              ...createZeroCostEstimate({
+                estimatedCostUsd: 0.12,
+                estimatedAiCredits: 12,
+                costBreakdownUsd: {
+                  input: 0.04,
+                  cachedInput: 0.01,
+                  cacheWrite: 0.01,
+                  output: 0.05,
+                  reasoning: 0.01,
+                  total: 0.12,
+                },
+                billableOutputTokens: 600,
+              }),
+              ...createPricedModelMetadata("gpt-5.5"),
             },
           ],
+          unpricedModels: [],
         },
         {
           sessionId: "session-2",
           shutdownAt: "2026-05-02T10:00:00.000Z",
-          requests: 2,
-          inputTokens: 500,
-          outputTokens: 400,
-          cacheReadTokens: 400,
-          cacheWriteTokens: 200,
-          reasoningTokens: 500,
+          requests: 3,
+          inputTokens: 800,
+          outputTokens: 500,
+          cacheReadTokens: 200,
+          cacheWriteTokens: 100,
+          reasoningTokens: 400,
           totalTokens: 2_000,
+          ...createZeroCostEstimate({
+            estimatedCostUsd: 0.08,
+            estimatedAiCredits: 8,
+            costBreakdownUsd: {
+              input: 0.02,
+              cachedInput: 0,
+              cacheWrite: 0,
+              output: 0.04,
+              reasoning: 0.02,
+              total: 0.08,
+            },
+            billableOutputTokens: 900,
+          }),
           models: [
             {
               model: "claude-opus-4.7",
               sessions: 1,
               requests: 2,
               inputTokens: 500,
-              outputTokens: 400,
-              cacheReadTokens: 400,
-              cacheWriteTokens: 200,
-              reasoningTokens: 500,
-              totalTokens: 2_000,
+              outputTokens: 300,
+              cacheReadTokens: 200,
+              cacheWriteTokens: 100,
+              reasoningTokens: 400,
+              totalTokens: 1_500,
+              ...createZeroCostEstimate({
+                estimatedCostUsd: 0.08,
+                estimatedAiCredits: 8,
+                costBreakdownUsd: {
+                  input: 0.02,
+                  cachedInput: 0,
+                  cacheWrite: 0,
+                  output: 0.04,
+                  reasoning: 0.02,
+                  total: 0.08,
+                },
+                billableOutputTokens: 700,
+              }),
+              ...createPricedModelMetadata("claude-opus-4.7"),
+            },
+            {
+              model: "mystery-model",
+              sessions: 1,
+              requests: 1,
+              inputTokens: 300,
+              outputTokens: 200,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+              totalTokens: 500,
+              ...createZeroCostEstimate({ billableOutputTokens: 200 }),
+              ...createUnpricedModelMetadata(),
+            },
+          ],
+          unpricedModels: [
+            {
+              model: "mystery-model",
+              sessions: 1,
+              requests: 1,
+              inputTokens: 300,
+              outputTokens: 200,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+              totalTokens: 500,
+              ...createUnpricedModelMetadata(),
             },
           ],
         },
@@ -472,6 +645,12 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Review usage metrics");
     expect(html).toContain("gpt-5.5");
     expect(html).toContain("claude-opus-4.7");
+    expect(html).toContain("Est. cost");
+    expect(html).toContain("$0.20");
+    expect(html).toContain("20 credits");
+    expect(html).toContain("mystery-model");
+    expect(html).toContain("Estimated cost excludes");
+    expect(html).toContain("500 tokens");
     expect(html).not.toContain("Activity timeline");
   });
 

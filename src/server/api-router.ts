@@ -31,6 +31,7 @@ import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
 import { isCanonicalArtifactId, HTML_MIME_TYPE, loadVisualArtifactMeta, resolveVisualArtifact } from "./visual-artifacts.js";
 import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
+import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
@@ -55,6 +56,37 @@ function getDirSize(dirPath: string): number {
 /** Resolve the .copilot home directory — uses ctx.copilotHome if set, otherwise homedir()/.copilot */
 function getCopilotHome(ctx: AppContext): string {
   return ctx.copilotHome ?? join(homedir(), ".copilot");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toCopilotModelMetadataForPricing(value: unknown): CopilotModelMetadataForPricing | null {
+  if (!isRecord(value)) return null;
+  let record = value;
+  if (typeof record.id !== "string" && typeof record.toJSON === "function") {
+    const serialized = record.toJSON();
+    if (isRecord(serialized)) record = serialized;
+  }
+  if (typeof record.id !== "string") return null;
+  const id = record.id.trim();
+  if (!id) return null;
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  return name ? { id, name } : { id };
+}
+
+function sanitizeCopilotModelMetadataForPricing(value: unknown): readonly CopilotModelMetadataForPricing[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(toCopilotModelMetadataForPricing)
+    .filter((model): model is CopilotModelMetadataForPricing => model !== null);
+}
+
+async function listCopilotModelMetadataForPricing(
+  ctx: AppContext,
+): Promise<readonly CopilotModelMetadataForPricing[]> {
+  return sanitizeCopilotModelMetadataForPricing(await ctx.sessionManager.listModels());
 }
 
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
@@ -429,9 +461,20 @@ function hasScheduleReuseField(body: Record<string, unknown>): boolean {
 }
 
 function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
-  const serializeModelRow = (row: CopilotUsageSummary["models"][number]) => ({
-    model: row.model,
-    sessions: row.sessions,
+  type TokenTotalsLike = Pick<
+    CopilotUsageSummary["totals"],
+    "requests" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens" | "totalTokens"
+  >;
+  type CostBreakdownLike = CopilotUsageSummary["totals"]["costBreakdownUsd"];
+  type CostEstimateLike = Pick<
+    CopilotUsageSummary["totals"],
+    "estimatedCostUsd" | "estimatedAiCredits" | "costBreakdownUsd" | "billableOutputTokens" | "reasoningPricingAssumption"
+  >;
+  type PricingMetadataLike = Pick<
+    CopilotUsageSummary["models"][number],
+    "pricingKey" | "pricedAs" | "pricingStatus" | "pricingSource" | "normalizedPricingModel"
+  >;
+  const serializeTokenTotals = (row: TokenTotalsLike) => ({
     requests: row.requests,
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
@@ -440,27 +483,76 @@ function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     reasoningTokens: row.reasoningTokens,
     totalTokens: row.totalTokens,
   });
+  const serializeCostBreakdown = (row: CostBreakdownLike) => ({
+    input: row.input,
+    cachedInput: row.cachedInput,
+    cacheWrite: row.cacheWrite,
+    output: row.output,
+    reasoning: row.reasoning,
+    total: row.total,
+  });
+  const serializeCostEstimate = (row: CostEstimateLike) => ({
+    estimatedCostUsd: row.estimatedCostUsd,
+    estimatedAiCredits: row.estimatedAiCredits,
+    costBreakdownUsd: serializeCostBreakdown(row.costBreakdownUsd),
+    billableOutputTokens: row.billableOutputTokens,
+    reasoningPricingAssumption: row.reasoningPricingAssumption,
+  });
+  const serializePricingMetadata = (row: PricingMetadataLike) => ({
+    pricingKey: row.pricingKey,
+    pricedAs: row.pricedAs,
+    pricingStatus: row.pricingStatus,
+    pricingSource: row.pricingSource,
+    normalizedPricingModel: row.normalizedPricingModel,
+  });
+  const serializeUnpricedModelRow = (row: CopilotUsageSummary["unpricedModels"][number]) => ({
+    model: row.model,
+    sessions: row.sessions,
+    ...serializeTokenTotals(row),
+    ...serializePricingMetadata(row),
+  });
+  const serializeModelRow = (row: CopilotUsageSummary["models"][number]) => ({
+    model: row.model,
+    sessions: row.sessions,
+    ...serializeTokenTotals(row),
+    ...serializeCostEstimate(row),
+    ...serializePricingMetadata(row),
+  });
 
   return {
     generatedAt: summary.generatedAt,
-    totals: { ...summary.totals },
+    totals: {
+      ...serializeTokenTotals(summary.totals),
+      ...serializeCostEstimate(summary.totals),
+      unpricedModelCount: summary.totals.unpricedModelCount,
+      unpricedTokens: serializeTokenTotals(summary.totals.unpricedTokens),
+    },
     coverage: {
-      ...summary.coverage,
-      skippedByReason: { ...summary.coverage.skippedByReason },
+      sessionsSeen: summary.coverage.sessionsSeen,
+      sessionsWithEvents: summary.coverage.sessionsWithEvents,
+      sessionsIncluded: summary.coverage.sessionsIncluded,
+      sessionsSkipped: summary.coverage.sessionsSkipped,
+      skippedByReason: {
+        no_events: summary.coverage.skippedByReason.no_events,
+        no_shutdown: summary.coverage.skippedByReason.no_shutdown,
+        empty_model_metrics: summary.coverage.skippedByReason.empty_model_metrics,
+        parse_error: summary.coverage.skippedByReason.parse_error,
+      },
+      earliestIncludedAt: summary.coverage.earliestIncludedAt,
+      latestIncludedAt: summary.coverage.latestIncludedAt,
+      earliestSkippedAt: summary.coverage.earliestSkippedAt,
+      latestSkippedAt: summary.coverage.latestSkippedAt,
     },
     models: (summary.models ?? []).map(serializeModelRow),
     sessions: (summary.sessions ?? []).map((row) => ({
       sessionId: row.sessionId,
       shutdownAt: row.shutdownAt,
-      requests: row.requests,
-      inputTokens: row.inputTokens,
-      outputTokens: row.outputTokens,
-      cacheReadTokens: row.cacheReadTokens,
-      cacheWriteTokens: row.cacheWriteTokens,
-      reasoningTokens: row.reasoningTokens,
-      totalTokens: row.totalTokens,
+      ...serializeTokenTotals(row),
+      ...serializeCostEstimate(row),
       models: (row.models ?? []).map(serializeModelRow),
+      unpricedModels: (row.unpricedModels ?? []).map(serializeUnpricedModelRow),
     })),
+    unpricedModels: (summary.unpricedModels ?? []).map(serializeUnpricedModelRow),
   };
 }
 
@@ -532,7 +624,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
     (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService ?? createTranscriptionService();
   const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
   const getBridgeGitRevisions = createBridgeGitRevisionReader();
-  const copilotUsageReader = createCopilotUsageReader({ copilotHome: getCopilotHome(ctx) });
+  const copilotUsageReader = createCopilotUsageReader({
+    copilotHome: getCopilotHome(ctx),
+    modelMetadataProvider: () => listCopilotModelMetadataForPricing(ctx),
+  });
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
