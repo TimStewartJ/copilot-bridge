@@ -38,18 +38,37 @@ const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DO
 const TEST_CLEANUP_MAX_RETRIES = 5;
 const TEST_CLEANUP_RETRY_DELAY_MS = 25;
 const testCleanupPaths = new Set<string>();
+const testAppCleanups = new Set<() => Promise<void>>();
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  for (const dir of [...testCleanupPaths].sort((a, b) => b.length - a.length)) {
-    rmSync(dir, {
-      recursive: true,
-      force: true,
-      maxRetries: TEST_CLEANUP_MAX_RETRIES,
-      retryDelay: TEST_CLEANUP_RETRY_DELAY_MS,
-    });
+afterEach(async () => {
+  const cleanupErrors: unknown[] = [];
+
+  for (const cleanup of [...testAppCleanups].reverse()) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
+  testAppCleanups.clear();
+
+  vi.unstubAllEnvs();
+  const cleanupPaths = [...testCleanupPaths].sort((a, b) => b.length - a.length);
   testCleanupPaths.clear();
+  for (const dir of cleanupPaths) {
+    try {
+      rmSync(dir, {
+        recursive: true,
+        force: true,
+        maxRetries: TEST_CLEANUP_MAX_RETRIES,
+        retryDelay: TEST_CLEANUP_RETRY_DELAY_MS,
+      });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+
+  throwCleanupErrors(cleanupErrors, "Test cleanup failed");
 });
 
 function sanitizeTestPrefix(prefix: string): string {
@@ -68,6 +87,33 @@ export function makeTestDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), `bridge-${sanitizeTestPrefix(prefix)}-`));
   testCleanupPaths.add(dir);
   return dir;
+}
+
+function registerTestAppCleanup(cleanup: () => Promise<void>): () => Promise<void> {
+  let cleanedUp = false;
+  const trackedCleanup = async () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    testAppCleanups.delete(trackedCleanup);
+    await cleanup();
+  };
+  testAppCleanups.add(trackedCleanup);
+  return trackedCleanup;
+}
+
+function hasNoArgFunction<K extends string>(value: unknown, method: K): value is Record<K, () => unknown> {
+  return typeof value === "object"
+    && value !== null
+    && typeof (value as Record<K, unknown>)[method] === "function";
+}
+
+function throwCleanupErrors(cleanupErrors: unknown[], message: string): void {
+  if (cleanupErrors.length === 1) {
+    throw cleanupErrors[0];
+  }
+  if (cleanupErrors.length > 1) {
+    throw new AggregateError(cleanupErrors, message);
+  }
 }
 
 export function makeTestRuntimePaths(
@@ -294,5 +340,29 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   const app = express();
   app.use("/api", createApiRouter(ctx));
 
-  return { app, ctx, db };
+  const cleanup = registerTestAppCleanup(async () => {
+    const cleanupErrors: unknown[] = [];
+    if (hasNoArgFunction(ctx.voiceJobManager, "shutdown")) {
+      try {
+        await ctx.voiceJobManager.shutdown();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (hasNoArgFunction(ctx.sessionManager, "gracefulShutdown")) {
+      try {
+        await ctx.sessionManager.gracefulShutdown();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      db.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    throwCleanupErrors(cleanupErrors, "Test app cleanup failed");
+  });
+
+  return { app, ctx, db, cleanup };
 }
