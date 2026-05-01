@@ -790,6 +790,48 @@ describe("SessionManager run state", () => {
     expect(events).toEqual(["session:busy", "session:stalled", "session:busy", "session:idle"]);
   });
 
+  it("includes the final assistant message preview on normal idle events", async () => {
+    const { manager, globalBus } = createManager();
+    let idleEvent: any;
+    globalBus.subscribe((event) => {
+      if (event.type === "session:idle" && event.sessionId === "session-1") {
+        idleEvent = event;
+      }
+    });
+
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "assistant.message",
+      data: {
+        content: "**Done.** Here's the `fix`:\n\n```ts\nconst noisy = true;\n```\n\nSecond paragraph should not be in the preview.",
+      },
+      timestamp: new Date().toISOString(),
+    });
+    await flushMicrotasks();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date().toISOString(),
+    });
+    await flushMicrotasks();
+
+    expect(idleEvent).toMatchObject({
+      type: "session:idle",
+      sessionId: "session-1",
+      assistantPreview: "Done. Here's the fix:",
+    });
+  });
+
   it("attempts recovery (re-resume + re-subscribe) when a session first becomes stalled", async () => {
     const { manager } = createManager();
     const { session } = makeSession();

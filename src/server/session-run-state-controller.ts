@@ -39,6 +39,7 @@ export interface SessionActivity {
 }
 
 export const ABORT_CONFIRMATION_TIMEOUT_MS = 2_000;
+const ASSISTANT_PREVIEW_MAX_LENGTH = 160;
 
 type SessionEventBus = ReturnType<typeof getOrCreateBus>;
 
@@ -60,6 +61,7 @@ export interface SessionRunStateControllerDeps {
 
 export class SessionRunStateController {
   private readonly sessionRuns = new Map<string, SessionRunRecord>();
+  private readonly completedAssistantPreviews = new Map<string, string>();
   private readonly logger: Pick<Console, "warn">;
 
   constructor(private readonly deps: SessionRunStateControllerDeps) {
@@ -126,6 +128,8 @@ export class SessionRunStateController {
         settlePromptDelivery({ status: "accepted" });
       },
       completeDone: (content) => {
+        const preview = normalizeAssistantPreview(content);
+        if (preview) this.completedAssistantPreviews.set(sessionId, preview);
         settlePromptDelivery({ status: "accepted" });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(
@@ -137,6 +141,7 @@ export class SessionRunStateController {
         });
       },
       completeError: (message) => {
+        this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(sessionId, "error", message);
@@ -144,6 +149,7 @@ export class SessionRunStateController {
         });
       },
       completeAborted: (content) => {
+        this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryAbortedMessage });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryAbortedMessage);
@@ -151,6 +157,7 @@ export class SessionRunStateController {
         });
       },
       completeShutdown: (content) => {
+        this.completedAssistantPreviews.delete(sessionId);
         settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryShutdownMessage });
         finish((timestamp) => {
           this.deps.cancelPendingUserInputRequests(sessionId, "session_ended", this.deps.promptDeliveryShutdownMessage);
@@ -194,11 +201,21 @@ export class SessionRunStateController {
     if (state === "idle") {
       if (!current) return;
       this.sessionRuns.delete(sessionId);
-      this.deps.globalBus.emit({ type: "session:idle", sessionId });
+      const assistantPreview = this.completedAssistantPreviews.get(sessionId);
+      this.completedAssistantPreviews.delete(sessionId);
+      this.deps.globalBus.emit({
+        type: "session:idle",
+        sessionId,
+        ...(assistantPreview ? { assistantPreview } : {}),
+      });
       if (this.deps.isRestartPending()) {
         this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
       }
       return;
+    }
+
+    if (state === "busy" && !current) {
+      this.completedAssistantPreviews.delete(sessionId);
     }
 
     const next: SessionRunRecord = {
@@ -276,4 +293,30 @@ export class SessionRunStateController {
       staleMs: now - a.lastEventAt,
     }));
   }
+}
+
+function normalizeAssistantPreview(content: string): string | undefined {
+  const paragraph = stripPreviewMarkdown(content)
+    .split(/\r?\n\s*\r?\n/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .find((part) => part.length > 0);
+  const normalized = paragraph?.trim() ?? "";
+  if (!normalized || normalized === "(no response)") return undefined;
+  const chars = Array.from(normalized);
+  if (chars.length <= ASSISTANT_PREVIEW_MAX_LENGTH) return normalized;
+  return `${chars.slice(0, ASSISTANT_PREVIEW_MAX_LENGTH - 3).join("").trimEnd()}...`;
+}
+
+function stripPreviewMarkdown(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/~~~[\s\S]*?~~~/g, " ")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/[*_~]{1,3}/g, "");
 }
