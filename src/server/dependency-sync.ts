@@ -4,9 +4,45 @@ import { basename, dirname, join, relative, sep } from "node:path";
 
 const ROOT_DEP_FILES = ["package.json", "package-lock.json"] as const;
 const PATCHES_DIR = "patches";
+const BACKUP_DIR_PREFIX = ".patch-package-backups-";
 
 export const DEPENDENCY_SYNC_PATHS = [...ROOT_DEP_FILES, PATCHES_DIR] as const;
 export const DEPENDENCY_SYNC_GIT_PATHSPEC = DEPENDENCY_SYNC_PATHS.join(" ");
+
+/**
+ * Remove any leftover .patch-package-backups-* directories under
+ * <root>/node_modules. These are created by preparePatchedPackagesForInstall
+ * and normally cleaned up at the end of the install. If the launcher crashed
+ * mid-install (e.g. EPERM on a held-open .node file), the dir can persist and
+ * confuse future installs. Safe to call before any install.
+ *
+ * Returns the names of directories that were swept (or attempted).
+ */
+export function sweepStalePatchPackageBackups(root: string): string[] {
+  const nodeModules = join(root, "node_modules");
+  if (!existsSync(nodeModules)) return [];
+
+  let entries: string[];
+  try {
+    entries = readdirSync(nodeModules)
+      .filter((name) => name.startsWith(BACKUP_DIR_PREFIX));
+  } catch {
+    return [];
+  }
+
+  const swept: string[] = [];
+  for (const name of entries) {
+    const path = join(nodeModules, name);
+    try {
+      rmSync(path, { recursive: true, force: true });
+      swept.push(name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[dependency-sync] Failed to sweep stale backup ${path}: ${message}`);
+    }
+  }
+  return swept;
+}
 
 type PatchFile = { absPath: string; relPath: string };
 type ParsedNameAndVersion = {
@@ -167,7 +203,7 @@ export function preparePatchedPackagesForInstall(root: string): PreparedPatchedP
     };
   }
 
-  const backupRoot = mkdtempSync(join(root, "node_modules", ".patch-package-backups-"));
+  const backupRoot = mkdtempSync(join(root, "node_modules", BACKUP_DIR_PREFIX));
   const backups: PreparedBackup[] = [];
 
   try {
@@ -190,6 +226,17 @@ export function preparePatchedPackagesForInstall(root: string): PreparedPatchedP
   }
 
   let finalized = false;
+  const removeBackupRoot = () => {
+    try {
+      rmSync(backupRoot, { recursive: true, force: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[dependency-sync] Failed to clean patch-package backup at ${backupRoot}: ${message}. ` +
+          `Leaving for next-startup sweep.`,
+      );
+    }
+  };
   const finalize = (restore: boolean) => {
     if (finalized) return;
     finalized = true;
@@ -202,7 +249,7 @@ export function preparePatchedPackagesForInstall(root: string): PreparedPatchedP
       }
     }
 
-    rmSync(backupRoot, { recursive: true, force: true });
+    removeBackupRoot();
   };
 
   return {
