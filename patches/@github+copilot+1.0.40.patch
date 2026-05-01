@@ -38,18 +38,18 @@ index ba59197..3f92b27 100644
    - grep
    - glob
 diff --git a/node_modules/@github/copilot/definitions/research.agent.yaml b/node_modules/@github/copilot/definitions/research.agent.yaml
-index 55001c5..ee345ca 100644
+index 775d6d6..cf13742 100644
 --- a/node_modules/@github/copilot/definitions/research.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/research.agent.yaml
 @@ -4,7 +4,7 @@ description: >
-   Staff software engineer and software research specialist that provides exhaustive,
-   meticulously researched answers about codebases, APIs, libraries, and software
-   architecture using GitHub's search and exploration tools.
+   Research subagent that executes thorough searches based on main agent instructions.
+   Searches GitHub repos, fetches files, verifies claims, and reports detailed findings
+   with citations. Designed to work autonomously within a research workflow.
 -model: claude-sonnet-4.6
 +model: claude-opus-4.7
  tools:
    # GitHub MCP tools (using short 'github/' prefix which maps to 'github-mcp-server/')
-   - github/get_me # IMPORTANT: Use this first to understand user context and org
+   - github/get_me # USE THIS FIRST to understand org/repo context
 diff --git a/node_modules/@github/copilot/definitions/task.agent.yaml b/node_modules/@github/copilot/definitions/task.agent.yaml
 index 21d10cb..523bf0d 100644
 --- a/node_modules/@github/copilot/definitions/task.agent.yaml
