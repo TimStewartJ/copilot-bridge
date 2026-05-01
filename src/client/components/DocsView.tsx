@@ -25,12 +25,14 @@ import {
   Folder,
   FolderOpen,
   List,
+  MoreHorizontal,
   Pencil,
   Plus,
   Save,
   Search,
   Trash2,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { setLastViewedDoc } from "../last-viewed";
 import { useIsMobile } from "../useIsMobile";
@@ -64,8 +66,43 @@ type DbSortState = { field: string; order: "asc" | "desc" };
 type DocHeading = { id: string; text: string; level: number };
 type DocCrumb = { label: string; path: string | null };
 type DocsSheetProps = { title: string; onClose: () => void; children: ReactNode };
+type DocActionId = "details" | "edit" | "delete";
+type DocActionTone = "secondary" | "destructive";
+type DocAction = {
+  id: DocActionId;
+  label: string;
+  icon: LucideIcon;
+  onClick: () => void;
+  tone?: DocActionTone;
+};
+type CreateDocActionsOptions = {
+  includeDetails: boolean;
+  onDetails: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+};
+type MobileDocActionSheetProps = {
+  actions: DocAction[];
+  onActionSelect: (action: DocAction) => void;
+};
+type PageInspectorContentProps = {
+  page: DocPage;
+  headings: DocHeading[];
+  activeHeadingId: string | null;
+  relatedDocs: string[];
+  onHeadingSelect: (id: string) => void;
+  onRelatedDocSelect: (path: string) => void;
+};
 
 const DOCS_MARKDOWN_CLASSNAME = DOCS_PROSE;
+const DOC_ACTION_BUTTON_BASE =
+  "inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm transition-colors";
+const DOC_ICON_BUTTON_CLASSNAME =
+  "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary";
+const DOC_ACTION_TONE_CLASSNAMES: Record<DocActionTone, string> = {
+  secondary: "text-text-primary hover:bg-bg-hover",
+  destructive: "text-error hover:bg-error/10 hover:text-error-hover",
+};
 
 const SELECT_BADGE_COLORS = [
   { bg: "bg-blue-500/15", text: "text-blue-400" },
@@ -311,6 +348,11 @@ function DocsSheet({ title, onClose, children }: DocsSheetProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -319,7 +361,7 @@ function DocsSheet({ title, onClose, children }: DocsSheetProps) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -346,7 +388,7 @@ function DocsSheet({ title, onClose, children }: DocsSheetProps) {
       document.removeEventListener("keydown", handleKeyDown);
       previousFocus?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
@@ -359,15 +401,14 @@ function DocsSheet({ title, onClose, children }: DocsSheetProps) {
         className="relative flex max-h-[88vh] w-full flex-col rounded-t-3xl border border-border bg-bg-primary shadow-2xl md:mt-12 md:max-h-[80vh] md:max-w-2xl md:rounded-3xl"
         style={MOBILE_SHEET_SAFE_AREA}
       >
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div className="mx-auto h-1.5 w-12 rounded-full bg-border" />
-        </div>
-        <div className="flex items-center justify-between px-4 pb-3 pt-1">
-          <h2 id={titleId} className="text-sm font-semibold text-text-primary">{title}</h2>
+        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+          <div className="h-1.5 w-10 shrink-0 rounded-full bg-border" aria-hidden="true" />
+          <h2 id={titleId} className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">{title}</h2>
           <button
             ref={closeButtonRef}
+            type="button"
             onClick={onClose}
-            className="rounded-full p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className={DOC_ICON_BUTTON_CLASSNAME}
             aria-label="Close"
           >
             <X size={16} />
@@ -384,6 +425,199 @@ function InfoPill({ label }: { label: string }) {
     <span className="inline-flex items-center rounded-full border border-border bg-bg-primary px-2.5 py-1 text-[11px] font-medium text-text-secondary">
       {label}
     </span>
+  );
+}
+
+function createDocActions({ includeDetails, onDetails, onEdit, onDelete }: CreateDocActionsOptions): DocAction[] {
+  return [
+    ...(includeDetails ? [{ id: "details" as const, label: "Details", icon: List, onClick: onDetails }] : []),
+    { id: "edit", label: "Edit", icon: Pencil, onClick: onEdit },
+    { id: "delete", label: "Delete", icon: Trash2, onClick: onDelete, tone: "destructive" },
+  ];
+}
+
+function DocActionBar({ actions }: { actions: DocAction[] }) {
+  if (actions.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 self-start">
+      {actions.map((action) => {
+        const Icon = action.icon;
+        const tone = action.tone ?? "secondary";
+        return (
+          <button
+            key={action.id}
+            type="button"
+            onClick={action.onClick}
+            className={`${DOC_ACTION_BUTTON_BASE} ${DOC_ACTION_TONE_CLASSNAMES[tone]}`}
+          >
+            <Icon size={14} />
+            {action.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MobileDocActionSheet({ actions, onActionSelect }: MobileDocActionSheetProps) {
+  if (actions.length === 0) return null;
+
+  const secondaryActions = actions.filter((action) => action.tone !== "destructive");
+  const destructiveActions = actions.filter((action) => action.tone === "destructive");
+  const renderAction = (action: DocAction) => {
+    const Icon = action.icon;
+    const isDestructive = action.tone === "destructive";
+    return (
+      <button
+        key={action.id}
+        type="button"
+        onClick={() => onActionSelect(action)}
+        className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm transition-colors ${
+          isDestructive
+            ? "text-error hover:bg-error/10 hover:text-error-hover"
+            : "text-text-primary hover:bg-bg-hover"
+        }`}
+      >
+        <Icon size={16} className="shrink-0" />
+        <span className="font-medium">{action.label}</span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      {secondaryActions.length > 0 && (
+        <div className="rounded-2xl border border-border bg-bg-secondary/70 p-2">
+          {secondaryActions.map(renderAction)}
+        </div>
+      )}
+      {destructiveActions.length > 0 && (
+        <div className="rounded-2xl border border-border bg-bg-secondary/40 p-2">
+          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+            Destructive
+          </div>
+          {destructiveActions.map(renderAction)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PageMetaSummary({ page }: { page: DocPage }) {
+  return (
+    <>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <InfoPill label={`Updated ${formatDocDate(page.modified)}`} />
+        {page.created && <InfoPill label={`Created ${formatDocDate(page.created)}`} />}
+        {page.isDbItem && <InfoPill label="Database entry" />}
+      </div>
+      {page.tags.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {page.tags.map((tag) => {
+            const bg = TAG_COLOR_BG[tag] ?? "bg-bg-hover";
+            const text = TAG_COLOR_TEXT[tag] ?? "text-text-muted";
+            return (
+              <span key={tag} className={`rounded-full px-2.5 py-1 text-xs font-medium ${bg} ${text}`}>
+                {tag}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function PageInspectorContent({
+  page,
+  headings,
+  activeHeadingId,
+  relatedDocs,
+  onHeadingSelect,
+  onRelatedDocSelect,
+}: PageInspectorContentProps) {
+  return (
+    <div className="space-y-4">
+      {headings.length > 0 && (
+        <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+            <List size={14} />
+            Contents
+          </div>
+          <nav className="mt-3 space-y-1">
+            {headings.map((heading) => (
+              <button
+                key={heading.id}
+                onClick={() => onHeadingSelect(heading.id)}
+                className={`w-full rounded-xl px-2 py-1.5 text-left text-sm transition-colors ${
+                  activeHeadingId === heading.id
+                    ? "bg-accent/10 text-text-primary"
+                    : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
+                }`}
+                style={{ paddingLeft: `${heading.level * 10}px` }}
+              >
+                {heading.text}
+              </button>
+            ))}
+          </nav>
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Page info</div>
+        <dl className="mt-3 space-y-3 text-sm">
+          <div>
+            <dt className="text-xs text-text-faint">Path</dt>
+            <dd className="mt-1 break-all text-text-primary">{page.path}</dd>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <dt className="text-xs text-text-faint">Created</dt>
+              <dd className="mt-1 text-text-primary">{formatDocDate(page.created)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-faint">Updated</dt>
+              <dd className="mt-1 text-text-primary">{formatDocDate(page.modified)}</dd>
+            </div>
+          </div>
+          {page.tags.length > 0 && (
+            <div>
+              <dt className="text-xs text-text-faint">Tags</dt>
+              <dd className="mt-2 flex flex-wrap gap-1.5">
+                {page.tags.map((tag) => {
+                  const bg = TAG_COLOR_BG[tag] ?? "bg-bg-hover";
+                  const text = TAG_COLOR_TEXT[tag] ?? "text-text-muted";
+                  return (
+                    <span key={tag} className={`rounded-full px-2 py-1 text-[11px] font-medium ${bg} ${text}`}>
+                      {tag}
+                    </span>
+                  );
+                })}
+              </dd>
+            </div>
+          )}
+        </dl>
+      </div>
+
+      {relatedDocs.length > 0 && (
+        <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Related docs</div>
+          <div className="mt-3 space-y-1.5">
+            {relatedDocs.map((path) => (
+              <button
+                key={path}
+                onClick={() => onRelatedDocSelect(path)}
+                className="flex w-full items-center justify-between rounded-xl px-2 py-2 text-left text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+              >
+                <span className="truncate">{path}</span>
+                <ChevronRight size={14} className="shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -650,6 +884,7 @@ export default function DocsView() {
   const [searching, setSearching] = useState(false);
   const [navigatorOpen, setNavigatorOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [actionSheetOpen, setActionSheetOpen] = useState(false);
   const [dbSchema, setDbSchema] = useState<DbSchema | null>(null);
   const [dbEntries, setDbEntries] = useState<DbEntry[]>([]);
   const [dbTotal, setDbTotal] = useState<number | null>(null);
@@ -726,6 +961,7 @@ export default function DocsView() {
     setPageLoading(true);
     setNavigatorOpen(false);
     setInspectorOpen(false);
+    setActionSheetOpen(false);
     setDbItemSchema(null);
 
     if (isDbFromUrl) {
@@ -840,6 +1076,7 @@ export default function DocsView() {
     const url = isDb ? `/docs/${path}?db` : `/docs/${path}`;
     setNavigatorOpen(false);
     setInspectorOpen(false);
+    setActionSheetOpen(false);
     navigate(url);
   }, [navigate]);
 
@@ -868,6 +1105,10 @@ export default function DocsView() {
     }
   }, [selectedPath, loadTree, navigate]);
 
+  const openInspector = useCallback(() => {
+    setInspectorOpen(true);
+  }, []);
+
   const handleCreateNew = useCallback(async () => {
     if (!newPagePath.trim()) return;
     try {
@@ -893,6 +1134,28 @@ export default function DocsView() {
     setEditing(true);
   }, [page]);
 
+  const docActions = useMemo(
+    () =>
+      page
+        ? createDocActions({
+            includeDetails: !showDesktopInspector,
+            onDetails: openInspector,
+            onEdit: startEdit,
+            onDelete: handleDelete,
+          })
+        : [],
+    [handleDelete, openInspector, page, showDesktopInspector, startEdit],
+  );
+  const mobileDocActions = useMemo(
+    () => docActions.filter((action) => action.id !== "details"),
+    [docActions],
+  );
+  const showMobileDocActions = isMobile && page !== null && !creatingNew && !editing && mobileDocActions.length > 0;
+  const handleMobileDocActionSelect = useCallback((action: DocAction) => {
+    setActionSheetOpen(false);
+    action.onClick();
+  }, []);
+
   const handleGoHome = useCallback(() => {
     if (hasRootIndex) {
       navigate("/docs/index");
@@ -903,8 +1166,13 @@ export default function DocsView() {
     setCreatingNew(false);
     setDbFolder(null);
     setDbSchema(null);
+    setActionSheetOpen(false);
     navigate("/docs");
   }, [hasRootIndex, navigate]);
+
+  useEffect(() => {
+    if (!showMobileDocActions && actionSheetOpen) setActionSheetOpen(false);
+  }, [actionSheetOpen, showMobileDocActions]);
 
   useEffect(() => {
     if (!page?.body) return;
@@ -1049,6 +1317,12 @@ export default function DocsView() {
     setActiveHeadingId(id);
   }, []);
 
+  const handleInspectorHeadingSelect = useCallback((id: string) => {
+    setInspectorOpen(false);
+    scrollToHeading(id);
+    updateHash(id);
+  }, [scrollToHeading, updateHash]);
+
   const remarkPlugins = useMemo(() => [remarkGfm, remarkBreaks, remarkWikilink], []);
 
   const markdownComponents = useMemo(() => {
@@ -1166,23 +1440,35 @@ export default function DocsView() {
     };
   }, [pageHeadings, resolvedLinks, selectedDirectoryPath, selectedPath, selectedPathIsDirectory, navigate, scrollToHeading, updateHash]);
 
-  const handleBreadcrumbSelect = useCallback((crumbPath: string) => {
-    if (!page) {
-      handleSelectNode(crumbPath);
-      return;
+  const isBreadcrumbNavigable = useCallback((crumbPath: string) => {
+    if (crumbPath === "") {
+      return true;
     }
+    if (page?.isDbItem && crumbPath === page.folder) {
+      return true;
+    }
+    return navigablePaths.has(crumbPath);
+  }, [navigablePaths, page?.folder, page?.isDbItem]);
+
+  const handleBreadcrumbSelect = useCallback((crumbPath: string) => {
+    if (!isBreadcrumbNavigable(crumbPath)) return;
     if (crumbPath === "") {
       handleGoHome();
       return;
     }
-    if (page.isDbItem && crumbPath === page.folder) {
+    if (page?.isDbItem && crumbPath === page.folder) {
       handleSelectNode(crumbPath, true);
       return;
     }
-    if (navigablePaths.has(crumbPath)) {
-      handleSelectNode(crumbPath);
-    }
-  }, [page, handleGoHome, handleSelectNode, navigablePaths]);
+    handleSelectNode(crumbPath);
+  }, [handleGoHome, handleSelectNode, isBreadcrumbNavigable, page?.folder, page?.isDbItem]);
+
+  const mobileBreadcrumbs = useMemo(
+    () => breadcrumbs.filter((crumb): crumb is DocCrumb & { path: string } => (
+      crumb.path !== null && isBreadcrumbNavigable(crumb.path)
+    )),
+    [breadcrumbs, isBreadcrumbNavigable],
+  );
 
   const openCreatePage = useCallback(() => {
     setCreatingNew(true);
@@ -1190,6 +1476,7 @@ export default function DocsView() {
     setPage(null);
     setDbFolder(null);
     setNavigatorOpen(false);
+    setActionSheetOpen(false);
     setNewPagePath("");
     setNewPageContent("---\ntitle: \ndescription: \ntags: []\n---\n\n");
     navigate("/docs");
@@ -1298,109 +1585,29 @@ export default function DocsView() {
     </div>
   );
 
-  const pageMetaCard = page ? (
-    <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Page info</div>
-      <dl className="mt-3 space-y-3 text-sm">
-        <div>
-          <dt className="text-xs text-text-faint">Path</dt>
-          <dd className="mt-1 break-all text-text-primary">{page.path}</dd>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <dt className="text-xs text-text-faint">Created</dt>
-            <dd className="mt-1 text-text-primary">{formatDocDate(page.created)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-text-faint">Updated</dt>
-            <dd className="mt-1 text-text-primary">{formatDocDate(page.modified)}</dd>
-          </div>
-        </div>
-        {page.tags.length > 0 && (
-          <div>
-            <dt className="text-xs text-text-faint">Tags</dt>
-            <dd className="mt-2 flex flex-wrap gap-1.5">
-              {page.tags.map((tag) => {
-                const bg = TAG_COLOR_BG[tag] ?? "bg-bg-hover";
-                const text = TAG_COLOR_TEXT[tag] ?? "text-text-muted";
-                return (
-                  <span key={tag} className={`rounded-full px-2 py-1 text-[11px] font-medium ${bg} ${text}`}>
-                    {tag}
-                  </span>
-                );
-              })}
-            </dd>
-          </div>
-        )}
-      </dl>
-    </div>
-  ) : null;
-
-  const tocCard = pageHeadings.length > 0 ? (
-    <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-        <List size={14} />
-        Contents
-      </div>
-      <nav className="mt-3 space-y-1">
-        {pageHeadings.map((heading) => (
-          <button
-            key={heading.id}
-            onClick={() => {
-              setInspectorOpen(false);
-              scrollToHeading(heading.id);
-              updateHash(heading.id);
-            }}
-            className={`w-full rounded-xl px-2 py-1.5 text-left text-sm transition-colors ${
-              activeHeadingId === heading.id
-                ? "bg-accent/10 text-text-primary"
-                : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
-            }`}
-            style={{ paddingLeft: `${heading.level * 10}px` }}
-          >
-            {heading.text}
-          </button>
-        ))}
-      </nav>
-    </div>
-  ) : null;
-
-  const relatedDocsCard = relatedDocs.length > 0 ? (
-    <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Related docs</div>
-      <div className="mt-3 space-y-1.5">
-        {relatedDocs.map((path) => (
-          <button
-            key={path}
-            onClick={() => handleSelectNode(path)}
-            className="flex w-full items-center justify-between rounded-xl px-2 py-2 text-left text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-          >
-            <span className="truncate">{path}</span>
-            <ChevronRight size={14} className="shrink-0" />
-          </button>
-        ))}
-      </div>
-    </div>
-  ) : null;
-
   const rightRail = page && showDesktopInspector ? (
     <aside className="w-[300px] shrink-0 overflow-hidden">
-      <div className="sticky top-0 flex h-full flex-col gap-4 overflow-y-auto px-4 py-6">
-        {tocCard}
-        {pageMetaCard}
-        {relatedDocsCard}
+      <div className="sticky top-0 h-full overflow-y-auto px-4 py-6">
+        <PageInspectorContent
+          page={page}
+          headings={pageHeadings}
+          activeHeadingId={activeHeadingId}
+          relatedDocs={relatedDocs}
+          onHeadingSelect={handleInspectorHeadingSelect}
+          onRelatedDocSelect={handleSelectNode}
+        />
       </div>
     </aside>
   ) : null;
 
   const pageHeader = page ? (
-    <div className="shrink-0 border-b border-border bg-gradient-to-b from-bg-secondary to-bg-primary">
+    <div className="hidden shrink-0 border-b border-border bg-gradient-to-b from-bg-secondary to-bg-primary md:block">
       <div className="mx-auto max-w-4xl px-5 py-6 sm:px-8">
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-faint">
           {breadcrumbs.map((crumb, index) => (
             <div key={`${crumb.label}-${crumb.path ?? "current"}`} className="flex items-center gap-2">
               {index > 0 && <ChevronRight size={12} />}
-              {crumb.path !== null && (crumb.path === "" || navigablePaths.has(crumb.path) || (page.isDbItem && crumb.path === page.folder)) ? (
+              {crumb.path !== null && isBreadcrumbNavigable(crumb.path) ? (
                 <button
                   onClick={() => handleBreadcrumbSelect(crumb.path)}
                   className="max-w-[180px] truncate rounded-md px-1.5 py-0.5 transition-colors hover:bg-bg-hover hover:text-text-primary"
@@ -1416,74 +1623,11 @@ export default function DocsView() {
         <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-3xl font-semibold tracking-tight text-text-primary sm:text-4xl">{page.title}</h1>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <InfoPill label={`Updated ${formatDocDate(page.modified)}`} />
-              {page.created && <InfoPill label={`Created ${formatDocDate(page.created)}`} />}
-              {page.isDbItem && <InfoPill label="Database entry" />}
-            </div>
-            {page.tags.length > 0 && (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {page.tags.map((tag) => {
-                  const bg = TAG_COLOR_BG[tag] ?? "bg-bg-hover";
-                  const text = TAG_COLOR_TEXT[tag] ?? "text-text-muted";
-                  return (
-                    <span key={tag} className={`rounded-full px-2.5 py-1 text-xs font-medium ${bg} ${text}`}>
-                      {tag}
-                    </span>
-                  );
-                })}
-              </div>
-            )}
+            <PageMetaSummary page={page} />
           </div>
-          <div className="flex items-center gap-2 self-start">
-            {!showDesktopInspector && (
-              <button
-                onClick={() => setInspectorOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover xl:hidden"
-              >
-                <List size={14} />
-                Details
-              </button>
-            )}
-            <button
-              onClick={startEdit}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover"
-            >
-              <Pencil size={14} />
-              Edit
-            </button>
-            <button
-              onClick={handleDelete}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-error transition-colors hover:bg-error/10 hover:text-error-hover"
-            >
-              <Trash2 size={14} />
-              Delete
-            </button>
-          </div>
+          <DocActionBar actions={docActions} />
         </div>
       </div>
-      {isMobile && (
-        <div className="border-t border-border/70 px-4 py-2">
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            <button
-              onClick={() => setNavigatorOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
-            >
-              <BookOpen size={14} />
-              Browse
-            </button>
-            {!showDesktopInspector && (
-              <button
-                onClick={() => setInspectorOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
-              >
-                <List size={14} />
-                Contents
-              </button>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   ) : null;
 
@@ -1767,33 +1911,66 @@ export default function DocsView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-bg-primary">
-      <div className="flex items-center gap-3 border-b border-border bg-bg-secondary px-4 py-3 md:hidden">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-text-primary">
-            {page ? page.title : dbSchema ? dbSchema.name : creatingNew ? "New page" : editing ? "Edit page" : "Docs"}
+      <div className="border-b border-border bg-bg-secondary md:hidden">
+        <div className="flex items-center gap-3 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-text-primary">
+              {page ? page.title : dbSchema ? dbSchema.name : creatingNew ? "New page" : editing ? "Edit page" : "Docs"}
+            </div>
+            <div className="truncate text-[11px] text-text-faint">
+              {page ? page.path : dbFolder ?? "Knowledge base"}
+            </div>
           </div>
-          <div className="truncate text-[11px] text-text-faint">
-            {page ? page.path : dbFolder ?? "Knowledge base"}
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setNavigatorOpen(true)}
-            className="rounded-full p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-            aria-label="Open navigator"
-          >
-            <BookOpen size={16} />
-          </button>
-          {page && !showDesktopInspector && (
+          <div className="flex items-center gap-1.5">
             <button
-              onClick={() => setInspectorOpen(true)}
-              className="rounded-full p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-              aria-label="Open contents and details"
+              type="button"
+              onClick={() => setNavigatorOpen(true)}
+              className={DOC_ICON_BUTTON_CLASSNAME}
+              aria-label="Open navigator"
             >
-              <List size={16} />
+              <BookOpen size={16} />
             </button>
-          )}
+            {page && !creatingNew && !editing && !showDesktopInspector && (
+              <button
+                type="button"
+                onClick={openInspector}
+                className={DOC_ICON_BUTTON_CLASSNAME}
+                aria-label="Open contents and details"
+              >
+                <List size={16} />
+              </button>
+            )}
+            {showMobileDocActions && (
+              <button
+                type="button"
+                onClick={() => setActionSheetOpen(true)}
+                className={DOC_ICON_BUTTON_CLASSNAME}
+                aria-label="Open page actions"
+              >
+                <MoreHorizontal size={16} />
+              </button>
+            )}
+          </div>
         </div>
+
+        {mobileBreadcrumbs.length > 0 && (
+          <nav aria-label="Parent docs" className="border-t border-border/70 px-4 py-2">
+            <div className="flex items-center gap-1 overflow-x-auto text-[11px] text-text-faint">
+              {mobileBreadcrumbs.map((crumb, index) => (
+                <div key={`${crumb.label}-${crumb.path}`} className="flex shrink-0 items-center gap-1">
+                  {index > 0 && <ChevronRight size={12} className="text-text-faint" />}
+                  <button
+                    type="button"
+                    onClick={() => handleBreadcrumbSelect(crumb.path)}
+                    className="max-w-[9rem] truncate rounded-full px-2 py-1 transition-colors hover:bg-bg-hover hover:text-text-primary"
+                  >
+                    {crumb.label}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </nav>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -1811,13 +1988,22 @@ export default function DocsView() {
         </DocsSheet>
       )}
 
-      {!showDesktopInspector && inspectorOpen && page && (
-        <DocsSheet title="Contents and details" onClose={() => setInspectorOpen(false)}>
-          <div className="space-y-4">
-            {tocCard}
-            {pageMetaCard}
-            {relatedDocsCard}
-          </div>
+      {isMobile && actionSheetOpen && showMobileDocActions && (
+        <DocsSheet title="Page actions" onClose={() => setActionSheetOpen(false)}>
+          <MobileDocActionSheet actions={mobileDocActions} onActionSelect={handleMobileDocActionSelect} />
+        </DocsSheet>
+      )}
+
+      {!showDesktopInspector && inspectorOpen && page && !creatingNew && !editing && (
+        <DocsSheet title={pageHeadings.length > 0 ? "Contents and details" : "Details"} onClose={() => setInspectorOpen(false)}>
+          <PageInspectorContent
+            page={page}
+            headings={pageHeadings}
+            activeHeadingId={activeHeadingId}
+            relatedDocs={relatedDocs}
+            onHeadingSelect={handleInspectorHeadingSelect}
+            onRelatedDocSelect={handleSelectNode}
+          />
         </DocsSheet>
       )}
     </div>
