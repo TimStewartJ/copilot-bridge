@@ -22,44 +22,58 @@ const LAUNCHER_LOG_LINE_COUNT = 8;
 export function BridgeCommitsSection() {
   const [commits, setCommits] = useState<BridgeCommitMetadata | null>(null);
   const [launcherLog, setLauncherLog] = useState<LauncherLogTail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [commitsLoading, setCommitsLoading] = useState(true);
+  const [launcherLogLoading, setLauncherLogLoading] = useState(true);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [launcherLogError, setLauncherLogError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
-  const refresh = useCallback(async (forceRefresh = false) => {
+  const refresh = useCallback((forceRefresh = false) => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    setLoading(true);
-    try {
-      const [commitResult, launcherLogResult] = await Promise.allSettled([
-        fetchBridgeCommitMetadata(forceRefresh),
-        fetchLauncherLogTail(LAUNCHER_LOG_LINE_COUNT),
-      ]);
-      if (requestIdRef.current !== requestId) return;
-      const nextErrors: string[] = [];
+    setCommitsLoading(true);
+    setLauncherLogLoading(true);
+    setCommitError(null);
+    setLauncherLogError(null);
 
-      if (commitResult.status === "fulfilled") {
-        setCommits(commitResult.value);
-      } else {
-        nextErrors.push(`Commit status failed: ${formatRequestError(commitResult.reason)}`);
-      }
+    void fetchBridgeCommitMetadata(forceRefresh)
+      .then((value) => {
+        if (requestIdRef.current !== requestId) return;
+        setCommits(value);
+      })
+      .catch((reason: unknown) => {
+        if (requestIdRef.current !== requestId) return;
+        setCommitError(`Commit status failed: ${formatRequestError(reason)}`);
+      })
+      .finally(() => {
+        if (requestIdRef.current !== requestId) return;
+        setCommitsLoading(false);
+      });
 
-      if (launcherLogResult.status === "fulfilled") {
-        setLauncherLog(launcherLogResult.value);
-      } else {
-        nextErrors.push(`Launcher log failed: ${formatRequestError(launcherLogResult.reason)}`);
-      }
-
-      setError(nextErrors.length > 0 ? nextErrors.join(" ") : null);
-    } finally {
-      if (requestIdRef.current !== requestId) return;
-      setLoading(false);
-    }
+    void fetchLauncherLogTail(LAUNCHER_LOG_LINE_COUNT)
+      .then((value) => {
+        if (requestIdRef.current !== requestId) return;
+        setLauncherLog(value);
+      })
+      .catch((reason: unknown) => {
+        if (requestIdRef.current !== requestId) return;
+        setLauncherLogError(`Launcher log failed: ${formatRequestError(reason)}`);
+      })
+      .finally(() => {
+        if (requestIdRef.current !== requestId) return;
+        setLauncherLogLoading(false);
+      });
   }, []);
 
   useEffect(() => {
-    void refresh();
+    refresh();
   }, [refresh]);
+
+  const loading = commitsLoading || launcherLogLoading;
+  const errors = [commitError, launcherLogError].filter(
+    (message): message is string => message !== null,
+  );
+  const error = errors.length > 0 ? errors.join(" ") : null;
 
   return (
     <SettingsSection
@@ -67,7 +81,7 @@ export function BridgeCommitsSection() {
       description="Compare local, tracked upstream, and running bridge commits, plus the latest launcher lines from the bridge serving this UI."
       action={(
         <button
-          onClick={() => void refresh(true)}
+          onClick={() => refresh(true)}
           disabled={loading}
           className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors inline-flex items-center gap-1.5"
         >
@@ -77,35 +91,35 @@ export function BridgeCommitsSection() {
       )}
     >
       <div className="space-y-3">
-        <CommitOverviewCard commits={commits} loading={loading} />
+        <CommitOverviewCard commits={commits} loading={commitsLoading} />
         <div className="grid gap-2 lg:grid-cols-3">
           <CommitCard
             title="Local"
             subtitle="Current worktree HEAD"
             snapshot={commits?.local ?? null}
-            loading={loading}
+            loading={commitsLoading}
           />
           <CommitCard
             title="Remote"
             subtitle="Tracked upstream branch"
             snapshot={commits?.remote ?? null}
-            loading={loading}
+            loading={commitsLoading}
           />
           <CommitCard
             title="Running"
             subtitle="Bridge process serving this UI"
             snapshot={commits?.running ?? null}
-            loading={loading}
+            loading={commitsLoading}
           />
         </div>
         <LauncherLogCard
           launcherLog={launcherLog}
-          loading={loading}
+          loading={launcherLogLoading}
         />
 
         {error && (
           <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-            Commit metadata check failed: {error}
+            Bridge status check failed: {error}
           </div>
         )}
       </div>
