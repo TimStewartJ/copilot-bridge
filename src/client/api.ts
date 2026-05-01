@@ -1,4 +1,5 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
   NativeUserInputResponse as NativeUserInputResponseType,
@@ -1076,15 +1077,57 @@ export interface CopilotUsageTotals {
   totalTokens: number;
 }
 
-export interface CopilotUsageModelRow extends CopilotUsageTotals {
+export type CopilotUsageReasoningPricingAssumption = "reasoning_tokens_priced_at_output_rate";
+
+export interface CopilotUsageCostBreakdownUsd {
+  input: number;
+  cachedInput: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+  total: number;
+}
+
+export interface CopilotUsageCostEstimate {
+  estimatedCostUsd: number;
+  estimatedAiCredits: number;
+  costBreakdownUsd: CopilotUsageCostBreakdownUsd;
+  billableOutputTokens: number;
+  reasoningPricingAssumption: CopilotUsageReasoningPricingAssumption;
+}
+
+export interface CopilotUsageSummaryTotals extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  unpricedModelCount: number;
+  unpricedTokens: CopilotUsageTotals;
+}
+
+export interface CopilotUsageModelPricingMetadata {
+  pricingKey: string | null;
+  pricedAs: string | null;
+  pricingStatus: CopilotPricingModelResolutionStatus;
+  pricingSource: CopilotPricingModelResolutionStatus;
+  normalizedPricingModel: string | null;
+}
+
+export interface CopilotUsageUnpricedModelRow extends CopilotUsageTotals, CopilotUsageModelPricingMetadata {
+  model: string;
+  sessions: number;
+  pricingKey: null;
+  pricedAs: null;
+  pricingStatus: "unpriced";
+  pricingSource: "unpriced";
+}
+
+export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCostEstimate, CopilotUsageModelPricingMetadata {
   model: string;
   sessions: number;
 }
 
-export interface CopilotUsageSessionRow extends CopilotUsageTotals {
+export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
   sessionId: string;
   shutdownAt: string | null;
   models: CopilotUsageModelRow[];
+  unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
 export interface CopilotUsageCoverage {
@@ -1101,10 +1144,11 @@ export interface CopilotUsageCoverage {
 
 export interface CopilotUsageSummary {
   generatedAt: string;
-  totals: CopilotUsageTotals;
+  totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
   sessions: CopilotUsageSessionRow[];
+  unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
 export async function fetchCopilotUsage(options?: { refresh?: boolean; signal?: AbortSignal }): Promise<CopilotUsageSummary> {

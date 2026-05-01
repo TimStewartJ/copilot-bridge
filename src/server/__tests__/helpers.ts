@@ -145,6 +145,7 @@ export function createTestBus() {
 export function createMockSessionManager() {
   return {
     listSessions: async () => [],
+    listModels: async () => [],
     listSessionsFromDisk: () => [],
     getSessionActivity: () => [],
     isSessionBusy: () => false,

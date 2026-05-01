@@ -1,5 +1,16 @@
 import { useMemo, type ReactNode } from "react";
-import type { BatchAction, CopilotUsageModelRow, CopilotUsageSessionRow, CopilotUsageTotals, Session, Task, TaskGroup, TaskPatch } from "../api";
+import type {
+  BatchAction,
+  CopilotUsageCostBreakdownUsd,
+  CopilotUsageCostEstimate,
+  CopilotUsageModelRow,
+  CopilotUsageSessionRow,
+  CopilotUsageTotals,
+  Session,
+  Task,
+  TaskGroup,
+  TaskPatch,
+} from "../api";
 import { getSessionActivityTime } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
@@ -442,8 +453,18 @@ export default function TaskDashboard({
                 </LoadingSkeletonRegion>
               ) : (
                 <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5">
-                <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+                <div className={sessionUsage.cost.hasCostEstimate
+                  ? "grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7"
+                  : "grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6"}
+                >
                   <MetricCard label="Tokens" value={formatNumber(sessionUsage.totals.totalTokens)} sub="posted" />
+                  {sessionUsage.cost.hasCostEstimate && (
+                    <MetricCard
+                      label="Est. cost"
+                      value={formatUsd(sessionUsage.cost.estimatedCostUsd)}
+                      sub={`${formatAiCredits(sessionUsage.cost.estimatedAiCredits)} credits`}
+                    />
+                  )}
                   <MetricCard label="Requests" value={formatNumber(sessionUsage.totals.requests)} sub="completed" />
                   <MetricCard label="Tokenized" value={String(sessionUsage.includedSessions.length)} sub="sessions" />
                   <MetricCard label="Pending" value={String(sessionUsage.sessionsWithoutUsage)} sub="no shutdown yet" />
@@ -481,7 +502,10 @@ export default function TaskDashboard({
                             />
                           </div>
                           <div className="text-right text-[11px] font-medium text-text-primary">
-                            {formatNumber(bucket.totalTokens)}
+                            <div>{formatNumber(bucket.totalTokens)}</div>
+                            {bucket.hasCostEstimate && (
+                              <div className="text-[10px] font-normal text-text-faint">{formatUsd(bucket.estimatedCostUsd)}</div>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -512,7 +536,10 @@ export default function TaskDashboard({
                               </div>
                               <div className="shrink-0 text-right">
                                 <div className="text-xs font-semibold text-text-primary">{formatNumber(row.totalTokens)}</div>
-                                <div className="text-[10px] text-text-faint">{formatNumber(row.requests)} req</div>
+                                <div className="text-[10px] text-text-faint">
+                                  {formatNumber(row.requests)} req
+                                  {row.hasCostEstimate ? ` · ${formatUsd(row.estimatedCostUsd)}` : ""}
+                                </div>
                               </div>
                             </div>
                             {row.hasLoadedSession && (
@@ -545,8 +572,13 @@ export default function TaskDashboard({
                                 {row.sessions} {row.sessions === 1 ? "session" : "sessions"} · {formatNumber(row.requests)} requests
                               </div>
                             </div>
-                            <div className="text-right text-xs font-semibold text-text-primary">
-                              {formatNumber(row.totalTokens)}
+                            <div className="text-right">
+                              <div className="text-xs font-semibold text-text-primary">{formatNumber(row.totalTokens)}</div>
+                              {row.hasCostEstimate && (
+                                <div className="text-[10px] text-text-faint">
+                                  {row.hasUnpricedUsage && row.estimatedCostUsd === 0 ? "unpriced" : formatUsd(row.estimatedCostUsd)}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ))}
@@ -559,15 +591,25 @@ export default function TaskDashboard({
                   </div>
                 </div>
 
-                {sessionUsage.sessionsWithoutUsage > 0 && (
-                  <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/10 px-3 py-2 text-xs text-info">
-                    <Info size={14} className="mt-0.5 shrink-0" />
-                    <p>
-                      {sessionUsage.sessionsWithoutUsage} linked {sessionUsage.sessionsWithoutUsage === 1 ? "session has" : "sessions have"} no token total yet.
-                      Running or recently active sessions usually post usage after assistant turns complete or after shutdown.
-                    </p>
-                  </div>
-                )}
+                  {sessionUsage.sessionsWithoutUsage > 0 && (
+                    <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/10 px-3 py-2 text-xs text-info">
+                      <Info size={14} className="mt-0.5 shrink-0" />
+                      <p>
+                        {sessionUsage.sessionsWithoutUsage} linked {sessionUsage.sessionsWithoutUsage === 1 ? "session has" : "sessions have"} no token total yet.
+                        Running or recently active sessions usually post usage after assistant turns complete or after shutdown.
+                      </p>
+                    </div>
+                  )}
+                  {sessionUsage.cost.unpricedModelNames.length > 0 && (
+                    <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      <p>
+                        Estimated cost excludes {formatNumber(sessionUsage.cost.unpricedTokens.totalTokens)} tokens from unpriced linked{" "}
+                        {sessionUsage.cost.unpricedModelNames.length === 1 ? "model" : "models"}: {sessionUsage.cost.unpricedModelNames.slice(0, 3).join(", ")}
+                        {sessionUsage.cost.unpricedModelNames.length > 3 ? ` +${sessionUsage.cost.unpricedModelNames.length - 3} more` : ""}.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </Section>
@@ -855,18 +897,37 @@ function buildReadinessInsight({
   };
 }
 
-interface SessionUsageDisplayRow extends CopilotUsageTotals {
+interface SessionUsageCostFields extends CopilotUsageCostEstimate {
+  hasCostEstimate: boolean;
+}
+
+interface SessionUsageCostRollup extends SessionUsageCostFields {
+  unpricedModelNames: string[];
+  unpricedTokens: CopilotUsageTotals;
+}
+
+interface SessionUsageDisplayRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
   sessionId: string;
   label: string;
   shutdownAt: string | null;
   models: CopilotUsageModelRow[];
   hasLoadedSession: boolean;
+  hasCostEstimate: boolean;
+  hasUnpricedUsage: boolean;
 }
 
-interface SessionUsageDayBucket extends CopilotUsageTotals {
+interface SessionUsageModelDisplayRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  model: string;
+  sessions: number;
+  hasCostEstimate: boolean;
+  hasUnpricedUsage: boolean;
+}
+
+interface SessionUsageDayBucket extends CopilotUsageTotals, CopilotUsageCostEstimate {
   key: string;
   label: string;
   sessionIds: Set<string>;
+  hasCostEstimate: boolean;
 }
 
 function buildSessionUsageAnalytics({
@@ -885,15 +946,26 @@ function buildSessionUsageAnalytics({
   const includedSessions = usageSessions.filter((row) => taskSessionIdSet.has(row.sessionId));
   const includedSessionIds = new Set(includedSessions.map((row) => row.sessionId));
   const totals = { ...ZERO_USAGE_TOTALS };
-  const modelTotals = new Map<string, CopilotUsageModelRow>();
+  const costTotals = createSessionUsageCostFields();
+  const unpricedTokens = { ...ZERO_USAGE_TOTALS };
+  const unpricedModelNames = new Set<string>();
+  const modelTotals = new Map<string, SessionUsageModelDisplayRow>();
   const dayBuckets = new Map<string, SessionUsageDayBucket>();
 
   for (const row of includedSessions) {
     addUsageTotals(totals, row);
-    for (const model of row.models) {
-      const existing = modelTotals.get(model.model) ?? { ...ZERO_USAGE_TOTALS, model: model.model, sessions: 0 };
+    addUsageCostEstimate(costTotals, row);
+    for (const unpricedModel of getUnpricedModelRows(row)) {
+      addUsageTotals(unpricedTokens, unpricedModel);
+      unpricedModelNames.add(unpricedModel.model);
+    }
+
+    for (const model of row.models ?? []) {
+      const existing = modelTotals.get(model.model) ?? createSessionUsageModelRow(model.model);
       existing.sessions += model.sessions;
       addUsageTotals(existing, model);
+      addUsageCostEstimate(existing, model);
+      existing.hasUnpricedUsage ||= isUnpricedUsageModel(model);
       modelTotals.set(model.model, existing);
     }
 
@@ -901,11 +973,14 @@ function buildSessionUsageAnalytics({
     if (bucketKey) {
       const bucket = dayBuckets.get(bucketKey) ?? {
         ...ZERO_USAGE_TOTALS,
+        ...createZeroCostEstimate(),
         key: bucketKey,
         label: formatDateLabel(row.shutdownAt!),
         sessionIds: new Set<string>(),
+        hasCostEstimate: false,
       };
       addUsageTotals(bucket, row);
+      addUsageCostEstimate(bucket, row);
       bucket.sessionIds.add(row.sessionId);
       dayBuckets.set(bucketKey, bucket);
     }
@@ -914,10 +989,15 @@ function buildSessionUsageAnalytics({
   const topSessions: SessionUsageDisplayRow[] = includedSessions
     .map((row) => {
       const session = linkedSessionMap.get(row.sessionId);
+      const { estimate, hasCostEstimate } = normalizeUsageCostEstimate(row);
       return {
         ...row,
+        ...estimate,
+        models: row.models ?? [],
         label: session?.summary || session?.intentText || `Session ${row.sessionId.slice(0, 8)}`,
         hasLoadedSession: Boolean(session),
+        hasCostEstimate,
+        hasUnpricedUsage: getUnpricedModelRows(row).length > 0,
       };
     })
     .sort((left, right) => (
@@ -944,6 +1024,11 @@ function buildSessionUsageAnalytics({
 
   return {
     totals,
+    cost: {
+      ...costTotals,
+      unpricedTokens,
+      unpricedModelNames: [...unpricedModelNames].sort((left, right) => left.localeCompare(right)),
+    } satisfies SessionUsageCostRollup,
     includedSessions,
     sessionsWithoutUsage,
     busySessions: linkedSessions.filter((session) => session.busy || session.runState === "busy" || session.runState === "stalled").length,
@@ -1018,6 +1103,67 @@ function formatBytes(value: number): string {
   return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0";
+  const fractionDigits = value >= 1
+    ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+    : value >= 0.01
+      ? { minimumFractionDigits: 2, maximumFractionDigits: 4 }
+      : { minimumFractionDigits: 4, maximumFractionDigits: 6 };
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    ...fractionDigits,
+  });
+}
+
+function formatAiCredits(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 100) return Math.round(value).toLocaleString();
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: value >= 10 ? 1 : 2,
+  });
+}
+
+function createSessionUsageModelRow(model: string): SessionUsageModelDisplayRow {
+  return {
+    ...ZERO_USAGE_TOTALS,
+    ...createZeroCostEstimate(),
+    model,
+    sessions: 0,
+    hasCostEstimate: false,
+    hasUnpricedUsage: false,
+  };
+}
+
+function createSessionUsageCostFields(): SessionUsageCostFields {
+  return {
+    ...createZeroCostEstimate(),
+    hasCostEstimate: false,
+  };
+}
+
+function createZeroCostEstimate(): CopilotUsageCostEstimate {
+  return {
+    estimatedCostUsd: 0,
+    estimatedAiCredits: 0,
+    costBreakdownUsd: createZeroCostBreakdownUsd(),
+    billableOutputTokens: 0,
+    reasoningPricingAssumption: "reasoning_tokens_priced_at_output_rate",
+  };
+}
+
+function createZeroCostBreakdownUsd(): CopilotUsageCostBreakdownUsd {
+  return {
+    input: 0,
+    cachedInput: 0,
+    cacheWrite: 0,
+    output: 0,
+    reasoning: 0,
+    total: 0,
+  };
+}
+
 function addUsageTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void {
   target.requests += delta.requests;
   target.inputTokens += delta.inputTokens;
@@ -1026,6 +1172,65 @@ function addUsageTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): 
   target.cacheWriteTokens += delta.cacheWriteTokens;
   target.reasoningTokens += delta.reasoningTokens;
   target.totalTokens += delta.totalTokens;
+}
+
+function addUsageCostEstimate(target: SessionUsageCostFields, delta: Partial<CopilotUsageCostEstimate>): void {
+  const { estimate, hasCostEstimate } = normalizeUsageCostEstimate(delta);
+  if (!hasCostEstimate) return;
+
+  target.hasCostEstimate = true;
+  target.estimatedCostUsd += estimate.estimatedCostUsd;
+  target.estimatedAiCredits += estimate.estimatedAiCredits;
+  target.billableOutputTokens += estimate.billableOutputTokens;
+  target.reasoningPricingAssumption = estimate.reasoningPricingAssumption;
+  target.costBreakdownUsd.input += estimate.costBreakdownUsd.input;
+  target.costBreakdownUsd.cachedInput += estimate.costBreakdownUsd.cachedInput;
+  target.costBreakdownUsd.cacheWrite += estimate.costBreakdownUsd.cacheWrite;
+  target.costBreakdownUsd.output += estimate.costBreakdownUsd.output;
+  target.costBreakdownUsd.reasoning += estimate.costBreakdownUsd.reasoning;
+  target.costBreakdownUsd.total += estimate.costBreakdownUsd.total;
+}
+
+function normalizeUsageCostEstimate(source: Partial<CopilotUsageCostEstimate>): { estimate: CopilotUsageCostEstimate; hasCostEstimate: boolean } {
+  const breakdown = source.costBreakdownUsd;
+  if (
+    !isFiniteNumber(source.estimatedCostUsd)
+    || !isFiniteNumber(source.estimatedAiCredits)
+    || !breakdown
+    || !isFiniteNumber(breakdown.input)
+    || !isFiniteNumber(breakdown.cachedInput)
+    || !isFiniteNumber(breakdown.cacheWrite)
+    || !isFiniteNumber(breakdown.output)
+    || !isFiniteNumber(breakdown.reasoning)
+    || !isFiniteNumber(breakdown.total)
+  ) {
+    return { estimate: createZeroCostEstimate(), hasCostEstimate: false };
+  }
+
+  return {
+    estimate: {
+      estimatedCostUsd: source.estimatedCostUsd,
+      estimatedAiCredits: source.estimatedAiCredits,
+      costBreakdownUsd: { ...breakdown },
+      billableOutputTokens: isFiniteNumber(source.billableOutputTokens) ? source.billableOutputTokens : 0,
+      reasoningPricingAssumption: source.reasoningPricingAssumption ?? "reasoning_tokens_priced_at_output_rate",
+    },
+    hasCostEstimate: true,
+  };
+}
+
+function getUnpricedModelRows(row: CopilotUsageSessionRow): Array<CopilotUsageModelRow | CopilotUsageSessionRow["unpricedModels"][number]> {
+  const reported = Array.isArray(row.unpricedModels) ? row.unpricedModels : [];
+  if (reported.length > 0) return reported;
+  return (row.models ?? []).filter(isUnpricedUsageModel);
+}
+
+function isUnpricedUsageModel(model: Pick<CopilotUsageModelRow, "pricingStatus">): boolean {
+  return model.pricingStatus === "unpriced";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function maxNullableTimestamp(current: string | null, candidate: string): string {

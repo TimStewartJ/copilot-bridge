@@ -6,8 +6,12 @@ import {
   createCopilotUsageReader,
   readCopilotUsageSummary,
   type CopilotUsageSummary,
+  type CopilotUsageTotals,
+  type ReadCopilotUsageSummaryOptions,
 } from "../copilot-usage.js";
 import { makeTestDir } from "./helpers.js";
+
+const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_priced_at_output_rate" as const;
 
 function createCopilotHome(): string {
   return makeTestDir("copilot-usage");
@@ -30,6 +34,64 @@ function writeEvents(copilotHome: string, sessionId: string, events: unknown[]):
 function writeRawEvents(copilotHome: string, sessionId: string, lines: string[]): void {
   const sessionDir = createSession(copilotHome, sessionId);
   writeFileSync(join(sessionDir, "events.jsonl"), `${lines.join("\n")}\n`);
+}
+
+function zeroTotals(): CopilotUsageTotals {
+  return {
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+function summaryTotals(totals: CopilotUsageTotals): CopilotUsageSummary["totals"] {
+  return {
+    ...totals,
+    estimatedCostUsd: 0,
+    estimatedAiCredits: 0,
+    costBreakdownUsd: {
+      input: 0,
+      cachedInput: 0,
+      cacheWrite: 0,
+      output: 0,
+      reasoning: 0,
+      total: 0,
+    },
+    billableOutputTokens: totals.outputTokens + totals.reasoningTokens,
+    reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
+    unpricedModelCount: 0,
+    unpricedTokens: zeroTotals(),
+  };
+}
+
+function emptySummary(generatedAt = "2026-05-02T00:00:00.000Z"): CopilotUsageSummary {
+  return {
+    generatedAt,
+    totals: summaryTotals(zeroTotals()),
+    coverage: {
+      sessionsSeen: 0,
+      sessionsWithEvents: 0,
+      sessionsIncluded: 0,
+      sessionsSkipped: 0,
+      skippedByReason: {
+        no_events: 0,
+        no_shutdown: 0,
+        empty_model_metrics: 0,
+        parse_error: 0,
+      },
+      earliestIncludedAt: null,
+      latestIncludedAt: null,
+      earliestSkippedAt: null,
+      latestSkippedAt: null,
+    },
+    models: [],
+    sessions: [],
+    unpricedModels: [],
+  };
 }
 
 describe("readCopilotUsageSummary", () => {
@@ -77,7 +139,7 @@ describe("readCopilotUsageSummary", () => {
       now: () => Date.parse("2026-01-04T00:00:00.000Z"),
     });
 
-    expect(summary).toEqual({
+    expect(summary).toMatchObject({
       generatedAt: "2026-01-04T00:00:00.000Z",
       totals: {
         requests: 7,
@@ -214,6 +276,229 @@ describe("readCopilotUsageSummary", () => {
     });
   });
 
+  it("calculates estimated cost and AI credits for public SKUs", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "claude-sonnet-4.6": {
+              requests: { count: 1 },
+              usage: {
+                inputTokens: 1_000_000,
+                outputTokens: 1_000_000,
+                cacheReadTokens: 1_000_000,
+                cacheWriteTokens: 1_000_000,
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+    const model = summary.models[0];
+    const session = summary.sessions[0];
+
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(summary.totals.estimatedAiCredits).toBeCloseTo(2_205);
+    expect(summary.totals.unpricedModelCount).toBe(0);
+    expect(summary.unpricedModels).toEqual([]);
+    expect(model).toMatchObject({
+      model: "claude-sonnet-4.6",
+      pricingStatus: "exact",
+      pricingSource: "exact",
+      pricingKey: "claude-sonnet-4.6",
+      pricedAs: "claude-sonnet-4.6",
+      billableOutputTokens: 1_000_000,
+      reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
+    });
+    expect(model.costBreakdownUsd).toMatchObject({
+      input: 3,
+      cachedInput: 0.3,
+      cacheWrite: 3.75,
+      output: 15,
+      reasoning: 0,
+    });
+    expect(model.costBreakdownUsd.total).toBeCloseTo(22.05);
+    expect(model.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(model.estimatedAiCredits).toBeCloseTo(2_205);
+    expect(session.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(session.models[0].estimatedCostUsd).toBeCloseTo(22.05);
+  });
+
+  it("resolves generic model variants through the pricing resolver", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-06T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "claude-opus-4.7-context-low": {
+              requests: { count: 1 },
+              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+    const model = summary.models[0];
+
+    expect(model).toMatchObject({
+      model: "claude-opus-4.7-context-low",
+      pricingStatus: "normalized-variant",
+      pricingSource: "normalized-variant",
+      pricingKey: "claude-opus-4.7",
+      pricedAs: "claude-opus-4.7",
+      normalizedPricingModel: "claude-opus-4.7",
+    });
+    expect(model.estimatedCostUsd).toBeCloseTo(30);
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(30);
+  });
+
+  it("resolves arbitrary observed model IDs through supplied SDK display names", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-06T11:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "opaque-sdk-id": {
+              requests: { count: 1 },
+              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      sdkModels: [{ id: "opaque-sdk-id", name: "Claude Opus 4.7" }],
+    });
+    const model = summary.models[0];
+
+    expect(model).toMatchObject({
+      model: "opaque-sdk-id",
+      pricingStatus: "sdk-name",
+      pricingSource: "sdk-name",
+      pricingKey: "claude-opus-4.7",
+      pricedAs: "claude-opus-4.7",
+      normalizedPricingModel: "claude-opus-4.7",
+    });
+    expect(model.estimatedCostUsd).toBeCloseTo(30);
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(30);
+  });
+
+  it("marks unknown models unpriced and excludes them from cost totals", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-07T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { outputTokens: 1_000_000 },
+            },
+            "unknown-model": {
+              requests: { count: 1 },
+              usage: {
+                inputTokens: 1_000_000,
+                outputTokens: 1_000_000,
+                reasoningTokens: 1_000_000,
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+    const known = summary.models.find((row) => row.model === "gpt-5.5");
+    const unknown = summary.models.find((row) => row.model === "unknown-model");
+
+    expect(summary.totals).toMatchObject({
+      requests: 2,
+      inputTokens: 1_000_000,
+      outputTokens: 2_000_000,
+      reasoningTokens: 1_000_000,
+      totalTokens: 4_000_000,
+      billableOutputTokens: 3_000_000,
+      unpricedModelCount: 1,
+    });
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(30);
+    expect(summary.totals.estimatedAiCredits).toBeCloseTo(3_000);
+    expect(summary.totals.unpricedTokens).toMatchObject({
+      requests: 1,
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      reasoningTokens: 1_000_000,
+      totalTokens: 3_000_000,
+    });
+    expect(known?.estimatedCostUsd).toBeCloseTo(30);
+    expect(unknown).toMatchObject({
+      pricingStatus: "unpriced",
+      pricingSource: "unpriced",
+      pricingKey: null,
+      pricedAs: null,
+      normalizedPricingModel: "unknown-model",
+      estimatedCostUsd: 0,
+      estimatedAiCredits: 0,
+      billableOutputTokens: 2_000_000,
+    });
+    expect(unknown?.costBreakdownUsd.total).toBe(0);
+    expect(summary.unpricedModels).toEqual([
+      expect.objectContaining({
+        model: "unknown-model",
+        requests: 1,
+        totalTokens: 3_000_000,
+        pricingStatus: "unpriced",
+      }),
+    ]);
+    expect(summary.sessions[0].unpricedModels).toEqual(summary.unpricedModels);
+  });
+
+  it("prices reasoning tokens at the output rate and exposes them separately", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-08T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: { outputTokens: 1_000_000, reasoningTokens: 2_000_000 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+    const model = summary.models[0];
+
+    expect(model).toMatchObject({
+      outputTokens: 1_000_000,
+      reasoningTokens: 2_000_000,
+      billableOutputTokens: 3_000_000,
+      reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
+    });
+    expect(model.costBreakdownUsd.output).toBeCloseTo(30);
+    expect(model.costBreakdownUsd.reasoning).toBeCloseTo(60);
+    expect(model.costBreakdownUsd.total).toBeCloseTo(90);
+    expect(summary.totals.costBreakdownUsd.reasoning).toBeCloseTo(60);
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(90);
+  });
+
   it("tracks skipped sessions and shutdown-based skipped coverage metadata", async () => {
     const copilotHome = createCopilotHome();
     createSession(copilotHome, "session-no-events");
@@ -282,7 +567,7 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.coverage.skippedByReason.no_shutdown).toBe(0);
     expect(summary.coverage.earliestIncludedAt).toBe("2026-02-02T09:00:06.000Z");
     expect(summary.coverage.latestIncludedAt).toBe("2026-02-02T09:01:00.000Z");
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 2,
       inputTokens: 0,
       outputTokens: 17,
@@ -291,7 +576,7 @@ describe("readCopilotUsageSummary", () => {
       reasoningTokens: 0,
       totalTokens: 17,
     });
-    expect(summary.models).toEqual([
+    expect(summary.models).toMatchObject([
       {
         model: "gpt-5.5",
         sessions: 1,
@@ -304,7 +589,7 @@ describe("readCopilotUsageSummary", () => {
         totalTokens: 17,
       },
     ]);
-    expect(summary.sessions).toEqual([
+    expect(summary.sessions).toMatchObject([
       {
         sessionId: "session-live",
         shutdownAt: "2026-02-02T09:01:00.000Z",
@@ -460,7 +745,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({ copilotHome });
 
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 11,
       inputTokens: 100,
       outputTokens: 55,
@@ -514,7 +799,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({ copilotHome });
 
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 4,
       inputTokens: 10,
       outputTokens: 7,
@@ -526,7 +811,7 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.coverage.sessionsIncluded).toBe(1);
     expect(summary.coverage.earliestIncludedAt).toBe("2026-03-05T08:00:00.000Z");
     expect(summary.coverage.latestIncludedAt).toBe("2026-03-05T09:00:00.000Z");
-    expect(summary.models).toEqual([
+    expect(summary.models).toMatchObject([
       {
         model: "gpt-4o",
         sessions: 1,
@@ -576,7 +861,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({ copilotHome });
 
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 2,
       inputTokens: 10,
       outputTokens: 0,
@@ -613,7 +898,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({ copilotHome });
 
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 2,
       inputTokens: 9,
       outputTokens: 4,
@@ -649,7 +934,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({ copilotHome });
 
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 2,
       inputTokens: 12,
       outputTokens: 0,
@@ -697,7 +982,7 @@ describe("readCopilotUsageSummary", () => {
 
     const summary = await readCopilotUsageSummary({ copilotHome });
 
-    expect(summary.totals).toEqual({
+    expect(summary.totals).toMatchObject({
       requests: 2,
       inputTokens: 5,
       outputTokens: 0,
@@ -783,6 +1068,38 @@ describe("createCopilotUsageReader", () => {
     expect(expired.totals.inputTokens).toBe(20);
   });
 
+  it("loads SDK metadata on uncached reads and refreshes", async () => {
+    const sdkModels = [{ id: "opaque-sdk-id", name: "Claude Opus 4.7" }] as const;
+    const loadOptions: ReadCopilotUsageSummaryOptions[] = [];
+    const initialSummary = emptySummary("2026-05-01T00:00:01.000Z");
+    const refreshedSummary = emptySummary("2026-05-01T00:00:02.000Z");
+    const loader = vi.fn((options: ReadCopilotUsageSummaryOptions): Promise<CopilotUsageSummary> => {
+      loadOptions.push(options);
+      return Promise.resolve(loadOptions.length === 1 ? initialSummary : refreshedSummary);
+    });
+    const provider = vi.fn(async () => sdkModels);
+    const reader = createCopilotUsageReader({
+      copilotHome: createCopilotHome(),
+      ttlMs: 60_000,
+      now: () => Date.parse("2026-05-01T00:00:00.000Z"),
+      loadSummary: loader,
+      modelMetadataProvider: provider,
+    });
+
+    await expect(reader.readSummary()).resolves.toBe(initialSummary);
+    await expect(reader.readSummary()).resolves.toBe(initialSummary);
+
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(loadOptions[0]?.sdkModels).toEqual(sdkModels);
+
+    await expect(reader.readSummary({ refresh: true })).resolves.toBe(refreshedSummary);
+
+    expect(provider).toHaveBeenCalledTimes(2);
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(loadOptions[1]?.sdkModels).toEqual(sdkModels);
+  });
+
   it("keeps the newest load cached when an older inflight request resolves later", async () => {
     let currentTime = Date.parse("2026-05-02T00:00:00.000Z");
     const pending: Array<{ resolve: (summary: CopilotUsageSummary) => void }> = [];
@@ -803,7 +1120,7 @@ describe("createCopilotUsageReader", () => {
 
     const staleSummary: CopilotUsageSummary = {
       generatedAt: "2026-05-02T00:00:01.000Z",
-      totals: {
+      totals: summaryTotals({
         requests: 1,
         inputTokens: 10,
         outputTokens: 0,
@@ -811,7 +1128,7 @@ describe("createCopilotUsageReader", () => {
         cacheWriteTokens: 0,
         reasoningTokens: 0,
         totalTokens: 10,
-      },
+      }),
       coverage: {
         sessionsSeen: 1,
         sessionsWithEvents: 1,
@@ -830,11 +1147,20 @@ describe("createCopilotUsageReader", () => {
       },
       models: [],
       sessions: [],
+      unpricedModels: [],
     };
     const refreshedSummary: CopilotUsageSummary = {
       ...staleSummary,
       generatedAt: "2026-05-02T00:00:02.000Z",
-      totals: { ...staleSummary.totals, requests: 2, inputTokens: 20, totalTokens: 20 },
+      totals: summaryTotals({
+        requests: 2,
+        inputTokens: 20,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 20,
+      }),
     };
 
     pending[1].resolve(refreshedSummary);

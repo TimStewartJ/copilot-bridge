@@ -25,17 +25,44 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+function createUsageTotals(totalTokens: number, requests = 1) {
+  return {
+    requests,
+    inputTokens: totalTokens,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    totalTokens,
+  };
+}
+
+function createZeroCostEstimate() {
+  return {
+    estimatedCostUsd: 0,
+    estimatedAiCredits: 0,
+    costBreakdownUsd: {
+      input: 0,
+      cachedInput: 0,
+      cacheWrite: 0,
+      output: 0,
+      reasoning: 0,
+      total: 0,
+    },
+    billableOutputTokens: 0,
+    reasoningPricingAssumption: "reasoning_tokens_priced_at_output_rate" as const,
+  };
+}
+
 function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUsageSummary {
+  const totals = createUsageTotals(totalTokens);
   return {
     generatedAt,
     totals: {
-      requests: 1,
-      inputTokens: totalTokens,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      totalTokens,
+      ...totals,
+      ...createZeroCostEstimate(),
+      unpricedModelCount: 0,
+      unpricedTokens: createUsageTotals(0, 0),
     },
     coverage: {
       sessionsSeen: 1,
@@ -56,15 +83,16 @@ function createUsageSummary(generatedAt: string, totalTokens: number): CopilotUs
     models: [{
       model: "gpt-5.4",
       sessions: 1,
-      requests: 1,
-      inputTokens: totalTokens,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      totalTokens,
+      ...totals,
+      ...createZeroCostEstimate(),
+      pricingKey: "gpt-5.4",
+      pricedAs: "gpt-5.4",
+      pricingStatus: "exact",
+      pricingSource: "exact",
+      normalizedPricingModel: "gpt-5.4",
     }],
     sessions: [],
+    unpricedModels: [],
   };
 }
 

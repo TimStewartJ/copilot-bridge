@@ -1,12 +1,36 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, BarChart3, Loader2, RotateCw } from "lucide-react";
-import type { CopilotUsageCoverage, CopilotUsageModelRow, CopilotUsageSkipReason } from "../../api";
+import type {
+  CopilotUsageCoverage,
+  CopilotUsageModelRow,
+  CopilotUsageSkipReason,
+  CopilotUsageTotals,
+  CopilotUsageUnpricedModelRow,
+} from "../../api";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import EmptyState from "../shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
 
 const NUMBER_FORMATTER = new Intl.NumberFormat();
+const USD_FORMATTER = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const SMALL_USD_FORMATTER = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 6,
+});
+const AI_CREDIT_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 2,
+});
+const SMALL_AI_CREDIT_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 4,
+});
 const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
@@ -25,6 +49,13 @@ const SKIP_REASON_LABELS: Record<CopilotUsageSkipReason, string> = {
   no_shutdown: "no shutdown summary",
   empty_model_metrics: "empty model metrics",
   parse_error: "parse errors",
+};
+
+const PRICING_STATUS_LABELS: Record<CopilotUsageModelRow["pricingStatus"], string> = {
+  exact: "Exact public price",
+  "sdk-name": "Matched SDK name",
+  "normalized-variant": "Variant priced",
+  unpriced: "Unpriced",
 };
 
 export function CopilotUsageSection() {
@@ -60,7 +91,7 @@ export function CopilotUsageSection() {
   return (
     <SettingsSection
       title="Local Copilot Usage"
-      description="Estimated from local session history on this device. Not official GitHub, billing, or cross-device usage."
+      description="Estimated from local session history with GitHub Copilot public pricing assumptions. Not official billing."
       action={(
         <button
           onClick={() => void handleRefresh()}
@@ -74,7 +105,7 @@ export function CopilotUsageSection() {
     >
       <div className="space-y-3">
         <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-          Local estimate only. Only persisted shutdown summaries count toward totals; active work after the latest persisted shutdown is excluded.
+          Local estimate only. Costs use GitHub's public Copilot model pricing, assume reasoning tokens are priced at the output rate, and convert AI credits at $0.01 per credit. Only persisted local session shutdown summaries on this device count toward coverage; active work after the latest persisted shutdown, unpersisted sessions, and other devices are excluded. This is not official GitHub billing.
         </div>
 
         {isLoading && !data && (
@@ -89,8 +120,8 @@ export function CopilotUsageSection() {
                 Usage totals will appear after local shutdown summaries are scanned.
               </p>
             </div>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-              {["Total tokens", "Requests", "Included sessions", "Coverage window"].map((label) => (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+              {["Estimated cost", "AI credits", "Total tokens", "Requests", "Included sessions", "Coverage window"].map((label) => (
                 <div key={label} className="rounded-md border border-border bg-bg-primary px-4 py-3">
                   <Skeleton height={10} width="54%" shape="pill" />
                   <Skeleton height={16} width="72%" shape="pill" className="mt-2" />
@@ -111,12 +142,30 @@ export function CopilotUsageSection() {
 
         {data && (
           <>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+              <SummaryCard
+                label="Estimated cost"
+                value={formatCurrencyUsd(data.totals.estimatedCostUsd)}
+                sub={data.totals.unpricedModelCount > 0 ? "Excludes unpriced models" : "Priced models"}
+              />
+              <SummaryCard
+                label="Estimated AI credits"
+                value={formatAiCredits(data.totals.estimatedAiCredits)}
+                sub={data.totals.unpricedModelCount > 0 ? "Excludes unpriced models" : "GitHub credit estimate"}
+              />
               <SummaryCard label="Total tokens" value={formatNumber(data.totals.totalTokens)} />
               <SummaryCard label="Requests" value={formatNumber(data.totals.requests)} />
               <SummaryCard label="Included sessions" value={formatNumber(data.coverage.sessionsIncluded)} />
               <SummaryCard label="Coverage window" value={formatCoverageWindow(data.coverage)} />
             </div>
+
+            {data.totals.unpricedModelCount > 0 && (
+              <UnpricedModelsWarning
+                count={data.totals.unpricedModelCount}
+                models={data.unpricedModels}
+                unpricedTokens={data.totals.unpricedTokens}
+              />
+            )}
 
             <div className="rounded-md border border-warning/30 bg-warning/10 p-4 space-y-3">
               <div className="flex items-start justify-between gap-3">
@@ -177,6 +226,9 @@ export function CopilotUsageSection() {
                         <th className="px-4 py-3 text-left font-medium">Model</th>
                         <th className="px-4 py-3 text-right font-medium">Sessions</th>
                         <th className="px-4 py-3 text-right font-medium">Requests</th>
+                        <th className="px-4 py-3 text-right font-medium">Est. cost</th>
+                        <th className="px-4 py-3 text-right font-medium">AI credits</th>
+                        <th className="px-4 py-3 text-right font-medium">Pricing</th>
                         <th className="px-4 py-3 text-right font-medium">Total tokens</th>
                         <th className="px-4 py-3 text-right font-medium">Input</th>
                         <th className="px-4 py-3 text-right font-medium">Output</th>
@@ -207,11 +259,12 @@ export function CopilotUsageSection() {
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
+function SummaryCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="rounded-md border border-border bg-bg-elevated px-4 py-3">
       <div className="text-[11px] font-semibold uppercase tracking-wider text-text-faint">{label}</div>
       <div className="mt-1 text-sm font-medium text-text-primary">{value}</div>
+      {sub && <div className="mt-1 text-[11px] text-text-faint">{sub}</div>}
     </div>
   );
 }
@@ -225,12 +278,62 @@ function CoverageStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function UnpricedModelsWarning({
+  count,
+  models,
+  unpricedTokens,
+}: {
+  count: number;
+  models: CopilotUsageUnpricedModelRow[];
+  unpricedTokens: CopilotUsageTotals;
+}) {
+  return (
+    <div className="rounded-md border border-warning/30 bg-warning/10 p-4 space-y-3">
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-warning">Unknown pricing excluded from cost totals</div>
+          <p className="mt-1 text-xs text-text-muted">
+            GitHub public pricing did not include {formatNumber(count)} observed model{count === 1 ? "" : "s"}. These models remain visible below with token totals, but their estimated cost and AI credits are excluded from summary totals.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2 xl:grid-cols-4">
+        <CoverageStat label="Unpriced tokens" value={formatNumber(unpricedTokens.totalTokens)} />
+        <CoverageStat label="Unpriced requests" value={formatNumber(unpricedTokens.requests)} />
+        <CoverageStat label="Unpriced models" value={formatNumber(count)} />
+        <CoverageStat label="Excluded cost" value={formatCurrencyUsd(0)} />
+      </div>
+
+      {models.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {models.map((row) => (
+            <span
+              key={row.model}
+              className="rounded-full border border-warning/20 bg-bg-primary px-2 py-0.5 text-[11px] font-medium text-text-secondary"
+            >
+              {row.model}
+              {row.normalizedPricingModel && row.normalizedPricingModel !== row.model && (
+                <span className="text-text-faint"> · normalized {row.normalizedPricingModel}</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelRow({ row }: { row: CopilotUsageModelRow }) {
   return (
     <tr className="border-b border-border last:border-b-0">
       <td className="px-4 py-3 font-medium text-text-primary">{row.model}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.sessions)}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.requests)}</td>
+      <td className="px-4 py-3 text-right font-medium text-text-primary">{formatCurrencyUsd(row.estimatedCostUsd)}</td>
+      <td className="px-4 py-3 text-right text-text-muted">{formatAiCredits(row.estimatedAiCredits)}</td>
+      <PricingStatusCell row={row} />
       <td className="px-4 py-3 text-right font-medium text-text-primary">{formatNumber(row.totalTokens)}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.inputTokens)}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.outputTokens)}</td>
@@ -241,8 +344,55 @@ function ModelRow({ row }: { row: CopilotUsageModelRow }) {
   );
 }
 
+function PricingStatusCell({ row }: { row: CopilotUsageModelRow }) {
+  const pricedAs = row.pricedAs ?? row.pricingKey;
+  const showPricedAs = Boolean(pricedAs && pricedAs !== row.model);
+
+  return (
+    <td className="px-4 py-3 text-right text-text-muted">
+      <div className="flex flex-col items-end gap-1">
+        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${row.pricingStatus === "unpriced" ? "bg-warning/10 text-warning" : "bg-bg-primary text-text-secondary"}`}>
+          {PRICING_STATUS_LABELS[row.pricingStatus] ?? row.pricingStatus}
+        </span>
+        {showPricedAs && (
+          <span className="text-[11px] text-text-faint">priced as {pricedAs}</span>
+        )}
+        {row.pricingStatus === "unpriced" && (
+          <span className="text-[11px] text-text-faint">excluded from cost</span>
+        )}
+      </div>
+    </td>
+  );
+}
+
 function formatNumber(value: number): string {
   return NUMBER_FORMATTER.format(value);
+}
+
+function formatCurrencyUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return USD_FORMATTER.format(0);
+  }
+  if (value < 0.000001) {
+    return "<$0.000001";
+  }
+  if (value < 0.01) {
+    return SMALL_USD_FORMATTER.format(value);
+  }
+  return USD_FORMATTER.format(value);
+}
+
+function formatAiCredits(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0";
+  }
+  if (value < 0.0001) {
+    return "<0.0001";
+  }
+  if (value < 1) {
+    return SMALL_AI_CREDIT_FORMATTER.format(value);
+  }
+  return AI_CREDIT_FORMATTER.format(value);
 }
 
 function formatCoverageWindow(coverage: CopilotUsageCoverage): string {
