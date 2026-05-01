@@ -102,7 +102,7 @@ describe("isExpandablePanelValue", () => {
 });
 
 describe("TaskMomentumFields panel rendering", () => {
-  it("renders long values as expandable read surfaces with separate edit and clear controls", () => {
+  it("renders long values as implicitly expandable read surfaces with separate edit and clear controls", () => {
     const html = renderToStaticMarkup(createElement(TaskMomentumFields, {
       task: createTask({
         nextAction: "Next scheduled quick sweep. 18:15 PT quick-sweep final state after cleanup: dashboard has 20 active tasks, 0 open checklist items, and the remaining work is ready for review.",
@@ -115,7 +115,7 @@ describe("TaskMomentumFields panel rendering", () => {
     expect(html).toContain('aria-label="Clear Next action"');
     expect(html).toContain("line-clamp-3");
     expect(html).toContain("md:line-clamp-2");
-    expect(html).toContain("More");
+    expect(html).not.toContain("More");
   });
 
   it("renders short values without an expand affordance", () => {
