@@ -199,7 +199,12 @@ async function main(): Promise<void> {
 
   // Initialize scheduler after session manager is ready
   scheduler.initialize(sessionManager, {
-    scheduleStore, taskStore, sessionMetaStore, globalBus: defaultGlobalBus,
+    scheduleStore,
+    taskStore,
+    sessionMetaStore,
+    globalBus: defaultGlobalBus,
+    deferredPromptStore,
+    deferLoopStore,
   });
 
   // Initialize deferred prompt runner after session manager is ready

@@ -20,6 +20,8 @@ import {
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
 import type { Schedule } from "./schedule-store.js";
+import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
+import { normalizeScheduleAutoArchiveKeep } from "./schedule-validation.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
@@ -124,6 +126,8 @@ function getSchedulerModule(ctx: AppContext): typeof scheduler {
       taskStore: ctx.taskStore,
       sessionMetaStore: ctx.sessionMetaStore,
       globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
     });
     ctx.scheduler = scheduler;
   }
@@ -473,6 +477,21 @@ const SCHEDULE_REUSE_UNSUPPORTED_MESSAGE =
 
 function hasScheduleReuseField(body: Record<string, unknown>): boolean {
   return SCHEDULE_REUSE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(body, field));
+}
+
+async function enforceRetentionForSchedule(ctx: AppContext, schedule: Schedule): Promise<void> {
+  try {
+    await enforceScheduleSessionRetention({
+      schedule,
+      sessionMetaStore: ctx.sessionMetaStore,
+      sessionManager: ctx.sessionManager,
+      globalBus: ctx.globalBus,
+      deferredPromptStore: ctx.deferredPromptStore,
+      deferLoopStore: ctx.deferLoopStore,
+    });
+  } catch (err) {
+    console.warn(`[schedules] Failed to apply retention for "${schedule.name}" (${schedule.id}):`, err);
+  }
 }
 
 function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
@@ -2603,9 +2622,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.post("/schedules", async (req, res) => {
     try {
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt } = req.body;
+      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt, autoArchiveKeep } = req.body;
+      const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
       if (hasScheduleReuseField(req.body)) {
         return res.status(400).json({ error: SCHEDULE_REUSE_UNSUPPORTED_MESSAGE });
+      }
+      const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(autoArchiveKeep);
+      if (!normalizedAutoArchiveKeep.ok) {
+        return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
       }
       if (!taskId || !name || !prompt || !type) {
         return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
@@ -2634,7 +2658,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
         timezone,
         maxRuns,
         expiresAt,
+        autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
       });
+      if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
+        await enforceRetentionForSchedule(ctx, schedule);
+      }
 
       // Register cron job or arm one-shot timer
       if (schedule.type === "cron") {
@@ -2664,8 +2692,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
 
       const updates = { ...req.body };
+      const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
+      if (autoArchiveKeepProvided) {
+        const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(req.body.autoArchiveKeep);
+        if (!normalizedAutoArchiveKeep.ok) {
+          return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
+        }
+        updates.autoArchiveKeep = normalizedAutoArchiveKeep.value;
+      }
 
       const schedule = ctx.scheduleStore.updateSchedule(req.params.id, updates);
+      if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
+        await enforceRetentionForSchedule(ctx, schedule);
+      }
 
       // Re-register cron job if timing or enabled state changed
       if (schedule.type === "cron") {

@@ -34,12 +34,13 @@ describe("schedule-store", () => {
     });
 
     it("createSchedule returns a valid schedule", () => {
-      const s = store.createSchedule(baseCron);
+      const s = store.createSchedule({ ...baseCron, autoArchiveKeep: 8 });
       expect(s.id).toBeTruthy();
       expect(s.name).toBe("Daily standup");
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
       expect(s.sessionMode).toBe("new");
+      expect(s.autoArchiveKeep).toBe(8);
     });
 
     it("getSchedule returns created schedule", () => {
@@ -66,6 +67,12 @@ describe("schedule-store", () => {
       expect(updated.name).toBe("Renamed");
       expect(updated.enabled).toBe(false);
       expect(updated.sessionMode).toBe("new");
+    });
+
+    it("updateSchedule changes and clears autoArchiveKeep", () => {
+      const s = store.createSchedule(baseCron);
+      expect(store.updateSchedule(s.id, { autoArchiveKeep: 4 }).autoArchiveKeep).toBe(4);
+      expect(store.updateSchedule(s.id, { autoArchiveKeep: null }).autoArchiveKeep).toBeUndefined();
     });
 
     it("normalizes legacy reuse-target rows to new-session behavior without exposing targets", () => {
@@ -156,11 +163,12 @@ describe("schedule-store", () => {
         const migratedDb = openDatabase(dataDir);
         try {
           const rows = migratedDb.prepare(`
-            SELECT id, sessionMode, targetSessionId, lastSessionId, reuseLastRequiresExistingSession
+            SELECT id, autoArchiveKeep, sessionMode, targetSessionId, lastSessionId, reuseLastRequiresExistingSession
             FROM schedules
             ORDER BY id
           `).all() as Array<{
             id: string;
+            autoArchiveKeep: number | null;
             sessionMode: string;
             targetSessionId: string | null;
             lastSessionId: string | null;
@@ -169,6 +177,7 @@ describe("schedule-store", () => {
           expect(rows).toEqual([
             {
               id: "reuse-last-schedule",
+              autoArchiveKeep: null,
               sessionMode: "new",
               targetSessionId: null,
               lastSessionId: "last-session",
@@ -176,6 +185,7 @@ describe("schedule-store", () => {
             },
             {
               id: "reuse-target-schedule",
+              autoArchiveKeep: null,
               sessionMode: "new",
               targetSessionId: null,
               lastSessionId: "target-session",

@@ -230,6 +230,39 @@ describe("Schedule routes", () => {
     expect(res.body).not.toHaveProperty("targetSessionId");
   });
 
+  it("POST /api/schedules accepts autoArchiveKeep", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Retained schedule",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        autoArchiveKeep: 8,
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.autoArchiveKeep).toBe(8);
+    expect(ctx.scheduleStore.getSchedule(res.body.id)?.autoArchiveKeep).toBe(8);
+  });
+
+  it("POST /api/schedules validates autoArchiveKeep", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Bad retention",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "0 0 * * *",
+        autoArchiveKeep: 0,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/autoArchiveKeep/);
+  });
+
   it("GET /api/schedules omits legacy reuse fields", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
@@ -390,6 +423,32 @@ describe("Schedule routes", () => {
     expect(res.body).not.toHaveProperty("sessionMode");
     expect(res.body).not.toHaveProperty("reuseSession");
     expect(res.body).not.toHaveProperty("targetSessionId");
+  });
+
+  it("PATCH /api/schedules applies autoArchiveKeep retention immediately", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Apply retention",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "new-session", "2026-01-02T00:00:00.000Z");
+    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "old-session", "2026-01-01T00:00:00.000Z");
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "new-session", summary: "New run" } as any,
+      { sessionId: "old-session", summary: "Old run" } as any,
+    ];
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(false);
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ autoArchiveKeep: 1 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.autoArchiveKeep).toBe(1);
+    expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
+    expect(ctx.sessionMetaStore.isArchived("old-session")).toBe(true);
   });
 
   it("GET /api/schedules/:id/sessions returns sessions for a schedule", async () => {

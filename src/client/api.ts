@@ -1511,14 +1511,17 @@ export interface Schedule {
   runCount: number;
   maxRuns?: number;
   expiresAt?: string;
+  autoArchiveKeep?: number;
 }
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "maxRuns" | "expiresAt">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
 
 export type ScheduleUpdateInput = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
->>;
+>> & {
+  autoArchiveKeep?: number | null;
+};
 
 export async function fetchSchedules(taskId?: string): Promise<Schedule[]> {
   const qs = taskId ? `?taskId=${taskId}` : "";
