@@ -5,7 +5,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dependencySyncHash, preparePatchedPackagesForInstall } from "./server/dependency-sync.js";
+import { dependencySyncHash, preparePatchedPackagesForInstall, sweepStalePatchPackageBackups } from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnvManagedKeys } from "./server/env-loader.js";
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
 import {
@@ -1110,6 +1110,10 @@ async function main() {
     }
 
     // Ensure dependencies are in sync after pull
+    const swept = sweepStalePatchPackageBackups(ROOT);
+    if (swept.length > 0) {
+      log(`Swept ${swept.length} stale patch-package backup dir(s) from previous run`);
+    }
     if (!verifyLauncherStartup({ ensureDeps, log })) {
       throw new Error("Dependency sync failed during startup");
     }
