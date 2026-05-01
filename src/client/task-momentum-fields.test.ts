@@ -1,11 +1,33 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import {
+import type { Task } from "./api";
+import TaskMomentumFields, {
   getFollowUpState,
   getPanelFieldTone,
   getVisibleMomentumFieldKeys,
+  isExpandablePanelValue,
   toDateTimeInputValue,
   toDateTimeStorageValue,
 } from "./components/TaskMomentumFields";
+
+function createTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-1",
+    title: "Momentum task",
+    kind: "task",
+    status: "active",
+    priority: 0,
+    order: 0,
+    createdAt: "2026-05-01T00:00:00.000Z",
+    updatedAt: "2026-05-01T00:00:00.000Z",
+    sessionIds: [],
+    workItems: [],
+    pullRequests: [],
+    tags: [],
+    ...overrides,
+  };
+}
 
 describe("getFollowUpState", () => {
   const now = new Date("2026-05-01T12:00:00.000Z");
@@ -65,5 +87,44 @@ describe("getVisibleMomentumFieldKeys", () => {
 
   it("hides doneWhen for ongoing items", () => {
     expect(getVisibleMomentumFieldKeys("ongoing")).toEqual(["nextAction", "waitingOn", "nextTouchAt"]);
+  });
+});
+
+describe("isExpandablePanelValue", () => {
+  it("keeps short values static", () => {
+    expect(isExpandablePanelValue("Ship the preview")).toBe(false);
+  });
+
+  it("expands long values and multiline values", () => {
+    expect(isExpandablePanelValue("x".repeat(97))).toBe(true);
+    expect(isExpandablePanelValue("Line one\nLine two")).toBe(true);
+  });
+});
+
+describe("TaskMomentumFields panel rendering", () => {
+  it("renders long values as expandable read surfaces with separate edit and clear controls", () => {
+    const html = renderToStaticMarkup(createElement(TaskMomentumFields, {
+      task: createTask({
+        nextAction: "Next scheduled quick sweep. 18:15 PT quick-sweep final state after cleanup: dashboard has 20 active tasks, 0 open checklist items, and the remaining work is ready for review.",
+      }),
+    }));
+
+    expect(html).toContain('aria-label="Expand Next action"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-label="Edit Next action"');
+    expect(html).toContain('aria-label="Clear Next action"');
+    expect(html).toContain("line-clamp-3");
+    expect(html).toContain("md:line-clamp-2");
+    expect(html).toContain("More");
+  });
+
+  it("renders short values without an expand affordance", () => {
+    const html = renderToStaticMarkup(createElement(TaskMomentumFields, {
+      task: createTask({ nextAction: "Ship the preview" }),
+    }));
+
+    expect(html).not.toContain('aria-label="Expand Next action"');
+    expect(html).not.toContain("More");
+    expect(html).toContain('aria-label="Edit Next action"');
   });
 });
