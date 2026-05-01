@@ -23,6 +23,8 @@ import { createDocsIndex } from "./docs-index.js";
 import { createTagStore } from "./tag-store.js";
 import { createTelemetryStore } from "./telemetry-store.js";
 import { createVoiceJobStore } from "./voice-job-store.js";
+import { createPushNotificationService, initPushEventNotifications } from "./push-notification-service.js";
+import { createPushSubscriptionStore } from "./push-subscription-store.js";
 import * as scheduler from "./scheduler.js";
 import { defaultEventBusRegistry } from "./event-bus.js";
 import { notifyWebhook, gitHash, getPublicBaseUrl, discoverTunnelUrl, rememberRequestOrigin, shouldTrustProxyHeaders } from "./tunnel.js";
@@ -74,6 +76,7 @@ const checklistStore = createChecklistStore(db, defaultGlobalBus);
 const tagStore = createTagStore(db);
 const telemetryStore = createTelemetryStore(db);
 const voiceJobStore = createVoiceJobStore(db);
+const pushSubscriptionStore = createPushSubscriptionStore(db);
 const docsDir = runtimePaths.docsDir;
 const copilotHome = runtimePaths.copilotHome;
 const docsStore = createDocsStore(docsDir);
@@ -95,6 +98,7 @@ const defaultContext: AppContext = {
   sessionManager: null as any, // assigned below after construction
   transcriptionService: createTranscriptionService(),
   voiceJobManager: null as any, // assigned below after construction
+  pushSubscriptionStore,
   deferredPromptStore,
   deferLoopStore,
   scheduler,
@@ -119,6 +123,8 @@ defaultContext.voiceJobManager = createVoiceJobManager({
   taskStore,
   taskGroupStore,
 });
+defaultContext.pushNotificationService = createPushNotificationService({ subscriptionStore: pushSubscriptionStore });
+initPushEventNotifications(defaultContext, defaultContext.pushNotificationService);
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
 app.use("/api", (_req, res, next) => {
@@ -138,6 +144,12 @@ app.use("/staging/:prefix/api", (req, res, next) => {
   }
 });
 
+function setClientStaticHeaders(res: express.Response, filePath: string): void {
+  if (filePath.endsWith(".html") || filePath.endsWith("service-worker.js") || filePath.endsWith("manifest.json")) {
+    res.setHeader("Cache-Control", "no-store");
+  }
+}
+
 // Staging previews — dynamically serves frontend builds registered by staging_preview tool
 app.use("/staging/:prefix", (req, res, next) => {
   const prefix = req.params.prefix;
@@ -146,7 +158,7 @@ app.use("/staging/:prefix", (req, res, next) => {
   if (!distDir || !existsSync(distDir)) {
     return res.status(404).send("Staging preview not found. It may have been cleaned up or deployed.");
   }
-  express.static(distDir)(req, res, () => {
+  express.static(distDir, { setHeaders: setClientStaticHeaders })(req, res, () => {
     // SPA fallback — serve index.html for unmatched routes within this staging preview
     res.sendFile(join(distDir, "index.html"));
   });
@@ -157,12 +169,7 @@ app.use(
   express.static(distPath, {
     maxAge: "1y",
     immutable: true,
-    setHeaders: (res, filePath) => {
-      // HTML must not be cached — browser needs to check for updates
-      if (filePath.endsWith(".html")) {
-        res.setHeader("Cache-Control", "no-store");
-      }
-    },
+    setHeaders: setClientStaticHeaders,
   }),
 );
 app.get("/{*splat}", (_req, res) => {

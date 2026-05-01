@@ -1227,6 +1227,57 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
   return res.json();
 }
 
+// ── Push notification API ──────────────────────────────────────────
+
+export interface PushPublicStatus {
+  configured: boolean;
+  publicKey?: string;
+  subject?: string;
+  missingEnv: string[];
+  subscriptionCount: number;
+}
+
+export interface BrowserPushSubscription {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+}
+
+export interface PushSendSummary {
+  attempted: number;
+  sent: number;
+  failed: number;
+  pruned: number;
+}
+
+export async function fetchPushStatus(): Promise<PushPublicStatus> {
+  return apiFetch<PushPublicStatus>("/api/push/status");
+}
+
+export async function savePushSubscription(subscription: BrowserPushSubscription): Promise<void> {
+  await apiFetch<{ ok: true }>("/api/push/subscriptions", { subscription });
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/push/subscriptions`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
+export async function sendTestPushNotification(endpoint?: string): Promise<PushSendSummary> {
+  const data = await apiFetch<{ ok: true; result: PushSendSummary }>("/api/push/test", endpoint ? { endpoint } : {});
+  return data.result;
+}
+
 // ── Transcription API ───────────────────────────────────────────────
 
 export interface TranscriptionStatus {

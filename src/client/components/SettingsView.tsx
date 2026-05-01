@@ -9,6 +9,7 @@ import {
   ModelSection,
   ReasoningEffortSection,
   AppearanceSection,
+  NotificationsSection,
   ProvidersSection,
   TagsSection,
   VoiceInputSection,
@@ -287,6 +288,7 @@ export default function SettingsView() {
               <ModelSection draft={draft} setDraft={setDraft} />
               <ReasoningEffortSection draft={draft} setDraft={setDraft} />
               <AppearanceSection draft={draft} setDraft={setDraft} />
+              <NotificationsSection />
             </CategoryPanel>
 
             <CategoryPanel category="integrations" activeCategory={activeCategory}>

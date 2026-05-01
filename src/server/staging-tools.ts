@@ -416,6 +416,27 @@ function disableSchedulesInStagingDb(dbPath: string): void {
   }
 }
 
+function clearPushSubscriptionsInStagingDb(dbPath: string): void {
+  let stagingDb: DatabaseSync | null = null;
+  try {
+    stagingDb = new DatabaseSync(dbPath);
+    const table = stagingDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'push_subscriptions'").get();
+    if (table) {
+      stagingDb.exec("DELETE FROM push_subscriptions");
+    }
+  } catch (err) {
+    log(`Warning: could not clear push subscriptions in staging DB: ${err}`);
+  } finally {
+    if (stagingDb) {
+      try {
+        stagingDb.close();
+      } catch (closeErr) {
+        log(`Warning: could not close staging DB after push subscription cleanup: ${closeErr}`);
+      }
+    }
+  }
+}
+
 /** Seed a staging data directory from production data, with schedules disabled.
  *  Uses the worktree's own data/ directory (already gitignored). */
 function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): RuntimePaths {
@@ -437,6 +458,7 @@ function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {
     copySqliteSnapshot(dbSrc, join(dataDir, "bridge.db"));
   }
   disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
+  clearPushSubscriptionsInStagingDb(join(dataDir, "bridge.db"));
 
   // Copy docs directory (source of truth is filesystem, not SQLite)
   const docsSrc = join(productionDataDir, "docs");
@@ -535,6 +557,8 @@ async function createStagingContext(
     deferLoopRunnerMod,
     deferDeliveryGuardMod,
     schedulerMod,
+    pushSubscriptionStoreMod,
+    pushNotificationServiceMod,
   ] = await Promise.all([
     import(ts("global-bus.ts")),
     import(ts("event-bus.ts")),
@@ -564,6 +588,8 @@ async function createStagingContext(
     importOptionalStagingModule(ts("defer-loop-runner.ts")),
     importOptionalStagingModule(ts("defer-delivery-guard.ts")),
     importOptionalStagingModule(ts("scheduler.ts")),
+    importOptionalStagingModule(ts("push-subscription-store.ts")),
+    importOptionalStagingModule(ts("push-notification-service.ts")),
   ]);
   // Open isolated staging database
   const db = dbMod.openDatabase(runtimePaths.dataDir);
@@ -592,6 +618,7 @@ async function createStagingContext(
     const deferredPromptStore = deferredPromptStoreMod?.createDeferredPromptStore?.(db);
     const deferLoopStore = deferLoopStoreMod?.createDeferLoopStore?.(db);
     const deferDeliveryGuard = deferDeliveryGuardMod?.createDeferDeliveryGuard?.();
+    const pushSubscriptionStore = pushSubscriptionStoreMod?.createPushSubscriptionStore?.(db);
 
     // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
     const copilotHome = runtimePaths.copilotHome ?? join(runtimePaths.dataDir, ".copilot");
@@ -623,6 +650,7 @@ async function createStagingContext(
         },
       },
       voiceJobManager: null as any,
+      ...(pushSubscriptionStore && { pushSubscriptionStore }),
       copilotHome,
       apiBasePath,
       runtimePaths,
@@ -681,6 +709,13 @@ async function createStagingContext(
           resumePendingJobs: () => {},
           shutdown: async () => {},
         } as any;
+    if (pushSubscriptionStore && pushNotificationServiceMod?.createPushNotificationService) {
+      ctx.pushNotificationService = pushNotificationServiceMod.createPushNotificationService({
+        subscriptionStore: pushSubscriptionStore,
+        env: runtimePaths.env,
+      });
+      pushNotificationServiceMod.initPushEventNotifications?.(ctx, ctx.pushNotificationService);
+    }
 
     // Store the apiRouter factory for mounting
     (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;

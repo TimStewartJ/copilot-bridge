@@ -40,6 +40,7 @@ const SQLITE_STATE_TABLES = [
   "tag_mcp_servers",
   "deferred_prompts",
   "defer_loops",
+  "push_subscriptions",
 ] as const;
 type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
 
@@ -470,6 +471,19 @@ function initSchema(db: DatabaseSync): void {
       ON defer_loops(status, nextRunAt);
     CREATE INDEX IF NOT EXISTS idx_defer_loops_sessionId_status_nextRunAt
       ON defer_loops(sessionId, status, nextRunAt);
+
+    -- Browser Web Push subscriptions
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      endpoint TEXT NOT NULL UNIQUE,
+      expirationTime INTEGER,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      userAgent TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastSeenAt TEXT NOT NULL
+    );
   `);
 
   // ── Migrations ──────────────────────────────────────────────────

@@ -25,6 +25,8 @@ import type { DeferredPromptRunner } from "./deferred-prompt-runner.js";
 import type { DeferLoopStore } from "./defer-loop-store.js";
 import type { DeferLoopRunner } from "./defer-loop-runner.js";
 import type * as SchedulerModule from "./scheduler.js";
+import type { PushSubscriptionStore } from "./push-subscription-store.js";
+import type { PushNotificationService } from "./push-notification-service.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -45,6 +47,8 @@ export interface AppContext {
   sessionManager: SessionManager;
   transcriptionService: TranscriptionService;
   voiceJobManager: VoiceJobManager;
+  pushSubscriptionStore?: PushSubscriptionStore;
+  pushNotificationService?: PushNotificationService;
   /** Deferred prompt persistence */
   deferredPromptStore?: DeferredPromptStore;
   /** Recurring defer loop persistence */
