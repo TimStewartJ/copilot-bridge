@@ -230,6 +230,40 @@ function normalizeWorkspacePath(cwd?: string | null): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function getFsErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function getWorkspaceAvailability(cwd?: string | null): {
+  cwd: string;
+  available: boolean;
+  clearStalePin: boolean;
+} | undefined {
+  const normalized = normalizeWorkspacePath(cwd);
+  if (!normalized) return undefined;
+  try {
+    return {
+      cwd: normalized,
+      available: statSync(normalized).isDirectory(),
+      clearStalePin: true,
+    };
+  } catch (error) {
+    const code = getFsErrorCode(error);
+    return {
+      cwd: normalized,
+      available: false,
+      clearStalePin: code === "ENOENT" || code === "ENOTDIR",
+    };
+  }
+}
+
+function resolveAvailableWorkspaceCwd(cwd?: string | null): string | undefined {
+  const availability = getWorkspaceAvailability(cwd);
+  return availability?.available ? availability.cwd : undefined;
+}
+
 function normalizeWorkspacePathForComparison(cwd: string): string {
   const normalized = cwd.trim().replace(/\\/g, "/");
   if (normalized === "/" || /^[A-Za-z]:\/$/.test(normalized)) return normalized.toLowerCase();
@@ -267,9 +301,13 @@ function buildSessionWorkspaceSummary(
   source: SessionWorkspaceSource;
 } {
   const sessionOverride = ctx.sessionWorkspaceStore?.getWorkspace(sessionId);
-  const overrideCwd = normalizeWorkspacePath(sessionOverride?.cwd);
-  const legacyCwd = getLegacySessionWorkspaceCwd(ctx, sessionId);
-  const taskCwd = normalizeWorkspacePath(task?.cwd);
+  const overrideAvailability = getWorkspaceAvailability(sessionOverride?.cwd);
+  if (sessionOverride && overrideAvailability && !overrideAvailability.available && overrideAvailability.clearStalePin) {
+    ctx.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+  }
+  const overrideCwd = overrideAvailability?.available ? overrideAvailability.cwd : undefined;
+  const legacyCwd = resolveAvailableWorkspaceCwd(getLegacySessionWorkspaceCwd(ctx, sessionId));
+  const taskCwd = resolveAvailableWorkspaceCwd(task?.cwd);
   const defaultCwd = getDefaultSessionCwd(ctx);
   const effectiveCwd = overrideCwd ?? legacyCwd ?? taskCwd ?? defaultCwd;
   const source: SessionWorkspaceSource = overrideCwd

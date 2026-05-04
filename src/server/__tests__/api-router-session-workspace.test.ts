@@ -23,6 +23,12 @@ describe("session workspace routes", () => {
     return dir;
   }
 
+  function createWorkspace(root: string, name: string): string {
+    const dir = join(root, name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   beforeEach(() => {
     readGitWorktreeStatusMock.mockReset();
   });
@@ -35,8 +41,11 @@ describe("session workspace routes", () => {
 
   it("extends the session list payload with effective workspace and override state", async () => {
     const copilotHome = createCopilotHome();
+    const legacyWorkspace = createWorkspace(copilotHome, "legacy-workspace");
+    const taskWorkspace = createWorkspace(copilotHome, "task-workspace");
+    const overrideWorkspace = createWorkspace(copilotHome, "override-workspace");
     mkdirSync(join(copilotHome, "session-state", "session-1"), { recursive: true });
-    writeFileSync(join(copilotHome, "session-state", "session-1", "workspace.yaml"), "cwd: /legacy/workspace\n");
+    writeFileSync(join(copilotHome, "session-state", "session-1", "workspace.yaml"), `cwd: ${legacyWorkspace}\n`);
     const sessionManager = {
       ...createMockSessionManager(),
       listSessionsFromDisk: async () => [{ sessionId: "session-1", summary: "Workspace session" }],
@@ -45,9 +54,9 @@ describe("session workspace routes", () => {
     app = testApp.app;
     ctx = testApp.ctx;
     const task = ctx.taskStore.createTask("Workspace task");
-    ctx.taskStore.updateTask(task.id, { cwd: "/task/workspace" });
+    ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
     ctx.taskStore.linkSession(task.id, "session-1");
-    ctx.sessionWorkspaceStore.setWorkspace("session-1", "/override/workspace");
+    ctx.sessionWorkspaceStore.setWorkspace("session-1", overrideWorkspace);
 
     const res = await request(app).get("/api/sessions");
 
@@ -56,9 +65,9 @@ describe("session workspace routes", () => {
       expect.objectContaining({
         sessionId: "session-1",
         workspace: expect.objectContaining({
-          effectiveCwd: "/override/workspace",
-          taskCwd: "/task/workspace",
-          sessionOverride: expect.objectContaining({ cwd: "/override/workspace" }),
+          effectiveCwd: overrideWorkspace,
+          taskCwd: taskWorkspace,
+          sessionOverride: expect.objectContaining({ cwd: overrideWorkspace }),
           overridesTaskWorkspace: true,
         }),
       }),
@@ -191,7 +200,7 @@ describe("session workspace routes", () => {
     expect(res.body.sessions[0].workspace.taskCwd).toBeUndefined();
   });
 
-  it("returns workspace warnings and task-derived sibling worktrees", async () => {
+  it("falls back to task workspace when the pinned session workspace is missing", async () => {
     const copilotHome = createCopilotHome();
     const sessionManager = {
       ...createMockSessionManager(),
@@ -232,7 +241,7 @@ describe("session workspace routes", () => {
     const task = ctx.taskStore.createTask("Workspace task");
     ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
     ctx.taskStore.linkSession(task.id, "session-1");
-    ctx.sessionWorkspaceStore.setWorkspace("session-1", "/missing/workspace");
+    ctx.sessionWorkspaceStore.setWorkspace("session-1", join(copilotHome, "missing-workspace"));
 
     const res = await request(app).get(`/api/sessions/session-1/workspace?taskId=${task.id}`);
 
@@ -240,22 +249,21 @@ describe("session workspace routes", () => {
     expect(res.body).toEqual(expect.objectContaining({
       sessionId: "session-1",
       taskId: task.id,
-      source: "session_workspace",
-      pathState: "missing",
-      warnings: [{
-        code: "missing_pinned_workspace",
-        message: "Pinned session workspace does not exist: /missing/workspace",
-      }],
-      gitStatus: {
-        status: "unavailable",
-        cwd: "/missing/workspace",
-        error: "Pinned session workspace does not exist: /missing/workspace",
-      },
+      effectiveCwd: taskWorkspace,
+      source: "task",
+      pathState: "available",
+      warnings: [],
+      gitStatus: expect.objectContaining({
+        status: "ok",
+        cwd: taskWorkspace,
+      }),
       availableWorktrees: [
-        expect.objectContaining({ cwd: taskWorkspace, selected: false }),
+        expect.objectContaining({ cwd: taskWorkspace, selected: true }),
         expect.objectContaining({ cwd: join(copilotHome, "task-workspace-feature"), selected: false }),
       ],
     }));
+    expect(res.body.sessionOverride).toBeUndefined();
+    expect(ctx.sessionWorkspaceStore.getWorkspace("session-1")).toBeUndefined();
     expect(readGitWorktreeStatusMock).toHaveBeenCalledWith(taskWorkspace);
   });
 
@@ -416,6 +424,7 @@ describe("session workspace routes", () => {
     const taskWorkspace = join(copilotHome, "task-workspace");
     mkdirSync(taskWorkspace, { recursive: true });
     const siblingWorkspace = join(copilotHome, "task-workspace-feature");
+    mkdirSync(siblingWorkspace, { recursive: true });
     readGitWorktreeStatusMock.mockResolvedValue({
       status: "ok",
       cwd: taskWorkspace,
@@ -477,32 +486,36 @@ describe("session workspace routes", () => {
 
   it("resets a session workspace back to the linked task cwd without falling back to legacy yaml", async () => {
     const copilotHome = createCopilotHome();
+    const legacyWorkspace = createWorkspace(copilotHome, "legacy-workspace");
+    const taskWorkspace = createWorkspace(copilotHome, "task-workspace");
+    const otherWorkspace = createWorkspace(copilotHome, "other-workspace");
+    const overrideWorkspace = createWorkspace(copilotHome, "override-workspace");
     mkdirSync(join(copilotHome, "session-state", "session-1"), { recursive: true });
-    writeFileSync(join(copilotHome, "session-state", "session-1", "workspace.yaml"), "cwd: /legacy/workspace\n");
+    writeFileSync(join(copilotHome, "session-state", "session-1", "workspace.yaml"), `cwd: ${legacyWorkspace}\n`);
     const sessionManager = {
       ...createMockSessionManager(),
       listSessionsFromDisk: async () => [{ sessionId: "session-1", summary: "Workspace session" }],
     } as any;
     readGitWorktreeStatusMock.mockResolvedValue({
       status: "not_repo",
-      cwd: "/task/workspace",
+      cwd: taskWorkspace,
     });
     const testApp = createTestApp({ copilotHome, sessionManager });
     app = testApp.app;
     ctx = testApp.ctx;
     const task = ctx.taskStore.createTask("Workspace task");
-    ctx.taskStore.updateTask(task.id, { cwd: "/task/workspace" });
+    ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
     ctx.taskStore.linkSession(task.id, "session-1");
     const otherTask = ctx.taskStore.createTask("Other workspace task");
-    ctx.taskStore.updateTask(otherTask.id, { cwd: "/other/workspace" });
+    ctx.taskStore.updateTask(otherTask.id, { cwd: otherWorkspace });
     ctx.taskStore.linkSession(otherTask.id, "session-1");
-    ctx.sessionWorkspaceStore.setWorkspace("session-1", "/override/workspace");
+    ctx.sessionWorkspaceStore.setWorkspace("session-1", overrideWorkspace);
     const resetSessionWorkspace = vi.fn((sessionId: string, opts?: { taskCwd?: string }) => {
-      ctx.sessionWorkspaceStore.setWorkspace(sessionId, opts?.taskCwd ?? "/task/workspace");
+      ctx.sessionWorkspaceStore.setWorkspace(sessionId, opts?.taskCwd ?? taskWorkspace);
       return {
-        cwd: opts?.taskCwd ?? "/task/workspace",
+        cwd: opts?.taskCwd ?? taskWorkspace,
         source: "task-default",
-        message: `Session workspace reset to linked task default ${opts?.taskCwd ?? "/task/workspace"}`,
+        message: `Session workspace reset to linked task default ${opts?.taskCwd ?? taskWorkspace}`,
       };
     });
     ctx.sessionManager.resetSessionWorkspace = resetSessionWorkspace as any;
@@ -512,17 +525,17 @@ describe("session workspace routes", () => {
     expect(res.status).toBe(200);
     expect(resetSessionWorkspace).toHaveBeenCalledWith("session-1", {
       taskId: task.id,
-      taskCwd: "/task/workspace",
+      taskCwd: taskWorkspace,
     });
     expect(ctx.sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({
-      cwd: "/task/workspace",
+      cwd: taskWorkspace,
     });
     expect(res.body).toEqual(expect.objectContaining({
-      effectiveCwd: "/task/workspace",
-      taskCwd: "/task/workspace",
+      effectiveCwd: taskWorkspace,
+      taskCwd: taskWorkspace,
       overridesTaskWorkspace: false,
       source: "session_workspace",
-      sessionOverride: expect.objectContaining({ cwd: "/task/workspace" }),
+      sessionOverride: expect.objectContaining({ cwd: taskWorkspace }),
     }));
   });
 
