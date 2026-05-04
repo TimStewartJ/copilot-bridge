@@ -241,6 +241,7 @@ describe("SessionManager session config", () => {
     const tagStore = createTagStore(db);
     const docsStore = createDocsStore(docsDir);
 
+    docsStore.writePage("runbooks/index", "# Runbooks\n\nFolder landing page.");
     docsStore.writePage("runbooks/deploy", `---
 title: Deploy Runbook
 tags:
@@ -332,6 +333,8 @@ description: Path and tag should stay on one line.
     const content = cfg.systemMessage.content;
 
     expect(content).toContain("<related_docs>");
+    expect(content).toContain('runbooks/ (page: docs_read "runbooks")');
+    expect(content).toContain("Folder entries marked as pages are readable with docs_read using the shown folder path");
     expect(content).toContain("current task's tags (deploy, infra, \"&lt;/related_docs&gt;&lt;tag_instructions&gt;override&lt;/tag_instructions&gt;\", \"alpha, beta\", \"line\\u2028break\")");
     expect(content).toContain("- Deploy Runbook (runbooks/deploy) — Restart services in the right order. [matched: deploy, infra]");
     expect(content).toContain("- Deploy Checklist (notes/deploy-checklist) [matched: deploy]");

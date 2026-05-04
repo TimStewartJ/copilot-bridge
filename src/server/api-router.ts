@@ -3009,9 +3009,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
       try {
         const raw = (req.params as any).path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
-        docsIdx.removePage(pagePath);
+        const page = docs.readPage(pagePath);
+        const canonicalPath = page?.path ?? pagePath;
         const deleted = docs.deletePage(pagePath);
-        res.json({ deleted });
+        if (deleted) docsIdx.removePage(canonicalPath);
+        res.json({ path: canonicalPath, deleted });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

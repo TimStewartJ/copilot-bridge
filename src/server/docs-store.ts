@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import matter from "gray-matter";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -54,6 +54,26 @@ const DB_INPUT_RESERVED_KEYS = new Set(["folder", "slug", "body", "fields"]);
 const DANGEROUS_DB_FIELD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SYSTEM_DB_FIELD_KEYS = new Set(["created", "modified"]);
 
+export function normalizeDocsPublicPath(input: string): string {
+  const normalized = input.replace(/\\/g, "/").replace(/\.md$/, "");
+  if (!normalized || normalized.startsWith("/")) {
+    throw new Error("Invalid page path: must be a non-empty relative path");
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    throw new Error("Invalid page path: path is empty");
+  }
+  for (const seg of segments) {
+    if (seg === "." || seg === "..") {
+      throw new Error(`Invalid page path: directory traversal ("${seg}") is not allowed`);
+    }
+  }
+  if (segments.length > 1 && segments[segments.length - 1] === "index") {
+    return segments.slice(0, -1).join("/");
+  }
+  return segments.join("/");
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createDocsStore(docsDir: string) {
@@ -79,10 +99,36 @@ export function createDocsStore(docsDir: string) {
     return segments;
   }
 
+  interface ParsedPagePath {
+    originalSegments: string[];
+    canonicalPath: string;
+    canonicalSegments: string[];
+    isFolderIndexAlias: boolean;
+  }
+
+  function publicPathFromSegments(segments: string[]): string {
+    return segments.join("/");
+  }
+
+  function parsePagePath(pagePath: string): ParsedPagePath {
+    const segments = validatePathSegments(pagePath, "page path");
+    const isFolderIndexAlias = segments.length > 1 && segments[segments.length - 1] === "index";
+    const canonicalSegments = isFolderIndexAlias ? segments.slice(0, -1) : segments;
+    return {
+      originalSegments: segments,
+      canonicalPath: publicPathFromSegments(canonicalSegments),
+      canonicalSegments,
+      isFolderIndexAlias,
+    };
+  }
+
+  function filePathForSegments(segments: string[]): string {
+    return join(docsDir, ...segments) + ".md";
+  }
+
   /** Convert page path (e.g. "incidents/march-outage") to absolute file path */
   function toFilePath(pagePath: string): string {
-    const segments = validatePathSegments(pagePath, "page path");
-    return join(docsDir, ...segments) + ".md";
+    return filePathForSegments(validatePathSegments(pagePath, "page path"));
   }
 
   /** Extract parent folder from a page path ("incidents/march-outage" → "incidents") */
@@ -254,14 +300,42 @@ export function createDocsStore(docsDir: string) {
   // ── Page CRUD ─────────────────────────────────────────────────
 
   /** Resolve a page path, falling back to folder/index.md if path.md doesn't exist */
-  function resolveFilePath(pagePath: string): { filePath: string; canonicalPath: string; usedFolderIndexFallback: boolean } | null {
-    const filePath = toFilePath(pagePath);
-    if (existsSync(filePath)) return { filePath, canonicalPath: pagePath, usedFolderIndexFallback: false };
+  function resolveFilePath(pagePath: string): { filePath: string; canonicalPath: string; usedFolderIndexFallback: boolean; usedExplicitIndexAlias: boolean } | null {
+    const parsed = parsePagePath(pagePath);
+
+    if (parsed.isFolderIndexAlias) {
+      const indexAliasPath = filePathForSegments(parsed.originalSegments);
+      if (existsSync(indexAliasPath)) {
+        return {
+          filePath: indexAliasPath,
+          canonicalPath: parsed.canonicalPath,
+          usedFolderIndexFallback: false,
+          usedExplicitIndexAlias: true,
+        };
+      }
+      return null;
+    }
+
+    const filePath = filePathForSegments(parsed.canonicalSegments);
+    if (existsSync(filePath)) {
+      return {
+        filePath,
+        canonicalPath: parsed.canonicalPath,
+        usedFolderIndexFallback: false,
+        usedExplicitIndexAlias: false,
+      };
+    }
 
     // Fall back: if pagePath is a folder with an index.md, use that
-    const segments = validatePathSegments(pagePath, "page path");
-    const indexPath = join(docsDir, ...segments, "index.md");
-    if (existsSync(indexPath)) return { filePath: indexPath, canonicalPath: pagePath, usedFolderIndexFallback: true };
+    const indexPath = join(docsDir, ...parsed.canonicalSegments, "index.md");
+    if (existsSync(indexPath)) {
+      return {
+        filePath: indexPath,
+        canonicalPath: parsed.canonicalPath,
+        usedFolderIndexFallback: true,
+        usedExplicitIndexAlias: false,
+      };
+    }
 
     return null;
   }
@@ -274,41 +348,62 @@ export function createDocsStore(docsDir: string) {
     const isIndexPage = basename(resolved.filePath) === "index.md";
     const parentFolder = folderOf(resolved.canonicalPath);
     const isDbCollectionIndex = isIndexPage && (isDbFolder(resolved.canonicalPath) || isDbFolder(parentFolder));
-    const isExplicitIndexAlias = resolved.canonicalPath === "index" || resolved.canonicalPath.endsWith("/index");
-    const isCanonicalFolderIndex = resolved.usedFolderIndexFallback
+    const isRootIndex = isIndexPage && resolved.canonicalPath === "index";
+    const isCanonicalFolderIndex = isIndexPage
+      && !isRootIndex
       && !isDbCollectionIndex;
     const pageFolder = isCanonicalFolderIndex ? resolved.canonicalPath : parentFolder;
     return {
       path: resolved.canonicalPath,
-      title: data.title || basename(resolved.canonicalPath),
+      title: data.title || (resolved.canonicalPath.split("/").pop() || resolved.canonicalPath),
       tags: Array.isArray(data.tags) ? data.tags : data.tags ? [data.tags] : [],
       frontmatter: data,
       body: content.trim(),
       folder: pageFolder,
       isDbItem: !isDbCollectionIndex && isDbFolder(pageFolder),
-      isFolderIndex: resolved.usedFolderIndexFallback || isExplicitIndexAlias,
+      isFolderIndex: isIndexPage,
       created: String(data.created || ""),
       modified: String(data.modified || ""),
     };
   }
 
   function writePage(pagePath: string, rawContent: string): DocPage {
+    const parsed = parsePagePath(pagePath);
+
     // Validate path
-    for (const part of pagePath.split("/")) {
+    for (const part of parsed.originalSegments) {
       if (isReservedName(part)) throw new Error(`Reserved name: "${part}" — names starting with _ are reserved`);
     }
 
     // Write guard: reject writes to DB folders
-    const folder = folderOf(pagePath);
-    if (folder && isDbFolder(folder)) {
+    const folder = folderOf(parsed.canonicalPath);
+    const dbFolder = isDbFolder(parsed.canonicalPath) ? parsed.canonicalPath : folder && isDbFolder(folder) ? folder : "";
+    if (dbFolder) {
       throw new Error(
-        `Cannot write raw content to DB folder "${folder}" — use docs_db_add with { folder: "${folder}", fields: { title: "Entry title", ... }, body: "# Markdown body" } instead.`,
+        `Cannot write raw content to DB folder "${dbFolder}" — use docs_db_add with { folder: "${dbFolder}", fields: { title: "Entry title", ... }, body: "# Markdown body" } instead.`,
       );
     }
 
-    // Resolve: prefer existing file, fall back to folder/index.md
-    const resolved = resolveFilePath(pagePath);
-    const filePath = resolved ? resolved.filePath : toFilePath(pagePath);
+    let filePath: string;
+    if (parsed.isFolderIndexAlias) {
+      const leafFilePath = filePathForSegments(parsed.canonicalSegments);
+      if (existsSync(leafFilePath)) {
+        throw new Error(`Cannot write folder index "${pagePath}" because page "${parsed.canonicalPath}" already exists`);
+      }
+      filePath = filePathForSegments(parsed.originalSegments);
+    } else {
+      // Resolve: prefer existing file, fall back to folder/index.md.
+      const resolved = resolveFilePath(pagePath);
+      if (resolved) {
+        filePath = resolved.filePath;
+      } else {
+        const folderPath = join(docsDir, ...parsed.canonicalSegments);
+        const createFolderIndex = parsed.canonicalPath !== "index"
+          && existsSync(folderPath)
+          && statSync(folderPath).isDirectory();
+        filePath = createFolderIndex ? join(folderPath, "index.md") : filePathForSegments(parsed.canonicalSegments);
+      }
+    }
     const dir = dirname(filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
@@ -326,7 +421,7 @@ export function createDocsStore(docsDir: string) {
     data.modified = now;
 
     writeFileSync(filePath, matter.stringify(content, data), "utf-8");
-    return readPage(pagePath)!;
+    return readPage(parsed.isFolderIndexAlias ? parsed.canonicalPath + "/index" : parsed.canonicalPath)!;
   }
 
   function previewEditPageContent(pagePath: string, oldStr: string, newStr: string): string {
@@ -527,6 +622,7 @@ export function createDocsStore(docsDir: string) {
 
   function scanAllPages(): DocPage[] {
     const pages: DocPage[] = [];
+    const seen = new Set<string>();
     function walk(dir: string, prefix: string) {
       if (!existsSync(dir)) return;
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -537,13 +633,17 @@ export function createDocsStore(docsDir: string) {
           let pagePath: string;
           if (entry.name === "index.md") {
             // Canonicalize: folder/index → folder path, root index → "index"
+            if (prefix && existsSync(toFilePath(prefix))) continue;
             pagePath = prefix || "index";
           } else {
             pagePath = prefix ? `${prefix}/${entry.name.replace(/\.md$/, "")}` : entry.name.replace(/\.md$/, "");
           }
           if (pagePath) {
             const page = readPage(pagePath);
-            if (page) pages.push(page);
+            if (page && !seen.has(page.path)) {
+              pages.push(page);
+              seen.add(page.path);
+            }
           }
         }
       }

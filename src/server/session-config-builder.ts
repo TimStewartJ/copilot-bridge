@@ -87,7 +87,9 @@ function renderDocsTree(nodes: DocTreeNode[], depth = 0): string {
   return nodes.map((n) => {
     const indent = "  ".repeat(depth);
     if (n.type === "folder") {
-      const label = n.isDb ? `${n.name}/ (collection)` : `${n.name}/`;
+      const label = n.isDb
+        ? `${n.name}/ (collection)`
+        : n.hasIndex ? `${n.name}/ (page: docs_read "${n.path}")` : `${n.name}/`;
       const children = depth < 1 && n.children?.length
         ? "\n" + renderDocsTree(n.children, depth + 1)
         : n.children?.length ? ` (${n.children.length} items)` : "";
@@ -271,7 +273,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   if (deps.docsStore) {
     const tree = deps.docsStore.listTree();
     if (tree.length > 0) {
-      contextParts.push(`\n<docs_tree>\nKnowledge base structure (use docs_read/docs_search to access):\n${renderDocsTree(tree)}\n</docs_tree>`);
+      contextParts.push(`\n<docs_tree>\nKnowledge base structure (use docs_read/docs_search to access). Folder entries marked as pages are readable with docs_read using the shown folder path; index.md is hidden because it is represented by the folder path.\n${renderDocsTree(tree)}\n</docs_tree>`);
 
       // Collect all DB collections from the full tree and inject schema summaries
       const dbSummaries = collectDocsDatabaseSummaries(deps.docsStore, tree);
