@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "./db.js";
-import type { DocsStore, DocPage } from "./docs-store.js";
+import { normalizeDocsPublicPath, type DocsStore, type DocPage } from "./docs-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -289,13 +289,26 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
   // ── Wikilink resolution ────────────────────────────────────────
 
   function resolveWikilink(target: string): ResolvedLink | null {
+    const candidates = [target];
+    let normalizedTarget: string | null = null;
+    try {
+      normalizedTarget = normalizeDocsPublicPath(target);
+    } catch {
+      // Invalid path-like targets may still match page titles below.
+    }
+    if (normalizedTarget && normalizedTarget !== target) candidates.push(normalizedTarget);
+
     // 1. Exact path match
-    const exact = db.prepare("SELECT path, title FROM docs_pages WHERE path = ?").get(target) as any;
-    if (exact) return { path: exact.path, title: exact.title || exact.path };
+    for (const candidate of candidates) {
+      const exact = db.prepare("SELECT path, title FROM docs_pages WHERE path = ?").get(candidate) as any;
+      if (exact) return { path: exact.path, title: exact.title || exact.path };
+    }
 
     // 2. Case-insensitive path match
-    const ciPath = db.prepare("SELECT path, title FROM docs_pages WHERE path = ? COLLATE NOCASE").get(target) as any;
-    if (ciPath) return { path: ciPath.path, title: ciPath.title || ciPath.path };
+    for (const candidate of candidates) {
+      const ciPath = db.prepare("SELECT path, title FROM docs_pages WHERE path = ? COLLATE NOCASE").get(candidate) as any;
+      if (ciPath) return { path: ciPath.path, title: ciPath.title || ciPath.path };
+    }
 
     // 3. Title match (exact then case-insensitive)
     const byTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ?").get(target) as any;

@@ -724,6 +724,11 @@ function TreeNode({
               <Folder size={15} className="shrink-0 text-text-secondary" />
             )}
             <span className="truncate">{node.name}</span>
+            {node.hasIndex && !node.isDb && (
+              <span className="shrink-0 rounded-full border border-border bg-bg-primary px-1.5 py-0.5 text-[10px] font-medium text-text-faint">
+                page
+              </span>
+            )}
           </button>
         </div>
         {expanded && node.children && (

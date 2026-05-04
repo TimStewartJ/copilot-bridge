@@ -198,6 +198,42 @@ tags:
     expect(tree.length).toBeGreaterThan(0);
   });
 
+  it("treats folder index pages as folder paths in page routes and tree output", async () => {
+    const write = await request(app)
+      .put("/api/docs/pages/guides/index")
+      .send({ content: "# Guide Home\n\nFolder landing page." });
+    expect(write.status).toBe(200);
+    expect(write.body.path).toBe("guides");
+
+    const readByFolder = await request(app).get("/api/docs/pages/guides");
+    expect(readByFolder.status).toBe(200);
+    expect(readByFolder.body.path).toBe("guides");
+    expect(readByFolder.body.isFolderIndex).toBe(true);
+    expect(readByFolder.body.body).toContain("Folder landing page.");
+
+    const readByAlias = await request(app).get("/api/docs/pages/guides/index");
+    expect(readByAlias.status).toBe(200);
+    expect(readByAlias.body.path).toBe("guides");
+
+    const treeRes = await request(app).get("/api/docs/tree");
+    const guides = treeRes.body.tree.find((node: any) => node.path === "guides");
+    expect(guides).toMatchObject({ type: "folder", hasIndex: true });
+    expect(guides.children?.some((node: any) => node.path === "guides/index")).toBe(false);
+  });
+
+  it("DELETE /api/docs/pages removes folder index aliases using canonical paths", async () => {
+    await request(app)
+      .put("/api/docs/pages/guides/index")
+      .send({ content: "# Guide Home" });
+
+    const res = await request(app).delete("/api/docs/pages/guides/index");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ path: "guides", deleted: true });
+
+    const get = await request(app).get("/api/docs/pages/guides");
+    expect(get.status).toBe(404);
+  });
+
   it("GET /api/docs/search finds indexed pages", async () => {
     await request(app)
       .put("/api/docs/pages/searchable")
@@ -409,5 +445,15 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain(`Cannot write raw content to DB folder "${folder}"`);
     expect(res.body.error).toContain("docs_db_add");
     expect(res.body.error).toContain(`folder: "${folder}"`);
+  });
+
+  it("PUT /api/docs/pages rejects DB collection folder index writes", async () => {
+    const res = await request(app)
+      .put(`/api/docs/pages/${folder}/index`)
+      .send({ content: "# Raw collection index" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`Cannot write raw content to DB folder "${folder}"`);
+    expect(res.body.error).toContain("docs_db_add");
   });
 });

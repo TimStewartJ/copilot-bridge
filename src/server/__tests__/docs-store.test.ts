@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDocsStore } from "../docs-store.js";
@@ -16,6 +16,68 @@ afterEach(() => {
   while (tempDirs.length) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });
   }
+});
+
+describe("docs store folder index pages", () => {
+  it("reads explicit folder index aliases with the folder path as canonical", () => {
+    const store = makeStore();
+
+    const written = store.writePage("guides/index", "# Guide Home\n\nFolder landing page.");
+    const viaFolder = store.readPage("guides");
+    const viaAlias = store.readPage("guides/index");
+
+    expect(written.path).toBe("guides");
+    expect(viaFolder?.path).toBe("guides");
+    expect(viaAlias?.path).toBe("guides");
+    expect(viaFolder?.folder).toBe("guides");
+    expect(viaFolder?.isFolderIndex).toBe(true);
+    expect(viaAlias?.body).toContain("Folder landing page.");
+  });
+
+  it("creates a folder index when writing a folder path that already exists", () => {
+    const store = makeStore();
+
+    store.writePage("guides/intro", "# Intro");
+    const written = store.writePage("guides", "# Guide Home");
+    const tree = store.listTree();
+    const guides = tree.find((node) => node.path === "guides");
+
+    expect(written.path).toBe("guides");
+    expect(written.isFolderIndex).toBe(true);
+    expect(guides).toMatchObject({ type: "folder", path: "guides", hasIndex: true });
+    expect(guides?.children?.some((node) => node.path === "guides/index")).toBe(false);
+  });
+
+  it("keeps leaf pages authoritative when a leaf and folder index collide", () => {
+    const store = makeStore();
+
+    store.writePage("guides", "# Leaf Guide");
+    mkdirSync(join(store.docsDir, "guides"), { recursive: true });
+    writeFileSync(join(store.docsDir, "guides", "index.md"), "# Folder Guide", "utf-8");
+
+    expect(store.readPage("guides")?.body).toBe("# Leaf Guide");
+    expect(store.readPage("guides/index")?.body).toBe("# Folder Guide");
+    expect(store.scanAllPages().filter((page) => page.path === "guides")).toHaveLength(1);
+    expect(() => store.writePage("guides/index", "# New Folder Guide")).toThrow(
+      'Cannot write folder index "guides/index" because page "guides" already exists',
+    );
+  });
+
+  it("rejects raw writes to database collection folder indexes", () => {
+    const store = makeStore();
+
+    store.writeSchema("incidents", {
+      name: "Incidents",
+      fields: [{ name: "severity", type: "select", options: ["sev1"] }],
+    });
+
+    expect(() => store.writePage("incidents", "# Incident Index")).toThrow(
+      'Cannot write raw content to DB folder "incidents"',
+    );
+    expect(() => store.writePage("incidents/index", "# Incident Index")).toThrow(
+      'Cannot write raw content to DB folder "incidents"',
+    );
+  });
 });
 
 describe("docs store DB input normalization", () => {
