@@ -547,6 +547,7 @@ async function createStagingContext(
     sessionTitlesMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
     docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
+    mcpServerStoreMod,
     telemetryStoreMod,
     transcriptionServiceMod,
     voiceJobStoreMod,
@@ -578,6 +579,7 @@ async function createStagingContext(
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
     importOptionalStagingModule(ts("tag-store.ts")),
+    importOptionalStagingModule(ts("mcp-server-store.ts")),
     importOptionalStagingModule(ts("telemetry-store.ts")),
     importOptionalStagingModule(ts("transcription-service.ts")),
     importOptionalStagingModule(ts("voice-job-store.ts")),
@@ -610,6 +612,7 @@ async function createStagingContext(
       ?? createNoopChecklistStore();
     const todoStore = todoStoreMod?.createTodoStore?.(db, globalBus);
     const tagStore = tagStoreMod?.createTagStore(db);
+    const mcpServerStore = mcpServerStoreMod?.createMcpServerStore(db);
     const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
     const transcriptionService = transcriptionServiceMod?.createTranscriptionService();
     const docsStore = docsStoreMod?.createDocsStore(runtimePaths.docsDir);
@@ -631,6 +634,7 @@ async function createStagingContext(
       ...(docsStore && { docsStore }),
       ...(docsIndex && { docsIndex }),
       ...(tagStore && { tagStore }),
+      ...(mcpServerStore && { mcpServerStore }),
       ...(telemetryStore && { telemetryStore }),
       ...(deferredPromptStore && { deferredPromptStore }),
       ...(deferLoopStore && { deferLoopStore }),
@@ -666,7 +670,7 @@ async function createStagingContext(
     // automatically without updating this file (see createSessionManager in session-manager.ts)
     const sm = sessionManagerMod.createSessionManager(ctx, {
       tools: stagingTools,
-      config: { sessionMcpServers: settingsStore.getMcpServers(), model: "claude-haiku-4.5" },
+      config: { get sessionMcpServers() { return settingsStore.getMcpServers(); }, model: "claude-haiku-4.5" },
       clientEnv: runtimePaths.env,
       copilotHome,
       runtimePaths,

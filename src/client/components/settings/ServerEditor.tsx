@@ -52,10 +52,12 @@ export function ServerEditor({
       : "",
   );
 
+  const normalizedName = name.trim();
+  const existingNameSet = new Set(existingNames.map((existingName) => existingName.toLocaleLowerCase()));
   const nameError =
-    name.trim() === ""
+    normalizedName === ""
       ? "Name is required"
-      : existingNames.includes(name.trim())
+      : existingNameSet.has(normalizedName.toLocaleLowerCase())
         ? "Name already exists"
         : null;
 

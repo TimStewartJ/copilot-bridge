@@ -13,6 +13,7 @@ import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { TagStore } from "./tag-store.js";
+import type { McpServerStore } from "./mcp-server-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
@@ -41,6 +42,7 @@ export interface AppContext {
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
   tagStore?: TagStore;
+  mcpServerStore?: McpServerStore;
   telemetryStore?: TelemetryStore;
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;

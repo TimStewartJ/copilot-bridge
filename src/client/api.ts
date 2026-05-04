@@ -1,4 +1,5 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
@@ -6,7 +7,7 @@ import type {
   UserInputAnswerEndpointPayload as UserInputAnswerEndpointPayloadType,
   UserInputRequestId as UserInputRequestIdType,
 } from "../server/user-input-types.js";
-export type { McpServerConfig } from "../mcp-config";
+export type { McpServerConfig };
 export type {
   NativeUserInputRequest,
   NativeUserInputResponse,
@@ -289,9 +290,28 @@ export interface Tag {
 }
 
 export interface TagMcpServer {
+  id: string;
+  serverId: string;
   serverName: string;
   config: McpServerConfig;
 }
+
+export interface McpServer {
+  id: string;
+  name: string;
+  config: McpServerConfig;
+  enabledByDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateMcpServerInput {
+  name: string;
+  config: McpServerConfig;
+  enabledByDefault?: boolean;
+}
+
+export type UpdateMcpServerInput = Partial<Pick<McpServer, "name" | "config" | "enabledByDefault">>;
 
 // ── Checklist item types ──────────────────────────────────────────
 
@@ -813,6 +833,40 @@ export async function reorderTaskGroups(groupIds: string[]): Promise<TaskGroup[]
   return data.groups;
 }
 
+// ── MCP Server Registry API ───────────────────────────────────────
+
+export async function fetchMcpServers(): Promise<McpServer[]> {
+  const data = await apiFetch<{ servers: McpServer[] }>("/api/mcp-servers");
+  return data.servers;
+}
+
+export async function createMcpServer(input: CreateMcpServerInput): Promise<McpServer> {
+  const data = await apiFetch<{ server: McpServer }>("/api/mcp-servers", input);
+  return data.server;
+}
+
+export async function updateMcpServer(id: string, updates: UpdateMcpServerInput): Promise<McpServer> {
+  const res = await fetch(`${API_BASE}/api/mcp-servers/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.server;
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/mcp-servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
 // ── Tag API ───────────────────────────────────────────────────────
 
 export async function fetchTags(): Promise<Tag[]> {
@@ -891,6 +945,36 @@ export async function setTagMcpServer(tagId: string, serverName: string, config:
   }
 }
 
+export async function setTagMcpServers(tagId: string, serverIds: string[]): Promise<TagMcpServer[]> {
+  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp-servers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.servers;
+}
+
+export async function setTagMcpServerRefs(tagId: string, serverIds: string[]): Promise<TagMcpServer[]> {
+  return setTagMcpServers(tagId, serverIds);
+}
+
+export async function addTagMcpServerRef(tagId: string, serverId: string): Promise<TagMcpServer> {
+  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp-refs/${encodeURIComponent(serverId)}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.server;
+}
+
 export async function reorderTags(tagIds: string[]): Promise<Tag[]> {
   const res = await fetch(`${API_BASE}/api/tags/reorder`, {
     method: "PUT",
@@ -907,6 +991,16 @@ export async function reorderTags(tagIds: string[]): Promise<Tag[]> {
 
 export async function removeTagMcpServer(tagId: string, serverName: string): Promise<void> {
   await fetch(`${API_BASE}/api/tags/${tagId}/mcp/${encodeURIComponent(serverName)}`, { method: "DELETE" });
+}
+
+export async function removeTagMcpServerRef(tagId: string, serverId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/tags/${tagId}/mcp-refs/${encodeURIComponent(serverId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
 }
 
 export interface RelatedDoc {

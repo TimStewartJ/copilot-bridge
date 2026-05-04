@@ -293,10 +293,8 @@ export default function SettingsView() {
 
             <CategoryPanel category="integrations" activeCategory={activeCategory}>
               <ProvidersSection draft={draft} setDraft={setDraft} />
-              <TagsSection tags={tags} setTags={setTags} />
+              <TagsSection tags={tags} />
               <McpServersSection
-                draft={draft}
-                onDraftChange={setDraft}
                 resetSignal={mcpSectionResetSignal}
               />
             </CategoryPanel>

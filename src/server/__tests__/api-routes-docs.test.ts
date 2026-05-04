@@ -44,7 +44,7 @@ describe("Tag MCP server routes", () => {
   it("GET /api/tags/:id/mcp returns empty servers initially", async () => {
     const res = await request(app).get(`/api/tags/${tagId}/mcp`);
     expect(res.status).toBe(200);
-    expect(res.body.servers).toEqual(expect.any(Object));
+    expect(res.body.servers).toEqual([]);
   });
 
   it("PUT /api/tags/:id/mcp/:serverName sets an MCP server", async () => {
@@ -71,23 +71,25 @@ describe("Tag MCP server routes", () => {
 
     const get = await request(app).get(`/api/tags/${tagId}/mcp`);
     expect(get.body.servers).toEqual([
-      {
+      expect.objectContaining({
+        id: expect.any(String),
+        serverId: expect.any(String),
         serverName: "remote-server",
         config: remoteConfig,
-      },
+      }),
     ]);
   });
 
   it("DELETE /api/tags/:id/mcp/:serverName removes an MCP server", async () => {
     await request(app)
       .put(`/api/tags/${tagId}/mcp/to-delete`)
-      .send({ command: "echo" });
+      .send({ command: "echo", args: [] });
 
     const res = await request(app).delete(`/api/tags/${tagId}/mcp/to-delete`);
     expect(res.status).toBe(200);
 
     const get = await request(app).get(`/api/tags/${tagId}/mcp`);
-    expect(get.body.servers["to-delete"]).toBeUndefined();
+    expect(get.body.servers).toEqual([]);
   });
 });
 
