@@ -4,6 +4,9 @@ import { buildSessionConfig, type SessionConfigBuilderCallbacks, type SessionCon
 import type { Task } from "../task-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
+import { setupTestDb } from "./helpers.js";
+import { createMcpServerStore } from "../mcp-server-store.js";
+import { createTagStore } from "../tag-store.js";
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -38,6 +41,14 @@ function createDeps(overrides: Partial<SessionConfigBuilderDeps> = {}): SessionC
     tools: [],
     config: { sessionMcpServers: {} },
     ...overrides,
+  };
+}
+
+function createMcpRegistryDeps() {
+  const db = setupTestDb();
+  return {
+    mcpServerStore: createMcpServerStore(db),
+    tagStore: createTagStore(db),
   };
 }
 
@@ -76,6 +87,223 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content).toContain("Prefer concise summaries.");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
+  });
+
+  it("uses default-enabled registry MCP servers for unlinked sessions", () => {
+    const { mcpServerStore } = createMcpRegistryDeps();
+    mcpServerStore.createMcpServer({
+      name: "Default",
+      config: { command: "default-mcp", args: [] },
+      enabledByDefault: true,
+    });
+    mcpServerStore.createMcpServer({
+      name: "Opt In",
+      config: { command: "opt-in-mcp", args: [] },
+    });
+    const settingsStore = {
+      getSettings: () => ({}),
+      getMcpServers: () => ({ stale: { command: "stale-settings-mcp", args: [] } }),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        mcpServerStore,
+        settingsStore,
+        config: { sessionMcpServers: { fallback: { command: "fallback-mcp", args: [] } } },
+      }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      Default: { command: "default-mcp", args: [] },
+    });
+  });
+
+  it("adds MCP servers selected by task tags", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const taskServer = mcpServerStore.createMcpServer({
+      name: "Task MCP",
+      config: { command: "task-mcp", args: ["serve"] },
+    });
+    const tag = tagStore.createTag("Task tools");
+    tagStore.addTagMcpServerRef(tag.id, taskServer.id);
+    tagStore.setEntityTags("task", "task-1", [tag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ mcpServerStore, tagStore }),
+      options: { task: createTask() },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      "Task MCP": { command: "task-mcp", args: ["serve"] },
+    });
+  });
+
+  it("adds MCP servers selected by inherited group tags", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const groupServer = mcpServerStore.createMcpServer({
+      name: "Group MCP",
+      config: { type: "http", url: "https://group.example/mcp" },
+    });
+    const tag = tagStore.createTag("Group tools");
+    tagStore.addTagMcpServerRef(tag.id, groupServer.id);
+    tagStore.setEntityTags("task_group", "group-1", [tag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ mcpServerStore, tagStore }),
+      options: { task: createTask({ groupId: "group-1" }) },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      "Group MCP": { type: "http", url: "https://group.example/mcp" },
+    });
+  });
+
+  it("combines default-enabled, task-tag, and group-tag MCP selections", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    mcpServerStore.createMcpServer({
+      name: "Default MCP",
+      config: { command: "default-mcp", args: [] },
+      enabledByDefault: true,
+    });
+    const taskServer = mcpServerStore.createMcpServer({
+      name: "Task MCP",
+      config: { command: "task-mcp", args: [] },
+    });
+    const groupServer = mcpServerStore.createMcpServer({
+      name: "Group MCP",
+      config: { type: "sse", url: "https://group.example/sse" },
+    });
+    const taskTag = tagStore.createTag("Task tools");
+    const groupTag = tagStore.createTag("Group tools");
+    tagStore.addTagMcpServerRef(taskTag.id, taskServer.id);
+    tagStore.addTagMcpServerRef(groupTag.id, groupServer.id);
+    tagStore.setEntityTags("task", "task-1", [taskTag.id]);
+    tagStore.setEntityTags("task_group", "group-1", [groupTag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ mcpServerStore, tagStore }),
+      options: { task: createTask({ groupId: "group-1" }) },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      "Default MCP": { command: "default-mcp", args: [] },
+      "Task MCP": { command: "task-mcp", args: [] },
+      "Group MCP": { type: "sse", url: "https://group.example/sse" },
+    });
+  });
+
+  it("deduplicates a registry server selected by both default and tag", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const sharedServer = mcpServerStore.createMcpServer({
+      name: "Shared MCP",
+      config: { command: "shared-mcp", args: [] },
+      enabledByDefault: true,
+    });
+    const tag = tagStore.createTag("Shared tools");
+    tagStore.addTagMcpServerRef(tag.id, sharedServer.id);
+    tagStore.setEntityTags("task", "task-1", [tag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ mcpServerStore, tagStore }),
+      options: { task: createTask() },
+      callbacks: createCallbacks(),
+    });
+
+    expect(Object.keys(cfg.mcpServers)).toEqual(["Shared MCP"]);
+    expect(cfg.mcpServers).toEqual({
+      "Shared MCP": { command: "shared-mcp", args: [] },
+    });
+  });
+
+  it("deduplicates one registry server selected by task and group tags during resume", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const sharedServer = mcpServerStore.createMcpServer({
+      name: "Shared Tagged MCP",
+      config: { command: "shared-tagged-mcp", args: ["serve"] },
+    });
+    const taskTag = tagStore.createTag("Task tools");
+    const groupTag = tagStore.createTag("Group tools");
+    tagStore.addTagMcpServerRef(taskTag.id, sharedServer.id);
+    tagStore.addTagMcpServerRef(groupTag.id, sharedServer.id);
+    tagStore.setEntityTags("task", "task-1", [taskTag.id]);
+    tagStore.setEntityTags("task_group", "group-1", [groupTag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        mcpServerStore,
+        tagStore,
+        settingsStore: {
+          getSettings: () => ({ model: "gpt-new", reasoningEffort: "high" }),
+          getMcpServers: () => ({}),
+        } as unknown as SettingsStore,
+      }),
+      options: { task: createTask({ groupId: "group-1" }), forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBeUndefined();
+    expect(cfg.reasoningEffort).toBeUndefined();
+    expect(Object.keys(cfg.mcpServers)).toEqual(["Shared Tagged MCP"]);
+    expect(cfg.mcpServers).toEqual({
+      "Shared Tagged MCP": { command: "shared-tagged-mcp", args: ["serve"] },
+    });
+  });
+
+  it("merges legacy tag-owned MCP configs when the registry store is unavailable", () => {
+    const settingsStore = {
+      getSettings: () => ({}),
+      getMcpServers: () => ({ Default: { command: "default-mcp", args: [] } }),
+    } as unknown as SettingsStore;
+    const tagStore = {
+      resolveEffectiveTags: () => ({
+        tags: [],
+        mergedInstructions: "",
+        mcpServerIds: [],
+        mergedMcpServers: {
+          "Legacy Tag": { type: "sse" as const, url: "https://legacy.example/sse" },
+        },
+      }),
+    } as unknown as ReturnType<typeof createTagStore>;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ settingsStore, tagStore }),
+      options: { task: createTask() },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      Default: { command: "default-mcp", args: [] },
+      "Legacy Tag": { type: "sse", url: "https://legacy.example/sse" },
+    });
+  });
+
+  it("refreshes registry MCP servers while preserving forResume model behavior", () => {
+    const { mcpServerStore } = createMcpRegistryDeps();
+    mcpServerStore.createMcpServer({
+      name: "Resume MCP",
+      config: { command: "resume-mcp", args: [] },
+      enabledByDefault: true,
+    });
+    const settingsStore = {
+      getSettings: () => ({ model: "gpt-new", reasoningEffort: "high" }),
+      getMcpServers: () => ({}),
+    } as unknown as SettingsStore;
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ mcpServerStore, settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
+      options: { forResume: true },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.model).toBeUndefined();
+    expect(cfg.reasoningEffort).toBeUndefined();
+    expect(cfg.mcpServers).toEqual({
+      "Resume MCP": { command: "resume-mcp", args: [] },
+    });
   });
 
   it("includes model and reasoningEffort for new-session paths (forResume omitted/false)", () => {

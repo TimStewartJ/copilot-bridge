@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import type { McpServerConfig } from "./mcp-config.js";
+import { createMcpServerStore } from "./mcp-server-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -20,6 +21,9 @@ export interface Tag {
 }
 
 export interface TagMcpServer {
+  /** Registry server id. `id` is included for client selection UIs. */
+  id: string;
+  serverId: string;
   serverName: string;
   config: McpServerConfig;
 }
@@ -27,12 +31,15 @@ export interface TagMcpServer {
 export interface ResolvedTagConfig {
   tags: Tag[];
   mergedInstructions: string;
+  mcpServerIds: string[];
   mergedMcpServers: Record<string, TagMcpServer["config"]>;
 }
 
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createTagStore(db: DatabaseSync) {
+  const mcpServerStore = createMcpServerStore(db);
+
   function hydrate(row: any): Tag {
     return {
       id: row.id,
@@ -171,25 +178,131 @@ export function createTagStore(db: DatabaseSync) {
 
   // ── Tag MCP server management ────────────────────────────────────
 
+  function assertTagExists(tagId: string): void {
+    if (!getTag(tagId)) throw new Error(`Tag ${tagId} not found`);
+  }
+
+  function assertMcpServerExists(serverId: string): void {
+    if (!mcpServerStore.getMcpServer(serverId)) throw new Error(`MCP server ${serverId} not found`);
+  }
+
+  function hydrateTagMcpServer(serverId: string): TagMcpServer {
+    const server = mcpServerStore.getMcpServer(serverId);
+    if (!server) throw new Error(`MCP server ${serverId} not found`);
+    return {
+      id: server.id,
+      serverId: server.id,
+      serverName: server.name,
+      config: server.config,
+    };
+  }
+
+  function clearLegacyTagMcpServers(tagId: string): void {
+    db.prepare("DELETE FROM tag_mcp_servers WHERE tagId = ?").run(tagId);
+  }
+
+  function getTagMcpServerIds(tagId: string): string[] {
+    const rows = db.prepare(`
+      SELECT ms.id
+      FROM tag_mcp_server_refs refs
+      JOIN mcp_servers ms ON ms.id = refs.serverId
+      WHERE refs.tagId = ?
+      ORDER BY ms.name COLLATE NOCASE
+    `).all(tagId) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
   function getTagMcpServers(tagId: string): TagMcpServer[] {
-    const rows = db.prepare("SELECT serverName, config FROM tag_mcp_servers WHERE tagId = ?").all(tagId) as any[];
-    return rows.map((r) => ({
-      serverName: r.serverName,
-      config: JSON.parse(r.config),
-    }));
+    return getTagMcpServerIds(tagId).map(hydrateTagMcpServer);
+  }
+
+  function replaceTagMcpServerRefs(tagId: string, serverIds: string[]): TagMcpServer[] {
+    assertTagExists(tagId);
+    const uniqueServerIds = [...new Set(serverIds)];
+    for (const serverId of uniqueServerIds) {
+      assertMcpServerExists(serverId);
+    }
+
+    db.exec("BEGIN");
+    try {
+      db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ?").run(tagId);
+      clearLegacyTagMcpServers(tagId);
+
+      const stmt = db.prepare("INSERT INTO tag_mcp_server_refs (tagId, serverId) VALUES (?, ?)");
+      for (const serverId of uniqueServerIds) {
+        stmt.run(tagId, serverId);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return getTagMcpServers(tagId);
+  }
+
+  function addTagMcpServerRef(tagId: string, serverId: string): TagMcpServer {
+    assertTagExists(tagId);
+    assertMcpServerExists(serverId);
+    db.prepare(`
+      INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
+      VALUES (?, ?)
+    `).run(tagId, serverId);
+    clearLegacyTagMcpServers(tagId);
+    return hydrateTagMcpServer(serverId);
+  }
+
+  function removeTagMcpServerRef(tagId: string, serverId: string): void {
+    db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ? AND serverId = ?").run(tagId, serverId);
+    clearLegacyTagMcpServers(tagId);
+  }
+
+  function removeTagMcpServerRefsByServerId(serverId: string): void {
+    db.prepare("DELETE FROM tag_mcp_server_refs WHERE serverId = ?").run(serverId);
+  }
+
+  function matchingTagMcpServerRefIds(tagId: string, serverName: string): string[] {
+    const lowerName = serverName.trim().toLocaleLowerCase();
+    if (!lowerName) return [];
+    const rows = db.prepare(`
+      SELECT ms.id, ms.name
+      FROM tag_mcp_server_refs refs
+      JOIN mcp_servers ms ON ms.id = refs.serverId
+      WHERE refs.tagId = ?
+    `).all(tagId) as Array<{ id: string; name: string }>;
+    return rows
+      .filter((row) => {
+        const lowerRowName = row.name.toLocaleLowerCase();
+        return lowerRowName === lowerName || lowerRowName.startsWith(`${lowerName} (`);
+      })
+      .map((row) => row.id);
   }
 
   function setTagMcpServer(tagId: string, serverName: string, config: TagMcpServer["config"]): void {
-    const tag = getTag(tagId);
-    if (!tag) throw new Error(`Tag ${tagId} not found`);
-    db.prepare(`
-      INSERT OR REPLACE INTO tag_mcp_servers (tagId, serverName, config)
-      VALUES (?, ?, ?)
-    `).run(tagId, serverName, JSON.stringify(config));
+    assertTagExists(tagId);
+    const server = mcpServerStore.ensureMcpServerForNameAndConfig(serverName, config, false);
+    db.exec("BEGIN");
+    try {
+      for (const serverId of matchingTagMcpServerRefIds(tagId, serverName)) {
+        db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ? AND serverId = ?").run(tagId, serverId);
+      }
+      db.prepare(`
+        INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
+        VALUES (?, ?)
+      `).run(tagId, server.id);
+      clearLegacyTagMcpServers(tagId);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   function removeTagMcpServer(tagId: string, serverName: string): void {
-    db.prepare("DELETE FROM tag_mcp_servers WHERE tagId = ? AND serverName = ?").run(tagId, serverName);
+    for (const serverId of matchingTagMcpServerRefIds(tagId, serverName)) {
+      db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ? AND serverId = ?").run(tagId, serverId);
+    }
+    clearLegacyTagMcpServers(tagId);
   }
 
   // ── Tag resolution ───────────────────────────────────────────────
@@ -198,6 +311,8 @@ export function createTagStore(db: DatabaseSync) {
     const tags = getEffectiveTaskTags(taskId, groupId);
 
     const instructionParts: string[] = [];
+    const mcpServerIds: string[] = [];
+    const seenMcpServerIds = new Set<string>();
     const mcpServers: Record<string, TagMcpServer["config"]> = {};
 
     for (const tag of tags) {
@@ -206,6 +321,10 @@ export function createTagStore(db: DatabaseSync) {
       }
       const servers = getTagMcpServers(tag.id);
       for (const srv of servers) {
+        if (!seenMcpServerIds.has(srv.serverId)) {
+          mcpServerIds.push(srv.serverId);
+          seenMcpServerIds.add(srv.serverId);
+        }
         if (!mcpServers[srv.serverName]) {
           mcpServers[srv.serverName] = srv.config;
         }
@@ -215,6 +334,7 @@ export function createTagStore(db: DatabaseSync) {
     return {
       tags,
       mergedInstructions: instructionParts.join("\n\n"),
+      mcpServerIds,
       mergedMcpServers: mcpServers,
     };
   }
@@ -222,7 +342,9 @@ export function createTagStore(db: DatabaseSync) {
   return {
     listTags, getTag, getTagByName, createTag, updateTag, deleteTag, reorderTags,
     setEntityTags, getEntityTags, getEntitiesByTag, getEffectiveTaskTags,
-    getTagMcpServers, setTagMcpServer, removeTagMcpServer,
+    getTagMcpServerIds, getTagMcpServers,
+    replaceTagMcpServerRefs, addTagMcpServerRef, removeTagMcpServerRef, removeTagMcpServerRefsByServerId,
+    setTagMcpServer, removeTagMcpServer,
     resolveEffectiveTags,
   };
 }

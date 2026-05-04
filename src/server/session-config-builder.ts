@@ -9,6 +9,7 @@ import type { TagStore } from "./tag-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
+import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import {
   BRIDGE_EXCLUDED_TOOLS,
@@ -61,6 +62,7 @@ export interface SessionConfigBuilderDeps {
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
+  mcpServerStore?: McpServerStore;
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
@@ -115,6 +117,38 @@ function collectDocsDatabaseSummaries(docsStore: DocsStore, nodes: DocTreeNode[]
   return summaries;
 }
 
+function resolveSessionMcpServers(
+  deps: SessionConfigBuilderDeps,
+  tagSelectedServerIds: string[] = [],
+  fallbackTagServers?: Record<string, McpServerConfig>,
+): Record<string, McpServerConfig> {
+  if (!deps.mcpServerStore) {
+    const base = deps.settingsStore?.getMcpServers() ?? deps.config.sessionMcpServers;
+    return fallbackTagServers && Object.keys(fallbackTagServers).length > 0
+      ? { ...base, ...fallbackTagServers }
+      : base;
+  }
+
+  const byId = new Map<string, { name: string; config: McpServerConfig }>();
+  for (const server of deps.mcpServerStore.listMcpServers()) {
+    if (server.enabledByDefault) {
+      byId.set(server.id, { name: server.name, config: server.config });
+    }
+  }
+  for (const serverId of tagSelectedServerIds) {
+    if (byId.has(serverId)) continue;
+    const server = deps.mcpServerStore.getMcpServer(serverId);
+    if (!server) continue;
+    byId.set(server.id, { name: server.name, config: server.config });
+  }
+
+  const resolved: Record<string, McpServerConfig> = {};
+  for (const server of byId.values()) {
+    resolved[server.name] = server.config;
+  }
+  return resolved;
+}
+
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
   const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes, forResume } = params.options ?? {};
@@ -128,7 +162,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       callbacks.handleUserInputRequest(request, invocation),
     tools: deps.tools,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
-    mcpServers: deps.settingsStore?.getMcpServers() ?? deps.config.sessionMcpServers,
+    mcpServers: resolveSessionMcpServers(deps),
     skillDirectories: [
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
@@ -250,10 +284,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     if (resolved.mergedInstructions) {
       contextParts.push(`\n<tag_instructions>\n${resolved.mergedInstructions}\n</tag_instructions>`);
     }
-    // Merge tag MCP servers into session config
-    if (Object.keys(resolved.mergedMcpServers).length > 0) {
-      const currentMcp = cfg.mcpServers ?? {};
-      cfg.mcpServers = { ...currentMcp, ...resolved.mergedMcpServers };
+    // Merge tag-selected MCP registry servers into session config.
+    if (resolved.mcpServerIds.length > 0 || Object.keys(resolved.mergedMcpServers).length > 0) {
+      cfg.mcpServers = resolveSessionMcpServers(deps, resolved.mcpServerIds, resolved.mergedMcpServers);
     }
 
     // Inject related docs manifest — tell the AI which docs are available

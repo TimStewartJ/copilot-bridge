@@ -1,10 +1,10 @@
 import { useState } from "react";
 import {
+  fetchMcpServers,
   fetchTagMcpServers,
-  setTagMcpServer,
-  removeTagMcpServer,
+  setTagMcpServerRefs,
+  type McpServer,
   type Tag,
-  type McpServerConfig,
   type TagMcpServer,
 } from "../../api";
 import {
@@ -13,24 +13,60 @@ import {
   useDeleteTagMutation,
   useReorderTagsMutation,
 } from "../../hooks/queries/useTags";
-import {
-  getMcpServerTransport,
-  isLocalMcpServerConfig,
-  type LocalMcpServerConfig,
-  type RemoteMcpServerConfig,
-} from "../../../mcp-config";
 import { Pencil, Trash2, ArrowUp, ArrowDown } from "lucide-react";
 import { TAG_COLORS } from "../../tag-colors";
 import { TAG_COLOR_TEXT, TAG_COLOR_DOT } from "../../tag-colors";
 import { SettingsSection } from "./SettingsSection";
 import EmptyState from "../shared/EmptyState";
+import { summarizeMcpServerConfig } from "./mcp-display";
+
+export function getNextTagMcpServerIds(currentIds: string[], serverId: string, checked: boolean): string[] {
+  return checked
+    ? [...new Set([...currentIds, serverId])]
+    : currentIds.filter((id) => id !== serverId);
+}
+
+export function TagMcpServerOption({
+  server,
+  checked,
+  disabled,
+  onChange,
+}: {
+  server: McpServer;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (serverId: string, checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-2 bg-bg-primary rounded px-2 py-1.5 text-xs">
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(server.id, e.target.checked)}
+        className="mt-0.5 h-3.5 w-3.5 accent-accent disabled:opacity-50"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono text-text-primary truncate">{server.name}</span>
+          {server.enabledByDefault && (
+            <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] text-accent">
+              default
+            </span>
+          )}
+        </span>
+        <span className="block truncate text-[10px] text-text-faint">
+          {summarizeMcpServerConfig(server.config)}
+        </span>
+      </span>
+    </label>
+  );
+}
 
 export function TagsSection({
   tags,
-  setTags,
 }: {
   tags: Tag[];
-  setTags: (t: Tag[]) => void;
 }) {
   const createTagMutation = useCreateTagMutation();
   const patchTagMutation = usePatchTagMutation();
@@ -43,14 +79,11 @@ export function TagsSection({
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editInstructions, setEditInstructions] = useState("");
+  const [availableMcpServers, setAvailableMcpServers] = useState<McpServer[]>([]);
   const [editMcpServers, setEditMcpServers] = useState<TagMcpServer[]>([]);
-  const [addingMcp, setAddingMcp] = useState(false);
-  const [mcpName, setMcpName] = useState("");
-  const [mcpTransport, setMcpTransport] = useState<"local" | "http" | "sse">("local");
-  const [mcpCommand, setMcpCommand] = useState("");
-  const [mcpArgs, setMcpArgs] = useState("");
-  const [mcpUrl, setMcpUrl] = useState("");
-  const [mcpHeaders, setMcpHeaders] = useState("");
+  const [loadingMcpServers, setLoadingMcpServers] = useState(false);
+  const [savingMcpSelection, setSavingMcpSelection] = useState(false);
+  const [mcpSelectionError, setMcpSelectionError] = useState<string | null>(null);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -69,12 +102,23 @@ export function TagsSection({
     setEditName(tag.name);
     setEditColor(tag.color);
     setEditInstructions(tag.instructions);
-    setAddingMcp(false);
+    setEditMcpServers([]);
+    setMcpSelectionError(null);
+    setLoadingMcpServers(true);
     try {
-      const servers = await fetchTagMcpServers(tag.id);
-      setEditMcpServers(servers);
-    } catch {
+      const [registryServers, selectedServers] = await Promise.all([
+        fetchMcpServers(),
+        fetchTagMcpServers(tag.id),
+      ]);
+      setAvailableMcpServers(registryServers);
+      setEditMcpServers(selectedServers);
+    } catch (e) {
+      console.error("Failed to load tag MCP servers:", e);
+      setAvailableMcpServers([]);
       setEditMcpServers([]);
+      setMcpSelectionError(`Failed to load MCP servers: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setLoadingMcpServers(false);
     }
   };
 
@@ -87,53 +131,18 @@ export function TagsSection({
     }
   };
 
-  const handleAddMcp = async (tagId: string) => {
-    if (!mcpName.trim() || (mcpTransport === "local" ? !mcpCommand.trim() : !mcpUrl.trim())) return;
+  const handleMcpSelectionChange = async (tagId: string, serverId: string, checked: boolean) => {
+    const currentIds = editMcpServers.map((server) => server.serverId);
+    const nextIds = getNextTagMcpServerIds(currentIds, serverId, checked);
+    setSavingMcpSelection(true);
+    setMcpSelectionError(null);
     try {
-      let config: McpServerConfig;
-      if (mcpTransport === "local") {
-        const localConfig: LocalMcpServerConfig = {
-          command: mcpCommand.trim(),
-          args: mcpArgs.trim() ? mcpArgs.trim().split("\n") : [],
-        };
-        config = localConfig;
-      } else {
-        const remoteConfig: RemoteMcpServerConfig = {
-          type: mcpTransport,
-          url: mcpUrl.trim(),
-        };
-        if (mcpHeaders.trim()) {
-          const headers: Record<string, string> = {};
-          for (const line of mcpHeaders.split("\n")) {
-            const eq = line.indexOf("=");
-            if (eq > 0) {
-              headers[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-            }
-          }
-          if (Object.keys(headers).length > 0) remoteConfig.headers = headers;
-        }
-        config = remoteConfig;
-      }
-      await setTagMcpServer(tagId, mcpName.trim(), config);
-      setEditMcpServers((prev) => [...prev, { serverName: mcpName.trim(), config }]);
-      setMcpName("");
-      setMcpTransport("local");
-      setMcpCommand("");
-      setMcpArgs("");
-      setMcpUrl("");
-      setMcpHeaders("");
-      setAddingMcp(false);
+      setEditMcpServers(await setTagMcpServerRefs(tagId, nextIds));
     } catch (e) {
-      console.error("Failed to add MCP server:", e);
-    }
-  };
-
-  const handleRemoveMcp = async (tagId: string, serverName: string) => {
-    try {
-      await removeTagMcpServer(tagId, serverName);
-      setEditMcpServers((prev) => prev.filter((s) => s.serverName !== serverName));
-    } catch (e) {
-      console.error("Failed to remove MCP server:", e);
+      console.error("Failed to update tag MCP servers:", e);
+      setMcpSelectionError(`Failed to update MCP server selection: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setSavingMcpSelection(false);
     }
   };
 
@@ -153,10 +162,12 @@ export function TagsSection({
     reorderTagsMutation.mutate(ids);
   };
 
+  const selectedMcpServerIds = new Set(editMcpServers.map((server) => server.serverId));
+
   return (
     <SettingsSection
       title="Tags"
-      description="Organize tasks, groups, and docs. Tags can carry custom instructions and MCP servers."
+      description="Organize tasks, groups, and docs. Tags can carry custom instructions and select registered MCP servers."
       action={
         <button
           onClick={() => setAdding(true)}
@@ -197,96 +208,49 @@ export function TagsSection({
                 className="w-full text-xs bg-bg-primary border border-border rounded px-2 py-1.5 text-text-primary outline-none focus:border-accent resize-none"
                 rows={3}
               />
-              {/* MCP Servers for this tag */}
               <div>
-                <div className="flex items-center justify-between mb-1">
+                <div className="mb-1">
                   <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">MCP Servers</span>
-                  <button
-                    onClick={() => setAddingMcp(true)}
-                    className="text-[10px] text-accent hover:text-accent-hover"
-                  >
-                    + Add
-                  </button>
+                  <p className="mt-0.5 text-[10px] text-text-faint">
+                    Select registered servers to add when this tag is present. Selections save immediately; edit definitions in MCP Servers settings.
+                  </p>
                 </div>
-                {editMcpServers.map((srv) => (
-                  <div key={srv.serverName} className="flex items-center gap-2 bg-bg-primary rounded px-2 py-1 mb-1 text-xs">
-                    <span className="font-mono text-text-primary flex-1 truncate">{srv.serverName}</span>
-                    <span className="text-text-faint truncate">
-                      {isLocalMcpServerConfig(srv.config)
-                        ? srv.config.command
-                        : `${getMcpServerTransport(srv.config)} ${srv.config.url}`}
-                    </span>
-                    <button
-                      onClick={() => handleRemoveMcp(tag.id, srv.serverName)}
-                      className="text-text-faint hover:text-error shrink-0"
-                    >
-                      <Trash2 size={10} />
-                    </button>
+                {mcpSelectionError && (
+                  <div className="mb-2 rounded border border-error/20 bg-error/10 px-2 py-1 text-[10px] text-error">
+                    {mcpSelectionError}
                   </div>
-                ))}
-                {editMcpServers.length === 0 && !addingMcp && (
-                  <div className="text-[10px] text-text-faint py-1">No tag-specific MCP servers</div>
                 )}
-                {addingMcp && (
-                  <div className="bg-bg-primary rounded p-2 space-y-1.5 mt-1">
-                    <input
-                      autoFocus
-                      value={mcpName}
-                      onChange={(e) => setMcpName(e.target.value)}
-                      placeholder="Server name"
-                      className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
-                    />
-                    <select
-                      value={mcpTransport}
-                      onChange={(e) => setMcpTransport(e.target.value as "local" | "http" | "sse")}
-                      className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
-                    >
-                      <option value="local">Local / stdio</option>
-                      <option value="http">Remote HTTP</option>
-                      <option value="sse">Remote SSE</option>
-                    </select>
-                    {mcpTransport === "local" ? (
-                      <>
-                        <input
-                          value={mcpCommand}
-                          onChange={(e) => setMcpCommand(e.target.value)}
-                          placeholder="Command (e.g. npx, uvx)"
-                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
-                        />
-                        <textarea
-                          value={mcpArgs}
-                          onChange={(e) => setMcpArgs(e.target.value)}
-                          placeholder="Args (one per line)"
-                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent resize-none"
-                          rows={2}
-                        />
-                      </>
-                    ) : (
-                      <>
-                        <input
-                          value={mcpUrl}
-                          onChange={(e) => setMcpUrl(e.target.value)}
-                          placeholder="https://example.com/mcp"
-                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent"
-                        />
-                        <textarea
-                          value={mcpHeaders}
-                          onChange={(e) => setMcpHeaders(e.target.value)}
-                          placeholder="Headers (KEY=VALUE, one per line)"
-                          className="w-full text-xs bg-bg-surface border border-border rounded px-2 py-1 text-text-primary outline-none focus:border-accent resize-none"
-                          rows={2}
-                        />
-                      </>
-                    )}
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => setAddingMcp(false)} className="text-[10px] text-text-muted hover:text-text-primary px-1.5 py-0.5">Cancel</button>
-                      <button
-                        onClick={() => handleAddMcp(tag.id)}
-                        disabled={!mcpName.trim() || (mcpTransport === "local" ? !mcpCommand.trim() : !mcpUrl.trim())}
-                        className="text-[10px] bg-accent text-white px-2 py-0.5 rounded hover:bg-accent-hover disabled:opacity-50"
-                      >
-                        Add
-                      </button>
+                {loadingMcpServers ? (
+                  <div className="text-[10px] text-text-faint py-1">Loading MCP servers…</div>
+                ) : availableMcpServers.length === 0 ? (
+                  <div className="text-[10px] text-text-faint py-1">
+                    No registered MCP servers. Add definitions in MCP Servers settings first.
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {availableMcpServers.map((server) => (
+                      <TagMcpServerOption
+                        key={server.id}
+                        server={server}
+                        checked={selectedMcpServerIds.has(server.id)}
+                        disabled={savingMcpSelection}
+                        onChange={(serverId, checked) => handleMcpSelectionChange(tag.id, serverId, checked)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {editMcpServers.length > 0 && (
+                  <div className="mt-2 rounded bg-bg-primary px-2 py-1.5">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                      Selected for this tag
+                    </div>
+                    <div className="mt-1 space-y-0.5">
+                      {editMcpServers.map((server) => (
+                        <div key={server.serverId} className="flex gap-2 text-[10px] text-text-muted">
+                          <span className="font-mono text-text-secondary">{server.serverName}</span>
+                          <span className="truncate text-text-faint">{summarizeMcpServerConfig(server.config)}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

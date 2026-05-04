@@ -2,17 +2,24 @@ import type { McpServerConfig, McpServerStatus } from "../../api";
 import { CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
 import { getMcpServerTransport, isLocalMcpServerConfig } from "../../../mcp-config";
 import { ConfigCard } from "./ConfigCard";
+import { summarizeMcpServerConfig } from "./mcp-display";
 
 export function ServerCard({
   name,
   config,
   status,
+  enabledByDefault,
+  onToggleEnabledByDefault,
+  defaultToggleDisabled,
   onEdit,
   onRemove,
 }: {
   name: string;
   config: McpServerConfig;
   status?: McpServerStatus;
+  enabledByDefault?: boolean;
+  onToggleEnabledByDefault?: (enabled: boolean) => void;
+  defaultToggleDisabled?: boolean;
   onEdit: () => void;
   onRemove: () => void;
 }) {
@@ -119,6 +126,26 @@ export function ServerCard({
               </code>
             </div>
           )
+        )}
+        {onToggleEnabledByDefault && (
+          <label
+            className="mt-3 flex items-start gap-2 rounded-md border border-border bg-bg-surface/60 px-2 py-2 text-xs text-text-muted"
+            title={summarizeMcpServerConfig(config)}
+          >
+            <input
+              type="checkbox"
+              checked={!!enabledByDefault}
+              disabled={defaultToggleDisabled}
+              onChange={(e) => onToggleEnabledByDefault(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 accent-accent disabled:opacity-50"
+            />
+            <span>
+              <span className="font-medium text-text-secondary">Enabled by default</span>
+              <span className="block text-[11px] text-text-faint">
+                Attach this server to every session.
+              </span>
+            </span>
+          </label>
         )}
       </div>
     </ConfigCard>

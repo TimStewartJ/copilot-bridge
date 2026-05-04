@@ -9,6 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
 import { openDatabase, type DatabaseSync } from "./db.js";
+import type { McpServerConfig } from "./mcp-config.js";
 import {
   clearRestartPending,
   configureRestartStateStore,
@@ -1895,6 +1896,79 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // ── MCP server registry routes ───────────────────────────────────
+
+  const getMcpServerStore = () => ctx.mcpServerStore ?? ctx.settingsStore.getMcpServerStore();
+
+  router.get("/mcp-servers", (_req, res) => {
+    const mcpServerStore = getMcpServerStore();
+    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
+    res.json({ servers: mcpServerStore.listMcpServers() });
+  });
+
+  router.post("/mcp-servers", (req, res) => {
+    const mcpServerStore = getMcpServerStore();
+    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
+    if (!isRecord(req.body)) return res.status(400).json({ error: "request body is required" });
+    const { name, config, enabledByDefault } = req.body;
+    if (typeof name !== "string") return res.status(400).json({ error: "name is required" });
+    if (enabledByDefault !== undefined && typeof enabledByDefault !== "boolean") {
+      return res.status(400).json({ error: "enabledByDefault must be a boolean" });
+    }
+
+    try {
+      const server = mcpServerStore.createMcpServer({ name, config: config as McpServerConfig, enabledByDefault });
+      console.log("[mcp] MCP server registry changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
+      res.status(201).json({ server });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.patch("/mcp-servers/:id", (req, res) => {
+    const mcpServerStore = getMcpServerStore();
+    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
+    if (!isRecord(req.body)) return res.status(400).json({ error: "request body is required" });
+
+    const updates: { name?: string; config?: McpServerConfig; enabledByDefault?: boolean } = {};
+    if ("name" in req.body) {
+      if (typeof req.body.name !== "string") return res.status(400).json({ error: "name must be a string" });
+      updates.name = req.body.name;
+    }
+    if ("config" in req.body) updates.config = req.body.config as McpServerConfig;
+    if ("enabledByDefault" in req.body) {
+      if (typeof req.body.enabledByDefault !== "boolean") {
+        return res.status(400).json({ error: "enabledByDefault must be a boolean" });
+      }
+      updates.enabledByDefault = req.body.enabledByDefault;
+    }
+
+    try {
+      const server = mcpServerStore.updateMcpServer(req.params.id, updates);
+      console.log("[mcp] MCP server registry changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
+      res.json({ server });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(/not found/i.test(message) ? 404 : 400).json({ error: message });
+    }
+  });
+
+  router.delete("/mcp-servers/:id", (req, res) => {
+    const mcpServerStore = getMcpServerStore();
+    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
+    if (!mcpServerStore.getMcpServer(req.params.id)) {
+      return res.status(404).json({ error: "MCP server not found" });
+    }
+
+    ctx.tagStore?.removeTagMcpServerRefsByServerId(req.params.id);
+    mcpServerStore.deleteMcpServer(req.params.id);
+    console.log("[mcp] MCP server registry changed — evicting cached sessions");
+    ctx.sessionManager.evictAllCachedSessions();
+    res.json({ success: true });
+  });
+
   // ── Tag routes ──────────────────────────────────────────────────
 
   router.get("/tags", (_req, res) => {
@@ -1964,6 +2038,45 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/tags/:id/mcp", (req, res) => {
     if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
     res.json({ servers: ctx.tagStore.getTagMcpServers(req.params.id) });
+  });
+
+  const replaceTagMcpServerSelection = (req: express.Request<{ id: string }>, res: express.Response) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    const serverIds = isRecord(req.body) ? req.body.serverIds : undefined;
+    if (!Array.isArray(serverIds) || !serverIds.every((serverId) => typeof serverId === "string")) {
+      return res.status(400).json({ error: "serverIds array is required" });
+    }
+    try {
+      const servers = ctx.tagStore.replaceTagMcpServerRefs(req.params.id, serverIds);
+      console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
+      res.json({ servers });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  };
+
+  router.put("/tags/:id/mcp", replaceTagMcpServerSelection);
+  router.put("/tags/:id/mcp-servers", replaceTagMcpServerSelection);
+
+  router.post("/tags/:id/mcp-refs/:serverId", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    try {
+      const server = ctx.tagStore.addTagMcpServerRef(req.params.id, req.params.serverId);
+      console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
+      ctx.sessionManager.evictAllCachedSessions();
+      res.json({ server });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  router.delete("/tags/:id/mcp-refs/:serverId", (req, res) => {
+    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
+    ctx.tagStore.removeTagMcpServerRef(req.params.id, req.params.serverId);
+    console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
+    ctx.sessionManager.evictAllCachedSessions();
+    res.json({ success: true });
   });
 
   router.put("/tags/:id/mcp/:serverName", (req, res) => {

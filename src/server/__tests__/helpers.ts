@@ -19,6 +19,7 @@ import { createSessionTitlesStore } from "../session-titles.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createTagStore } from "../tag-store.js";
+import { createMcpServerStore } from "../mcp-server-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
 import { createPushNotificationService } from "../push-notification-service.js";
@@ -304,8 +305,9 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     sessionWorkspaceStore: createSessionWorkspaceStore(db),
     sessionTitles: createSessionTitlesStore(db),
     readStateStore: createReadStateStore(db),
-     checklistStore: createChecklistStore(db, globalBus),
+    checklistStore: createChecklistStore(db, globalBus),
     tagStore: createTagStore(db),
+    mcpServerStore: createMcpServerStore(db),
     telemetryStore: createTelemetryStore(db),
     docsStore,
     docsIndex,

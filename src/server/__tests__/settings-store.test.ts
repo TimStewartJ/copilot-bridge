@@ -35,6 +35,8 @@ describe("settings-store", () => {
     // Verify persistence
     const reloaded = store.getSettings();
     expect(reloaded.mcpServers.custom).toBeDefined();
+    const raw = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as any).value);
+    expect(raw.mcpServers).toBeUndefined();
   });
 
   it("getMcpServers returns current config", () => {

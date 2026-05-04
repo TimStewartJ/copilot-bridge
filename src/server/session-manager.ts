@@ -72,6 +72,7 @@ import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
+import type { McpServerStore } from "./mcp-server-store.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -160,6 +161,7 @@ export interface SessionManagerDeps {
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
+  mcpServerStore?: McpServerStore;
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   browserSessionStore?: BrowserSessionStore;
@@ -205,6 +207,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     checklistStore: ctx.checklistStore,
     settingsStore: ctx.settingsStore,
     tagStore: ctx.tagStore,
+    mcpServerStore: ctx.mcpServerStore ?? ctx.settingsStore.getMcpServerStore(),
     docsIndex: ctx.docsIndex,
     docsStore: ctx.docsStore,
     browserSessionStore: getOrCreateBrowserSessionStore(ctx, {

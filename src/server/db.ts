@@ -5,6 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isMcpServerConfig,
+  mcpServerConfigsEqual,
+  type McpServerConfig,
+} from "./mcp-config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
@@ -38,6 +43,8 @@ const SQLITE_STATE_TABLES = [
   "tags",
   "entity_tags",
   "tag_mcp_servers",
+  "mcp_servers",
+  "tag_mcp_server_refs",
   "deferred_prompts",
   "defer_loops",
   "push_subscriptions",
@@ -180,6 +187,169 @@ function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: b
   const violations = db.prepare("PRAGMA foreign_key_check").all() as any[];
   if (violations.length > 0) {
     throw new Error(`Task legacy-column migration left ${violations.length} foreign key violation(s)`);
+  }
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseMcpServerConfig(value: string): McpServerConfig | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isMcpServerConfig(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeMcpServerName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed || "mcp-server";
+}
+
+function hydrateMcpServerConfig(row: { config: string }): McpServerConfig | undefined {
+  return parseMcpServerConfig(row.config);
+}
+
+function findMcpServerByName(db: DatabaseSync, name: string): any | undefined {
+  return db.prepare("SELECT * FROM mcp_servers WHERE name = ? COLLATE NOCASE").get(name) as any;
+}
+
+function insertMcpServer(
+  db: DatabaseSync,
+  name: string,
+  config: McpServerConfig,
+  enabledByDefault: boolean,
+): string {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO mcp_servers (id, name, config, enabledByDefault, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, name, JSON.stringify(config), enabledByDefault ? 1 : 0, now, now);
+  return id;
+}
+
+function makeUniqueMcpServerName(db: DatabaseSync, preferredName: string): string {
+  const base = normalizeMcpServerName(preferredName);
+  const existingNames = new Set(
+    (db.prepare("SELECT name FROM mcp_servers").all() as Array<{ name: string }>)
+      .map((row) => row.name.toLocaleLowerCase()),
+  );
+  if (!existingNames.has(base.toLocaleLowerCase())) return base;
+
+  const first = `${base} (tag override)`;
+  if (!existingNames.has(first.toLocaleLowerCase())) return first;
+  for (let i = 2; ; i++) {
+    const candidate = `${base} (tag override ${i})`;
+    if (!existingNames.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+}
+
+function upsertDefaultMcpServer(db: DatabaseSync, name: string, config: McpServerConfig): string {
+  const normalizedName = normalizeMcpServerName(name);
+  const existing = findMcpServerByName(db, normalizedName);
+  if (!existing) return insertMcpServer(db, normalizedName, config, true);
+
+  const existingConfig = hydrateMcpServerConfig(existing);
+  if (!existingConfig || !mcpServerConfigsEqual(existingConfig, config) || existing.enabledByDefault !== 1) {
+    db.prepare(`
+      UPDATE mcp_servers
+      SET config = ?, enabledByDefault = 1, updatedAt = ?
+      WHERE id = ?
+    `).run(JSON.stringify(config), new Date().toISOString(), existing.id);
+  }
+  return existing.id;
+}
+
+function findReusableMcpServerForTagConfig(
+  db: DatabaseSync,
+  tagId: string,
+  name: string,
+  config: McpServerConfig,
+): any | undefined {
+  const normalizedName = normalizeMcpServerName(name);
+  const lowerName = normalizedName.toLocaleLowerCase();
+  const existingRefs = db.prepare(`
+    SELECT ms.*
+    FROM tag_mcp_server_refs refs
+    JOIN mcp_servers ms ON ms.id = refs.serverId
+    WHERE refs.tagId = ?
+  `).all(tagId) as any[];
+  const existingRef = existingRefs.find((row) => {
+    const existingConfig = hydrateMcpServerConfig(row);
+    return existingConfig ? mcpServerConfigsEqual(existingConfig, config) : false;
+  });
+  if (existingRef) return existingRef;
+
+  const sameName = findMcpServerByName(db, normalizedName);
+  const sameNameConfig = sameName ? hydrateMcpServerConfig(sameName) : undefined;
+  if (sameName && sameNameConfig && mcpServerConfigsEqual(sameNameConfig, config)) return sameName;
+
+  const generatedRows = db.prepare("SELECT * FROM mcp_servers").all() as any[];
+  return generatedRows.find((row) => {
+    const lowerRowName = String(row.name).toLocaleLowerCase();
+    if (!lowerRowName.startsWith(`${lowerName} (`)) return false;
+    const existingConfig = hydrateMcpServerConfig(row);
+    return existingConfig ? mcpServerConfigsEqual(existingConfig, config) : false;
+  });
+}
+
+function ensureTagMcpServerInRegistry(
+  db: DatabaseSync,
+  tagId: string,
+  name: string,
+  config: McpServerConfig,
+): string {
+  const reusable = findReusableMcpServerForTagConfig(db, tagId, name, config);
+  if (reusable) return reusable.id;
+  return insertMcpServer(db, makeUniqueMcpServerName(db, name), config, false);
+}
+
+function migrateMcpRegistry(db: DatabaseSync): void {
+  db.exec("BEGIN");
+  try {
+    const appSettingsRow = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string } | undefined;
+    const appSettings = appSettingsRow ? parseJsonObject(appSettingsRow.value) : undefined;
+    const legacyMcpServers = appSettings?.mcpServers;
+    if (legacyMcpServers && typeof legacyMcpServers === "object" && !Array.isArray(legacyMcpServers)) {
+      for (const [name, config] of Object.entries(legacyMcpServers)) {
+        if (typeof name === "string" && isMcpServerConfig(config)) {
+          upsertDefaultMcpServer(db, name, config);
+        }
+      }
+      delete appSettings.mcpServers;
+      db.prepare("UPDATE settings SET value = ? WHERE key = 'app'").run(JSON.stringify(appSettings));
+    }
+
+    const legacyTagServers = db.prepare("SELECT tagId, serverName, config FROM tag_mcp_servers").all() as Array<{
+      tagId: string;
+      serverName: string;
+      config: string;
+    }>;
+    for (const row of legacyTagServers) {
+      const config = parseMcpServerConfig(row.config);
+      if (!config) continue;
+      const serverId = ensureTagMcpServerInRegistry(db, row.tagId, row.serverName, config);
+      db.prepare(`
+        INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
+        VALUES (?, ?)
+      `).run(row.tagId, serverId);
+    }
+    db.prepare("DELETE FROM tag_mcp_servers").run();
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
 }
 
@@ -400,6 +570,17 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_telemetry_ingest_keys_created ON telemetry_ingest_keys(createdAt);
 
+    -- Canonical MCP server registry
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      config TEXT NOT NULL,
+      enabledByDefault INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabledByDefault ON mcp_servers(enabledByDefault);
+
     -- Tags
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY,
@@ -429,6 +610,16 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (tagId, serverName),
       FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
     );
+
+    -- Tag ↔ canonical MCP server references
+    CREATE TABLE IF NOT EXISTS tag_mcp_server_refs (
+      tagId TEXT NOT NULL,
+      serverId TEXT NOT NULL,
+      PRIMARY KEY (tagId, serverId),
+      FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE,
+      FOREIGN KEY (serverId) REFERENCES mcp_servers(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_tag_mcp_server_refs_server ON tag_mcp_server_refs(serverId);
 
     -- Deferred prompts (same-session deferred execution)
     CREATE TABLE IF NOT EXISTS deferred_prompts (
@@ -488,6 +679,8 @@ function initSchema(db: DatabaseSync): void {
   `);
 
   // ── Migrations ──────────────────────────────────────────────────
+  migrateMcpRegistry(db);
+
   // Add linkedAt column to task_sessions if missing (existing rows get a fixed fallback)
   const cols = db.prepare("PRAGMA table_info(task_sessions)").all() as any[];
   if (!cols.some((c: any) => c.name === "linkedAt")) {
