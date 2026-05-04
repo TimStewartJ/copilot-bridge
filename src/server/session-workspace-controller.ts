@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -36,6 +36,40 @@ function isDemoMode(runtimePaths?: RuntimePaths): boolean {
 function resolveDemoWorkspaceDir(runtimePaths?: RuntimePaths): string | undefined {
   if (!isDemoMode(runtimePaths)) return undefined;
   return runtimePaths?.workspaceDir ?? (runtimePaths ? join(resolve(runtimePaths.dataDir), "workspace") : undefined);
+}
+
+function getFsErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function getWorkspaceAvailability(cwd?: string | null): {
+  cwd: string;
+  available: boolean;
+  clearStalePin: boolean;
+} | undefined {
+  const normalized = cwd?.trim();
+  if (!normalized) return undefined;
+  try {
+    return {
+      cwd: normalized,
+      available: statSync(normalized).isDirectory(),
+      clearStalePin: true,
+    };
+  } catch (error) {
+    const code = getFsErrorCode(error);
+    return {
+      cwd: normalized,
+      available: false,
+      clearStalePin: code === "ENOENT" || code === "ENOTDIR",
+    };
+  }
+}
+
+function resolveAvailableWorkspaceCwd(cwd?: string | null): string | undefined {
+  const availability = getWorkspaceAvailability(cwd);
+  return availability?.available ? availability.cwd : undefined;
 }
 
 export class SessionWorkspaceController {
@@ -109,13 +143,15 @@ export class SessionWorkspaceController {
 
   resolveEffectiveSessionCwd(opts: { sessionId?: string; task?: Pick<Task, "cwd"> | null }): string | undefined {
     const { sessionId, task } = opts;
-    const persistedCwd = sessionId ? this.deps.sessionWorkspaceStore?.getWorkspace(sessionId)?.cwd : undefined;
-    if (persistedCwd?.trim()) return persistedCwd;
+    const persistedCwd = this.resolvePersistedSessionCwd(sessionId);
+    if (persistedCwd) return persistedCwd;
 
     const legacyCwd = sessionId ? this.getLegacyWorkspaceCwd(sessionId) : undefined;
-    if (legacyCwd?.trim()) return legacyCwd;
+    const availableLegacyCwd = resolveAvailableWorkspaceCwd(legacyCwd);
+    if (availableLegacyCwd) return availableLegacyCwd;
 
-    if (task?.cwd?.trim()) return task.cwd;
+    const taskCwd = resolveAvailableWorkspaceCwd(task?.cwd);
+    if (taskCwd) return taskCwd;
 
     return resolveDemoWorkspaceDir(this.deps.runtimePaths);
   }
@@ -125,9 +161,9 @@ export class SessionWorkspaceController {
     workspaceYamlContent: string,
   ): string | undefined {
     const linkedTask = this.findLinkedTask(sessionId);
-    return this.deps.sessionWorkspaceStore?.getWorkspace(sessionId)?.cwd
-      ?? parseWorkspaceCwd(workspaceYamlContent)
-      ?? linkedTask?.cwd
+    return this.resolvePersistedSessionCwd(sessionId)
+      ?? resolveAvailableWorkspaceCwd(parseWorkspaceCwd(workspaceYamlContent))
+      ?? resolveAvailableWorkspaceCwd(linkedTask?.cwd)
       ?? resolveDemoWorkspaceDir(this.deps.runtimePaths);
   }
 
@@ -188,6 +224,23 @@ export class SessionWorkspaceController {
     if (this.deps.isSessionBusy(sessionId) && !opts.allowDuringActiveTurn) {
       throw new Error("Cannot switch workspace for a busy session");
     }
+  }
+
+  private resolvePersistedSessionCwd(sessionId?: string): string | undefined {
+    if (!sessionId) return undefined;
+    const storedWorkspace = this.deps.sessionWorkspaceStore?.getWorkspace(sessionId);
+    const cwd = storedWorkspace?.cwd?.trim();
+    if (!cwd) return undefined;
+    const availability = getWorkspaceAvailability(cwd);
+    if (availability?.available) return availability.cwd;
+
+    if (availability?.clearStalePin) {
+      this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+    }
+    console.warn(
+      `[workspace] Session ${sessionId.slice(0, 8)} pinned workspace is no longer available; falling back: ${cwd}`,
+    );
+    return undefined;
   }
 
   private applySessionWorkspaceChange(
