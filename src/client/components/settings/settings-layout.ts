@@ -6,6 +6,7 @@ export type SectionId =
   | "reasoning-effort"
   | "appearance"
   | "notifications"
+  | "device-management"
   | "providers"
   | "tags"
   | "mcp-servers"
@@ -23,7 +24,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "general",
     label: "General",
-    sections: ["system-prompt", "model", "reasoning-effort", "appearance", "notifications"],
+    sections: ["system-prompt", "model", "reasoning-effort", "appearance", "notifications", "device-management"],
   },
   {
     id: "integrations",

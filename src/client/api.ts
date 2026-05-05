@@ -1321,6 +1321,15 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
   return res.json();
 }
 
+export interface DeviceHibernateResponse {
+  ok: true;
+  message: string;
+}
+
+export async function hibernateDevice(): Promise<DeviceHibernateResponse> {
+  return apiFetch<DeviceHibernateResponse>("/api/device/hibernate", {});
+}
+
 // ── Push notification API ──────────────────────────────────────────
 
 export interface PushPublicStatus {

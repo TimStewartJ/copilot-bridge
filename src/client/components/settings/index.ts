@@ -7,6 +7,7 @@ export { ModelSection } from "./ModelSection";
 export { ReasoningEffortSection } from "./ReasoningEffortSection";
 export { AppearanceSection } from "./AppearanceSection";
 export { NotificationsSection } from "./NotificationsSection";
+export { DeviceManagementSection } from "./DeviceManagementSection";
 export { ProvidersSection } from "./ProvidersSection";
 export { ServerCard } from "./ServerCard";
 export { ServerEditor } from "./ServerEditor";

@@ -1,11 +1,13 @@
 // Platform abstraction — encapsulates OS-specific operations behind a unified API.
 // Windows uses taskkill, wmic, mklink /J; Linux uses kill, pkill, ln -s.
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { lstatSync, rmSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 
 type ProcessRow = { pid: number; ppid: number };
+const execFileAsync = promisify(execFile);
 
 export type ProcessTreeSnapshot = {
   rootPid: number;
@@ -18,8 +20,57 @@ export type ProcessTreeKillResult = ProcessTreeSnapshot & {
   killRequested: boolean;
 };
 
+export type DeviceHibernateCommand = {
+  platform: NodeJS.Platform;
+  command: string;
+  args: string[];
+};
+
 function isWindows(): boolean {
   return process.platform === "win32";
+}
+
+export function getDeviceHibernateCommand(platform: NodeJS.Platform = process.platform): DeviceHibernateCommand {
+  switch (platform) {
+    case "win32":
+      return { platform, command: "shutdown.exe", args: ["/h"] };
+    case "linux":
+      return { platform, command: "systemctl", args: ["hibernate"] };
+    case "darwin":
+      throw new Error("Device hibernation is not supported on macOS by Copilot Bridge.");
+    default:
+      throw new Error(`Device hibernation is not supported on ${platform}.`);
+  }
+}
+
+function stringifyProcessOutput(value: unknown): string {
+  if (Buffer.isBuffer(value)) return value.toString("utf8").trim();
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function formatExecFileError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const output = [
+    stringifyProcessOutput((error as NodeJS.ErrnoException & { stderr?: unknown }).stderr),
+    stringifyProcessOutput((error as NodeJS.ErrnoException & { stdout?: unknown }).stdout),
+  ].filter(Boolean);
+  return output.length > 0 ? `${error.message}: ${output.join(" ")}` : error.message;
+}
+
+export async function requestDeviceHibernate(
+  hibernateCommand: DeviceHibernateCommand = getDeviceHibernateCommand(),
+): Promise<DeviceHibernateCommand> {
+  try {
+    await execFileAsync(hibernateCommand.command, hibernateCommand.args, {
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    return hibernateCommand;
+  } catch (error) {
+    throw new Error(
+      `Failed to request device hibernation via ${hibernateCommand.command}: ${formatExecFileError(error)}`,
+    );
+  }
 }
 
 function isValidPid(pid: number): boolean {
