@@ -10,6 +10,7 @@ import {
   ReasoningEffortSection,
   AppearanceSection,
   NotificationsSection,
+  DeviceManagementSection,
   ProvidersSection,
   TagsSection,
   VoiceInputSection,
@@ -289,6 +290,7 @@ export default function SettingsView() {
               <ReasoningEffortSection draft={draft} setDraft={setDraft} />
               <AppearanceSection draft={draft} setDraft={setDraft} />
               <NotificationsSection />
+              <DeviceManagementSection />
             </CategoryPanel>
 
             <CategoryPanel category="integrations" activeCategory={activeCategory}>

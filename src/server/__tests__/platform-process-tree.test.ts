@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getDeviceHibernateCommand,
   killProcessTree,
   listDescendantPids,
   shouldSpawnDetachedProcessGroup,
@@ -45,6 +46,27 @@ afterEach(() => {
 });
 
 describe("process tree platform helpers", () => {
+  it("selects shell-safe hibernate commands for supported platforms", () => {
+    setPlatform("linux");
+    expect(getDeviceHibernateCommand()).toEqual({
+      platform: "linux",
+      command: "systemctl",
+      args: ["hibernate"],
+    });
+
+    setPlatform("win32");
+    expect(getDeviceHibernateCommand()).toEqual({
+      platform: "win32",
+      command: "shutdown.exe",
+      args: ["/h"],
+    });
+  });
+
+  it("rejects hibernate on unsupported platforms", () => {
+    setPlatform("darwin");
+    expect(() => getDeviceHibernateCommand()).toThrow("not supported on macOS");
+  });
+
   it("uses detached process groups for POSIX server children only", () => {
     setPlatform("linux");
     expect(shouldSpawnDetachedProcessGroup()).toBe(true);

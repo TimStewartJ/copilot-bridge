@@ -23,9 +23,9 @@ describe("SETTINGS_CATEGORIES", () => {
     }
   });
 
-  it("covers all 11 sections across categories", () => {
+  it("covers all 12 sections across categories", () => {
     const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
-    expect(allSections).toHaveLength(11);
+    expect(allSections).toHaveLength(12);
   });
 
   it("sections are non-overlapping across categories", () => {
@@ -41,6 +41,7 @@ describe("SETTINGS_CATEGORIES", () => {
       "reasoning-effort",
       "appearance",
       "notifications",
+      "device-management",
       "providers",
       "tags",
       "mcp-servers",

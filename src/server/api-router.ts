@@ -41,6 +41,7 @@ import { UserInputBrokerError } from "./user-input-broker.js";
 import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { createPushNotificationService, getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
+import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -1166,6 +1167,28 @@ export function createApiRouter(ctx: AppContext): express.Router {
       console.error("[web] Error during graceful shutdown:", err);
     }
     process.exit(0);
+  });
+
+  router.post("/device/hibernate", (_req, res) => {
+    if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
+    let hibernateCommand: DeviceHibernateCommand;
+    try {
+      hibernateCommand = getDeviceHibernateCommand();
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+    console.log("[device] Hibernate requested via API");
+    res.on("finish", () => {
+      setTimeout(() => {
+        void requestDeviceHibernate(hibernateCommand).catch((error) => {
+          console.error("[device] Hibernate request failed:", error);
+        });
+      }, 250);
+    });
+    res.status(202).json({
+      ok: true,
+      message: "Hibernate requested. This device may sleep shortly.",
+    });
   });
 
   // POST /restart-clear — manual escape hatch to dismiss a stale restart banner
