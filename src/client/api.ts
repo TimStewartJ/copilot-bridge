@@ -1496,15 +1496,32 @@ export async function markVoiceJobRecovered(jobId: string): Promise<VoiceJobStat
 
 export interface McpServerStatus {
   name: string;
-  status: "connected" | "failed" | "pending" | "disabled" | "not_configured" | "unknown";
+  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "not_configured" | "unknown";
   error?: string;
   source?: string;
 }
+export interface McpLoginResponse {
+  serverName: string;
+  authorizationUrl?: string;
+  servers: McpServerStatus[];
+}
+
 
 export async function fetchMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
   const result = await apiFetch<{ servers: McpServerStatus[] }>(`/api/sessions/${sessionId}/mcp-status`);
   return result.servers;
 }
+export async function loginMcpServer(
+  sessionId: string,
+  serverName: string,
+  options: { forceReauth?: boolean } = {},
+): Promise<McpLoginResponse> {
+  return apiFetch<McpLoginResponse>(`/api/sessions/${sessionId}/mcp-login`, {
+    serverName,
+    ...(options.forceReauth !== undefined ? { forceReauth: options.forceReauth } : {}),
+  });
+}
+
 
 export async function fetchGlobalMcpStatus(): Promise<McpServerStatus[]> {
   const result = await apiFetch<{ servers: McpServerStatus[] }>("/api/mcp-status");

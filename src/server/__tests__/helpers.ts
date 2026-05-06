@@ -225,6 +225,11 @@ export function createMockSessionManager() {
     }),
     getSessionModelState: async () => ({ source: "unknown" as const }),
     getMcpStatus: async () => [],
+    loginMcpServer: async (_sessionId: string, serverName: string) => ({
+      serverName,
+      authorizationUrl: "https://login.example.test",
+      servers: [{ name: serverName, status: "pending" }],
+    }),
     getLatestMcpStatus: () => [],
     hasPlan: () => true,
     createTaskSession: async () => ({ sessionId: "task-session" }),
