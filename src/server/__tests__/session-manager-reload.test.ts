@@ -91,6 +91,70 @@ describe("SessionManager reloadSession", () => {
     await expect(manager.reloadSession("stalled-session")).rejects.toThrow("Cannot reload a busy session");
     expect(manager.client.resumeSession).not.toHaveBeenCalled();
   });
+
+  it("starts MCP OAuth on an already cached session", async () => {
+    const manager = createManager();
+    const login = vi.fn().mockResolvedValue({ authorizationUrl: "https://login.example.test" });
+    const list = vi.fn().mockResolvedValue({
+      servers: [{ name: "demo", status: "needs-auth", source: "settings" }],
+    });
+    manager.client = { resumeSession: vi.fn() };
+    manager.sessionObjects.set("session-auth", {
+      rpc: { mcp: { oauth: { login }, list } },
+    });
+
+    const result = await manager.loginMcpServer("session-auth", "DEMO", { forceReauth: true });
+
+    expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    expect(login).toHaveBeenCalledWith(expect.objectContaining({
+      serverName: "demo",
+      forceReauth: true,
+      clientName: "Copilot Bridge",
+    }));
+    expect(result).toEqual({
+      serverName: "demo",
+      authorizationUrl: "https://login.example.test",
+      servers: [{ name: "demo", status: "needs-auth", source: "settings" }],
+    });
+    expect(manager.isSessionBusy("session-auth")).toBe(false);
+  });
+
+  it("resumes a cold session before starting MCP OAuth", async () => {
+    const manager = createManager();
+    const login = vi.fn().mockResolvedValue({});
+    const list = vi.fn().mockResolvedValue({
+      servers: [{ name: "demo", status: "pending", source: "settings" }],
+    });
+    const resumedSession = {
+      rpc: { mcp: { oauth: { login }, list } },
+    };
+    const resumeSession = vi.fn().mockResolvedValue(resumedSession);
+    manager.client = { resumeSession };
+
+    const result = await manager.loginMcpServer("session-auth-cold", "demo");
+
+    expect(resumeSession).toHaveBeenCalledWith(
+      "session-auth-cold",
+      expect.objectContaining({
+        mcpServers: { demo: { command: "echo", args: ["hi"] } },
+      }),
+    );
+    expect(login).toHaveBeenCalledWith(expect.objectContaining({ serverName: "demo" }));
+    expect(result).toEqual({
+      serverName: "demo",
+      servers: [{ name: "demo", status: "pending", source: "settings" }],
+    });
+  });
+
+  it("rejects MCP OAuth for servers not configured on the session", async () => {
+    const manager = createManager();
+    const resumeSession = vi.fn();
+    manager.client = { resumeSession };
+
+    await expect(manager.loginMcpServer("session-auth-missing", "ado"))
+      .rejects.toThrow('MCP server "ado" is not configured for this session');
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("SessionManager warmSession", () => {

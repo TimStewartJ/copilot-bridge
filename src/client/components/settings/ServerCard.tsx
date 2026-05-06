@@ -39,6 +39,12 @@ export function ServerCard({
             <XCircle size={10} /> failed
           </span>
         );
+      case "needs-auth":
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning rounded-full flex items-center gap-0.5" title="Open a session using this server to sign in.">
+            <AlertTriangle size={10} /> needs auth
+          </span>
+        );
       case "pending":
         return (
           <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning rounded-full flex items-center gap-0.5">

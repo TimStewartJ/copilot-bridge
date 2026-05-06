@@ -1740,6 +1740,28 @@ export function createApiRouter(ctx: AppContext): express.Router {
       res.status(500).json({ error: String(err) });
     }
   });
+  // POST /sessions/:id/mcp-login - begin OAuth for a remote MCP server attached to this session
+  router.post("/sessions/:id/mcp-login", async (req, res) => {
+    if (!isRecord(req.body)) return res.status(400).json({ error: "request body is required" });
+    const { serverName, forceReauth } = req.body;
+    if (typeof serverName !== "string" || !serverName.trim()) {
+      return res.status(400).json({ error: "serverName is required" });
+    }
+    if (forceReauth !== undefined && typeof forceReauth !== "boolean") {
+      return res.status(400).json({ error: "forceReauth must be a boolean" });
+    }
+
+    try {
+      const result = await ctx.sessionManager.loginMcpServer(req.params.id, serverName, { forceReauth });
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/busy session/i.test(message)) return res.status(409).json({ error: message });
+      if (/not configured for this session/i.test(message)) return res.status(404).json({ error: message });
+      res.status(500).json({ error: message });
+    }
+  });
+
 
   // PATCH /sessions/:id — update session metadata (archive/unarchive)
   router.patch("/sessions/:id", (req, res) => {

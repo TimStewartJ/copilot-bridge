@@ -42,7 +42,7 @@ const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
 
 export interface McpServerStatus {
   name: string;
-  status: "connected" | "failed" | "pending" | "disabled" | "not_configured" | "unknown";
+  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "not_configured" | "unknown";
   error?: string;
   source?: string;
 }

@@ -4,6 +4,7 @@ import {
   fetchMessages,
   fetchMessagesFast,
   warmSession,
+  loginMcpServer,
   fetchMcpStatus,
   reportTiming,
   submitUserInputResponse,
@@ -451,6 +452,24 @@ export default function ChatView({
 
   // Prefer a manual override immediately after reload, then return to live stream updates.
   const effectiveMcpServers = (manualMcpOverride ?? (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus)) ?? [];
+  const refreshMcpStatus = useCallback(async () => {
+    if (!sessionId) return;
+    const servers = await fetchMcpStatus(sessionId);
+    setMcpStatus(servers);
+    setManualMcpOverride(servers);
+  }, [sessionId]);
+
+  const handleMcpAuthenticate = useCallback(async (
+    serverName: string,
+    options: { forceReauth?: boolean } = {},
+  ) => {
+    if (!sessionId) throw new Error("Open a session before signing in to an MCP server.");
+    const result = await loginMcpServer(sessionId, serverName, options);
+    setMcpStatus(result.servers);
+    setManualMcpOverride(result.servers);
+    return result;
+  }, [sessionId]);
+
 
   // Load history + MCP status when session changes.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
@@ -1220,7 +1239,11 @@ export default function ChatView({
         </div>
       )}
       {/* MCP server status */}
-      <McpStatusBar servers={effectiveMcpServers} />
+      <McpStatusBar
+        servers={effectiveMcpServers}
+        onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
+        onRefresh={sessionId ? refreshMcpStatus : undefined}
+      />
       {loading && entries.length === 0 ? (
         <LoadingSkeletonRegion
           isLoading

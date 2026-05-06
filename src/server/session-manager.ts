@@ -182,6 +182,12 @@ export interface CreateSessionManagerOpts {
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
 }
+export interface McpLoginResult {
+  serverName: string;
+  authorizationUrl?: string;
+  servers: McpServerStatus[];
+}
+
 
 /**
  * Factory that maps AppContext → SessionManagerDeps.
@@ -699,6 +705,72 @@ export class SessionManager {
     }
     return this.mcpStatus.get(sessionId) ?? [];
   }
+  async loginMcpServer(
+    sessionId: string,
+    serverName: string,
+    options: { forceReauth?: boolean } = {},
+  ): Promise<McpLoginResult> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (this.isSessionBusy(sessionId)) {
+      throw new Error("Cannot authenticate MCP server for a busy session");
+    }
+
+    const requestedServerName = serverName.trim();
+    if (!requestedServerName) throw new Error("MCP server name is required");
+
+    const sid = sessionId.slice(0, 8);
+    const linkedTask = this.findLinkedTask(sessionId);
+    const resumeConfig = this.buildSessionConfig({
+      sessionId,
+      task: linkedTask,
+      groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
+      forResume: true,
+    });
+    const configuredServerName = Object.keys(resumeConfig.mcpServers ?? {})
+      .find((name) => name.toLocaleLowerCase() === requestedServerName.toLocaleLowerCase());
+    if (!configuredServerName) {
+      throw new Error(`MCP server "${requestedServerName}" is not configured for this session`);
+    }
+
+    this.beginSessionResume(sessionId);
+    try {
+      let session = this.sessionObjects.get(sessionId);
+      if (!session) {
+        console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
+        session = await Promise.race([
+          this.client.resumeSession(sessionId, resumeConfig),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("MCP auth resume timed out after 60s")), 60_000),
+          ),
+        ]);
+        session = this.cacheResumedSession(sessionId, session);
+      }
+
+      if (typeof session.rpc?.mcp?.oauth?.login !== "function") {
+        throw new Error("MCP OAuth login is not available in this Copilot SDK build");
+      }
+
+      const result = await session.rpc.mcp.oauth.login({
+        serverName: configuredServerName,
+        forceReauth: options.forceReauth,
+        clientName: "Copilot Bridge",
+        callbackSuccessMessage: "Authentication complete. You can return to Copilot Bridge.",
+      });
+      const servers = await this.getMcpStatus(sessionId);
+      console.log(`[sdk] [${sid}] MCP auth started for ${configuredServerName}${result?.authorizationUrl ? " (browser required)" : ""}`);
+      return {
+        serverName: configuredServerName,
+        ...(typeof result?.authorizationUrl === "string" && result.authorizationUrl.trim()
+          ? { authorizationUrl: result.authorizationUrl }
+          : {}),
+        servers,
+      };
+    } finally {
+      this.endSessionResume(sessionId);
+      this.flushPendingSessionEviction(sessionId);
+    }
+  }
+
 
   /** Get latest MCP status from any session (for settings page) */
   getLatestMcpStatus(): McpServerStatus[] {

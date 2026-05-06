@@ -1701,6 +1701,50 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("servers");
   });
+  it("POST /api/sessions/:id/mcp-login starts MCP OAuth for a session server", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.loginMcpServer = vi.fn().mockResolvedValue({
+      serverName: "ado",
+      authorizationUrl: "https://login.example.test",
+      servers: [{ name: "ado", status: "needs-auth" }],
+    });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/mcp-login")
+      .send({ serverName: "ado", forceReauth: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      serverName: "ado",
+      authorizationUrl: "https://login.example.test",
+      servers: [{ name: "ado", status: "needs-auth" }],
+    });
+    expect(sessionManager.loginMcpServer).toHaveBeenCalledWith("test-id", "ado", { forceReauth: true });
+  });
+
+  it("POST /api/sessions/:id/mcp-login validates the request body", async () => {
+    const res = await request(app)
+      .post("/api/sessions/test-id/mcp-login")
+      .send({ forceReauth: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("serverName is required");
+  });
+
+  it("POST /api/sessions/:id/mcp-login maps busy sessions to 409", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.loginMcpServer = vi.fn().mockRejectedValue(new Error("Cannot authenticate MCP server for a busy session"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/mcp-login")
+      .send({ serverName: "ado" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cannot authenticate MCP server for a busy session");
+  });
+
 
   it("GET /api/mcp-status returns global MCP status", async () => {
     const res = await request(app).get("/api/mcp-status");
