@@ -193,13 +193,25 @@ export function createDeferLoopRunner(
       "<defer>",
       `deferId: ${toIntervalDeferId(loop.id)}`,
       "kind: interval",
+      "attentionMode: quiet",
       `runCount: ${loop.runCount + 1}`,
       `intervalSeconds: ${loop.intervalSeconds}`,
       `nextRunAt: ${loop.nextRunAt}`,
     ];
     if (loop.maxRuns !== undefined) lines.push(`maxRuns: ${loop.maxRuns}`);
     if (loop.expiresAt) lines.push(`expiresAt: ${loop.expiresAt}`);
-    lines.push("</defer>", "", "User prompt:", loop.prompt);
+    lines.push(
+      "</defer>",
+      "",
+      "Quiet recurring deferral instructions:",
+      "- This is an automated polling check. If there is nothing actionable for the user, give a concise status and stop.",
+      "- Do not ask a question just to report no change.",
+      "- If user input, approval, a decision, credentials, clarification, or prioritization is needed, you MUST use ask_user instead of asking in plain text.",
+      "- Only ask_user raises user attention for this quiet check.",
+      "",
+      "User prompt:",
+      loop.prompt,
+    );
     return lines.join("\n");
   }
 
@@ -210,7 +222,12 @@ export function createDeferLoopRunner(
   ): Promise<void> {
     let shouldProcessNextDueLoop = false;
     try {
-      await sessionManager.startWorkAndWaitForDelivery(loop.sessionId, formatLoopPrompt(loop));
+      await sessionManager.startWorkAndWaitForDelivery(
+        loop.sessionId,
+        formatLoopPrompt(loop),
+        undefined,
+        { attentionMode: "quiet" },
+      );
       const acceptedAt = new Date();
       const nextRunAt = new Date(acceptedAt.getTime() + loop.intervalSeconds * 1000).toISOString();
       const updated = store.completeOccurrence(loop.id, claimToken, nextRunAt, acceptedAt.toISOString());

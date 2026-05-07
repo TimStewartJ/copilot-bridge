@@ -154,6 +154,65 @@ describe("event-transform visible activity", () => {
 
     expect(lastVisibleActivityAt).toBeUndefined();
   });
+
+  it("ignores quiet interval defer turns for visible activity while keeping transcript entries", () => {
+    const events = [
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: {
+          content: [
+            "<defer>",
+            "deferId: interval_123",
+            "kind: interval",
+            "attentionMode: quiet",
+            "</defer>",
+            "",
+            "User prompt:",
+            "Poll deployment",
+          ].join("\n"),
+        },
+      },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:10.000Z", data: { content: "No change yet." } },
+      { type: "session.idle", timestamp: "2026-04-10T10:00:11.000Z", data: {} },
+      { type: "user.message", timestamp: "2026-04-10T10:05:00.000Z", data: { content: "What changed?" } },
+      { type: "assistant.message", timestamp: "2026-04-10T10:05:05.000Z", data: { content: "Here is the update." } },
+    ];
+
+    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:05:05.000Z");
+    expect(transformEventsToMessages(events, "session-1").map((entry) => entry.content)).toEqual([
+      expect.stringContaining("attentionMode: quiet"),
+      "No change yet.",
+      "What changed?",
+      "Here is the update.",
+    ]);
+  });
+
+  it("resumes normal visible activity at the next user turn if a quiet defer turn has no terminal event", () => {
+    const lastVisibleActivityAt = getLastVisibleActivityAt([
+      {
+        type: "user.message",
+        timestamp: "2026-04-10T10:00:00.000Z",
+        data: {
+          content: [
+            "<defer>",
+            "deferId: interval_123",
+            "kind: interval",
+            "attentionMode: quiet",
+            "</defer>",
+            "",
+            "User prompt:",
+            "Poll deployment",
+          ].join("\n"),
+        },
+      },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:10.000Z", data: { content: "No change yet." } },
+      { type: "user.message", timestamp: "2026-04-10T10:03:00.000Z", data: { content: "Unrelated question" } },
+      { type: "assistant.message", timestamp: "2026-04-10T10:03:05.000Z", data: { content: "Unrelated answer" } },
+    ], "session-1");
+
+    expect(lastVisibleActivityAt).toBe("2026-04-10T10:03:05.000Z");
+  });
 });
 
 describe("event-transform tool results", () => {

@@ -16,14 +16,14 @@ function makeMockSessionManager(overrides: Partial<{
   startWorkError?: Error;
 }> = {}) {
   const { sessions = [], busySessions = new Set(), startWorkError } = overrides;
-  const started: Array<{ sessionId: string; prompt: string }> = [];
+  const started: Array<{ sessionId: string; prompt: string; options?: unknown }> = [];
   return {
     listSessionsFromDisk: async (options: { includeArchived?: boolean } = {}) =>
       sessions.map((s) => ({ sessionId: s, archived: false, ...options })),
     isSessionBusy: (sid: string) => busySessions.has(sid),
-    startWorkAndWaitForDelivery: async (sessionId: string, prompt: string) => {
+    startWorkAndWaitForDelivery: async (sessionId: string, prompt: string, _attachments?: unknown, options?: unknown) => {
       if (startWorkError) throw startWorkError;
-      started.push({ sessionId, prompt });
+      started.push({ sessionId, prompt, options });
     },
     _started: started,
   };
@@ -65,8 +65,11 @@ describe("defer-loop-runner", () => {
     expect(sm._started).toHaveLength(1);
     expect(sm._started[0].prompt).toContain(`<defer>\ndeferId: ${loop.deferId}`);
     expect(sm._started[0].prompt).toContain("kind: interval");
+    expect(sm._started[0].prompt).toContain("attentionMode: quiet");
     expect(sm._started[0].prompt).toContain("runCount: 1");
+    expect(sm._started[0].prompt).toContain("If user input, approval, a decision, credentials, clarification, or prioritization is needed, you MUST use ask_user");
     expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
+    expect(sm._started[0].options).toEqual({ attentionMode: "quiet" });
     const updated = store.get(loop.id)!;
     expect(updated.status).toBe("active");
     expect(updated.runCount).toBe(1);

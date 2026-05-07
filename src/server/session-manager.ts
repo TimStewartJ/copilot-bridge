@@ -112,8 +112,8 @@ import {
   type SessionRunState,
   type SessionActivity,
 } from "./session-run-state-controller.js";
-import { SessionRunner, type McpServerStatus } from "./session-runner.js";
-export type { McpServerStatus } from "./session-runner.js";
+import { SessionRunner, type McpServerStatus, type StartWorkOptions } from "./session-runner.js";
+export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
   deriveModelStateFromEventsFile,
   type DerivedModelState,
@@ -1028,12 +1028,17 @@ export class SessionManager {
   }
 
   // Fire and forget — starts work and emits events to the session's EventBus
-  startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): void {
-    this.sessionRunner.startWork(sessionId, prompt, attachments);
+  startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[], options?: StartWorkOptions): void {
+    this.sessionRunner.startWork(sessionId, prompt, attachments, options);
   }
 
-  async startWorkAndWaitForDelivery(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
-    await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments);
+  async startWorkAndWaitForDelivery(
+    sessionId: string,
+    prompt: string,
+    attachments?: StartWorkAttachment[],
+    options?: StartWorkOptions,
+  ): Promise<void> {
+    await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, options);
   }
 
   startFleet(sessionId: string, prompt?: string): void {

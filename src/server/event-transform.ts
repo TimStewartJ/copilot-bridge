@@ -55,6 +55,34 @@ function isTurnTerminalEvent(event: any): boolean {
     || event.type === "session.error";
 }
 
+function getUserMessageContent(event: any): string {
+  if (event?.type !== "user.message") return "";
+  const content = event?.data?.content ?? event?.data?.prompt;
+  return typeof content === "string" ? content : "";
+}
+
+function parseDeferMetadata(content: string): Record<string, string> | undefined {
+  const start = content.indexOf("<defer>");
+  const end = content.indexOf("</defer>", start + "<defer>".length);
+  if (start < 0 || end < 0) return undefined;
+
+  const metadata: Record<string, string> = {};
+  const block = content.slice(start + "<defer>".length, end);
+  for (const rawLine of block.split(/\r?\n/)) {
+    const separator = rawLine.indexOf(":");
+    if (separator <= 0) continue;
+    const key = rawLine.slice(0, separator).trim();
+    const value = rawLine.slice(separator + 1).trim();
+    if (key && value) metadata[key] = value;
+  }
+  return metadata;
+}
+
+function isQuietIntervalDeferEvent(event: any): boolean {
+  const metadata = parseDeferMetadata(getUserMessageContent(event));
+  return metadata?.kind === "interval" && metadata.attentionMode === "quiet";
+}
+
 function getRenameTargetSessionId(args: unknown): string | undefined {
   if (!args || typeof args !== "object") return undefined;
   const value = (args as Record<string, unknown>).sessionId;
@@ -193,25 +221,40 @@ export function getVisibleEventTimestamp(event: any, sessionId?: string): string
   return event?.data?.timestamp ?? event?.timestamp;
 }
 
-export function getLastVisibleActivityAt(events: any[], sessionId?: string): string | undefined {
+export function createVisibleActivityTracker(sessionId?: string) {
   const openVisibleToolCallIds = new Set<string>();
   let lastVisibleActivityAt: string | undefined;
+  let quietTurn = false;
 
-  for (const event of events) {
+  function observe(event: any): string | undefined {
+    if (event.type === "user.message") {
+      quietTurn = isQuietIntervalDeferEvent(event);
+      if (quietTurn) {
+        openVisibleToolCallIds.clear();
+        return lastVisibleActivityAt;
+      }
+    } else if (quietTurn) {
+      if (isTurnTerminalEvent(event)) {
+        quietTurn = false;
+        openVisibleToolCallIds.clear();
+      }
+      return lastVisibleActivityAt;
+    }
+
     const timestamp = getVisibleEventTimestamp(event, sessionId);
     if (timestamp) {
       lastVisibleActivityAt = timestamp;
       if (event.type === "tool.execution_start" && event?.data?.toolCallId) {
         openVisibleToolCallIds.add(event.data.toolCallId);
       }
-      continue;
+      return lastVisibleActivityAt;
     }
 
     if (event.type === "tool.execution_complete" && event?.data?.toolCallId && openVisibleToolCallIds.has(event.data.toolCallId)) {
       const completedAt = event?.timestamp;
       if (completedAt) lastVisibleActivityAt = completedAt;
       openVisibleToolCallIds.delete(event.data.toolCallId);
-      continue;
+      return lastVisibleActivityAt;
     }
 
     if (isTurnTerminalEvent(event) && openVisibleToolCallIds.size > 0) {
@@ -219,8 +262,21 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
       if (terminalAt) lastVisibleActivityAt = terminalAt;
       openVisibleToolCallIds.clear();
     }
+    return lastVisibleActivityAt;
   }
-  return lastVisibleActivityAt;
+
+  return {
+    observe,
+    getLastVisibleActivityAt: () => lastVisibleActivityAt,
+  };
+}
+
+export function getLastVisibleActivityAt(events: any[], sessionId?: string): string | undefined {
+  const tracker = createVisibleActivityTracker(sessionId);
+  for (const event of events) {
+    tracker.observe(event);
+  }
+  return tracker.getLastVisibleActivityAt();
 }
 
 export interface TransformEventsToMessagesOptions {

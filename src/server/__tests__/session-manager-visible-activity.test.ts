@@ -118,4 +118,63 @@ describe("SessionManager visible activity cache", () => {
     expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
     expect(countReads(eventsPath)).toBe(0);
   });
+
+  it("does not persist quiet interval defer activity as visible activity", async () => {
+    const quietPrompt = [
+      "<defer>",
+      "deferId: interval_123",
+      "kind: interval",
+      "attentionMode: quiet",
+      "</defer>",
+      "",
+      "User prompt:",
+      "Poll deployment",
+    ].join("\n");
+    const eventsPath = writeSession([
+      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: quietPrompt } },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:05.000Z", data: { content: "No change yet." } },
+      { type: "session.idle", timestamp: "2026-04-10T10:00:06.000Z", data: {} },
+    ]);
+    const { manager, sessionMetaStore } = createManager();
+
+    const result = await manager.readMessagesFromDisk("session-1");
+
+    expect(result.total).toBe(2);
+    expect(result.lastVisibleActivityAt).toBeUndefined();
+    expect(countReads(eventsPath)).toBe(1);
+    expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt).toBeUndefined();
+  });
+
+  it("keeps quiet interval defer entries in fast reads without advancing visible activity", async () => {
+    const quietPrompt = [
+      "<defer>",
+      "deferId: interval_123",
+      "kind: interval",
+      "attentionMode: quiet",
+      "</defer>",
+      "",
+      "User prompt:",
+      "Poll deployment",
+    ].join("\n");
+    writeSession([
+      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: quietPrompt } },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:05.000Z", data: { content: "No change yet." } },
+      { type: "session.idle", timestamp: "2026-04-10T10:00:06.000Z", data: {} },
+      { type: "user.message", timestamp: "2026-04-10T10:10:00.000Z", data: { content: "Normal question" } },
+      { type: "assistant.message", timestamp: "2026-04-10T10:10:05.000Z", data: { content: "Normal answer" } },
+    ]);
+    const { manager, sessionMetaStore } = createManager();
+
+    const result = await manager.readMessagesFromDisk("session-1", { limit: 10 });
+
+    expect(result.total).toBe(4);
+    expect(result.messages.map((message) => message.content)).toEqual([
+      quietPrompt,
+      "No change yet.",
+      "Normal question",
+      "Normal answer",
+    ]);
+    expect(result.lastVisibleActivityAt).toBe("2026-04-10T10:10:05.000Z");
+    expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt).toBe("2026-04-10T10:10:05.000Z");
+  });
 });
