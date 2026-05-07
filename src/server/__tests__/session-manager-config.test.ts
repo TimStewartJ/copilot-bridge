@@ -142,7 +142,7 @@ describe("SessionManager session config", () => {
     const content = cfg.systemMessage.content;
 
     expect(content).toContain("Task momentum:");
-    expect(content).toContain("- Next action / waiting on / follow up: none set; update with task_update when clear.");
+    expect(content).toContain("- Next action / waiting on / follow up: none set; update with task_update_momentum when clear.");
   });
 
   it("includes stored task momentum in newly created task sessions", async () => {

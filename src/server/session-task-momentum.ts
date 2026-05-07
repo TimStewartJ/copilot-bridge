@@ -38,7 +38,7 @@ export function formatTaskMomentumContext(task: Task): string | undefined {
     lines.push(`- Follow up: ${formatTaskFollowUp(task.nextTouchAt!)}`);
   }
   if (task.status === "active" && !hasNextAction && !hasWaitingOn && !hasNextTouchAt) {
-    lines.push("- Next action / waiting on / follow up: none set; update with task_update when clear.");
+    lines.push("- Next action / waiting on / follow up: none set; update with task_update_momentum when clear.");
   }
 
   return lines.length > 0 ? `Task momentum:\n${lines.join("\n")}` : undefined;

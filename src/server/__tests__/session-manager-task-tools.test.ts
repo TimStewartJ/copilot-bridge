@@ -20,10 +20,11 @@ function createInvocation(toolName: string) {
 }
 
 describe("session manager task tools", () => {
-  it("tool metadata exposes kind on task create, update, list, and info", () => {
+  it("tool metadata exposes kind on task create/update and dedicated momentum tool", () => {
     const { ctx } = createTestApp();
     const createTool = getTool(ctx, "task_create") as any;
     const updateTool = getTool(ctx, "task_update") as any;
+    const momentumTool = getTool(ctx, "task_update_momentum") as any;
     const listTool = getTool(ctx, "task_list") as any;
     const infoTool = getTool(ctx, "task_get_info") as any;
 
@@ -37,6 +38,11 @@ describe("session manager task tools", () => {
       enum: ["task", "ongoing"],
       description: "Task kind",
     });
+    expect(updateTool.parameters.properties.nextAction).toBeUndefined();
+    expect(updateTool.parameters.properties.waitingOn).toBeUndefined();
+    expect(updateTool.parameters.properties.nextTouchAt).toBeUndefined();
+    expect(momentumTool.parameters.required).toEqual(["taskId", "followUp"]);
+    expect(momentumTool.parameters.properties.followUp.properties.mode.enum).toEqual(["set", "keep", "clear"]);
     expect(listTool.description).toContain("kinds");
     expect(infoTool.description).toContain("kind");
   });
@@ -135,21 +141,45 @@ describe("session manager task tools", () => {
     );
   });
 
-  it("task_update stores nullable momentum fields", async () => {
+  it("task_update does not expose or handle momentum fields", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum host");
     const tool = getTool(ctx, "task_update");
 
     await expect(tool.handler({
       taskId: task.id,
-      doneWhen: "Merged and deployed",
+      nextAction: "Ignored action",
+      waitingOn: "Ignored blocker",
+      nextTouchAt: "2026-05-02T10:00:00.000Z",
+    }, createInvocation("task_update"))).resolves.toEqual(
+      toolFailure("No fields to update. Provide at least one of: title, kind, notes, cwd, groupId, doneWhen, tags"),
+    );
+
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
+      nextAction: undefined,
+      waitingOn: undefined,
+      nextTouchAt: undefined,
+    }));
+  });
+
+  it("task_update_momentum sets and clears nullable momentum fields", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Momentum host");
+    const tool = getTool(ctx, "task_update_momentum");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      nextAction: "Check the release dashboard",
+      waitingOn: "Customer validation",
+      followUp: { mode: "set", nextTouchAt: "2026-05-02T10:00:00.000Z" },
+    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      success: true,
       nextAction: "Check the release dashboard",
       waitingOn: "Customer validation",
       nextTouchAt: "2026-05-02T10:00:00.000Z",
-    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
+    });
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
-      doneWhen: "Merged and deployed",
       nextAction: "Check the release dashboard",
       waitingOn: "Customer validation",
       nextTouchAt: "2026-05-02T10:00:00.000Z",
@@ -157,18 +187,43 @@ describe("session manager task tools", () => {
 
     await expect(tool.handler({
       taskId: task.id,
-      doneWhen: null,
+      nextAction: null,
+      waitingOn: null,
+      followUp: { mode: "clear" },
+    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      success: true,
       nextAction: null,
       waitingOn: null,
       nextTouchAt: null,
-    }, createInvocation("task_update"))).resolves.toMatchObject({ success: true });
+    });
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
-      doneWhen: undefined,
       nextAction: undefined,
       waitingOn: undefined,
       nextTouchAt: undefined,
     }));
+  });
+
+  it("task_update_momentum can keep the existing follow-up while changing other momentum", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Momentum keep");
+    ctx.taskStore.updateTask(task.id, {
+      nextAction: "Check existing review",
+      waitingOn: "Initial reviewer",
+      nextTouchAt: "2026-05-02T10:00:00.000Z",
+    });
+    const tool = getTool(ctx, "task_update_momentum");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      waitingOn: "Updated reviewer",
+      followUp: { mode: "keep" },
+    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      success: true,
+      nextAction: "Check existing review",
+      waitingOn: "Updated reviewer",
+      nextTouchAt: "2026-05-02T10:00:00.000Z",
+    });
   });
 
   it("task_get_info includes momentum fields", async () => {
@@ -193,16 +248,37 @@ describe("session manager task tools", () => {
     }));
   });
 
-  it("task_update rejects invalid nextTouchAt values", async () => {
+  it("task_update_momentum rejects invalid follow-up inputs", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum invalid");
-    const tool = getTool(ctx, "task_update");
+    const tool = getTool(ctx, "task_update_momentum");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      followUp: { mode: "keep" },
+    }, createInvocation("task_update_momentum"))).resolves.toEqual(
+      toolFailure("followUp.mode 'keep' must be paired with nextAction or waitingOn. Use mode 'set' or 'clear' to update only the follow-up date."),
+    );
+
+    await expect(tool.handler({
+      taskId: task.id,
+      followUp: { mode: "set" },
+    }, createInvocation("task_update_momentum"))).resolves.toEqual(
+      toolFailure("followUp.nextTouchAt is required when followUp.mode is 'set'"),
+    );
+
+    await expect(tool.handler({
+      taskId: task.id,
+      followUp: { mode: "clear", nextTouchAt: "2026-05-02T10:00:00.000Z" },
+    }, createInvocation("task_update_momentum"))).resolves.toEqual(
+      toolFailure("followUp.nextTouchAt is only allowed when followUp.mode is 'set'"),
+    );
 
     for (const nextTouchAt of ["not-a-date", "2026-02-31T00:00:00.000Z", JSON.parse("{\"value\":123}").value]) {
       await expect(tool.handler({
         taskId: task.id,
-        nextTouchAt,
-      }, createInvocation("task_update"))).resolves.toEqual(
+        followUp: { mode: "set", nextTouchAt },
+      }, createInvocation("task_update_momentum"))).resolves.toEqual(
         toolFailure("nextTouchAt must be a valid ISO timestamp with timezone"),
       );
     }
@@ -210,17 +286,18 @@ describe("session manager task tools", () => {
     expect(ctx.taskStore.getTask(task.id)?.nextTouchAt).toBeUndefined();
   });
 
-  it("task_update rejects parked momentum updates for completed tasks", async () => {
+  it("task_update_momentum rejects momentum updates for completed tasks", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum closed");
     ctx.taskStore.updateTask(task.id, { status: "done" });
-    const tool = getTool(ctx, "task_update");
+    const tool = getTool(ctx, "task_update_momentum");
 
     await expect(tool.handler({
       taskId: task.id,
       nextAction: "Take another pass",
-    }, createInvocation("task_update"))).resolves.toEqual(
-      toolFailure("nextAction, waitingOn, and nextTouchAt can only be set on active tasks"),
+      followUp: { mode: "set", nextTouchAt: "2026-05-02T10:00:00.000Z" },
+    }, createInvocation("task_update_momentum"))).resolves.toEqual(
+      toolFailure("task_update_momentum can only be used on active tasks"),
     );
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({

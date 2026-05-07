@@ -5,6 +5,14 @@ import type { AppContext } from "../app-context.js";
 import type { TagStore } from "../tag-store.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 
+function hasOwn(args: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(args, key);
+}
+
+function normalizeFollowUpMode(value: unknown): "set" | "keep" | "clear" | undefined {
+  return value === "set" || value === "keep" || value === "clear" ? value : undefined;
+}
+
 export function createTaskTools(ctx: AppContext) {
   return [
   defineTool("task_link_work_item", {
@@ -59,9 +67,6 @@ export function createTaskTools(ctx: AppContext) {
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" },
         doneWhen: { anyOf: [{ type: "string" }, { type: "null" }], description: "Definition of done for this task. Null clears it." },
-        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The next concrete action for this task. Null clears it." },
-        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "What this task is waiting on. Null clears it." },
-        nextTouchAt: { anyOf: [{ type: "string" }, { type: "null" }], description: "ISO timestamp with timezone for when to revisit the task. Null clears it." },
         tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." },
       },
       required: ["taskId"],
@@ -74,11 +79,8 @@ export function createTaskTools(ctx: AppContext) {
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
       if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
-      if (args.nextAction !== undefined) updates.nextAction = args.nextAction;
-      if (args.waitingOn !== undefined) updates.waitingOn = args.waitingOn;
-      if (args.nextTouchAt !== undefined) updates.nextTouchAt = args.nextTouchAt;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, notes, cwd, groupId, doneWhen, nextAction, waitingOn, nextTouchAt, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, notes, cwd, groupId, doneWhen, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
@@ -106,6 +108,83 @@ export function createTaskTools(ctx: AppContext) {
       }
       const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
       return { success: true, message: `Task updated (${fields})`, kind: updatedTask.kind };
+    },
+  }),
+  defineTool("task_update_momentum", {
+    description: "Update a task's momentum: next action, waiting on, and follow-up. Always provide an explicit followUp decision so stale follow-up dates are not left behind.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The task ID" },
+        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The next concrete action for this task. Null clears it." },
+        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "What this task is waiting on. Null clears it." },
+        followUp: {
+          type: "object",
+          description: "Explicit follow-up decision. Use set to set nextTouchAt, keep to preserve it while changing nextAction or waitingOn, or clear to clear it.",
+          properties: {
+            mode: { type: "string", enum: ["set", "keep", "clear"], description: "Follow-up decision for nextTouchAt" },
+            nextTouchAt: { type: "string", description: "ISO timestamp with timezone. Required when mode is set." },
+          },
+          required: ["mode"],
+        },
+      },
+      required: ["taskId", "followUp"],
+    },
+    handler: async (args: any) => {
+      const followUp = args.followUp;
+      if (!followUp || typeof followUp !== "object" || Array.isArray(followUp)) {
+        return toolFailure("followUp is required and must include mode: set, keep, or clear");
+      }
+
+      const mode = normalizeFollowUpMode(followUp.mode);
+      if (!mode) return toolFailure("followUp.mode must be one of: set, keep, clear");
+
+      const hasNextActionUpdate = hasOwn(args, "nextAction");
+      const hasWaitingOnUpdate = hasOwn(args, "waitingOn");
+      const hasNextTouchAtInput = hasOwn(followUp, "nextTouchAt");
+      if (mode === "keep" && !hasNextActionUpdate && !hasWaitingOnUpdate) {
+        return toolFailure("followUp.mode 'keep' must be paired with nextAction or waitingOn. Use mode 'set' or 'clear' to update only the follow-up date.");
+      }
+      if (mode === "set" && !hasNextTouchAtInput) {
+        return toolFailure("followUp.nextTouchAt is required when followUp.mode is 'set'");
+      }
+      if (mode !== "set" && hasNextTouchAtInput) {
+        return toolFailure("followUp.nextTouchAt is only allowed when followUp.mode is 'set'");
+      }
+
+      const task = ensureTask(ctx, args.taskId);
+      if (!task.ok) return toolFailure(task.error);
+      if (task.value.status !== "active") {
+        return toolFailure("task_update_momentum can only be used on active tasks");
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (hasNextActionUpdate) updates.nextAction = args.nextAction;
+      if (hasWaitingOnUpdate) updates.waitingOn = args.waitingOn;
+      if (mode === "set") updates.nextTouchAt = followUp.nextTouchAt;
+      if (mode === "clear") updates.nextTouchAt = null;
+
+      let updatedTask = task.value;
+      try {
+        updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any);
+      } catch (error) {
+        if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
+        throw error;
+      }
+
+      const fields = [
+        ...(hasNextActionUpdate ? ["nextAction"] : []),
+        ...(hasWaitingOnUpdate ? ["waitingOn"] : []),
+        ...(mode === "set" || mode === "clear" ? ["nextTouchAt"] : ["nextTouchAt kept"]),
+      ].join(", ");
+      return {
+        success: true,
+        message: `Task momentum updated (${fields})`,
+        nextAction: updatedTask.nextAction ?? null,
+        waitingOn: updatedTask.waitingOn ?? null,
+        nextTouchAt: updatedTask.nextTouchAt ?? null,
+        kind: updatedTask.kind,
+      };
     },
   }),
   defineTool("task_get_info", {
