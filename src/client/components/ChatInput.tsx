@@ -57,6 +57,7 @@ interface ChatInputProps {
   onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
   onReviewVoiceJob?: (composerKey: string) => void;
   onClearVoiceJobError?: (composerKey: string) => void;
+  onRetryVoiceJobUpload?: (composerKey: string) => void;
   /** When true, input is visible but send is disabled (e.g., session warming up) */
   disabled?: boolean;
   disabledHint?: string;
@@ -74,6 +75,7 @@ export default function ChatInput({
   onSubmitVoiceCapture,
   onReviewVoiceJob,
   onClearVoiceJobError,
+  onRetryVoiceJobUpload,
   disabled,
   disabledHint,
 }: ChatInputProps) {
@@ -174,6 +176,10 @@ export default function ChatInput({
     ? voiceJob
     : null;
   const voiceJobError = voiceJob?.status === "error" ? voiceJob.error ?? null : null;
+  const canRetryVoiceJobUpload =
+    voiceJob?.status === "error"
+    && voiceJob.retryable === true
+    && !!onRetryVoiceJobUpload;
 
   const voice = useVoiceInput({
     contextKey: composerKey,
@@ -447,12 +453,25 @@ export default function ChatInput({
 
       {voiceUi.message && (
         <div
-          className={`mb-2 text-xs ${voiceMessageClassName}`}
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
+          className={`mb-2 flex flex-wrap items-center gap-x-1 text-xs ${voiceMessageClassName}`}
         >
-          {voiceUi.message}
+          <span
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {voiceUi.message}
+          </span>
+          {canRetryVoiceJobUpload && (
+            <button
+              type="button"
+              onClick={() => onRetryVoiceJobUpload?.(composerKey)}
+              aria-label="Try sending voice message again"
+              className="rounded-sm font-medium underline underline-offset-2 transition-colors hover:text-error-hover focus:outline-none focus:ring-2 focus:ring-error/40"
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
 
