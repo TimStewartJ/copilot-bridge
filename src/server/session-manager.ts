@@ -797,6 +797,15 @@ export class SessionManager {
     return normalized;
   }
 
+  private isSessionStatePathSegment(sessionId: string): boolean {
+    return sessionId !== "." && sessionId !== ".." && !sessionId.includes("/") && !sessionId.includes("\\");
+  }
+
+  private hasSessionOnDisk(sessionId: string): boolean {
+    if (!this.isSessionStatePathSegment(sessionId)) return false;
+    return existsSync(join(this.getSessionStateDir(sessionId), "workspace.yaml"));
+  }
+
   private async canAddressSession(sessionId: string): Promise<boolean> {
     if (
       this.sessionObjects.has(sessionId)
@@ -808,8 +817,7 @@ export class SessionManager {
       return true;
     }
 
-    const sessions = await this.listSessionsFromDisk({ includeArchived: true });
-    return sessions.some((session: any) => session?.sessionId === sessionId);
+    return this.hasSessionOnDisk(sessionId);
   }
 
   async submitUserInputResponse(

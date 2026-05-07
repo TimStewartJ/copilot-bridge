@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createEventBusRegistry } from "../event-bus.js";
 import { SessionManager } from "../session-manager.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
 import { UserInputBroker, UserInputBrokerError } from "../user-input-broker.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, makeTestRuntimePaths } from "./helpers.js";
 
 type UserInputSessionConfig = {
   onUserInputRequest: (
@@ -17,6 +19,9 @@ function createManager(ids: string[] = ["request-1"]) {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const eventBusRegistry = createEventBusRegistry();
+  const runtimePaths = makeTestRuntimePaths("user-input-manager");
+  const copilotHome = runtimePaths.copilotHome;
+  if (!copilotHome) throw new Error("Expected test runtime paths to include copilotHome");
   let nextId = 0;
   const userInputBroker = new UserInputBroker({
     requestIdFactory: () => ids[nextId++] ?? `request-${nextId}`,
@@ -30,9 +35,18 @@ function createManager(ids: string[] = ["request-1"]) {
     sessionTitles: createSessionTitlesStore(db),
     taskStore: createTaskStore(db, globalBus),
     config: { sessionMcpServers: {} },
+    clientEnv: runtimePaths.env,
+    copilotHome,
+    runtimePaths,
   });
 
-  return { manager, eventBusRegistry, globalBus, userInputBroker };
+  return { manager, copilotHome, eventBusRegistry, globalBus, runtimePaths, userInputBroker };
+}
+
+function writeDiskSession(copilotHome: string, sessionId: string) {
+  const sessionDir = join(copilotHome, "session-state", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(join(sessionDir, "workspace.yaml"), "created_at: 2026-04-29T12:00:00.000Z\n");
 }
 
 describe("SessionManager user input responses", () => {
@@ -269,6 +283,33 @@ describe("SessionManager user input responses", () => {
     const { manager } = createManager();
 
     await expect(manager.submitUserInputResponse("missing-session", "request-1", {
+      answer: "yes",
+      wasFreeform: false,
+    })).rejects.toMatchObject({
+      code: "request_not_found",
+      statusCode: 404,
+      message: "Session not found",
+    } satisfies Partial<UserInputBrokerError>);
+  });
+
+  it("still addresses existing disk sessions without scanning the session list", async () => {
+    const { manager, copilotHome } = createManager();
+    writeDiskSession(copilotHome, "session-on-disk");
+
+    await expect(manager.submitUserInputResponse("session-on-disk", "request-1", {
+      answer: "yes",
+      wasFreeform: false,
+    })).rejects.toMatchObject({
+      code: "request_not_found",
+      statusCode: 404,
+      message: "Pending user input request not found",
+    } satisfies Partial<UserInputBrokerError>);
+  });
+
+  it("does not treat path traversal as an addressable disk session", async () => {
+    const { manager } = createManager();
+
+    await expect(manager.submitUserInputResponse("..\\outside-session", "request-1", {
       answer: "yes",
       wasFreeform: false,
     })).rejects.toMatchObject({
