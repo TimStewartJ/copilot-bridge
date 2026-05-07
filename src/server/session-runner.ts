@@ -124,7 +124,7 @@ export interface SessionRunnerDeps {
     reason: UserInputCancelReason,
     message?: string,
   ): void;
-  invalidateSessionListCache(): void;
+  invalidateSessionListCache(reason?: string): void;
 }
 
 export class SessionRunner {

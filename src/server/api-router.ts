@@ -481,9 +481,9 @@ function resolveWorkspaceTask(ctx: AppContext, sessionId: string, requestedTaskI
   return task;
 }
 
-function createSessionListTaskResolver(ctx: AppContext): (sessionId: string) => Task | undefined {
+function createSessionListTaskLookup(ctx: AppContext, tasks = ctx.taskStore.listTasks?.() ?? []) {
   const linkedTasksBySessionId = new Map<string, Task[]>();
-  for (const task of ctx.taskStore.listTasks?.() ?? []) {
+  for (const task of tasks) {
     for (const sessionId of task.sessionIds) {
       const linkedTasks = linkedTasksBySessionId.get(sessionId);
       if (linkedTasks) linkedTasks.push(task);
@@ -491,12 +491,37 @@ function createSessionListTaskResolver(ctx: AppContext): (sessionId: string) => 
     }
   }
 
-  return (sessionId: string) => {
+  const resolveTask = (sessionId: string): Task | undefined => {
     const linkedTasks = linkedTasksBySessionId.get(sessionId) ?? [];
     if (linkedTasks.length === 1) return linkedTasks[0];
     if (linkedTasks.length > 1) return undefined;
     return ctx.taskStore.findTaskBySessionId(sessionId);
   };
+
+  const getLinkedTasks = (sessionId: string): Task[] => {
+    const linkedTasks = linkedTasksBySessionId.get(sessionId) ?? [];
+    if (linkedTasks.length > 0) return linkedTasks;
+    const fallbackTask = ctx.taskStore.findTaskBySessionId(sessionId);
+    return fallbackTask ? [fallbackTask] : [];
+  };
+
+  return { tasks, resolveTask, getLinkedTasks };
+}
+
+function isLinkedOnlyToArchivedTasks(linkedTasks: Task[]): boolean {
+  return linkedTasks.length > 0 && linkedTasks.every((task) => task.status === "archived");
+}
+
+function hasExplicitUnreadActivity(
+  readState: Record<string, string>,
+  sessionId: string,
+  activityTime?: string,
+): boolean {
+  const lastReadAt = readState[sessionId];
+  if (!lastReadAt || !activityTime) return false;
+  const activityMs = Date.parse(activityTime);
+  const readMs = Date.parse(lastReadAt);
+  return Number.isFinite(activityMs) && Number.isFinite(readMs) && activityMs > readMs;
 }
 
 function resolveSessionSummary(
@@ -916,25 +941,206 @@ export function createApiRouter(ctx: AppContext): express.Router {
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
   let enrichedSessionCacheGeneration = 0;
 
-  function invalidateEnrichedCache() {
+  function recordSessionCacheSpan(name: string, duration: number, metadata: Record<string, unknown>): void {
+    try {
+      ctx.telemetryStore?.recordSpan({ name, duration, metadata, source: "server" });
+    } catch { /* telemetry should never break core flow */ }
+  }
+
+  function invalidateEnrichedCache(reason: string, opts: { rawDisk?: boolean } = {}) {
+    const hadCache = enrichedSessionCache !== null;
+    const hadActiveBuild = activeSessionCacheBuild !== null;
+    const hadAllBuild = allSessionCacheBuild !== null;
     enrichedSessionCache = null;
     enrichedSessionCacheGeneration += 1;
-    ctx.sessionManager.invalidateSessionListCache();
+    recordSessionCacheSpan("session.enrichedList.invalidate", 0, {
+      reason,
+      rawDisk: opts.rawDisk === true,
+      generation: enrichedSessionCacheGeneration,
+      hadCache,
+      hadActiveBuild,
+      hadAllBuild,
+    });
+    if (opts.rawDisk) ctx.sessionManager.invalidateSessionListCache(reason);
   }
 
   function setSessionArchived(sessionId: string, archived: boolean) {
     ctx.sessionMetaStore.setArchived(sessionId, archived);
-    invalidateEnrichedCache();
     ctx.globalBus.emit({ type: "session:archived", sessionId, archived });
+  }
+
+  function materializeSessionList(
+    sessions: any[],
+    includeArchived: boolean,
+    taskLookup = createSessionListTaskLookup(ctx),
+  ): any[] {
+    const currentMeta = ctx.sessionMetaStore.listMeta();
+    const readState = ctx.readStateStore.getReadState();
+    const publicSessions = sessions.flatMap((s: any) => {
+      const id = s.sessionId;
+      const status = getSessionStatus(ctx, id);
+      const linkedTask = taskLookup.resolveTask(id);
+      const linkedTasks = taskLookup.getLinkedTasks(id);
+      const summary = resolveSessionSummary(ctx, s, {
+        fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
+      });
+      if (!summary) return [];
+
+      const sessionMeta = currentMeta[id];
+      const archived = sessionMeta?.archived ?? s.archived ?? false;
+      const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
+      if (!includeArchived && archived) return [];
+      if (
+        !includeArchived
+        && isLinkedOnlyToArchivedTasks(linkedTasks)
+        && !status.busy
+        && !status.needsUserInput
+        && !hasExplicitUnreadActivity(readState, id, lastVisibleActivityAt)
+      ) {
+        return [];
+      }
+
+      const deferSummary = getSessionDeferSummary(ctx, id);
+      return [{
+        ...s,
+        summary,
+        lastVisibleActivityAt,
+        modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
+        ...status,
+        deferSummary,
+        archived,
+      }];
+    });
+    publicSessions.sort((a: any, b: any) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
+    return publicSessions;
+  }
+
+  function getReusableSessionCacheBuild(build: SessionCacheBuild | null): Promise<any[]> | null {
+    return build?.generation === enrichedSessionCacheGeneration ? build.promise : null;
+  }
+
+  async function getEnrichedSessionList(includeArchived: boolean): Promise<any[]> {
+    const now = Date.now();
+    const cacheValid = enrichedSessionCache
+      && (!includeArchived || enrichedSessionCache.includesArchived)
+      && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
+
+    if (cacheValid) {
+      recordSessionCacheSpan("session.enrichedList.cache", 0, {
+        result: "hit",
+        includeArchived,
+        cacheIncludesArchived: enrichedSessionCache!.includesArchived,
+        count: enrichedSessionCache!.data.length,
+      });
+      return enrichedSessionCache!.data;
+    }
+
+    const existingBuild = includeArchived
+      ? getReusableSessionCacheBuild(allSessionCacheBuild)
+      : (getReusableSessionCacheBuild(allSessionCacheBuild) ?? getReusableSessionCacheBuild(activeSessionCacheBuild));
+    if (existingBuild) {
+      const tWait = Date.now();
+      const sessions = await existingBuild;
+      recordSessionCacheSpan("session.enrichedList.cache", Date.now() - tWait, {
+        result: "coalesced",
+        includeArchived,
+        count: sessions.length,
+      });
+      return sessions;
+    }
+
+    recordSessionCacheSpan("session.enrichedList.cache", 0, {
+      result: enrichedSessionCache ? "stale" : "miss",
+      includeArchived,
+      cacheIncludesArchived: enrichedSessionCache?.includesArchived,
+    });
+
+    const buildGeneration = enrichedSessionCacheGeneration;
+    const buildIncludesArchived = includeArchived;
+    const tBuild = Date.now();
+    const build = (async () => {
+      const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
+      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
+      const meta = ctx.sessionMetaStore.listMeta();
+      const taskLookup = createSessionListTaskLookup(ctx);
+
+      const enriched = await Promise.all(
+        sessions
+          .map((s: any) => {
+            const id = s.sessionId;
+            const status = getSessionStatus(ctx, id);
+            const linkedTask = taskLookup.resolveTask(id);
+            return { session: s, linkedTask, status };
+          })
+          .map(async ({ session: s, linkedTask, status }) => {
+            const id = s.sessionId;
+            const archived = meta[id]?.archived === true;
+
+            const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+            const archivedAt = meta[id]?.archivedAt ?? null;
+            const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
+            const context = {
+              ...(s.context ?? {}),
+              ...(workspace.effectiveCwd ? { cwd: workspace.effectiveCwd } : {}),
+            };
+            return {
+              ...s,
+              context: Object.keys(context).length > 0 ? context : undefined,
+              workspace,
+              ...status,
+              hasPlan,
+              archived,
+              archivedAt,
+              triggeredBy: meta[id]?.triggeredBy,
+              scheduleId: meta[id]?.scheduleId,
+              scheduleName: meta[id]?.scheduleName,
+              scheduleEnabled: meta[id]?.scheduleId
+                ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
+                : undefined,
+            };
+          }),
+      );
+
+      const stored = buildGeneration === enrichedSessionCacheGeneration;
+      if (stored) {
+        enrichedSessionCache = { data: enriched, timestamp: Date.now(), includesArchived: buildIncludesArchived };
+      }
+      recordSessionCacheSpan("session.enrichedList.build", Date.now() - tBuild, {
+        result: stored ? "stored" : "discarded",
+        includeArchived: buildIncludesArchived,
+        count: enriched.length,
+        generation: buildGeneration,
+        currentGeneration: enrichedSessionCacheGeneration,
+      });
+      return enriched;
+    })().finally(() => {
+      if (buildIncludesArchived) {
+        if (allSessionCacheBuild?.promise === build) allSessionCacheBuild = null;
+      } else if (activeSessionCacheBuild?.promise === build) {
+        activeSessionCacheBuild = null;
+      }
+    });
+
+    const buildRecord = { generation: buildGeneration, promise: build };
+    if (buildIncludesArchived) allSessionCacheBuild = buildRecord;
+    else activeSessionCacheBuild = buildRecord;
+    return build;
   }
 
   // Invalidate on session lifecycle events
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
       case "session:title":
+        invalidateEnrichedCache("bus:session:title");
+        break;
       case "session:archived":
+        invalidateEnrichedCache("bus:session:archived", { rawDisk: true });
+        break;
       case "task:changed":
-        invalidateEnrichedCache();
+        invalidateEnrichedCache("bus:task:changed");
+        break;
+      case "schedule:changed":
+        invalidateEnrichedCache("bus:schedule:changed");
         break;
     }
   });
@@ -944,121 +1150,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/sessions", async (req, res) => {
     try {
       const includeArchived = req.query.includeArchived === "true";
-
-      const materializeSessionList = (sessions: any[]): any[] => {
-        const currentMeta = ctx.sessionMetaStore.listMeta();
-        const resolveSessionListTask = createSessionListTaskResolver(ctx);
-        const publicSessions = sessions.flatMap((s: any) => {
-          const id = s.sessionId;
-          const status = getSessionStatus(ctx, id);
-          const linkedTask = resolveSessionListTask(id);
-          const summary = resolveSessionSummary(ctx, s, {
-            fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
-          });
-          if (!summary) return [];
-
-          const sessionMeta = currentMeta[id];
-          const archived = sessionMeta?.archived ?? s.archived ?? false;
-          if (!includeArchived && archived) return [];
-
-          const deferSummary = getSessionDeferSummary(ctx, id);
-          const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
-          return [{
-            ...s,
-            summary,
-            lastVisibleActivityAt,
-            modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
-            ...status,
-            deferSummary,
-            archived,
-          }];
-        });
-        publicSessions.sort((a: any, b: any) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
-        return publicSessions;
-      };
-
-      const now = Date.now();
-      const cacheValid = enrichedSessionCache
-        && (!includeArchived || enrichedSessionCache.includesArchived)
-        && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
-
-      if (cacheValid) {
-        return res.json({ sessions: materializeSessionList(enrichedSessionCache!.data) });
-      }
-
-      const startCacheBuild = (buildIncludesArchived: boolean): Promise<any[]> => {
-        const getReusableBuild = (build: SessionCacheBuild | null) =>
-          build?.generation === enrichedSessionCacheGeneration ? build.promise : null;
-        const existingBuild = buildIncludesArchived
-          ? getReusableBuild(allSessionCacheBuild)
-          : (getReusableBuild(allSessionCacheBuild) ?? getReusableBuild(activeSessionCacheBuild));
-        if (existingBuild) return existingBuild;
-
-        const buildGeneration = enrichedSessionCacheGeneration;
-        const build = (async () => {
-          const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
-          const sessionStateDir = join(getCopilotHome(ctx), "session-state");
-          const meta = ctx.sessionMetaStore.listMeta();
-          const resolveSessionListTask = createSessionListTaskResolver(ctx);
-
-          const enriched = await Promise.all(
-            sessions
-              .map((s: any) => {
-                const id = s.sessionId;
-                const status = getSessionStatus(ctx, id);
-                const linkedTask = resolveSessionListTask(id);
-                return { session: s, linkedTask, status };
-              })
-              .map(async ({ session: s, linkedTask, status }) => {
-                const id = s.sessionId;
-                const archived = meta[id]?.archived === true;
-
-                const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
-                const archivedAt = meta[id]?.archivedAt ?? null;
-                const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
-                const context = {
-                  ...(s.context ?? {}),
-                  ...(workspace.effectiveCwd ? { cwd: workspace.effectiveCwd } : {}),
-                };
-                return {
-                  ...s,
-                  context: Object.keys(context).length > 0 ? context : undefined,
-                  workspace,
-                  ...status,
-                  hasPlan,
-                  archived,
-                  archivedAt,
-                  triggeredBy: meta[id]?.triggeredBy,
-                  scheduleId: meta[id]?.scheduleId,
-                  scheduleName: meta[id]?.scheduleName,
-                  scheduleEnabled: meta[id]?.scheduleId
-                    ? (ctx.scheduleStore.getSchedule(meta[id]!.scheduleId!)?.enabled ?? false)
-                    : undefined,
-                };
-              }),
-          );
-
-          if (buildGeneration === enrichedSessionCacheGeneration) {
-            enrichedSessionCache = { data: enriched, timestamp: Date.now(), includesArchived: buildIncludesArchived };
-          }
-          return enriched;
-        })().finally(() => {
-          if (buildIncludesArchived) {
-            if (allSessionCacheBuild?.promise === build) allSessionCacheBuild = null;
-          } else if (activeSessionCacheBuild?.promise === build) {
-            activeSessionCacheBuild = null;
-          }
-        });
-
-        const buildRecord = { generation: buildGeneration, promise: build };
-        if (buildIncludesArchived) allSessionCacheBuild = buildRecord;
-        else activeSessionCacheBuild = buildRecord;
-        return build;
-      };
-
-      const enriched = await startCacheBuild(includeArchived);
-
-      res.json({ sessions: materializeSessionList(enriched) });
+      const enriched = await getEnrichedSessionList(includeArchived);
+      res.json({ sessions: materializeSessionList(enriched, includeArchived) });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -1466,7 +1559,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const { name } = req.body ?? {};
       const result = await ctx.sessionManager.createSession();
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:session:create");
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -1491,7 +1584,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         originalTitle = sourceSession ? resolveSessionSummary(ctx, sourceSession) : undefined;
       }
       const result = await ctx.sessionManager.duplicateSession(sourceId);
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:session:duplicate");
 
       // Copy title with "Copy of" prefix
       if (originalTitle) {
@@ -1803,7 +1896,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const task = resolveWorkspaceTask(ctx, req.params.id, typeof req.query.taskId === "string" ? req.query.taskId : undefined);
       ctx.sessionManager.setSessionWorkspace(req.params.id, cwd);
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:session-workspace:set");
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1832,7 +1925,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(400).json({ error: SESSION_WORKTREE_SELECTION_INVALID_ERROR });
       }
       ctx.sessionManager.setSessionWorkspace(req.params.id, cwd);
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:session-workspace:set-worktree");
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1856,7 +1949,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       } else {
         ctx.sessionManager.resetSessionWorkspace(req.params.id);
       }
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:session-workspace:reset");
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1869,7 +1962,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const sessionId = req.params.id;
     try {
       await ctx.sessionManager.deleteSession(sessionId);
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:session:delete");
       ctx.sessionMetaStore.deleteMeta(sessionId);
       ctx.sessionTitles.deleteTitle(sessionId);
       // Unlink from any tasks that reference this session
@@ -1907,7 +2000,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             break;
           case "delete": {
             await ctx.sessionManager.deleteSession(sid);
-            invalidateEnrichedCache();
+            invalidateEnrichedCache("route:session-batch:delete");
             ctx.sessionMetaStore.deleteMeta(sid);
             ctx.sessionTitles.deleteTitle(sid);
             const tasks = ctx.taskStore.listTasks();
@@ -2435,7 +2528,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         undefined,
         groupNotes,
       );
-      invalidateEnrichedCache();
+      invalidateEnrichedCache("route:task-session:create");
 
       // Auto-link session to task
       ctx.taskStore.linkSession(task.id, result.sessionId);
@@ -2523,47 +2616,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const compatCtx = ctx as RouterCompatContext;
       const t0 = Date.now();
-      const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: false });
-      const sessionStateDir = join(getCopilotHome(ctx), "session-state");
-      const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
       const tasks = ctx.taskStore.listTasks();
+      const taskLookup = createSessionListTaskLookup(ctx, tasks);
       const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
 
-      // Enrich sessions (lightweight — skip disk size for dashboard)
-      const enrichedSessions = (await Promise.all(
-        sessions
-          .map((s: any) => {
-            const id = s.sessionId;
-            const status = getSessionStatus(ctx, id);
-            const linkedTask = tasks.find((task) => task.sessionIds.includes(id));
-            const summary = resolveSessionSummary(ctx, s, {
-              fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
-            });
-            return { session: s, summary, status };
-          })
-          .filter((entry): entry is {
-            session: any;
-            summary: string;
-            status: ReturnType<typeof getSessionStatus>;
-          } => !!entry.summary)
-          .map(async ({ session: s, summary, status }) => {
-            const id = s.sessionId;
-            const sessionMeta = meta[id];
-            const archived = sessionMeta?.archived === true;
-            const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
-            const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
-            return {
-              ...s,
-              summary,
-              ...status,
-              lastVisibleActivityAt,
-              modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
-              hasPlan,
-              archived,
-            };
-          }),
-      )).filter((s: any) => !s.archived);
+      const enrichedSessions = materializeSessionList(
+        await getEnrichedSessionList(false),
+        false,
+        taskLookup,
+      );
 
       const sessionById = new Map(enrichedSessions.map((s: any) => [s.sessionId, s]));
 
@@ -2581,7 +2643,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const busySessions = enrichedSessions
         .filter((s: any) => s.busy)
         .map((s: any) => {
-          const taskId = tasks.find((t) => t.sessionIds.includes(s.sessionId))?.id;
+          const taskId = taskLookup.resolveTask(s.sessionId)?.id;
           const bus = ctx.eventBusRegistry.getBus(s.sessionId);
           return {
             sessionId: s.sessionId,
@@ -2597,7 +2659,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const unreadSessions = enrichedSessions
         .filter((s: any) => !s.busy && isUnread(s.sessionId, s.lastVisibleActivityAt))
         .map((s: any) => {
-          const taskId = tasks.find((t) => t.sessionIds.includes(s.sessionId))?.id;
+          const taskId = taskLookup.resolveTask(s.sessionId)?.id;
           return {
             sessionId: s.sessionId,
             title: s.summary,

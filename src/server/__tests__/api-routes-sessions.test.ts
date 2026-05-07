@@ -172,6 +172,127 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
+  it("task changes do not clear the raw disk session list cache", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.invalidateSessionListCache = vi.fn();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    ctx.taskStore.createTask("Task cache metadata update");
+
+    expect(sessionManager.invalidateSessionListCache).not.toHaveBeenCalled();
+  });
+
+  it("session archive events clear the raw disk session list cache synchronously", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.invalidateSessionListCache = vi.fn();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "archive-me",
+        summary: "Archive me",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const before = await request(app).get("/api/sessions");
+    const patch = await request(app).patch("/api/sessions/archive-me").send({ archived: true });
+    const after = await request(app).get("/api/sessions");
+
+    expect(before.status).toBe(200);
+    expect(before.body.sessions).toEqual([expect.objectContaining({ sessionId: "archive-me" })]);
+    expect(patch.status).toBe(200);
+    expect(after.status).toBe(200);
+    expect(after.body.sessions).toEqual([]);
+    expect(sessionManager.invalidateSessionListCache).toHaveBeenCalledWith("bus:session:archived");
+  });
+
+  it("GET /api/sessions hides idle sessions linked only to archived tasks by default", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "archived-task-session",
+        summary: "Archived task session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+      {
+        sessionId: "unlinked-session",
+        summary: "Unlinked session",
+        modifiedTime: "2026-04-16T13:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T13:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const archivedTask = ctx.taskStore.createTask("Archived parent task");
+    ctx.taskStore.linkSession(archivedTask.id, "archived-task-session");
+    ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
+
+    const activeRes = await request(app).get("/api/sessions");
+    const allRes = await request(app).get("/api/sessions?includeArchived=true");
+
+    expect(activeRes.status).toBe(200);
+    expect(activeRes.body.sessions.map((session: any) => session.sessionId)).toEqual(["unlinked-session"]);
+    expect(allRes.status).toBe(200);
+    expect(allRes.body.sessions.map((session: any) => session.sessionId)).toEqual([
+      "unlinked-session",
+      "archived-task-session",
+    ]);
+  });
+
+  it("GET /api/sessions keeps sessions visible when any linked task is active", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "mixed-task-session",
+        summary: "Mixed task session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const archivedTask = ctx.taskStore.createTask("Archived parent task");
+    const activeTask = ctx.taskStore.createTask("Active parent task");
+    ctx.taskStore.linkSession(archivedTask.id, "mixed-task-session");
+    ctx.taskStore.linkSession(activeTask.id, "mixed-task-session");
+    ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toEqual([
+      expect.objectContaining({ sessionId: "mixed-task-session" }),
+    ]);
+  });
+
+  it("GET /api/sessions keeps busy archived-task sessions visible by default", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "busy-archived-task-session",
+        summary: "Busy archived task session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const archivedTask = ctx.taskStore.createTask("Archived parent task");
+    ctx.taskStore.linkSession(archivedTask.id, "busy-archived-task-session");
+    ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "busy-archived-task-session",
+        runState: "busy",
+        busy: true,
+      }),
+    ]);
+  });
+
   it("GET /api/sessions includes runState while keeping busy derived for stalled sessions", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
@@ -411,6 +532,29 @@ describe("Session routes (mocked)", () => {
     expect(res.body.unreadSessions).toEqual([
       expect.objectContaining({ sessionId: "active-session", title: "Active session" }),
     ]);
+  });
+
+  it("GET /api/dashboard reuses the warmed active session cache", async () => {
+    const sessionManager = createMockSessionManager();
+    const listSessionsFromDisk = vi.fn(async () => [
+      {
+        sessionId: "cached-dashboard-session",
+        summary: "Cached dashboard session",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    sessionManager.listSessionsFromDisk = listSessionsFromDisk;
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const sessionsRes = await request(app).get("/api/sessions");
+    const dashboardRes = await request(app).get("/api/dashboard");
+
+    expect(sessionsRes.status).toBe(200);
+    expect(dashboardRes.status).toBe(200);
+    expect(dashboardRes.body.unreadSessions).toEqual([
+      expect.objectContaining({ sessionId: "cached-dashboard-session", title: "Cached dashboard session" }),
+    ]);
+    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
   it("GET /api/dashboard tolerates preview contexts without dashboard stores", async () => {
