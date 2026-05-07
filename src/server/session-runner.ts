@@ -47,6 +47,12 @@ export interface McpServerStatus {
   source?: string;
 }
 
+export type SessionAttentionMode = "normal" | "quiet";
+
+export interface StartWorkOptions {
+  attentionMode?: SessionAttentionMode;
+}
+
 function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -168,7 +174,12 @@ export class SessionRunner {
     return this.deps.runStateController.createRunController(sessionId, bus);
   }
 
-  startWorkRun(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): SessionRunController {
+  startWorkRun(
+    sessionId: string,
+    prompt: string,
+    attachments?: StartWorkAttachment[],
+    options: StartWorkOptions = {},
+  ): SessionRunController {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
@@ -184,16 +195,21 @@ export class SessionRunner {
     return this.startBackgroundRun(
       sessionId,
       bus,
-      (runController) => this.doWork(sessionId, prompt, bus, runController, attachments),
+      (runController) => this.doWork(sessionId, prompt, bus, runController, attachments, options),
     );
   }
 
-  startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): void {
-    this.startWorkRun(sessionId, prompt, attachments);
+  startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[], options?: StartWorkOptions): void {
+    this.startWorkRun(sessionId, prompt, attachments, options);
   }
 
-  async startWorkAndWaitForDelivery(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
-    const runController = this.startWorkRun(sessionId, prompt, attachments);
+  async startWorkAndWaitForDelivery(
+    sessionId: string,
+    prompt: string,
+    attachments?: StartWorkAttachment[],
+    options?: StartWorkOptions,
+  ): Promise<void> {
+    const runController = this.startWorkRun(sessionId, prompt, attachments, options);
     const delivery = await runController.promptDelivery;
     if (delivery.status === "accepted") return;
     throw new Error(delivery.message);
@@ -252,6 +268,7 @@ export class SessionRunner {
     bus: ReturnType<typeof getOrCreateBus>,
     runController?: SessionRunController,
     attachments?: StartWorkAttachment[],
+    options: StartWorkOptions = {},
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
     const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
@@ -261,6 +278,7 @@ export class SessionRunner {
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
       fallbackTitleSource: prompt,
+      attentionMode: options.attentionMode ?? "normal",
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       execute: async (session) => {
@@ -300,6 +318,7 @@ export class SessionRunner {
       startLog: string;
       execute: (session: any) => Promise<void>;
       fallbackTitleSource?: string;
+      attentionMode?: SessionAttentionMode;
     },
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
@@ -432,7 +451,9 @@ export class SessionRunner {
         this.touchSessionRun(sessionId, eventAt);
       }
       const data = (event as any).data;
-      this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
+      if (opts.attentionMode !== "quiet") {
+        this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
+      }
       switch (event.type) {
         case "user.message":
           bus.clearPendingPrompt();

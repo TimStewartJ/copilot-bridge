@@ -2,8 +2,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import {
+  createVisibleActivityTracker,
   getLastVisibleActivityAt,
-  getVisibleEventTimestamp,
   getVisualArtifactFromToolCompletion,
   isVisibleTransformedEntryEvent,
   transformEventsToMessages,
@@ -205,11 +205,11 @@ async function scanEventLogStats(
 ): Promise<EventLogStats> {
   const openVisibleToolCallIds = new Set<string>();
   const visiblePublishVisualToolCallIds = new Set<string>();
+  const visibleActivityTracker = createVisibleActivityTracker(sessionId);
   let eventCount = 0;
   let candidateEventCount = 0;
   let malformedCandidateCount = 0;
   let totalEntries = 0;
-  let lastVisibleActivityAt: string | undefined;
   let initialTurnIndex = 0;
   let initialActiveTurnId: string | undefined;
 
@@ -232,6 +232,8 @@ async function scanEventLogStats(
       return;
     }
 
+    visibleActivityTracker.observe(event);
+
     if (lineStartsBeforeTail) {
       if (event.type === "assistant.turn_start") {
         initialTurnIndex += 1;
@@ -243,8 +245,6 @@ async function scanEventLogStats(
 
     if (isVisibleTransformedEntryEvent(event, sessionId)) {
       totalEntries += 1;
-      const timestamp = getVisibleEventTimestamp(event, sessionId);
-      if (timestamp) lastVisibleActivityAt = timestamp;
       if (event.type === "tool.execution_start") {
         const toolCallId = getToolCallId(event);
         if (toolCallId) {
@@ -262,8 +262,6 @@ async function scanEventLogStats(
       if (!toolCallId) return;
 
       if (openVisibleToolCallIds.has(toolCallId)) {
-        const completedAt = typeof event.timestamp === "string" ? event.timestamp : undefined;
-        if (completedAt) lastVisibleActivityAt = completedAt;
         openVisibleToolCallIds.delete(toolCallId);
       }
 
@@ -276,8 +274,6 @@ async function scanEventLogStats(
     }
 
     if (TURN_TERMINAL_EVENT_TYPES.has(event.type) && openVisibleToolCallIds.size > 0) {
-      const terminalAt = typeof event.timestamp === "string" ? event.timestamp : undefined;
-      if (terminalAt) lastVisibleActivityAt = terminalAt;
       openVisibleToolCallIds.clear();
     }
   };
@@ -329,7 +325,7 @@ async function scanEventLogStats(
     candidateEventCount,
     malformedCandidateCount,
     totalEntries,
-    lastVisibleActivityAt,
+    lastVisibleActivityAt: visibleActivityTracker.getLastVisibleActivityAt(),
     turnState: {
       initialTurnIndex,
       ...(initialActiveTurnId ? { initialActiveTurnId } : {}),
