@@ -30,6 +30,7 @@ const SQLITE_STATE_TABLES = [
   "task_pull_requests",
   "task_groups",
   "session_meta",
+  "bridge_session_state",
   "session_workspace",
   "settings",
   "session_titles",
@@ -423,6 +424,29 @@ function initSchema(db: DatabaseSync): void {
       lastVisibleActivityAt TEXT
     );
 
+    -- Bridge-owned session UX state overlay
+    CREATE TABLE IF NOT EXISTS bridge_session_state (
+      sessionId TEXT PRIMARY KEY,
+      archived INTEGER NOT NULL DEFAULT 0,
+      archivedAt TEXT,
+      titleOverride TEXT,
+      titleOverrideUpdatedAt TEXT,
+      pinnedCwd TEXT,
+      pinnedCwdUpdatedAt TEXT,
+      triggeredBy TEXT,
+      scheduleId TEXT,
+      scheduleName TEXT,
+      lastVisibleActivityAt TEXT,
+      hiddenReason TEXT,
+      hiddenAt TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bridge_session_state_archived
+      ON bridge_session_state(archived);
+    CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastVisibleActivityAt
+      ON bridge_session_state(lastVisibleActivityAt);
+
     -- Persisted session workspaces
     CREATE TABLE IF NOT EXISTS session_workspace (
       sessionId TEXT PRIMARY KEY,
@@ -692,6 +716,72 @@ function initSchema(db: DatabaseSync): void {
     db.exec("ALTER TABLE session_meta ADD COLUMN lastVisibleActivityAt TEXT");
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_session_meta_lastVisibleActivityAt ON session_meta(lastVisibleActivityAt)");
+  db.exec(`
+    INSERT OR IGNORE INTO bridge_session_state (
+      sessionId,
+      archived,
+      archivedAt,
+      triggeredBy,
+      scheduleId,
+      scheduleName,
+      lastVisibleActivityAt,
+      createdAt,
+      updatedAt
+    )
+    SELECT
+      sessionId,
+      archived,
+      NULLIF(archivedAt, ''),
+      triggeredBy,
+      scheduleId,
+      scheduleName,
+      lastVisibleActivityAt,
+      COALESCE(NULLIF(archivedAt, ''), lastVisibleActivityAt, datetime('now')),
+      COALESCE(lastVisibleActivityAt, NULLIF(archivedAt, ''), datetime('now'))
+    FROM session_meta;
+
+    UPDATE bridge_session_state
+    SET
+      archived = COALESCE((SELECT archived FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), archived),
+      archivedAt = COALESCE((SELECT NULLIF(archivedAt, '') FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), archivedAt),
+      triggeredBy = COALESCE((SELECT triggeredBy FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), triggeredBy),
+      scheduleId = COALESCE((SELECT scheduleId FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), scheduleId),
+      scheduleName = COALESCE((SELECT scheduleName FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), scheduleName),
+      lastVisibleActivityAt = COALESCE((SELECT lastVisibleActivityAt FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), lastVisibleActivityAt)
+    WHERE EXISTS (SELECT 1 FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId);
+
+    INSERT OR IGNORE INTO bridge_session_state (
+      sessionId,
+      titleOverride,
+      titleOverrideUpdatedAt,
+      createdAt,
+      updatedAt
+    )
+    SELECT sessionId, title, datetime('now'), datetime('now'), datetime('now')
+    FROM session_titles;
+
+    UPDATE bridge_session_state
+    SET
+      titleOverride = COALESCE((SELECT title FROM session_titles WHERE session_titles.sessionId = bridge_session_state.sessionId), titleOverride),
+      titleOverrideUpdatedAt = COALESCE(titleOverrideUpdatedAt, datetime('now'))
+    WHERE EXISTS (SELECT 1 FROM session_titles WHERE session_titles.sessionId = bridge_session_state.sessionId);
+
+    INSERT OR IGNORE INTO bridge_session_state (
+      sessionId,
+      pinnedCwd,
+      pinnedCwdUpdatedAt,
+      createdAt,
+      updatedAt
+    )
+    SELECT sessionId, cwd, updatedAt, updatedAt, updatedAt
+    FROM session_workspace;
+
+    UPDATE bridge_session_state
+    SET
+      pinnedCwd = COALESCE((SELECT cwd FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwd),
+      pinnedCwdUpdatedAt = COALESCE((SELECT updatedAt FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwdUpdatedAt)
+    WHERE EXISTS (SELECT 1 FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId);
+  `);
 
   const scheduleCols = db.prepare("PRAGMA table_info(schedules)").all() as any[];
   if (!scheduleCols.some((c: any) => c.name === "sessionMode")) {

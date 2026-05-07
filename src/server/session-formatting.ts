@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SESSION_TITLE_WORD_RE, looksLikePromptEchoTitle, normalizeSessionTitle } from "./session-title-utils.js";
 
 const SESSION_FORMATTING_REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -57,56 +56,6 @@ export function renderPublishedAttachment(
   };
 }
 
-export function deriveFallbackSessionTitle(sourceText: string): string | undefined {
-  const normalized = normalizeSessionTitle(sourceText);
-  if (!normalized) return undefined;
-
-  const trimmedLeadIn = normalized
-    .replace(/^(please\s+)?(can|could|would|will)\s+you\s+/i, "")
-    .replace(/^let'?s\s+/i, "")
-    .replace(/^help\s+me\s+/i, "")
-    .replace(/^i\s+(need|want)\s+to\s+/i, "")
-    .replace(/^we\s+need\s+to\s+/i, "")
-    .trim();
-
-  const words = (trimmedLeadIn || normalized).match(SESSION_TITLE_WORD_RE) ?? [];
-  if (words.length === 0) return undefined;
-
-  const fallbackTitle = normalizeSessionTitle(words.slice(0, 6).join(" "));
-  if (!fallbackTitle || fallbackTitle.length > 80 || looksLikePromptEchoTitle(fallbackTitle)) {
-    return undefined;
-  }
-
-  return fallbackTitle[0]?.toUpperCase() + fallbackTitle.slice(1);
-}
-
-export function parseWorkspaceSummary(content: string): string | undefined {
-  let summary: string | undefined;
-  let inSummary = false;
-  const summaryLines: string[] = [];
-
-  for (const line of content.split(/\r?\n/)) {
-    if (inSummary) {
-      if (line.startsWith("  ")) {
-        summaryLines.push(line.slice(2));
-        continue;
-      }
-      if (line.trim() === "") {
-        summaryLines.push("");
-        continue;
-      }
-      inSummary = false;
-    }
-    if (line.startsWith("summary: |-")) {
-      inSummary = true;
-    } else if (line.startsWith("summary:")) {
-      summary = line.slice(9).trim();
-    }
-  }
-
-  return summary ?? (summaryLines.length > 0 ? summaryLines.join("\n") : undefined);
-}
-
 export function parseWorkspaceCwd(content: string): string | undefined {
   for (const line of content.split(/\r?\n/)) {
     if (!line.startsWith("cwd:")) continue;
@@ -114,13 +63,6 @@ export function parseWorkspaceCwd(content: string): string | undefined {
     if (cwd) return cwd;
   }
   return undefined;
-}
-
-export function looksLikeExistingSessionTitle(summary: string): boolean {
-  const normalized = normalizeSessionTitle(summary);
-  if (!normalized) return false;
-  const wordCount = normalized.match(SESSION_TITLE_WORD_RE)?.length ?? 0;
-  return normalized.length <= 80 && wordCount <= 8;
 }
 
 export function normalizeInlineText(text: string): string {
@@ -184,15 +126,3 @@ export function formatRelatedDocManifestEntry(doc: {
   return line;
 }
 
-export function isPromptEchoSummary(summary: string, firstUserPrompt?: string): boolean {
-  const normalizedSummary = normalizeSessionTitle(summary);
-  const normalizedPrompt = normalizeSessionTitle(firstUserPrompt);
-  if (!normalizedSummary || !normalizedPrompt) return false;
-  if (normalizedSummary === normalizedPrompt) return true;
-  if (!normalizedPrompt.startsWith(normalizedSummary)) return false;
-
-  const summaryWords = normalizedSummary.match(SESSION_TITLE_WORD_RE)?.length ?? 0;
-  const promptWords = normalizedPrompt.match(SESSION_TITLE_WORD_RE)?.length ?? 0;
-  return normalizedPrompt.length - normalizedSummary.length >= 20
-    || promptWords - summaryWords >= 3;
-}

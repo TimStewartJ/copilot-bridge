@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { Task, TaskStore } from "./task-store.js";
-import { parseWorkspaceCwd, parseWorkspaceSummary } from "./session-formatting.js";
+import { parseWorkspaceCwd } from "./session-formatting.js";
 
 export type SessionWorkspaceChangeOptions = { allowDuringActiveTurn?: boolean };
 
@@ -81,19 +81,6 @@ export class SessionWorkspaceController {
 
   getSessionStateDir(sessionId: string): string {
     return join(this.getCopilotHome(), "session-state", sessionId);
-  }
-
-  getWorkspaceSummary(sessionId: string): string | undefined {
-    const yamlPath = join(this.getSessionStateDir(sessionId), "workspace.yaml");
-    try {
-      return this.parseWorkspaceSummary(readFileSync(yamlPath, "utf-8"));
-    } catch {
-      return undefined;
-    }
-  }
-
-  parseWorkspaceSummary(workspaceYamlContent: string): string | undefined {
-    return parseWorkspaceSummary(workspaceYamlContent);
   }
 
   getLegacyWorkspaceCwd(sessionId: string): string | undefined {

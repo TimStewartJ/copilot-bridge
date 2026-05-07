@@ -30,7 +30,6 @@ function createCallbacks(overrides: Partial<SessionConfigBuilderCallbacks> = {})
   return {
     resolveEffectiveSessionCwd: () => "/workspace/project",
     getCopilotHome: () => join("/home", "bridge-user", ".copilot"),
-    shouldInjectSelfRenameGuidance: () => false,
     handleUserInputRequest: async () => ({ text: "ok" }) as any,
     ...overrides,
   };
@@ -394,7 +393,6 @@ describe("session-config-builder", () => {
       },
       callbacks: createCallbacks({
         resolveEffectiveSessionCwd: () => undefined,
-        shouldInjectSelfRenameGuidance: () => true,
         handleUserInputRequest: userInputHandler,
       }),
     });
@@ -411,6 +409,6 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content).toContain('Group notes (from task group "Backend" that this task belongs to):\nGroup note body');
     expect(cfg.systemMessage.content).toContain("- [ ] Finish extraction [id: check-1] (due 2000-01-01 ⚠️ OVERDUE)");
     expect(cfg.systemMessage.content).toContain('triggered by schedule "Daily check" (recurring, run #3)');
-    expect(cfg.systemMessage.content).toContain("call `session_rename`");
+    expect(cfg.systemMessage.content).not.toContain("call `session_rename`");
   });
 });

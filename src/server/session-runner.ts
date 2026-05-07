@@ -12,12 +12,10 @@ import { getVisibleEventTimestamp } from "./event-transform.js";
 import type { getOrCreateBus } from "./event-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
-import type { SessionTitlesStore } from "./session-titles.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { Task } from "./task-store.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
-import { deriveFallbackSessionTitle } from "./session-formatting.js";
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   RESTART_PENDING_MESSAGE,
@@ -78,18 +76,6 @@ function getSessionShutdownType(data: any): string | undefined {
   return typeof data?.shutdownType === "string" ? data.shutdownType.toLowerCase() : undefined;
 }
 
-function storeSessionTitle(
-  sessionTitles: SessionTitlesStore,
-  eventBusRegistry: EventBusRegistry,
-  globalBus: GlobalBus,
-  sessionId: string,
-  title: string,
-): void {
-  sessionTitles.setTitle(sessionId, title);
-  eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title });
-  globalBus.emit({ type: "session:title", sessionId, title });
-}
-
 export interface SessionRunnerDeps {
   /** Lazy accessor for the SDK client; the manager owns lifecycle. */
   getClient(): CopilotClient | null;
@@ -104,7 +90,6 @@ export interface SessionRunnerDeps {
   userInputController: SessionUserInputController;
   eventBusRegistry: EventBusRegistry;
   globalBus: GlobalBus;
-  sessionTitles: SessionTitlesStore;
   sessionMetaStore?: SessionMetaStore;
   telemetryStore?: TelemetryStore;
   copilotHome?: string;
@@ -115,8 +100,6 @@ export interface SessionRunnerDeps {
   buildSessionConfig(opts?: SessionConfigOptions): any;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
-  hasStoredSessionTitle(sessionId: string): boolean;
-  hasExistingSessionTitle(sessionId: string): boolean;
   persistAndRouteAttachments(
     sessionId: string,
     attachments?: StartWorkAttachment[],
@@ -277,7 +260,6 @@ export class SessionRunner {
 
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
-      fallbackTitleSource: prompt,
       attentionMode: options.attentionMode ?? "normal",
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
@@ -317,7 +299,6 @@ export class SessionRunner {
       idleSpanName: string;
       startLog: string;
       execute: (session: any) => Promise<void>;
-      fallbackTitleSource?: string;
       attentionMode?: SessionAttentionMode;
     },
   ): Promise<void> {
@@ -616,14 +597,6 @@ export class SessionRunner {
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
-          if (opts.fallbackTitleSource && !this.deps.hasStoredSessionTitle(sessionId) && !this.deps.hasExistingSessionTitle(sessionId)) {
-            const fallbackTitle = deriveFallbackSessionTitle(opts.fallbackTitleSource);
-            if (fallbackTitle) {
-              storeSessionTitle(this.deps.sessionTitles, this.deps.eventBusRegistry, this.deps.globalBus, sessionId, fallbackTitle);
-              console.log(`[titles] [${sid}] Fallback title: "${fallbackTitle}"`);
-            }
-          }
-
           runController.completeDone(content);
           break;
         }

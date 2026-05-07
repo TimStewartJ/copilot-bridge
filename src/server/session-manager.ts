@@ -17,10 +17,6 @@ import { createScheduleStore } from "./schedule-store.js";
 import { getOrCreateBus } from "./event-bus.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import {
-  isPromptEchoSummary,
-  looksLikeExistingSessionTitle,
-} from "./session-formatting.js";
-import {
   buildSessionConfig as buildSessionConfigWithDeps,
   type ScheduleContext,
   type SessionConfigOptions,
@@ -39,7 +35,6 @@ export {
 } from "./session-task-momentum.js";
 export {
   buildSessionAttachmentUrlPath,
-  deriveFallbackSessionTitle,
   encodeAttachmentUrlSegment,
   escapeAttachmentMarkdownText,
   escapePromptLiteral,
@@ -48,11 +43,8 @@ export {
   formatPromptTag,
   formatPromptTagList,
   formatRelatedDocManifestEntry,
-  isPromptEchoSummary,
-  looksLikeExistingSessionTitle,
   normalizeInlineText,
   parseWorkspaceCwd,
-  parseWorkspaceSummary,
   renderPublishedAttachment,
   resolvePublishableAttachmentSourcePath,
 } from "./session-formatting.js";
@@ -298,7 +290,6 @@ export class SessionManager {
       userInputController: this.userInputController,
       eventBusRegistry: deps.eventBusRegistry,
       globalBus: deps.globalBus,
-      sessionTitles: deps.sessionTitles,
       sessionMetaStore: deps.sessionMetaStore,
       telemetryStore: deps.telemetryStore,
       copilotHome: deps.copilotHome,
@@ -308,8 +299,6 @@ export class SessionManager {
       buildSessionConfig: (opts) => this.buildSessionConfig(opts),
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
-      hasStoredSessionTitle: (sessionId) => this.hasStoredSessionTitle(sessionId),
-      hasExistingSessionTitle: (sessionId) => this.hasExistingSessionTitle(sessionId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
       cacheResumedSession: (sessionId, session) => this.cacheResumedSession(sessionId, session),
       replaceCachedSession: (sessionId, expectedSession, nextSession) =>
@@ -359,10 +348,6 @@ export class SessionManager {
     this.runStateController.touchSessionRun(sessionId, at);
   }
 
-  private getWorkspaceSummary(sessionId: string): string | undefined {
-    return this.workspaceController.getWorkspaceSummary(sessionId);
-  }
-
   private getCopilotHome(): string {
     return this.workspaceController.getCopilotHome();
   }
@@ -381,44 +366,6 @@ export class SessionManager {
 
   hasPlan(sessionId: string): boolean {
     return existsSync(this.getSessionPlanPath(sessionId));
-  }
-
-  private getFirstUserPrompt(sessionId: string): string | undefined {
-    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
-    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
-    try {
-      const raw = readFileSync(eventsPath, "utf-8");
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event?.type !== "user.message") continue;
-          const content = event?.data?.content ?? event?.data?.prompt;
-          if (typeof content === "string" && content.trim()) return content;
-        } catch {
-          continue;
-        }
-      }
-    } catch {
-      return undefined;
-    }
-    return undefined;
-  }
-
-  private hasStoredSessionTitle(sessionId: string): boolean {
-    return this.deps.sessionTitles.hasTitle(sessionId);
-  }
-
-  private hasExistingSessionTitle(sessionId: string): boolean {
-    const summary = this.getWorkspaceSummary(sessionId);
-    if (!summary || !looksLikeExistingSessionTitle(summary)) return false;
-    const firstUserPrompt = this.getFirstUserPrompt(sessionId);
-    return !isPromptEchoSummary(summary, firstUserPrompt);
-  }
-
-  private shouldInjectSelfRenameGuidance(sessionId?: string): boolean {
-    if (!sessionId) return true;
-    return !this.hasStoredSessionTitle(sessionId) && !this.hasExistingSessionTitle(sessionId);
   }
 
   private lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null {
@@ -521,7 +468,6 @@ export class SessionManager {
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
         getCopilotHome: () => this.getCopilotHome(),
-        shouldInjectSelfRenameGuidance: (sessionId) => this.shouldInjectSelfRenameGuidance(sessionId),
         handleUserInputRequest: (request, invocation) => this.handleUserInputRequest(request, invocation),
       },
     });
@@ -534,7 +480,6 @@ export class SessionManager {
       this.deps.clientEnv ? { env: this.deps.clientEnv } : undefined,
     );
     await this.client.start();
-    this.deps.sessionTitles.loadTitles();
     console.log("[sdk] Copilot SDK client ready");
   }
 
@@ -606,7 +551,6 @@ export class SessionManager {
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
       eventBusRegistry: this.deps.eventBusRegistry,
-      parseWorkspaceSummary: (content) => this.workspaceController.parseWorkspaceSummary(content),
       resolveEffectiveSessionCwdFromWorkspaceYaml: (sessionId, content) =>
         this.workspaceController.resolveEffectiveSessionCwdFromWorkspaceYaml(sessionId, content),
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
@@ -1176,7 +1120,6 @@ export class SessionManager {
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
       eventBusRegistry: this.deps.eventBusRegistry,
-      parseWorkspaceSummary: (content) => this.workspaceController.parseWorkspaceSummary(content),
       resolveEffectiveSessionCwdFromWorkspaceYaml: (sessionId, content) =>
         this.workspaceController.resolveEffectiveSessionCwdFromWorkspaceYaml(sessionId, content),
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),

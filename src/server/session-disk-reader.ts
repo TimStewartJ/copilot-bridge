@@ -42,7 +42,6 @@ export interface SessionDiskReaderDeps {
   copilotHome?: string;
   sessionMetaStore?: SessionMetaStore;
   eventBusRegistry: Pick<EventBusRegistry, "getBus">;
-  parseWorkspaceSummary(content: string): string | undefined;
   resolveEffectiveSessionCwdFromWorkspaceYaml(sessionId: string, content: string): string | undefined;
   recordSpan(name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>): void;
   persistLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void;
@@ -450,8 +449,6 @@ export async function listSessionsFromDisk(
     try {
       const content = await readFile(yamlPath, "utf-8");
       const session: any = { sessionId: dirName };
-      const summary = deps.parseWorkspaceSummary(content);
-      if (summary) session.summary = summary;
       const effectiveCwd = deps.resolveEffectiveSessionCwdFromWorkspaceYaml(dirName, content);
 
       for (const line of content.split(/\r?\n/)) {

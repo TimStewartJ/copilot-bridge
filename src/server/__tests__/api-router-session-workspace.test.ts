@@ -91,6 +91,8 @@ describe("session workspace routes", () => {
     const testApp = createTestApp({ copilotHome, sessionManager });
     app = testApp.app;
     ctx = testApp.ctx;
+    ctx.sessionTitles.setTitle("active-session", "Active session");
+    ctx.sessionTitles.setTitle("archived-session", "Archived session");
     ctx.sessionMetaStore.setArchived("archived-session", true);
 
     const activeRes = await request(app).get("/api/sessions");
@@ -116,6 +118,7 @@ describe("session workspace routes", () => {
     const testApp = createTestApp({ copilotHome, sessionManager });
     app = testApp.app;
     ctx = testApp.ctx;
+    ctx.sessionTitles.setTitle("session-1", "Cached session");
 
     const firstRes = await request(app).get("/api/sessions");
     runState = "busy";
@@ -155,6 +158,7 @@ describe("session workspace routes", () => {
     const testApp = createTestApp({ copilotHome, sessionManager });
     app = testApp.app;
     ctx = testApp.ctx;
+    ctx.sessionTitles.setTitle("session-1", "Cached session");
 
     const firstRequest = request(app).get("/api/sessions").then((res) => res);
     await buildStarted;

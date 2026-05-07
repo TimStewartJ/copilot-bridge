@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -22,6 +23,8 @@ type MetaMap = Record<string, SessionMeta>;
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createSessionMetaStore(db: DatabaseSync) {
+  const bridgeSessionStateStore = createBridgeSessionStateStore(db);
+
   function hydrate(row: any): SessionMeta {
     return {
       archived: row.archived === 1,
@@ -51,14 +54,17 @@ export function createSessionMetaStore(db: DatabaseSync) {
         VALUES (?, 1, ?)
         ON CONFLICT(sessionId) DO UPDATE SET archived = 1, archivedAt = ?
       `).run(sessionId, now, now);
+      bridgeSessionStateStore.setArchived(sessionId, true);
     } else {
       db.prepare("DELETE FROM session_meta WHERE sessionId = ?").run(sessionId);
+      bridgeSessionStateStore.setArchived(sessionId, false);
     }
     return getMeta(sessionId) ?? { archived: false, archivedAt: "" };
   }
 
   function deleteMeta(sessionId: string): void {
     db.prepare("DELETE FROM session_meta WHERE sessionId = ?").run(sessionId);
+    bridgeSessionStateStore.deleteState(sessionId);
   }
 
   function setScheduleMeta(sessionId: string, scheduleId: string, scheduleName: string): void {
@@ -74,6 +80,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
         VALUES (?, 0, '', 'schedule', ?, ?)
       `).run(sessionId, scheduleId, scheduleName);
     }
+    bridgeSessionStateStore.setScheduleMeta(sessionId, scheduleId, scheduleName);
   }
 
   function setLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt: string): void {
@@ -87,6 +94,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
           ELSE session_meta.lastVisibleActivityAt
         END
     `).run(sessionId, lastVisibleActivityAt);
+    bridgeSessionStateStore.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
   }
 
   function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {

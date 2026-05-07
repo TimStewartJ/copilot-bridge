@@ -15,6 +15,8 @@ import { createSessionMetaStore } from "./session-meta-store.js";
 import { createSessionWorkspaceStore } from "./session-workspace-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
+import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
+import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createChecklistStore } from "./checklist-store.js";
@@ -73,11 +75,17 @@ const settingsStore = createSettingsStore(db);
 const sessionMetaStore = createSessionMetaStore(db);
 const sessionWorkspaceStore = createSessionWorkspaceStore(db);
 const sessionTitles = createSessionTitlesStore(db);
+const bridgeSessionStateStore = createBridgeSessionStateStore(db);
 const readStateStore = createReadStateStore(db);
 const checklistStore = createChecklistStore(db, defaultGlobalBus);
 const tagStore = createTagStore(db);
 const mcpServerStore = createMcpServerStore(db);
 const telemetryStore = createTelemetryStore(db);
+const cliSessionCatalog = createCopilotCliSessionCatalog({
+  copilotHome: runtimePaths.copilotHome,
+  recordSpan: (name, duration, sessionId, metadata) =>
+    telemetryStore.recordSpan({ name, duration, sessionId, metadata, source: "server" }),
+});
 const voiceJobStore = createVoiceJobStore(db);
 const pushSubscriptionStore = createPushSubscriptionStore(db);
 const docsDir = runtimePaths.docsDir;
@@ -109,7 +117,7 @@ setMcpServersGetter(() => settingsStore.getMcpServers());
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore, docsStore, docsIndex, docsSnapshotStore, tagStore, mcpServerStore, telemetryStore,
+  sessionMetaStore, sessionWorkspaceStore, sessionTitles, bridgeSessionStateStore, cliSessionCatalog, readStateStore, checklistStore, docsStore, docsIndex, docsSnapshotStore, tagStore, mcpServerStore, telemetryStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction
