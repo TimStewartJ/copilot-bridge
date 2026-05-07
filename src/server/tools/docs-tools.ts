@@ -2,6 +2,7 @@ import { defineTool } from "@github/copilot-sdk";
 import matter from "gray-matter";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
+import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "../docs-snapshot-store.js";
 
 const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
 
@@ -29,6 +30,20 @@ function validateTaggedDocContent(content: string): void {
   if (tags.length === 0) return;
   if (typeof data.description !== "string" || !data.description.trim()) {
     throw new Error(TAGGED_DOC_DESCRIPTION_ERROR);
+  }
+}
+
+function createPreDeleteSnapshot(ctx: AppContext): void {
+  if (!ctx.docsSnapshotStore) return;
+  try {
+    ctx.docsSnapshotStore.createSnapshot({
+      reason: "pre-delete",
+      allowEmpty: false,
+      skipIfRecentMs: PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot delete docs page because pre-delete snapshot failed: ${message}`);
   }
 }
 
@@ -162,8 +177,56 @@ export function createDocsTools(ctx: AppContext) {
         }
       },
     }),
+    ...(ctx.docsSnapshotStore ? [
+      defineTool("docs_snapshot_create", {
+        description: "Create a full snapshot backup of the current docs folder. Snapshots are stored outside the live docs tree for recovery from accidental wipes or bad edits.",
+        parameters: { type: "object", properties: { reason: { type: "string", description: "Optional snapshot reason label (default: manual)" } }, required: [] },
+        handler: async (args: any) => {
+          try {
+            const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason.trim() : "manual";
+            const result = ctx.docsSnapshotStore!.createSnapshot({ reason, allowEmpty: true });
+            return { success: true, ...result };
+          } catch (error) {
+            return normalizeDocsToolFailure(error);
+          }
+        },
+      }),
+      defineTool("docs_snapshot_list", {
+        description: "List available full-folder docs snapshots, newest first.",
+        parameters: { type: "object", properties: {}, required: [] },
+        handler: async () => {
+          try {
+            return { snapshots: ctx.docsSnapshotStore!.listSnapshots() };
+          } catch (error) {
+            return normalizeDocsToolFailure(error);
+          }
+        },
+      }),
+      defineTool("docs_snapshot_restore", {
+        description: "Restore the live docs folder from a snapshot. Requires confirm: true. The restore creates a pre-restore snapshot first and rebuilds the docs search index.",
+        parameters: { type: "object", properties: { id: { type: "string", description: "Snapshot id returned by docs_snapshot_list" }, confirm: { type: "boolean", description: "Must be true to confirm replacing the live docs folder" } }, required: ["id", "confirm"] },
+        handler: async (args: any) => {
+          try {
+            if (args.confirm !== true) throw new Error("confirm: true is required to restore a docs snapshot");
+            const result = ctx.docsSnapshotStore!.restoreSnapshot(args.id);
+            let reindexed = true;
+            let reindexError: string | undefined;
+            try {
+              ctx.docsIndex!.reindex();
+            } catch (error) {
+              reindexed = false;
+              reindexError = error instanceof Error ? error.message : String(error);
+              console.warn(`[docs-snapshots] Restore succeeded but reindex failed: ${reindexError}`);
+            }
+            return { success: true, reindexed, ...(reindexError ? { reindexError } : {}), ...result };
+          } catch (error) {
+            return normalizeDocsToolFailure(error);
+          }
+        },
+      }),
+    ] : []),
     defineTool("docs_delete", {
-      description: "Delete a knowledge base page permanently. Returns whether the page was found and deleted. Cannot delete pages inside database collections — use docs_db_delete for those.",
+      description: "Delete a knowledge base page. Creates a pre-delete snapshot when snapshot backups are available. Returns whether the page was found and deleted. Cannot delete pages inside database collections — use docs_db_delete for those.",
       parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" } }, required: ["path"] },
       handler: async (args: any) => {
         try {
@@ -174,6 +237,9 @@ export function createDocsTools(ctx: AppContext) {
             return toolFailure(`"${pagePath}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.`);
           }
           const canonicalPath = page?.path ?? pagePath;
+          if (page) {
+            createPreDeleteSnapshot(ctx);
+          }
           const deleted = ctx.docsStore!.deletePage(pagePath);
           if (deleted) ctx.docsIndex!.removePage(canonicalPath);
           return { path: canonicalPath, deleted };
@@ -183,7 +249,7 @@ export function createDocsTools(ctx: AppContext) {
       },
     }),
     defineTool("docs_db_delete", {
-      description: "Delete an entry from a database collection permanently. Removes the markdown file for the entry.",
+      description: "Delete an entry from a database collection. Creates a pre-delete snapshot when snapshot backups are available, then removes the markdown file for the entry.",
       parameters: { type: "object", properties: { folder: { type: "string", description: "Database folder name (e.g., 'incidents')" }, slug: { type: "string", description: "Entry slug (filename without .md, returned by docs_db_add or docs_db_query)" } }, required: ["folder", "slug"] },
       handler: async (args: any) => {
         try {
@@ -194,6 +260,9 @@ export function createDocsTools(ctx: AppContext) {
           const page = ctx.docsStore!.readPage(pagePath);
           if (page && !page.isDbItem) {
             return toolFailure(`"${pagePath}" is not a database entry`);
+          }
+          if (page) {
+            createPreDeleteSnapshot(ctx);
           }
           const deleted = ctx.docsStore!.deletePage(pagePath);
           if (deleted) ctx.docsIndex!.removePage(pagePath);

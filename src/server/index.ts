@@ -20,6 +20,7 @@ import { createReadStateStore } from "./read-state-store.js";
 import { createChecklistStore } from "./checklist-store.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
+import { createDocsSnapshotStore, STARTUP_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { createTagStore } from "./tag-store.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
 import { createTelemetryStore } from "./telemetry-store.js";
@@ -83,7 +84,21 @@ const docsDir = runtimePaths.docsDir;
 const copilotHome = runtimePaths.copilotHome;
 const docsStore = createDocsStore(docsDir);
 const docsIndex = createDocsIndex(db, docsStore);
+const docsSnapshotStore = createDocsSnapshotStore(
+  docsDir,
+  runtimePaths.docsSnapshotsDir ?? join(dataDir, "backups", "docs", "snapshots"),
+);
 docsIndex.reindex();
+try {
+  docsSnapshotStore.createSnapshot({
+    reason: "startup",
+    allowEmpty: false,
+    skipIfRecentMs: STARTUP_SNAPSHOT_MIN_INTERVAL_MS,
+    skipIfUnchanged: true,
+  });
+} catch (error) {
+  console.warn(`[docs-snapshots] Startup snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+}
 const deferredPromptStore = createDeferredPromptStore(db);
 const deferLoopStore = createDeferLoopStore(db);
 const deferDeliveryGuard = createDeferDeliveryGuard();
@@ -94,7 +109,7 @@ setMcpServersGetter(() => settingsStore.getMcpServers());
 // Build default AppContext for production
 const defaultContext: AppContext = {
   taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore, docsStore, docsIndex, tagStore, mcpServerStore, telemetryStore,
+  sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore, docsStore, docsIndex, docsSnapshotStore, tagStore, mcpServerStore, telemetryStore,
   globalBus: defaultGlobalBus,
   eventBusRegistry: defaultEventBusRegistry,
   sessionManager: null as any, // assigned below after construction

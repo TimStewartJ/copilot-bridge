@@ -42,6 +42,11 @@ import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { createPushNotificationService, getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
+import {
+  DocsSnapshotNotFoundError,
+  DocsSnapshotValidationError,
+  PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
+} from "./docs-snapshot-store.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -3120,6 +3125,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
   if (ctx.docsStore && ctx.docsIndex) {
     const docs = ctx.docsStore;
     const docsIdx = ctx.docsIndex;
+    const docsSnapshots = ctx.docsSnapshotStore;
+    const createPreDeleteDocsSnapshot = () => {
+      if (!docsSnapshots) return;
+      try {
+        docsSnapshots.createSnapshot({
+          reason: "pre-delete",
+          allowEmpty: false,
+          skipIfRecentMs: PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Cannot delete docs page because pre-delete snapshot failed: ${message}`);
+      }
+    };
 
     router.get("/docs/tree", (_req, res) => {
       try {
@@ -3174,6 +3193,52 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
     });
 
+    router.get("/docs/snapshots", (_req, res) => {
+      if (!docsSnapshots) return res.status(501).json({ error: "Docs snapshots not available" });
+      try {
+        res.json({ snapshots: docsSnapshots.listSnapshots() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    router.post("/docs/snapshots", (req, res) => {
+      if (!docsSnapshots) return res.status(501).json({ error: "Docs snapshots not available" });
+      try {
+        const reason = typeof req.body?.reason === "string" && req.body.reason.trim()
+          ? req.body.reason.trim()
+          : "manual";
+        const result = docsSnapshots.createSnapshot({ reason, allowEmpty: true });
+        res.json(result);
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || String(err) });
+      }
+    });
+
+    router.post("/docs/snapshots/:id/restore", (req, res) => {
+      if (!docsSnapshots) return res.status(501).json({ error: "Docs snapshots not available" });
+      if (req.body?.confirm !== true) {
+        return res.status(400).json({ error: "confirm: true is required to restore a docs snapshot" });
+      }
+      try {
+        const result = docsSnapshots.restoreSnapshot(String(req.params.id));
+        let reindexed = true;
+        let reindexError: string | undefined;
+        try {
+          docsIdx.reindex();
+        } catch (error) {
+          reindexed = false;
+          reindexError = error instanceof Error ? error.message : String(error);
+          console.warn(`[docs-snapshots] Restore succeeded but reindex failed: ${reindexError}`);
+        }
+        res.json({ success: true, reindexed, ...(reindexError ? { reindexError } : {}), ...result });
+      } catch (err: any) {
+        if (err instanceof DocsSnapshotNotFoundError) return res.status(404).json({ error: err.message });
+        if (err instanceof DocsSnapshotValidationError) return res.status(422).json({ error: err.message });
+        res.status(500).json({ error: err.message || String(err) });
+      }
+    });
+
     // Page CRUD — explicit sub-path to avoid wildcard conflicts
     router.get("/docs/pages/*path", (req, res) => {
       try {
@@ -3207,6 +3272,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const page = docs.readPage(pagePath);
         const canonicalPath = page?.path ?? pagePath;
+        if (page) {
+          createPreDeleteDocsSnapshot();
+        }
         const deleted = docs.deletePage(pagePath);
         if (deleted) docsIdx.removePage(canonicalPath);
         res.json({ path: canonicalPath, deleted });

@@ -1132,11 +1132,12 @@ describe("scheduler startup recovery", () => {
 
     const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
     const docsDir = join(tempDir, "docs");
+    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const { ctx } = createTestApp({
-      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
     });
     try {
-      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
       await writeRestartState(join(tempDir, "restart-state.json"), {
         requestId: "req-one-shot-catchup",
         phase: "waiting-for-sessions",
@@ -1196,12 +1197,13 @@ describe("scheduler startup recovery", () => {
 
     const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
     const docsDir = join(tempDir, "docs");
+    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const restartStatePath = join(tempDir, "restart-state.json");
     const { ctx } = createTestApp({
-      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
     });
     try {
-      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
       await writeRestartState(restartStatePath, {
         requestId: "req-launcher-restart-catchup",
         phase: "restarting",
@@ -1264,12 +1266,13 @@ describe("scheduler startup recovery", () => {
 
     const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
     const docsDir = join(tempDir, "docs");
+    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const restartStatePath = join(tempDir, "restart-state.json");
     const { ctx } = createTestApp({
-      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
     });
     try {
-      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
       const restartRequestedAt = new Date().toISOString();
       await writeRestartState(restartStatePath, {
         requestId: "req-launcher-restart-aged-catchup",
@@ -1401,11 +1404,12 @@ describe("scheduler startup recovery", () => {
 
     const tempDir = mkdtempSync(join(tmpdir(), "restart-state-scheduler-"));
     const docsDir = join(tempDir, "docs");
+    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
     const { ctx, db } = createTestApp({
-      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, env: process.env },
+      runtimePaths: { demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
     });
     try {
-      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, env: process.env });
+      configureRestartStateStore({ demoMode: false, dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
       await writeRestartState(join(tempDir, "restart-state.json"), {
         requestId: "req-cron-catchup",
         phase: "waiting-for-sessions",

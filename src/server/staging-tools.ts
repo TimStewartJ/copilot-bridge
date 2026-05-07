@@ -545,7 +545,7 @@ async function createStagingContext(
     taskStoreMod, taskGroupStoreMod,
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod, sessionWorkspaceStoreMod,
     sessionTitlesMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
-    docsStoreMod, docsIndexMod, sessionManagerMod, apiRouterMod,
+    docsStoreMod, docsIndexMod, docsSnapshotStoreMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
     mcpServerStoreMod,
     telemetryStoreMod,
@@ -576,6 +576,7 @@ async function createStagingContext(
     importOptionalStagingModule(ts("todo-store.ts")),
     importOptionalStagingModule(ts("docs-store.ts")),
     importOptionalStagingModule(ts("docs-index.ts")),
+    importOptionalStagingModule(ts("docs-snapshot-store.ts")),
     import(ts("session-manager.ts")),
     import(ts("api-router.ts")),
     importOptionalStagingModule(ts("tag-store.ts")),
@@ -617,6 +618,12 @@ async function createStagingContext(
     const transcriptionService = transcriptionServiceMod?.createTranscriptionService();
     const docsStore = docsStoreMod?.createDocsStore(runtimePaths.docsDir);
     const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
+    const docsSnapshotStore = docsStore && docsSnapshotStoreMod
+      ? docsSnapshotStoreMod.createDocsSnapshotStore(
+          runtimePaths.docsDir,
+          runtimePaths.docsSnapshotsDir ?? join(runtimePaths.dataDir, "backups", "docs", "snapshots"),
+        )
+      : null;
     if (docsIndex) docsIndex.reindex();
     const deferredPromptStore = deferredPromptStoreMod?.createDeferredPromptStore?.(db);
     const deferLoopStore = deferLoopStoreMod?.createDeferLoopStore?.(db);
@@ -633,6 +640,7 @@ async function createStagingContext(
       ...(todoStore && { todoStore }),
       ...(docsStore && { docsStore }),
       ...(docsIndex && { docsIndex }),
+      ...(docsSnapshotStore && { docsSnapshotStore }),
       ...(tagStore && { tagStore }),
       ...(mcpServerStore && { mcpServerStore }),
       ...(telemetryStore && { telemetryStore }),

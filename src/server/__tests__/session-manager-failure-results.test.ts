@@ -140,6 +140,36 @@ Original body
     expect(ctx.docsStore!.readPage("notes/tagged-edit-with-description")?.body).toBe("Updated body");
   });
 
+  it("supports docs snapshot tools and requires restore confirmation", async () => {
+    const { ctx } = createTestApp();
+    const createTool = getTool(ctx, "docs_snapshot_create");
+    const listTool = getTool(ctx, "docs_snapshot_list");
+    const restoreTool = getTool(ctx, "docs_snapshot_restore");
+    ctx.docsStore!.writePage("notes/snapshotted", "# Snapshotted\n\nOriginal body");
+
+    const created = await createTool.handler({ reason: "tool-test" }, createInvocation("docs_snapshot_create")) as any;
+    expect(created).toMatchObject({
+      success: true,
+      created: true,
+      snapshot: { reason: "tool-test" },
+    });
+
+    await expect(listTool.handler({}, createInvocation("docs_snapshot_list")))
+      .resolves.toMatchObject({ snapshots: [expect.objectContaining({ id: created.snapshot.id })] });
+
+    await expect(restoreTool.handler({ id: created.snapshot.id, confirm: false }, createInvocation("docs_snapshot_restore")))
+      .resolves.toEqual(toolFailure("confirm: true is required to restore a docs snapshot"));
+
+    ctx.docsStore!.writePage("notes/snapshotted", "# Snapshotted\n\nChanged body");
+    await expect(restoreTool.handler({ id: created.snapshot.id, confirm: true }, createInvocation("docs_snapshot_restore")))
+      .resolves.toMatchObject({
+        success: true,
+        restoredFrom: { id: created.snapshot.id },
+        preRestoreSnapshotId: expect.any(String),
+      });
+    expect(ctx.docsStore!.readPage("notes/snapshotted")?.body).toContain("Original body");
+  });
+
   it("surfaces unexpected docs tool errors as failure results", async () => {
     const { ctx } = createTestApp();
     const docsReadTool = getTool(ctx, "docs_read");

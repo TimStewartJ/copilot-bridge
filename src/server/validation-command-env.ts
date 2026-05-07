@@ -7,6 +7,7 @@ export interface ValidationCommandEnv {
   rootDir: string;
   dataDir: string;
   docsDir: string;
+  docsSnapshotsDir: string;
   copilotHome: string;
   cleanup: () => void;
 }
@@ -41,9 +42,11 @@ export function createValidationCommandEnv(
   const rootDir = mkdtempSync(join(tmpdir(), options.prefix ?? "bridge-validation-"));
   const dataDir = join(rootDir, "data");
   const docsDir = join(rootDir, "docs");
+  const docsSnapshotsDir = join(rootDir, "docs-snapshots");
   const copilotHome = join(rootDir, ".copilot");
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(docsDir, { recursive: true });
+  mkdirSync(docsSnapshotsDir, { recursive: true });
   mkdirSync(copilotHome, { recursive: true });
 
   const env = options.nodeDir
@@ -52,6 +55,7 @@ export function createValidationCommandEnv(
   env.BRIDGE_DEMO_MODE = "false";
   env.BRIDGE_DATA_DIR = dataDir;
   env.BRIDGE_DOCS_DIR = docsDir;
+  env.BRIDGE_DOCS_SNAPSHOTS_DIR = docsSnapshotsDir;
   env.COPILOT_HOME = copilotHome;
 
   return {
@@ -59,6 +63,7 @@ export function createValidationCommandEnv(
     rootDir,
     dataDir,
     docsDir,
+    docsSnapshotsDir,
     copilotHome,
     cleanup: () => rmSync(rootDir, {
       recursive: true,
