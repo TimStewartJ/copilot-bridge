@@ -267,7 +267,7 @@ export class SessionManager {
         } else {
           this.evictCachedSession(sessionId);
         }
-        this.invalidateSessionListCache();
+        this.invalidateSessionListCache("workspace:changed");
       },
     });
     this.userInputController = new SessionUserInputController({
@@ -318,7 +318,7 @@ export class SessionManager {
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
-      invalidateSessionListCache: () => this.invalidateSessionListCache(),
+      invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
     });
     configureRestartStateStore(deps.runtimePaths);
     configureRestartEventBus(deps.globalBus);
@@ -632,11 +632,19 @@ export class SessionManager {
   }
 
   /** Invalidate the listSessions cache (call after create/delete) */
-  invalidateSessionListCache(): void {
+  invalidateSessionListCache(reason = "unknown"): void {
+    const cacheKeys = [...this.sessionDiskListCache.keys()];
+    const buildKeys = [...this.sessionDiskListBuilds.keys()];
     this.sessionListCache = null;
     this.sessionDiskListCache.clear();
     this.sessionDiskListBuilds.clear();
     this.sessionDiskListCacheGeneration += 1;
+    this.recordSpan("session.listFromDisk.invalidate", 0, undefined, {
+      reason,
+      generation: this.sessionDiskListCacheGeneration,
+      cacheKeys,
+      buildKeys,
+    });
   }
 
   async getSessionMetadata(sessionId: string) {
@@ -835,7 +843,7 @@ export class SessionManager {
     this.sessionObjects.set(session.sessionId, session);
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
-    this.invalidateSessionListCache();
+    this.invalidateSessionListCache("session:create");
     this.recordSpan("session.create", duration, session.sessionId);
     console.log(`[sdk] Created session ${session.sessionId} (${duration}ms)`);
     return { sessionId: session.sessionId };
@@ -902,7 +910,7 @@ export class SessionManager {
     this.persistSessionWorkspace(newId, sourceCwd);
 
     console.log(`[sdk] Duplicated session ${sourceSessionId.slice(0, 8)} → ${newId.slice(0, 8)}`);
-    this.invalidateSessionListCache();
+    this.invalidateSessionListCache("session:duplicate");
     return { sessionId: newId };
   }
 
@@ -954,7 +962,7 @@ export class SessionManager {
     this.sessionObjects.set(session.sessionId, session);
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
-    this.invalidateSessionListCache();
+    this.invalidateSessionListCache("session:create-task");
     this.recordSpan("session.createTask", duration, session.sessionId, { taskId });
     console.log(`[sdk] Created task session ${session.sessionId} for "${taskTitle}" (${duration}ms)`);
     return { sessionId: session.sessionId };
@@ -1262,7 +1270,7 @@ export class SessionManager {
       }
     }
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
-    this.invalidateSessionListCache();
+    this.invalidateSessionListCache("session:delete:start");
 
     // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
     const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
@@ -1272,7 +1280,7 @@ export class SessionManager {
     } catch (err) {
       console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
     }
-    this.invalidateSessionListCache();
+    this.invalidateSessionListCache("session:delete:removed");
 
     console.log(`[sdk] Deleted session ${sessionId}`);
   }
