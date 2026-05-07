@@ -134,6 +134,39 @@ function createNoopChecklistStore() {
   };
 }
 
+function createNoopBridgeSessionStateStore() {
+  return {
+    getState: () => undefined,
+    listStates: () => ({}),
+    setArchived: () => undefined,
+    setTitleOverride: (sessionId: string, title: string) => {
+      const now = new Date().toISOString();
+      return { sessionId, archived: false, titleOverride: title, titleOverrideUpdatedAt: now, createdAt: now, updatedAt: now };
+    },
+    clearTitleOverride: () => {},
+    setPinnedCwd: (sessionId: string, cwd: string) => {
+      const now = new Date().toISOString();
+      return { sessionId, archived: false, pinnedCwd: cwd, pinnedCwdUpdatedAt: now, createdAt: now, updatedAt: now };
+    },
+    clearPinnedCwd: () => {},
+    setScheduleMeta: (sessionId: string, scheduleId: string, scheduleName: string) => {
+      const now = new Date().toISOString();
+      return { sessionId, archived: false, triggeredBy: "schedule" as const, scheduleId, scheduleName, createdAt: now, updatedAt: now };
+    },
+    setLastVisibleActivityAt: (sessionId: string, lastVisibleActivityAt: string) => {
+      const now = new Date().toISOString();
+      return { sessionId, archived: false, lastVisibleActivityAt, createdAt: now, updatedAt: now };
+    },
+    setHidden: (sessionId: string, hiddenReason: string) => {
+      const now = new Date().toISOString();
+      return { sessionId, archived: false, hiddenReason, hiddenAt: now, createdAt: now, updatedAt: now };
+    },
+    clearHidden: () => {},
+    deleteState: () => {},
+    pruneIfDefault: () => {},
+  };
+}
+
 function resolvePreviewProfile(value?: string): StagingPreviewProfile {
   return value === "demo" ? "demo" : "clone";
 }
@@ -544,7 +577,7 @@ async function createStagingContext(
   const [globalBusMod, eventBusMod, dbMod,
     taskStoreMod, taskGroupStoreMod,
     scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod, sessionWorkspaceStoreMod,
-    sessionTitlesMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
+    sessionTitlesMod, bridgeSessionStateStoreMod, cliSessionCatalogMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
     docsStoreMod, docsIndexMod, docsSnapshotStoreMod, sessionManagerMod, apiRouterMod,
     tagStoreMod,
     mcpServerStoreMod,
@@ -571,6 +604,8 @@ async function createStagingContext(
     import(ts("session-meta-store.ts")),
     importOptionalStagingModule(ts("session-workspace-store.ts")),
     import(ts("session-titles.ts")),
+    importOptionalStagingModule(ts("bridge-session-state-store.ts")),
+    importOptionalStagingModule(ts("copilot-cli-session-catalog.ts")),
     import(ts("read-state-store.ts")),
     importOptionalStagingModule(ts("checklist-store.ts")),
     importOptionalStagingModule(ts("todo-store.ts")),
@@ -608,6 +643,8 @@ async function createStagingContext(
     const sessionWorkspaceStore = sessionWorkspaceStoreMod?.createSessionWorkspaceStore?.(db)
       ?? createNoopSessionWorkspaceStore();
     const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
+    const bridgeSessionStateStore = bridgeSessionStateStoreMod?.createBridgeSessionStateStore?.(db)
+      ?? createNoopBridgeSessionStateStore();
     const readStateStore = readStateStoreMod.createReadStateStore(db);
     const checklistStore = checklistStoreMod?.createChecklistStore?.(db, globalBus)
       ?? createNoopChecklistStore();
@@ -633,10 +670,19 @@ async function createStagingContext(
     // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
     const copilotHome = runtimePaths.copilotHome ?? join(runtimePaths.dataDir, ".copilot");
     mkdirSync(copilotHome, { recursive: true });
+    const cliSessionCatalog = cliSessionCatalogMod?.createCopilotCliSessionCatalog?.({
+      copilotHome,
+      recordSpan: telemetryStore
+        ? (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) =>
+            telemetryStore.recordSpan({ name, duration, sessionId, metadata, source: "server" })
+        : undefined,
+    });
 
     const ctx: StagingAppContext = {
       taskStore, taskGroupStore, scheduleStore, settingsStore,
       sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore,
+      bridgeSessionStateStore,
+      cliSessionCatalog,
       ...(todoStore && { todoStore }),
       ...(docsStore && { docsStore }),
       ...(docsIndex && { docsIndex }),

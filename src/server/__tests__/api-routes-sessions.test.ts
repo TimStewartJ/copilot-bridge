@@ -118,7 +118,6 @@ describe("Session routes (mocked)", () => {
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "new-task-session",
-        summary: "Generate a concise 3-6 word title for this conversation.",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
@@ -145,7 +144,6 @@ describe("Session routes (mocked)", () => {
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "untitled-session",
-        summary: "Generate a concise 3-6 word title for this conversation.",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
@@ -194,6 +192,7 @@ describe("Session routes (mocked)", () => {
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("archive-me", "Archive me");
 
     const before = await request(app).get("/api/sessions");
     const patch = await request(app).patch("/api/sessions/archive-me").send({ archived: true });
@@ -224,6 +223,7 @@ describe("Session routes (mocked)", () => {
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("unlinked-session", "Unlinked session");
     const archivedTask = ctx.taskStore.createTask("Archived parent task");
     ctx.taskStore.linkSession(archivedTask.id, "archived-task-session");
     ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
@@ -524,6 +524,7 @@ describe("Session routes (mocked)", () => {
     });
     sessionManager.listSessionsFromDisk = listSessionsFromDisk;
     ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("active-session", "Active session");
 
     const res = await request(app).get("/api/dashboard");
 
@@ -545,6 +546,7 @@ describe("Session routes (mocked)", () => {
     ]);
     sessionManager.listSessionsFromDisk = listSessionsFromDisk;
     ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("cached-dashboard-session", "Cached dashboard session");
 
     const sessionsRes = await request(app).get("/api/sessions");
     const dashboardRes = await request(app).get("/api/dashboard");
@@ -1669,9 +1671,11 @@ describe("Session metadata routes", () => {
 
   it("POST /api/sessions/batch invalidates the cached session list after archiving", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
-      { sessionId: "s2", summary: "Session two", startTime: "2026-04-19T00:00:00.000Z" } as any,
+      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z", lastVisibleActivityAt: "2026-04-19T00:00:00.000Z" } as any,
+      { sessionId: "s2", summary: "Session two", startTime: "2026-04-19T00:00:00.000Z", lastVisibleActivityAt: "2026-04-19T00:00:00.000Z" } as any,
     ];
+    ctx.readStateStore.markRead("s1");
+    ctx.readStateStore.markRead("s2");
 
     const before = await request(app).get("/api/sessions");
     expect(before.status).toBe(200);

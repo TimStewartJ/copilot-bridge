@@ -524,16 +524,71 @@ function hasExplicitUnreadActivity(
   return Number.isFinite(activityMs) && Number.isFinite(readMs) && activityMs > readMs;
 }
 
+function shouldIncludeMaterializedSession(opts: {
+  includeArchived: boolean;
+  archived: boolean;
+  linkedTasks: Task[];
+  status: ReturnType<typeof getSessionStatus>;
+  readState: Record<string, string>;
+  sessionId: string;
+  lastVisibleActivityAt?: string;
+  hasTitleOverride: boolean;
+  hasReadState: boolean;
+  hasBridgeActivitySignal: boolean;
+  hasDeferredWork: boolean;
+}): boolean {
+  if (!opts.includeArchived && opts.archived) return false;
+  if (
+    !opts.includeArchived
+    && isLinkedOnlyToArchivedTasks(opts.linkedTasks)
+    && !opts.status.busy
+    && !opts.status.needsUserInput
+    && !hasExplicitUnreadActivity(opts.readState, opts.sessionId, opts.lastVisibleActivityAt)
+  ) {
+    return false;
+  }
+  if (
+    !opts.archived
+    && opts.linkedTasks.length === 0
+    && !opts.hasTitleOverride
+    && !opts.hasBridgeActivitySignal
+    && !(opts.hasReadState && opts.lastVisibleActivityAt)
+    && !opts.hasDeferredWork
+    && opts.status.runState === "idle"
+    && !opts.status.busy
+    && !opts.status.needsUserInput
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function resolveSessionSummary(
   ctx: AppContext,
   session: { sessionId: string; summary?: string | null },
-  opts: { fallbackSummary?: string } = {},
-): string | undefined {
-  const title = ctx.sessionTitles.getTitle(session.sessionId);
+  opts: { fallbackSummary?: string; titleOverride?: string } = {},
+): string {
+  const title = opts.titleOverride ?? ctx.sessionTitles.getTitle(session.sessionId);
   if (title) return title;
   const summary = session.summary ?? undefined;
-  if (!summary || summary.startsWith("Generate a concise")) return opts.fallbackSummary;
-  return summary;
+  return summary || opts.fallbackSummary || "Untitled session";
+}
+
+function listSessionsFromCliCatalog(ctx: AppContext): any[] | undefined {
+  const catalogSessions = ctx.cliSessionCatalog?.listSessions();
+  if (!catalogSessions) return undefined;
+  const meta = ctx.sessionMetaStore.listMeta();
+  return catalogSessions.map((session) => {
+    const sessionMeta = meta[session.sessionId];
+    return {
+      ...session,
+      eventLogSizeBytes: 0,
+      lastVisibleActivityAt: sessionMeta?.lastVisibleActivityAt,
+      modifiedTime: sessionMeta?.lastVisibleActivityAt ?? session.modifiedTime ?? session.startTime,
+      archived: sessionMeta?.archived ?? false,
+      intentText: ctx.eventBusRegistry.getBus(session.sessionId)?.getIntentText() ?? null,
+    };
+  });
 }
 
 function serializeSchedule(schedule: Schedule) {
@@ -981,26 +1036,29 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const status = getSessionStatus(ctx, id);
       const linkedTask = taskLookup.resolveTask(id);
       const linkedTasks = taskLookup.getLinkedTasks(id);
-      const summary = resolveSessionSummary(ctx, s, {
-        fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
-      });
-      if (!summary) return [];
-
       const sessionMeta = currentMeta[id];
       const archived = sessionMeta?.archived ?? s.archived ?? false;
       const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
-      if (!includeArchived && archived) return [];
-      if (
-        !includeArchived
-        && isLinkedOnlyToArchivedTasks(linkedTasks)
-        && !status.busy
-        && !status.needsUserInput
-        && !hasExplicitUnreadActivity(readState, id, lastVisibleActivityAt)
-      ) {
-        return [];
-      }
-
+      const titleOverride = ctx.sessionTitles.getTitle(id);
       const deferSummary = getSessionDeferSummary(ctx, id);
+      if (!shouldIncludeMaterializedSession({
+        includeArchived,
+        archived,
+        linkedTasks,
+        status,
+        readState,
+        sessionId: id,
+        lastVisibleActivityAt,
+        hasTitleOverride: !!titleOverride,
+        hasReadState: !!readState[id],
+        hasBridgeActivitySignal: !!sessionMeta?.lastVisibleActivityAt,
+        hasDeferredWork: deferSummary.count > 0,
+      })) return [];
+      const summary = resolveSessionSummary(ctx, s, {
+        fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
+        titleOverride,
+      });
+
       return [{
         ...s,
         summary,
@@ -1059,9 +1117,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const buildIncludesArchived = includeArchived;
     const tBuild = Date.now();
     const build = (async () => {
-      const sessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
+      const catalogSessions = listSessionsFromCliCatalog(ctx);
+      const sessions = catalogSessions ?? await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
+      const readState = ctx.readStateStore.getReadState();
+      const titleOverrides = ctx.sessionTitles.getAllTitles();
       const taskLookup = createSessionListTaskLookup(ctx);
 
       const enriched = await Promise.all(
@@ -1070,11 +1131,39 @@ export function createApiRouter(ctx: AppContext): express.Router {
             const id = s.sessionId;
             const status = getSessionStatus(ctx, id);
             const linkedTask = taskLookup.resolveTask(id);
-            return { session: s, linkedTask, status };
+            const linkedTasks = taskLookup.getLinkedTasks(id);
+            return { session: s, linkedTask, linkedTasks, status };
           })
-          .map(async ({ session: s, linkedTask, status }) => {
+          .map(async ({ session: s, linkedTask, linkedTasks, status }) => {
             const id = s.sessionId;
             const archived = meta[id]?.archived === true;
+            const lastVisibleActivityAt = meta[id]?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
+            const deferSummary = getSessionDeferSummary(ctx, id);
+            const shouldBuildDetails = shouldIncludeMaterializedSession({
+              includeArchived: buildIncludesArchived,
+              archived,
+              linkedTasks,
+              status,
+              readState,
+              sessionId: id,
+              lastVisibleActivityAt,
+              hasTitleOverride: !!titleOverrides[id],
+              hasReadState: !!readState[id],
+              hasBridgeActivitySignal: !!meta[id]?.lastVisibleActivityAt,
+              hasDeferredWork: deferSummary.count > 0,
+            });
+
+            if (!shouldBuildDetails) {
+              return {
+                ...s,
+                ...status,
+                archived,
+                archivedAt: meta[id]?.archivedAt ?? null,
+                triggeredBy: meta[id]?.triggeredBy,
+                scheduleId: meta[id]?.scheduleId,
+                scheduleName: meta[id]?.scheduleName,
+              };
+            }
 
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
             const archivedAt = meta[id]?.archivedAt ?? null;

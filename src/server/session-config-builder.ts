@@ -72,7 +72,6 @@ export interface SessionConfigBuilderDeps {
 export interface SessionConfigBuilderCallbacks {
   resolveEffectiveSessionCwd(opts: { sessionId?: string; task?: Pick<Task, "cwd"> | null }): string | undefined;
   getCopilotHome(): string;
-  shouldInjectSelfRenameGuidance(sessionId?: string): boolean;
   handleUserInputRequest(
     request: NativeUserInputRequest,
     invocation: { sessionId: string },
@@ -268,12 +267,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // Custom instructions — append user-defined instructions to context
   if (settings?.customInstructions?.trim()) {
     contextParts.push(settings.customInstructions.trim());
-  }
-
-  if (callbacks.shouldInjectSelfRenameGuidance(sessionId)) {
-    contextParts.push(
-      "If this session does not already have a concise title, after your first substantive response call `session_rename` with a concise 3-6 word title for the current session. Do this silently without mentioning it to the user.",
-    );
   }
 
   contextParts.push(RESEARCH_GUIDANCE);

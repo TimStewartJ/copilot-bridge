@@ -6,7 +6,6 @@ import {
   readMessagesFromDisk,
   type SessionDiskReaderDeps,
 } from "../session-disk-reader.js";
-import { parseWorkspaceSummary } from "../session-formatting.js";
 import { makeTestDir } from "./helpers.js";
 
 function createDeps(copilotHome: string) {
@@ -22,7 +21,6 @@ function createDeps(copilotHome: string) {
     eventBusRegistry: {
       getBus: () => undefined,
     },
-    parseWorkspaceSummary,
     resolveEffectiveSessionCwdFromWorkspaceYaml: () => undefined,
     recordSpan: (name, duration, sessionId, metadata) => {
       spans.push({ name, duration, sessionId, metadata });
@@ -66,9 +64,9 @@ describe("listSessionsFromDisk telemetry", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({
       sessionId: "session-a",
-      summary: "Alpha",
       eventLogSizeBytes: expect.any(Number),
     });
+    expect(sessions[0].summary).toBeUndefined();
     expect(spans.map((span) => span.name)).toEqual(expect.arrayContaining([
       "session.listFromDisk.enumerate",
       "session.listFromDisk.workspace",

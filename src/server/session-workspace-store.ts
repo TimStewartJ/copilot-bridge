@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 
 export interface SessionWorkspace {
   cwd: string;
@@ -8,6 +9,8 @@ export interface SessionWorkspace {
 type SessionWorkspaceMap = Record<string, SessionWorkspace>;
 
 export function createSessionWorkspaceStore(db: DatabaseSync) {
+  const bridgeSessionStateStore = createBridgeSessionStateStore(db);
+
   function hydrate(row: any): SessionWorkspace {
     return {
       cwd: row.cwd,
@@ -27,11 +30,13 @@ export function createSessionWorkspaceStore(db: DatabaseSync) {
       VALUES (?, ?, ?)
       ON CONFLICT(sessionId) DO UPDATE SET cwd = excluded.cwd, updatedAt = excluded.updatedAt
     `).run(sessionId, cwd, now);
+    bridgeSessionStateStore.setPinnedCwd(sessionId, cwd);
     return { cwd, updatedAt: now };
   }
 
   function deleteWorkspace(sessionId: string): void {
     db.prepare("DELETE FROM session_workspace WHERE sessionId = ?").run(sessionId);
+    bridgeSessionStateStore.clearPinnedCwd(sessionId);
   }
 
   function listWorkspaces(): SessionWorkspaceMap {

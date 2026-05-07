@@ -16,6 +16,8 @@ import { createSettingsStore } from "../settings-store.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createSessionWorkspaceStore } from "../session-workspace-store.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
+import { createCopilotCliSessionCatalog } from "../copilot-cli-session-catalog.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createTagStore } from "../tag-store.js";
@@ -318,6 +320,8 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     sessionMetaStore: createSessionMetaStore(db),
     sessionWorkspaceStore: createSessionWorkspaceStore(db),
     sessionTitles: createSessionTitlesStore(db),
+    bridgeSessionStateStore: createBridgeSessionStateStore(db),
+    cliSessionCatalog: createCopilotCliSessionCatalog({ copilotHome: runtimePaths.copilotHome }),
     readStateStore: createReadStateStore(db),
     checklistStore: createChecklistStore(db, globalBus),
     tagStore: createTagStore(db),

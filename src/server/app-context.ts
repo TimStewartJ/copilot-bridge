@@ -8,6 +8,8 @@ import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
+import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
+import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import type { ReadStateStore } from "./read-state-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsStore } from "./docs-store.js";
@@ -38,6 +40,8 @@ export interface AppContext {
   sessionMetaStore: SessionMetaStore;
   sessionWorkspaceStore: SessionWorkspaceStore;
   sessionTitles: SessionTitlesStore;
+  bridgeSessionStateStore: BridgeSessionStateStore;
+  cliSessionCatalog?: CopilotCliSessionCatalog;
   readStateStore: ReadStateStore;
   checklistStore: ChecklistStore;
   docsStore?: DocsStore;

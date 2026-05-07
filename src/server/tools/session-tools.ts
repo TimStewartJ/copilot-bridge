@@ -1,5 +1,5 @@
 import { defineTool } from "@github/copilot-sdk";
-import { looksLikePromptEchoTitle, normalizeSessionTitle } from "../session-title-utils.js";
+import { normalizeSessionTitle } from "../session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { storeSessionTitle } from "./helpers.js";
@@ -15,7 +15,6 @@ export function createSessionTools(ctx: AppContext) {
 
       if (!sessionId) return toolFailure("sessionId is required");
       if (!title) return toolFailure("Title is required");
-      if (looksLikePromptEchoTitle(title)) return toolFailure("Title looks like echoed prompt text");
       if (title.length > 80) return toolFailure("Title is too long");
 
       storeSessionTitle(ctx.sessionTitles, ctx.eventBusRegistry, ctx.globalBus, sessionId, title);

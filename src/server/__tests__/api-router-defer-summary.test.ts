@@ -52,6 +52,7 @@ describe("session list defer summaries", () => {
       listSessionsFromDisk,
     } as any;
     const { app, ctx } = createTestApp({ sessionManager });
+    ctx.sessionTitles.setTitle("session-1", "Cached session");
 
     const firstRes = await request(app).get("/api/sessions");
     ctx.deferredPromptStore!.create(
