@@ -54,6 +54,7 @@ interface ChatViewProps {
   onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
   onReviewVoiceJob?: (composerKey: string) => void;
   onClearVoiceJobError?: (composerKey: string) => void;
+  onRetryVoiceJobUpload?: (composerKey: string) => void;
   reloadToken?: number;
   reloadMcpServers?: McpServerStatus[];
   /** Incremented when an external source (e.g. schedule) starts work on this session */
@@ -317,6 +318,7 @@ export default function ChatView({
   onSubmitVoiceCapture,
   onReviewVoiceJob,
   onClearVoiceJobError,
+  onRetryVoiceJobUpload,
   reloadToken = 0,
   reloadMcpServers,
   busySignal = 0,
@@ -1323,6 +1325,7 @@ export default function ChatView({
         onSubmitVoiceCapture={onSubmitVoiceCapture}
         onReviewVoiceJob={onReviewVoiceJob}
         onClearVoiceJobError={onClearVoiceJobError}
+        onRetryVoiceJobUpload={onRetryVoiceJobUpload}
         disabled={composerDisabled}
         disabledHint={composerDisabledHint}
       />

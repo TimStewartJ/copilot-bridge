@@ -22,6 +22,7 @@ export interface VoiceBackgroundJob {
   status: VoiceBackgroundJobStatus;
   submitMode: VoiceSubmitMode;
   error?: string;
+  retryable?: boolean;
   serverOwned?: boolean;
   serverJobId?: string;
   originComposerKey?: string;
@@ -53,6 +54,7 @@ interface UseBackgroundVoiceJobsOptions {
 export interface UseBackgroundVoiceJobsResult {
   getJobForComposer: (composerKey: string) => VoiceBackgroundJob | null;
   startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
+  retryVoiceJobUpload: (composerKey: string) => void;
   reviewInstead: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
 }
@@ -76,6 +78,7 @@ export function useBackgroundVoiceJobs({
   const jobsRef = useRef(jobs);
   const uploadControllersRef = useRef<Record<string, AbortController>>({});
   const uploadAudioRef = useRef<Record<string, Blob>>({});
+  const retryingComposerKeysRef = useRef<Set<string>>(new Set());
   const pollTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const claimedOriginServerJobIdsRef = useRef<Record<string, string>>({});
   const optionsRef = useRef({
@@ -133,7 +136,22 @@ export function useBackgroundVoiceJobs({
 
   const getJobForComposer = useCallback((composerKey: string) => jobs[composerKey] ?? null, [jobs]);
 
+  const clearUploadTracking = useCallback((composerKey: string, expectedController?: AbortController) => {
+    if (expectedController && uploadControllersRef.current[composerKey] !== expectedController) return;
+    delete uploadControllersRef.current[composerKey];
+    delete uploadAudioRef.current[composerKey];
+  }, []);
+
+  const clearUploadController = useCallback((composerKey: string, expectedController: AbortController) => {
+    if (uploadControllersRef.current[composerKey] === expectedController) {
+      delete uploadControllersRef.current[composerKey];
+    }
+  }, []);
+
   const clearVoiceJobError = useCallback((composerKey: string) => {
+    if (jobsRef.current[composerKey]?.status !== "error") return;
+    clearUploadTracking(composerKey);
+    retryingComposerKeysRef.current.delete(composerKey);
     setJobsState((prev) => {
       const existing = prev[composerKey];
       if (!existing || existing.status !== "error") return prev;
@@ -141,12 +159,7 @@ export function useBackgroundVoiceJobs({
       delete next[composerKey];
       return next;
     });
-  }, [setJobsState]);
-
-  const clearUploadTracking = useCallback((composerKey: string) => {
-    delete uploadControllersRef.current[composerKey];
-    delete uploadAudioRef.current[composerKey];
-  }, []);
+  }, [clearUploadTracking, setJobsState]);
 
   const stopPolling = useCallback((jobId: string) => {
     const timer = pollTimersRef.current[jobId];
@@ -203,19 +216,26 @@ export function useBackgroundVoiceJobs({
   const markError = useCallback((
     composerKey: string,
     message: string,
-    extras?: Partial<Pick<VoiceBackgroundJob, "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave">>,
+    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave">>,
   ) => {
-    setJob(composerKey, {
+    const nextJob: VoiceBackgroundJob = {
       composerKey,
       status: "error",
       submitMode: "insert",
       error: message,
-      ...extras,
-    });
+    };
+    if (extras) {
+      Object.assign(nextJob, extras);
+    }
+    nextJob.retryable = extras?.retryable === true && !!uploadAudioRef.current[composerKey]
+      ? true
+      : undefined;
+    setJob(composerKey, nextJob);
   }, [setJob]);
 
   const startLocalInsertJob = useCallback((composerKey: string, audio: Blob) => {
-    clearVoiceJobError(composerKey);
+    clearUploadTracking(composerKey);
+    uploadAudioRef.current[composerKey] = audio;
     setJob(composerKey, {
       composerKey,
       status: "transcribing",
@@ -231,14 +251,20 @@ export function useBackgroundVoiceJobs({
         }
 
         insertTranscriptIntoDraft(composerKey, transcript);
+        clearUploadTracking(composerKey);
         clearJob(composerKey);
       } catch (err) {
-        markError(composerKey, err instanceof Error ? err.message : String(err));
+        markError(composerKey, err instanceof Error ? err.message : String(err), {
+          submitMode: "insert",
+          retryable: true,
+        });
+      } finally {
+        retryingComposerKeysRef.current.delete(composerKey);
       }
     };
 
     void runJob();
-  }, [clearJob, clearVoiceJobError, insertTranscriptIntoDraft, markError, setJob]);
+  }, [clearJob, clearUploadTracking, insertTranscriptIntoDraft, markError, setJob]);
 
   const applyServerSnapshot = useCallback(async (
     snapshot: VoiceJobStatusResponse,
@@ -384,11 +410,11 @@ export function useBackgroundVoiceJobs({
   }, [applyServerSnapshot, clearJob, findDisplayKeyForServerJob, stopPolling]);
 
   const startServerAutoSendJob = useCallback((composerKey: string, audio: Blob) => {
+    clearUploadTracking(composerKey);
     const controller = new AbortController();
     uploadControllersRef.current[composerKey] = controller;
     uploadAudioRef.current[composerKey] = audio;
     delete claimedOriginServerJobIdsRef.current[composerKey];
-    clearVoiceJobError(composerKey);
     setJob(composerKey, {
       composerKey,
       status: "uploading",
@@ -408,16 +434,20 @@ export function useBackgroundVoiceJobs({
           audio,
           { signal: controller.signal },
         );
-        clearUploadTracking(composerKey);
+        clearUploadTracking(composerKey, controller);
+        retryingComposerKeysRef.current.delete(composerKey);
         claimedOriginServerJobIdsRef.current[composerKey] = snapshot.id;
         const keepPolling = await applyServerSnapshot(snapshot, composerKey);
         if (keepPolling) {
           pollServerJob(snapshot.id, composerKey);
         }
       } catch (err) {
+        retryingComposerKeysRef.current.delete(composerKey);
         if (controller.signal.aborted) return;
-        clearUploadTracking(composerKey);
+        clearUploadController(composerKey, controller);
         markError(composerKey, err instanceof Error ? err.message : String(err), {
+          submitMode: "autosend",
+          retryable: true,
           serverOwned: true,
           originComposerKey: composerKey,
         });
@@ -425,7 +455,7 @@ export function useBackgroundVoiceJobs({
     };
 
     void runJob();
-  }, [applyServerSnapshot, clearUploadTracking, clearVoiceJobError, markError, pollServerJob, setJob]);
+  }, [applyServerSnapshot, clearUploadController, clearUploadTracking, markError, pollServerJob, setJob]);
 
   const reviewInstead = useCallback((_composerKey: string) => {
     // Server-owned autosend commits once upload begins; insert/review mode remains local-only.
@@ -449,6 +479,27 @@ export function useBackgroundVoiceJobs({
     }
     return Promise.resolve();
   }, [draftHasContent, startLocalInsertJob, startServerAutoSendJob]);
+
+  const retryVoiceJobUpload = useCallback((composerKey: string) => {
+    const existing = jobsRef.current[composerKey];
+    const retainedAudio = uploadAudioRef.current[composerKey];
+    if (
+      !existing
+      || existing.status !== "error"
+      || existing.retryable !== true
+      || !retainedAudio
+      || retryingComposerKeysRef.current.has(composerKey)
+    ) {
+      return;
+    }
+
+    retryingComposerKeysRef.current.add(composerKey);
+    if (existing.submitMode === "autosend") {
+      startServerAutoSendJob(composerKey, retainedAudio);
+    } else {
+      startLocalInsertJob(composerKey, retainedAudio);
+    }
+  }, [startLocalInsertJob, startServerAutoSendJob]);
 
   useEffect(() => {
     if (!activeComposerKey) return;
@@ -482,6 +533,7 @@ export function useBackgroundVoiceJobs({
       }
       uploadControllersRef.current = {};
       uploadAudioRef.current = {};
+      retryingComposerKeysRef.current.clear();
       for (const timer of Object.values(pollTimersRef.current)) {
         clearTimeout(timer);
       }
@@ -492,6 +544,7 @@ export function useBackgroundVoiceJobs({
   return {
     getJobForComposer,
     startBackgroundVoiceJob,
+    retryVoiceJobUpload,
     reviewInstead,
     clearVoiceJobError,
   };

@@ -784,6 +784,7 @@ export default function App() {
   const {
     getJobForComposer,
     startBackgroundVoiceJob,
+    retryVoiceJobUpload,
     reviewInstead,
     clearVoiceJobError,
   } = useBackgroundVoiceJobs({
@@ -1542,6 +1543,7 @@ export default function App() {
                   materializeSession={materializeSession}
                   getVoiceJob={getJobForComposer}
                   startBackgroundVoiceJob={startBackgroundVoiceJob}
+                  retryVoiceJobUpload={retryVoiceJobUpload}
                   reviewVoiceJob={reviewInstead}
                   clearVoiceJobError={clearVoiceJobError}
                   sessionReloads={sessionReloads}
@@ -1609,6 +1611,7 @@ export default function App() {
                   materializeSession={materializeSession}
                   getVoiceJob={getJobForComposer}
                   startBackgroundVoiceJob={startBackgroundVoiceJob}
+                  retryVoiceJobUpload={retryVoiceJobUpload}
                   reviewVoiceJob={reviewInstead}
                   clearVoiceJobError={clearVoiceJobError}
                   sessionReloads={sessionReloads}
@@ -1821,6 +1824,7 @@ function SessionRoute({
   materializeSession,
   getVoiceJob,
   startBackgroundVoiceJob,
+  retryVoiceJobUpload,
   reviewVoiceJob,
   clearVoiceJobError,
   sessionReloads,
@@ -1837,6 +1841,7 @@ function SessionRoute({
   materializeSession: (taskId?: string) => Promise<string>;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
   startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
+  retryVoiceJobUpload: (composerKey: string) => void;
   reviewVoiceJob: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
@@ -1922,6 +1927,7 @@ function SessionRoute({
       onSubmitVoiceCapture={startBackgroundVoiceJob}
       onReviewVoiceJob={reviewVoiceJob}
       onClearVoiceJobError={clearVoiceJobError}
+      onRetryVoiceJobUpload={retryVoiceJobUpload}
       reloadToken={sessionReload?.token ?? 0}
       reloadMcpServers={sessionReload?.servers}
       busySignal={busySignal}
