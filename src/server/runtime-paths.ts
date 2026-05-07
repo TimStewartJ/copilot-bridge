@@ -11,6 +11,7 @@ export interface RuntimePaths {
   demoMode: boolean;
   dataDir: string;
   docsDir: string;
+  docsSnapshotsDir?: string;
   copilotHome?: string;
   workspaceDir?: string;
   env: NodeJS.ProcessEnv;
@@ -21,6 +22,7 @@ export interface RuntimePathOverrides {
   demoMode?: boolean;
   dataDir?: string;
   docsDir?: string;
+  docsSnapshotsDir?: string;
   copilotHome?: string;
   workspaceDir?: string;
 }
@@ -58,6 +60,9 @@ export function resolveRuntimePaths(
         ? resolveDefaultReleaseDataDir(env)
         : join(REPO_ROOT, "data"));
   const docsDir = optionalEnvValue(overrides.docsDir) ?? optionalEnvValue(env.BRIDGE_DOCS_DIR) ?? join(dataDir, "docs");
+  const docsSnapshotsDir = optionalEnvValue(overrides.docsSnapshotsDir)
+    ?? optionalEnvValue(env.BRIDGE_DOCS_SNAPSHOTS_DIR)
+    ?? join(dataDir, "backups", "docs", "snapshots");
   const copilotHome = overrides.copilotHome
     ?? optionalEnvValue(env.COPILOT_HOME)
     ?? (demoMode || releaseMode ? join(dataDir, ".copilot") : undefined);
@@ -68,6 +73,7 @@ export function resolveRuntimePaths(
     demoMode,
     dataDir,
     docsDir,
+    docsSnapshotsDir,
     copilotHome,
     workspaceDir,
     env: {
@@ -76,6 +82,7 @@ export function resolveRuntimePaths(
       BRIDGE_DEMO_MODE: demoMode ? "true" : "false",
       BRIDGE_DATA_DIR: dataDir,
       BRIDGE_DOCS_DIR: docsDir,
+      BRIDGE_DOCS_SNAPSHOTS_DIR: docsSnapshotsDir,
       ...(copilotHome ? { COPILOT_HOME: copilotHome } : {}),
     },
   };

@@ -27,6 +27,7 @@ import { createPushSubscriptionStore } from "../push-subscription-store.js";
 import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
+import { createDocsSnapshotStore } from "../docs-snapshot-store.js";
 import { createApiRouter } from "../api-router.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
@@ -35,7 +36,7 @@ import { resolveRuntimePaths } from "../runtime-paths.js";
 import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
 
-const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "COPILOT_HOME"] as const;
+const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
 const TEST_CLEANUP_MAX_RETRIES = 5;
 const TEST_CLEANUP_RETRY_DELAY_MS = 25;
 const testCleanupPaths = new Set<string>();
@@ -126,11 +127,13 @@ export function makeTestRuntimePaths(
   const demoMode = overrides.demoMode ?? false;
   const dataDir = overrides.dataDir ?? join(rootDir, "data");
   const docsDir = overrides.docsDir ?? join(rootDir, "docs");
+  const docsSnapshotsDir = overrides.docsSnapshotsDir ?? join(rootDir, "docs-snapshots");
   const copilotHome = overrides.copilotHome ?? join(rootDir, ".copilot");
   const workspaceDir = overrides.workspaceDir ?? (demoMode ? join(rootDir, "workspace") : undefined);
 
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(docsDir, { recursive: true });
+  mkdirSync(docsSnapshotsDir, { recursive: true });
   mkdirSync(copilotHome, { recursive: true });
   if (workspaceDir) {
     mkdirSync(workspaceDir, { recursive: true });
@@ -141,6 +144,7 @@ export function makeTestRuntimePaths(
     demoMode,
     dataDir,
     docsDir,
+    docsSnapshotsDir,
     copilotHome,
     ...(workspaceDir ? { workspaceDir } : {}),
   });
@@ -290,11 +294,16 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     demoMode: baseRuntimePaths.demoMode,
     dataDir: baseRuntimePaths.dataDir,
     docsDir: baseRuntimePaths.docsDir,
+    docsSnapshotsDir: baseRuntimePaths.docsSnapshotsDir,
     copilotHome,
     workspaceDir: baseRuntimePaths.workspaceDir,
   });
   const docsStore = createDocsStore(runtimePaths.docsDir);
   const docsIndex = createDocsIndex(db, docsStore);
+  const docsSnapshotStore = createDocsSnapshotStore(
+    runtimePaths.docsDir,
+    runtimePaths.docsSnapshotsDir ?? join(runtimePaths.dataDir, "backups", "docs", "snapshots"),
+  );
   const transcriptionService = createMockTranscriptionService();
   const sessionManager = createMockSessionManager();
   const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, { runtimePaths });
@@ -316,6 +325,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     telemetryStore: createTelemetryStore(db),
     docsStore,
     docsIndex,
+    docsSnapshotStore,
     globalBus,
     eventBusRegistry,
     sessionManager,

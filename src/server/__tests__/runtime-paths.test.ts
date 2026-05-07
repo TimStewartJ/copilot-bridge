@@ -10,10 +10,12 @@ describe("runtime paths", () => {
     expect(paths.demoMode).toBe(true);
     expect(paths.dataDir).toMatch(/demo-data$/);
     expect(paths.docsDir).toBe(join(paths.dataDir, "docs"));
+    expect(paths.docsSnapshotsDir).toBe(join(paths.dataDir, "backups", "docs", "snapshots"));
     expect(paths.copilotHome).toBe(join(paths.dataDir, ".copilot"));
     expect(paths.workspaceDir).toBe(join(paths.dataDir, "workspace"));
     expect(paths.env.BRIDGE_DATA_DIR).toBe(paths.dataDir);
     expect(paths.env.BRIDGE_DOCS_DIR).toBe(paths.docsDir);
+    expect(paths.env.BRIDGE_DOCS_SNAPSHOTS_DIR).toBe(paths.docsSnapshotsDir);
     expect(paths.env.COPILOT_HOME).toBe(paths.copilotHome);
     expect(paths.env.BRIDGE_DEMO_MODE).toBe("true");
   });
@@ -21,16 +23,19 @@ describe("runtime paths", () => {
   it("keeps existing explicit overrides intact", () => {
     const dataDir = join(tmpdir(), "demo-data");
     const docsDir = join(tmpdir(), "demo-docs");
+    const docsSnapshotsDir = join(tmpdir(), "demo-docs-snapshots");
     const copilotHome = join(tmpdir(), "demo-copilot");
     const paths = resolveRuntimePaths({
       BRIDGE_DEMO_MODE: "true",
       BRIDGE_DATA_DIR: dataDir,
       BRIDGE_DOCS_DIR: docsDir,
+      BRIDGE_DOCS_SNAPSHOTS_DIR: docsSnapshotsDir,
       COPILOT_HOME: copilotHome,
     });
 
     expect(paths.dataDir).toBe(dataDir);
     expect(paths.docsDir).toBe(docsDir);
+    expect(paths.docsSnapshotsDir).toBe(docsSnapshotsDir);
     expect(paths.copilotHome).toBe(copilotHome);
     expect(paths.workspaceDir).toBe(join(paths.dataDir, "workspace"));
   });
@@ -46,11 +51,13 @@ describe("runtime paths", () => {
     expect(paths.demoMode).toBe(false);
     expect(paths.dataDir).toBe(resolveDefaultReleaseDataDir({ LOCALAPPDATA: localAppData }));
     expect(paths.docsDir).toBe(join(paths.dataDir, "docs"));
+    expect(paths.docsSnapshotsDir).toBe(join(paths.dataDir, "backups", "docs", "snapshots"));
     expect(paths.copilotHome).toBe(join(paths.dataDir, ".copilot"));
     expect(paths.workspaceDir).toBeUndefined();
     expect(paths.env.BRIDGE_DISTRIBUTION_MODE).toBe("release");
     expect(paths.env.BRIDGE_DATA_DIR).toBe(paths.dataDir);
     expect(paths.env.BRIDGE_DOCS_DIR).toBe(paths.docsDir);
+    expect(paths.env.BRIDGE_DOCS_SNAPSHOTS_DIR).toBe(paths.docsSnapshotsDir);
     expect(paths.env.COPILOT_HOME).toBe(paths.copilotHome);
   });
 
@@ -61,11 +68,13 @@ describe("runtime paths", () => {
       LOCALAPPDATA: localAppData,
       BRIDGE_DATA_DIR: "",
       BRIDGE_DOCS_DIR: " ",
+      BRIDGE_DOCS_SNAPSHOTS_DIR: "",
       COPILOT_HOME: "",
     });
 
     expect(paths.dataDir).toBe(resolveDefaultReleaseDataDir({ LOCALAPPDATA: localAppData }));
     expect(paths.docsDir).toBe(join(paths.dataDir, "docs"));
+    expect(paths.docsSnapshotsDir).toBe(join(paths.dataDir, "backups", "docs", "snapshots"));
     expect(paths.copilotHome).toBe(join(paths.dataDir, ".copilot"));
   });
 });

@@ -12,6 +12,7 @@ import type { ReadStateStore } from "./read-state-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
+import type { DocsSnapshotStore } from "./docs-snapshot-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -41,6 +42,7 @@ export interface AppContext {
   checklistStore: ChecklistStore;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
+  docsSnapshotStore?: DocsSnapshotStore;
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;
   telemetryStore?: TelemetryStore;
