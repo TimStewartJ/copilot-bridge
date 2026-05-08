@@ -62,6 +62,19 @@ function Optimize-RuntimeNodeModules([string]$AppDir) {
   Remove-PathIfExists (Join-Path $AppDir "node_modules\@github\copilot-win32-x64")
 }
 
+function Read-UpdateManifestPublicKeyPem {
+  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM)) {
+    return $env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64)) {
+    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64.Trim()))
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PATH) -and (Test-Path $env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PATH)) {
+    return Get-Content -Path $env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PATH -Raw
+  }
+  return $null
+}
+
 $runtimeDependencyNames = @(
   "@github/copilot-sdk",
   "express",
@@ -111,6 +124,11 @@ Copy-Item -Path (Join-Path $repoRoot "scripts\update-release.ps1") -Destination 
 Copy-Item -Path (Join-Path $repoRoot "scripts\install-startup-task.ps1") -Destination (Join-Path $releaseRoot "install-startup-task.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\uninstall-startup-task.ps1") -Destination (Join-Path $releaseRoot "uninstall-startup-task.ps1")
 
+$updateManifestPublicKeyPem = Read-UpdateManifestPublicKeyPem
+if (-not [string]::IsNullOrWhiteSpace($updateManifestPublicKeyPem)) {
+  Set-Content -Path (Join-Path $appDir "update-manifest-public-key.pem") -Value $updateManifestPublicKeyPem.Trim() -Encoding ASCII
+}
+
 if ($IncludeNodeModules) {
   Push-Location $appDir
   try {
@@ -141,6 +159,7 @@ $manifest = [ordered]@{
   includesNodeModules = [bool]$IncludeNodeModules
   nodeModulesMode = if ($IncludeNodeModules) { "runtime" } else { "none" }
   nodeModulesOptimization = if ($IncludeNodeModules) { "win-x64-pruned" } else { "none" }
+  updateManifestPublicKeyPath = if (-not [string]::IsNullOrWhiteSpace($updateManifestPublicKeyPem)) { "update-manifest-public-key.pem" } else { $null }
   runtimeDependencies = $runtimeDependencyNames
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $appDir ".bridge-release.json") -Encoding UTF8

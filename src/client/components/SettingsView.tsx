@@ -14,6 +14,7 @@ import {
   ProvidersSection,
   TagsSection,
   VoiceInputSection,
+  UpdatesSection,
   BridgeCommitsSection,
   CopilotUsageSection,
   SettingsCategoryNav,
@@ -302,6 +303,7 @@ export default function SettingsView() {
             </CategoryPanel>
 
             <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
+              <UpdatesSection />
               <BridgeCommitsSection />
               <CopilotUsageSection />
               <VoiceInputSection />

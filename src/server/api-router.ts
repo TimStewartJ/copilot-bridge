@@ -43,6 +43,13 @@ import { createPushNotificationService, getPushPublicStatus, type BridgePushPayl
 import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import {
+  checkForUpdate,
+  readUpdateInstallStatus,
+  startUpdateInstall,
+  UpdateInstallError,
+  type UpdateChannel,
+} from "./update-service.js";
+import {
   DocsSnapshotNotFoundError,
   DocsSnapshotValidationError,
   PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
@@ -3220,6 +3227,82 @@ export function createApiRouter(ctx: AppContext): express.Router {
       res.json(await getBridgeGitRevisions({ forceRefresh }));
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Update checks
+
+  function getUpdateChannel(value: unknown): UpdateChannel | undefined {
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (raw === undefined || raw === null || raw === "") return undefined;
+    if (raw === "stable" || raw === "preview") return raw;
+    throw new UpdateInstallError(`Unsupported update channel "${String(raw)}". Expected "stable" or "preview".`, 400);
+  }
+
+  function rejectCrossSiteUpdateMutation(req: express.Request, res: express.Response): boolean {
+    const secFetchSite = req.get("sec-fetch-site")?.toLowerCase();
+    if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "same-site" && secFetchSite !== "none") {
+      res.status(403).json({ error: "Update installation must be started from the Bridge UI." });
+      return true;
+    }
+    const origin = req.get("origin");
+    const host = req.get("host");
+    if (origin && host) {
+      try {
+        if (new URL(origin).host !== host) {
+          res.status(403).json({ error: "Update installation must be started from the Bridge UI." });
+          return true;
+        }
+      } catch {
+        res.status(403).json({ error: "Update installation origin is invalid." });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  router.get("/updates/check", async (req, res) => {
+    try {
+      const channel = getUpdateChannel(req.query.channel);
+      res.json(await checkForUpdate({
+        channel,
+        runtimePaths: ctx.runtimePaths,
+        env: process.env,
+      }));
+    } catch (err) {
+      const statusCode = err instanceof UpdateInstallError ? err.statusCode : 500;
+      res.status(statusCode).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/updates/install-status", (_req, res) => {
+    try {
+      const runtimePaths = ctx.runtimePaths;
+      if (!runtimePaths) {
+        return res.status(500).json({ error: "Runtime paths are not configured." });
+      }
+      res.json(readUpdateInstallStatus({ runtimePaths }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/updates/install", async (req, res) => {
+    if (rejectCrossSiteUpdateMutation(req, res)) return;
+    try {
+      const runtimePaths = ctx.runtimePaths;
+      if (!runtimePaths) {
+        return res.status(500).json({ error: "Runtime paths are not configured." });
+      }
+      const channel = getUpdateChannel(req.body?.channel);
+      res.status(202).json(await startUpdateInstall({
+        channel,
+        runtimePaths,
+        env: process.env,
+      }));
+    } catch (err) {
+      const statusCode = err instanceof UpdateInstallError ? err.statusCode : 500;
+      res.status(statusCode).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
