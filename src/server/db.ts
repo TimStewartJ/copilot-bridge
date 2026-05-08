@@ -14,6 +14,8 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+const BRIDGE_SESSION_STATE_LEGACY_BACKFILL = "bridge_session_state_legacy_backfill_v1";
+const SCHEDULE_RUNS_LEGACY_BACKFILL = "schedule_runs_legacy_backfill_v1";
 const LEGACY_JSON_STATE_FILES = [
   "tasks.json",
   "task-groups.json",
@@ -354,6 +356,137 @@ function migrateMcpRegistry(db: DatabaseSync): void {
   }
 }
 
+function hasSchemaMigration(db: DatabaseSync, id: string): boolean {
+  const row = db.prepare("SELECT 1 AS found FROM schema_migrations WHERE id = ?").get(id) as { found?: number } | undefined;
+  return row?.found === 1;
+}
+
+function markSchemaMigration(db: DatabaseSync, id: string): void {
+  db.prepare(`
+    INSERT INTO schema_migrations (id, appliedAt)
+    VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(id) DO NOTHING
+  `).run(id);
+}
+
+function backfillBridgeSessionStateFromLegacyTables(db: DatabaseSync): void {
+  if (hasSchemaMigration(db, BRIDGE_SESSION_STATE_LEGACY_BACKFILL)) return;
+
+  db.exec("BEGIN");
+  try {
+    db.exec(`
+      INSERT OR IGNORE INTO bridge_session_state (
+        sessionId,
+        archived,
+        archivedAt,
+        triggeredBy,
+        scheduleId,
+        scheduleName,
+        lastVisibleActivityAt,
+        createdAt,
+        updatedAt
+      )
+      SELECT
+        sessionId,
+        archived,
+        NULLIF(archivedAt, ''),
+        triggeredBy,
+        scheduleId,
+        scheduleName,
+        lastVisibleActivityAt,
+        COALESCE(NULLIF(archivedAt, ''), lastVisibleActivityAt, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        COALESCE(lastVisibleActivityAt, NULLIF(archivedAt, ''), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      FROM session_meta;
+
+      UPDATE bridge_session_state
+      SET
+        archived = COALESCE((SELECT archived FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), archived),
+        archivedAt = COALESCE((SELECT NULLIF(archivedAt, '') FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), archivedAt),
+        triggeredBy = COALESCE((SELECT triggeredBy FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), triggeredBy),
+        scheduleId = COALESCE((SELECT scheduleId FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), scheduleId),
+        scheduleName = COALESCE((SELECT scheduleName FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), scheduleName),
+        lastVisibleActivityAt = COALESCE((SELECT lastVisibleActivityAt FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), lastVisibleActivityAt)
+      WHERE EXISTS (SELECT 1 FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId);
+
+      INSERT OR IGNORE INTO bridge_session_state (
+        sessionId,
+        titleOverride,
+        titleOverrideUpdatedAt,
+        createdAt,
+        updatedAt
+      )
+      SELECT
+        sessionId,
+        title,
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM session_titles;
+
+      UPDATE bridge_session_state
+      SET
+        titleOverride = COALESCE((SELECT title FROM session_titles WHERE session_titles.sessionId = bridge_session_state.sessionId), titleOverride),
+        titleOverrideUpdatedAt = COALESCE(titleOverrideUpdatedAt, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      WHERE EXISTS (SELECT 1 FROM session_titles WHERE session_titles.sessionId = bridge_session_state.sessionId);
+
+      INSERT OR IGNORE INTO bridge_session_state (
+        sessionId,
+        pinnedCwd,
+        pinnedCwdUpdatedAt,
+        createdAt,
+        updatedAt
+      )
+      SELECT sessionId, cwd, updatedAt, updatedAt, updatedAt
+      FROM session_workspace;
+
+      UPDATE bridge_session_state
+      SET
+        pinnedCwd = COALESCE((SELECT cwd FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwd),
+        pinnedCwdUpdatedAt = COALESCE((SELECT updatedAt FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwdUpdatedAt)
+      WHERE EXISTS (SELECT 1 FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId);
+    `);
+    markSchemaMigration(db, BRIDGE_SESSION_STATE_LEGACY_BACKFILL);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function backfillScheduleRunsFromLegacyState(db: DatabaseSync): void {
+  if (hasSchemaMigration(db, SCHEDULE_RUNS_LEGACY_BACKFILL)) return;
+
+  db.exec("BEGIN");
+  try {
+    db.exec(`
+      INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+      SELECT s.id, s.lastSessionId, COALESCE(s.lastRunAt, s.updatedAt, s.createdAt, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      FROM schedules s
+      WHERE s.lastSessionId IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM schedule_runs sr
+          WHERE sr.scheduleId = s.id AND sr.sessionId = s.lastSessionId
+        );
+
+      INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+      SELECT sm.scheduleId, sm.sessionId, COALESCE(NULLIF(sm.archivedAt, ''), '${UNKNOWN_SCHEDULE_RUN_AT}')
+      FROM session_meta sm
+      WHERE sm.scheduleId IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM schedule_runs sr
+          WHERE sr.scheduleId = sm.scheduleId AND sr.sessionId = sm.sessionId
+        );
+    `);
+    markSchemaMigration(db, SCHEDULE_RUNS_LEGACY_BACKFILL);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function initSchema(db: DatabaseSync): void {
   db.exec(`
     -- Tasks
@@ -483,6 +616,11 @@ function initSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      appliedAt TEXT NOT NULL
     );
 
     -- Session titles
@@ -716,56 +854,7 @@ function initSchema(db: DatabaseSync): void {
     db.exec("ALTER TABLE session_meta ADD COLUMN lastVisibleActivityAt TEXT");
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_session_meta_lastVisibleActivityAt ON session_meta(lastVisibleActivityAt)");
-  db.exec(`
-    INSERT OR IGNORE INTO bridge_session_state (
-      sessionId,
-      archived,
-      archivedAt,
-      triggeredBy,
-      scheduleId,
-      scheduleName,
-      lastVisibleActivityAt,
-      createdAt,
-      updatedAt
-    )
-    SELECT
-      sessionId,
-      archived,
-      NULLIF(archivedAt, ''),
-      triggeredBy,
-      scheduleId,
-      scheduleName,
-      lastVisibleActivityAt,
-      COALESCE(NULLIF(archivedAt, ''), lastVisibleActivityAt, datetime('now')),
-      COALESCE(lastVisibleActivityAt, NULLIF(archivedAt, ''), datetime('now'))
-    FROM session_meta;
-
-    UPDATE bridge_session_state
-    SET
-      archived = COALESCE((SELECT archived FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), archived),
-      archivedAt = COALESCE((SELECT NULLIF(archivedAt, '') FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), archivedAt),
-      triggeredBy = COALESCE((SELECT triggeredBy FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), triggeredBy),
-      scheduleId = COALESCE((SELECT scheduleId FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), scheduleId),
-      scheduleName = COALESCE((SELECT scheduleName FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), scheduleName),
-      lastVisibleActivityAt = COALESCE((SELECT lastVisibleActivityAt FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId), lastVisibleActivityAt)
-    WHERE EXISTS (SELECT 1 FROM session_meta WHERE session_meta.sessionId = bridge_session_state.sessionId);
-
-    INSERT OR IGNORE INTO bridge_session_state (
-      sessionId,
-      pinnedCwd,
-      pinnedCwdUpdatedAt,
-      createdAt,
-      updatedAt
-    )
-    SELECT sessionId, cwd, updatedAt, updatedAt, updatedAt
-    FROM session_workspace;
-
-    UPDATE bridge_session_state
-    SET
-      pinnedCwd = COALESCE((SELECT cwd FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwd),
-      pinnedCwdUpdatedAt = COALESCE((SELECT updatedAt FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId), pinnedCwdUpdatedAt)
-    WHERE EXISTS (SELECT 1 FROM session_workspace WHERE session_workspace.sessionId = bridge_session_state.sessionId);
-  `);
+  backfillBridgeSessionStateFromLegacyTables(db);
 
   const scheduleCols = db.prepare("PRAGMA table_info(schedules)").all() as any[];
   if (!scheduleCols.some((c: any) => c.name === "sessionMode")) {
@@ -807,28 +896,7 @@ function initSchema(db: DatabaseSync): void {
     DELETE FROM schedule_session_claims;
   `);
 
-  // Backfill schedule run history from prior metadata and latest schedule state
-  db.exec(`
-    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
-    SELECT s.id, s.lastSessionId, COALESCE(s.lastRunAt, s.updatedAt, s.createdAt, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    FROM schedules s
-    WHERE s.lastSessionId IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM schedule_runs sr
-        WHERE sr.scheduleId = s.id AND sr.sessionId = s.lastSessionId
-      );
-
-    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
-    SELECT sm.scheduleId, sm.sessionId, COALESCE(NULLIF(sm.archivedAt, ''), '${UNKNOWN_SCHEDULE_RUN_AT}')
-    FROM session_meta sm
-    WHERE sm.scheduleId IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM schedule_runs sr
-        WHERE sr.scheduleId = sm.scheduleId AND sr.sessionId = sm.sessionId
-      );
-  `);
+  backfillScheduleRunsFromLegacyState(db);
 
   const tableExists = (tableName: string): boolean =>
     !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);

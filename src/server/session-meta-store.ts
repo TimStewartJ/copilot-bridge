@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "./db.js";
-import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
+import { createBridgeSessionStateStore, type BridgeSessionState } from "./bridge-session-state-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -25,75 +25,49 @@ type MetaMap = Record<string, SessionMeta>;
 export function createSessionMetaStore(db: DatabaseSync) {
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
 
-  function hydrate(row: any): SessionMeta {
+  function hasMetaFields(state: BridgeSessionState): boolean {
+    return state.archived
+      || state.archivedAt !== undefined
+      || state.triggeredBy !== undefined
+      || state.scheduleId !== undefined
+      || state.scheduleName !== undefined
+      || state.lastVisibleActivityAt !== undefined;
+  }
+
+  function hydrate(state: BridgeSessionState): SessionMeta {
     return {
-      archived: row.archived === 1,
-      archivedAt: row.archivedAt ?? "",
-      triggeredBy: row.triggeredBy ?? undefined,
-      scheduleId: row.scheduleId ?? undefined,
-      scheduleName: row.scheduleName ?? undefined,
-      lastVisibleActivityAt: row.lastVisibleActivityAt ?? undefined,
+      archived: state.archived,
+      archivedAt: state.archivedAt ?? "",
+      triggeredBy: state.triggeredBy,
+      scheduleId: state.scheduleId,
+      scheduleName: state.scheduleName,
+      lastVisibleActivityAt: state.lastVisibleActivityAt,
     };
   }
 
   function getMeta(sessionId: string): SessionMeta | undefined {
-    const row = db.prepare("SELECT * FROM session_meta WHERE sessionId = ?").get(sessionId) as any;
-    return row ? hydrate(row) : undefined;
+    const state = bridgeSessionStateStore.getState(sessionId);
+    return state && hasMetaFields(state) ? hydrate(state) : undefined;
   }
 
   function isArchived(sessionId: string): boolean {
-    const row = db.prepare("SELECT archived FROM session_meta WHERE sessionId = ?").get(sessionId) as any;
-    return row?.archived === 1;
+    return bridgeSessionStateStore.getState(sessionId)?.archived === true;
   }
 
   function setArchived(sessionId: string, archived: boolean): SessionMeta {
-    if (archived) {
-      const now = new Date().toISOString();
-      db.prepare(`
-        INSERT INTO session_meta (sessionId, archived, archivedAt)
-        VALUES (?, 1, ?)
-        ON CONFLICT(sessionId) DO UPDATE SET archived = 1, archivedAt = ?
-      `).run(sessionId, now, now);
-      bridgeSessionStateStore.setArchived(sessionId, true);
-    } else {
-      db.prepare("DELETE FROM session_meta WHERE sessionId = ?").run(sessionId);
-      bridgeSessionStateStore.setArchived(sessionId, false);
-    }
+    bridgeSessionStateStore.setArchived(sessionId, archived);
     return getMeta(sessionId) ?? { archived: false, archivedAt: "" };
   }
 
   function deleteMeta(sessionId: string): void {
-    db.prepare("DELETE FROM session_meta WHERE sessionId = ?").run(sessionId);
     bridgeSessionStateStore.deleteState(sessionId);
   }
 
   function setScheduleMeta(sessionId: string, scheduleId: string, scheduleName: string): void {
-    const existing = getMeta(sessionId);
-    if (existing) {
-      db.prepare(`
-        UPDATE session_meta SET triggeredBy = 'schedule', scheduleId = ?, scheduleName = ?
-        WHERE sessionId = ?
-      `).run(scheduleId, scheduleName, sessionId);
-    } else {
-      db.prepare(`
-        INSERT INTO session_meta (sessionId, archived, archivedAt, triggeredBy, scheduleId, scheduleName)
-        VALUES (?, 0, '', 'schedule', ?, ?)
-      `).run(sessionId, scheduleId, scheduleName);
-    }
     bridgeSessionStateStore.setScheduleMeta(sessionId, scheduleId, scheduleName);
   }
 
   function setLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt: string): void {
-    db.prepare(`
-      INSERT INTO session_meta (sessionId, archived, archivedAt, lastVisibleActivityAt)
-      VALUES (?, 0, '', ?)
-      ON CONFLICT(sessionId) DO UPDATE SET
-        lastVisibleActivityAt = CASE
-          WHEN session_meta.lastVisibleActivityAt IS NULL OR session_meta.lastVisibleActivityAt < excluded.lastVisibleActivityAt
-          THEN excluded.lastVisibleActivityAt
-          ELSE session_meta.lastVisibleActivityAt
-        END
-    `).run(sessionId, lastVisibleActivityAt);
     bridgeSessionStateStore.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
   }
 
@@ -105,10 +79,12 @@ export function createSessionMetaStore(db: DatabaseSync) {
   }
 
   function listMeta(): MetaMap {
-    const rows = db.prepare("SELECT * FROM session_meta").all() as any[];
+    const states = bridgeSessionStateStore.listStates();
     const result: MetaMap = {};
-    for (const row of rows) {
-      result[row.sessionId] = hydrate(row);
+    for (const state of Object.values(states)) {
+      if (hasMetaFields(state)) {
+        result[state.sessionId] = hydrate(state);
+      }
     }
     return result;
   }

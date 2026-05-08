@@ -11,39 +11,37 @@ type SessionWorkspaceMap = Record<string, SessionWorkspace>;
 export function createSessionWorkspaceStore(db: DatabaseSync) {
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
 
-  function hydrate(row: any): SessionWorkspace {
+  function hydrate(state: { pinnedCwd: string; pinnedCwdUpdatedAt?: string; updatedAt: string }): SessionWorkspace {
     return {
-      cwd: row.cwd,
-      updatedAt: row.updatedAt,
+      cwd: state.pinnedCwd,
+      updatedAt: state.pinnedCwdUpdatedAt ?? state.updatedAt,
     };
   }
 
   function getWorkspace(sessionId: string): SessionWorkspace | undefined {
-    const row = db.prepare("SELECT cwd, updatedAt FROM session_workspace WHERE sessionId = ?").get(sessionId) as any;
-    return row ? hydrate(row) : undefined;
+    const state = bridgeSessionStateStore.getState(sessionId);
+    return state?.pinnedCwd ? hydrate({ ...state, pinnedCwd: state.pinnedCwd }) : undefined;
   }
 
   function setWorkspace(sessionId: string, cwd: string): SessionWorkspace {
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO session_workspace (sessionId, cwd, updatedAt)
-      VALUES (?, ?, ?)
-      ON CONFLICT(sessionId) DO UPDATE SET cwd = excluded.cwd, updatedAt = excluded.updatedAt
-    `).run(sessionId, cwd, now);
-    bridgeSessionStateStore.setPinnedCwd(sessionId, cwd);
-    return { cwd, updatedAt: now };
+    const state = bridgeSessionStateStore.setPinnedCwd(sessionId, cwd);
+    return {
+      cwd,
+      updatedAt: state.pinnedCwdUpdatedAt ?? state.updatedAt,
+    };
   }
 
   function deleteWorkspace(sessionId: string): void {
-    db.prepare("DELETE FROM session_workspace WHERE sessionId = ?").run(sessionId);
     bridgeSessionStateStore.clearPinnedCwd(sessionId);
   }
 
   function listWorkspaces(): SessionWorkspaceMap {
-    const rows = db.prepare("SELECT sessionId, cwd, updatedAt FROM session_workspace").all() as any[];
+    const states = bridgeSessionStateStore.listStates();
     const result: SessionWorkspaceMap = {};
-    for (const row of rows) {
-      result[row.sessionId] = hydrate(row);
+    for (const state of Object.values(states)) {
+      if (state.pinnedCwd) {
+        result[state.sessionId] = hydrate({ ...state, pinnedCwd: state.pinnedCwd });
+      }
     }
     return result;
   }

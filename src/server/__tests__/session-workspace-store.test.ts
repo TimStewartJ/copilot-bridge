@@ -20,6 +20,7 @@ describe("session-workspace-store", () => {
       cwd: "/workspace/two",
       updatedAt: updated.updatedAt,
     });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM session_workspace").get() as any).count).toBe(0);
   });
 
   it("deletes stored workspaces", () => {
