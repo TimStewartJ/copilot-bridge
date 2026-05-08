@@ -180,7 +180,7 @@ export function createPushNotificationService({
 export type PushNotificationService = ReturnType<typeof createPushNotificationService>;
 
 export function initPushEventNotifications(
-  ctx: Pick<AppContext, "globalBus" | "taskStore" | "sessionTitles" | "apiBasePath">,
+  ctx: Pick<AppContext, "globalBus" | "taskStore" | "cliSessionCatalog" | "apiBasePath">,
   service: PushNotificationService,
 ): () => void {
   return subscribeToPushEvents(ctx.globalBus, async (event) => {
@@ -231,12 +231,14 @@ function subscribeToPushEvents(
 }
 
 function buildSessionNotificationTarget(
-  ctx: Pick<AppContext, "taskStore" | "sessionTitles" | "apiBasePath">,
+  ctx: Pick<AppContext, "taskStore" | "cliSessionCatalog" | "apiBasePath">,
   sessionId: string,
 ): { sessionName: string; taskName?: string; url: string } {
   const task = ctx.taskStore.findTaskBySessionId(sessionId);
-  const sessionTitle = ctx.sessionTitles.getTitle(sessionId);
-  const sessionName = normalizeNotificationName(sessionTitle) ?? `Session ${sessionId.slice(0, 8)}`;
+  const cliName = ctx.cliSessionCatalog?.listSessions()
+    ?.find((session) => session.sessionId === sessionId)
+    ?.summary;
+  const sessionName = normalizeNotificationName(cliName) ?? `Session ${sessionId.slice(0, 8)}`;
   const taskName = normalizeNotificationName(task?.title);
   const appPath = task
     ? `/tasks/${encodeURIComponent(task.id)}/sessions/${encodeURIComponent(sessionId)}`

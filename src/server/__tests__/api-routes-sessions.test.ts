@@ -124,8 +124,6 @@ describe("Session routes (mocked)", () => {
       throw new Error("should use CLI catalog");
     });
     ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
-    ctx.sessionTitles.setTitle("cli-sized-session", "Sized CLI session");
-    ctx.sessionTitles.setTitle("cli-missing-events", "Missing events session");
 
     const res = await request(app).get("/api/sessions");
 
@@ -143,17 +141,17 @@ describe("Session routes (mocked)", () => {
     ]));
   });
 
-  it("GET /api/sessions keeps sessions visible when only a title override exists", async () => {
+  it("GET /api/sessions keeps sessions visible when a CLI-owned summary exists", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "dup-session",
+        summary: "Copy of Original session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("dup-session", "Copy of Original session");
 
     const res = await request(app).get("/api/sessions");
 
@@ -245,7 +243,6 @@ describe("Session routes (mocked)", () => {
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("archive-me", "Archive me");
 
     const before = await request(app).get("/api/sessions");
     const patch = await request(app).patch("/api/sessions/archive-me").send({ archived: true });
@@ -276,7 +273,6 @@ describe("Session routes (mocked)", () => {
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("unlinked-session", "Unlinked session");
     const archivedTask = ctx.taskStore.createTask("Archived parent task");
     ctx.taskStore.linkSession(archivedTask.id, "archived-task-session");
     ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
@@ -577,7 +573,6 @@ describe("Session routes (mocked)", () => {
     });
     sessionManager.listSessionsFromDisk = listSessionsFromDisk;
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("active-session", "Active session");
 
     const res = await request(app).get("/api/dashboard");
 
@@ -599,7 +594,6 @@ describe("Session routes (mocked)", () => {
     ]);
     sessionManager.listSessionsFromDisk = listSessionsFromDisk;
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("cached-dashboard-session", "Cached dashboard session");
 
     const sessionsRes = await request(app).get("/api/sessions");
     const dashboardRes = await request(app).get("/api/dashboard");
@@ -633,17 +627,17 @@ describe("Session routes (mocked)", () => {
     expect(res.body.schedules).toEqual([]);
   });
 
-  it("GET /api/dashboard keeps sessions visible when only a title override exists", async () => {
+  it("GET /api/dashboard keeps sessions visible when a CLI-owned summary exists", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "dup-session",
+        summary: "Copy of Original session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("dup-session", "Copy of Original session");
 
     const res = await request(app).get("/api/dashboard");
 
@@ -1820,8 +1814,9 @@ describe("Session manager routes", () => {
     expect(res.body).toHaveProperty("sessionId");
   });
 
-  it("POST /api/sessions/:id/duplicate seeds the copied title from the source summary", async () => {
+  it("POST /api/sessions/:id/duplicate seeds the copied CLI name from the source summary", async () => {
     const sessionManager = createMockSessionManager();
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "test-id",
@@ -1835,7 +1830,8 @@ describe("Session manager routes", () => {
     const res = await request(app).post("/api/sessions/test-id/duplicate");
 
     expect(res.status).toBe(200);
-    expect(ctx.sessionTitles.getTitle("dup-session")).toBe("Copy of Original session");
+    expect(sessionManager.setSessionName).toHaveBeenCalledWith("dup-session", "Copy of Original session");
+    expect(ctx.sessionTitles.getTitle("dup-session")).toBeUndefined();
   });
 
   it("POST /api/sessions/:id/duplicate preserves all task links from the source session", async () => {

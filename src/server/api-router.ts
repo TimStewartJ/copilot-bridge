@@ -553,7 +553,7 @@ function shouldIncludeMaterializedSession(opts: {
   readState: Record<string, string>;
   sessionId: string;
   lastVisibleActivityAt?: string;
-  hasTitleOverride: boolean;
+  hasSessionName: boolean;
   hasReadState: boolean;
   hasBridgeActivitySignal: boolean;
   hasDeferredWork: boolean;
@@ -571,7 +571,7 @@ function shouldIncludeMaterializedSession(opts: {
   if (
     !opts.archived
     && opts.linkedTasks.length === 0
-    && !opts.hasTitleOverride
+    && !opts.hasSessionName
     && !opts.hasBridgeActivitySignal
     && !(opts.hasReadState && opts.lastVisibleActivityAt)
     && !opts.hasDeferredWork
@@ -585,12 +585,9 @@ function shouldIncludeMaterializedSession(opts: {
 }
 
 function resolveSessionSummary(
-  ctx: AppContext,
   session: { sessionId: string; summary?: string | null },
-  opts: { fallbackSummary?: string; titleOverride?: string } = {},
+  opts: { fallbackSummary?: string } = {},
 ): string {
-  const title = opts.titleOverride ?? ctx.sessionTitles.getTitle(session.sessionId);
-  if (title) return title;
   const summary = session.summary ?? undefined;
   return summary || opts.fallbackSummary || "Untitled session";
 }
@@ -1059,7 +1056,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const sessionMeta = currentMeta[id];
       const archived = sessionMeta?.archived ?? s.archived ?? false;
       const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
-      const titleOverride = ctx.sessionTitles.getTitle(id);
       const deferSummary = getSessionDeferSummary(ctx, id);
       if (!shouldIncludeMaterializedSession({
         includeArchived,
@@ -1069,14 +1065,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
         readState,
         sessionId: id,
         lastVisibleActivityAt,
-        hasTitleOverride: !!titleOverride,
+        hasSessionName: typeof s.summary === "string" && s.summary.trim().length > 0,
         hasReadState: !!readState[id],
         hasBridgeActivitySignal: !!sessionMeta?.lastVisibleActivityAt,
         hasDeferredWork: deferSummary.count > 0,
       })) return [];
-      const summary = resolveSessionSummary(ctx, s, {
+      const summary = resolveSessionSummary(s, {
         fallbackSummary: linkedTask || status.runState !== "idle" ? "New session" : undefined,
-        titleOverride,
       });
 
       return [{
@@ -1142,7 +1137,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
-      const titleOverrides = ctx.sessionTitles.getAllTitles();
       const taskLookup = createSessionListTaskLookup(ctx);
 
       const enriched = await Promise.all(
@@ -1167,7 +1161,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
               readState,
               sessionId: id,
               lastVisibleActivityAt,
-              hasTitleOverride: !!titleOverrides[id],
+              hasSessionName: typeof s.summary === "string" && s.summary.trim().length > 0,
               hasReadState: !!readState[id],
               hasBridgeActivitySignal: !!meta[id]?.lastVisibleActivityAt,
               hasDeferredWork: deferSummary.count > 0,
@@ -1690,18 +1684,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (ctx.sessionManager.isSessionBusy(sourceId)) {
         return res.status(409).json({ error: "Cannot duplicate a busy session" });
       }
-      let originalTitle = ctx.sessionTitles.getTitle(sourceId);
-      if (!originalTitle) {
-        const sourceSession = (await ctx.sessionManager.listSessionsFromDisk())
-          .find((session: any) => session.sessionId === sourceId);
-        originalTitle = sourceSession ? resolveSessionSummary(ctx, sourceSession) : undefined;
-      }
+      const sourceSession = (await ctx.sessionManager.listSessionsFromDisk())
+        .find((session: any) => session.sessionId === sourceId);
+      const originalTitle = typeof sourceSession?.summary === "string" && sourceSession.summary.trim()
+        ? resolveSessionSummary(sourceSession)
+        : undefined;
       const result = await ctx.sessionManager.duplicateSession(sourceId);
       invalidateEnrichedCache("route:session:duplicate");
 
       // Copy title with "Copy of" prefix
       if (originalTitle) {
-        ctx.sessionTitles.setTitle(result.sessionId, `Copy of ${originalTitle}`);
+        await ctx.sessionManager.setSessionName(result.sessionId, `Copy of ${originalTitle}`.slice(0, 100).trim());
       }
 
       // Copy all task links from the source session
@@ -2077,7 +2070,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       await ctx.sessionManager.deleteSession(sessionId);
       invalidateEnrichedCache("route:session:delete");
       ctx.sessionMetaStore.deleteMeta(sessionId);
-      ctx.sessionTitles.deleteTitle(sessionId);
       // Unlink from any tasks that reference this session
       const tasks = ctx.taskStore.listTasks();
       for (const task of tasks) {
@@ -2115,7 +2107,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
             await ctx.sessionManager.deleteSession(sid);
             invalidateEnrichedCache("route:session-batch:delete");
             ctx.sessionMetaStore.deleteMeta(sid);
-            ctx.sessionTitles.deleteTitle(sid);
             const tasks = ctx.taskStore.listTasks();
             for (const task of tasks) {
               if (task.sessionIds.includes(sid)) {
@@ -3144,8 +3135,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         pageRuns.map(async (run) => {
           const s = sessionMap.get(run.sessionId);
           const archived = meta[run.sessionId]?.archived === true;
-          const generatedTitle = ctx.sessionTitles.getTitle(run.sessionId);
-          const summary = generatedTitle ?? s?.summary ?? run.sessionId;
+          const summary = s?.summary ?? run.sessionId;
           const status = s
             ? getSessionStatus(ctx, run.sessionId)
             : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false };

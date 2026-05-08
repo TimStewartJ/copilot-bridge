@@ -15,7 +15,6 @@ import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createScheduleStore } from "./schedule-store.js";
 import { getOrCreateBus } from "./event-bus.js";
-import { createSessionTitlesStore } from "./session-titles.js";
 import {
   buildSessionConfig as buildSessionConfigWithDeps,
   type ScheduleContext,
@@ -110,6 +109,17 @@ import {
   deriveModelStateFromEventsFile,
   type DerivedModelState,
 } from "./session-events-model.js";
+import {
+  buildSessionNameResumeConfig,
+  createSessionNameRpc,
+  type SetSessionNameOptions,
+  type SessionNameRpc,
+} from "./session-name-rpc.js";
+import {
+  createSessionNameAutogenerator,
+  type SessionNameAutogenerator,
+} from "./session-name-autogen.js";
+import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -233,6 +243,8 @@ export class SessionManager {
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly runStateController: SessionRunStateController;
+  private readonly sessionNameRpc: SessionNameRpc;
+  private readonly sessionNameAutogenerator: SessionNameAutogenerator;
   private readonly sessionRunner: SessionRunner;
   readonly sessionRuns: Map<string, SessionRunRecord>;
 
@@ -281,6 +293,26 @@ export class SessionManager {
       logger: console,
     });
     this.sessionRuns = this.runStateController.getRunRecords();
+    this.sessionNameRpc = createSessionNameRpc({
+      withSessionNameRpc: (sessionId, operation) => this.withSessionNameRpc(sessionId, operation),
+      getSessionStateDir: (sessionId) => this.getSessionStateDir(sessionId),
+      emitSessionNameChanged: (sessionId, name) => this.emitSessionNameChanged(sessionId, name),
+    });
+    this.sessionNameAutogenerator = createSessionNameAutogenerator({
+      listModels: () => this.listModels(),
+      createSession: async (sessionConfig) => {
+        if (!this.client) throw new Error("SessionManager not initialized");
+        return this.client.createSession(sessionConfig);
+      },
+      deleteSession: async (sessionId) => {
+        if (!this.client) return;
+        await this.client.deleteSession(sessionId);
+      },
+      getCopilotHome: () => this.getCopilotHome(),
+      getSessionName: (sessionId) => this.getSessionName(sessionId),
+      setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
+      logger: console,
+    });
     this.sessionRunner = new SessionRunner({
       getClient: () => this.client,
       sessionObjects: this.sessionObjects,
@@ -308,6 +340,7 @@ export class SessionManager {
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
+      maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
     });
     configureRestartStateStore(deps.runtimePaths);
     configureRestartEventBus(deps.globalBus);
@@ -481,6 +514,9 @@ export class SessionManager {
     );
     await this.client.start();
     console.log("[sdk] Copilot SDK client ready");
+    void this.migrateLegacySessionTitles().catch((error) => {
+      console.warn(`[sdk] Legacy session title migration failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   async listSessions() {
@@ -591,6 +627,65 @@ export class SessionManager {
     });
   }
 
+  private emitSessionNameChanged(sessionId: string, name: string): void {
+    this.deps.eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title: name });
+    this.deps.globalBus.emit({ type: "session:title", sessionId, title: name });
+    this.invalidateSessionListCache("session:name");
+  }
+
+  private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+
+    const cachedSession = this.sessionObjects.get(sessionId);
+    if (cachedSession) return operation(cachedSession);
+
+    if (!this.hasSessionOnDisk(sessionId)) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    this.beginSessionResume(sessionId);
+    let session: any | undefined;
+    try {
+      session = await Promise.race([
+        this.client.resumeSession(sessionId, buildSessionNameResumeConfig()),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("name resume timed out after 60s")), 60_000),
+        ),
+      ]);
+      return await operation(session);
+    } finally {
+      try { await session?.disconnect?.(); } catch { /* best-effort */ }
+      this.endSessionResume(sessionId);
+      this.flushPendingSessionEviction(sessionId);
+    }
+  }
+
+  async getSessionName(sessionId: string): Promise<string | undefined> {
+    return this.sessionNameRpc.getSessionName(sessionId);
+  }
+
+  async setSessionName(sessionId: string, name: string, opts: SetSessionNameOptions = {}): Promise<void> {
+    await this.sessionNameRpc.setSessionName(sessionId, name, opts);
+  }
+
+  maybeAutoNameSession(
+    sessionId: string,
+    options: { session?: any; userMessages?: string[] } = {},
+  ): void {
+    this.sessionNameAutogenerator.maybeAutoNameSession(sessionId, options);
+  }
+
+  async migrateLegacySessionTitles(): Promise<void> {
+    await migrateLegacySessionTitlesWithDeps({
+      sessionTitles: this.deps.sessionTitles,
+      hasSessionOnDisk: (sessionId) => this.hasSessionOnDisk(sessionId),
+      readSessionNameFromWorkspace: (sessionId) => this.sessionNameRpc.readSessionNameFromWorkspace(sessionId),
+      setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
+      invalidateSessionListCache: (reason) => this.invalidateSessionListCache(reason),
+      logger: console,
+    });
+  }
+
   async getSessionMetadata(sessionId: string) {
     if (!this.client) throw new Error("SessionManager not initialized");
     return this.client.getSessionMetadata(sessionId);
@@ -624,6 +719,7 @@ export class SessionManager {
       return current;
     }
     this.sessionObjects.set(sessionId, session);
+    this.maybeAutoNameSession(sessionId, { session });
     return session;
   }
 

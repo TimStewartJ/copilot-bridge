@@ -39,6 +39,17 @@ describe("copilot CLI session catalog", () => {
         '2026-05-07T11:00:00.000Z',
         'github'
       );
+      INSERT INTO sessions (id, cwd, repository, branch, summary, created_at, updated_at, host_type)
+      VALUES (
+        'b17e1000-0000-4000-8000-000000000001',
+        'D:\\repo',
+        'owner/repo',
+        'main',
+        'Disposable helper',
+        '2026-05-07T10:00:00.000Z',
+        '2026-05-07T12:00:00.000Z',
+        'github'
+      );
     `);
     db.close();
     const catalog = createCopilotCliSessionCatalog({ copilotHome });

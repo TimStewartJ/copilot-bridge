@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isDisposableTitleSessionId } from "./session-name-generator.js";
 
 export interface CopilotCliCatalogSession {
   sessionId: string;
@@ -68,16 +69,18 @@ export function createCopilotCliSessionCatalog(deps: {
       `).all() as any[];
 
       recordSpan("session.cliCatalog.list", start, { result: "hit", count: rows.length });
-      return rows.map((row) => ({
-        sessionId: String(row.id),
-        summary: typeof row.summary === "string" && row.summary.trim() ? row.summary.trim() : undefined,
-        startTime: typeof row.created_at === "string" ? row.created_at : undefined,
-        modifiedTime: typeof row.updated_at === "string" ? row.updated_at : undefined,
-        context: typeof row.cwd === "string" && row.cwd.trim() ? { cwd: row.cwd } : undefined,
-        repository: typeof row.repository === "string" && row.repository.trim() ? row.repository : undefined,
-        branch: typeof row.branch === "string" && row.branch.trim() ? row.branch : undefined,
-        hostType: typeof row.host_type === "string" && row.host_type.trim() ? row.host_type : undefined,
-      }));
+      return rows
+        .filter((row) => !isDisposableTitleSessionId(String(row.id)))
+        .map((row) => ({
+          sessionId: String(row.id),
+          summary: typeof row.summary === "string" && row.summary.trim() ? row.summary.trim() : undefined,
+          startTime: typeof row.created_at === "string" ? row.created_at : undefined,
+          modifiedTime: typeof row.updated_at === "string" ? row.updated_at : undefined,
+          context: typeof row.cwd === "string" && row.cwd.trim() ? { cwd: row.cwd } : undefined,
+          repository: typeof row.repository === "string" && row.repository.trim() ? row.repository : undefined,
+          branch: typeof row.branch === "string" && row.branch.trim() ? row.branch : undefined,
+          hostType: typeof row.host_type === "string" && row.host_type.trim() ? row.host_type : undefined,
+        }));
     } catch (error) {
       recordSpan("session.cliCatalog.list", start, {
         result: "error",

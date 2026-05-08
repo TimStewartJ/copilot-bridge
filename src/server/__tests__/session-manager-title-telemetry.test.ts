@@ -1,15 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBridgeTools } from "../session-manager.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createBridgeTools, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, createTestApp } from "./helpers.js";
 
-describe("session title overrides", () => {
+class MigrationTestSessionManager extends SessionManager {
+  readonly setCalls: Array<{ sessionId: string; name: string; opts: any }> = [];
+
+  override async setSessionName(sessionId: string, name: string, opts: any = {}): Promise<void> {
+    this.setCalls.push({ sessionId, name, opts });
+  }
+}
+
+describe("session CLI renames", () => {
   function createRenameToolHarness() {
     const db = setupTestDb();
     const eventBusRegistry = createEventBusRegistry();
     const sessionTitles = createSessionTitlesStore(db);
     const globalBus = createTestBus();
+    const setSessionName = vi.fn(async (sessionId: string, title: string) => {
+      eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title });
+      globalBus.emit({ type: "session:title", sessionId, title });
+    });
     const tool = createBridgeTools({
       taskStore: { findTaskBySessionId: () => undefined } as any,
       taskGroupStore: {} as any,
@@ -25,14 +39,14 @@ describe("session title overrides", () => {
       docsIndex: undefined,
       globalBus,
       eventBusRegistry,
-      sessionManager: { evictAllCachedSessions() {} } as any,
+      sessionManager: { evictAllCachedSessions() {}, setSessionName } as any,
     } as any).find((candidate) => candidate.name === "session_rename");
     if (!tool) throw new Error("session_rename tool not found");
-    return { tool, eventBusRegistry, sessionTitles, globalBus };
+    return { tool, eventBusRegistry, sessionTitles, globalBus, setSessionName };
   }
 
-  it("defaults session_rename to the invoking session and emits title updates", async () => {
-    const { tool, eventBusRegistry, sessionTitles, globalBus } = createRenameToolHarness();
+  it("defaults session_rename to the invoking session and delegates to CLI-owned rename", async () => {
+    const { tool, eventBusRegistry, sessionTitles, globalBus, setSessionName } = createRenameToolHarness();
     const sessionBus = eventBusRegistry.getOrCreateBus("session-1");
     const busEvents: any[] = [];
     const globalEvents: any[] = [];
@@ -51,7 +65,8 @@ describe("session title overrides", () => {
       sessionId: "session-1",
       message: 'Session renamed to "Project sync follow-up"',
     });
-    expect(sessionTitles.getTitle("session-1")).toBe("Project sync follow-up");
+    expect(setSessionName).toHaveBeenCalledWith("session-1", "Project sync follow-up");
+    expect(sessionTitles.getTitle("session-1")).toBeUndefined();
     expect(busEvents).toContainEqual({ type: "title_changed", title: "Project sync follow-up" });
     expect(globalEvents).toContainEqual({
       type: "session:title",
@@ -61,7 +76,7 @@ describe("session title overrides", () => {
   });
 
   it("respects an explicit target session id", async () => {
-    const { tool, eventBusRegistry, sessionTitles } = createRenameToolHarness();
+    const { tool, eventBusRegistry, sessionTitles, setSessionName } = createRenameToolHarness();
     const targetBus = eventBusRegistry.getOrCreateBus("target-session");
     const targetEvents: any[] = [];
     targetBus.subscribe((event) => {
@@ -74,7 +89,8 @@ describe("session title overrides", () => {
     );
 
     expect(sessionTitles.getTitle("caller-session")).toBeUndefined();
-    expect(sessionTitles.getTitle("target-session")).toBe("Renamed elsewhere");
+    expect(sessionTitles.getTitle("target-session")).toBeUndefined();
+    expect(setSessionName).toHaveBeenCalledWith("target-session", "Renamed elsewhere");
     expect(targetEvents).toContainEqual({ type: "title_changed", title: "Renamed elsewhere" });
   });
 
@@ -82,5 +98,47 @@ describe("session title overrides", () => {
     const { tool } = createRenameToolHarness();
     expect(tool.description).toContain("Rename a chat session");
     expect(vi.isMockFunction(tool.handler)).toBe(false);
+  });
+
+  it("migrates legacy Bridge titles only for sessions without existing CLI names", async () => {
+    const { ctx, db } = createTestApp();
+    const writeWorkspace = (sessionId: string, content: string) => {
+      const sessionDir = join(ctx.copilotHome!, "session-state", sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(join(sessionDir, "workspace.yaml"), content);
+    };
+    writeWorkspace("needs-migration", "created_at: 2026-05-01T10:00:00.000Z\n");
+    writeWorkspace("already-named", "created_at: 2026-05-01T10:00:00.000Z\nname: CLI name\n");
+    ctx.sessionTitles.setTitle("needs-migration", "Legacy Bridge Name");
+    ctx.sessionTitles.setTitle("already-named", "Legacy Should Not Win");
+
+    const manager = new MigrationTestSessionManager({
+      tools: [],
+      globalBus: ctx.globalBus,
+      eventBusRegistry: ctx.eventBusRegistry,
+      sessionTitles: ctx.sessionTitles,
+      sessionWorkspaceStore: ctx.sessionWorkspaceStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      taskStore: ctx.taskStore,
+      taskGroupStore: ctx.taskGroupStore,
+      checklistStore: ctx.checklistStore,
+      settingsStore: ctx.settingsStore,
+      tagStore: ctx.tagStore,
+      mcpServerStore: ctx.mcpServerStore,
+      docsIndex: ctx.docsIndex,
+      docsStore: ctx.docsStore,
+      config: { sessionMcpServers: {} },
+      telemetryStore: ctx.telemetryStore,
+      copilotHome: ctx.copilotHome,
+      runtimePaths: ctx.runtimePaths,
+    } as any);
+
+    await manager.migrateLegacySessionTitles();
+
+    expect(manager.setCalls).toEqual([
+      { sessionId: "needs-migration", name: "Legacy Bridge Name", opts: { emit: false } },
+    ]);
+    expect(ctx.sessionTitles.getAllTitles()).toEqual({});
+    expect(() => db.prepare("SELECT * FROM session_titles").all()).toThrow();
   });
 });

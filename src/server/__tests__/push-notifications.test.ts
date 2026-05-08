@@ -30,6 +30,14 @@ function getSentPayload(sendNotification: ReturnType<typeof vi.fn>): Record<stri
   return JSON.parse(payload) as Record<string, unknown>;
 }
 
+function createPushTestApp(sessionNames: Record<string, string> = {}) {
+  return createTestApp({
+    cliSessionCatalog: {
+      listSessions: () => Object.entries(sessionNames).map(([sessionId, summary]) => ({ sessionId, summary })),
+    } as any,
+  });
+}
+
 describe("push service worker freshness", () => {
   it("does not intercept fetches or delete origin-wide caches", () => {
     const source = readFileSync(join(REPO_ROOT, "public", "service-worker.js"), "utf-8");
@@ -122,7 +130,7 @@ describe("push notification service", () => {
 describe("push event notification copy", () => {
   it("uses the session title and puts linked task context in needs-input bodies", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createTestApp();
+      const { ctx } = createPushTestApp({ "session-input": "Message-style push notifications" });
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -133,7 +141,6 @@ describe("push event notification copy", () => {
       const unsubscribe = initPushEventNotifications(ctx, service);
       const task = ctx.taskStore.createTask("Copilot Bridge Local Deployment");
       ctx.taskStore.linkSession(task.id, "session-input");
-      ctx.sessionTitles.setTitle("session-input", "Message-style push notifications");
 
       ctx.globalBus.emit({ type: "session:user-input", sessionId: "session-input", needsUserInput: true });
 
@@ -152,7 +159,7 @@ describe("push event notification copy", () => {
 
   it("uses the session title and prefixes linked task context to assistant previews", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createTestApp();
+      const { ctx } = createPushTestApp({ "session-with-task": "Message-style push notifications" });
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -163,7 +170,6 @@ describe("push event notification copy", () => {
       const unsubscribe = initPushEventNotifications(ctx, service);
       const task = ctx.taskStore.createTask("Copilot Bridge Local Deployment");
       ctx.taskStore.linkSession(task.id, "session-with-task");
-      ctx.sessionTitles.setTitle("session-with-task", "Message-style push notifications");
 
       ctx.globalBus.emit({ type: "session:busy", sessionId: "session-with-task" });
       ctx.globalBus.emit({
@@ -187,7 +193,7 @@ describe("push event notification copy", () => {
 
   it("puts the session title in finished notification titles", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createTestApp();
+      const { ctx } = createPushTestApp({ "session-finished": "  Push   notification\ncopy polish  " });
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -196,7 +202,6 @@ describe("push event notification copy", () => {
         sendNotification,
       });
       const unsubscribe = initPushEventNotifications(ctx, service);
-      ctx.sessionTitles.setTitle("session-finished", "  Push   notification\ncopy polish  ");
 
       ctx.globalBus.emit({ type: "session:busy", sessionId: "session-finished" });
       ctx.globalBus.emit({
@@ -218,7 +223,7 @@ describe("push event notification copy", () => {
 
   it("falls back to a short session id when no task or title is available", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createTestApp();
+      const { ctx } = createPushTestApp();
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -241,7 +246,9 @@ describe("push event notification copy", () => {
 
   it("truncates long notification names", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createTestApp();
+      const { ctx } = createPushTestApp({
+        "long-session": "This is a very long session title that should be shortened for notification displays",
+      });
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -250,7 +257,6 @@ describe("push event notification copy", () => {
         sendNotification,
       });
       const unsubscribe = initPushEventNotifications(ctx, service);
-      ctx.sessionTitles.setTitle("long-session", "This is a very long session title that should be shortened for notification displays");
 
       ctx.globalBus.emit({ type: "session:busy", sessionId: "long-session" });
       ctx.globalBus.emit({ type: "session:idle", sessionId: "long-session", assistantPreview: "Done." });
@@ -266,7 +272,7 @@ describe("push event notification copy", () => {
 
   it("uses a fallback completion body when no assistant preview is available", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createTestApp();
+      const { ctx } = createPushTestApp({ "no-preview": "No Preview Session" });
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -275,7 +281,6 @@ describe("push event notification copy", () => {
         sendNotification,
       });
       const unsubscribe = initPushEventNotifications(ctx, service);
-      ctx.sessionTitles.setTitle("no-preview", "No Preview Session");
 
       ctx.globalBus.emit({ type: "session:busy", sessionId: "no-preview" });
       ctx.globalBus.emit({ type: "session:idle", sessionId: "no-preview" });

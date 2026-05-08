@@ -752,22 +752,6 @@ function initSchema(db: DatabaseSync): void {
 
     INSERT OR IGNORE INTO bridge_session_state (
       sessionId,
-      titleOverride,
-      titleOverrideUpdatedAt,
-      createdAt,
-      updatedAt
-    )
-    SELECT sessionId, title, datetime('now'), datetime('now'), datetime('now')
-    FROM session_titles;
-
-    UPDATE bridge_session_state
-    SET
-      titleOverride = COALESCE((SELECT title FROM session_titles WHERE session_titles.sessionId = bridge_session_state.sessionId), titleOverride),
-      titleOverrideUpdatedAt = COALESCE(titleOverrideUpdatedAt, datetime('now'))
-    WHERE EXISTS (SELECT 1 FROM session_titles WHERE session_titles.sessionId = bridge_session_state.sessionId);
-
-    INSERT OR IGNORE INTO bridge_session_state (
-      sessionId,
       pinnedCwd,
       pinnedCwdUpdatedAt,
       createdAt,

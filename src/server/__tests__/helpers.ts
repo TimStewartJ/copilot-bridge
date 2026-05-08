@@ -209,6 +209,8 @@ export function createMockSessionManager() {
     isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),
     duplicateSession: async () => ({ sessionId: "dup-session" }),
+    getSessionName: async () => undefined,
+    setSessionName: async () => {},
     startWork: () => {},
     startFleet: () => {},
     abortSession: async () => true,
