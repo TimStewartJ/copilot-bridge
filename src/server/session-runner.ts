@@ -114,6 +114,10 @@ export interface SessionRunnerDeps {
     message?: string,
   ): void;
   invalidateSessionListCache(reason?: string): void;
+  maybeAutoNameSession(
+    sessionId: string,
+    options: { session?: any; userMessages?: string[] },
+  ): void;
 }
 
 export class SessionRunner {
@@ -439,6 +443,9 @@ export class SessionRunner {
         case "user.message":
           bus.clearPendingPrompt();
           runController.markPromptAccepted();
+          if (typeof data?.content === "string" && !("source" in (data ?? {}))) {
+            this.deps.maybeAutoNameSession(sessionId, { session, userMessages: [data.content] });
+          }
           break;
         case "assistant.turn_start":
           console.log(`[sdk] [${sid}] ⏳ Turn started`);

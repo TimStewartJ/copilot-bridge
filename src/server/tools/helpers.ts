@@ -2,13 +2,10 @@ import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ok, err, type Result } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
-import type { GlobalBus } from "../global-bus.js";
-import type { EventBusRegistry } from "../event-bus.js";
 import type { Task } from "../task-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import type { TagStore } from "../tag-store.js";
 import type { TaskGroupStore } from "../task-group-store.js";
-import type { SessionTitlesStore } from "../session-titles.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 
 export const BRIDGE_TOOLS_REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -59,18 +56,6 @@ export function getAttachmentApiBasePath(ctx: AppContext): string {
     return `/staging/${prefix}/api`;
   }
   return "/api";
-}
-
-export function storeSessionTitle(
-  sessionTitles: SessionTitlesStore,
-  eventBusRegistry: EventBusRegistry,
-  globalBus: GlobalBus,
-  sessionId: string,
-  title: string,
-): void {
-  sessionTitles.setTitle(sessionId, title);
-  eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title });
-  globalBus.emit({ type: "session:title", sessionId, title });
 }
 
 export function resolveDemoWorkspaceDir(runtimePaths?: RuntimePaths): string | undefined {

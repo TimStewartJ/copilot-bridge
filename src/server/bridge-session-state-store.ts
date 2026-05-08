@@ -125,6 +125,33 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     pruneIfDefault(sessionId);
   }
 
+  function clearAllTitleOverrides(): void {
+    const now = nowIso();
+    db.prepare(`
+      UPDATE bridge_session_state
+      SET titleOverride = NULL,
+          titleOverrideUpdatedAt = NULL,
+          updatedAt = ?
+      WHERE titleOverride IS NOT NULL
+         OR titleOverrideUpdatedAt IS NOT NULL
+    `).run(now);
+    db.prepare(`
+      DELETE FROM bridge_session_state
+      WHERE archived = 0
+        AND archivedAt IS NULL
+        AND titleOverride IS NULL
+        AND titleOverrideUpdatedAt IS NULL
+        AND pinnedCwd IS NULL
+        AND pinnedCwdUpdatedAt IS NULL
+        AND triggeredBy IS NULL
+        AND scheduleId IS NULL
+        AND scheduleName IS NULL
+        AND lastVisibleActivityAt IS NULL
+        AND hiddenReason IS NULL
+        AND hiddenAt IS NULL
+    `).run();
+  }
+
   function setPinnedCwd(sessionId: string, cwd: string): BridgeSessionState {
     const now = nowIso();
     db.prepare(`
@@ -221,6 +248,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     setArchived,
     setTitleOverride,
     clearTitleOverride,
+    clearAllTitleOverrides,
     setPinnedCwd,
     clearPinnedCwd,
     setScheduleMeta,

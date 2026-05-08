@@ -64,9 +64,9 @@ describe("listSessionsFromDisk telemetry", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({
       sessionId: "session-a",
+      summary: "Alpha",
       eventLogSizeBytes: expect.any(Number),
     });
-    expect(sessions[0].summary).toBeUndefined();
     expect(spans.map((span) => span.name)).toEqual(expect.arrayContaining([
       "session.listFromDisk.enumerate",
       "session.listFromDisk.workspace",
@@ -74,6 +74,26 @@ describe("listSessionsFromDisk telemetry", () => {
       "session.listFromDisk.sort",
       "session.listFromDisk",
     ]));
+  });
+
+  it("prefers workspace name over summary and filters disposable title helper sessions", async () => {
+    const copilotHome = makeTestDir("session-disk-list-names");
+    writeSessionFiles(copilotHome, "session-named", {
+      workspace: [
+        "created_at: 2026-04-30T10:00:00.000Z",
+        "name: CLI owned name",
+        "summary: Legacy summary",
+      ].join("\n"),
+    });
+    writeSessionFiles(copilotHome, "b17e1000-0000-4000-8000-000000000001", {
+      workspace: "created_at: 2026-04-30T10:00:00.000Z\nname: Helper name\n",
+    });
+
+    const { deps } = createDeps(copilotHome);
+    const sessions = await listSessionsFromDisk(deps);
+
+    expect(sessions.map((session) => session.sessionId)).toEqual(["session-named"]);
+    expect(sessions[0]).toMatchObject({ summary: "CLI owned name" });
   });
 });
 

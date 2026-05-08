@@ -9,6 +9,7 @@ import {
   transformEventsToMessages,
   type TransformedEntry,
 } from "./event-transform.js";
+import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 
@@ -91,6 +92,24 @@ function isFileNotFoundError(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
     && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function parseWorkspaceScalar(content: string, key: string): string | undefined {
+  const pattern = new RegExp(`^${key}:\\s*(.*)$`);
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(pattern);
+    if (!match) continue;
+    const rawValue = match[1]?.trim() ?? "";
+    if (!rawValue || rawValue === "null") return undefined;
+    if (
+      rawValue.length >= 2
+      && ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'")))
+    ) {
+      return rawValue.slice(1, -1).trim() || undefined;
+    }
+    return rawValue.trim() || undefined;
+  }
+  return undefined;
 }
 
 function getToolCallId(event: any): string | undefined {
@@ -428,7 +447,10 @@ export async function listSessionsFromDisk(
     deps.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: 0, includeArchived });
     return [];
   }
-  const dirs = entries.filter((d: any) => d.isDirectory()).map((d: any) => d.name);
+  const dirs = entries
+    .filter((d: any) => d.isDirectory())
+    .map((d: any) => d.name)
+    .filter((name: string) => !isDisposableTitleSessionId(name));
   deps.recordSpan("session.listFromDisk.enumerate", Date.now() - tEnumerate, undefined, {
     dirCount: dirs.length,
     includeArchived,
@@ -454,6 +476,8 @@ export async function listSessionsFromDisk(
       for (const line of content.split(/\r?\n/)) {
         if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
       }
+      const name = parseWorkspaceScalar(content, "name") ?? parseWorkspaceScalar(content, "summary");
+      if (name) session.summary = name;
       if (effectiveCwd) session.context = { cwd: effectiveCwd };
       return { dirName, yamlPath, session };
     } catch {

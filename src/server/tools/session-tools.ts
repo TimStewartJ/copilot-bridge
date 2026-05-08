@@ -2,7 +2,6 @@ import { defineTool } from "@github/copilot-sdk";
 import { normalizeSessionTitle } from "../session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
-import { storeSessionTitle } from "./helpers.js";
 
 export function createSessionTools(ctx: AppContext) {
   return [
@@ -17,7 +16,11 @@ export function createSessionTools(ctx: AppContext) {
       if (!title) return toolFailure("Title is required");
       if (title.length > 80) return toolFailure("Title is too long");
 
-      storeSessionTitle(ctx.sessionTitles, ctx.eventBusRegistry, ctx.globalBus, sessionId, title);
+      try {
+        await ctx.sessionManager.setSessionName(sessionId, title);
+      } catch (error) {
+        return toolFailure(error instanceof Error ? error.message : String(error));
+      }
       return { success: true, sessionId, message: `Session renamed to "${title}"` };
     },
   }),
