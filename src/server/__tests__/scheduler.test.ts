@@ -108,6 +108,12 @@ describe("computeNextRunAt", () => {
     const next = computeNextRunAt("0 8 * * 5", "UTC", after);
     expect(next).toBe("2026-04-17T08:00:00.000Z");
   });
+  it("looks far enough ahead for weekday schedules across weekends", () => {
+    // 2026-04-17 is a Friday after the scheduled time; next Monday is more than 48 hours away.
+    const after = new Date("2026-04-17T09:00:00Z");
+    const next = computeNextRunAt("0 8 * * 1", "UTC", after);
+    expect(next).toBe("2026-04-20T08:00:00.000Z");
+  });
 });
 
 describe("scheduler restart gating", () => {
@@ -1534,5 +1540,64 @@ describe("scheduler startup recovery", () => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(4);
     });
     expect(sessionManager.startWork).toHaveBeenCalledTimes(4);
+  });
+
+  it("uses the watchdog to catch a missed cron slot while the process stays alive", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T15:20:00Z"));
+
+    const { ctx, db } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "watchdog-catch-up" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Unregistered cron",
+      prompt: "catch up from watchdog",
+      type: "cron",
+      cron: "30 * * * *",
+      timezone: "UTC",
+    });
+    db.prepare("UPDATE schedules SET lastRunAt = ?, nextRunAt = ?, runCount = ? WHERE id = ?").run(
+      "2026-04-16T15:00:00.000Z",
+      "2026-04-16T15:30:00.000Z",
+      1,
+      schedule.id,
+    );
+
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionManager.startWork).toHaveBeenCalledWith("watchdog-catch-up", "catch up from watchdog");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
+      runCount: 2,
+      lastSessionId: "watchdog-catch-up",
+      nextRunAt: "2026-04-16T16:30:00.000Z",
+    });
+    const claim = db.prepare(`
+      SELECT source, status, runKey, sessionId
+      FROM schedule_run_claims
+      WHERE scheduleId = ?
+    `).get(schedule.id) as { source: string; status: string; runKey: string; sessionId: string };
+    expect(claim).toEqual({
+      source: "catchup",
+      status: "triggered",
+      runKey: "2026-04-16T15:30:00.000Z",
+      sessionId: "watchdog-catch-up",
+    });
   });
 });
