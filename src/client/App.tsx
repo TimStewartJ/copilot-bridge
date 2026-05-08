@@ -11,7 +11,7 @@ import {
   patchTask,
   deleteTask,
   deleteSession,
-  duplicateSession,
+  forkSession,
   reloadSession,
   createTaskSession,
   linkResource,
@@ -1095,9 +1095,9 @@ export default function App() {
     }
   };
 
-  const handleDuplicateSession = async (sessionId: string) => {
+  const handleForkSession = async (sessionId: string, opts?: { toEventId?: string }) => {
     try {
-      const newId = await duplicateSession(sessionId);
+      const newId = await forkSession(sessionId, opts);
       addOptimisticSession(newId);
       // Navigate to the new session in the same context
       const linkedTaskId = tasks.find((t) => t.sessionIds.includes(sessionId))?.id;
@@ -1117,7 +1117,7 @@ export default function App() {
       }
       await Promise.all([invalidateAllSessionQueries(), invalidateTasks()]);
     } catch (err) {
-      console.error("Failed to duplicate session:", err);
+      console.error("Failed to fork session:", err);
     }
   };
 
@@ -1308,7 +1308,7 @@ export default function App() {
         onNewQuickChat={handleNewQuickChat}
         onArchiveSession={handleArchiveSession}
         onDeleteSession={handleDeleteSession}
-        onDuplicateSession={handleDuplicateSession}
+        onForkSession={handleForkSession}
         onReloadSession={handleReloadSession}
         onLinkToTask={handleLinkToTask}
         onMarkUnread={markUnread}
@@ -1369,7 +1369,7 @@ export default function App() {
                   allTasks={tasks}
                   onLinkToTask={handleLinkToTask}
                   onDeleteSession={handleDeleteSession}
-                  onDuplicateSession={handleDuplicateSession}
+                  onForkSession={handleForkSession}
                   onReloadSession={handleReloadSession}
                   markUnread={markUnread}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
@@ -1404,7 +1404,7 @@ export default function App() {
                   onLinkToTask={handleLinkToTask}
                   onDeleteTask={handleDeleteTask}
                   onDeleteSession={handleDeleteSession}
-                  onDuplicateSession={handleDuplicateSession}
+                  onForkSession={handleForkSession}
                   onReloadSession={handleReloadSession}
                   onMarkUnread={markUnread}
                   hasDraft={hasDraft}
@@ -1498,7 +1498,7 @@ export default function App() {
                     onLinkToTask={handleLinkToTask}
                     onDeleteTask={handleDeleteTask}
                     onDeleteSession={handleDeleteSession}
-                    onDuplicateSession={handleDuplicateSession}
+                    onForkSession={handleForkSession}
                     onReloadSession={handleReloadSession}
                     onMarkUnread={markUnread}
                     hasDraft={hasDraft}
@@ -1548,6 +1548,7 @@ export default function App() {
                   clearVoiceJobError={clearVoiceJobError}
                   sessionReloads={sessionReloads}
                   sessionBusySignals={sessionBusySignals}
+                  onForkSession={handleForkSession}
                 />
               }
             />
@@ -1568,7 +1569,7 @@ export default function App() {
                     onSetTaskTags={handleSetTaskTags}
                     onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
                     onDeleteSession={handleDeleteSession}
-                    onDuplicateSession={handleDuplicateSession}
+                    onForkSession={handleForkSession}
                     onReloadSession={handleReloadSession}
                     onArchiveSession={handleArchiveSession}
                     archivingIds={archivingIds}
@@ -1616,6 +1617,7 @@ export default function App() {
                   clearVoiceJobError={clearVoiceJobError}
                   sessionReloads={sessionReloads}
                   sessionBusySignals={sessionBusySignals}
+                  onForkSession={handleForkSession}
                 />
               }
             />
@@ -1681,7 +1683,7 @@ function MobileTaskListView({
   allTasks,
   onLinkToTask,
         onDeleteSession,
-        onDuplicateSession,
+        onForkSession,
         onReloadSession,
         markUnread,
   onRefresh,
@@ -1728,7 +1730,7 @@ function MobileTaskListView({
   allTasks: Task[];
   onLinkToTask: (sessionId: string, taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
-  onDuplicateSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   markUnread?: (sessionId: string) => void;
   onRefresh: () => Promise<void>;
@@ -1771,7 +1773,7 @@ function MobileTaskListView({
             tasks={allTasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
-            onDuplicateSession={onDuplicateSession}
+            onForkSession={onForkSession}
             onReloadSession={onReloadSession}
             onMarkUnread={markUnread}
             onMarkAllRead={onMarkAllRead}
@@ -1829,6 +1831,7 @@ function SessionRoute({
   clearVoiceJobError,
   sessionReloads,
   sessionBusySignals,
+  onForkSession,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -1846,6 +1849,7 @@ function SessionRoute({
   clearVoiceJobError: (composerKey: string) => void;
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
   sessionBusySignals: Record<string, number>;
+  onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -1932,6 +1936,7 @@ function SessionRoute({
       reloadMcpServers={sessionReload?.servers}
       busySignal={busySignal}
       activeSessionActivityAt={activeSessionActivityAt}
+      onForkSession={onForkSession}
     />
   );
 }

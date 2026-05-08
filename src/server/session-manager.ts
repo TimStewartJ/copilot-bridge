@@ -2,7 +2,7 @@
 // Universal tools — taskId is a parameter, same tools for every session
 
 import { CopilotClient, defineTool } from "@github/copilot-sdk";
-import { writeFileSync, readFileSync, existsSync, cpSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -903,69 +903,34 @@ export class SessionManager {
     return { sessionId: session.sessionId };
   }
 
-  async duplicateSession(sourceSessionId: string): Promise<{ sessionId: string }> {
+  async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
-    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
-    const sessionStateDir = join(copilotHome, "session-state");
-    const sourceDir = join(sessionStateDir, sourceSessionId);
-
-    if (!existsSync(sourceDir)) {
-      throw new Error(`Source session directory not found: ${sourceSessionId}`);
-    }
-
-    // Create a new session through the SDK so it's properly registered with the CLI host.
-    // Simply copying a directory doesn't register the session; the CLI host needs to
-    // have created the session through its own session.create RPC.
-    const session = await this.client.createSession(this.buildSessionConfig());
-    const newId = session.sessionId;
-    const destDir = join(sessionStateDir, newId);
     const sourceTask = this.findLinkedTask(sourceSessionId);
     const sourceCwd = this.resolveEffectiveSessionCwd({ sessionId: sourceSessionId, task: sourceTask });
-
-    // Copy events.jsonl from source, rewriting the session.start event's sessionId
-    const sourceEventsPath = join(sourceDir, "events.jsonl");
-    if (existsSync(sourceEventsPath)) {
-      const sourceContent = readFileSync(sourceEventsPath, "utf-8");
-      const lines = sourceContent.split("\n");
-      const rewritten = lines.map((line) => {
-        if (!line.trim()) return line;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "session.start" && event.data?.sessionId) {
-            event.data.sessionId = newId;
-            return JSON.stringify(event);
-          }
-          return line;
-        } catch {
-          return line;
-        }
-      });
-      writeFileSync(join(destDir, "events.jsonl"), rewritten.join("\n"));
+    if (typeof this.client.rpc?.sessions?.fork !== "function") {
+      throw new Error("Session fork is not available in this Copilot SDK build");
     }
 
-    // Copy auxiliary files from source session
-    for (const file of ["plan.md"]) {
-      const src = join(sourceDir, file);
-      if (existsSync(src)) cpSync(src, join(destDir, file), { force: true });
-    }
-    for (const dir of ["files", "research"]) {
-      const src = join(sourceDir, dir);
-      if (existsSync(src)) cpSync(src, join(destDir, dir), { recursive: true, force: true });
-    }
+    const toEventId = options.toEventId?.trim();
+    const params = toEventId
+      ? { sessionId: sourceSessionId, toEventId }
+      : { sessionId: sourceSessionId };
+    const t0 = Date.now();
+    const result = await this.client.rpc.sessions.fork(params);
+    const duration = Date.now() - t0;
+    this.persistSessionWorkspace(result.sessionId, sourceCwd);
 
-    // Drop the cached session object so the next access does a fresh resume from disk,
-    // picking up the copied event history.
-    session.disconnect();
-    this.sessionObjects.delete(newId);
-    this.persistSessionWorkspace(newId, sourceCwd);
-
-    console.log(`[sdk] Duplicated session ${sourceSessionId.slice(0, 8)} → ${newId.slice(0, 8)}`);
-    this.invalidateSessionListCache("session:duplicate");
-    return { sessionId: newId };
+    console.log(`[sdk] Forked session ${sourceSessionId.slice(0, 8)} → ${result.sessionId.slice(0, 8)}`);
+    this.invalidateSessionListCache("session:fork");
+    this.recordSpan("session.fork", duration, result.sessionId, {
+      sourceSessionId,
+      bounded: Boolean(toEventId),
+    });
+    return result;
   }
 
   async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {

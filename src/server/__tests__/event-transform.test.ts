@@ -215,6 +215,87 @@ describe("event-transform visible activity", () => {
   });
 });
 
+describe("event-transform fork boundaries", () => {
+  it("adds the next raw event id after a completed assistant turn as a safe fork boundary", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
+      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
+      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
+      { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-10T10:01:02.000Z", data: {} },
+    ]);
+
+    const firstAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
+    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
+  });
+
+  it("skips repeated system prompts when choosing a fork boundary", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
+      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
+      { id: "system-2", type: "system.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "Repeated instructions" } },
+      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+    ]);
+
+    const firstAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
+    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
+  });
+
+  it("omits fork boundaries when the completed turn has no following event", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
+      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
+    ]);
+
+    const assistant = entries.find((entry) => entry.role === "assistant");
+    expect(assistant?.forkBoundaryEventId).toBeUndefined();
+  });
+
+  it("omits fork boundaries for in-flight assistant turns", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Partial answer" } },
+      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+    ]);
+
+    const assistant = entries.find((entry) => entry.role === "assistant");
+    expect(assistant?.forkBoundaryEventId).toBeUndefined();
+  });
+
+  it("only marks the final top-level assistant message in a multi-message turn", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Interim answer" } },
+      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "Final answer" } },
+      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:03.000Z", data: {} },
+      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+    ]);
+
+    const assistants = entries.filter((entry) => entry.role === "assistant");
+    expect(assistants.map((entry) => entry.forkBoundaryEventId)).toEqual([undefined, "user-2"]);
+  });
+
+  it("does not scan across failed turns when computing fork boundaries", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Failed answer" } },
+      { id: "error-1", type: "session.error", timestamp: "2026-04-10T10:00:02.000Z", data: { message: "boom" } },
+      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
+      { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-10T10:01:02.000Z", data: {} },
+      { id: "user-3", type: "user.message", timestamp: "2026-04-10T10:02:00.000Z", data: { content: "Third" } },
+    ]);
+
+    const firstAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Failed answer");
+    const secondAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Answer two");
+    expect(firstAssistant?.forkBoundaryEventId).toBeUndefined();
+    expect(secondAssistant?.forkBoundaryEventId).toBe("user-3");
+  });
+});
+
 describe("event-transform tool results", () => {
   it("prefers detailedContent for successful tools", () => {
     const entries = transformEventsToMessages([

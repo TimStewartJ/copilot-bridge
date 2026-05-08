@@ -31,6 +31,7 @@ type FakeElement = FakeNode & {
   getAttribute: (name: string) => string | null;
   focus: () => void;
   blur: () => void;
+  getBoundingClientRect: () => DOMRect;
   firstChild: FakeNode | null;
   lastChild: FakeNode | null;
 };
@@ -232,6 +233,19 @@ export function installDomShim() {
         if (document.activeElement === this) {
           document.activeElement = null;
         }
+      },
+      getBoundingClientRect() {
+        return {
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
       },
       get firstChild() {
         return this.childNodes[0] ?? null;

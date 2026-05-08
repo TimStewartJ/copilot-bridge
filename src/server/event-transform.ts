@@ -27,6 +27,7 @@ export interface TransformedEntry {
   role?: string;
   content?: string;
   timestamp?: string;
+  forkBoundaryEventId?: string;
   attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
   // Tool fields (when type === "tool")
   toolCall?: {
@@ -49,10 +50,56 @@ export interface TransformedEntry {
 export type TransformedMessage = TransformedEntry;
 
 function isTurnTerminalEvent(event: any): boolean {
-  return event.type === "session.shutdown"
+  return event.type === "assistant.turn_end"
+    || event.type === "session.shutdown"
     || event.type === "abort"
     || event.type === "session.idle"
     || event.type === "session.error";
+}
+
+const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
+
+function getRawEventId(event: any): string | undefined {
+  const id = event?.id ?? event?.eventId;
+  return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+function getNextForkBoundaryEventId(events: any[], startIndex: number): string | undefined {
+  for (let index = startIndex; index < events.length; index += 1) {
+    const event = events[index];
+    if (FORK_BOUNDARY_SKIP_EVENT_TYPES.has(event?.type)) continue;
+    const id = getRawEventId(event);
+    if (id) return id;
+  }
+  return undefined;
+}
+
+function getAssistantForkBoundaries(events: any[]): Map<string, string> {
+  const boundaries = new Map<string, string>();
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (event?.type !== "assistant.message" || event?.data?.parentToolCallId) continue;
+    const assistantEventId = getRawEventId(event);
+    if (!assistantEventId) continue;
+
+    for (let nextIndex = index + 1; nextIndex < events.length; nextIndex += 1) {
+      const nextEvent = events[nextIndex];
+      if (nextEvent?.type === "assistant.turn_end") {
+        const boundaryEventId = getNextForkBoundaryEventId(events, nextIndex + 1);
+        if (boundaryEventId) boundaries.set(assistantEventId, boundaryEventId);
+        break;
+      }
+      if (
+        nextEvent?.type === "assistant.turn_start"
+        || nextEvent?.type === "user.message"
+        || (nextEvent?.type === "assistant.message" && !nextEvent?.data?.parentToolCallId)
+        || isTurnTerminalEvent(nextEvent)
+      ) {
+        break;
+      }
+    }
+  }
+  return boundaries;
 }
 
 function getUserMessageContent(event: any): string {
@@ -305,6 +352,7 @@ export function transformEventsToMessages(
   const subAgentStarts = new Map<string, { agentName: string; agentDisplayName: string }>();
   const subAgentResponses = new Map<string, string>();
   const toolNames = new Map<string, string>();
+  const assistantForkBoundaries = getAssistantForkBoundaries(events);
   // Detect visual artifact publications from publish_visual tool completions
   const visualResults = new Map<string, TransformedVisual>();
 
@@ -375,6 +423,8 @@ export function transformEventsToMessages(
       if (data?.parentToolCallId) continue; // sub-agent response text, not a top-level message
       const content = data?.content ?? "";
       if (content.trim()) {
+        const rawEventId = getRawEventId(event);
+        const forkBoundaryEventId = rawEventId ? assistantForkBoundaries.get(rawEventId) : undefined;
         entries.push({
           id: `entry-${idx++}`,
           type: "message",
@@ -382,6 +432,7 @@ export function transformEventsToMessages(
           content,
           timestamp: data.timestamp ?? (event as any).timestamp,
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
+          ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
         });
       }
     } else if (event.type === "tool.execution_start") {

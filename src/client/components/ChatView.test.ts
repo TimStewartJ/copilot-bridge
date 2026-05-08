@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +45,7 @@ vi.mock("./McpStatusBar", () => ({
 }));
 
 vi.mock("./MessageBubble", () => ({
-  default: () => null,
+  default: ({ actionSlot }: { actionSlot?: ReactNode }) => createElement("div", null, actionSlot),
 }));
 
 vi.mock("./ToolCallTree", () => ({
@@ -54,6 +54,22 @@ vi.mock("./ToolCallTree", () => ({
 
 vi.mock("./PlanSheet", () => ({
   default: () => null,
+}));
+
+vi.mock("./ContextMenu", () => ({
+  default: ({ children }: { children: ReactNode }) => createElement("div", { "data-testid": "context-menu" }, children),
+  CtxDivider: () => createElement("hr"),
+  CtxItem: ({
+    label,
+    onClick,
+    disabled,
+    title,
+  }: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    title?: string;
+  }) => createElement("button", { disabled, onClick, title }, label),
 }));
 
 type Act = (callback: () => void | Promise<void>) => Promise<void>;
@@ -75,12 +91,30 @@ type RenderChatViewOptions = {
   seedQueryClient?: (queryClient: QueryClient) => void;
   streamOverrides?: Record<string, unknown>;
   waitForQuestion?: boolean;
+  onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
 };
 
 const WAIT_FOR_CONDITION_TIMEOUT_MS = 5_000;
 
 function createMessage(id: string, content = id): ChatEntry {
   return { id, role: "assistant", content };
+}
+
+function findButtonByAriaLabel(root: any, label: string): any {
+  const button = findAllByTag(root, "BUTTON").find((candidate) => (
+    getReactProps(candidate)?.["aria-label"] === label
+    || candidate.getAttribute?.("aria-label") === label
+  ));
+  if (!button) throw new Error(`Button not found with aria-label: ${label}`);
+  return button;
+}
+
+function clickButton(button: any) {
+  getReactProps(button)?.onClick?.({
+    currentTarget: button,
+    preventDefault: vi.fn(),
+    stopPropagation: vi.fn(),
+  });
 }
 
 function createSnapshot(
@@ -240,6 +274,7 @@ async function renderChatView(
               onSubmitVoiceCapture: vi.fn(),
               busySignal: nextOptions.busySignal,
               activeSessionActivityAt: nextOptions.activeSessionActivityAt,
+              onForkSession: nextOptions.onForkSession,
             }),
           ),
         ),
@@ -883,6 +918,67 @@ describe("ChatView cached resume loading state", () => {
         warm: true,
         hasMore: true,
       });
+      await cleanup();
+    }
+  });
+});
+
+describe("ChatView message actions", () => {
+  it("shows timestamp, copy, and bounded fork actions for assistant messages", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const onForkSession = vi.fn().mockResolvedValue(undefined);
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          content: "assistant reply",
+          timestamp: "2026-04-29T12:00:00.000Z",
+          forkBoundaryEventId: "event-after-assistant-1",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+      onForkSession,
+    });
+
+    try {
+      (globalThis.navigator as { clipboard?: { writeText: typeof writeText } }).clipboard = { writeText };
+      await waitUntilAct(act, () => {
+        try {
+          findButtonByAriaLabel(dom.container, "Open message actions");
+          return true;
+        } catch {
+          return false;
+        }
+      });
+
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(dom.container, "Open message actions"));
+      });
+
+      expect(dom.container.textContent).toContain("Timestamp");
+      expect(dom.container.textContent).toContain("Copy message");
+      expect(dom.container.textContent).toContain("Fork from here");
+
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Copy message"));
+        await waitTick();
+      });
+      expect(writeText).toHaveBeenCalledWith("assistant reply");
+
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(dom.container, "Open message actions"));
+      });
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Fork from here"));
+        await waitTick();
+      });
+      expect(onForkSession).toHaveBeenCalledWith("session-1", { toEventId: "event-after-assistant-1" });
+    } finally {
       await cleanup();
     }
   });

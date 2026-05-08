@@ -58,7 +58,7 @@ interface TaskDashboardProps {
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   onRefresh?: () => Promise<void>;
   onDeleteSession?: (sessionId: string) => void;
-  onDuplicateSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   archivingIds?: Set<string>;

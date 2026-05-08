@@ -670,7 +670,7 @@ describe("SessionManager run state", () => {
       });
 
       await expect(manager.createSession()).rejects.toThrow(RESTART_PENDING_MESSAGE);
-      await expect(manager.duplicateSession("source-session")).rejects.toThrow(RESTART_PENDING_MESSAGE);
+      await expect(manager.forkSession("source-session")).rejects.toThrow(RESTART_PENDING_MESSAGE);
       await expect(manager.createTaskSession("task-1", "Task one", [], [], "")).rejects.toThrow(RESTART_PENDING_MESSAGE);
       expect(manager.client.createSession).not.toHaveBeenCalled();
     } finally {

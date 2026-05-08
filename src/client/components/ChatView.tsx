@@ -24,8 +24,15 @@ import { buildRenderableSegmentRoots, buildToolCallForest, getActiveToolCallRoot
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
+import useLongPressMenu from "../hooks/useLongPressMenu";
 import type { Draft } from "../useDrafts";
 import MessageBubble from "./MessageBubble";
+import {
+  MessageActionsMenu,
+  MessageActionToolbar,
+  writeClipboardText,
+  type MessageActionMenuTarget,
+} from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
 import ToolCallNodeGroup from "./ToolCallNodeGroup";
 import ChatInput from "./ChatInput";
@@ -60,6 +67,7 @@ interface ChatViewProps {
   /** Incremented when an external source (e.g. schedule) starts work on this session */
   busySignal?: number;
   activeSessionActivityAt?: string;
+  onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
 }
 
 function renderPendingStatusCard(
@@ -323,6 +331,7 @@ export default function ChatView({
   reloadMcpServers,
   busySignal = 0,
   activeSessionActivityAt,
+  onForkSession,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -337,6 +346,16 @@ export default function ChatView({
   const [manualMcpOverride, setManualMcpOverride] = useState<McpServerStatus[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [forkingBoundaryEventId, setForkingBoundaryEventId] = useState<string | null>(null);
+  const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
+  const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
+  const {
+    bind: bindMessageMenu,
+    menu: messageMenu,
+    openMenu: openMessageMenu,
+    closeMenu,
+    isTarget: isMessageLongPressTarget,
+  } = useLongPressMenu<string>();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
@@ -355,6 +374,7 @@ export default function ChatView({
   const topAutoFillConsumedRef = useRef(false);
   const staleTailRefreshRetryRef = useRef<string | undefined>(undefined);
   const tailSkeletonRefreshEligibleRef = useRef(false);
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedSendRef = useRef<{
     sessionId: string | null;
     composerKey: string;
@@ -364,6 +384,10 @@ export default function ChatView({
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<(opts?: { background?: boolean }) => void>(() => {});
   activeSessionActivityAtRef.current = activeSessionActivityAt;
+
+  useEffect(() => () => {
+    if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+  }, []);
 
   const applyHistory = useCallback((
     nextEntries: ChatEntry[],
@@ -1170,6 +1194,56 @@ export default function ChatView({
   const isLaunchingFleet = isStreaming && pendingOrigin === "fleet";
   const composerDisabled = warming || loading;
   const composerDisabledHint = loading ? "Loading history…" : warming ? "Reconnecting…" : undefined;
+  const forkFromHereDisabled = loading || isStreaming || creating || warming || refreshingHistory;
+  const handleForkFromHere = useCallback(async (message: ChatMessage) => {
+    if (!sessionId || !onForkSession || !message.forkBoundaryEventId) return;
+    setForkingBoundaryEventId(message.forkBoundaryEventId);
+    try {
+      await onForkSession(sessionId, { toEventId: message.forkBoundaryEventId });
+    } catch (err) {
+      console.error("Failed to fork session from message:", err);
+    } finally {
+      setForkingBoundaryEventId((current) =>
+        current === message.forkBoundaryEventId ? null : current,
+      );
+    }
+  }, [onForkSession, sessionId]);
+
+  const closeMessageMenu = useCallback(() => {
+    closeMenu();
+    setMessageMenuTarget(null);
+  }, [closeMenu]);
+
+  const openMessageActionsMenu = useCallback((x: number, y: number, key: string, message: ChatMessage) => {
+    setMessageMenuTarget({ key, message });
+    openMessageMenu(x, y, key);
+  }, [openMessageMenu]);
+
+  const handleCopySpecificMessage = useCallback((key: string, message: ChatMessage) => {
+    void writeClipboardText(message.content).then(() => {
+      setCopiedMessageKey(key);
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = setTimeout(() => {
+        setCopiedMessageKey((current) => (current === key ? null : current));
+      }, 1_800);
+    }).catch((err) => {
+      console.error("Failed to copy message:", err);
+    });
+  }, []);
+
+  const handleCopyMessage = useCallback(() => {
+    const target = messageMenuTarget;
+    if (!target) return;
+    closeMessageMenu();
+    handleCopySpecificMessage(target.key, target.message);
+  }, [closeMessageMenu, handleCopySpecificMessage, messageMenuTarget]);
+
+  const handleForkMessageMenu = useCallback(() => {
+    const target = messageMenuTarget;
+    if (!target) return;
+    closeMessageMenu();
+    void handleForkFromHere(target.message);
+  }, [closeMessageMenu, handleForkFromHere, messageMenuTarget]);
 
   if (!sessionId && !isDraft) {
     return (
@@ -1213,15 +1287,55 @@ export default function ChatView({
       }
 
       const msg = segment.entry as ChatMessage;
+      const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
+      const menuBindings = bindMessageMenu(messageKey, () => {});
+      const isLongPressTarget = isMessageLongPressTarget(messageKey);
+      const actionSlot = (
+        <MessageActionToolbar
+          messageKey={messageKey}
+          message={msg}
+          copied={copiedMessageKey === messageKey}
+          onCopy={handleCopySpecificMessage}
+          onOpenMenu={openMessageActionsMenu}
+        />
+      );
       result.push(
-        <div key={msg.id ?? `${msg.role}-${index}`} className="px-3 md:px-5 pt-4">
-          <MessageBubble message={msg} />
+        <div
+          key={messageKey}
+          className={`relative px-3 pt-4 transition-colors md:px-5 ${
+            isLongPressTarget ? "bg-accent/5" : ""
+          }`}
+          onClick={menuBindings.onClick}
+          onTouchStart={(event) => {
+            setMessageMenuTarget({ key: messageKey, message: msg });
+            menuBindings.onTouchStart(event);
+          }}
+          onTouchMove={menuBindings.onTouchMove}
+          onTouchEnd={menuBindings.onTouchEnd}
+          onTouchCancel={menuBindings.onTouchCancel}
+        >
+          <MessageBubble message={msg} actionSlot={actionSlot} />
         </div>,
       );
     });
 
     return result;
-  }, [historicalEntries, toolForest]);
+  }, [
+    bindMessageMenu,
+    copiedMessageKey,
+    handleCopySpecificMessage,
+    historicalEntries,
+    isMessageLongPressTarget,
+    openMessageActionsMenu,
+    toolForest,
+  ]);
+
+  const messageMenuForkBoundary = messageMenuTarget?.message.role === "assistant"
+    ? messageMenuTarget.message.forkBoundaryEventId
+    : undefined;
+  const messageMenuForkLoading = Boolean(
+    messageMenuForkBoundary && forkingBoundaryEventId === messageMenuForkBoundary,
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -1312,6 +1426,18 @@ export default function ChatView({
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           <div className="h-4" />
         </div>
+      )}
+      {messageMenu && messageMenuTarget && (
+        <MessageActionsMenu
+          position={messageMenu}
+          target={messageMenuTarget}
+          copied={copiedMessageKey === messageMenuTarget.key}
+          forkLoading={messageMenuForkLoading}
+          forkDisabled={forkFromHereDisabled}
+          onClose={closeMessageMenu}
+          onCopy={handleCopyMessage}
+          onFork={handleForkMessageMenu}
+        />
       )}
       <ChatInput
         onSend={handleSend}

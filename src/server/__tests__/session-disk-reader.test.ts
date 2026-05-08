@@ -194,6 +194,29 @@ describe("readMessagesFromDisk latest-page path", () => {
     ]);
   });
 
+  it("preserves fork boundaries in the latest-page tail transform", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-fork-boundary");
+    writeSessionFiles(copilotHome, "forkable", {
+      events: [
+        { id: "user-1", type: "user.message", timestamp: "2026-04-30T10:00:00.000Z", data: { content: "First" } },
+        { id: "turn-start-1", type: "assistant.turn_start", timestamp: "2026-04-30T10:00:01.000Z", data: {} },
+        { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-30T10:00:02.000Z", data: { content: "Answer one" } },
+        { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-30T10:00:03.000Z", data: {} },
+        { id: "system-2", type: "system.message", timestamp: "2026-04-30T10:00:04.000Z", data: { content: "Repeated instructions" } },
+        { id: "user-2", type: "user.message", timestamp: "2026-04-30T10:01:00.000Z", data: { content: "Second" } },
+        { id: "turn-start-2", type: "assistant.turn_start", timestamp: "2026-04-30T10:01:01.000Z", data: {} },
+        { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-30T10:01:02.000Z", data: { content: "Answer two" } },
+        { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-30T10:01:03.000Z", data: {} },
+      ],
+    });
+
+    const { deps } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "forkable", { limit: 10 });
+
+    const firstAssistant = result.messages.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
+    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
+  });
+
   it("falls back to a full read when events are appended during a tail read", async () => {
     const copilotHome = makeTestDir("session-disk-reader-append");
     const sessionId = "append-race";
