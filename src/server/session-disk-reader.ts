@@ -9,7 +9,6 @@ import {
   transformEventsToMessages,
   type TransformedEntry,
 } from "./event-transform.js";
-import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 
@@ -449,8 +448,7 @@ export async function listSessionsFromDisk(
   }
   const dirs = entries
     .filter((d: any) => d.isDirectory())
-    .map((d: any) => d.name)
-    .filter((name: string) => !isDisposableTitleSessionId(name));
+    .map((d: any) => d.name);
   deps.recordSpan("session.listFromDisk.enumerate", Date.now() - tEnumerate, undefined, {
     dirCount: dirs.length,
     includeArchived,

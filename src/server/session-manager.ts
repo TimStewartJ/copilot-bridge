@@ -119,6 +119,7 @@ import {
   createSessionNameAutogenerator,
   type SessionNameAutogenerator,
 } from "./session-name-autogen.js";
+import { deleteCliSessionStoreRows } from "./cli-session-store.js";
 import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
@@ -149,6 +150,11 @@ export type {
 
 // Universal tools — same instance for every session
 export { createBridgeTools } from "./bridge-tools.js";
+
+function isMissingSessionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|does not exist|no such (file|session)|ENOENT/i.test(message);
+}
 
 export interface SessionManagerDeps {
   tools: ReturnType<typeof defineTool>[];
@@ -1304,6 +1310,7 @@ export class SessionManager {
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot delete a busy session");
     }
+    let sdkDeleteError: unknown;
     this.cancelPendingUserInputRequests(
       sessionId,
       "session_ended",
@@ -1313,26 +1320,30 @@ export class SessionManager {
     try {
       await this.client.deleteSession(sessionId);
     } catch (err: unknown) {
-      // Tolerate "not found" errors — the session file may already be gone
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/not found/i.test(msg)) {
+      if (isMissingSessionError(err)) {
         console.log(`[sdk] Session ${sessionId} already gone, continuing cleanup`);
       } else {
-        throw err;
+        sdkDeleteError = err;
+        console.warn(`[sdk] Delete session ${sessionId} failed before local cleanup:`, err);
       }
     }
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
-    this.invalidateSessionListCache("session:delete:start");
 
     // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
-    const copilotHome = this.deps.copilotHome ?? join(homedir(), ".copilot");
+    const copilotHome = this.getCopilotHome();
     const sessionDir = join(copilotHome, "session-state", sessionId);
     try {
       await rm(sessionDir, { recursive: true, force: true });
     } catch (err) {
       console.warn(`[sdk] Failed to remove session dir ${sessionId}:`, err);
     }
+    try {
+      deleteCliSessionStoreRows(copilotHome, sessionId);
+    } catch (err) {
+      console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
+    }
     this.invalidateSessionListCache("session:delete:removed");
+    if (sdkDeleteError) throw sdkDeleteError;
 
     console.log(`[sdk] Deleted session ${sessionId}`);
   }

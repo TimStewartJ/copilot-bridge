@@ -13,7 +13,7 @@ describe("copilot CLI session catalog", () => {
     expect(catalog.listSessions()).toBeUndefined();
   });
 
-  it("lists sessions from the CLI session store without reading workspace files", () => {
+  it("lists sessions from the CLI session store without reading workspace files or hiding helper-looking rows", () => {
     const copilotHome = makeTestDir("cli-catalog");
     mkdirSync(copilotHome, { recursive: true });
     const db = new DatabaseSync(join(copilotHome, "session-store.db"));
@@ -50,11 +50,43 @@ describe("copilot CLI session catalog", () => {
         '2026-05-07T12:00:00.000Z',
         'github'
       );
+      INSERT INTO sessions (id, cwd, repository, branch, summary, created_at, updated_at, host_type)
+      VALUES (
+        'legacy-title-helper',
+        'D:\\repo',
+        'owner/repo',
+        'main',
+        'Generate a concise 3-6 word title for this conversation.
+Reply with ONLY the title text for a stale helper',
+        '2026-05-07T10:00:00.000Z',
+        '2026-05-07T13:00:00.000Z',
+        'github'
+      );
     `);
     db.close();
     const catalog = createCopilotCliSessionCatalog({ copilotHome });
 
     expect(catalog.listSessions()).toEqual([
+      {
+        sessionId: "legacy-title-helper",
+        summary: "Generate a concise 3-6 word title for this conversation.\nReply with ONLY the title text for a stale helper",
+        startTime: "2026-05-07T10:00:00.000Z",
+        modifiedTime: "2026-05-07T13:00:00.000Z",
+        context: { cwd: "D:\\repo" },
+        repository: "owner/repo",
+        branch: "main",
+        hostType: "github",
+      },
+      {
+        sessionId: "b17e1000-0000-4000-8000-000000000001",
+        summary: "Disposable helper",
+        startTime: "2026-05-07T10:00:00.000Z",
+        modifiedTime: "2026-05-07T12:00:00.000Z",
+        context: { cwd: "D:\\repo" },
+        repository: "owner/repo",
+        branch: "main",
+        hostType: "github",
+      },
       {
         sessionId: "session-1",
         summary: "Review catalog adapter",
