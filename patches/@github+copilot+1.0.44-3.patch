@@ -11,19 +11,6 @@ index d66438c..14685b1 100644
  tools:
    - "*"
  promptParts:
-diff --git a/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml b/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
-index ca92cda..063b5a0 100644
---- a/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
-+++ b/node_modules/@github/copilot/definitions/configure-copilot.agent.yaml
-@@ -3,7 +3,7 @@ displayName: Configure Copilot
- description: >
-   Manages Copilot CLI MCP server configuration. Use when the user wants to add,
-   remove, or modify MCP servers.
--model: claude-haiku-4.5
-+model: claude-opus-4.7
- contexts:
-   - cli
- tools:
 diff --git a/node_modules/@github/copilot/definitions/explore.agent.yaml b/node_modules/@github/copilot/definitions/explore.agent.yaml
 index ba59197..3f92b27 100644
 --- a/node_modules/@github/copilot/definitions/explore.agent.yaml
