@@ -2,7 +2,6 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isDisposableTitleSessionId } from "./session-name-generator.js";
 
 export interface CopilotCliCatalogSession {
   sessionId: string;
@@ -70,7 +69,6 @@ export function createCopilotCliSessionCatalog(deps: {
 
       recordSpan("session.cliCatalog.list", start, { result: "hit", count: rows.length });
       return rows
-        .filter((row) => !isDisposableTitleSessionId(String(row.id)))
         .map((row) => ({
           sessionId: String(row.id),
           summary: typeof row.summary === "string" && row.summary.trim() ? row.summary.trim() : undefined,

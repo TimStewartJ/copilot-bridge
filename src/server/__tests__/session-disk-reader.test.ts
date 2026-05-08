@@ -76,7 +76,7 @@ describe("listSessionsFromDisk telemetry", () => {
     ]));
   });
 
-  it("prefers workspace name over summary and filters disposable title helper sessions", async () => {
+  it("prefers workspace name over summary without hiding helper-looking session ids", async () => {
     const copilotHome = makeTestDir("session-disk-list-names");
     writeSessionFiles(copilotHome, "session-named", {
       workspace: [
@@ -92,8 +92,14 @@ describe("listSessionsFromDisk telemetry", () => {
     const { deps } = createDeps(copilotHome);
     const sessions = await listSessionsFromDisk(deps);
 
-    expect(sessions.map((session) => session.sessionId)).toEqual(["session-named"]);
-    expect(sessions[0]).toMatchObject({ summary: "CLI owned name" });
+    expect(sessions.map((session) => session.sessionId).sort()).toEqual([
+      "b17e1000-0000-4000-8000-000000000001",
+      "session-named",
+    ]);
+    expect(sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: "session-named", summary: "CLI owned name" }),
+      expect.objectContaining({ sessionId: "b17e1000-0000-4000-8000-000000000001", summary: "Helper name" }),
+    ]));
   });
 });
 

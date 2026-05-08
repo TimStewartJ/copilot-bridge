@@ -8,7 +8,7 @@ import {
 } from "../session-name-generator.js";
 
 describe("session name generator helpers", () => {
-  it("marks disposable title helper session ids with a filterable prefix", () => {
+  it("marks disposable title helper session ids with a recognizable prefix", () => {
     const sessionId = createDisposableTitleSessionId();
 
     expect(sessionId).toMatch(/^b17e1000-/);
