@@ -2,7 +2,14 @@ param(
   [string]$PackagePath,
   [string]$DownloadUrl,
   [string]$ExpectedSha256,
-  [string]$StateRoot = $env:BRIDGE_STATE_ROOT
+  [string]$StateRoot = $env:BRIDGE_STATE_ROOT,
+  [string]$InstallId,
+  [string]$FromVersion,
+  [string]$TargetVersion,
+  [string]$Channel,
+  [string]$SourceCommit,
+  [string]$StatusPath = $env:BRIDGE_UPDATE_INSTALL_STATUS_PATH,
+  [string]$LogPath = $env:BRIDGE_UPDATE_INSTALL_LOG_PATH
 )
 
 $ErrorActionPreference = "Stop"
@@ -232,15 +239,54 @@ Add-BackupEntry "data" $effectiveDataDir
 Add-BackupEntry "docs" $effectiveDocsDir
 Add-BackupEntry "copilot-home" $effectiveCopilotHome
 
+if ([string]::IsNullOrWhiteSpace($StatusPath)) {
+  $StatusPath = Join-Path $effectiveDataDir "update-status.json"
+}
+if ([string]::IsNullOrWhiteSpace($LogPath)) {
+  $LogPath = Join-Path $stateRoot "logs\update-$timestamp.log"
+}
+New-Item -ItemType Directory -Path (Split-Path -Parent $StatusPath), (Split-Path -Parent $LogPath) -Force | Out-Null
+$statusStartedAt = (Get-Date).ToUniversalTime().ToString("o")
+
+function Write-UpdateStatus($Phase, [string]$ErrorMessage = $null, [bool]$RollbackAttempted = $false) {
+  $now = (Get-Date).ToUniversalTime().ToString("o")
+  $status = [ordered]@{
+    id = if (-not [string]::IsNullOrWhiteSpace($InstallId)) { $InstallId } else { $timestamp }
+    phase = $Phase
+    channel = $Channel
+    fromVersion = $FromVersion
+    toVersion = $TargetVersion
+    sourceCommit = $SourceCommit
+    packageUrl = $DownloadUrl
+    packageSha256 = $ExpectedSha256
+    startedAt = $statusStartedAt
+    updatedAt = $now
+    logPath = $LogPath
+  }
+  if ($Phase -eq "succeeded" -or $Phase -eq "failed") {
+    $status.completedAt = $now
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) {
+    $status.error = $ErrorMessage
+  }
+  if ($RollbackAttempted) {
+    $status.rollbackAttempted = $true
+  }
+  $status | ConvertTo-Json -Depth 4 | Set-Content -Path $StatusPath -Encoding UTF8
+}
+
 try {
+  Write-UpdateStatus "started"
   $resolvedPackage = $PackagePath
   if ($DownloadUrl) {
+    Write-UpdateStatus "downloading"
     $resolvedPackage = Join-Path $tempDir "copilot-bridge-update.zip"
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $resolvedPackage
   }
   $resolvedPackage = (Resolve-Path $resolvedPackage).Path
 
   if ($ExpectedSha256) {
+    Write-UpdateStatus "verifying"
     $hash = (Get-FileHash -Path $resolvedPackage -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
       throw "Package SHA256 mismatch. Expected $ExpectedSha256 but got $hash."
@@ -248,6 +294,7 @@ try {
   }
 
   $expandedDir = Join-Path $tempDir "expanded"
+  Write-UpdateStatus "staging"
   Expand-Archive -Path $resolvedPackage -DestinationPath $expandedDir -Force
   $newApp = Join-Path $expandedDir "CopilotBridge\app"
   if (-not (Test-Path $newApp)) {
@@ -262,6 +309,7 @@ try {
 
   $stopScript = Join-Path $installRoot "stop.ps1"
   if (Test-Path $stopScript) {
+    Write-UpdateStatus "stopping"
     & $stopScript
     $bridgeStopped = $true
     Start-Sleep -Seconds 2
@@ -275,6 +323,7 @@ try {
   Copy-ReleaseWrappers $installRoot $backupDir
   Backup-ConfiguredDirectories
 
+  Write-UpdateStatus "installing"
   if (Test-Path $appDir) {
     Remove-Item -Path $appDir -Recurse -Force
   }
@@ -284,6 +333,7 @@ try {
 
   $startScript = Join-Path $installRoot "start.ps1"
   if (Test-Path $startScript) {
+    Write-UpdateStatus "starting"
     & $startScript
     Wait-BridgeHealth
     if ($stateRootFromInput) {
@@ -293,8 +343,10 @@ try {
     throw "Installed start.ps1 not found after update."
   }
 
+  Write-UpdateStatus "succeeded"
   Write-Output "Copilot Bridge updated. Backup: $backupDir"
 } catch {
+  $updateError = $_.Exception.Message
   if ($bridgeStopped) {
     $stopScript = Join-Path $installRoot "stop.ps1"
     if (Test-Path $stopScript) {
@@ -326,6 +378,7 @@ try {
       & $startScript
     }
   }
+  Write-UpdateStatus "failed" $updateError $true
   throw
 } finally {
   if (Test-Path $tempDir) {

@@ -44,5 +44,6 @@ export const queryKeys = {
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,
   dashboard: ["dashboard"] as const,
   copilotUsage: ["copilot-usage"] as const,
+  updates: (channel?: string) => ["updates", channel ?? "default"] as const,
   relatedDocs: (tagIds: string[]) => ["related-docs", ...tagIds] as const,
 };

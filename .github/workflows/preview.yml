@@ -51,6 +51,21 @@ jobs:
           "PREVIEW_PLATFORM=win-x64" >> $env:GITHUB_ENV
           "PREVIEW_TAG=latest-preview" >> $env:GITHUB_ENV
 
+      - name: Validate update manifest signing config
+        shell: pwsh
+        env:
+          BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_PEM }}
+          BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_BASE64: ${{ secrets.BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_BASE64 }}
+          BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM: ${{ vars.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM || secrets.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM }}
+          BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64: ${{ vars.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64 || secrets.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_PEM) -and [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_BASE64)) {
+            throw "Missing update manifest signing private key. Configure BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_PEM or BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_BASE64 as a GitHub secret."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM) -and [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64)) {
+            throw "Missing update manifest public key. Configure BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM or BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64 as a GitHub Actions variable or secret."
+          }
+
       - name: Typecheck
         shell: pwsh
         run: npx tsc --noEmit
@@ -69,6 +84,9 @@ jobs:
 
       - name: Build preview package
         shell: pwsh
+        env:
+          BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM: ${{ vars.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM || secrets.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM }}
+          BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64: ${{ vars.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64 || secrets.BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64 }}
         run: |
           pwsh -NoProfile -File .\scripts\package-release.ps1 `
             -Version $env:PREVIEW_VERSION `
@@ -99,6 +117,31 @@ jobs:
             "3. Run ``start.ps1``."
           ) | Set-Content -Path $notesPath -Encoding UTF8
 
+      - name: Write signed preview manifest
+        shell: pwsh
+        env:
+          BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_PEM }}
+          BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_BASE64: ${{ secrets.BRIDGE_UPDATE_MANIFEST_PRIVATE_KEY_BASE64 }}
+        run: |
+          $zip = "release/copilot-bridge-$env:PREVIEW_VERSION-$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.zip"
+          $packageName = Split-Path -Leaf $zip
+          $manifest = "release/$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.manifest.json"
+          $signature = "$manifest.sig"
+          $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:PREVIEW_TAG"
+          $packageUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:PREVIEW_TAG/$packageName"
+
+          node .\scripts\write-update-manifest.mjs `
+            --version $env:PREVIEW_VERSION `
+            --channel $env:PREVIEW_CHANNEL `
+            --platform $env:PREVIEW_PLATFORM `
+            --source-commit $env:GITHUB_SHA `
+            --package-path $zip `
+            --package-url $packageUrl `
+            --release-url $releaseUrl `
+            --release-notes-url $releaseUrl `
+            --output $manifest `
+            --signature-output $signature
+
       - name: Upload preview workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -107,6 +150,8 @@ jobs:
             release/copilot-bridge-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip
             release/copilot-bridge-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip.sha256
             release/copilot-bridge-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.analysis.json
+            release/${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.manifest.json
+            release/${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.manifest.json.sig
             release/preview-notes.md
           if-no-files-found: error
 
@@ -119,6 +164,8 @@ jobs:
           $zip = "release/copilot-bridge-$env:PREVIEW_VERSION-$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.zip"
           $sha = "$zip.sha256"
           $analysis = "release/copilot-bridge-$env:PREVIEW_VERSION-$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.analysis.json"
+          $manifest = "release/$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.manifest.json"
+          $signature = "$manifest.sig"
           $notes = "release/preview-notes.md"
 
           gh release view $env:PREVIEW_TAG *> $null
@@ -134,6 +181,8 @@ jobs:
             $zip `
             $sha `
             $analysis `
+            $manifest `
+            $signature `
             --prerelease `
             --target $env:GITHUB_SHA `
             --title "Copilot Bridge Latest Preview" `

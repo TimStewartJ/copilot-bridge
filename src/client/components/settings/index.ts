@@ -13,6 +13,7 @@ export { ServerCard } from "./ServerCard";
 export { ServerEditor } from "./ServerEditor";
 export { TagsSection } from "./TagsSection";
 export { VoiceInputSection } from "./VoiceInputSection";
+export { UpdatesSection } from "./UpdatesSection";
 export { BridgeCommitsSection } from "./BridgeCommitsSection";
 export { CopilotUsageSection } from "./CopilotUsageSection";
 export { SettingsCategoryNav } from "./SettingsCategoryNav";
