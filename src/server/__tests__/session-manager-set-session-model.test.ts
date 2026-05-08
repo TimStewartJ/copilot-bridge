@@ -325,7 +325,7 @@ describe("PATCH /api/sessions/:id/model route", () => {
 
   it("accepts valid reasoningEffort values", async () => {
     const { app } = createTestApp();
-    for (const effort of ["low", "medium", "high", "max", "xhigh"]) {
+    for (const effort of ["low", "medium", "high", "xhigh"]) {
       const res = await supertest(app)
         .patch(`/api/sessions/${sessionId}/model`)
         .send({ model: "claude-opus-4.7", reasoningEffort: effort });

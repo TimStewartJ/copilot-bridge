@@ -1280,7 +1280,7 @@ export interface ProvidersConfig {
 }
 
 export type ThemePreference = "light" | "dark" | "system";
-export type ReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface AppSettings {
   providers?: ProvidersConfig;

@@ -274,7 +274,7 @@ function resolveCopilotPublicSkuFromVariant(normalizedModel: string): PublicCopi
 
 function stripCopilotModelVariantSuffix(normalizedModel: string): string {
   return normalizedModel.replace(
-    /-(?:(?:\d+(?:k|m))|context|internal|only|reasoning|extra|xhigh|high|medium|low|max)$/u,
+    /-(?:(?:\d+(?:k|m))|context|internal|only|reasoning|extra|xhigh|high|medium|low)$/u,
     "",
   );
 }

@@ -51,7 +51,7 @@ describe("Copilot public pricing catalog", () => {
     for (const entry of COPILOT_PUBLIC_PRICING_CATALOG) {
       expect(entry.sku).not.toMatch(/(?:^|-)internal(?:$|-)/i);
       expect(entry.sku).not.toMatch(/(?:^|-)(?:1m|200k|272k)(?:$|-)/i);
-      expect(entry.sku).not.toMatch(/-(?:low|medium|high|xhigh|max)$/i);
+      expect(entry.sku).not.toMatch(/-(?:low|medium|high|xhigh)$/i);
       expect(entry.source).toBe(GITHUB_COPILOT_PRICING_SOURCE);
       expect(entry.source.rateUnit).toBe(COPILOT_PRICING_RATE_UNIT);
       expect(entry.source.url).toBe("https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing");
