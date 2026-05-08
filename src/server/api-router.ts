@@ -1690,7 +1690,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     invalidateEnrichedCache("route:session:fork");
     if (originalTitle) {
-      ctx.sessionTitles.setTitle(forkedSessionId, `${opts.bounded ? "Fork from" : "Fork of"} ${originalTitle}`);
+      await ctx.sessionManager.setSessionName(
+        forkedSessionId,
+        `${opts.bounded ? "Fork from" : "Fork of"} ${originalTitle}`.slice(0, 100).trim(),
+      );
     }
     for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
       ctx.taskStore.linkSession(linkedTask.id, forkedSessionId);

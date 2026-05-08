@@ -146,12 +146,12 @@ describe("Session routes (mocked)", () => {
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "fork-session",
+        summary: "Fork of Original session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("fork-session", "Fork of Original session");
 
     const res = await request(app).get("/api/sessions");
 
@@ -632,12 +632,12 @@ describe("Session routes (mocked)", () => {
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "fork-session",
+        summary: "Fork of Original session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
-    ctx.sessionTitles.setTitle("fork-session", "Fork of Original session");
 
     const res = await request(app).get("/api/dashboard");
 
@@ -1811,6 +1811,7 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/fork passes safe event boundaries to the session manager", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.forkSession = vi.fn().mockResolvedValue({ sessionId: "bounded-fork" });
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "test-id",
@@ -1828,7 +1829,7 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ sessionId: "bounded-fork" });
     expect(sessionManager.forkSession).toHaveBeenCalledWith("test-id", { toEventId: "next-event" });
-    expect(ctx.sessionTitles.getTitle("bounded-fork")).toBe("Fork from Original session");
+    expect(sessionManager.setSessionName).toHaveBeenCalledWith("bounded-fork", "Fork from Original session");
   });
 
   it("POST /api/sessions/:id/fork rejects empty event boundaries", async () => {
@@ -1857,6 +1858,7 @@ describe("Session manager routes", () => {
 
   it("POST /api/sessions/:id/fork seeds the forked title from the source summary", async () => {
     const sessionManager = createMockSessionManager();
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "test-id",
@@ -1870,7 +1872,7 @@ describe("Session manager routes", () => {
     const res = await request(app).post("/api/sessions/test-id/fork");
 
     expect(res.status).toBe(200);
-    expect(ctx.sessionTitles.getTitle("fork-session")).toBe("Fork of Original session");
+    expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
   });
 
   it("POST /api/sessions/:id/fork preserves all task links from the source session", async () => {
