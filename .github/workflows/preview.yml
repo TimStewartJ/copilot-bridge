@@ -1,0 +1,143 @@
+name: Preview Release
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+    inputs:
+      publish_prerelease:
+        description: "Update the rolling latest-preview GitHub prerelease."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Build preview package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Resolve preview metadata
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $version = "$packageVersion-preview.${{ github.run_number }}.${{ github.run_attempt }}.g$shortSha"
+
+          "PREVIEW_VERSION=$version" >> $env:GITHUB_ENV
+          "PREVIEW_CHANNEL=preview" >> $env:GITHUB_ENV
+          "PREVIEW_PLATFORM=win-x64" >> $env:GITHUB_ENV
+          "PREVIEW_TAG=latest-preview" >> $env:GITHUB_ENV
+
+      - name: Typecheck
+        shell: pwsh
+        run: npx tsc --noEmit
+
+      - name: Cross-platform test audit
+        shell: pwsh
+        run: npm run test:xplat-audit
+
+      - name: Build client
+        shell: pwsh
+        run: npx vite build
+
+      - name: Run tests
+        shell: pwsh
+        run: npx vitest run
+
+      - name: Build preview package
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File .\scripts\package-release.ps1 `
+            -Version $env:PREVIEW_VERSION `
+            -Channel $env:PREVIEW_CHANNEL `
+            -Platform $env:PREVIEW_PLATFORM `
+            -IncludeNodeModules `
+            -Analyze `
+            -SmokeTest
+
+      - name: Write preview notes
+        shell: pwsh
+        run: |
+          $notesPath = Join-Path "release" "preview-notes.md"
+          @(
+            "# Copilot Bridge Preview $env:PREVIEW_VERSION",
+            "",
+            "Channel: $env:PREVIEW_CHANNEL",
+            "Commit: $env:GITHUB_SHA",
+            "Workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
+            "",
+            "This is an automatically generated preview build from the latest mainline update.",
+            "Preview builds are installable, but they are not stable releases.",
+            "",
+            "## Install",
+            "",
+            "1. Download the preview zip from this prerelease.",
+            "2. Extract it.",
+            "3. Run ``start.ps1``."
+          ) | Set-Content -Path $notesPath -Encoding UTF8
+
+      - name: Upload preview workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-bridge-preview-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_PLATFORM }}
+          path: |
+            release/copilot-bridge-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip
+            release/copilot-bridge-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip.sha256
+            release/copilot-bridge-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.analysis.json
+            release/preview-notes.md
+          if-no-files-found: error
+
+      - name: Publish rolling preview prerelease
+        if: ${{ github.event_name == 'push' || inputs.publish_prerelease == true }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "release/copilot-bridge-$env:PREVIEW_VERSION-$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.zip"
+          $sha = "$zip.sha256"
+          $analysis = "release/copilot-bridge-$env:PREVIEW_VERSION-$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.analysis.json"
+          $notes = "release/preview-notes.md"
+
+          gh release view $env:PREVIEW_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $env:PREVIEW_TAG --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to delete existing $env:PREVIEW_TAG prerelease."
+            }
+          }
+          git push origin ":refs/tags/$env:PREVIEW_TAG" 2>$null
+
+          gh release create $env:PREVIEW_TAG `
+            $zip `
+            $sha `
+            $analysis `
+            --prerelease `
+            --target $env:GITHUB_SHA `
+            --title "Copilot Bridge Latest Preview" `
+            --notes-file $notes
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create $env:PREVIEW_TAG prerelease."
+          }

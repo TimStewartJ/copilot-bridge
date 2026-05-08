@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version. Defaults to package.json version."
+        required: false
+        type: string
+      channel:
+        description: "Release channel."
+        required: true
+        default: "stable"
+        type: choice
+        options:
+          - stable
+          - beta
+      include_node_modules:
+        description: "Install slim runtime node_modules in the release package."
+        required: true
+        default: true
+        type: boolean
+      run_package_smoke:
+        description: "Run extracted package start smoke."
+        required: true
+        default: true
+        type: boolean
+      create_draft_release:
+        description: "Create a draft GitHub Release with the package assets."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build release package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = $packageVersion
+          } elseif ($version -ne $packageVersion) {
+            throw "Release version '$version' does not match package.json version '$packageVersion'. Update package.json in a PR before releasing."
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
+            throw "Invalid release version '$version'. Expected a semver-like version such as 0.1.0."
+          }
+
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=v$version" >> $env:GITHUB_ENV
+          "RELEASE_CHANNEL=${{ inputs.channel }}" >> $env:GITHUB_ENV
+          "RELEASE_PLATFORM=win-x64" >> $env:GITHUB_ENV
+
+      - name: Typecheck
+        shell: pwsh
+        run: npx tsc --noEmit
+
+      - name: Cross-platform test audit
+        shell: pwsh
+        run: npm run test:xplat-audit
+
+      - name: Build client
+        shell: pwsh
+        run: npx vite build
+
+      - name: Run tests
+        shell: pwsh
+        run: npx vitest run
+
+      - name: Build release package
+        shell: pwsh
+        run: |
+          $packageArgs = @(
+            "-NoProfile",
+            "-File",
+            ".\scripts\package-release.ps1",
+            "-Version",
+            $env:RELEASE_VERSION,
+            "-Channel",
+            $env:RELEASE_CHANNEL,
+            "-Platform",
+            $env:RELEASE_PLATFORM,
+            "-Analyze"
+          )
+
+          if ("${{ inputs.include_node_modules }}" -eq "true") {
+            $packageArgs += "-IncludeNodeModules"
+          }
+          if ("${{ inputs.run_package_smoke }}" -eq "true") {
+            $packageArgs += "-SmokeTest"
+          }
+
+          pwsh @packageArgs
+
+      - name: Write release notes stub
+        shell: pwsh
+        run: |
+          $notesPath = Join-Path "release" "release-notes.md"
+          @(
+            "# Copilot Bridge $env:RELEASE_VERSION",
+            "",
+            "Channel: $env:RELEASE_CHANNEL",
+            "",
+            "## Install",
+            "",
+            "1. Download the release zip from this release.",
+            "2. Extract it.",
+            "3. Run ``start.ps1``.",
+            "",
+            "## Notes",
+            "",
+            "Replace this draft text with the release notes before publishing."
+          ) | Set-Content -Path $notesPath -Encoding UTF8
+
+      - name: Upload release workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-bridge-${{ env.RELEASE_VERSION }}-${{ env.RELEASE_CHANNEL }}
+          path: |
+            release/copilot-bridge-${{ env.RELEASE_VERSION }}-${{ env.RELEASE_CHANNEL }}-${{ env.RELEASE_PLATFORM }}.zip
+            release/copilot-bridge-${{ env.RELEASE_VERSION }}-${{ env.RELEASE_CHANNEL }}-${{ env.RELEASE_PLATFORM }}.zip.sha256
+            release/copilot-bridge-${{ env.RELEASE_VERSION }}-${{ env.RELEASE_CHANNEL }}-${{ env.RELEASE_PLATFORM }}.analysis.json
+            release/release-notes.md
+          if-no-files-found: error
+
+      - name: Create draft GitHub Release
+        if: ${{ inputs.create_draft_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "release/copilot-bridge-$env:RELEASE_VERSION-$env:RELEASE_CHANNEL-$env:RELEASE_PLATFORM.zip"
+          $sha = "$zip.sha256"
+          $analysis = "release/copilot-bridge-$env:RELEASE_VERSION-$env:RELEASE_CHANNEL-$env:RELEASE_PLATFORM.analysis.json"
+          $notes = "release/release-notes.md"
+
+          gh release create $env:RELEASE_TAG `
+            $zip `
+            $sha `
+            $analysis `
+            --draft `
+            --target $env:GITHUB_SHA `
+            --title "Copilot Bridge $env:RELEASE_VERSION" `
+            --notes-file $notes

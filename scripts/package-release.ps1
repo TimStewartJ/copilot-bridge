@@ -1,19 +1,89 @@
 param(
   [string]$Version,
   [string]$Channel = "stable",
+  [ValidateSet("win-x64")]
+  [string]$Platform = "win-x64",
   [string]$OutputDir,
-  [switch]$IncludeNodeModules
+  [switch]$IncludeNodeModules,
+  [switch]$Analyze,
+  [switch]$SmokeTest
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $packageJson = Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
+$packageLockPath = Join-Path $repoRoot "package-lock.json"
 if (-not $Version) {
   $Version = $packageJson.version
 }
 if (-not $OutputDir) {
   $OutputDir = Join-Path $repoRoot "release"
+}
+
+function Get-DependencyMap($Source, [string[]]$Names) {
+  $map = [ordered]@{}
+  foreach ($name in $Names) {
+    $property = $Source.PSObject.Properties[$name]
+    if (-not $property) {
+      throw "Runtime dependency '$name' was not found in package.json dependencies."
+    }
+    $map[$name] = $property.Value
+  }
+  return $map
+}
+
+function Remove-PathIfExists([string]$Path) {
+  if (Test-Path $Path) {
+    Remove-Item -Path $Path -Recurse -Force
+  }
+}
+
+function Remove-ChildrenExcept([string]$Path, [string[]]$Keep) {
+  if (-not (Test-Path $Path)) {
+    return
+  }
+  Get-ChildItem -Path $Path -Force | Where-Object { $Keep -notcontains $_.Name } | ForEach-Object {
+    Remove-PathIfExists $_.FullName
+  }
+}
+
+function Optimize-RuntimeNodeModules([string]$AppDir) {
+  $copilotRoot = Join-Path $AppDir "node_modules\@github\copilot"
+  if (-not (Test-Path $copilotRoot)) {
+    return
+  }
+
+  Remove-ChildrenExcept (Join-Path $copilotRoot "prebuilds") @("win32-x64")
+  Remove-ChildrenExcept (Join-Path $copilotRoot "ripgrep\bin") @("win32-x64")
+  Remove-ChildrenExcept (Join-Path $copilotRoot "mxc-bin") @("x64")
+  Remove-ChildrenExcept (Join-Path $copilotRoot "koffi\build\koffi") @("win32_x64")
+  Remove-ChildrenExcept (Join-Path $copilotRoot "clipboard\node_modules\@teddyzhu") @("clipboard", "clipboard-win32-x64-msvc")
+  Remove-PathIfExists (Join-Path $AppDir "node_modules\@github\copilot-win32-x64")
+}
+
+$runtimeDependencyNames = @(
+  "@github/copilot-sdk",
+  "express",
+  "gray-matter",
+  "multer",
+  "node-cron",
+  "web-push",
+  "yaml"
+)
+
+$runtimePackageJson = [ordered]@{
+  name = $packageJson.name
+  version = $Version
+  private = $true
+  type = "module"
+  description = "Copilot Bridge packaged runtime dependencies"
+  license = $packageJson.license
+  engines = $packageJson.engines
+  dependencies = Get-DependencyMap $packageJson.dependencies $runtimeDependencyNames
+}
+if ($packageJson.overrides) {
+  $runtimePackageJson.overrides = $packageJson.overrides
 }
 
 Set-Location $repoRoot
@@ -29,8 +99,10 @@ New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 Copy-Item -Path (Join-Path $repoRoot "dist") -Destination (Join-Path $appDir "dist") -Recurse
 Copy-Item -Path (Join-Path $repoRoot "public") -Destination (Join-Path $appDir "public") -Recurse
 Copy-Item -Path (Join-Path $repoRoot "scripts") -Destination (Join-Path $appDir "scripts") -Recurse
-Copy-Item -Path (Join-Path $repoRoot "package.json") -Destination $appDir
-Copy-Item -Path (Join-Path $repoRoot "package-lock.json") -Destination $appDir
+$runtimePackageJson | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $appDir "package.json") -Encoding UTF8
+if (Test-Path $packageLockPath) {
+  Copy-Item -Path $packageLockPath -Destination $appDir
+}
 Copy-Item -Path (Join-Path $repoRoot ".env.example") -Destination $appDir
 Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination $appDir
 Copy-Item -Path (Join-Path $repoRoot "scripts\start-release.ps1") -Destination (Join-Path $releaseRoot "start.ps1")
@@ -40,7 +112,13 @@ Copy-Item -Path (Join-Path $repoRoot "scripts\install-startup-task.ps1") -Destin
 Copy-Item -Path (Join-Path $repoRoot "scripts\uninstall-startup-task.ps1") -Destination (Join-Path $releaseRoot "uninstall-startup-task.ps1")
 
 if ($IncludeNodeModules) {
-  Copy-Item -Path (Join-Path $repoRoot "node_modules") -Destination (Join-Path $appDir "node_modules") -Recurse
+  Push-Location $appDir
+  try {
+    npm install --omit=dev --omit=optional --no-audit --no-fund
+  } finally {
+    Pop-Location
+  }
+  Optimize-RuntimeNodeModules $appDir
 }
 
 $sourceCommit = "unknown"
@@ -51,22 +129,49 @@ try {
 }
 
 $manifest = [ordered]@{
+  schemaVersion = 1
+  appId = "copilot-bridge"
   version = $Version
   channel = $Channel
+  platform = $Platform
   sourceCommit = $sourceCommit
   createdAt = (Get-Date).ToUniversalTime().ToString("o")
+  packageLayoutVersion = 2
   distributionMode = "release"
   includesNodeModules = [bool]$IncludeNodeModules
+  nodeModulesMode = if ($IncludeNodeModules) { "runtime" } else { "none" }
+  nodeModulesOptimization = if ($IncludeNodeModules) { "win-x64-pruned" } else { "none" }
+  runtimeDependencies = $runtimeDependencyNames
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $appDir ".bridge-release.json") -Encoding UTF8
 
-$zipPath = Join-Path $OutputDir "copilot-bridge-$Version-$Channel.zip"
+$zipPath = Join-Path $OutputDir "copilot-bridge-$Version-$Channel-$Platform.zip"
 if (Test-Path $zipPath) {
   Remove-Item -Path $zipPath -Force
 }
 Compress-Archive -Path $releaseRoot -DestinationPath $zipPath -Force
 
+$zipHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$shaPath = "$zipPath.sha256"
+Set-Content -Path $shaPath -Value "$zipHash  $(Split-Path -Leaf $zipPath)" -Encoding ASCII
+
 Write-Output "Release package created: $zipPath"
+Write-Output "SHA256 file created: $shaPath"
 if (-not $IncludeNodeModules) {
   Write-Output "Package does not include node_modules. Run npm install in the app folder before starting, or rebuild with -IncludeNodeModules."
+}
+
+if ($Analyze) {
+  $analysisPath = [System.IO.Path]::ChangeExtension($zipPath, ".analysis.json")
+  & (Join-Path $PSScriptRoot "analyze-release-package.ps1") -PackagePath $zipPath -JsonOutput $analysisPath -FailOnSensitiveFiles
+}
+
+if ($SmokeTest) {
+  $smokeScript = Join-Path $PSScriptRoot "test-release-package.ps1"
+  if ($IncludeNodeModules) {
+    & $smokeScript -PackagePath $zipPath -Start
+  } else {
+    Write-Warning "Package does not include node_modules. Running layout-only smoke test."
+    & $smokeScript -PackagePath $zipPath
+  }
 }
