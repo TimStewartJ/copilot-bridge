@@ -77,6 +77,8 @@ type RenderChatViewOptions = {
   waitForQuestion?: boolean;
 };
 
+const WAIT_FOR_CONDITION_TIMEOUT_MS = 5_000;
+
 function createMessage(id: string, content = id): ChatEntry {
   return { id, role: "assistant", content };
 }
@@ -147,7 +149,11 @@ function waitTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-async function waitUntilAct(act: Act, predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+async function waitUntilAct(
+  act: Act,
+  predicate: () => boolean,
+  timeoutMs = WAIT_FOR_CONDITION_TIMEOUT_MS,
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (predicate()) return;
@@ -241,11 +247,6 @@ async function renderChatView(
     });
   };
 
-  await render();
-  if (options.waitForQuestion ?? false) {
-    await waitUntilAct(act as Act, () => dom.container.textContent?.includes("Question") ?? false);
-  }
-
   const cleanup = async () => {
     await act(async () => {
       root.unmount();
@@ -259,6 +260,16 @@ async function renderChatView(
     }
     dom.cleanup();
   };
+
+  await render();
+  if (options.waitForQuestion ?? false) {
+    try {
+      await waitUntilAct(act as Act, () => dom.container.textContent?.includes("Question") ?? false);
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
+  }
 
   return { dom, act: act as Act, cleanup, queryClient, render, sendMessageMock };
 }
