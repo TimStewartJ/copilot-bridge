@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import type { ApiRouteTestState, DeferredPromptRunner } from "./api-routes-test-helpers.js";
 import {
   createCopilotUsageTestHome,
@@ -88,6 +89,58 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/sessions");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("sessions");
+  });
+
+  it("GET /api/sessions restores event-log sizes for visible CLI catalog sessions", async () => {
+    const copilotHome = join(makeTestDir("api-cli-catalog"), ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
+    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
+    try {
+      cliDb.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          cwd TEXT,
+          summary TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        );
+      `);
+      cliDb.prepare(`
+        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run("cli-sized-session", "D:\\work", "Sized session", "2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z");
+      cliDb.prepare(`
+        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run("cli-missing-events", "D:\\work", "Missing events", "2026-04-16T11:00:00.000Z", "2026-04-16T11:00:00.000Z");
+    } finally {
+      cliDb.close();
+    }
+    const events = "{\"type\":\"message\",\"text\":\"hello\"}\n{\"type\":\"done\"}\n";
+    mkdirSync(join(copilotHome, "session-state", "cli-sized-session"), { recursive: true });
+    writeFileSync(join(copilotHome, "session-state", "cli-sized-session", "events.jsonl"), events);
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn(async () => {
+      throw new Error("should use CLI catalog");
+    });
+    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
+    ctx.sessionTitles.setTitle("cli-sized-session", "Sized CLI session");
+    ctx.sessionTitles.setTitle("cli-missing-events", "Missing events session");
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+    expect(res.body.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: "cli-sized-session",
+        eventLogSizeBytes: Buffer.byteLength(events),
+      }),
+      expect.objectContaining({
+        sessionId: "cli-missing-events",
+        eventLogSizeBytes: 0,
+      }),
+    ]));
   });
 
   it("GET /api/sessions keeps sessions visible when only a title override exists", async () => {

@@ -1,5 +1,5 @@
 import type { RestartState } from "./restart-state.js";
-import type { ScheduleStore } from "./schedule-store.js";
+import type { Schedule, ScheduleStore } from "./schedule-store.js";
 
 interface MissedRunCandidate {
   id: string;
@@ -36,6 +36,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
   let requested = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   const deferredCandidates = new Map<string, MissedRunCandidate>();
+  let generation = 0;
 
   function clearRetryTimer(): void {
     if (!retryTimer) return;
@@ -58,6 +59,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
   }
 
   function reset(): void {
+    generation += 1;
     clearRetryTimer();
     inFlight = undefined;
     requested = false;
@@ -77,7 +79,8 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
       }));
       scheduleRetry();
     }
-    inFlight = catchUpMissedRuns()
+    const runGeneration = generation;
+    inFlight = catchUpMissedRuns(runGeneration)
       .catch((err) => {
         console.error("[scheduler] Failed missed-run catch-up:", err);
       })
@@ -120,11 +123,28 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
       return { id: schedule.id, name: schedule.name, source: "once", scheduledFor };
     }
 
-    if (schedule.type !== "cron" || !schedule.cron || !schedule.lastRunAt) return undefined;
-    const nextExpected = deps.computeNextRunAt(schedule.cron, schedule.timezone, new Date(schedule.lastRunAt));
+    if (schedule.type !== "cron" || !schedule.cron) return undefined;
+    const nextExpected = getNextExpectedCronRun(schedule);
     if (!nextExpected || nextExpected !== candidate.scheduledFor) return undefined;
     if (Date.parse(nextExpected) >= now) return undefined;
     return { id: schedule.id, name: schedule.name, source: "catchup", scheduledFor: nextExpected };
+  }
+
+  function normalizeIso(value?: string | null): string | undefined {
+    if (!value) return undefined;
+    const time = Date.parse(value);
+    return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+  }
+
+  function getNextExpectedCronRun(schedule: Schedule): string | undefined {
+    if (schedule.type !== "cron" || !schedule.cron) return undefined;
+    const lastRunAt = normalizeIso(schedule.lastRunAt);
+    const nextRunAt = normalizeIso(schedule.nextRunAt);
+    if (lastRunAt) {
+      return deps.computeNextRunAt(schedule.cron, schedule.timezone, new Date(lastRunAt))
+        ?? (nextRunAt && Date.parse(nextRunAt) > Date.parse(lastRunAt) ? nextRunAt : undefined);
+    }
+    return nextRunAt;
   }
 
   function collectMissedRunCandidates(options: {
@@ -158,8 +178,8 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
         continue;
       }
 
-      if (!schedule.cron || !schedule.lastRunAt) continue;
-      const nextExpected = deps.computeNextRunAt(schedule.cron, schedule.timezone, new Date(schedule.lastRunAt));
+      if (!schedule.cron) continue;
+      const nextExpected = getNextExpectedCronRun(schedule);
       if (!nextExpected) continue;
 
       const nextExpectedTime = new Date(nextExpected).getTime();
@@ -171,8 +191,9 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
     return missedRuns;
   }
 
-  async function catchUpMissedRuns(): Promise<void> {
+  async function catchUpMissedRuns(runGeneration: number): Promise<void> {
     const restartState = await deps.refreshRestartState();
+    if (runGeneration !== generation) return;
     const restartPending = restartState.phase !== "idle";
     const preservedCandidateKeys = new Set(deferredCandidates.keys());
     const currentMissedRuns = collectMissedRunCandidates({

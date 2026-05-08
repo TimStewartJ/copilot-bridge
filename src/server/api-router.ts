@@ -69,6 +69,27 @@ function getCopilotHome(ctx: AppContext): string {
   return ctx.copilotHome ?? join(homedir(), ".copilot");
 }
 
+function getErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+async function getSessionEventLogSizeBytes(ctx: AppContext, sessionId: string): Promise<number> {
+  try {
+    const stats = await statAsync(join(getCopilotHome(ctx), "session-state", sessionId, "events.jsonl"));
+    return stats.size;
+  } catch (error) {
+    const code = getErrorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") return 0;
+    console.warn(
+      `[sessions] Failed to stat events.jsonl for ${sessionId}:`,
+      error instanceof Error ? error.message : error,
+    );
+    return 0;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -582,7 +603,6 @@ function listSessionsFromCliCatalog(ctx: AppContext): any[] | undefined {
     const sessionMeta = meta[session.sessionId];
     return {
       ...session,
-      eventLogSizeBytes: 0,
       lastVisibleActivityAt: sessionMeta?.lastVisibleActivityAt,
       modifiedTime: sessionMeta?.lastVisibleActivityAt ?? session.modifiedTime ?? session.startTime,
       archived: sessionMeta?.archived ?? false,
@@ -1166,6 +1186,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
             }
 
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
+            const eventLogSizeBytes = typeof s.eventLogSizeBytes === "number"
+              ? s.eventLogSizeBytes
+              : await getSessionEventLogSizeBytes(ctx, id);
             const archivedAt = meta[id]?.archivedAt ?? null;
             const { source: _workspaceSource, ...workspace } = buildSessionWorkspaceSummary(ctx, id, linkedTask);
             const context = {
@@ -1174,6 +1197,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             };
             return {
               ...s,
+              eventLogSizeBytes,
               context: Object.keys(context).length > 0 ? context : undefined,
               workspace,
               ...status,

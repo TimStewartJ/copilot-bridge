@@ -47,6 +47,9 @@ const MAX_CONCURRENT = 3;
 const MAX_CONSECUTIVE_FAILURES = 5;
 const AUTOMATIC_CLAIM_RENEW_INTERVAL_MS = 30 * 1000;
 const ONE_SHOT_RETRY_DELAY_MS = 30 * 1000;
+const MISSED_RUN_WATCHDOG_INTERVAL_MS = 60 * 1000;
+const NEXT_RUN_LOOKAHEAD_MINUTES = 35 * 24 * 60;
+let missedRunWatchdogTimer: ReturnType<typeof setInterval> | undefined;
 
 const missedRunCatchUp = createMissedRunCatchUpController({
   scheduleStore: () => scheduleStore,
@@ -85,6 +88,7 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   });
   registerAllSchedules();
   missedRunCatchUp.check();
+  startMissedRunWatchdog();
   console.log("[scheduler] Initialized");
 }
 
@@ -103,6 +107,7 @@ export function shutdown(): void {
   }
   clearAutomaticRetryTimers();
   missedRunCatchUp.reset();
+  clearMissedRunWatchdog();
   busUnsubscribe?.();
   busUnsubscribe = undefined;
   deferredPromptStore = undefined;
@@ -158,6 +163,10 @@ export function registerSchedule(scheduleId: string): void {
       console.error(`[scheduler] Error triggering schedule ${scheduleId}:`, err);
     });
   }, opts);
+  job.on("execution:missed", () => {
+    console.warn(`[scheduler] Missed cron execution for "${schedule.name}" (${schedule.id}); checking catch-up`);
+    missedRunCatchUp.check();
+  });
 
   cronJobs.set(scheduleId, job);
 
@@ -599,6 +608,19 @@ function registerAllSchedules(): void {
   console.log(`[scheduler] Registered ${cronJobs.size} cron job(s) and ${oneShotCount} one-shot timer(s)`);
 }
 
+function clearMissedRunWatchdog(): void {
+  if (!missedRunWatchdogTimer) return;
+  clearInterval(missedRunWatchdogTimer);
+  missedRunWatchdogTimer = undefined;
+}
+
+function startMissedRunWatchdog(): void {
+  clearMissedRunWatchdog();
+  missedRunWatchdogTimer = setInterval(() => {
+    missedRunCatchUp.check();
+  }, MISSED_RUN_WATCHDOG_INTERVAL_MS);
+}
+
 /**
  * Get date components in a specific timezone (or local if not provided).
  */
@@ -686,7 +708,8 @@ function getAutomaticRunKey(source: Exclude<ScheduleTriggerSource, "manual">, sc
 
 /**
  * Compute the next run time for a cron expression, respecting timezone.
- * Uses a simple approach: check each minute for the next 48 hours.
+ * Uses a simple approach: check each minute for the next 35 days.
+ * This covers monthly schedules while keeping invalid expressions bounded.
  */
 export function computeNextRunAt(cronExpr: string, timezone?: string, after?: Date): string | undefined {
   try {
@@ -694,7 +717,7 @@ export function computeNextRunAt(cronExpr: string, timezone?: string, after?: Da
     const check = new Date(now.getTime() + 60_000); // start checking from next minute
     check.setSeconds(0, 0);
 
-    const maxChecks = 48 * 60;
+    const maxChecks = NEXT_RUN_LOOKAHEAD_MINUTES;
     for (let i = 0; i < maxChecks; i++) {
       const testDate = new Date(check.getTime() + i * 60_000);
       if (matchesCron(cronExpr, testDate, timezone)) {
