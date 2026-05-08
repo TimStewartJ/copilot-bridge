@@ -13,5 +13,6 @@ describe("session title overrides", () => {
 
     expect(sessionTitles.getTitle("session-1")).toBe("Generate a concise changelog for release");
     expect(bridgeSessionState.getState("session-1")?.titleOverride).toBe("Generate a concise changelog for release");
+    expect((db.prepare("SELECT COUNT(*) AS count FROM session_titles").get() as any).count).toBe(0);
   });
 });

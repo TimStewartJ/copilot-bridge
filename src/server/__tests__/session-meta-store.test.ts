@@ -3,6 +3,7 @@ import { setupTestDb } from "./helpers.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import type { SessionMetaStore } from "../session-meta-store.js";
 import type { DatabaseSync } from "../db.js";
+import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
 
 let db: DatabaseSync;
 let store: SessionMetaStore;
@@ -29,6 +30,17 @@ describe("session-meta-store", () => {
     expect(store.getMeta("session-1")).toBeUndefined();
   });
 
+  it("setArchived(false) preserves unrelated overlay fields", () => {
+    const bridgeSessionState = createBridgeSessionStateStore(db);
+    bridgeSessionState.setTitleOverride("session-1", "Manual title");
+
+    store.setArchived("session-1", true);
+    store.setArchived("session-1", false);
+
+    expect(store.getMeta("session-1")).toBeUndefined();
+    expect(bridgeSessionState.getState("session-1")?.titleOverride).toBe("Manual title");
+  });
+
   it("isArchived returns false for unknown session", () => {
     expect(store.isArchived("nope")).toBe(false);
   });
@@ -48,6 +60,22 @@ describe("session-meta-store", () => {
     expect(meta!.scheduleName).toBe("My Schedule");
   });
 
+  it("writes runtime metadata only to bridge_session_state", () => {
+    store.setArchived("session-1", true);
+    store.setScheduleMeta("session-1", "sched-1", "My Schedule");
+
+    expect((db.prepare("SELECT COUNT(*) AS count FROM session_meta").get() as any).count).toBe(0);
+    expect(db.prepare(`
+      SELECT archived, scheduleId, scheduleName
+      FROM bridge_session_state
+      WHERE sessionId = ?
+    `).get("session-1")).toMatchObject({
+      archived: 1,
+      scheduleId: "sched-1",
+      scheduleName: "My Schedule",
+    });
+  });
+
   it("setScheduleMeta preserves existing archive state", () => {
     store.setArchived("session-1", true);
     store.setScheduleMeta("session-1", "sched-1", "Test");
@@ -61,6 +89,16 @@ describe("session-meta-store", () => {
     store.setArchived("s2", true);
     const all = store.listMeta();
     expect(Object.keys(all)).toHaveLength(2);
+  });
+
+  it("omits title-only and workspace-only overlay rows from meta reads", () => {
+    const bridgeSessionState = createBridgeSessionStateStore(db);
+    bridgeSessionState.setTitleOverride("title-only", "Manual title");
+    bridgeSessionState.setPinnedCwd("workspace-only", "D:\\repo");
+
+    expect(store.getMeta("title-only")).toBeUndefined();
+    expect(store.getMeta("workspace-only")).toBeUndefined();
+    expect(store.listMeta()).toEqual({});
   });
 
   it("listSessionIdsBySchedule returns sessions for a schedule", () => {
