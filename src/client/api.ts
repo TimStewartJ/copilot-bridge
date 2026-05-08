@@ -167,6 +167,8 @@ export type Attachment = BlobAttachment | UploadedAttachment | FileRefAttachment
 export interface ChatMessage {
   id?: string;
   turnId?: string;
+  /** Raw exclusive SDK event boundary for safe "fork from here" actions. */
+  forkBoundaryEventId?: string;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
@@ -538,8 +540,11 @@ export async function batchSessionAction(
   });
 }
 
-export async function duplicateSession(id: string): Promise<string> {
-  const data = await apiFetch<{ sessionId: string }>(`/api/sessions/${id}/duplicate`, {});
+export async function forkSession(id: string, opts?: { toEventId?: string }): Promise<string> {
+  const data = await apiFetch<{ sessionId: string }>(
+    `/api/sessions/${id}/fork`,
+    opts?.toEventId ? { toEventId: opts.toEventId } : {},
+  );
   return data.sessionId;
 }
 

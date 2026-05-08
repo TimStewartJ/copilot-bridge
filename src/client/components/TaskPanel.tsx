@@ -82,7 +82,7 @@ interface TaskPanelProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onDeleteTask?: (taskId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
-  onDuplicateSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   hasDraft?: (sessionId: string) => boolean;
@@ -170,7 +170,7 @@ export default function TaskPanel({
   onUnlinkFromTask,
   onDeleteTask,
   onDeleteSession,
-  onDuplicateSession,
+  onForkSession,
   onReloadSession,
   onMarkUnread,
   hasDraft,
@@ -540,7 +540,7 @@ export default function TaskPanel({
               onUnlinkFromTask={onUnlinkFromTask}
               onTasksChanged={onTasksChanged}
               onDeleteSession={onDeleteSession}
-              onDuplicateSession={onDuplicateSession}
+              onForkSession={onForkSession}
               onReloadSession={onReloadSession}
               onMarkUnread={onMarkUnread}
               onBulkAction={onBulkAction}

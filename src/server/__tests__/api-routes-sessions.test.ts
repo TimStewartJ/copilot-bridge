@@ -145,21 +145,21 @@ describe("Session routes (mocked)", () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
-        sessionId: "dup-session",
-        summary: "Copy of Original session",
+        sessionId: "fork-session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("fork-session", "Fork of Original session");
 
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
     expect(res.body.sessions).toEqual([
       expect.objectContaining({
-        sessionId: "dup-session",
-        summary: "Copy of Original session",
+        sessionId: "fork-session",
+        summary: "Fork of Original session",
       }),
     ]);
   });
@@ -420,12 +420,12 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createSession).not.toHaveBeenCalled();
   });
 
-  it("POST /api/sessions/:id/duplicate duplicates a session when restart is active in persisted state", async () => {
+  it("POST /api/sessions/:id/fork forks a session when restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.duplicateSession = vi.fn().mockResolvedValue({ sessionId: "dup-session" });
+    sessionManager.forkSession = vi.fn().mockResolvedValue({ sessionId: "fork-session" });
     const runtimePaths = createRestartRuntimePaths();
     await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-duplicate",
+      requestId: "req-session-fork",
       phase: "queued",
       requestedAt: "2026-04-24T12:00:00.000Z",
       waitingSessions: 0,
@@ -433,11 +433,11 @@ describe("Session routes (mocked)", () => {
     });
     ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
 
-    const res = await request(app).post("/api/sessions/source-session/duplicate");
+    const res = await request(app).post("/api/sessions/source-session/fork");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessionId: "dup-session" });
-    expect(sessionManager.duplicateSession).toHaveBeenCalledWith("source-session");
+    expect(res.body).toEqual({ sessionId: "fork-session" });
+    expect(sessionManager.forkSession).toHaveBeenCalledWith("source-session", {});
   });
 
   it("POST /api/tasks/:id/session creates a task session when restart is active in persisted state", async () => {
@@ -631,21 +631,21 @@ describe("Session routes (mocked)", () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
-        sessionId: "dup-session",
-        summary: "Copy of Original session",
+        sessionId: "fork-session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionTitles.setTitle("fork-session", "Fork of Original session");
 
     const res = await request(app).get("/api/dashboard");
 
     expect(res.status).toBe(200);
     expect(res.body.unreadSessions).toEqual([
       expect.objectContaining({
-        sessionId: "dup-session",
-        title: "Copy of Original session",
+        sessionId: "fork-session",
+        title: "Fork of Original session",
       }),
     ]);
   });
@@ -1808,15 +1808,9 @@ describe("Session manager routes", () => {
     });
   });
 
-  it("POST /api/sessions/:id/duplicate duplicates a session", async () => {
-    const res = await request(app).post("/api/sessions/test-id/duplicate");
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty("sessionId");
-  });
-
-  it("POST /api/sessions/:id/duplicate seeds the copied CLI name from the source summary", async () => {
+  it("POST /api/sessions/:id/fork passes safe event boundaries to the session manager", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
+    sessionManager.forkSession = vi.fn().mockResolvedValue({ sessionId: "bounded-fork" });
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "test-id",
@@ -1827,14 +1821,59 @@ describe("Session manager routes", () => {
     ]);
     ({ app, ctx } = createTestApp({ sessionManager }));
 
-    const res = await request(app).post("/api/sessions/test-id/duplicate");
+    const res = await request(app)
+      .post("/api/sessions/test-id/fork")
+      .send({ toEventId: "next-event" });
 
     expect(res.status).toBe(200);
-    expect(sessionManager.setSessionName).toHaveBeenCalledWith("dup-session", "Copy of Original session");
-    expect(ctx.sessionTitles.getTitle("dup-session")).toBeUndefined();
+    expect(res.body).toEqual({ sessionId: "bounded-fork" });
+    expect(sessionManager.forkSession).toHaveBeenCalledWith("test-id", { toEventId: "next-event" });
+    expect(ctx.sessionTitles.getTitle("bounded-fork")).toBe("Fork from Original session");
   });
 
-  it("POST /api/sessions/:id/duplicate preserves all task links from the source session", async () => {
+  it("POST /api/sessions/:id/fork rejects empty event boundaries", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.forkSession = vi.fn();
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/sessions/test-id/fork")
+      .send({ toEventId: "   " });
+
+    expect(res.status).toBe(400);
+    expect(sessionManager.forkSession).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/sessions/:id/fork reports unforkable sessions as a client error", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.forkSession = vi.fn().mockRejectedValue(new Error("Session test-id not found or has no persisted events"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/fork");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("persisted conversation history");
+  });
+
+  it("POST /api/sessions/:id/fork seeds the forked title from the source summary", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "test-id",
+        summary: "Original session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/fork");
+
+    expect(res.status).toBe(200);
+    expect(ctx.sessionTitles.getTitle("fork-session")).toBe("Fork of Original session");
+  });
+
+  it("POST /api/sessions/:id/fork preserves all task links from the source session", async () => {
     const sessionManager = createMockSessionManager();
     ({ app, ctx } = createTestApp({ sessionManager }));
     const taskA = ctx.taskStore.createTask("Task A");
@@ -1842,11 +1881,11 @@ describe("Session manager routes", () => {
     const taskB = ctx.taskStore.createTask("Task B");
     ctx.taskStore.linkSession(taskB.id, "test-id");
 
-    const res = await request(app).post("/api/sessions/test-id/duplicate");
+    const res = await request(app).post("/api/sessions/test-id/fork");
 
     expect(res.status).toBe(200);
-    expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain("dup-session");
-    expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain("dup-session");
+    expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain("fork-session");
+    expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain("fork-session");
   });
 
   it("POST /api/sessions/:id/reload reloads a session", async () => {

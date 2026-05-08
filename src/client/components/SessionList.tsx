@@ -13,7 +13,7 @@ import {
   type Task,
 } from "../api";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, CopyPlus, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -241,8 +241,8 @@ interface SessionListProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   // Session deletion
   onDeleteSession?: (sessionId: string) => void;
-  // Session duplication
-  onDuplicateSession?: (sessionId: string) => void;
+  // Session fork
+  onForkSession?: (sessionId: string) => void;
   // Session reload
   onReloadSession?: (sessionId: string) => void;
   // Mark unread
@@ -278,7 +278,7 @@ export default function SessionList({
   taskContext,
   onUnlinkFromTask,
   onDeleteSession,
-  onDuplicateSession,
+  onForkSession,
   onReloadSession,
   onMarkUnread,
   onMarkAllRead,
@@ -320,7 +320,7 @@ export default function SessionList({
     : null;
   const canSelectFromMenu = !!onBulkAction && !!ctxSession && !ctxSession.archived;
   const canReloadFromMenu = !!onReloadSession && !!ctxSession;
-  const canDuplicateFromMenu = !!onDuplicateSession && !!ctxSession;
+  const canForkFromMenu = !!onForkSession && !!ctxSession;
   const canArchiveFromMenu = !!onArchiveSession && !!ctxSession;
   const canMarkUnreadFromMenu = !!ctxSession
     && !!onMarkUnread
@@ -329,7 +329,7 @@ export default function SessionList({
   const canUnlinkFromTaskFromMenu = !!ctxSession && !!taskContext && !!onUnlinkFromTask;
   const canDeleteFromMenu = !!onDeleteSession && !!ctxSession;
   const hasEditSection =
-    canDuplicateFromMenu
+    canForkFromMenu
     || canArchiveFromMenu
     || canMarkUnreadFromMenu
     || canLinkToTaskFromMenu
@@ -857,13 +857,14 @@ export default function SessionList({
             </>
           )}
           {(hasEditSection || canDeleteFromMenu) && <CtxDivider />}
-          {canDuplicateFromMenu && (
+          {canForkFromMenu && (
             <CtxItem
-              icon={<CopyPlus size={14} />}
-              label="Duplicate"
+              icon={<GitFork size={14} />}
+              label="Fork"
               disabled={ctxSession.busy}
+              title={ctxSession.busy ? "This session is busy" : "Create a new branch from this session"}
               onClick={() => {
-                onDuplicateSession(ctxSession.sessionId);
+                onForkSession(ctxSession.sessionId);
                 closeMenu();
               }}
             />

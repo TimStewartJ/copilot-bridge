@@ -63,7 +63,7 @@ interface TaskRailProps {
   onNewQuickChat?: () => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   onDeleteSession?: (sessionId: string) => void;
-  onDuplicateSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   onLinkToTask?: (sessionId: string, taskId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
@@ -125,7 +125,7 @@ export default function TaskRail({
   onNewQuickChat,
   onArchiveSession,
   onDeleteSession,
-  onDuplicateSession,
+  onForkSession,
   onReloadSession,
   onLinkToTask,
   onMarkUnread,
@@ -623,7 +623,7 @@ export default function TaskRail({
             tasks={tasks}
             onLinkToTask={onLinkToTask}
             onDeleteSession={onDeleteSession}
-            onDuplicateSession={onDuplicateSession}
+            onForkSession={onForkSession}
             onReloadSession={onReloadSession}
             onMarkUnread={onMarkUnread}
             onMarkAllRead={onMarkAllQuickChatsRead}

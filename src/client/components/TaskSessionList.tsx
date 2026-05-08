@@ -18,7 +18,7 @@ interface TaskSessionListProps {
   onUnlinkFromTask?: (sessionId: string, taskId: string) => void;
   onTasksChanged?: () => void;
   onDeleteSession?: (sessionId: string) => void;
-  onDuplicateSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => void;
   onReloadSession?: (sessionId: string) => void;
   onMarkUnread?: (sessionId: string) => void;
   onBulkAction?: (action: BatchAction, sessionIds: string[]) => void;
@@ -45,7 +45,7 @@ export default function TaskSessionList({
   onUnlinkFromTask,
   onTasksChanged,
   onDeleteSession,
-  onDuplicateSession,
+  onForkSession,
   onReloadSession,
   onMarkUnread,
   onBulkAction,
@@ -97,7 +97,7 @@ export default function TaskSessionList({
           })
       }
       onDeleteSession={onDeleteSession}
-      onDuplicateSession={onDuplicateSession}
+      onForkSession={onForkSession}
       onReloadSession={onReloadSession}
       onMarkUnread={onMarkUnread}
       onBulkAction={onBulkAction}

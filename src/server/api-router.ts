@@ -1680,8 +1680,42 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  // POST /sessions/:id/duplicate — duplicate an existing session
-  router.post("/sessions/:id/duplicate", async (req, res) => {
+  async function finishForkedSession(sourceId: string, forkedSessionId: string, opts: { bounded?: boolean } = {}) {
+    let originalTitle = ctx.sessionTitles.getTitle(sourceId);
+    if (!originalTitle) {
+      const sourceSession = (await ctx.sessionManager.listSessionsFromDisk())
+        .find((session: any) => session.sessionId === sourceId);
+      originalTitle = sourceSession ? resolveSessionSummary(sourceSession) : undefined;
+    }
+
+    invalidateEnrichedCache("route:session:fork");
+    if (originalTitle) {
+      ctx.sessionTitles.setTitle(forkedSessionId, `${opts.bounded ? "Fork from" : "Fork of"} ${originalTitle}`);
+    }
+    for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
+      ctx.taskStore.linkSession(linkedTask.id, forkedSessionId);
+    }
+  }
+
+  function handleForkError(res: express.Response, err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/not found or has no persisted events/i.test(message) || /no persisted events/i.test(message)) {
+      return res.status(400).json({ error: "Cannot fork a session before it has persisted conversation history." });
+    }
+    if (/event.*not found|toEventId.*not found/i.test(message)) {
+      return res.status(400).json({ error: message });
+    }
+    if (/session .*not found|session not found/i.test(message)) {
+      return res.status(404).json({ error: message });
+    }
+    if (/fork is not available/i.test(message)) {
+      return res.status(501).json({ error: message });
+    }
+    return res.status(500).json({ error: message });
+  }
+
+  // POST /sessions/:id/fork — create a native SDK fork, optionally before a raw event boundary
+  router.post("/sessions/:id/fork", async (req, res) => {
     const sourceId = req.params.id;
     try {
       if (isRestartCutoverInProgress(await refreshRestartState())) {
@@ -1689,29 +1723,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
       if (ctx.sessionManager.isSessionBusy(sourceId)) {
-        return res.status(409).json({ error: "Cannot duplicate a busy session" });
+        return res.status(409).json({ error: "Cannot fork a busy session" });
       }
-      const sourceSession = (await ctx.sessionManager.listSessionsFromDisk())
-        .find((session: any) => session.sessionId === sourceId);
-      const originalTitle = typeof sourceSession?.summary === "string" && sourceSession.summary.trim()
-        ? resolveSessionSummary(sourceSession)
+      const toEventId = isRecord(req.body) && typeof req.body.toEventId === "string"
+        ? req.body.toEventId.trim()
         : undefined;
-      const result = await ctx.sessionManager.duplicateSession(sourceId);
-      invalidateEnrichedCache("route:session:duplicate");
-
-      // Copy title with "Copy of" prefix
-      if (originalTitle) {
-        await ctx.sessionManager.setSessionName(result.sessionId, `Copy of ${originalTitle}`.slice(0, 100).trim());
+      if (isRecord(req.body) && req.body.toEventId !== undefined && !toEventId) {
+        return res.status(400).json({ error: "toEventId must be a non-empty string when provided" });
       }
-
-      // Copy all task links from the source session
-      for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
-        ctx.taskStore.linkSession(linkedTask.id, result.sessionId);
-      }
+      const result = await ctx.sessionManager.forkSession(sourceId, toEventId ? { toEventId } : {});
+      await finishForkedSession(sourceId, result.sessionId, { bounded: Boolean(toEventId) });
 
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      handleForkError(res, err);
     }
   });
 

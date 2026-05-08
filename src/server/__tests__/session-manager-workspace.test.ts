@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -281,7 +281,7 @@ describe("SessionManager workspace resolution", () => {
     expect(config.systemMessage.content).not.toContain("Task notes:\nNotes B");
   });
 
-  it("copies legacy workspace state when duplicating a session", async () => {
+  it("copies legacy workspace state when forking a session", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
     const legacyWorkspace = createWorkspace(copilotHome, "legacy-source-workspace");
@@ -291,16 +291,16 @@ describe("SessionManager workspace resolution", () => {
 
     const { manager, sessionWorkspaceStore } = createManager({ copilotHome });
     manager.client = {
-      createSession: vi.fn(async () => {
-        const sessionId = "duplicate-session";
-        mkdirSync(join(copilotHome, "session-state", sessionId), { recursive: true });
-        return { sessionId, disconnect: vi.fn() };
-      }),
+      rpc: {
+        sessions: {
+          fork: vi.fn(async () => ({ sessionId: "forked-session" })),
+        },
+      },
     };
 
-    await manager.duplicateSession("source-session");
+    await manager.forkSession("source-session");
 
-    expect(sessionWorkspaceStore.getWorkspace("duplicate-session")).toMatchObject({ cwd: legacyWorkspace });
+    expect(sessionWorkspaceStore.getWorkspace("forked-session")).toMatchObject({ cwd: legacyWorkspace });
   });
 
   it("session_set_workspace stores an explicit workspace for future turns", async () => {
@@ -445,7 +445,7 @@ describe("SessionManager workspace resolution", () => {
   });
 });
 
-describe("SessionManager duplicateSession model history", () => {
+describe("SessionManager forkSession", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
@@ -473,99 +473,37 @@ describe("SessionManager duplicateSession model history", () => {
     return { manager: manager as any, sessionWorkspaceStore };
   }
 
-  it("copies source events.jsonl model history to the new session directory", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-dup-model-"));
+  it("delegates full-session forks to the native SDK RPC", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-fork-"));
     tempDirs.push(copilotHome);
-
-    const sourceDir = join(copilotHome, "session-state", "source-session");
-    mkdirSync(sourceDir, { recursive: true });
-    // Source has model history: started on one model, then switched
-    const sourceEvents = [
-      JSON.stringify({ type: "session.start", data: { sessionId: "source-session", selectedModel: "gpt-5.5", reasoningEffort: "high" } }),
-      JSON.stringify({ type: "session.model_change", data: { newModel: "claude-opus-4.7", reasoningEffort: "xhigh" } }),
-    ].join("\n");
-    writeFileSync(join(sourceDir, "events.jsonl"), sourceEvents);
-
-    const { manager } = createManager(copilotHome);
-    const shellDisconnect = vi.fn();
+    const sourceWorkspace = join(copilotHome, "source-workspace");
+    mkdirSync(sourceWorkspace, { recursive: true });
+    const { manager, sessionWorkspaceStore } = createManager(copilotHome);
+    sessionWorkspaceStore.setWorkspace("source-session", sourceWorkspace);
+    const fork = vi.fn(async () => ({ sessionId: "forked-session" }));
     manager.client = {
-      createSession: vi.fn(async () => {
-        const newId = "new-dup-session";
-        mkdirSync(join(copilotHome, "session-state", newId), { recursive: true });
-        return { sessionId: newId, disconnect: shellDisconnect };
-      }),
+      rpc: { sessions: { fork } },
     };
 
-    const { sessionId: newId } = await manager.duplicateSession("source-session");
+    const result = await manager.forkSession("source-session");
 
-    // Events.jsonl should be present in the new session directory
-    const newEventsPath = join(copilotHome, "session-state", newId, "events.jsonl");
-    const newContent = readFileSync(newEventsPath, "utf-8");
-
-    // Model history is preserved (claude-opus-4.7 model_change event carried over)
-    expect(newContent).toContain("claude-opus-4.7");
-    expect(newContent).toContain("session.model_change");
-    expect(newContent).toContain("xhigh");
+    expect(result).toEqual({ sessionId: "forked-session" });
+    expect(fork).toHaveBeenCalledWith({ sessionId: "source-session" });
+    expect(sessionWorkspaceStore.getWorkspace("forked-session")).toMatchObject({ cwd: sourceWorkspace });
   });
 
-  it("rewrites sessionId in session.start but preserves model in the event", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-dup-model-rewrite-"));
+  it("passes safe raw event boundaries to the native SDK fork RPC", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-fork-boundary-"));
     tempDirs.push(copilotHome);
-
-    const sourceDir = join(copilotHome, "session-state", "source-session");
-    mkdirSync(sourceDir, { recursive: true });
-    writeFileSync(
-      join(sourceDir, "events.jsonl"),
-      JSON.stringify({ type: "session.start", data: { sessionId: "source-session", selectedModel: "gpt-5.5" } }),
-    );
-
     const { manager } = createManager(copilotHome);
+    const fork = vi.fn(async () => ({ sessionId: "bounded-fork" }));
     manager.client = {
-      createSession: vi.fn(async () => {
-        const newId = "rewrite-dup-session";
-        mkdirSync(join(copilotHome, "session-state", newId), { recursive: true });
-        return { sessionId: newId, disconnect: vi.fn() };
-      }),
+      rpc: { sessions: { fork } },
     };
 
-    const { sessionId: newId } = await manager.duplicateSession("source-session");
+    await manager.forkSession("source-session", { toEventId: " next-event " });
 
-    const newEventsPath = join(copilotHome, "session-state", newId, "events.jsonl");
-    const newContent = readFileSync(newEventsPath, "utf-8");
-    const parsed = JSON.parse(newContent.trim());
-
-    // sessionId in start event is rewritten to the new session
-    expect(parsed.data.sessionId).toBe(newId);
-    // Source model is preserved in the rewritten event
-    expect(parsed.data.selectedModel).toBe("gpt-5.5");
+    expect(fork).toHaveBeenCalledWith({ sessionId: "source-session", toEventId: "next-event" });
   });
 
-  it("disconnects and evicts the SDK shell so the next access reads from source events.jsonl", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-dup-evict-"));
-    tempDirs.push(copilotHome);
-
-    const sourceDir = join(copilotHome, "session-state", "source-session");
-    mkdirSync(sourceDir, { recursive: true });
-    writeFileSync(
-      join(sourceDir, "events.jsonl"),
-      JSON.stringify({ type: "session.start", data: { sessionId: "source-session", selectedModel: "source-model" } }),
-    );
-
-    const { manager } = createManager(copilotHome);
-    const shellDisconnect = vi.fn();
-    manager.client = {
-      createSession: vi.fn(async () => {
-        const newId = "evict-dup-session";
-        mkdirSync(join(copilotHome, "session-state", newId), { recursive: true });
-        return { sessionId: newId, disconnect: shellDisconnect };
-      }),
-    };
-
-    const { sessionId: newId } = await manager.duplicateSession("source-session");
-
-    // SDK shell must have been disconnected so the "wrong" settings model is not cached
-    expect(shellDisconnect).toHaveBeenCalledOnce();
-    // The new session must not be in the session cache — forces fresh resume from disk
-    expect(manager.sessionObjects.has(newId)).toBe(false);
-  });
 });

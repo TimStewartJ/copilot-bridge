@@ -20,6 +20,7 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [
   "user.message",
   "assistant.message",
   "assistant.turn_start",
+  "assistant.turn_end",
   "tool.execution_start",
   "tool.execution_complete",
   "tool.execution_progress",
@@ -32,6 +33,7 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [
 ];
 
 const TURN_TERMINAL_EVENT_TYPES = new Set([
+  "assistant.turn_end",
   "session.shutdown",
   "abort",
   "session.idle",
