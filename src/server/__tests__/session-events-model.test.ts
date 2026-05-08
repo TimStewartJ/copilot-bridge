@@ -51,11 +51,11 @@ describe("deriveModelStateFromEventsContent", () => {
   it("derives model from session.model_change", () => {
     const content = JSON.stringify({
       type: "session.model_change",
-      data: { newModel: "claude-opus-4.7", reasoningEffort: "max" },
+      data: { newModel: "claude-opus-4.7", reasoningEffort: "xhigh" },
     });
     expect(deriveModelStateFromEventsContent(content)).toEqual({
       model: "claude-opus-4.7",
-      reasoningEffort: "max",
+      reasoningEffort: "xhigh",
     });
   });
 
@@ -267,7 +267,7 @@ describe("SessionManager.getSessionModelState", () => {
     writeFileSync(
       join(sessionDir, "events.jsonl"),
       [
-        JSON.stringify({ type: "session.start", data: { selectedModel: "stale-model", reasoningEffort: "max" } }),
+        JSON.stringify({ type: "session.start", data: { selectedModel: "stale-model", reasoningEffort: "low" } }),
         JSON.stringify({ type: "session.model_change", data: { newModel: "new-model", reasoningEffort: "high" } }),
       ].join("\n"),
     );

@@ -1619,7 +1619,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "max", "xhigh"]);
+  const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 
   // GET /sessions/:id/model — derive current model/reasoning for a session on demand
   router.get("/sessions/:id/model", async (req, res) => {

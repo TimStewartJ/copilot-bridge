@@ -7,8 +7,7 @@ const EFFORT_OPTIONS: { value: string; label: string }[] = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
-  { value: "max", label: "Max (Claude)" },
-  { value: "xhigh", label: "Extra High (GPT)" },
+  { value: "xhigh", label: "Extra High" },
 ];
 
 export function ReasoningEffortSection({

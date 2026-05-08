@@ -179,7 +179,7 @@ describe("session model menu labels", () => {
 
   it("does not keep current reasoning effort before lookup completes for constrained models", () => {
     expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["max"],
+      supportedReasoningEfforts: ["xhigh"],
       currentEffortLookupReady: false,
     })).toBe(false);
   });
@@ -194,7 +194,7 @@ describe("session model menu labels", () => {
 
   it("allows keeping current when lookup confirms no reasoning effort is set", () => {
     expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["max"],
+      supportedReasoningEfforts: ["xhigh"],
       currentEffortLookupReady: true,
     })).toBe(true);
   });
@@ -223,7 +223,7 @@ describe("session model menu labels", () => {
 
   it("does not keep unsupported current reasoning effort for constrained models", () => {
     expect(canKeepCurrentReasoningEffortForModel({
-      supportedReasoningEfforts: ["max"],
+      supportedReasoningEfforts: ["high"],
       currentReasoningEffort: "xhigh",
       currentEffortLookupReady: true,
     })).toBe(false);

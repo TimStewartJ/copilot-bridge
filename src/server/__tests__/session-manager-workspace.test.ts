@@ -482,7 +482,7 @@ describe("SessionManager duplicateSession model history", () => {
     // Source has model history: started on one model, then switched
     const sourceEvents = [
       JSON.stringify({ type: "session.start", data: { sessionId: "source-session", selectedModel: "gpt-5.5", reasoningEffort: "high" } }),
-      JSON.stringify({ type: "session.model_change", data: { newModel: "claude-opus-4.7", reasoningEffort: "max" } }),
+      JSON.stringify({ type: "session.model_change", data: { newModel: "claude-opus-4.7", reasoningEffort: "xhigh" } }),
     ].join("\n");
     writeFileSync(join(sourceDir, "events.jsonl"), sourceEvents);
 
@@ -505,7 +505,7 @@ describe("SessionManager duplicateSession model history", () => {
     // Model history is preserved (claude-opus-4.7 model_change event carried over)
     expect(newContent).toContain("claude-opus-4.7");
     expect(newContent).toContain("session.model_change");
-    expect(newContent).toContain("max");
+    expect(newContent).toContain("xhigh");
   });
 
   it("rewrites sessionId in session.start but preserves model in the event", async () => {
