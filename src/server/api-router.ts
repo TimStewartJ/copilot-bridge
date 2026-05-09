@@ -57,6 +57,7 @@ import {
   DocsSnapshotValidationError,
   PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
 } from "./docs-snapshot-store.js";
+import { DocsStoreValidationError } from "./docs-store.js";
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -626,14 +627,6 @@ function listSessionsFromCliCatalog(ctx: AppContext): any[] | undefined {
 function serializeSchedule(schedule: Schedule) {
   const { sessionMode: _sessionMode, ...publicSchedule } = schedule;
   return publicSchedule;
-}
-
-const SCHEDULE_REUSE_FIELDS = ["sessionMode", "reuseSession", "targetSessionId"] as const;
-const SCHEDULE_REUSE_UNSUPPORTED_MESSAGE =
-  "Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.";
-
-function hasScheduleReuseField(body: Record<string, unknown>): boolean {
-  return SCHEDULE_REUSE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(body, field));
 }
 
 async function enforceRetentionForSchedule(ctx: AppContext, schedule: Schedule): Promise<void> {
@@ -3137,9 +3130,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt, autoArchiveKeep } = req.body;
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
-      if (hasScheduleReuseField(req.body)) {
-        return res.status(400).json({ error: SCHEDULE_REUSE_UNSUPPORTED_MESSAGE });
-      }
       const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(autoArchiveKeep);
       if (!normalizedAutoArchiveKeep.ok) {
         return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
@@ -3199,10 +3189,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
       const existing = ctx.scheduleStore.getSchedule(req.params.id);
       if (!existing) return res.status(404).json({ error: "Schedule not found" });
-
-      if (hasScheduleReuseField(req.body)) {
-        return res.status(400).json({ error: SCHEDULE_REUSE_UNSUPPORTED_MESSAGE });
-      }
 
       const updates = { ...req.body };
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
@@ -3656,16 +3642,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
       try {
         const raw = (req.params as any).path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
-        const page = docs.readPage(pagePath);
+        const page = docs.readUserPage(pagePath);
         const canonicalPath = page?.path ?? pagePath;
         if (page) {
           createPreDeleteDocsSnapshot();
         }
-        const deleted = docs.deletePage(pagePath);
+        const deleted = docs.deleteUserPage(pagePath);
         if (deleted) docsIdx.removePage(canonicalPath);
         res.json({ path: canonicalPath, deleted });
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 

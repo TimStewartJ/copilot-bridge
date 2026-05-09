@@ -128,7 +128,7 @@ describe("Docs routes", () => {
     expect(res.body.path).toBe("test-page");
   });
 
-  it("PUT /api/docs/pages allows tagged pages without a description", async () => {
+  it("PUT /api/docs/pages rejects tagged pages without a description", async () => {
     const res = await request(app)
       .put("/api/docs/pages/tagged-page")
       .send({
@@ -141,10 +141,9 @@ tags:
 # Tagged page
 `,
       });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(ctx.docsStore!.readPage("tagged-page")?.frontmatter.tags).toEqual(["deploy"]);
-    expect(ctx.docsStore!.readPage("tagged-page")?.frontmatter.description).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Tagged docs must include a non-empty frontmatter description");
+    expect(ctx.docsStore!.readPage("tagged-page")).toBeNull();
   });
 
   it("GET /api/docs/pages reads a written page", async () => {
@@ -411,6 +410,20 @@ describe("Docs DB routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.isDbItem).toBe(true);
     expect(res.body.folder).toBe(folder);
+  });
+
+  it("DELETE /api/docs/pages refuses to remove DB entries", async () => {
+    const create = await request(app)
+      .post(`/api/docs/db/${folder}`)
+      .send({
+        fields: { title: "Protected outage", severity: "sev1" },
+        body: "Body content",
+      });
+
+    const res = await request(app).delete(`/api/docs/pages/${folder}/${create.body.slug}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("database entry");
+    expect(ctx.docsStore!.readPage(`${folder}/${create.body.slug}`)?.isDbItem).toBe(true);
   });
 
   it("POST /api/docs/db extracts DB fields from body frontmatter when fields are missing", async () => {

@@ -125,10 +125,6 @@ export function createScheduleStore(db: DatabaseSync) {
     WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
   `);
 
-  function normalizeSessionMode(row: { sessionMode?: string | null; reuseSession?: number | null }): ScheduleSessionMode {
-    return "new";
-  }
-
   function hydrate(row: any): Schedule {
     return {
       id: row.id,
@@ -140,7 +136,7 @@ export function createScheduleStore(db: DatabaseSync) {
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
       enabled: row.enabled === 1,
-      sessionMode: normalizeSessionMode(row),
+      sessionMode: "new",
       lastSessionId: row.lastSessionId ?? row.targetSessionId ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -196,12 +192,6 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.runAt !== undefined) { fields.push("runAt = ?"); values.push(updates.runAt); }
     if (updates.timezone !== undefined) { fields.push("timezone = ?"); values.push(updates.timezone); }
     if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
-    if (updates.sessionMode !== undefined) {
-      fields.push("sessionMode = ?");
-      values.push("new");
-      fields.push("reuseLastRequiresExistingSession = 0");
-      fields.push("targetSessionId = NULL");
-    }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }
     if (updates.autoArchiveKeep !== undefined) { fields.push("autoArchiveKeep = ?"); values.push(updates.autoArchiveKeep); }
@@ -520,15 +510,6 @@ export function createScheduleStore(db: DatabaseSync) {
     return result.changes ?? 0;
   }
 
-  function requiresExistingReuseSession(id: string): boolean {
-    const row = db.prepare(`
-      SELECT sessionMode, reuseLastRequiresExistingSession
-      FROM schedules
-      WHERE id = ?
-    `).get(id) as { sessionMode?: string | null; reuseLastRequiresExistingSession?: number | null } | undefined;
-    return false;
-  }
-
   return {
     listSchedules, getSchedule, createSchedule, updateSchedule, deleteSchedule,
     recordRun, claimScheduleRun, claimAutomaticRun, claimSessionReuse,
@@ -537,7 +518,6 @@ export function createScheduleStore(db: DatabaseSync) {
     releaseClaimedSessionReuse, renewClaimedSessionReuse,
     updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
     listClaimedSessionIds, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
-    requiresExistingReuseSession,
   };
 }
 

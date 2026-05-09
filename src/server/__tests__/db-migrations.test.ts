@@ -52,6 +52,7 @@ describe("database migration registry", () => {
       "session-meta-last-visible-activity-column",
       "bridge_session_state_legacy_backfill_v1",
       "schedule-reuse-fields-normalization",
+      "schedule-reuse-final-new-session-normalization-v1",
       "schedule_runs_legacy_backfill_v1",
       "checklist-items-from-legacy-todos",
       "task-groups-notes-column",
@@ -64,7 +65,7 @@ describe("database migration registry", () => {
     const dataDir = createTempDataDir();
     const expectedOneShotMigrations = listDatabaseMigrations()
       .filter((migration) => migration.runMode === "once")
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
     const firstRows = listRecordedMigrations(dataDir);
     expect(firstRows.map((row) => row.id)).toEqual(expectedOneShotMigrations.map((migration) => migration.id));

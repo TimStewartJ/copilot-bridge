@@ -327,7 +327,7 @@ describe("Schedule routes", () => {
     expect(res.body[0]).not.toHaveProperty("targetSessionId");
   });
 
-  it("POST /api/schedules rejects reuseSession input", async () => {
+  it("POST /api/schedules ignores legacy reuse input", async () => {
     const res = await request(app)
       .post("/api/schedules")
       .send({
@@ -337,45 +337,21 @@ describe("Schedule routes", () => {
         type: "cron",
         cron: "0 0 * * *",
         reuseSession: true,
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
-  });
-
-  it("POST /api/schedules rejects sessionMode input", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Wrong mode",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
         sessionMode: "new",
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
-  });
-
-  it("POST /api/schedules rejects legacy targetSessionId input", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Wrong target field",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
         targetSessionId: "linked-session",
       });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      name: "Legacy reuse",
+      type: "cron",
+    });
+    expect(res.body).not.toHaveProperty("sessionMode");
+    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.body).not.toHaveProperty("targetSessionId");
   });
 
-  it("PATCH /api/schedules rejects sessionMode input", async () => {
+  it("PATCH /api/schedules ignores legacy reuse input", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
       name: "Keep target",
@@ -386,45 +362,21 @@ describe("Schedule routes", () => {
 
     const res = await request(app)
       .patch(`/api/schedules/${schedule.id}`)
-      .send({ sessionMode: "new" });
+      .send({
+        name: "Renamed",
+        sessionMode: "new",
+        reuseSession: false,
+        targetSessionId: "linked-session",
+      });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
-  });
-
-  it("PATCH /api/schedules rejects legacy targetSessionId input", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Ignore target field",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: schedule.id,
+      name: "Renamed",
     });
-
-    const res = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ name: "Renamed", targetSessionId: "linked-session" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
-  });
-
-  it("PATCH /api/schedules rejects reuseSession input", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Legacy patch",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-      sessionMode: "reuse-last",
-    });
-
-    const res = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ reuseSession: false });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.");
+    expect(res.body).not.toHaveProperty("sessionMode");
+    expect(res.body).not.toHaveProperty("reuseSession");
+    expect(res.body).not.toHaveProperty("targetSessionId");
   });
 
   it("PATCH /api/schedules serializes updated schedules without reuse fields", async () => {
