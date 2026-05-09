@@ -220,6 +220,31 @@ export default function App() {
   }, [tasks]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
+  const renderedReadThroughRef = useRef<Record<string, string>>({});
+  const [renderedReadThroughState, setRenderedReadThroughState] = useState<Record<string, string>>({});
+  const rememberRenderedReadThrough = useCallback((sessionId: string, readThroughActivityAt: string) => {
+    const readThroughTime = Date.parse(readThroughActivityAt);
+    if (!Number.isFinite(readThroughTime)) return;
+    const normalizedReadThrough = new Date(readThroughTime).toISOString();
+    const current = renderedReadThroughRef.current[sessionId];
+    const currentTime = current ? Date.parse(current) : Number.NaN;
+    if (Number.isFinite(currentTime) && currentTime >= readThroughTime) return;
+
+    renderedReadThroughRef.current = {
+      ...renderedReadThroughRef.current,
+      [sessionId]: normalizedReadThrough,
+    };
+    setRenderedReadThroughState((prev) => {
+      const prevTime = prev[sessionId] ? Date.parse(prev[sessionId]) : Number.NaN;
+      if (Number.isFinite(prevTime) && prevTime >= readThroughTime) return prev;
+      return { ...prev, [sessionId]: normalizedReadThrough };
+    });
+  }, []);
+  const markReadThroughRendered = useCallback((sessionId: string) => {
+    const readThroughActivityAt = renderedReadThroughRef.current[sessionId];
+    if (!readThroughActivityAt || !isUnread(sessionId, readThroughActivityAt)) return;
+    markRead(sessionId, readThroughActivityAt);
+  }, [isUnread, markRead]);
   // Ref for read-state SSE handler (avoids stale closure in useCallback)
   const applyServerStateRef = useRef(applyServerState);
   applyServerStateRef.current = applyServerState;
@@ -519,10 +544,10 @@ export default function App() {
       previousSessionId !== activeSessionId &&
       dwelledSessionIdRef.current === previousSessionId
     ) {
-      markRead(previousSessionId);
+      markReadThroughRendered(previousSessionId);
     }
     previousActiveSessionIdRef.current = activeSessionId;
-  }, [activeSessionId, pageHasAttention, markRead]);
+  }, [activeSessionId, pageHasAttention, markReadThroughRendered]);
 
   useEffect(() => {
     if (!activeSessionId || !pageHasAttention) {
@@ -534,13 +559,13 @@ export default function App() {
     const timer = window.setTimeout(() => {
       if (!pageHasAttentionRef.current) return;
       dwelledSessionIdRef.current = activeSessionId;
-      markRead(activeSessionId);
+      markReadThroughRendered(activeSessionId);
     }, 2000);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeSessionId, pageHasAttention, markRead]);
+  }, [activeSessionId, pageHasAttention, markReadThroughRendered]);
 
   useEffect(() => {
     if (!activeSessionId) return;
@@ -548,7 +573,9 @@ export default function App() {
     const onPageHide = () => {
       if (!pageHasAttentionRef.current) return;
       if (dwelledSessionIdRef.current !== activeSessionId) return;
-      markSessionReadOnPageHide(activeSessionId);
+      const readThroughActivityAt = renderedReadThroughRef.current[activeSessionId];
+      if (!readThroughActivityAt) return;
+      markSessionReadOnPageHide(activeSessionId, { readThroughActivityAt });
     };
 
     window.addEventListener("pagehide", onPageHide);
@@ -567,28 +594,19 @@ export default function App() {
     }
   }, [activeSessionId, activeTaskId, quickChatsMode]);
 
-  // Re-mark the active session as read when its activity timestamp advances
-  // (e.g., busy→idle transition) while the user is still viewing it.
-  const activeSessionActivity = useMemo(() => {
-    if (!activeSessionId) return undefined;
-    const session = sessions.find((s) => s.sessionId === activeSessionId);
-    if (!session || isSessionActive(session)) return undefined;
-    return getSessionActivityTime(session);
-  }, [activeSessionId, sessions]);
+  const activeRenderedReadThrough = activeSessionId ? renderedReadThroughState[activeSessionId] : undefined;
 
   useEffect(() => {
     if (
       !pageHasAttention ||
       !activeSessionId ||
-      !activeSessionActivity ||
+      !activeRenderedReadThrough ||
       dwelledSessionIdRef.current !== activeSessionId
     ) {
       return;
     }
-    if (isUnread(activeSessionId, activeSessionActivity)) {
-      markRead(activeSessionId);
-    }
-  }, [activeSessionId, activeSessionActivity, isUnread, markRead, pageHasAttention]);
+    markReadThroughRendered(activeSessionId);
+  }, [activeSessionId, activeRenderedReadThrough, markReadThroughRendered, pageHasAttention]);
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
@@ -1177,7 +1195,10 @@ export default function App() {
       .map((s) => s.sessionId);
     if (unreadIds.length === 0) return;
     // Mark each read locally (instant UI update)
-    for (const id of unreadIds) markRead(id);
+    for (const id of unreadIds) {
+      const session = globalSessions.find((s) => s.sessionId === id);
+      markRead(id, session ? getSessionActivityTime(session) : undefined);
+    }
     // Batch sync to server
     batchSessionAction("markRead", unreadIds).catch(() => {});
   }, [globalSessions, isUnread, markRead]);
@@ -1206,7 +1227,10 @@ export default function App() {
     }
 
     if (action === "markRead") {
-      for (const id of sessionIds) markRead(id);
+      for (const id of sessionIds) {
+        const session = sessions.find((s) => s.sessionId === id);
+        markRead(id, session ? getSessionActivityTime(session) : undefined);
+      }
     }
 
     if (action === "archive") {
@@ -1551,6 +1575,7 @@ export default function App() {
                 <SessionRoute
                   sessions={sessions}
                   onMessageSent={invalidateSessions}
+                  onRenderedReadThrough={rememberRenderedReadThrough}
                   getDraft={getDraft}
                   getDraftSession={getDraftSession}
                   setDraft={setDraft}
@@ -1621,6 +1646,7 @@ export default function App() {
                 <SessionRoute
                   sessions={sessions}
                   onMessageSent={invalidateSessions}
+                  onRenderedReadThrough={rememberRenderedReadThrough}
                   getDraft={getDraft}
                   getDraftSession={getDraftSession}
                   setDraft={setDraft}
@@ -1836,6 +1862,7 @@ function MobileTaskListView({
 function SessionRoute({
   sessions,
   onMessageSent,
+  onRenderedReadThrough,
   getDraft,
   getDraftSession,
   setDraft,
@@ -1855,6 +1882,7 @@ function SessionRoute({
 }: {
   sessions: Session[];
   onMessageSent: () => void;
+  onRenderedReadThrough: (sessionId: string, readThroughActivityAt: string) => void;
   getDraft: (composerKey: string) => import("./useDrafts").Draft | null;
   getDraftSession: (composerKey: string) => string | null;
   setDraft: (composerKey: string, text: string, attachments?: import("./api").Attachment[]) => void;
@@ -1945,6 +1973,7 @@ function SessionRoute({
       sessionId={sessionId}
       hasPlan={hasPlan}
       onMessageSent={handleMessageSent}
+      onRenderedReadThrough={onRenderedReadThrough}
       draft={draft}
       onDraftChange={handleDraftChange}
       onDraftClear={handleDraftClear}

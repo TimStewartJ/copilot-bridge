@@ -22,7 +22,7 @@ type TaskMenuUpdates = {
 };
 
 interface TaskContextMenuActions {
-  markRead?: (sessionId: string) => void;
+  markRead?: (sessionId: string, readThroughActivityAt?: string) => void;
   onUpdateTask?: (taskId: string, updates: TaskMenuUpdates) => void;
   onDeleteTask?: (taskId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
@@ -94,7 +94,7 @@ export default function TaskContextMenu({
             for (const sid of task.sessionIds) {
               const session = sessionMap.get(sid);
               if (session && !session.archived && isUnread?.(sid, getSessionActivityTime(session))) {
-                markRead(sid);
+                markRead(sid, getSessionActivityTime(session));
               }
             }
             closeMenu();

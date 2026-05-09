@@ -70,6 +70,7 @@ interface ChatViewProps {
   historySignal?: number;
   activeSessionActivityAt?: string;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
+  onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 }
 
 function renderPendingStatusCard(
@@ -163,6 +164,33 @@ function activityTimestampCovers(loadedActivityAt: string | undefined, markerAct
   if (!loadedActivityAt) return false;
   const loadedTime = Date.parse(loadedActivityAt);
   return Number.isFinite(loadedTime) && loadedTime >= markerTime;
+}
+
+function maxActivityTimestamp(left?: string | null, right?: string | null): string | undefined {
+  const leftTime = left ? Date.parse(left) : Number.NaN;
+  const rightTime = right ? Date.parse(right) : Number.NaN;
+  if (!Number.isFinite(leftTime) && !Number.isFinite(rightTime)) return undefined;
+  return new Date(Math.max(
+    Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY,
+    Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY,
+  )).toISOString();
+}
+
+function getEntryActivityTimestamp(entry: ChatEntry): string | undefined {
+  if (entry.type === "tool") return entry.toolCall.completedAt ?? entry.toolCall.startedAt;
+  if (entry.type === "visual") return entry.timestamp;
+  if ("role" in entry && ((entry.content ?? "").trim() || entry.attachments?.length)) {
+    return entry.timestamp;
+  }
+  return undefined;
+}
+
+function getLatestEntryActivityTimestamp(entries: ChatEntry[]): string | undefined {
+  let latest: string | undefined;
+  for (const entry of entries) {
+    latest = maxActivityTimestamp(latest, getEntryActivityTimestamp(entry));
+  }
+  return latest;
 }
 
 function sortPendingUserInputRequests(
@@ -335,6 +363,7 @@ export default function ChatView({
   historySignal = 0,
   activeSessionActivityAt,
   onForkSession,
+  onRenderedReadThrough,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -378,6 +407,10 @@ export default function ChatView({
   const staleTailRefreshRetryRef = useRef<string | undefined>(undefined);
   const tailSkeletonRefreshEligibleRef = useRef(false);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRenderedReadThroughRef = useRef<{
+    sessionId: string;
+    readThroughActivityAt: string;
+  } | null>(null);
   const queuedSendRef = useRef<{
     sessionId: string | null;
     composerKey: string;
@@ -417,6 +450,14 @@ export default function ChatView({
     entriesRef.current = nextEntries;
     setEntries(nextEntries);
     setHasMore(nextHasMore);
+
+    const nextReadThrough = maxActivityTimestamp(
+      nextLastVisibleActivityAt,
+      getLatestEntryActivityTimestamp(nextEntries),
+    );
+    pendingRenderedReadThroughRef.current = ownerSessionId && nextReadThrough
+      ? { sessionId: ownerSessionId, readThroughActivityAt: nextReadThrough }
+      : null;
 
     if (!ownerSessionId) return;
     setCachedChatSnapshot(queryClient, {
@@ -819,6 +860,13 @@ export default function ChatView({
   useEffect(() => {
     refreshingHistoryRef.current = refreshingHistory;
   }, [refreshingHistory]);
+
+  useLayoutEffect(() => {
+    const pending = pendingRenderedReadThroughRef.current;
+    if (!pending || pending.sessionId !== sessionId) return;
+    pendingRenderedReadThroughRef.current = null;
+    onRenderedReadThrough?.(pending.sessionId, pending.readThroughActivityAt);
+  }, [entries, onRenderedReadThrough, sessionId]);
 
   useEffect(() => {
     if (!tailSkeletonRefreshEligibleRef.current || !refreshingHistoryRef.current || entriesRef.current.length === 0) return;

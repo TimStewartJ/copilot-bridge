@@ -546,10 +546,20 @@ export function useSessionStream(
                       event.terminalTimestamp ?? event.timestamp,
                     );
                     if (event.errorMessage) {
-                      onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.errorMessage}`, ...(turnId ? { turnId } : {}) }]);
+                      onEntriesRef.current([{
+                        role: "assistant",
+                        content: `⚠️ Error: ${event.errorMessage}`,
+                        ...(event.terminalTimestamp ? { timestamp: event.terminalTimestamp } : {}),
+                        ...(turnId ? { turnId } : {}),
+                      }]);
                     } else if (typeof event.finalContent === "string" && event.finalContent.length > 0) {
                       const text = formatTerminalContent(event.finalContent, event.terminalType);
-                      onEntriesRef.current([{ role: "assistant", content: text, ...(turnId ? { turnId } : {}) }]);
+                      onEntriesRef.current([{
+                        role: "assistant",
+                        content: text,
+                        ...(event.terminalTimestamp ? { timestamp: event.terminalTimestamp } : {}),
+                        ...(turnId ? { turnId } : {}),
+                      }]);
                     }
                     activeTurnId = undefined;
                     setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
@@ -606,7 +616,12 @@ export function useSessionStream(
                 case "assistant_partial":
                   if (event.content) {
                     const turnId = getEventTurnId(event);
-                    onEntriesRef.current([{ role: "assistant", content: event.content, ...(turnId ? { turnId } : {}) }]);
+                    onEntriesRef.current([{
+                      role: "assistant",
+                      content: event.content,
+                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                      ...(turnId ? { turnId } : {}),
+                    }]);
                   }
                   const partialHadVisibleOutput = Boolean(accumulatedContent || event.content);
                   accumulatedContent = "";
@@ -835,7 +850,12 @@ export function useSessionStream(
                   activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("done", event.timestamp);
                   if (event.content) {
-                    onEntriesRef.current([{ role: "assistant", content: event.content, ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
+                    onEntriesRef.current([{
+                      role: "assistant",
+                      content: event.content,
+                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                    }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   refreshTitle(true);
@@ -847,7 +867,12 @@ export function useSessionStream(
                   emitTerminalToolEntries("aborted", event.timestamp);
                   const text = event.content || accumulatedContent;
                   if (text) {
-                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "aborted"), ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
+                    onEntriesRef.current([{
+                      role: "assistant",
+                      content: formatTerminalContent(text, "aborted"),
+                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                    }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";
@@ -859,7 +884,12 @@ export function useSessionStream(
                   emitTerminalToolEntries("shutdown", event.timestamp);
                   const text = event.content || accumulatedContent;
                   if (text) {
-                    onEntriesRef.current([{ role: "assistant", content: formatTerminalContent(text, "shutdown"), ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
+                    onEntriesRef.current([{
+                      role: "assistant",
+                      content: formatTerminalContent(text, "shutdown"),
+                      ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                      ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                    }]);
                   }
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   accumulatedContent = "";
@@ -869,7 +899,12 @@ export function useSessionStream(
                 case "error":
                   activeTurnId = getEventTurnId(event);
                   emitTerminalToolEntries("error", event.timestamp);
-                  onEntriesRef.current([{ role: "assistant", content: `⚠️ Error: ${event.message}`, ...(activeTurnId ? { turnId: activeTurnId } : {}) }]);
+                  onEntriesRef.current([{
+                    role: "assistant",
+                    content: `⚠️ Error: ${event.message}`,
+                    ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+                    ...(activeTurnId ? { turnId: activeTurnId } : {}),
+                  }]);
                   setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
                   activeTurnId = undefined;
                   break;

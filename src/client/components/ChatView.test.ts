@@ -92,6 +92,7 @@ type RenderChatViewOptions = {
   streamOverrides?: Record<string, unknown>;
   waitForQuestion?: boolean;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
+  onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 };
 
 const WAIT_FOR_CONDITION_TIMEOUT_MS = 5_000;
@@ -275,6 +276,7 @@ async function renderChatView(
               busySignal: nextOptions.busySignal,
               activeSessionActivityAt: nextOptions.activeSessionActivityAt,
               onForkSession: nextOptions.onForkSession,
+              onRenderedReadThrough: nextOptions.onRenderedReadThrough,
             }),
           ),
         ),
@@ -315,6 +317,100 @@ afterEach(() => {
 });
 
 describe("ChatView cached resume loading state", () => {
+  it("reports the rendered read-through cursor from loaded history", async () => {
+    const onRenderedReadThrough = vi.fn();
+    const { act, cleanup } = await renderChatView({
+      onRenderedReadThrough,
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+        lastVisibleActivityAt: "2026-05-07T21:00:00.000Z",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
+      expect(onRenderedReadThrough).toHaveBeenCalledWith(
+        "session-1",
+        "2026-05-07T21:00:00.000Z",
+      );
+    } finally {
+      await cleanup();
+    }
+  }, 30_000);
+
+  it("does not report newer session-list activity until the rendered tail covers it", async () => {
+    const onRenderedReadThrough = vi.fn();
+    const deferred = createDeferred<FetchMessagesFastResult>();
+    const { act, cleanup } = await renderChatView({
+      activeSessionActivityAt: "2026-05-07T21:05:00.000Z",
+      onRenderedReadThrough,
+      fetchMessagesFastResult: deferred.promise,
+      seedQueryClient: (queryClient) => setCachedChatSnapshot(
+        queryClient,
+        createSnapshot("session-1", [createMessage("entry-1")], "2026-05-07T21:00:00.000Z"),
+      ),
+    });
+
+    try {
+      await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
+      expect(onRenderedReadThrough).toHaveBeenCalledWith(
+        "session-1",
+        "2026-05-07T21:00:00.000Z",
+      );
+      expect(onRenderedReadThrough).not.toHaveBeenCalledWith(
+        "session-1",
+        "2026-05-07T21:05:00.000Z",
+      );
+    } finally {
+      deferred.resolve({
+        messages: [createMessage("entry-1")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+        lastVisibleActivityAt: "2026-05-07T21:00:00.000Z",
+      });
+      await cleanup();
+    }
+  }, 30_000);
+
+  it("reports live assistant message timestamps as rendered read-through cursors", async () => {
+    const onRenderedReadThrough = vi.fn();
+    const { act, cleanup } = await renderChatView({
+      onRenderedReadThrough,
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+        lastVisibleActivityAt: "2026-05-07T21:00:00.000Z",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.length > 0);
+      const appendEntries = useSessionStreamMock.mock.calls[0][1] as (entries: ChatEntry[]) => void;
+      await act(async () => {
+        appendEntries([{
+          role: "assistant",
+          content: "Done",
+          timestamp: "2026-05-07T21:05:00.000Z",
+        }]);
+        await waitTick();
+      });
+      await waitUntilAct(act, () => onRenderedReadThrough.mock.calls.some((call) => (
+        call[0] === "session-1" && call[1] === "2026-05-07T21:05:00.000Z"
+      )));
+    } finally {
+      await cleanup();
+    }
+  }, 30_000);
+
   it("shows the newer-content skeleton for a stale cached resume while the fast refresh is pending", async () => {
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup } = await renderChatView({

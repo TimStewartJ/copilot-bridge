@@ -7,6 +7,12 @@ type ReadStateMap = Record<string, string>; // sessionId → ISO lastReadAt
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createReadStateStore(db: DatabaseSync) {
+  function normalizeTimestamp(timestamp: string): string {
+    const time = Date.parse(timestamp);
+    if (!Number.isFinite(time)) throw new Error("Invalid read timestamp");
+    return new Date(time).toISOString();
+  }
+
   function getReadState(): ReadStateMap {
     const rows = db.prepare("SELECT sessionId, lastReadAt FROM read_state").all() as any[];
     const result: ReadStateMap = {};
@@ -16,12 +22,19 @@ export function createReadStateStore(db: DatabaseSync) {
     return result;
   }
 
-  function markRead(sessionId: string): string {
-    const now = new Date().toISOString();
+  function markRead(sessionId: string, readThroughActivityAt = new Date().toISOString()): string {
+    const readThrough = normalizeTimestamp(readThroughActivityAt);
     db.prepare(
-      "INSERT INTO read_state (sessionId, lastReadAt) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET lastReadAt = ?",
-    ).run(sessionId, now, now);
-    return now;
+      `INSERT INTO read_state (sessionId, lastReadAt)
+       VALUES (?, ?)
+       ON CONFLICT(sessionId) DO UPDATE SET
+         lastReadAt = CASE
+           WHEN read_state.lastReadAt < excluded.lastReadAt THEN excluded.lastReadAt
+           ELSE read_state.lastReadAt
+         END`,
+    ).run(sessionId, readThrough);
+    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
+    return row?.lastReadAt ?? readThrough;
   }
 
   function isUnread(sessionId: string, activityTime?: string): boolean {

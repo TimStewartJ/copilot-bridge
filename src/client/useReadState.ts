@@ -4,6 +4,14 @@ import { fetchReadState, getSessionActivityTime, markSessionRead, markSessionUnr
 
 type ReadState = Record<string, string>; // sessionId → ISO lastReadAt
 
+function isNewerTimestamp(candidate: string, current?: string): boolean {
+  const candidateTime = Date.parse(candidate);
+  if (!Number.isFinite(candidateTime)) return false;
+  if (!current) return true;
+  const currentTime = Date.parse(current);
+  return !Number.isFinite(currentTime) || candidateTime > currentTime;
+}
+
 export function useReadState() {
   const [state, setState] = useState<ReadState>({});
 
@@ -32,10 +40,15 @@ export function useReadState() {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [applyServerState]);
 
-  const markRead = useCallback((sessionId: string) => {
+  const markRead = useCallback((sessionId: string, readThroughActivityAt?: string) => {
     // Optimistic update — server confirms via SSE
-    setState((prev) => ({ ...prev, [sessionId]: new Date().toISOString() }));
-    markSessionRead(sessionId).catch(() => {});
+    const optimisticReadAt = readThroughActivityAt ?? new Date().toISOString();
+    setState((prev) => (
+      isNewerTimestamp(optimisticReadAt, prev[sessionId])
+        ? { ...prev, [sessionId]: optimisticReadAt }
+        : prev
+    ));
+    markSessionRead(sessionId, readThroughActivityAt ? { readThroughActivityAt } : {}).catch(() => {});
   }, []);
 
   const markUnread = useCallback((sessionId: string) => {

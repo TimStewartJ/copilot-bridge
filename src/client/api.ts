@@ -1050,24 +1050,48 @@ export async function fetchReadState(): Promise<Record<string, string>> {
   return apiFetch<Record<string, string>>("/api/read-state");
 }
 
-export async function markSessionRead(sessionId: string): Promise<void> {
-  await apiFetch<{ ok: boolean }>(`/api/read-state/${sessionId}`, {});
+export interface MarkSessionReadOptions {
+  readThroughActivityAt?: string;
+}
+
+function buildMarkReadBody(readThroughActivityAt?: string): MarkSessionReadOptions {
+  return readThroughActivityAt ? { readThroughActivityAt } : {};
+}
+
+export async function markSessionRead(sessionId: string, options: MarkSessionReadOptions = {}): Promise<void> {
+  await apiFetch<{ ok: boolean }>(
+    `/api/read-state/${sessionId}`,
+    buildMarkReadBody(options.readThroughActivityAt),
+  );
 }
 
 export function markSessionReadOnPageHide(
   sessionId: string,
   options: {
+    readThroughActivityAt?: string;
     navigator?: Pick<Navigator, "sendBeacon">;
     fetchFn?: typeof fetch;
   } = {},
 ): void {
   const endpoint = `${API_BASE}/api/read-state/${sessionId}`;
+  const body = buildMarkReadBody(options.readThroughActivityAt);
+  const hasBody = Object.keys(body).length > 0;
   const nav = options.navigator ?? (typeof navigator !== "undefined" ? navigator : undefined);
-  if (nav?.sendBeacon?.(endpoint)) return;
+  if (nav?.sendBeacon) {
+    if (!hasBody && nav.sendBeacon(endpoint)) return;
+    if (hasBody) {
+      const payload = new Blob([JSON.stringify(body)], { type: "application/json" });
+      if (nav.sendBeacon(endpoint, payload)) return;
+    }
+  }
 
   const fetchFn = options.fetchFn ?? (typeof fetch !== "undefined" ? fetch.bind(globalThis) : undefined);
   if (!fetchFn) return;
-  void fetchFn(endpoint, { method: "POST", keepalive: true }).catch(() => {});
+  void fetchFn(endpoint, {
+    method: "POST",
+    keepalive: true,
+    ...(hasBody ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+  }).catch(() => {});
 }
 
 export async function markSessionUnread(sessionId: string): Promise<void> {
