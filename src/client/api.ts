@@ -707,9 +707,10 @@ export async function fetchTask(id: string): Promise<Task> {
 
 export async function fetchTaskGitStatus(
   id: string,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; refresh?: boolean },
 ): Promise<TaskGitStatus> {
-  return apiFetch<TaskGitStatus>(`/api/tasks/${id}/git-status`, undefined, options);
+  const suffix = options?.refresh ? "?refresh=1" : "";
+  return apiFetch<TaskGitStatus>(`/api/tasks/${id}/git-status${suffix}`, undefined, options);
 }
 
 export async function updateTask(
