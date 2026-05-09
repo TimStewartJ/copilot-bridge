@@ -439,3 +439,154 @@ describe("readGitWorktreeStatus", () => {
     });
   });
 });
+
+describe("readCachedGitWorktreeStatus", () => {
+  it("reuses fresh cached status for the same cwd", async () => {
+    mockLinkedWorktreeGitCommands();
+    let nowMs = 0;
+
+    const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
+    const first = await readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => nowMs });
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+
+    nowMs = 30_000;
+    const second = await readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => nowMs });
+
+    expect(second).toEqual(first);
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("coalesces concurrent cache misses for the same cwd", async () => {
+    mockLinkedWorktreeGitCommands();
+
+    const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
+    const first = readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => 0 });
+    const second = readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => 0 });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(secondResult).toEqual(firstResult);
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("force-refreshes even when cached status is still fresh", async () => {
+    let dirty = false;
+    let nowMs = 0;
+    mockExecFileImplementation((args) => {
+      const key = gitArgsKey(args);
+      if (key === gitArgsKey(["rev-parse", "--show-toplevel"])) {
+        return "/workspace/copilot-bridge";
+      }
+      if (key === gitArgsKey(["status", "--porcelain=v1", "--branch"])) {
+        return dirty
+          ? ["## main", " M modified.ts"].join("\n")
+          : "## main";
+      }
+      if (key === gitArgsKey(["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
+        return "/workspace/copilot-bridge/.git";
+      }
+      if (key === gitArgsKey(["worktree", "list", "--porcelain"])) {
+        return [
+          "worktree /workspace/copilot-bridge",
+          "HEAD aaaaaaa11111111111111111111111111111111",
+          "branch refs/heads/main",
+        ].join("\n");
+      }
+      throw new Error(`Unexpected git args: ${args.join(" ")}`);
+    });
+
+    const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
+    const first = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => nowMs });
+    expect(first).toMatchObject({ status: "ok", clean: true, modified: 0 });
+
+    dirty = true;
+    nowMs = 30_000;
+    const refreshed = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", {
+      forceRefresh: true,
+      now: () => nowMs,
+    });
+
+    expect(refreshed).toMatchObject({ status: "ok", clean: false, modified: 1 });
+    expect(execFileMock).toHaveBeenCalledTimes(8);
+  });
+
+  it("runs a follow-up refresh when force-refresh is requested during an in-flight read", async () => {
+    let statusReads = 0;
+    mockExecFileImplementation((args) => {
+      const key = gitArgsKey(args);
+      if (key === gitArgsKey(["rev-parse", "--show-toplevel"])) {
+        return "/workspace/copilot-bridge";
+      }
+      if (key === gitArgsKey(["status", "--porcelain=v1", "--branch"])) {
+        statusReads += 1;
+        return statusReads > 1
+          ? ["## main", " M modified.ts"].join("\n")
+          : "## main";
+      }
+      if (key === gitArgsKey(["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
+        return "/workspace/copilot-bridge/.git";
+      }
+      if (key === gitArgsKey(["worktree", "list", "--porcelain"])) {
+        return [
+          "worktree /workspace/copilot-bridge",
+          "HEAD aaaaaaa11111111111111111111111111111111",
+          "branch refs/heads/main",
+        ].join("\n");
+      }
+      throw new Error(`Unexpected git args: ${args.join(" ")}`);
+    });
+
+    const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
+    const initial = readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => 0 });
+    const forced = readCachedGitWorktreeStatus("/workspace/copilot-bridge", {
+      forceRefresh: true,
+      now: () => 0,
+    });
+    const [initialResult, forcedResult] = await Promise.all([initial, forced]);
+
+    expect(initialResult).toMatchObject({ status: "ok", clean: true, modified: 0 });
+    expect(forcedResult).toMatchObject({ status: "ok", clean: false, modified: 1 });
+    expect(statusReads).toBe(2);
+    expect(execFileMock).toHaveBeenCalledTimes(8);
+  });
+
+  it("returns stale status while refreshing expired cache entries", async () => {
+    let dirty = false;
+    let nowMs = 0;
+    mockExecFileImplementation((args) => {
+      const key = gitArgsKey(args);
+      if (key === gitArgsKey(["rev-parse", "--show-toplevel"])) {
+        return "/workspace/copilot-bridge";
+      }
+      if (key === gitArgsKey(["status", "--porcelain=v1", "--branch"])) {
+        return dirty
+          ? ["## main", " M modified.ts"].join("\n")
+          : "## main";
+      }
+      if (key === gitArgsKey(["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
+        return "/workspace/copilot-bridge/.git";
+      }
+      if (key === gitArgsKey(["worktree", "list", "--porcelain"])) {
+        return [
+          "worktree /workspace/copilot-bridge",
+          "HEAD aaaaaaa11111111111111111111111111111111",
+          "branch refs/heads/main",
+        ].join("\n");
+      }
+      throw new Error(`Unexpected git args: ${args.join(" ")}`);
+    });
+
+    const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
+    const first = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => nowMs });
+    expect(first).toMatchObject({ status: "ok", clean: true, modified: 0 });
+
+    dirty = true;
+    nowMs = 61_000;
+    const stale = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => nowMs });
+    expect(stale).toMatchObject({ status: "ok", clean: true, modified: 0 });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    nowMs = 62_000;
+    const refreshed = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => nowMs });
+    expect(refreshed).toMatchObject({ status: "ok", clean: false, modified: 1 });
+  });
+});

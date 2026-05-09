@@ -29,7 +29,7 @@ import { createTranscriptionService, type TranscriptionService } from "./transcr
 import { createVoiceJobStore } from "./voice-job-store.js";
 import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
-import { readGitWorktreeStatus } from "./git-worktree-status.js";
+import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
 import { isCanonicalArtifactId, HTML_MIME_TYPE, loadVisualArtifactMeta, resolveVisualArtifact } from "./visual-artifacts.js";
@@ -2545,7 +2545,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
 
     try {
-      res.json(await readGitWorktreeStatus(taskCwd));
+      const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
+      res.json(await readCachedGitWorktreeStatus(taskCwd, { forceRefresh }));
     } catch (error) {
       res.json({
         status: "unavailable",

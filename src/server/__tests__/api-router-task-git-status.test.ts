@@ -3,17 +3,17 @@ import request from "supertest";
 import type { Express } from "express";
 import { createTestApp } from "./helpers.js";
 
-const readGitWorktreeStatusMock = vi.hoisted(() => vi.fn());
+const readCachedGitWorktreeStatusMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../git-worktree-status.js", () => ({
-  readGitWorktreeStatus: readGitWorktreeStatusMock,
+  readCachedGitWorktreeStatus: readCachedGitWorktreeStatusMock,
 }));
 
 let app: Express;
 let taskStore: ReturnType<typeof createTestApp>["ctx"]["taskStore"];
 
 beforeEach(() => {
-  readGitWorktreeStatusMock.mockReset();
+  readCachedGitWorktreeStatusMock.mockReset();
   const testApp = createTestApp();
   app = testApp.app;
   taskStore = testApp.ctx.taskStore;
@@ -23,7 +23,7 @@ describe("task git status route", () => {
   it("returns git worktree status for a task cwd", async () => {
     const task = taskStore.createTask("Track git status");
     taskStore.updateTask(task.id, { cwd: "/workspace/copilot-bridge" });
-    readGitWorktreeStatusMock.mockResolvedValue({
+    readCachedGitWorktreeStatusMock.mockResolvedValue({
       status: "ok",
       cwd: "/workspace/copilot-bridge",
       repoRoot: "/workspace/copilot-bridge",
@@ -50,7 +50,7 @@ describe("task git status route", () => {
     const res = await request(app).get(`/api/tasks/${task.id}/git-status`);
 
     expect(res.status).toBe(200);
-    expect(readGitWorktreeStatusMock).toHaveBeenCalledWith("/workspace/copilot-bridge");
+    expect(readCachedGitWorktreeStatusMock).toHaveBeenCalledWith("/workspace/copilot-bridge", { forceRefresh: false });
     expect(res.body).toEqual({
       status: "ok",
       cwd: "/workspace/copilot-bridge",
@@ -81,7 +81,21 @@ describe("task git status route", () => {
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "Task not found" });
-    expect(readGitWorktreeStatusMock).not.toHaveBeenCalled();
+    expect(readCachedGitWorktreeStatusMock).not.toHaveBeenCalled();
+  });
+
+  it("forces a cache refresh when requested", async () => {
+    const task = taskStore.createTask("Refresh git status");
+    taskStore.updateTask(task.id, { cwd: "/workspace/copilot-bridge" });
+    readCachedGitWorktreeStatusMock.mockResolvedValue({
+      status: "not_repo",
+      cwd: "/workspace/copilot-bridge",
+    });
+
+    const res = await request(app).get(`/api/tasks/${task.id}/git-status?refresh=1`);
+
+    expect(res.status).toBe(200);
+    expect(readCachedGitWorktreeStatusMock).toHaveBeenCalledWith("/workspace/copilot-bridge", { forceRefresh: true });
   });
 
   it("returns a typed not_configured result when the task has no cwd", async () => {
@@ -94,7 +108,7 @@ describe("task git status route", () => {
       status: "not_configured",
       error: "Task working directory is not configured.",
     });
-    expect(readGitWorktreeStatusMock).not.toHaveBeenCalled();
+    expect(readCachedGitWorktreeStatusMock).not.toHaveBeenCalled();
   });
 
   it("treats whitespace-only cwd values as not configured", async () => {
@@ -108,13 +122,13 @@ describe("task git status route", () => {
       status: "not_configured",
       error: "Task working directory is not configured.",
     });
-    expect(readGitWorktreeStatusMock).not.toHaveBeenCalled();
+    expect(readCachedGitWorktreeStatusMock).not.toHaveBeenCalled();
   });
 
   it("passes through typed non-repo responses", async () => {
     const task = taskStore.createTask("Outside repo");
     taskStore.updateTask(task.id, { cwd: "/workspace/not-a-repo" });
-    readGitWorktreeStatusMock.mockResolvedValue({
+    readCachedGitWorktreeStatusMock.mockResolvedValue({
       status: "not_repo",
       cwd: "/workspace/not-a-repo",
     });
@@ -131,7 +145,7 @@ describe("task git status route", () => {
   it("returns a typed unavailable result when reading git status throws", async () => {
     const task = taskStore.createTask("Git unavailable");
     taskStore.updateTask(task.id, { cwd: "/workspace/copilot-bridge" });
-    readGitWorktreeStatusMock.mockRejectedValue(new Error("spawn git ENOENT"));
+    readCachedGitWorktreeStatusMock.mockRejectedValue(new Error("spawn git ENOENT"));
 
     const res = await request(app).get(`/api/tasks/${task.id}/git-status`);
 

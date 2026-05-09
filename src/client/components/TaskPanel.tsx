@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Task, TaskGroup, Session } from "../api";
-import { patchTask } from "../api";
+import { fetchTaskGitStatus, patchTask } from "../api";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
+import { queryKeys } from "../queryClient";
 import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
 import { areWorkspacePathsEqual } from "../lib/workspace-presentation";
 import {
@@ -185,6 +187,7 @@ export default function TaskPanel({
   onSetTaskTags,
   scrollRestoration,
 }: TaskPanelProps) {
+  const queryClient = useQueryClient();
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
   const {
     enrichedWIs,
@@ -224,6 +227,29 @@ export default function TaskPanel({
   const highlightTimerRef = useRef<number | null>(null);
   const latestTaskIdRef = useRef(task?.id ?? null);
   const pendingChecklistItemId = searchParams.get("checklistItem");
+
+  const openWorkspaceSheet = () => {
+    setWorkspaceSheetOpen(true);
+    if (!task) return;
+
+    if (task.cwd?.trim()) {
+      void queryClient.fetchQuery({
+        queryKey: queryKeys.taskGitStatus(task.id),
+        queryFn: ({ signal }) => fetchTaskGitStatus(task.id, { signal, refresh: true }),
+        staleTime: 0,
+      }).catch((error: unknown) => {
+        console.warn(`[task-panel] Failed to refresh workspace git status: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+
+    if (activeSession?.sessionId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessionWorkspace(activeSession.sessionId, task.id),
+      }).catch((error: unknown) => {
+        console.warn(`[task-panel] Failed to refresh session workspace details: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  };
 
   useEffect(() => {
     if (highlightTimerRef.current !== null) {
@@ -630,7 +656,7 @@ export default function TaskPanel({
                     subtitle={workspaceSubtitle}
                     subtitleClassName={workspaceWarning ? "line-clamp-2 text-warning" : "truncate font-mono"}
                     chips={workspaceChips}
-                    onClick={() => setWorkspaceSheetOpen(true)}
+                    onClick={openWorkspaceSheet}
                   />
                   {!workspaceWarning && (showWorkspaceDefault || workspaceStatus) && (
                     <div className="rounded-md bg-bg-surface px-2.5 pb-2 pl-8">

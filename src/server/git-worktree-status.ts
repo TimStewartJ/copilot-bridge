@@ -3,6 +3,10 @@ import { realpath } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 
 const LOCAL_GIT_TIMEOUT_MS = 5_000;
+const GIT_WORKTREE_STATUS_CACHE_TTL_MS = 60_000;
+const GIT_WORKTREE_STATUS_CACHE_MAX_STALE_MS = 2 * GIT_WORKTREE_STATUS_CACHE_TTL_MS;
+const GIT_WORKTREE_STATUS_CACHE_MAX_ENTRIES = 128;
+const GIT_WORKTREE_STATUS_REFRESH_ERROR_LOG_INTERVAL_MS = 5 * 60_000;
 
 export interface GitWorktreeBranchHead {
   kind: "branch";
@@ -71,6 +75,21 @@ export type TaskGitStatusResponse = GitWorktreeStatus | TaskGitStatusNotConfigur
 type GitCommandResult =
   | { ok: true; output: string }
   | { ok: false; error: string };
+
+interface ReadCachedGitWorktreeStatusOptions {
+  forceRefresh?: boolean;
+  now?: () => number;
+  ttlMs?: number;
+  maxStaleMs?: number;
+}
+
+interface GitWorktreeStatusCacheEntry {
+  value?: GitWorktreeStatus;
+  updatedAt: number;
+  lastAccessedAt: number;
+  refresh?: Promise<GitWorktreeStatus>;
+  lastRefreshErrorLoggedAt?: number;
+}
 
 interface ParsedWorktreeStatus {
   staged: number;
@@ -165,6 +184,86 @@ function normalizeComparablePath(filePath: string): string {
     comparable = comparable.replace(/\/+$/, "");
   }
   return comparable;
+}
+
+const gitWorktreeStatusCache = new Map<string, GitWorktreeStatusCacheEntry>();
+
+function getGitWorktreeStatusCacheKey(cwd: string): string {
+  return normalizeComparablePath(cwd);
+}
+
+function pruneGitWorktreeStatusCache(now: number): void {
+  for (const [key, entry] of gitWorktreeStatusCache) {
+    if (!entry.refresh && now - entry.lastAccessedAt > GIT_WORKTREE_STATUS_CACHE_MAX_STALE_MS) {
+      gitWorktreeStatusCache.delete(key);
+    }
+  }
+
+  while (gitWorktreeStatusCache.size > GIT_WORKTREE_STATUS_CACHE_MAX_ENTRIES) {
+    const oldest = [...gitWorktreeStatusCache.entries()]
+      .filter(([, entry]) => !entry.refresh)
+      .sort(([, left], [, right]) => left.lastAccessedAt - right.lastAccessedAt)[0];
+    if (!oldest) return;
+    gitWorktreeStatusCache.delete(oldest[0]);
+  }
+}
+
+function formatRefreshError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logGitWorktreeStatusRefreshError(
+  key: string,
+  cwd: string,
+  error: unknown,
+  now: () => number,
+): void {
+  const entry = gitWorktreeStatusCache.get(key);
+  const nowMs = now();
+  if (
+    entry?.lastRefreshErrorLoggedAt !== undefined
+    && nowMs - entry.lastRefreshErrorLoggedAt < GIT_WORKTREE_STATUS_REFRESH_ERROR_LOG_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  if (entry) entry.lastRefreshErrorLoggedAt = nowMs;
+  console.warn(`[git-status] Background refresh failed for ${cwd}: ${formatRefreshError(error)}`);
+}
+
+function startGitWorktreeStatusRefresh(
+  key: string,
+  cwd: string,
+  entry: GitWorktreeStatusCacheEntry,
+  now: () => number,
+): Promise<GitWorktreeStatus> {
+  let refresh!: Promise<GitWorktreeStatus>;
+  refresh = readGitWorktreeStatus(cwd)
+    .then((status) => {
+      const refreshedAt = now();
+      const current = gitWorktreeStatusCache.get(key) ?? entry;
+      current.value = status;
+      current.updatedAt = refreshedAt;
+      current.lastAccessedAt = refreshedAt;
+      current.lastRefreshErrorLoggedAt = undefined;
+      if (current.refresh === refresh) current.refresh = undefined;
+      gitWorktreeStatusCache.set(key, current);
+      pruneGitWorktreeStatusCache(refreshedAt);
+      return status;
+    })
+    .catch((error: unknown) => {
+      const current = gitWorktreeStatusCache.get(key);
+      if (current?.refresh === refresh) {
+        current.refresh = undefined;
+        current.lastAccessedAt = now();
+        if (!current.value) gitWorktreeStatusCache.delete(key);
+      }
+      throw error;
+    });
+
+  entry.refresh = refresh;
+  gitWorktreeStatusCache.set(key, entry);
+  return refresh;
 }
 
 function basenamePortable(filePath: string): string {
@@ -405,4 +504,66 @@ export async function readGitWorktreeStatus(cwd: string): Promise<GitWorktreeSta
     untracked: dirty.untracked,
     conflicts: dirty.conflicts,
   };
+}
+
+export function clearGitWorktreeStatusCache(): void {
+  gitWorktreeStatusCache.clear();
+}
+
+export async function readCachedGitWorktreeStatus(
+  cwd: string,
+  options: ReadCachedGitWorktreeStatusOptions = {},
+): Promise<GitWorktreeStatus> {
+  const now = options.now ?? Date.now;
+  const ttlMs = options.ttlMs ?? GIT_WORKTREE_STATUS_CACHE_TTL_MS;
+  const maxStaleMs = options.maxStaleMs ?? GIT_WORKTREE_STATUS_CACHE_MAX_STALE_MS;
+  const key = getGitWorktreeStatusCacheKey(cwd);
+  const nowMs = now();
+  pruneGitWorktreeStatusCache(nowMs);
+
+  const entry = gitWorktreeStatusCache.get(key);
+  if (!entry) {
+    return startGitWorktreeStatusRefresh(key, cwd, {
+      updatedAt: 0,
+      lastAccessedAt: nowMs,
+    }, now);
+  }
+
+  entry.lastAccessedAt = nowMs;
+  if (options.forceRefresh) {
+    if (!entry.refresh) {
+      return startGitWorktreeStatusRefresh(key, cwd, entry, now);
+    }
+
+    const pendingRefresh = entry.refresh;
+    const forcedRefresh = pendingRefresh
+      .catch(() => undefined)
+      .then(() => {
+        const current = gitWorktreeStatusCache.get(key) ?? entry;
+        return startGitWorktreeStatusRefresh(key, cwd, current, now);
+      });
+    entry.refresh = forcedRefresh;
+    return forcedRefresh;
+  }
+
+  if (entry.value && nowMs - entry.updatedAt <= ttlMs) {
+    return entry.value;
+  }
+
+  if (entry.refresh) {
+    if (entry.value && nowMs - entry.updatedAt <= maxStaleMs) {
+      return entry.value;
+    }
+    return entry.refresh;
+  }
+
+  const refresh = startGitWorktreeStatusRefresh(key, cwd, entry, now);
+  if (entry.value && nowMs - entry.updatedAt <= maxStaleMs) {
+    void refresh.catch((error: unknown) => {
+      logGitWorktreeStatusRefreshError(key, cwd, error, now);
+    });
+    return entry.value;
+  }
+
+  return refresh;
 }

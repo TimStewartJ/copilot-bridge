@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { Task, Session } from "../api";
 import { installDomShim } from "../test-dom-shim";
@@ -9,6 +9,30 @@ const useTaskWorkspaceMock = vi.hoisted(() => vi.fn());
 const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
 const sessionListMock = vi.hoisted(() => vi.fn(() => null));
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
+const taskPanelSummaryRowMock = vi.hoisted(() => vi.fn(() => null));
+const fetchTaskGitStatusMock = vi.hoisted(() => vi.fn());
+const patchTaskMock = vi.hoisted(() => vi.fn());
+const queryClientMock = vi.hoisted(() => ({
+  fetchQuery: vi.fn(),
+  invalidateQueries: vi.fn(),
+}));
+
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-query")>();
+  return {
+    ...actual,
+    useQueryClient: () => queryClientMock,
+  };
+});
+
+vi.mock("../api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api")>();
+  return {
+    ...actual,
+    fetchTaskGitStatus: fetchTaskGitStatusMock,
+    patchTask: patchTaskMock,
+  };
+});
 
 vi.mock("../hooks/queries/useTags", () => ({
   useTagsQuery: () => ({ data: [] }),
@@ -28,6 +52,10 @@ vi.mock("./SessionList", () => ({
 
 vi.mock("./PullToRefresh", () => ({
   default: (props: { children: unknown }) => pullToRefreshMock(props),
+}));
+
+vi.mock("./TaskPanelSummaryRow", () => ({
+  default: (props: unknown) => taskPanelSummaryRowMock(props),
 }));
 
 vi.mock("./ScheduleDetailSheet", () => ({
@@ -143,6 +171,18 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  taskPanelSummaryRowMock.mockClear();
+  queryClientMock.fetchQuery.mockReset();
+  queryClientMock.fetchQuery.mockResolvedValue(null);
+  queryClientMock.invalidateQueries.mockReset();
+  queryClientMock.invalidateQueries.mockResolvedValue(undefined);
+  fetchTaskGitStatusMock.mockReset();
+  fetchTaskGitStatusMock.mockResolvedValue(null);
+  patchTaskMock.mockReset();
+  patchTaskMock.mockResolvedValue(null);
+});
 
 async function renderTaskPanelHtml(task: Task, workspaceOverrides: Record<string, unknown> = {}) {
   useTaskWorkspaceMock.mockReturnValue(createWorkspace(workspaceOverrides));
@@ -397,6 +437,72 @@ describe("TaskPanel", () => {
     if (!scrollContainerCall) throw new Error("TaskPanel PullToRefresh was not rendered");
     expect((scrollContainerCall[0] as { scrollRestoration?: typeof scrollRestoration }).scrollRestoration).toBe(scrollRestoration);
     expect(html).toContain("md:sticky");
+  });
+
+  it("force-refreshes git status when opening workspace details", async () => {
+    const linkedSession = createSession();
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: [linkedSession] }));
+    useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
+
+    const dom = installDomShim();
+
+    try {
+      const [{ flushSync }, { createRoot }, { default: TaskPanel }] = await Promise.all([
+        import("react-dom"),
+        import("react-dom/client"),
+        import("./TaskPanel"),
+      ]);
+
+      const root = createRoot(dom.container as any);
+      flushSync(() => {
+        root.render(
+          createElement(
+            MemoryRouter,
+            null,
+            createElement(TaskPanel, {
+              task: createTask({ cwd: "/workspace/copilot-bridge", sessionIds: [linkedSession.sessionId] }),
+              taskGroups: [],
+              sessions: [linkedSession],
+              activeSessionId: linkedSession.sessionId,
+              onSelectSession: () => {},
+              onNewSession: () => {},
+              onUpdateTask: () => {},
+            }),
+          ),
+        );
+      });
+
+      const workspaceRowCall = taskPanelSummaryRowMock.mock.calls.find(([props]) =>
+        (props as { label?: string }).label === "Workspace");
+      if (!workspaceRowCall) throw new Error("Workspace row was not rendered");
+
+      (workspaceRowCall[0] as { onClick: () => void }).onClick();
+
+      expect(queryClientMock.fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
+        queryKey: ["task", "task-1", "git-status"],
+        staleTime: 0,
+      }));
+      expect(queryClientMock.invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["session-workspace", linkedSession.sessionId, "task-1"],
+      });
+
+      const fetchOptions = queryClientMock.fetchQuery.mock.calls[0]?.[0] as {
+        queryFn: (context: { signal: AbortSignal }) => Promise<unknown>;
+      };
+      const controller = new AbortController();
+      await fetchOptions.queryFn({ signal: controller.signal });
+      expect(fetchTaskGitStatusMock).toHaveBeenCalledWith("task-1", {
+        signal: controller.signal,
+        refresh: true,
+      });
+
+      flushSync(() => {
+        root.unmount();
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    } finally {
+      dom.cleanup();
+    }
   });
 
   it("omits lifecycle status labels from the header", async () => {
