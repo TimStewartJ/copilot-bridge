@@ -386,6 +386,10 @@ export default function App() {
         }
         invalidateAllSessionQueries();
         break;
+      case "sessions:changed":
+        invalidateAllSessionQueries();
+        invalidateDashboard();
+        break;
       case "session:user-input":
         if (event.sessionId) {
           const pendingUserInputCount = event.pendingUserInputCount ?? 0;

@@ -42,6 +42,7 @@ import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
 import { createPushNotificationService, getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
+import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import {
   checkForUpdate,
   readUpdateInstallStatus,
@@ -1283,6 +1284,33 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  router.post("/maintenance/session-overlay-reaper", (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const minimumAgeMs = typeof body.minimumAgeMs === "number" && Number.isFinite(body.minimumAgeMs) && body.minimumAgeMs >= 0
+        ? body.minimumAgeMs
+        : undefined;
+      const minimumAgeHours = typeof body.minimumAgeHours === "number" && Number.isFinite(body.minimumAgeHours) && body.minimumAgeHours >= 0
+        ? body.minimumAgeHours
+        : undefined;
+      const report = runSessionOverlayReaper(ctx, {
+        dryRun: body.dryRun !== false,
+        cleanupDeletedScheduleRuns: body.cleanupDeletedScheduleRuns === true,
+        minimumAgeMs: minimumAgeMs ?? (minimumAgeHours === undefined ? undefined : minimumAgeHours * 60 * 60 * 1000),
+      });
+
+      if (!report.dryRun && (report.reaped > 0 || report.deletedScheduleRuns.deleted > 0)) {
+        invalidateEnrichedCache("maintenance:session-overlay-reaper");
+        ctx.globalBus.emit({ type: "sessions:changed" });
+      }
+
+      res.json(report);
+    } catch (err) {
+      console.error("[maintenance] Session overlay reaper failed:", err);
+      res.status(500).json({ error: "Failed to run session overlay reaper" });
+    }
   });
 
   router.get("/push/status", (_req, res) => {

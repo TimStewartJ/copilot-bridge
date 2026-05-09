@@ -42,6 +42,22 @@ export function createSessionTitlesStore(db: DatabaseSync) {
     return result;
   }
 
+  function getAllLegacyTitles(): Record<string, string> {
+    if (!tableExists()) return {};
+    const rows = db.prepare("SELECT sessionId, title FROM session_titles").all() as any[];
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      result[row.sessionId] = row.title;
+    }
+    return result;
+  }
+
+  function deleteLegacyTitle(sessionId: string): void {
+    if (tableExists()) {
+      db.prepare("DELETE FROM session_titles WHERE sessionId = ?").run(sessionId);
+    }
+  }
+
   function clearAllTitles(): void {
     if (tableExists()) {
       db.prepare("DELETE FROM session_titles").run();
@@ -53,10 +69,19 @@ export function createSessionTitlesStore(db: DatabaseSync) {
     if (tableExists()) {
       db.prepare("DROP TABLE session_titles").run();
     }
-    bridgeSessionStateStore.clearAllTitleOverrides();
   }
 
-  return { getTitle, setTitle, hasTitle, deleteTitle, getAllTitles, clearAllTitles, dropLegacyTable };
+  return {
+    getTitle,
+    setTitle,
+    hasTitle,
+    deleteTitle,
+    getAllTitles,
+    getAllLegacyTitles,
+    deleteLegacyTitle,
+    clearAllTitles,
+    dropLegacyTable,
+  };
 }
 
 export type SessionTitlesStore = ReturnType<typeof createSessionTitlesStore>;

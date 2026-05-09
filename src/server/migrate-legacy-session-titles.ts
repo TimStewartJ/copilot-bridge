@@ -11,7 +11,7 @@ export interface LegacySessionTitleMigrationDeps {
 }
 
 export async function migrateLegacySessionTitles(deps: LegacySessionTitleMigrationDeps): Promise<void> {
-  const legacyTitles = deps.sessionTitles.getAllTitles();
+  const legacyTitles = deps.sessionTitles.getAllLegacyTitles();
   const entries = Object.entries(legacyTitles);
   if (entries.length === 0) {
     deps.sessionTitles.dropLegacyTable();
@@ -25,14 +25,14 @@ export async function migrateLegacySessionTitles(deps: LegacySessionTitleMigrati
       if (!existingName && deps.hasSessionOnDisk(sessionId)) {
         await deps.setSessionName(sessionId, title, { emit: false });
       }
-      deps.sessionTitles.deleteTitle(sessionId);
+      deps.sessionTitles.deleteLegacyTitle(sessionId);
     } catch (error) {
       failures += 1;
       deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Legacy title migration failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  if (failures === 0 && Object.keys(deps.sessionTitles.getAllTitles()).length === 0) {
+  if (failures === 0 && Object.keys(deps.sessionTitles.getAllLegacyTitles()).length === 0) {
     deps.sessionTitles.dropLegacyTable();
   }
   deps.invalidateSessionListCache("session:title-migration");

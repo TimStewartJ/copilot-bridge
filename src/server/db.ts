@@ -181,17 +181,6 @@ function initSchema(db: DatabaseSync): void {
       updatedAt TEXT NOT NULL
     );
 
-    -- Session metadata
-    CREATE TABLE IF NOT EXISTS session_meta (
-      sessionId TEXT PRIMARY KEY,
-      archived INTEGER NOT NULL DEFAULT 0,
-      archivedAt TEXT,
-      triggeredBy TEXT,
-      scheduleId TEXT,
-      scheduleName TEXT,
-      lastVisibleActivityAt TEXT
-    );
-
     -- Bridge-owned session UX state overlay
     CREATE TABLE IF NOT EXISTS bridge_session_state (
       sessionId TEXT PRIMARY KEY,
@@ -214,13 +203,6 @@ function initSchema(db: DatabaseSync): void {
       ON bridge_session_state(archived);
     CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastVisibleActivityAt
       ON bridge_session_state(lastVisibleActivityAt);
-
-    -- Persisted session workspaces
-    CREATE TABLE IF NOT EXISTS session_workspace (
-      sessionId TEXT PRIMARY KEY,
-      cwd TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
 
     -- Per-run schedule history
     CREATE TABLE IF NOT EXISTS schedule_runs (
@@ -256,12 +238,6 @@ function initSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
       appliedAt TEXT NOT NULL
-    );
-
-    -- Session titles
-    CREATE TABLE IF NOT EXISTS session_titles (
-      sessionId TEXT PRIMARY KEY,
-      title TEXT NOT NULL
     );
 
     -- Schedules

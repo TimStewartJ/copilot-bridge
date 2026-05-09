@@ -226,6 +226,17 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return normalizeDeferSummary(selectSummaryForSession.get(sessionId) as DeferSummaryRow | undefined);
   }
 
+  function hasActiveForSession(sessionId: string): boolean {
+    const row = db.prepare(`
+      SELECT 1 AS found
+      FROM defer_loops
+      WHERE sessionId = ?
+        AND status IN ('active', 'running')
+      LIMIT 1
+    `).get(sessionId) as { found?: number } | undefined;
+    return row?.found === 1;
+  }
+
   function listExpiredRunningSessionIds(now = new Date().toISOString()): string[] {
     return (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>).map((row) => row.sessionId);
   }
@@ -334,6 +345,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
     getNextFutureActive,
     getNextRunningLeaseExpiry,
     getSummaryForSession,
+    hasActiveForSession,
     listExpiredRunningSessionIds,
     claimDue,
     renewClaim,

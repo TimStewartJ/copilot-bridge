@@ -7,6 +7,7 @@ export type StatusEvent =
   | { type: "session:title"; sessionId?: string; title?: string }
   | { type: "session:intent"; sessionId?: string; intent?: string }
   | { type: "session:archived"; sessionId?: string; archived?: boolean }
+  | { type: "sessions:changed" }
   | {
       type: "session:user-input";
       sessionId?: string;

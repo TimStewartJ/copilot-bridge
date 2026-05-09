@@ -64,7 +64,7 @@ describe("session-meta-store", () => {
     store.setArchived("session-1", true);
     store.setScheduleMeta("session-1", "sched-1", "My Schedule");
 
-    expect((db.prepare("SELECT COUNT(*) AS count FROM session_meta").get() as any).count).toBe(0);
+    expect((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_meta'").get() as any)).toBeUndefined();
     expect(db.prepare(`
       SELECT archived, scheduleId, scheduleName
       FROM bridge_session_state

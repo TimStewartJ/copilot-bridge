@@ -215,6 +215,17 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return normalizeDeferSummary(selectSummaryForSession.get(sessionId) as DeferSummaryRow | undefined);
   }
 
+  function hasActiveForSession(sessionId: string): boolean {
+    const row = db.prepare(`
+      SELECT 1 AS found
+      FROM deferred_prompts
+      WHERE sessionId = ?
+        AND status IN ('pending', 'running')
+      LIMIT 1
+    `).get(sessionId) as { found?: number } | undefined;
+    return row?.found === 1;
+  }
+
   function listExpiredRunningSessionIds(now = new Date().toISOString()): string[] {
     return (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>).map((row) => row.sessionId);
   }
@@ -295,6 +306,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     getNextFuturePending,
     getNextRunningLeaseExpiry,
     getSummaryForSession,
+    hasActiveForSession,
     listExpiredRunningSessionIds,
     claimDue,
     markCompleted,
