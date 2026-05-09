@@ -49,7 +49,8 @@ jobs:
           "PREVIEW_VERSION=$version" >> $env:GITHUB_ENV
           "PREVIEW_CHANNEL=preview" >> $env:GITHUB_ENV
           "PREVIEW_PLATFORM=win-x64" >> $env:GITHUB_ENV
-          "PREVIEW_TAG=latest-preview" >> $env:GITHUB_ENV
+          "PREVIEW_IMMUTABLE_TAG=preview-$version" >> $env:GITHUB_ENV
+          "PREVIEW_POINTER_TAG=latest-preview" >> $env:GITHUB_ENV
 
       - name: Validate update manifest signing config
         shell: pwsh
@@ -106,13 +107,14 @@ jobs:
             "Channel: $env:PREVIEW_CHANNEL",
             "Commit: $env:GITHUB_SHA",
             "Workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
+            "Immutable release: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/tag/$env:PREVIEW_IMMUTABLE_TAG",
             "",
             "This is an automatically generated preview build from the latest mainline update.",
             "Preview builds are installable, but they are not stable releases.",
             "",
             "## Install",
             "",
-            "1. Download the preview zip from this prerelease.",
+            "1. Download the preview zip from the immutable release linked above.",
             "2. Extract it.",
             "3. Run ``start.ps1``."
           ) | Set-Content -Path $notesPath -Encoding UTF8
@@ -127,8 +129,8 @@ jobs:
           $packageName = Split-Path -Leaf $zip
           $manifest = "release/$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.manifest.json"
           $signature = "$manifest.sig"
-          $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:PREVIEW_TAG"
-          $packageUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:PREVIEW_TAG/$packageName"
+          $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:PREVIEW_IMMUTABLE_TAG"
+          $packageUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:PREVIEW_IMMUTABLE_TAG/$packageName"
 
           node .\scripts\write-update-manifest.mjs `
             --version $env:PREVIEW_VERSION `
@@ -155,7 +157,7 @@ jobs:
             release/preview-notes.md
           if-no-files-found: error
 
-      - name: Publish rolling preview prerelease
+      - name: Publish immutable preview prerelease
         if: ${{ github.event_name == 'push' || inputs.publish_prerelease == true }}
         shell: pwsh
         env:
@@ -167,17 +169,14 @@ jobs:
           $manifest = "release/$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.manifest.json"
           $signature = "$manifest.sig"
           $notes = "release/preview-notes.md"
+          $tag = $env:PREVIEW_IMMUTABLE_TAG
 
-          gh release view $env:PREVIEW_TAG *> $null
+          gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release delete $env:PREVIEW_TAG --yes --cleanup-tag
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to delete existing $env:PREVIEW_TAG prerelease."
-            }
+            throw "Immutable preview release $tag already exists. Refusing to overwrite published preview assets."
           }
-          git push origin ":refs/tags/$env:PREVIEW_TAG" 2>$null
 
-          gh release create $env:PREVIEW_TAG `
+          gh release create $tag `
             $zip `
             $sha `
             $analysis `
@@ -185,8 +184,86 @@ jobs:
             $signature `
             --prerelease `
             --target $env:GITHUB_SHA `
-            --title "Copilot Bridge Latest Preview" `
+            --title "Copilot Bridge Preview $env:PREVIEW_VERSION" `
             --notes-file $notes
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create $env:PREVIEW_TAG prerelease."
+            throw "Failed to create immutable preview prerelease $tag."
+          }
+
+      - name: Publish latest preview pointer
+        if: ${{ github.event_name == 'push' || inputs.publish_prerelease == true }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = "release/$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.manifest.json"
+          $signature = "$manifest.sig"
+          $notes = "release/preview-notes.md"
+          $tag = $env:PREVIEW_POINTER_TAG
+
+          git tag -f $tag $env:GITHUB_SHA
+          git push -f origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to update $tag git tag."
+          }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag `
+              --prerelease `
+              --target $env:GITHUB_SHA `
+              --title "Copilot Bridge Latest Preview" `
+              --notes-file $notes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to update $tag prerelease metadata."
+            }
+
+            gh release upload $tag $signature --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload $tag manifest signature."
+            }
+            gh release upload $tag $manifest --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload $tag manifest."
+            }
+          } else {
+            gh release create $tag `
+              $signature `
+              $manifest `
+              --prerelease `
+              --target $env:GITHUB_SHA `
+              --title "Copilot Bridge Latest Preview" `
+              --notes-file $notes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create $tag prerelease pointer."
+            }
+          }
+
+      - name: Prune old immutable preview prereleases
+        if: ${{ github.event_name == 'push' || inputs.publish_prerelease == true }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $retentionCount = 10
+          $retentionDays = 7
+          $cutoff = (Get-Date).ToUniversalTime().AddDays(-$retentionDays)
+          $releases = @(gh release list --limit 200 --json tagName,isPrerelease,publishedAt | ConvertFrom-Json)
+          $previewReleases = @(
+            $releases |
+              Where-Object { $_.tagName -like "preview-*" -and $_.isPrerelease -eq $true } |
+              Sort-Object { [DateTimeOffset]::Parse($_.publishedAt).UtcDateTime } -Descending
+          )
+
+          for ($index = $retentionCount; $index -lt $previewReleases.Count; $index++) {
+            $release = $previewReleases[$index]
+            $publishedAt = [DateTimeOffset]::Parse($release.publishedAt).UtcDateTime
+            if ($publishedAt -ge $cutoff) {
+              continue
+            }
+
+            gh release delete $release.tagName --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to delete old immutable preview prerelease $($release.tagName)."
+            }
           }
