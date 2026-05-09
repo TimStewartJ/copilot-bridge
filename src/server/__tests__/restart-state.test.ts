@@ -140,6 +140,19 @@ describe("restart-state", () => {
     expect(writeFileMock).not.toHaveBeenCalledWith(statePath, expect.anything(), expect.anything());
   });
 
+  it("retries transient rename failures before succeeding", async () => {
+    renameMock
+      .mockRejectedValueOnce(Object.assign(new Error("state file locked"), { code: "EPERM" }))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(writeRestartState(statePath, activeState)).resolves.toEqual(activeState);
+
+    expect(renameMock).toHaveBeenCalledTimes(2);
+    expect(renameMock).toHaveBeenNthCalledWith(1, tempPath, statePath);
+    expect(renameMock).toHaveBeenNthCalledWith(2, tempPath, statePath);
+    expect(rmMock).not.toHaveBeenCalled();
+  });
+
   it("cleans up the temp file if rename fails", async () => {
     renameMock.mockRejectedValueOnce(new Error("rename failed"));
 
@@ -147,10 +160,31 @@ describe("restart-state", () => {
     expect(rmMock).toHaveBeenCalledWith(tempPath, { force: true });
   });
 
+  it("retries transient read failures before falling back to default state", async () => {
+    readFileMock
+      .mockRejectedValueOnce(Object.assign(new Error("state file locked"), { code: "EBUSY" }))
+      .mockResolvedValueOnce(JSON.stringify(activeState));
+
+    await expect(readRestartState(statePath)).resolves.toEqual(activeState);
+    expect(readFileMock).toHaveBeenCalledTimes(2);
+  });
+
   it("clears the persisted state file", async () => {
     await clearRestartState(statePath);
 
     expect(rmMock).toHaveBeenCalledWith(statePath, { force: true });
+  });
+
+  it("retries transient clear failures before succeeding", async () => {
+    rmMock
+      .mockRejectedValueOnce(Object.assign(new Error("state file locked"), { code: "EACCES" }))
+      .mockResolvedValueOnce(undefined);
+
+    await clearRestartState(statePath);
+
+    expect(rmMock).toHaveBeenCalledTimes(2);
+    expect(rmMock).toHaveBeenNthCalledWith(1, statePath, { force: true });
+    expect(rmMock).toHaveBeenNthCalledWith(2, statePath, { force: true });
   });
 
   it("builds an idle restart state that preserves release failure metadata", () => {
