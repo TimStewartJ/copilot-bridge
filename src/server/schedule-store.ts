@@ -23,6 +23,11 @@ export interface SessionReuseClaim {
   leaseExpiresAt: string;
 }
 
+export interface DeletedScheduleRunGroup {
+  scheduleId: string;
+  runs: number;
+}
+
 const SCHEDULE_RUN_CLAIM_TTL_MS = 2 * 60 * 1000;
 const SCHEDULE_LOCK_RUN_KEY = "__schedule_active__";
 
@@ -478,6 +483,43 @@ export function createScheduleStore(db: DatabaseSync) {
     return (db.prepare("SELECT * FROM schedules WHERE enabled = 1").all() as any[]).map(hydrate);
   }
 
+  function listClaimedSessionIds(): string[] {
+    const sessionClaims = db.prepare("SELECT sessionId FROM schedule_session_claims").all() as Array<{ sessionId: string }>;
+    const automaticRunClaims = db.prepare(`
+      SELECT sessionId
+      FROM schedule_run_claims
+      WHERE sessionId IS NOT NULL
+    `).all() as Array<{ sessionId: string }>;
+    return [...new Set([...sessionClaims, ...automaticRunClaims].map((row) => row.sessionId))];
+  }
+
+  function listScheduleRunSessionIds(): string[] {
+    const rows = db.prepare("SELECT DISTINCT sessionId FROM schedule_runs").all() as Array<{ sessionId: string }>;
+    return rows.map((row) => row.sessionId);
+  }
+
+  function listDeletedScheduleRunGroups(): DeletedScheduleRunGroup[] {
+    return (db.prepare(`
+      SELECT sr.scheduleId, COUNT(*) AS runs
+      FROM schedule_runs sr
+      LEFT JOIN schedules s ON s.id = sr.scheduleId
+      WHERE s.id IS NULL
+      GROUP BY sr.scheduleId
+      ORDER BY runs DESC, sr.scheduleId ASC
+    `).all() as Array<{ scheduleId: string; runs: number }>).map((row) => ({
+      scheduleId: row.scheduleId,
+      runs: Number(row.runs),
+    }));
+  }
+
+  function deleteRunsForDeletedSchedules(): number {
+    const result = db.prepare(`
+      DELETE FROM schedule_runs
+      WHERE scheduleId NOT IN (SELECT id FROM schedules)
+    `).run() as { changes?: number };
+    return result.changes ?? 0;
+  }
+
   function requiresExistingReuseSession(id: string): boolean {
     const row = db.prepare(`
       SELECT sessionMode, reuseLastRequiresExistingSession
@@ -494,6 +536,7 @@ export function createScheduleStore(db: DatabaseSync) {
     releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
     releaseClaimedSessionReuse, renewClaimedSessionReuse,
     updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
+    listClaimedSessionIds, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
     requiresExistingReuseSession,
   };
 }

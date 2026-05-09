@@ -109,8 +109,16 @@ describe("session CLI renames", () => {
     };
     writeWorkspace("needs-migration", "created_at: 2026-05-01T10:00:00.000Z\n");
     writeWorkspace("already-named", "created_at: 2026-05-01T10:00:00.000Z\nname: CLI name\n");
-    ctx.sessionTitles.setTitle("needs-migration", "Legacy Bridge Name");
-    ctx.sessionTitles.setTitle("already-named", "Legacy Should Not Win");
+    db.exec(`
+      CREATE TABLE session_titles (
+        sessionId TEXT PRIMARY KEY,
+        title TEXT NOT NULL
+      );
+    `);
+    db.prepare("INSERT INTO session_titles (sessionId, title) VALUES (?, ?)")
+      .run("needs-migration", "Legacy Bridge Name");
+    db.prepare("INSERT INTO session_titles (sessionId, title) VALUES (?, ?)")
+      .run("already-named", "Legacy Should Not Win");
 
     const manager = new MigrationTestSessionManager({
       tools: [],

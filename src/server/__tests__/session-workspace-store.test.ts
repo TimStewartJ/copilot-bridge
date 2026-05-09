@@ -20,7 +20,7 @@ describe("session-workspace-store", () => {
       cwd: "/workspace/two",
       updatedAt: updated.updatedAt,
     });
-    expect((db.prepare("SELECT COUNT(*) AS count FROM session_workspace").get() as any).count).toBe(0);
+    expect((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_workspace'").get() as any)).toBeUndefined();
   });
 
   it("deletes stored workspaces", () => {

@@ -42,6 +42,20 @@ function createLegacySessionTables(db: DatabaseSync): void {
 }
 
 describe("bridge session state legacy backfill", () => {
+  it("does not create legacy session metadata tables for fresh databases", () => {
+    const dataDir = createTempDataDir();
+    const db = openDatabase(dataDir);
+
+    expect(db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name IN ('session_meta', 'session_titles', 'session_workspace')
+      ORDER BY name
+    `).all()).toEqual([]);
+    db.close();
+  });
+
   it("imports legacy session metadata once without letting stale legacy rows overwrite later overlay changes", () => {
     const dataDir = createTempDataDir();
     const dbPath = join(dataDir, "bridge.db");

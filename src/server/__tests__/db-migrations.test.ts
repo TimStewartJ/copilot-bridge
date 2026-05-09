@@ -21,6 +21,29 @@ function listRecordedMigrations(dataDir: string) {
   return rows;
 }
 
+function createLegacySessionTables(db: ReturnType<typeof openDatabase>): void {
+  db.exec(`
+    CREATE TABLE session_meta (
+      sessionId TEXT PRIMARY KEY,
+      archived INTEGER NOT NULL DEFAULT 0,
+      archivedAt TEXT,
+      triggeredBy TEXT,
+      scheduleId TEXT,
+      scheduleName TEXT,
+      lastVisibleActivityAt TEXT
+    );
+    CREATE TABLE session_titles (
+      sessionId TEXT PRIMARY KEY,
+      title TEXT NOT NULL
+    );
+    CREATE TABLE session_workspace (
+      sessionId TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+  `);
+}
+
 describe("database migration registry", () => {
   it("keeps the compatibility migration order explicit", () => {
     expect(listDatabaseMigrations().map((migration) => migration.id)).toEqual([
@@ -62,6 +85,7 @@ describe("database migration registry", () => {
       INSERT INTO bridge_session_state (sessionId, archived, titleOverride, pinnedCwd, createdAt, updatedAt)
       VALUES (?, 0, 'canonical-title', '/canonical-workspace', ?, ?)
     `).run(sessionId, now, now);
+    createLegacySessionTables(db);
     db.prepare(`
       INSERT INTO session_meta (sessionId, archived, archivedAt, triggeredBy, scheduleId, scheduleName, lastVisibleActivityAt)
       VALUES (?, 1, ?, 'schedule', 'legacy-schedule', 'Legacy schedule', ?)
