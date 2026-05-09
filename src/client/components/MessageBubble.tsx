@@ -86,7 +86,7 @@ export default memo(function MessageBubble({ message, actionSlot }: MessageBubbl
   if (!hasContent && hasTools) {
     return (
       <div className="flex justify-start min-w-0">
-        <div className="group/message-bubble relative max-w-[85%] min-w-0 space-y-1">
+        <div className="group/message-bubble relative w-full max-w-full min-w-0 space-y-1 md:w-auto md:max-w-[85%]">
           <BubbleActions side="left">{actionSlot}</BubbleActions>
           {renderToolCalls(message.toolCalls!)}
         </div>
@@ -96,7 +96,7 @@ export default memo(function MessageBubble({ message, actionSlot }: MessageBubbl
 
   return (
     <div className="flex justify-start min-w-0">
-      <div className="group/message-bubble relative max-w-[85%] min-w-0 break-words space-y-2">
+      <div className="group/message-bubble relative w-full max-w-full min-w-0 break-words space-y-2 md:w-auto md:max-w-[85%]">
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
           <div className={`px-4 py-3 bg-bg-surface text-text-primary rounded-2xl rounded-bl-sm text-sm leading-relaxed ${APP_PROSE} prose-pre:bg-bg-primary prose-th:bg-bg-primary`}>
