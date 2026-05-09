@@ -2225,7 +2225,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             break;
           }
           case "markRead":
-            ctx.readStateStore.markRead(sid);
+            ctx.readStateStore.markRead(sid, resolveReadThroughActivityAt(sid));
             break;
         }
       } catch (err) {
@@ -2812,10 +2812,46 @@ export function createApiRouter(ctx: AppContext): express.Router {
     res.json(ctx.readStateStore.getReadState());
   });
 
+  function parseReadThroughActivityAt(raw: unknown): string | undefined {
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== "string") throw new Error("readThroughActivityAt must be an ISO timestamp");
+    const time = Date.parse(raw);
+    if (!Number.isFinite(time)) throw new Error("readThroughActivityAt must be an ISO timestamp");
+    return new Date(time).toISOString();
+  }
+
+  function resolveReadThroughActivityAt(sessionId: string, requested?: string): string {
+    const latestActivityAt = ctx.sessionMetaStore.getMeta(sessionId)?.lastVisibleActivityAt;
+    const latestActivityTime = latestActivityAt ? Date.parse(latestActivityAt) : Number.NaN;
+    const latestActivity = Number.isFinite(latestActivityTime)
+      ? new Date(latestActivityTime).toISOString()
+      : undefined;
+
+    if (!requested) return latestActivity ?? new Date().toISOString();
+
+    const requestedTime = Date.parse(requested);
+    if (latestActivity && Number.isFinite(latestActivityTime) && requestedTime > latestActivityTime) {
+      return latestActivity;
+    }
+
+    const maxFutureSkewMs = 5_000;
+    const maxAllowedTime = Date.now() + maxFutureSkewMs;
+    return new Date(Math.min(requestedTime, maxAllowedTime)).toISOString();
+  }
+
   router.post("/read-state/:sessionId", (req, res) => {
-    const ts = ctx.readStateStore.markRead(req.params.sessionId);
+    let requestedReadThrough: string | undefined;
+    try {
+      const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+      requestedReadThrough = parseReadThroughActivityAt(body.readThroughActivityAt);
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : "Invalid readThroughActivityAt" });
+    }
+
+    const readThroughActivityAt = resolveReadThroughActivityAt(req.params.sessionId, requestedReadThrough);
+    const ts = ctx.readStateStore.markRead(req.params.sessionId, readThroughActivityAt);
     ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
-    res.json({ ok: true, lastReadAt: ts });
+    res.json({ ok: true, lastReadAt: ts, readThroughActivityAt });
   });
 
   router.delete("/read-state/:sessionId", (req, res) => {

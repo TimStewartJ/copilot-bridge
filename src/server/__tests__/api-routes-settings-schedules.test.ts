@@ -154,6 +154,39 @@ describe("Read state routes", () => {
     expect(state.body).toHaveProperty("sess-1");
   });
 
+  it("POST /api/read-state/:sessionId honors an explicit read-through cursor", async () => {
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "2026-05-07T21:00:00.000Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:00:00.000Z");
+
+    const state = await request(app).get("/api/read-state");
+    expect(state.body["sess-1"]).toBe("2026-05-07T21:00:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId clamps explicit cursors to server-known visible activity", async () => {
+    ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
+
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "2026-05-07T21:05:00.000Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:00:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:00:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId rejects invalid read-through cursors", async () => {
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "not-a-date" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("readThroughActivityAt");
+  });
+
   it("DELETE /api/read-state/:sessionId marks a session as unread", async () => {
     await request(app).post("/api/read-state/sess-2");
 

@@ -23,6 +23,19 @@ describe("read-state-store", () => {
     expect(new Date(ts).getTime()).toBeGreaterThan(0);
   });
 
+  it("markRead can store an explicit read-through timestamp", () => {
+    const ts = store.markRead("session-1", "2026-05-07T21:00:00.000Z");
+    expect(ts).toBe("2026-05-07T21:00:00.000Z");
+    expect(store.getReadState()["session-1"]).toBe("2026-05-07T21:00:00.000Z");
+  });
+
+  it("markRead never moves an existing cursor backward", () => {
+    store.markRead("session-1", "2026-05-07T21:00:00.000Z");
+    const ts = store.markRead("session-1", "2026-05-07T20:00:00.000Z");
+    expect(ts).toBe("2026-05-07T21:00:00.000Z");
+    expect(store.getReadState()["session-1"]).toBe("2026-05-07T21:00:00.000Z");
+  });
+
   it("isUnread returns true for never-read session", () => {
     expect(store.isUnread("session-1", new Date().toISOString())).toBe(true);
   });
