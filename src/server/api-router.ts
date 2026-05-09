@@ -43,6 +43,8 @@ import { createPushNotificationService, getPushPublicStatus, type BridgePushPayl
 import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
+import { isDisposableTitleSessionId } from "./session-name-generator.js";
+import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import {
   checkForUpdate,
   readUpdateInstallStatus,
@@ -600,6 +602,11 @@ function resolveSessionSummary(
   return summary || opts.fallbackSummary || "Untitled session";
 }
 
+async function readWorkspaceSessionName(sessionStateDir: string, sessionId: string): Promise<string | undefined> {
+  const content = await readFile(join(sessionStateDir, sessionId, "workspace.yaml"), "utf-8");
+  return parseWorkspaceYamlSessionName(content);
+}
+
 function listSessionsFromCliCatalog(ctx: AppContext): any[] | undefined {
   const catalogSessions = ctx.cliSessionCatalog?.listSessions();
   if (!catalogSessions) return undefined;
@@ -1141,11 +1148,39 @@ export function createApiRouter(ctx: AppContext): express.Router {
     const tBuild = Date.now();
     const build = (async () => {
       const catalogSessions = listSessionsFromCliCatalog(ctx);
-      const sessions = catalogSessions ?? await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
+      const usingCliCatalog = catalogSessions !== undefined;
+      const sessions = (catalogSessions ?? await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived }))
+        .filter((session: any) => !isDisposableTitleSessionId(session.sessionId));
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
       const meta = ctx.sessionMetaStore.listMeta();
       const readState = ctx.readStateStore.getReadState();
       const taskLookup = createSessionListTaskLookup(ctx);
+      let overlayDurationMs = 0;
+      let overlayReadCount = 0;
+      let overlayHitCount = 0;
+      let overlayMismatchCount = 0;
+      let overlayErrorCount = 0;
+
+      const overlayWorkspaceSessionName = async (session: any): Promise<any> => {
+        if (!usingCliCatalog) return session;
+        const start = Date.now();
+        overlayReadCount += 1;
+        try {
+          const workspaceName = await readWorkspaceSessionName(sessionStateDir, session.sessionId);
+          if (!workspaceName) return session;
+          overlayHitCount += 1;
+          const dbSummary = typeof session.summary === "string" && session.summary.trim()
+            ? session.summary.trim()
+            : undefined;
+          if (dbSummary && dbSummary !== workspaceName) overlayMismatchCount += 1;
+          return { ...session, summary: workspaceName };
+        } catch (error) {
+          if (getErrorCode(error) !== "ENOENT") overlayErrorCount += 1;
+          return session;
+        } finally {
+          overlayDurationMs += Date.now() - start;
+        }
+      };
 
       const enriched = await Promise.all(
         sessions
@@ -1187,6 +1222,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
               };
             }
 
+            const namedSession = await overlayWorkspaceSessionName(s);
             const hasPlan = await statAsync(join(sessionStateDir, id, "plan.md")).then(() => true, () => false);
             const eventLogSizeBytes = typeof s.eventLogSizeBytes === "number"
               ? s.eventLogSizeBytes
@@ -1198,7 +1234,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
               ...(workspace.effectiveCwd ? { cwd: workspace.effectiveCwd } : {}),
             };
             return {
-              ...s,
+              ...namedSession,
               eventLogSizeBytes,
               context: Object.keys(context).length > 0 ? context : undefined,
               workspace,
@@ -1215,6 +1251,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
             };
           }),
       );
+      if (usingCliCatalog) {
+        recordSessionCacheSpan("session.workspaceNameOverlay", overlayDurationMs, {
+          readCount: overlayReadCount,
+          hitCount: overlayHitCount,
+          mismatchCount: overlayMismatchCount,
+          errorCount: overlayErrorCount,
+          candidateCount: sessions.length,
+          includeArchived: buildIncludesArchived,
+        });
+      }
 
       const stored = buildGeneration === enrichedSessionCacheGeneration;
       if (stored) {
@@ -3221,7 +3267,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
           };
         }),
       );
-
       res.json({
         sessions: enriched,
         total: allRuns.length,

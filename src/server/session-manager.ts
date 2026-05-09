@@ -119,7 +119,8 @@ import {
   createSessionNameAutogenerator,
   type SessionNameAutogenerator,
 } from "./session-name-autogen.js";
-import { deleteCliSessionStoreRows } from "./cli-session-store.js";
+import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
+import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
@@ -237,8 +238,10 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
 }
 
 export class SessionManager {
+  private static DISPOSABLE_TITLE_SWEEP_GRACE_MS = 60_000;
   private client: CopilotClient | null = null;
   private deps: SessionManagerDeps;
+  private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
   private modelSwitchingSessions = new Set<string>();
@@ -317,6 +320,7 @@ export class SessionManager {
       getCopilotHome: () => this.getCopilotHome(),
       getSessionName: (sessionId) => this.getSessionName(sessionId),
       setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
+      recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
       logger: console,
     });
     this.sessionRunner = new SessionRunner({
@@ -520,9 +524,34 @@ export class SessionManager {
     );
     await this.client.start();
     console.log("[sdk] Copilot SDK client ready");
+    this.sweepLeakedDisposableTitleSessions();
     void this.migrateLegacySessionTitles().catch((error) => {
       console.warn(`[sdk] Legacy session title migration failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  private sweepLeakedDisposableTitleSessions(): void {
+    const start = Date.now();
+    try {
+      const sweptIds = sweepLeakedCliSessionStoreRows({
+        copilotHome: this.getCopilotHome(),
+        idPrefix: DISPOSABLE_TITLE_SESSION_ID_PREFIX,
+        cutoffTimestampMs: this.processStartedAtMs - SessionManager.DISPOSABLE_TITLE_SWEEP_GRACE_MS,
+      });
+      this.recordSpan("session.name.cleanupSweep", start, undefined, {
+        result: "ok",
+        count: sweptIds.length,
+      });
+      if (sweptIds.length > 0) {
+        console.warn(`[sdk] Cleaned up ${sweptIds.length} leaked disposable title session row(s)`);
+      }
+    } catch (error) {
+      this.recordSpan("session.name.cleanupSweep", start, undefined, {
+        result: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      console.warn(`[sdk] Disposable title session sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async listSessions() {
