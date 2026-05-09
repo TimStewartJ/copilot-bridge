@@ -14,6 +14,7 @@ export type StatusEvent =
       needsUserInput?: boolean;
     }
   | { type: "session:defer-summary"; sessionId: string; deferSummary: DeferSummary }
+  | { type: "session:history-truncated"; sessionId?: string }
   | { type: "server:restart-pending"; waitingSessions?: number }
   | { type: "server:restart-cleared" }
   | { type: "status:connected" }
