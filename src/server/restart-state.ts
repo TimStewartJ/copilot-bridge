@@ -41,6 +41,9 @@ const defaultRestartState = {
 } satisfies RestartState;
 
 export const DEFAULT_RESTART_STATE: Readonly<RestartState> = Object.freeze(defaultRestartState);
+const TRANSIENT_RESTART_STATE_FS_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const RESTART_STATE_FS_RETRY_DELAYS_MS = [25, 50, 100, 250, 500] as const;
+const RESTART_STATE_RM_OPTIONS = { force: true } as const;
 
 export function createDefaultRestartState(): RestartState {
   return { ...DEFAULT_RESTART_STATE };
@@ -125,9 +128,40 @@ function getTempRestartStatePath(filePath: string): string {
   return join(dirname(filePath), `.${basename(filePath)}.${randomUUID()}.tmp`);
 }
 
+function getFsErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+function isTransientRestartStateFsError(error: unknown): boolean {
+  const code = getFsErrorCode(error);
+  return code !== undefined && TRANSIENT_RESTART_STATE_FS_ERROR_CODES.has(code);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryTransientRestartStateFsOperation<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        attempt >= RESTART_STATE_FS_RETRY_DELAYS_MS.length
+        || !isTransientRestartStateFsError(error)
+      ) {
+        throw error;
+      }
+      await sleep(RESTART_STATE_FS_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
 export async function readRestartState(filePath: string): Promise<RestartState> {
   try {
-    const raw = await readFile(filePath, "utf8");
+    const raw = await retryTransientRestartStateFsOperation(() => readFile(filePath, "utf8"));
     if (!raw.trim()) return createDefaultRestartState();
     return normalizeRestartState(JSON.parse(raw) as unknown);
   } catch {
@@ -149,12 +183,16 @@ export async function writeRestartState(filePath: string, state: RestartState): 
   const normalized = normalizeRestartState(state);
   const tempPath = getTempRestartStatePath(filePath);
 
-  await mkdir(dirname(filePath), { recursive: true });
+  await retryTransientRestartStateFsOperation(() => mkdir(dirname(filePath), { recursive: true }));
   try {
-    await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
-    await rename(tempPath, filePath);
+    await retryTransientRestartStateFsOperation(
+      () => writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8"),
+    );
+    await retryTransientRestartStateFsOperation(() => rename(tempPath, filePath));
   } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => undefined);
+    await retryTransientRestartStateFsOperation(
+      () => rm(tempPath, RESTART_STATE_RM_OPTIONS),
+    ).catch(() => undefined);
     throw error;
   }
 
@@ -162,5 +200,5 @@ export async function writeRestartState(filePath: string, state: RestartState): 
 }
 
 export async function clearRestartState(filePath: string): Promise<void> {
-  await rm(filePath, { force: true });
+  await retryTransientRestartStateFsOperation(() => rm(filePath, RESTART_STATE_RM_OPTIONS));
 }
