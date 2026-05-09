@@ -141,6 +141,7 @@ export default function App() {
   const [undoingTaskCompletionId, setUndoingTaskCompletionId] = useState<string | null>(null);
   // Incremented per-session when an external source (e.g. schedule) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
+  const [sessionHistorySignals, setSessionHistorySignals] = useState<Record<string, number>>({});
   const sessionBusyHintExpiresAtRef = useRef<Record<string, number>>({});
 
   // Settings query (shared with useTheme, SettingsView, etc.)
@@ -334,6 +335,13 @@ export default function App() {
     if (!sessionId) return;
     delete sessionBusyHintExpiresAtRef.current[sessionId];
   }, []);
+  const bumpSessionHistorySignal = useCallback((sessionId?: string) => {
+    if (!sessionId) return;
+    setSessionHistorySignals((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] ?? 0) + 1,
+    }));
+  }, []);
 
   useStatusStream(useCallback((event) => {
     switch (event.type) {
@@ -393,6 +401,11 @@ export default function App() {
           patchSessionInCache(event.sessionId, { deferSummary: event.deferSummary });
         }
         break;
+      case "session:history-truncated":
+        if (event.sessionId) {
+          bumpSessionHistorySignal(event.sessionId);
+        }
+        break;
       case "server:restart-pending":
         setRestartBanner((prev) => reduceRestartBannerState(prev, {
           type: "server:restart-pending",
@@ -430,7 +443,7 @@ export default function App() {
         invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
@@ -1549,6 +1562,7 @@ export default function App() {
                   sessionReloads={sessionReloads}
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
+                  sessionHistorySignals={sessionHistorySignals}
                 />
               }
             />
@@ -1618,6 +1632,7 @@ export default function App() {
                   sessionReloads={sessionReloads}
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
+                  sessionHistorySignals={sessionHistorySignals}
                 />
               }
             />
@@ -1832,6 +1847,7 @@ function SessionRoute({
   sessionReloads,
   sessionBusySignals,
   onForkSession,
+  sessionHistorySignals,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -1850,6 +1866,7 @@ function SessionRoute({
   sessionReloads: Record<string, { token: number; servers: McpServerStatus[] }>;
   sessionBusySignals: Record<string, number>;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
+  sessionHistorySignals: Record<string, number>;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -1865,6 +1882,7 @@ function SessionRoute({
   const isDraft = sessionId === null;
   const sessionReload = sessionId ? sessionReloads[sessionId] : undefined;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
+  const historySignal = sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0;
   const activeSession = sessions.find((s) => s.sessionId === sessionId);
   const hasPlan = activeSession?.hasPlan;
   const activeSessionActivityAt = activeSession?.lastVisibleActivityAt;
@@ -1922,7 +1940,7 @@ function SessionRoute({
       composerKey={composerKey}
       sessionId={sessionId}
       hasPlan={hasPlan}
-        onMessageSent={handleMessageSent}
+      onMessageSent={handleMessageSent}
       draft={draft}
       onDraftChange={handleDraftChange}
       onDraftClear={handleDraftClear}
@@ -1935,6 +1953,7 @@ function SessionRoute({
       reloadToken={sessionReload?.token ?? 0}
       reloadMcpServers={sessionReload?.servers}
       busySignal={busySignal}
+      historySignal={historySignal}
       activeSessionActivityAt={activeSessionActivityAt}
       onForkSession={onForkSession}
     />

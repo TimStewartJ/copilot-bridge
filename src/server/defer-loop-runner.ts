@@ -226,7 +226,13 @@ export function createDeferLoopRunner(
         loop.sessionId,
         formatLoopPrompt(loop),
         undefined,
-        { attentionMode: "quiet" },
+        {
+          attentionMode: "quiet",
+          historyTruncation: {
+            mode: "replace-quiet-interval-defer-tail",
+            deferId: loop.deferId,
+          },
+        },
       );
       const acceptedAt = new Date();
       const nextRunAt = new Date(acceptedAt.getTime() + loop.intervalSeconds * 1000).toISOString();

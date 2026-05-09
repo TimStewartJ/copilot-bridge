@@ -69,7 +69,13 @@ describe("defer-loop-runner", () => {
     expect(sm._started[0].prompt).toContain("runCount: 1");
     expect(sm._started[0].prompt).toContain("If user input, approval, a decision, credentials, clarification, or prioritization is needed, you MUST use ask_user");
     expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
-    expect(sm._started[0].options).toEqual({ attentionMode: "quiet" });
+    expect(sm._started[0].options).toEqual({
+      attentionMode: "quiet",
+      historyTruncation: {
+        mode: "replace-quiet-interval-defer-tail",
+        deferId: loop.deferId,
+      },
+    });
     const updated = store.get(loop.id)!;
     expect(updated.status).toBe("active");
     expect(updated.runCount).toBe(1);

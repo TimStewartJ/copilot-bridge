@@ -66,6 +66,8 @@ interface ChatViewProps {
   reloadMcpServers?: McpServerStatus[];
   /** Incremented when an external source (e.g. schedule) starts work on this session */
   busySignal?: number;
+  /** Incremented when server history was truncated and the loaded window must be replaced. */
+  historySignal?: number;
   activeSessionActivityAt?: string;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
 }
@@ -330,6 +332,7 @@ export default function ChatView({
   reloadToken = 0,
   reloadMcpServers,
   busySignal = 0,
+  historySignal = 0,
   activeSessionActivityAt,
   onForkSession,
 }: ChatViewProps) {
@@ -382,7 +385,7 @@ export default function ChatView({
     attachments?: Attachment[];
   } | null>(null);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
-  const loadAndReconnectRef = useRef<(opts?: { background?: boolean }) => void>(() => {});
+  const loadAndReconnectRef = useRef<(opts?: { background?: boolean; replace?: boolean }) => void>(() => {});
   activeSessionActivityAtRef.current = activeSessionActivityAt;
 
   useEffect(() => () => {
@@ -559,14 +562,13 @@ export default function ChatView({
       reconnect(sessionId);
       return;
     }
-
     // Reset stick-to-bottom so the new session starts following output,
     // regardless of scroll position in the previous session.
     stickToBottomRef.current = true;
 
     const controller = new AbortController();
 
-    const loadAndReconnect = ({ background = false }: { background?: boolean } = {}) => {
+    const loadAndReconnect = ({ background = false, replace = false }: { background?: boolean; replace?: boolean } = {}) => {
       const requestId = ++loadRequestIdRef.current;
       if (background) {
         refreshingHistoryRef.current = true;
@@ -588,9 +590,11 @@ export default function ChatView({
           if (requestId !== loadRequestIdRef.current) {
             return;
           }
-          if (!background) {
+          const shouldReplaceLoadedWindow = !background
+            || (replace && !(busy && hasClientGeneratedEntries(entriesRef.current)));
+          if (shouldReplaceLoadedWindow) {
             staleTailRefreshRetryRef.current = undefined;
-            tailSkeletonRefreshEligibleRef.current = false;
+            if (!background) tailSkeletonRefreshEligibleRef.current = false;
             const nextFirstItemIndex = Math.max(0, total - msgs.length);
             const activeActivityAt = activeSessionActivityAtRef.current;
             const responseCoversActiveActivity = activityTimestampCovers(
@@ -792,6 +796,17 @@ export default function ChatView({
       loadAndReconnectRef.current({ background: true });
     }
   }, [busySignal, creating, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
+
+  const prevHistorySignalRef = useRef(historySignal);
+  useEffect(() => {
+    prevHistorySignalRef.current = historySignal;
+  }, [sessionId]);
+  useEffect(() => {
+    const prev = prevHistorySignalRef.current;
+    if (!sessionId || historySignal === prev) return;
+    prevHistorySignalRef.current = historySignal;
+    loadAndReconnectRef.current({ background: true, replace: true });
+  }, [historySignal, sessionId]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;

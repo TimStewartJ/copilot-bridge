@@ -33,6 +33,10 @@ import type {
   StartWorkAttachment,
 } from "./session-attachment-routing.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
+import {
+  truncateQuietIntervalDeferTail,
+  type QuietIntervalDeferTailTruncationRequest,
+} from "./session-history-truncation.js";
 
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
@@ -49,6 +53,7 @@ export type SessionAttentionMode = "normal" | "quiet";
 
 export interface StartWorkOptions {
   attentionMode?: SessionAttentionMode;
+  historyTruncation?: QuietIntervalDeferTailTruncationRequest;
 }
 
 function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -267,6 +272,7 @@ export class SessionRunner {
       attentionMode: options.attentionMode ?? "normal",
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
+      historyTruncation: options.historyTruncation,
       execute: async (session) => {
         await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
       },
@@ -304,6 +310,7 @@ export class SessionRunner {
       startLog: string;
       execute: (session: any) => Promise<void>;
       attentionMode?: SessionAttentionMode;
+      historyTruncation?: QuietIntervalDeferTailTruncationRequest;
     },
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
@@ -649,7 +656,24 @@ export class SessionRunner {
       return activeSession.on(handleEvent);
     };
 
-    let unsub = subscribeToSession(session);
+    let unsub: (() => void) | undefined;
+
+    const prepareSessionForSend = async (activeSession: typeof session) => {
+      if (opts.historyTruncation?.mode !== "replace-quiet-interval-defer-tail") return;
+      const result = await truncateQuietIntervalDeferTail({
+        session: activeSession,
+        sessionId,
+        deferId: opts.historyTruncation.deferId,
+        recordSpan: (name, duration, spanSessionId, metadata) => this.recordSpan(name, duration, spanSessionId, metadata),
+      });
+      if (result.status !== "truncated") return;
+      bus.emit({
+        type: "history_truncated",
+        eventId: result.eventId,
+        eventsRemoved: result.eventsRemoved,
+      });
+      this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
+    };
 
     const cachedMcp = this.deps.mcpStatus.get(sessionId);
     if (cachedMcp?.length) {
@@ -797,7 +821,7 @@ export class SessionRunner {
         this.deps.probeMcpStatus(sessionId, recoverySession);
         acceptingSessionEvents = true;
 
-        try { previousUnsub(); } catch { /* best-effort */ }
+        try { previousUnsub?.(); } catch { /* best-effort */ }
         if (previousSession !== recoverySession) {
           try { previousSession.disconnect?.(); } catch { /* best-effort */ }
         }
@@ -864,6 +888,9 @@ export class SessionRunner {
 
       try {
         if (runController.isCompleted()) return;
+        await prepareSessionForSend(session);
+        if (runController.isCompleted()) return;
+        unsub = subscribeToSession(session);
         beginSend();
         if (runController.isCompleted()) return;
         await opts.execute(session);
@@ -871,15 +898,17 @@ export class SessionRunner {
       } catch (operationErr) {
         if (operationErr instanceof Error && operationErr.message.includes("Session not found") && usedCache) {
           console.warn(`[sdk] [${sid}] Stale cached session — evicting and re-resuming...`);
-          unsub();
+          unsub?.();
+          unsub = undefined;
           this.deps.sessionObjects.delete(sessionId);
           session = await resumeSession();
           if (runController.isCompleted()) {
             abandonSession(session);
             return;
           }
-          unsub = subscribeToSession(session);
+          await prepareSessionForSend(session);
           if (runController.isCompleted()) return;
+          unsub = subscribeToSession(session);
           beginSend();
           if (runController.isCompleted()) return;
           await opts.execute(session);
@@ -894,7 +923,7 @@ export class SessionRunner {
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
       syncShellWaits.clear();
-      unsub();
+      unsub?.();
     }
   }
 }

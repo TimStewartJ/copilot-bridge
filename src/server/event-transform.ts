@@ -108,7 +108,7 @@ function getUserMessageContent(event: any): string {
   return typeof content === "string" ? content : "";
 }
 
-function parseDeferMetadata(content: string): Record<string, string> | undefined {
+export function parseDeferMetadata(content: string): Record<string, string> | undefined {
   const start = content.indexOf("<defer>");
   const end = content.indexOf("</defer>", start + "<defer>".length);
   if (start < 0 || end < 0) return undefined;
@@ -125,9 +125,11 @@ function parseDeferMetadata(content: string): Record<string, string> | undefined
   return metadata;
 }
 
-function isQuietIntervalDeferEvent(event: any): boolean {
+export function isQuietIntervalDeferEvent(event: any, expectedDeferId?: string): boolean {
   const metadata = parseDeferMetadata(getUserMessageContent(event));
-  return metadata?.kind === "interval" && metadata.attentionMode === "quiet";
+  return metadata?.kind === "interval"
+    && metadata.attentionMode === "quiet"
+    && (expectedDeferId === undefined || metadata.deferId === expectedDeferId);
 }
 
 function getRenameTargetSessionId(args: unknown): string | undefined {

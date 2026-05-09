@@ -730,6 +730,70 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
+  it("truncates a previous quiet interval defer tail before sending the next interval prompt", async () => {
+    const { manager, globalBus } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    const statusEvents: any[] = [];
+    const truncate = vi.fn(async () => ({ eventsRemoved: 3 }));
+    const sessionWithHistory = Object.assign(session, {
+      getMessages: vi.fn(async () => [
+        {
+          id: "previous-quiet-user",
+          type: "user.message",
+          data: {
+            content: [
+              "<defer>",
+              "deferId: interval_loop-1",
+              "kind: interval",
+              "attentionMode: quiet",
+              "</defer>",
+              "",
+              "User prompt:",
+              "Poll deployment",
+            ].join("\n"),
+          },
+        },
+        { id: "previous-assistant", type: "assistant.message", data: { content: "No change" } },
+        { id: "previous-idle", type: "session.idle", data: {} },
+      ]),
+      rpc: { history: { truncate } },
+    });
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+    globalBus.subscribe((event) => statusEvents.push(event));
+
+    const accepted = manager.startWorkAndWaitForDelivery("session-1", "next poll", undefined, {
+      attentionMode: "quiet",
+      historyTruncation: {
+        mode: "replace-quiet-interval-defer-tail",
+        deferId: "interval_loop-1",
+      },
+    });
+    await flushMicrotasks();
+
+    expect(sessionWithHistory.getMessages).toHaveBeenCalled();
+    expect(truncate).toHaveBeenCalledWith({ eventId: "previous-quiet-user" });
+    expect(truncate.mock.invocationCallOrder[0]).toBeLessThan(session.send.mock.invocationCallOrder[0]);
+    expect(statusEvents).toContainEqual({ type: "session:history-truncated", sessionId: "session-1" });
+
+    getHandler()?.({
+      type: "user.message",
+      data: {},
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    });
+    await expect(accepted).resolves.toBeUndefined();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: new Date(Date.now() + 2).toISOString(),
+    });
+    await flushMicrotasks();
+  });
+
   it("transitions busy → stalled → busy → idle from the server run-state model", async () => {
     const { manager, globalBus } = createManager();
     const events: string[] = [];
