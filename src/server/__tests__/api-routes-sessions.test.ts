@@ -141,6 +141,68 @@ describe("Session routes (mocked)", () => {
     ]));
   });
 
+  it("GET /api/sessions overlays CLI catalog summaries with workspace names after cheap filtering", async () => {
+    const copilotHome = join(makeTestDir("api-cli-catalog-name-overlay"), ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
+    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
+    try {
+      cliDb.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          cwd TEXT,
+          summary TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        );
+      `);
+      const insert = cliDb.prepare(`
+        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      insert.run(
+        "cli-named-session",
+        "D:\\work",
+        "ok luycyd lyte was sold! update he selling db",
+        "2026-04-16T12:00:00.000Z",
+        "2026-04-16T12:00:00.000Z",
+      );
+      insert.run(
+        "b17e1000-0000-4000-8000-000000000001",
+        "D:\\work",
+        "Disposable helper",
+        "2026-04-16T13:00:00.000Z",
+        "2026-04-16T13:00:00.000Z",
+      );
+    } finally {
+      cliDb.close();
+    }
+    mkdirSync(join(copilotHome, "session-state", "cli-named-session"), { recursive: true });
+    writeFileSync(
+      join(copilotHome, "session-state", "cli-named-session", "workspace.yaml"),
+      [
+        "created_at: 2026-04-16T12:00:00.000Z",
+        "name: Record Lucyd Lyte Sale",
+        "summary: Record Lucyd Lyte Sale",
+      ].join("\n"),
+    );
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn(async () => {
+      throw new Error("should use CLI catalog");
+    });
+    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+    expect(res.body.sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "cli-named-session",
+        summary: "Record Lucyd Lyte Sale",
+      }),
+    ]);
+  });
+
   it("GET /api/sessions keeps sessions visible when a CLI-owned summary exists", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([

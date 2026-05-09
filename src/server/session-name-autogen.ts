@@ -1,6 +1,7 @@
 import { approveAll, type ModelInfo } from "@github/copilot-sdk";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { deleteCliSessionStoreRows } from "./cli-session-store.js";
 import {
   buildSessionTitleSystemPrompt,
@@ -26,6 +27,7 @@ export interface SessionNameAutogeneratorDeps {
   getCopilotHome(): string;
   getSessionName(sessionId: string): Promise<string | undefined>;
   setSessionName(sessionId: string, name: string, opts?: SetSessionNameOptions): Promise<void>;
+  recordSpan?: (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) => void;
   logger?: Pick<typeof console, "warn">;
 }
 
@@ -46,6 +48,10 @@ export class SessionNameAutogenerator {
   private readonly generationLastAttempt = new Map<string, number>();
 
   constructor(private readonly deps: SessionNameAutogeneratorDeps) {}
+
+  private recordSpan(name: string, start: number, sessionId?: string, metadata?: Record<string, unknown>): void {
+    this.deps.recordSpan?.(name, Date.now() - start, sessionId, metadata);
+  }
 
   maybeAutoNameSession(
     sessionId: string,
@@ -74,22 +80,36 @@ export class SessionNameAutogenerator {
     sessionId: string,
     options: { session?: any; userMessages?: string[] },
   ): Promise<void> {
+    const start = Date.now();
     const existingName = options.session && typeof options.session.rpc?.name?.get === "function"
       ? (await options.session.rpc.name.get())?.name
       : await this.deps.getSessionName(sessionId);
-    if (typeof existingName === "string" && existingName.trim()) return;
+    if (typeof existingName === "string" && existingName.trim()) {
+      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });
+      return;
+    }
 
     let userMessages = (options.userMessages ?? []).map((message) => message.trim()).filter(Boolean).slice(-20);
     if (userMessages.length === 0 && options.session) {
       const events = await options.session.getMessages();
       userMessages = collectRecentUserMessages(events);
     }
-    if (userMessages.length === 0) return;
+    if (userMessages.length === 0) {
+      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_messages" });
+      return;
+    }
 
     this.generationLastAttempt.set(sessionId, Date.now());
     const generatedName = await this.generateSessionName(userMessages);
-    if (!generatedName) return;
+    if (!generatedName) {
+      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_title" });
+      return;
+    }
     await this.deps.setSessionName(sessionId, generatedName, { session: options.session });
+    this.recordSpan("session.name.autogen", start, sessionId, {
+      result: "generated",
+      messageCount: userMessages.length,
+    });
   }
 
   private async generateSessionName(userMessages: string[]): Promise<string | undefined> {
@@ -138,10 +158,21 @@ export class SessionNameAutogenerator {
       }
     }
     await rm(join(this.deps.getCopilotHome(), "session-state", sessionId), { recursive: true, force: true });
-    try {
-      deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
-    } catch (error) {
-      this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Disposable title session DB cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    // The CLI session-store row may be flushed after the helper session directory is gone.
+    for (const delayMs of [0, 500, 2_000]) {
+      if (delayMs > 0) await sleep(delayMs);
+      const start = Date.now();
+      try {
+        deleteCliSessionStoreRows(this.deps.getCopilotHome(), sessionId);
+        this.recordSpan("session.name.cleanup", start, sessionId, { result: "ok", delayMs });
+      } catch (error) {
+        this.recordSpan("session.name.cleanup", start, sessionId, {
+          result: "error",
+          delayMs,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Disposable title session DB cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 }

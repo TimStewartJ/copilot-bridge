@@ -1,6 +1,10 @@
 import { approveAll } from "@github/copilot-sdk";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  isSessionStatePathSegment,
+  parseWorkspaceYamlSessionName,
+} from "./session-workspace-yaml.js";
 
 export interface SetSessionNameOptions {
   session?: any;
@@ -11,10 +15,6 @@ export interface SessionNameRpcDeps {
   withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T>;
   getSessionStateDir(sessionId: string): string;
   emitSessionNameChanged(sessionId: string, name: string): void;
-}
-
-function isSessionStatePathSegment(sessionId: string): boolean {
-  return sessionId !== "." && sessionId !== ".." && !sessionId.includes("/") && !sessionId.includes("\\");
 }
 
 function normalizeSessionName(name: string): string {
@@ -44,23 +44,7 @@ export function readSessionNameFromWorkspace(
   const workspacePath = join(getSessionStateDir(sessionId), "workspace.yaml");
   if (!existsSync(workspacePath)) return undefined;
   const content = readFileSync(workspacePath, "utf-8");
-  const readScalar = (key: string): string | undefined => {
-    const pattern = new RegExp(`^${key}:\\s*(.*)$`);
-    for (const line of content.split(/\r?\n/)) {
-      const match = line.match(pattern);
-      const rawValue = match?.[1]?.trim();
-      if (!rawValue || rawValue === "null") continue;
-      if (
-        rawValue.length >= 2
-        && ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'")))
-      ) {
-        return rawValue.slice(1, -1).trim() || undefined;
-      }
-      return rawValue.trim() || undefined;
-    }
-    return undefined;
-  };
-  return readScalar("name") ?? readScalar("summary");
+  return parseWorkspaceYamlSessionName(content);
 }
 
 export function createSessionNameRpc(deps: SessionNameRpcDeps) {

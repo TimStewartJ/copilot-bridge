@@ -11,6 +11,7 @@ import {
 } from "./event-transform.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_MAX_TAIL_BYTES = 8 * 1024 * 1024;
@@ -93,24 +94,6 @@ function isFileNotFoundError(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
     && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-function parseWorkspaceScalar(content: string, key: string): string | undefined {
-  const pattern = new RegExp(`^${key}:\\s*(.*)$`);
-  for (const line of content.split(/\r?\n/)) {
-    const match = line.match(pattern);
-    if (!match) continue;
-    const rawValue = match[1]?.trim() ?? "";
-    if (!rawValue || rawValue === "null") return undefined;
-    if (
-      rawValue.length >= 2
-      && ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'")))
-    ) {
-      return rawValue.slice(1, -1).trim() || undefined;
-    }
-    return rawValue.trim() || undefined;
-  }
-  return undefined;
 }
 
 function getToolCallId(event: any): string | undefined {
@@ -476,7 +459,7 @@ export async function listSessionsFromDisk(
       for (const line of content.split(/\r?\n/)) {
         if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
       }
-      const name = parseWorkspaceScalar(content, "name") ?? parseWorkspaceScalar(content, "summary");
+      const name = parseWorkspaceYamlSessionName(content);
       if (name) session.summary = name;
       if (effectiveCwd) session.context = { cwd: effectiveCwd };
       return { dirName, yamlPath, session };

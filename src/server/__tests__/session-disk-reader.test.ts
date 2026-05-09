@@ -81,7 +81,9 @@ describe("listSessionsFromDisk telemetry", () => {
     writeSessionFiles(copilotHome, "session-named", {
       workspace: [
         "created_at: 2026-04-30T10:00:00.000Z",
-        "name: CLI owned name",
+        "name: |-",
+        "  CLI owned",
+        "  name",
         "summary: Legacy summary",
       ].join("\n"),
     });
