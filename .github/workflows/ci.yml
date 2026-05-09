@@ -45,6 +45,6 @@ jobs:
         shell: pwsh
         run: npx vite build
 
-      - name: Run tests
+      - name: Run tests with coverage
         shell: pwsh
-        run: npx vitest run
+        run: npm run test:coverage
