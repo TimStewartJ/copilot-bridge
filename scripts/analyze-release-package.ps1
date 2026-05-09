@@ -64,6 +64,11 @@ function Find-AppRoot($ReleaseRoot) {
 }
 
 function Test-SensitiveFileName($RelativePath) {
+  $normalizedPath = $RelativePath -replace '[\\/]+', '/'
+  if ($normalizedPath -eq "app/update-manifest-public-key.pem") {
+    return $false
+  }
+
   $name = [System.IO.Path]::GetFileName($RelativePath)
   return $name -match '(^\.env$|\.pem$|\.key$|\.pfx$|^id_rsa|^\.bridge-release-token)'
 }
