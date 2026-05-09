@@ -1,36 +1,10 @@
 import { defineTool } from "@github/copilot-sdk";
-import matter from "gray-matter";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "../docs-snapshot-store.js";
 
-const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
-
 function normalizeDocsToolFailure(error: unknown) {
   return toolFailure(error instanceof Error ? error.message : String(error));
-}
-
-function getTaggedDocFrontmatterTags(frontmatter: { tags?: unknown }): string[] {
-  if (Array.isArray(frontmatter.tags)) {
-    return frontmatter.tags
-      .filter((tag): tag is string => typeof tag === "string")
-      .map((tag) => tag.trim())
-      .filter(Boolean);
-  }
-  if (typeof frontmatter.tags === "string") {
-    const trimmed = frontmatter.tags.trim();
-    return trimmed ? [trimmed] : [];
-  }
-  return [];
-}
-
-function validateTaggedDocContent(content: string): void {
-  const { data } = matter(content);
-  const tags = getTaggedDocFrontmatterTags(data);
-  if (tags.length === 0) return;
-  if (typeof data.description !== "string" || !data.description.trim()) {
-    throw new Error(TAGGED_DOC_DESCRIPTION_ERROR);
-  }
 }
 
 function createPreDeleteSnapshot(ctx: AppContext): void {
@@ -72,7 +46,6 @@ export function createDocsTools(ctx: AppContext) {
       parameters: { type: "object", properties: { path: { type: "string", description: "Page path relative to docs root (e.g., 'notes/my-page')" }, content: { type: "string", description: "Raw markdown content (may include YAML frontmatter)" } }, required: ["path", "content"] },
       handler: async (args: any) => {
         try {
-          validateTaggedDocContent(args.content);
           const page = ctx.docsStore!.writePage(args.path, args.content);
           ctx.docsIndex!.indexPage(page);
           return { path: page.path, success: true };
@@ -87,7 +60,6 @@ export function createDocsTools(ctx: AppContext) {
       handler: async (args: any) => {
         try {
           const updatedContent = ctx.docsStore!.previewEditPageContent(args.path, args.old_str, args.new_str);
-          validateTaggedDocContent(updatedContent);
           const page = ctx.docsStore!.writePage(args.path, updatedContent);
           ctx.docsIndex!.indexPage(page);
           return { path: page.path, success: true };
@@ -231,16 +203,12 @@ export function createDocsTools(ctx: AppContext) {
       handler: async (args: any) => {
         try {
           const pagePath: string = args.path;
-          // Guard: don't allow deleting DB entries via this tool
-          const page = ctx.docsStore!.readPage(pagePath);
-          if (page?.isDbItem) {
-            return toolFailure(`"${pagePath}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.`);
-          }
+          const page = ctx.docsStore!.readUserPage(pagePath);
           const canonicalPath = page?.path ?? pagePath;
           if (page) {
             createPreDeleteSnapshot(ctx);
           }
-          const deleted = ctx.docsStore!.deletePage(pagePath);
+          const deleted = ctx.docsStore!.deleteUserPage(pagePath);
           if (deleted) ctx.docsIndex!.removePage(canonicalPath);
           return { path: canonicalPath, deleted };
         } catch (error) {

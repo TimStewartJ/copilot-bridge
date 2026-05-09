@@ -53,6 +53,14 @@ const VALID_FIELD_TYPES = new Set(["text", "select", "date", "number", "boolean"
 const DB_INPUT_RESERVED_KEYS = new Set(["folder", "slug", "body", "fields"]);
 const DANGEROUS_DB_FIELD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SYSTEM_DB_FIELD_KEYS = new Set(["created", "modified"]);
+export const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
+
+export class DocsStoreValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocsStoreValidationError";
+  }
+}
 
 export function normalizeDocsPublicPath(input: string): string {
   const normalized = input.replace(/\\/g, "/").replace(/\.md$/, "");
@@ -72,6 +80,29 @@ export function normalizeDocsPublicPath(input: string): string {
     return segments.slice(0, -1).join("/");
   }
   return segments.join("/");
+}
+
+function getTaggedDocFrontmatterTags(frontmatter: { tags?: unknown }): string[] {
+  if (Array.isArray(frontmatter.tags)) {
+    return frontmatter.tags
+      .filter((tag): tag is string => typeof tag === "string")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
+  if (typeof frontmatter.tags === "string") {
+    const trimmed = frontmatter.tags.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return [];
+}
+
+export function validateTaggedDocContent(content: string): void {
+  const { data } = matter(content);
+  const tags = getTaggedDocFrontmatterTags(data);
+  if (tags.length === 0) return;
+  if (typeof data.description !== "string" || !data.description.trim()) {
+    throw new DocsStoreValidationError(TAGGED_DOC_DESCRIPTION_ERROR);
+  }
 }
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -409,6 +440,7 @@ export function createDocsStore(docsDir: string) {
 
     // Parse incoming content for frontmatter
     const { data, content } = matter(rawContent);
+    validateTaggedDocContent(rawContent);
     const now = new Date().toISOString();
 
     // Preserve created timestamp from existing file
@@ -448,6 +480,19 @@ export function createDocsStore(docsDir: string) {
     if (!resolved) return false;
     unlinkSync(resolved.filePath);
     return true;
+  }
+
+  function readUserPage(pagePath: string): DocPage | null {
+    const page = readPage(pagePath);
+    if (page?.isDbItem) {
+      throw new DocsStoreValidationError(`"${pagePath}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.`);
+    }
+    return page;
+  }
+
+  function deleteUserPage(pagePath: string): boolean {
+    readUserPage(pagePath);
+    return deletePage(pagePath);
   }
 
   // ── Tree listing ──────────────────────────────────────────────
@@ -689,7 +734,7 @@ export function createDocsStore(docsDir: string) {
   }
 
   return {
-    readPage, writePage, previewEditPageContent, editPage, deletePage, listTree, scanAllPages, deleteFolder,
+    readPage, readUserPage, writePage, previewEditPageContent, editPage, deletePage, deleteUserPage, listTree, scanAllPages, deleteFolder,
     readSchema, writeSchema, isDbFolder,
     normalizeDbEntryInput,
     addDbEntry, updateDbEntry, listDbEntries,

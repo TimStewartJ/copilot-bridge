@@ -262,8 +262,9 @@ function Write-UpdateStatus($Phase, [string]$ErrorMessage = $null, [bool]$Rollba
     startedAt = $statusStartedAt
     updatedAt = $now
     logPath = $LogPath
+    backupDir = $backupDir
   }
-  if ($Phase -eq "succeeded" -or $Phase -eq "failed") {
+  if ($Phase -eq "succeeded" -or $Phase -eq "failed" -or $Phase -eq "rollback_failed") {
     $status.completedAt = $now
   }
   if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) {
@@ -271,6 +272,7 @@ function Write-UpdateStatus($Phase, [string]$ErrorMessage = $null, [bool]$Rollba
   }
   if ($RollbackAttempted) {
     $status.rollbackAttempted = $true
+    $status.mutableDirectoriesPreservedOnRollback = @($backupEntries | ForEach-Object { $_.Path })
   }
   $status | ConvertTo-Json -Depth 4 | Set-Content -Path $StatusPath -Encoding UTF8
 }
@@ -368,14 +370,19 @@ try {
       }
     }
   }
-  foreach ($entry in $backupEntries) {
-    Restore-BackupEntry $entry
-  }
+  Write-Warning "Preserving mutable data/config directories after failed update. Backup remains available at $backupDir."
   Copy-ReleaseWrappers $backupDir $installRoot
   if ($bridgeStopped) {
     $startScript = Join-Path $installRoot "start.ps1"
     if (Test-Path $startScript) {
-      & $startScript
+      try {
+        & $startScript
+        Wait-BridgeHealth -TimeoutSeconds 60
+      } catch {
+        $rollbackError = $_.Exception.Message
+        Write-UpdateStatus "rollback_failed" "$updateError Rollback failed: $rollbackError" $true
+        throw "Update failed: $updateError Rollback failed: $rollbackError"
+      }
     }
   }
   Write-UpdateStatus "failed" $updateError $true

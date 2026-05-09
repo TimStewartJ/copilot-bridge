@@ -8,10 +8,6 @@ import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTask } from "./helpers.js";
 
-const SCHEDULE_REUSE_FIELDS = ["sessionMode", "reuseSession", "targetSessionId"] as const;
-const SCHEDULE_REUSE_UNSUPPORTED_MESSAGE =
-  "Schedule reuse fields are no longer supported; schedules always create fresh task-linked sessions. Use defer_create with delaySeconds/runAt for same-session one-shot follow-up or intervalSeconds for same-session polling.";
-
 function isPathAtOrUnder(parent: string, candidate: string): boolean {
   const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
   return candidate === parent || candidate.startsWith(parentWithSeparator);
@@ -47,10 +43,6 @@ function getScheduler(ctx: AppContext): typeof schedulerModule {
     ctx.scheduler = schedulerModule;
   }
   return schedulerModule;
-}
-
-function hasScheduleReuseField(args: Record<string, unknown>): boolean {
-  return SCHEDULE_REUSE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(args, field));
 }
 
 async function enforceRetentionForSchedule(ctx: AppContext, schedule: Parameters<typeof enforceScheduleSessionRetention>[0]["schedule"]): Promise<void> {
@@ -89,9 +81,6 @@ export function createScheduleTools(ctx: AppContext) {
       required: ["taskId", "name", "prompt", "type"],
     },
     handler: async (args: any) => {
-      if (hasScheduleReuseField(args)) {
-        return toolFailure(SCHEDULE_REUSE_UNSUPPORTED_MESSAGE);
-      }
       if (args.type === "cron" && !args.cron) return toolFailure("cron expression is required for cron schedules");
       if (args.type === "once" && !args.runAt) return toolFailure("runAt is required for one-shot schedules");
       const scheduler = getScheduler(ctx);
@@ -147,9 +136,6 @@ export function createScheduleTools(ctx: AppContext) {
       required: ["scheduleId"],
     },
     handler: async (args: any) => {
-      if (hasScheduleReuseField(args)) {
-        return toolFailure(SCHEDULE_REUSE_UNSUPPORTED_MESSAGE);
-      }
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       const scheduler = getScheduler(ctx);

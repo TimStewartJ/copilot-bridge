@@ -82,7 +82,6 @@ describe("schedule-store", () => {
       const hydrated = store.getSchedule(s.id)!;
       expect(hydrated.sessionMode).toBe("new");
       expect(hydrated.lastSessionId).toBe("session-123");
-      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
       expect((hydrated as any).targetSessionId).toBeUndefined();
     });
 
@@ -92,14 +91,11 @@ describe("schedule-store", () => {
         .run("session-123", s.id);
 
       expect(store.getSchedule(s.id)!.sessionMode).toBe("new");
-      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
       const renamed = store.updateSchedule(s.id, { name: "Still strict" });
       expect(renamed.sessionMode).toBe("new");
-      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
 
       const updated = store.updateSchedule(s.id, { sessionMode: "reuse-last" });
       expect(updated.sessionMode).toBe("new");
-      expect(store.requiresExistingReuseSession(s.id)).toBe(false);
     });
 
     it("normalizes legacy reuse data during database migration", () => {
@@ -194,8 +190,20 @@ describe("schedule-store", () => {
           ]);
           const claims = migratedDb.prepare("SELECT COUNT(*) AS count FROM schedule_session_claims").get() as { count: number };
           expect(claims.count).toBe(0);
+          migratedDb.prepare(`
+            INSERT INTO schedule_session_claims (sessionId, scheduleId, claimedAt, leaseExpiresAt)
+            VALUES (?, ?, ?, ?)
+          `).run("post-migration-claim", "reuse-last-schedule", now, "2026-01-01T00:02:00.000Z");
         } finally {
           migratedDb.close();
+        }
+
+        const reopenedDb = openDatabase(dataDir);
+        try {
+          const claims = reopenedDb.prepare("SELECT sessionId FROM schedule_session_claims").all() as Array<{ sessionId: string }>;
+          expect(claims.map((claim) => claim.sessionId)).toEqual(["post-migration-claim"]);
+        } finally {
+          reopenedDb.close();
         }
       } finally {
         rmSync(dataDir, { recursive: true, force: true });

@@ -382,7 +382,7 @@ function backfillBridgeSessionState(db: DatabaseSync): void {
   }
 }
 
-function normalizeLegacyScheduleReuseState(db: DatabaseSync): void {
+function ensureLegacyScheduleReuseColumns(db: DatabaseSync): void {
   const scheduleCols = db.prepare("PRAGMA table_info(schedules)").all() as any[];
   if (!scheduleCols.some((c: any) => c.name === "sessionMode")) {
     db.exec("ALTER TABLE schedules ADD COLUMN sessionMode TEXT NOT NULL DEFAULT 'new'");
@@ -399,7 +399,9 @@ function normalizeLegacyScheduleReuseState(db: DatabaseSync): void {
   if (!scheduleCols.some((c: any) => c.name === "autoArchiveKeep")) {
     db.exec("ALTER TABLE schedules ADD COLUMN autoArchiveKeep INTEGER");
   }
+}
 
+function finalizeLegacyScheduleReuseState(db: DatabaseSync): void {
   db.exec(`
     UPDATE schedules
     SET sessionMode = 'reuse-last',
@@ -413,7 +415,10 @@ function normalizeLegacyScheduleReuseState(db: DatabaseSync): void {
     UPDATE schedules
     SET sessionMode = 'new',
         targetSessionId = NULL,
-        reuseLastRequiresExistingSession = 0;
+        reuseLastRequiresExistingSession = 0
+    WHERE sessionMode != 'new'
+       OR targetSessionId IS NOT NULL
+       OR reuseLastRequiresExistingSession != 0;
 
     DELETE FROM schedule_session_claims;
   `);
@@ -615,10 +620,17 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   },
   {
     id: "schedule-reuse-fields-normalization",
-    category: "data-repair",
+    category: "schema-upgrade",
     runMode: "every-open",
-    description: "Add former schedule reuse columns when needed and normalize removed reuse modes to fresh-session schedules.",
-    apply: normalizeLegacyScheduleReuseState,
+    description: "Add former schedule reuse columns when needed so legacy databases remain readable.",
+    apply: ensureLegacyScheduleReuseColumns,
+  },
+  {
+    id: "schedule-reuse-final-new-session-normalization-v1",
+    category: "data-repair",
+    runMode: "once",
+    description: "One-time normalization of removed schedule reuse modes to fresh-session schedules.",
+    apply: finalizeLegacyScheduleReuseState,
   },
   {
     id: SCHEDULE_RUNS_LEGACY_BACKFILL,

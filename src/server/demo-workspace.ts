@@ -69,7 +69,7 @@ function timestamp(offsetMs = 0): string {
 }
 
 function markdownPage(title: string, tags: string[], body: string): string {
-  return matter.stringify(`${body.trim()}\n`, { title, tags });
+  return matter.stringify(`${body.trim()}\n`, { title, description: `${title} demo page.`, tags });
 }
 
 export function getDemoPaths(repoRoot: string): DemoPaths {
