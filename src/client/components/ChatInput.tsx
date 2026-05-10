@@ -443,7 +443,7 @@ export default function ChatInput({
       : "text-text-faint";
 
   return (
-    <div className="p-3 md:p-4 border-t border-border bg-bg-secondary">
+    <div className="border-t border-border/80 bg-bg-secondary/95 p-3 md:p-4">
       {uploading > 0 && (
         <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
           <Loader2 size={12} className="animate-spin" />
@@ -511,7 +511,7 @@ export default function ChatInput({
 
       <div className="flex items-center gap-2 md:gap-3">
         <div
-          className="flex-1 flex items-center gap-1 bg-bg-primary border border-border rounded-md focus-within:border-accent"
+          className="flex-1 flex items-center gap-1 rounded-xl border border-border bg-bg-primary shadow-sm transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent-border"
           onDrop={handleDrop}
           onDragOver={handleDragOver}
         >
@@ -598,7 +598,11 @@ export default function ChatInput({
           <button
             onClick={handleSend}
             disabled={!canSend}
-            className="h-10 w-10 rounded-md text-text-secondary hover:bg-bg-elevated hover:text-text-primary disabled:text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint self-center transition-colors flex items-center justify-center"
+            className={`flex h-10 w-10 items-center justify-center self-center rounded-lg transition-colors ${
+              canSend
+                ? "bg-accent text-white hover:bg-accent-hover"
+                : "text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint"
+            }`}
             title={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
             aria-label={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
             type="button"

@@ -120,7 +120,7 @@ export function getTaskAlertChips({
       kind: "session-unread",
       label: unreadSessions.length === 1 ? "Unread activity" : `${unreadSessions.length} unread chats`,
       title: describeSessions(unreadSessions, "unread"),
-      tone: "accent",
+      tone: "success",
       priority: 40,
       recency: getSessionRecency(unreadSessions[0]),
     });
@@ -132,7 +132,7 @@ export function getTaskAlertChips({
       kind: "active-pr",
       label: activePrCount === 1 ? "1 active PR" : `${activePrCount} active PRs`,
       title: `${activePrCount} linked pull request${activePrCount === 1 ? " is" : "s are"} still active`,
-      tone: "success",
+      tone: "info",
       priority: 50,
       recency: toTimestamp(task.updatedAt),
     });
@@ -143,7 +143,7 @@ export function getTaskAlertChips({
       kind: "needs-decision",
       label: "Needs decision",
       title: "No next action, waiting reason, or follow-up is set",
-      tone: "accent",
+      tone: "warning",
       priority: 60,
       recency: toTimestamp(task.updatedAt),
     });

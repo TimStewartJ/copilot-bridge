@@ -24,6 +24,8 @@
   --color-accent: #3b82f6;
   --color-accent-hover: #2563eb;
   --color-accent-muted: #3b82f6/15%;
+  --color-accent-surface: rgba(59, 130, 246, 0.12);
+  --color-accent-border: rgba(96, 165, 250, 0.30);
 
   /* Borders */
   --color-border: #27272a;
@@ -34,7 +36,9 @@
   --color-warning: #eab308;
   --color-error: #ef4444;
   --color-error-hover: #dc2626;
-  --color-info: #3b82f6;
+  --color-info: #38bdf8;
+  --color-info-surface: rgba(56, 189, 248, 0.13);
+  --color-info-border: rgba(125, 211, 252, 0.30);
 
   /* Agent / sub-agent */
   --color-agent: #a78bfa;
@@ -81,6 +85,8 @@
   --color-accent: #2563eb;
   --color-accent-hover: #1d4ed8;
   --color-accent-muted: rgba(37, 99, 235, 0.10);
+  --color-accent-surface: rgba(37, 99, 235, 0.08);
+  --color-accent-border: rgba(37, 99, 235, 0.22);
 
   --color-border: #d4d4d8;
   --color-border-subtle: #e4e4e7;
@@ -89,7 +95,9 @@
   --color-warning: #d97706;
   --color-error: #dc2626;
   --color-error-hover: #b91c1c;
-  --color-info: #2563eb;
+  --color-info: #0284c7;
+  --color-info-surface: rgba(2, 132, 199, 0.08);
+  --color-info-border: rgba(2, 132, 199, 0.20);
 
   --color-agent: #7c3aed;
   --color-agent-muted: rgba(124, 58, 237, 0.10);

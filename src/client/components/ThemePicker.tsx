@@ -23,7 +23,7 @@ export default function ThemePicker({ value, onChange }: Props) {
             onClick={() => onChange(v)}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-all cursor-pointer
               ${active
-                ? "bg-accent text-white font-medium"
+                ? "border border-accent-border bg-accent-surface text-accent font-medium"
                 : "bg-bg-surface text-text-muted hover:text-text-secondary hover:bg-bg-hover border border-transparent hover:border-border"
               }`}
             title={label}

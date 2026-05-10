@@ -120,19 +120,19 @@ export function getTaskLifecycleBadgeClass(task: Pick<Task, "status" | "complete
   const state = getTaskLifecycleDisplayState(task);
   const colours =
     state === "completed"
-      ? "bg-accent/15 text-accent"
+      ? "bg-success/15 text-success"
       : state === "archived"
         ? "bg-text-muted/15 text-text-muted"
-        : "bg-success/15 text-success";
+        : "bg-info-surface text-info";
   return `rounded-full px-1.5 py-0.5 text-[10px] ${colours}`;
 }
 
 /** Tailwind text-colour class for a small inline status label. */
 export function getTaskStatusTextClass(task: Pick<Task, "status" | "completedAt">): string {
   const state = getTaskLifecycleDisplayState(task);
-  if (state === "completed") return "text-text-muted";
+  if (state === "completed") return "text-success";
   if (state === "archived") return "text-text-faint";
-  return "text-success";
+  return "text-info";
 }
 
 export function getTaskCompletionAction(task: Pick<Task, "status" | "completedAt">): {

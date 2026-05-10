@@ -9,6 +9,7 @@ import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections } from "../task-helpers";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu } from "./task-list";
+import { UI } from "./shared/design-system";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
@@ -119,7 +120,7 @@ export default function TaskList({
     if (items.length === 0) return null;
     return (
       <div key={label}>
-        <div className="px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider">
+        <div className="px-3 py-1.5 text-xs font-semibold tracking-wide text-text-secondary">
           {label} ({items.length})
         </div>
         <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
@@ -144,7 +145,7 @@ export default function TaskList({
     <div className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
       <button
         onClick={() => onNewTask()}
-        className="w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
+        className={`${UI.button.primary} w-full`}
       >
         + New Task
       </button>
@@ -165,7 +166,7 @@ export default function TaskList({
                     onClick={() => {
                       if (onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
                     }}
-                    className="flex-1 px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-1.5"
+                    className="flex-1 px-3 py-1.5 text-xs font-semibold tracking-wide text-text-secondary flex items-center gap-1.5"
                   >
                     {isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
                     {group.name}
@@ -302,4 +303,3 @@ export default function TaskList({
     </div>
   );
 }
-

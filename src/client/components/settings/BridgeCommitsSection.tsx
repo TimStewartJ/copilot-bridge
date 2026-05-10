@@ -174,7 +174,7 @@ function ComparisonSummaryCard({
     <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-text-faint">{label}</div>
+          <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
           <p className="mt-1 text-xs text-text-muted">{descriptor.detail}</p>
         </div>
         <StatusPill descriptor={descriptor} compact />
@@ -206,7 +206,7 @@ function statusToneClassName(tone: BridgeStatusTone): string {
     case "error":
       return "bg-error/10 text-error";
     case "info":
-      return "bg-info/15 text-info";
+      return "bg-info-surface text-info";
     default:
       return "bg-bg-surface text-text-secondary";
   }

@@ -494,7 +494,7 @@ function MobileDocActionSheet({ actions, onActionSelect }: MobileDocActionSheetP
       )}
       {destructiveActions.length > 0 && (
         <div className="rounded-2xl border border-border bg-bg-secondary/40 p-2">
-          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+          <div className="px-3 pb-1 pt-2 text-xs font-semibold tracking-wide text-text-secondary">
             Destructive
           </div>
           {destructiveActions.map(renderAction)}
@@ -541,7 +541,7 @@ function PageInspectorContent({
     <div className="space-y-4">
       {headings.length > 0 && (
         <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+          <div className="flex items-center gap-2 text-sm font-semibold tracking-tight text-text-primary">
             <List size={14} />
             Contents
           </div>
@@ -552,7 +552,7 @@ function PageInspectorContent({
                 onClick={() => onHeadingSelect(heading.id)}
                 className={`w-full rounded-xl px-2 py-1.5 text-left text-sm transition-colors ${
                   activeHeadingId === heading.id
-                    ? "bg-accent/10 text-text-primary"
+                    ? "bg-accent-surface text-accent ring-1 ring-accent-border"
                     : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
                 }`}
                 style={{ paddingLeft: `${heading.level * 10}px` }}
@@ -565,7 +565,7 @@ function PageInspectorContent({
       )}
 
       <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Page info</div>
+        <div className="text-sm font-semibold tracking-tight text-text-primary">Page info</div>
         <dl className="mt-3 space-y-3 text-sm">
           <div>
             <dt className="text-xs text-text-faint">Path</dt>
@@ -602,7 +602,7 @@ function PageInspectorContent({
 
       {relatedDocs.length > 0 && (
         <div className="rounded-2xl border border-border bg-bg-secondary/70 p-4">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Related docs</div>
+          <div className="text-sm font-semibold tracking-tight text-text-primary">Related docs</div>
           <div className="mt-3 space-y-1.5">
             {relatedDocs.map((path) => (
               <button
@@ -1644,7 +1644,7 @@ export default function DocsView() {
           {dbItemSchema?.fields.filter((field) => field.name !== "title").length ? (
             <div className="shrink-0 border-b border-border bg-bg-secondary/50">
               <div className="mx-auto max-w-4xl px-5 py-4 sm:px-8">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Properties</div>
+                <div className="text-sm font-semibold tracking-tight text-text-primary">Properties</div>
                 <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(0,160px)_minmax(0,1fr)]">
                   {dbItemSchema?.fields.filter((field) => field.name !== "title").map((field) => (
                     <div key={field.name} className="grid gap-1 sm:contents">

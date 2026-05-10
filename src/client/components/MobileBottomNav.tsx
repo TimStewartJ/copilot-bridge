@@ -58,13 +58,13 @@ export function MobileBottomNav({
             <button
               key={id}
               onClick={() => onSelectTab(id)}
-              className={`flex flex-col items-center justify-center gap-0.5 flex-1 h-full transition-colors ${active ? "text-accent" : "text-text-muted active:text-text-secondary"}`}
+              className={`flex h-full flex-1 flex-col items-center justify-center gap-0.5 transition-colors ${active ? "text-accent" : "text-text-muted active:text-text-secondary"}`}
               aria-label={homeIndicatorDescription ? `${label}, ${homeIndicatorDescription}` : label}
             >
-              <span className="relative">
+              <span className={`relative rounded-full p-1 transition-colors ${active ? "bg-accent-surface" : ""}`}>
                 <Icon size={20} strokeWidth={active ? 2.2 : 1.8} />
                 {unreadCount > 0 && (
-                  <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-accent text-white text-[10px] font-semibold leading-none">
+                  <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-success text-white text-[10px] font-semibold leading-none">
                     {unreadCount > 99 ? "99+" : unreadCount}
                   </span>
                 )}

@@ -27,6 +27,7 @@ import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import { MessageSquare, Plus, CheckSquare, Check, ChevronDown, ChevronRight, ArrowUpDown, Clock, Bell, HelpCircle, Archive, AlertTriangle, Hourglass } from "lucide-react";
 import { ScheduleRow } from "./task-sections";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
+import { UI } from "./shared/design-system";
 
 type ChecklistSort = "deadline" | "task";
 
@@ -372,7 +373,7 @@ export default function Dashboard({
     >
       {/* ── Attention Bar ─────────────────────────────────── */}
       {hasAttention && (
-        <div className="border-b border-border bg-bg-secondary">
+        <div className="border-b border-border/80 bg-bg-secondary/95">
           <div className="max-w-5xl mx-auto px-4 md:px-8 py-3 space-y-2">
             {workingSessions.length > 0 && (
               <div className="flex items-start gap-3">
@@ -391,7 +392,7 @@ export default function Dashboard({
                       <button
                         key={s.sessionId}
                         onClick={() => selectSession(s)}
-                        className="text-xs px-2 py-1 rounded bg-info/10 text-info hover:bg-info/20 transition-colors truncate max-w-[200px]"
+                        className="max-w-[200px] truncate rounded border border-info-border bg-info-surface px-2 py-1 text-xs text-info transition-colors hover:border-info"
                       >
                         {s.intentText || s.title}
                       </button>
@@ -477,7 +478,7 @@ export default function Dashboard({
           {/* Left: Checklist (wider) */}
           <div className="lg:col-span-2 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+              <h2 className={UI.text.sectionTitle}>
                 <CheckSquare size={14} />
                 Open Checklist
                 {localOpenChecklistItems.length > 0 && (
@@ -493,7 +494,7 @@ export default function Dashboard({
                       onClick={() => handleSortChange(s)}
                       className={`text-[11px] px-1.5 py-0.5 rounded transition-colors ${
                         checklistSort === s
-                          ? "bg-accent/15 text-accent font-medium"
+                          ? `${UI.chip.selected} font-medium`
                           : "text-text-faint hover:text-text-secondary"
                       }`}
                     >
@@ -650,7 +651,7 @@ export default function Dashboard({
                   <>
                     <button
                       onClick={() => setShowCompleted((v) => !v)}
-                      className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5 hover:text-text-secondary transition-colors"
+                      className={UI.text.sectionTitle}
                     >
                       {showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       <Check size={14} />
@@ -694,7 +695,7 @@ export default function Dashboard({
           <div className="space-y-6">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                <h2 className={UI.text.sectionTitle}>
                   <MessageSquare size={14} />
                   Recent Chats
                 </h2>
@@ -729,7 +730,7 @@ export default function Dashboard({
             {schedules.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                  <h2 className={UI.text.sectionTitle}>
                     <Clock size={14} />
                     Schedules
                     <span className="text-text-faint font-normal text-xs">
@@ -814,12 +815,12 @@ function ResumeStrip({
   });
 
   return (
-    <div className="bg-bg-surface border border-border rounded-lg p-4 flex items-center gap-4">
+    <div className={`${UI.surface.card} flex items-center gap-4 p-4`}>
       <div className="flex-1 min-w-0">
-        <div className="text-xs text-text-faint mb-1">Pick up where you left off</div>
+        <div className={UI.text.eyebrow}>Pick up where you left off</div>
         <button
           onClick={() => onSelect(t.id)}
-          className="font-medium text-sm text-text-primary hover:text-accent transition-colors truncate block"
+          className="mt-1 block truncate text-base font-semibold text-text-primary transition-colors hover:text-accent"
         >
           {t.title}
         </button>
@@ -840,7 +841,7 @@ function ResumeStrip({
         {lastSessionId && (
           <button
             onClick={() => onResume(t.id, lastSessionId)}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center gap-1.5"
+            className={`${UI.button.primary} flex items-center gap-1.5 py-1.5 text-xs`}
           >
             <MessageSquare size={12} />
             Resume Chat
@@ -848,7 +849,7 @@ function ResumeStrip({
         )}
         <button
           onClick={() => onResume(t.id)}
-          className="px-3 py-1.5 text-xs font-medium rounded-md bg-bg-hover text-text-primary hover:bg-border transition-colors flex items-center gap-1.5"
+          className={`${UI.button.secondary} flex items-center gap-1.5`}
         >
           <Plus size={12} />
           New Chat
@@ -868,7 +869,7 @@ function OrphanSessionRow({
   return (
     <button
       onClick={onSelect}
-      className="w-full text-left px-3 py-2.5 rounded-md bg-bg-surface hover:bg-bg-hover transition-colors"
+      className="w-full rounded-lg bg-bg-surface px-3 py-2.5 text-left transition-colors hover:bg-bg-hover"
     >
       <div className="flex items-center gap-2">
         {(session.busy || session.unread) && (
@@ -918,7 +919,7 @@ const QUEUE_CONFIGS: QueueConfig[] = [
     key: "needsDecision",
     label: "Needs decision",
     icon: <HelpCircle size={13} />,
-    color: "text-accent",
+    color: "text-warning",
     emptyHint: "No pending decisions",
   },
   {
@@ -956,10 +957,10 @@ function MomentumQueues({
 
   return (
     <div className="space-y-3">
-      <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+      <h2 className={UI.text.sectionTitle}>
         Attention
       </h2>
-      <div className="bg-bg-surface border border-border rounded-lg divide-y divide-border">
+      <div className="divide-y divide-border rounded-lg border border-border bg-bg-surface">
         {activeQueues.map((q) => (
           <MomentumQueueSection
             key={q.key}

@@ -71,7 +71,7 @@ function TagColorPicker({
 }) {
   return (
     <div>
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+      <div className="mb-2 text-xs font-semibold tracking-wide text-text-secondary">
         Color
       </div>
       <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Tag color">
@@ -164,7 +164,7 @@ function TagMcpServerPicker({
     <section className="rounded-lg border border-border bg-bg-elevated p-3">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+          <div className="text-xs font-semibold tracking-wide text-text-secondary">
             MCP Servers
           </div>
           <p className="mt-0.5 text-[10px] leading-4 text-text-faint">
@@ -333,7 +333,7 @@ function CreateTagCard({
 
       <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
         <label>
-          <span className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+          <span className="mb-2 block text-xs font-semibold tracking-wide text-text-secondary">
             Name
           </span>
           <input
@@ -423,12 +423,12 @@ function EditTagCard({
 
       <div className="space-y-4">
         <section className="rounded-lg border border-border bg-bg-elevated p-3">
-          <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+          <div className="mb-3 text-xs font-semibold tracking-wide text-text-secondary">
             Basics
           </div>
           <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
             <label>
-              <span className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+              <span className="mb-2 block text-xs font-semibold tracking-wide text-text-secondary">
                 Name
               </span>
               <input
@@ -449,7 +449,7 @@ function EditTagCard({
 
         <section className="rounded-lg border border-border bg-bg-elevated p-3">
           <label>
-            <span className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+            <span className="mb-2 block text-xs font-semibold tracking-wide text-text-secondary">
               Instructions
             </span>
             <textarea

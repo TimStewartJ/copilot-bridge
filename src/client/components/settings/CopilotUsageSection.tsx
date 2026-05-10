@@ -262,7 +262,7 @@ export function CopilotUsageSection() {
 function SummaryCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="rounded-md border border-border bg-bg-elevated px-4 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-faint">{label}</div>
+      <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
       <div className="mt-1 text-sm font-medium text-text-primary">{value}</div>
       {sub && <div className="mt-1 text-[11px] text-text-faint">{sub}</div>}
     </div>
@@ -272,7 +272,7 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
 function CoverageStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-warning/20 bg-bg-primary px-3 py-2">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-faint">{label}</div>
+      <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
       <div className="mt-1 text-sm font-medium text-text-primary">{value}</div>
     </div>
   );

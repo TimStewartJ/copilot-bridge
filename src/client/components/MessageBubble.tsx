@@ -45,7 +45,7 @@ export default memo(function MessageBubble({ message, actionSlot }: MessageBubbl
       <div className="flex justify-end">
         <div className="group/message-bubble relative max-w-[85%]">
           <BubbleActions side="right">{actionSlot}</BubbleActions>
-          <div className="px-4 py-3 bg-accent text-white rounded-2xl rounded-br-sm text-sm leading-relaxed whitespace-pre-wrap break-words">
+          <div className="rounded-2xl rounded-br-sm border border-accent-border bg-accent-surface px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words">
             {hasAttachments && (
               <div className="flex gap-2 flex-wrap mb-2">
                 {message.attachments!.map((att, i) =>
@@ -60,12 +60,12 @@ export default memo(function MessageBubble({ message, actionSlot }: MessageBubbl
                       <img
                         src={`data:${att.mimeType};base64,${att.data}`}
                         alt={att.displayName ?? "attachment"}
-                        className="max-w-[200px] max-h-[200px] rounded-md border border-white/20 cursor-pointer hover:opacity-90 transition-opacity"
+                        className="max-w-[200px] max-h-[200px] rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
                       />
                     </a>
                   ) : (
-                    <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-md bg-white/10 text-white/90 text-xs max-w-[200px]">
-                      <FileText size={14} className="flex-shrink-0 text-white/60" />
+                    <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-surface text-text-secondary text-xs max-w-[200px]">
+                      <FileText size={14} className="flex-shrink-0 text-text-faint" />
                       <span className="truncate">{att.displayName ?? "file"}</span>
                     </div>
                   ),

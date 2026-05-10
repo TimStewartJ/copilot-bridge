@@ -111,7 +111,7 @@ export default function LinkDialog({
                     onClick={() => handleProviderChange(p)}
                     className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
                       provider === p
-                        ? "bg-accent/15 text-accent border border-accent/30"
+                        ? "border border-accent-border bg-accent-surface text-accent"
                         : "bg-bg-primary text-text-muted border border-border hover:text-text-secondary"
                     }`}
                   >

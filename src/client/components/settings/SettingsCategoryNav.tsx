@@ -38,7 +38,7 @@ export function SettingsCategoryNav({
                   className={classes(
                     "flex-1 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                     isActive
-                      ? "bg-accent text-white shadow-sm"
+                      ? "bg-accent-surface text-accent shadow-sm ring-1 ring-accent-border"
                       : "text-text-muted hover:bg-bg-hover hover:text-text-secondary",
                   )}
                 >
@@ -52,7 +52,7 @@ export function SettingsCategoryNav({
 
       <nav aria-label={ariaLabel} className={classes("hidden md:block md:sticky", desktopStickyTopClassName)}>
         <div className="rounded-xl border border-border bg-bg-elevated p-2">
-          <p className="px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+          <p className="px-2 pb-2 text-xs font-semibold tracking-wide text-text-secondary">
             Categories
           </p>
           <div className="space-y-1">
@@ -70,7 +70,7 @@ export function SettingsCategoryNav({
                   className={classes(
                     "flex w-full items-center rounded-lg px-3 py-2.5 text-left transition-colors",
                     isActive
-                      ? "bg-accent/10 text-accent"
+                      ? "bg-accent-surface text-accent ring-1 ring-accent-border"
                       : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
                   )}
                 >
