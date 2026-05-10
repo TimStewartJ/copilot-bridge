@@ -270,7 +270,7 @@ export default function SettingsView() {
 
       {/* Toast */}
       {toast && (
-        <div className="mx-6 mt-3 px-4 py-2 bg-accent/15 text-accent text-xs rounded-md border border-accent/20">
+        <div className="mx-6 mt-3 rounded-md border border-success/25 bg-success/10 px-4 py-2 text-xs text-success">
           {toast}
         </div>
       )}
@@ -314,8 +314,8 @@ export default function SettingsView() {
 
       {/* Sticky unsaved-changes bar */}
       {hasChanges && (
-        <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-3 border-t border-accent/30 bg-accent/10 backdrop-blur">
-          <span className="text-xs text-accent font-medium">You have unsaved changes</span>
+        <div className="shrink-0 flex items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-6 py-3 backdrop-blur">
+          <span className="text-xs font-medium text-warning">You have unsaved changes</span>
           <div className="flex items-center gap-2">
             <button
               onClick={handleDiscard}

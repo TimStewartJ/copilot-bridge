@@ -11,7 +11,7 @@ export function SettingsSection({
 }) {
   const heading = (
     <>
-      <h2 className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+      <h2 className="text-sm font-semibold tracking-tight text-text-primary">
         {title}
       </h2>
       {description && (

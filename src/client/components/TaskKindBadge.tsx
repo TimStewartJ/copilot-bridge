@@ -19,7 +19,7 @@ export default function TaskKindBadge({
   const label = getTaskKindLabel(kind);
 
   const tone = kind === "ongoing"
-    ? "bg-info/10 text-info"
+    ? "bg-info-surface text-info"
     : "bg-bg-hover text-text-muted";
 
   return (

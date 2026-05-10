@@ -34,6 +34,7 @@ import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import { getTaskKindUpdate } from "../task-kind";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonRow, SkeletonText } from "./shared/Skeleton";
+import { UI } from "./shared/design-system";
 import {
   WorkItemList,
   PullRequestList,
@@ -45,7 +46,7 @@ import {
 
 function SectionLabel({ label, count, progress }: { label: string; count?: number; progress?: string }) {
   return (
-    <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+    <div className={UI.text.sectionLabel}>
       {label}
       {progress !== undefined && (
         <span className="ml-1 text-text-faint">({progress})</span>
@@ -427,15 +428,15 @@ export default function TaskPanel({
         className="h-full overflow-x-hidden"
         scrollRestoration={scrollRestoration}
       >
-        <div className="space-y-2.5 border-b border-border bg-bg-secondary p-3 md:sticky md:top-0 md:z-20">
+        <div className="space-y-3 border-b border-border/80 bg-bg-secondary/95 p-4 shadow-sm md:sticky md:top-0 md:z-20">
         <div className="flex items-center justify-between gap-2">
           {onViewDashboard ? (
             <button
               onClick={() => openTaskOverview()}
-              className="inline-flex items-center gap-1.5 text-[10px] text-text-muted transition-colors hover:text-accent"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-text-muted transition-colors hover:text-accent"
               title="Open task overview"
             >
-              <LayoutDashboard size={10} />
+              <LayoutDashboard size={12} />
               <span>Overview</span>
             </button>
           ) : <span />}
@@ -449,7 +450,7 @@ export default function TaskPanel({
             {editingTitle ? (
               <input
                 autoFocus
-                className="w-full rounded border border-border bg-bg-surface px-1.5 py-0.5 text-sm font-medium text-text-primary outline-none focus:border-accent"
+                className="w-full rounded-md border border-border bg-bg-surface px-2 py-1 text-base font-semibold leading-tight text-text-primary outline-none focus:border-accent md:text-lg"
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onBlur={commitTitle}
@@ -464,7 +465,7 @@ export default function TaskPanel({
                   setTitleDraft(task.title);
                   setEditingTitle(true);
                 }}
-                className="w-full text-left text-sm font-medium leading-tight text-text-primary transition-colors hover:text-accent"
+                className="w-full text-left text-base font-semibold leading-tight text-text-primary transition-colors hover:text-accent md:text-lg"
                 title="Click to edit title"
               >
                 <span className="line-clamp-2">{task.title}</span>
@@ -473,7 +474,7 @@ export default function TaskPanel({
 
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {group && (
-                <div className="flex shrink-0 items-center gap-1 rounded bg-bg-hover px-1.5 py-0.5 text-[10px] text-text-muted" title={`Group: ${group.name}`}>
+                <div className="flex shrink-0 items-center gap-1 rounded bg-bg-hover px-2 py-0.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
                   <span className={`h-2 w-2 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
                   <span className="max-w-[88px] truncate">{group.name}</span>
                 </div>
@@ -509,7 +510,7 @@ export default function TaskPanel({
             {alertChips.map((chip) => (
               <span
                 key={chip.kind}
-                className={`rounded-full px-2 py-0.5 text-[10px] ${ALERT_TONE_CLASS[chip.tone]}`}
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${ALERT_TONE_CLASS[chip.tone]}`}
                 title={chip.title}
               >
                 {chip.label}
@@ -525,14 +526,14 @@ export default function TaskPanel({
                 onClick={() => { void handleCompletionAction(); }}
                 disabled={completionDisabled}
                 title={completionDescription}
-                className="w-full px-3 py-2 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center justify-center gap-1.5 disabled:bg-bg-hover disabled:text-text-faint disabled:hover:bg-bg-hover"
+                className={`${UI.button.primary} flex w-full items-center justify-center gap-1.5 text-xs`}
               >
                 {completionState.ctaState === "completed" ? <RotateCcw size={12} /> : <CheckCircle2 size={12} />}
                 {completionState.ctaLabel}
               </button>
             )}
             {showCompletionDetails && (
-              <p className="text-[11px] text-text-muted leading-relaxed">
+              <p className="text-xs leading-relaxed text-text-muted">
                 {completionDescription}
               </p>
             )}
@@ -727,8 +728,8 @@ export default function TaskPanel({
 }
 
 const ALERT_TONE_CLASS: Record<TaskAlertTone, string> = {
-  accent: "bg-accent/15 text-accent",
-  info: "bg-info/15 text-info",
+  accent: "bg-accent-surface text-accent",
+  info: "bg-info-surface text-info",
   success: "bg-success/15 text-success",
   warning: "bg-warning/15 text-warning",
   danger: "bg-error/15 text-error",

@@ -19,6 +19,7 @@ import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
+import { UI } from "./shared/design-system";
 
 interface TaskRailProps {
   tasks: Task[];
@@ -79,7 +80,7 @@ interface TaskRailProps {
 }
 
 const STATUS_BG: Record<Task["status"], string> = {
-  active: "bg-accent/15",
+  active: "bg-info-surface",
   done: "bg-success/15",
   archived: "bg-text-faint/10",
 };
@@ -140,7 +141,7 @@ export default function TaskRail({
   onRailTabChange,
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
-    active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
+    active ? `${UI.surface.selectedRow} text-accent` : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
   const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
   const homeIndicatorDotClass = homeChecklistIndicator.state === "overdue"
     ? "bg-error"
@@ -420,7 +421,7 @@ export default function TaskRail({
           <ListTodo size={13} />
           Tasks
           {taskTabUnread > 0 && (
-            <span className="min-w-[16px] h-4 px-1 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center">
+            <span className="min-w-[16px] h-4 px-1 rounded-full bg-success text-white text-[10px] font-semibold flex items-center justify-center">
               {taskTabUnread}
             </span>
           )}
@@ -439,7 +440,7 @@ export default function TaskRail({
           <MessageSquare size={13} />
           Chats
           {chatTabUnread > 0 && (
-            <span className="min-w-[16px] h-4 px-1 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center">
+            <span className="min-w-[16px] h-4 px-1 rounded-full bg-success text-white text-[10px] font-semibold flex items-center justify-center">
               {chatTabUnread}
             </span>
           )}
@@ -456,7 +457,7 @@ export default function TaskRail({
             {/* New Task button */}
             <button
               onClick={() => onNewTask()}
-              className="w-full px-3 py-2 mb-1 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
+              className={`${UI.button.primary} mb-1 w-full`}
             >
               + New Task
             </button>
@@ -826,4 +827,3 @@ export default function TaskRail({
     </div>
   );
 }
-

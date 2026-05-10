@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
+import { UI } from "./shared/design-system";
 
 export interface TaskPanelSummaryChip {
   label: string;
@@ -42,14 +43,14 @@ export default function TaskPanelSummaryRow({
       <div className="flex min-w-0 flex-1 items-start gap-2">
         <span className="mt-0.5 shrink-0 text-text-faint">{icon}</span>
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-text-faint">
+          <div className="text-[11px] font-medium tracking-wide text-text-muted">
             {label}
           </div>
-          <div className={`min-w-0 text-xs font-medium text-text-primary ${titleClassName ?? "truncate"}`}>
+          <div className={`mt-0.5 min-w-0 text-sm font-medium text-text-primary ${titleClassName ?? "truncate"}`}>
             {title}
           </div>
           {subtitle && (
-            <div className={`mt-0.5 min-w-0 text-[11px] text-text-muted ${subtitleClassName ?? "truncate"}`}>
+            <div className={`mt-0.5 min-w-0 text-xs text-text-muted ${subtitleClassName ?? "truncate"}`}>
               {subtitle}
             </div>
           )}
@@ -58,7 +59,7 @@ export default function TaskPanelSummaryRow({
               {chips.map((chip) => (
                 <span
                   key={`${label}-${chip.label}`}
-                  className={`rounded-full px-1.5 py-0.5 text-[10px] ${chip.className ?? "bg-text-muted/15 text-text-muted"}`}
+                  className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${chip.className ?? UI.chip.muted}`}
                 >
                   {chip.label}
                 </span>
@@ -74,7 +75,7 @@ export default function TaskPanelSummaryRow({
   );
 
   return (
-    <div className={`group flex items-stretch rounded-md bg-bg-surface transition-colors ${onClick || trailing ? "hover:bg-bg-hover" : ""}`}>
+    <div className={`group flex items-stretch rounded-lg bg-bg-surface transition-colors ${onClick || trailing ? "hover:bg-bg-hover" : ""}`}>
       {onClick ? (
         <button
           onClick={onClick}

@@ -7,6 +7,7 @@ import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import { getFollowUpState } from "../TaskMomentumFields";
 import TaskKindBadge from "../TaskKindBadge";
 import { getTaskStatusLabel, getTaskStatusTextClass } from "../../task-completion-helpers";
+import { UI } from "../shared/design-system";
 
 
 
@@ -48,16 +49,16 @@ export default function SortableTaskItem({
     <div ref={setNodeRef} style={style} className="group">
       <button
         {...bindLongPress(task.id, () => onSelectTask(task.id))}
-        className={`relative w-full text-left px-3 ${isRail ? "py-2" : "py-2.5"} rounded-md text-sm select-none no-callout transition-all duration-150 ${
+        className={`relative w-full text-left px-3 ${isRail ? "py-2" : "py-2.5"} rounded-lg text-sm select-none no-callout transition-all duration-150 ${
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
             : isActive
-              ? "bg-bg-hover"
+              ? UI.surface.selectedRow
               : "hover:bg-bg-hover"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
         {indicator?.unread && (
-          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-3 rounded-full bg-text-primary" />
+          <span className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-success" />
         )}
         <div className="flex items-center">
           <span
@@ -83,7 +84,7 @@ export default function SortableTaskItem({
             </span>
           )}
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-text-muted transition-all duration-150 pl-0 group-hover:pl-4">
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-text-muted transition-all duration-150 pl-0 group-hover:pl-4">
           {momentumBadges.map((badge) => (
             <span
               key={badge.label}
@@ -126,7 +127,7 @@ export function getTaskListMomentumBadges(task: Task): Array<{ label: string; cl
   if (task.status === "active" && !task.nextAction && !task.waitingOn && !task.nextTouchAt) {
     badges.push({
       label: "Needs decision",
-      className: "bg-accent/15 text-accent",
+      className: "bg-warning/15 text-warning",
       title: "No next action, waiting reason, or follow-up is set",
     });
   }

@@ -1433,7 +1433,7 @@ export default function ChatView({
             <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
               <SkeletonText lines={3} widths={["88%", "72%", "46%"]} />
             </div>
-            <div className="ml-auto max-w-md rounded-2xl border border-accent/20 bg-accent/10 px-4 py-3">
+            <div className="ml-auto max-w-md rounded-2xl border border-accent-border bg-accent-surface px-4 py-3">
               <SkeletonText lines={2} widths={["78%", "52%"]} />
             </div>
             <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">

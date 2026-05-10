@@ -88,7 +88,7 @@ export default function ScheduleSection({
     const chips: TaskPanelSummaryChip[] = [];
 
     if (activeSchedules.length > 0) {
-      chips.push({ label: `${activeSchedules.length} active`, className: "bg-accent/15 text-accent" });
+      chips.push({ label: `${activeSchedules.length} active`, className: "bg-info-surface text-info" });
     }
     if (disabledSchedules.length > 0) {
       chips.push({ label: `${disabledSchedules.length} paused`, className: "bg-text-muted/15 text-text-muted" });
@@ -111,7 +111,7 @@ export default function ScheduleSection({
     return (
       <TaskPanelSummaryDisclosure
         label="Schedules"
-        icon={<Clock size={14} className={primarySchedule.enabled ? "text-accent" : "text-text-faint"} />}
+        icon={<Clock size={14} className={primarySchedule.enabled ? "text-info" : "text-text-faint"} />}
         title={title}
         subtitle={subtitle}
         chips={chips}

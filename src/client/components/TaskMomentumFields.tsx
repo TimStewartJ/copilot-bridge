@@ -159,7 +159,7 @@ export default function TaskMomentumFields({
     return (
       <div className="rounded-md border border-border bg-bg-surface overflow-hidden">
         <div className="px-3 py-2 border-b border-border/70 bg-bg-secondary/40">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+          <div className="text-xs font-semibold tracking-wide text-text-secondary">
             Momentum
           </div>
           <div className="text-[11px] text-text-faint mt-0.5">
@@ -191,7 +191,7 @@ export default function TaskMomentumFields({
               return (
                 <div key={field.key} className={`px-3 py-2 ${rowClassName}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelClassName}`}>
+                    <span className={`text-[11px] font-medium tracking-wide ${labelClassName}`}>
                       {field.label}
                     </span>
                     {isSaving ? (
@@ -307,7 +307,7 @@ export default function TaskMomentumFields({
             className={`rounded-md border border-border bg-bg-surface ${isDashboard ? "px-3 py-2.5" : "px-2.5 py-2"}`}
           >
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <span className="text-[11px] font-medium tracking-wide text-text-secondary">
                 {field.label}
               </span>
               {isSaving ? (

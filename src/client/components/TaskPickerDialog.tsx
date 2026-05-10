@@ -4,8 +4,8 @@ import { X } from "lucide-react";
 import TaskKindBadge from "./TaskKindBadge";
 
 const STATUS_COLORS: Record<string, string> = {
-  active: "bg-success/15 text-success",
-  done: "bg-accent/15 text-accent",
+  active: "bg-info-surface text-info",
+  done: "bg-success/15 text-success",
   archived: "bg-text-muted/15 text-text-muted",
 };
 

@@ -10,7 +10,7 @@ import {
 /** Icon + color for each ADO work item type */
 export const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode; color: string }> = {
   Bug: { icon: React.createElement(Bug, { size: 12, className: "text-error" }), color: "text-error" },
-  Task: { icon: React.createElement(CheckSquare, { size: 12, className: "text-accent" }), color: "text-accent" },
+  Task: { icon: React.createElement(CheckSquare, { size: 12, className: "text-info" }), color: "text-info" },
   "User Story": { icon: React.createElement(BookOpen, { size: 12, className: "text-success" }), color: "text-success" },
   Feature: { icon: React.createElement(Target, { size: 12, className: "text-agent" }), color: "text-agent" },
   Epic: { icon: React.createElement(Trophy, { size: 12, className: "text-warning" }), color: "text-warning" },
@@ -19,8 +19,8 @@ export const WI_TYPE_ICONS: Record<string, { icon: React.ReactNode; color: strin
 /** CSS classes for work item state badges */
 export const WI_STATE_STYLES: Record<string, string> = {
   New: "bg-text-muted/15 text-text-muted",
-  Active: "bg-accent/15 text-accent",
-  "In Progress": "bg-accent/15 text-accent",
+  Active: "bg-info-surface text-info",
+  "In Progress": "bg-info-surface text-info",
   Resolved: "bg-success/15 text-success",
   Closed: "bg-text-faint/15 text-text-faint",
   Done: "bg-success/15 text-success",
@@ -28,7 +28,7 @@ export const WI_STATE_STYLES: Record<string, string> = {
   Triage: "bg-warning/15 text-warning",
   Backlog: "bg-text-muted/15 text-text-muted",
   Todo: "bg-text-muted/15 text-text-muted",
-  Started: "bg-accent/15 text-accent",
+  Started: "bg-info-surface text-info",
   Completed: "bg-success/15 text-success",
   Cancelled: "bg-text-faint/15 text-text-faint",
   Duplicate: "bg-text-faint/15 text-text-faint",
@@ -36,7 +36,7 @@ export const WI_STATE_STYLES: Record<string, string> = {
 
 /** CSS dot class + label for PR statuses */
 export const PR_STATUS_STYLES: Record<string, { dot: string; label: string }> = {
-  active: { dot: "bg-accent", label: "Active" },
+  active: { dot: "bg-info", label: "Active" },
   completed: { dot: "bg-success", label: "Completed" },
   abandoned: { dot: "bg-text-muted", label: "Abandoned" },
 };
@@ -45,7 +45,7 @@ export const PR_STATUS_STYLES: Record<string, { dot: string; label: string }> = 
 export function stateColor(state: string): string {
   const s = state.toLowerCase();
   if (s === "active" || s === "in progress" || s === "committed" || s === "started")
-    return "bg-info/15 text-info";
+    return "bg-info-surface text-info";
   if (s === "new" || s === "to do" || s === "proposed" || s === "backlog" || s === "todo" || s === "triage")
     return "bg-text-muted/15 text-text-muted";
   if (s === "resolved" || s === "done" || s === "closed" || s === "completed")

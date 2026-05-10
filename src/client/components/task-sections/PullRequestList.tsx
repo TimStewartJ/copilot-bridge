@@ -14,7 +14,7 @@ export interface PullRequestListProps {
 }
 
 const PR_SUMMARY_STYLES: Record<string, string> = {
-  active: "bg-accent/15 text-accent",
+  active: "bg-info-surface text-info",
   completed: "bg-success/15 text-success",
   abandoned: "bg-text-muted/15 text-text-muted",
 };
@@ -127,8 +127,8 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
               )}
               {!isCompact && statusInfo && (
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  pr.status === "active" ? "bg-success/15 text-success" :
-                  pr.status === "completed" ? "bg-accent/15 text-accent" :
+                  pr.status === "active" ? "bg-info-surface text-info" :
+                  pr.status === "completed" ? "bg-success/15 text-success" :
                   "bg-text-muted/15 text-text-muted"
                 }`}>
                   {statusInfo.label}

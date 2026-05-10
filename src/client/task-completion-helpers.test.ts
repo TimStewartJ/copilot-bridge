@@ -332,16 +332,16 @@ describe("getTaskStatusLabel", () => {
 });
 
 describe("getTaskLifecycleBadgeClass", () => {
-  it("uses accent colour for completed tasks", () => {
-    expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toContain("text-accent");
+  it("uses success colour for completed tasks", () => {
+    expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: "2026-04-01T00:00:00.000Z" })).toContain("text-success");
   });
 
   it("uses muted colour for archived tasks", () => {
     expect(getTaskLifecycleBadgeClass({ status: "archived", completedAt: undefined })).toContain("text-text-muted");
   });
 
-  it("uses success colour for active tasks", () => {
-    expect(getTaskLifecycleBadgeClass({ status: "active", completedAt: undefined })).toContain("text-success");
+  it("uses info colour for active tasks", () => {
+    expect(getTaskLifecycleBadgeClass({ status: "active", completedAt: undefined })).toContain("text-info");
   });
 });
 
@@ -350,11 +350,11 @@ describe("getTaskStatusTextClass", () => {
     expect(getTaskStatusTextClass({ status: "archived", completedAt: undefined })).toBe("text-text-faint");
   });
 
-  it("returns muted class for completed tasks", () => {
-    expect(getTaskStatusTextClass({ status: "done", completedAt: undefined })).toBe("text-text-muted");
+  it("returns success class for completed tasks", () => {
+    expect(getTaskStatusTextClass({ status: "done", completedAt: undefined })).toBe("text-success");
   });
 
-  it("returns success class for active tasks", () => {
-    expect(getTaskStatusTextClass({ status: "active", completedAt: undefined })).toBe("text-success");
+  it("returns info class for active tasks", () => {
+    expect(getTaskStatusTextClass({ status: "active", completedAt: undefined })).toBe("text-info");
   });
 });

@@ -278,7 +278,7 @@ export default function WorkspaceDetailsSheet({
 
           <div className="grid gap-3 md:grid-cols-2">
             <div className="rounded-lg border border-border bg-bg-secondary px-3 py-3">
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+              <div className="mb-1 text-xs font-semibold tracking-wide text-text-secondary">
                 Current session workspace
               </div>
               {sessionId ? (
@@ -322,7 +322,7 @@ export default function WorkspaceDetailsSheet({
             </div>
 
             <div className="rounded-lg border border-border bg-bg-secondary px-3 py-3">
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+              <div className="mb-1 text-xs font-semibold tracking-wide text-text-secondary">
                 Linked task default
               </div>
               <div className="break-all font-mono text-xs text-text-primary">
@@ -335,7 +335,7 @@ export default function WorkspaceDetailsSheet({
           </div>
 
           <div className="rounded-lg border border-border bg-bg-secondary px-3 py-3">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+            <div className="mb-2 text-xs font-semibold tracking-wide text-text-secondary">
               Git workspace
             </div>
             {gitStatus?.status === "ok" && gitHead && gitWorkspaceKind && gitDirtyState ? (
@@ -383,7 +383,7 @@ export default function WorkspaceDetailsSheet({
           </div>
 
           <div className="rounded-lg border border-border bg-bg-secondary px-3 py-3">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+            <div className="mb-2 text-xs font-semibold tracking-wide text-text-secondary">
               Available worktrees
             </div>
             {loading && availableWorktrees.length === 0 ? (
@@ -408,7 +408,7 @@ export default function WorkspaceDetailsSheet({
           </div>
 
           <div className="rounded-lg border border-border bg-bg-secondary px-3 py-3">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
+            <div className="mb-2 text-xs font-semibold tracking-wide text-text-secondary">
               Selected workspace path
             </div>
             <div className="flex items-center gap-2">

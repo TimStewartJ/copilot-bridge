@@ -9,7 +9,7 @@ export function Field({
 }) {
   return (
     <div>
-      <label className="block text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-1">
+      <label className="mb-1 block text-xs font-semibold tracking-wide text-text-secondary">
         {label}
       </label>
       {children}

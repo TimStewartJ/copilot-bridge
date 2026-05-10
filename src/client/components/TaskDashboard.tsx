@@ -30,6 +30,7 @@ import { TagPillList } from "./TagPill";
 import TaskKindBadge from "./TaskKindBadge";
 import { getFollowUpState } from "./TaskMomentumFields";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
+import { UI } from "./shared/design-system";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -92,7 +93,7 @@ const SIGNAL_TONE_CLASS: Record<SignalTone, string> = {
   success: "border-success/30 bg-success/10 text-success",
   warning: "border-warning/30 bg-warning/10 text-warning",
   danger: "border-error/30 bg-error/10 text-error",
-  info: "border-info/30 bg-info/10 text-info",
+  info: "border-info-border bg-info-surface text-info",
   muted: "border-border bg-bg-surface text-text-muted",
 };
 
@@ -152,7 +153,7 @@ export function TaskDashboardRouteSkeleton() {
               <section className="space-y-2">
                 <Skeleton width={132} height={10} shape="pill" />
                 <SkeletonCard className="space-y-4">
-                  <SkeletonCard className="space-y-2 border-info/25 bg-info/10">
+                  <SkeletonCard className="space-y-2 border-info-border bg-info-surface">
                     <Skeleton width="48%" height={14} shape="pill" />
                     <SkeletonText lines={2} widths={["92%", "68%"]} />
                   </SkeletonCard>
@@ -284,8 +285,8 @@ export default function TaskDashboard({
       >
         <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
           <header className="space-y-3">
-            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-              <CircleDot size={14} className="text-accent" />
+            <div className={UI.text.pageKicker}>
+              <CircleDot size={14} className="text-info" />
               Task intelligence
             </div>
             <div className="space-y-2">
@@ -304,10 +305,10 @@ export default function TaskDashboard({
                   Last activity {timeAgo(lastActivity)}
                 </span>
               </div>
-              <h1 className="text-2xl font-semibold leading-tight text-text-primary">
+              <h1 className={UI.text.pageTitle}>
                 {task.title}
               </h1>
-              <p className="max-w-3xl text-sm leading-relaxed text-text-muted">
+              <p className={UI.text.pageDescription}>
                 A read-only overview of readiness, context, and recent activity. Use the task cockpit for edits and actions.
               </p>
             </div>
@@ -318,11 +319,11 @@ export default function TaskDashboard({
               icon={<FileText size={14} />}
               title="Task brief"
             >
-              <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-4">
+              <div className={`${UI.surface.card} space-y-4 p-4`}>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {contextStats.map((stat) => (
-                    <div key={stat.label} className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                    <div key={stat.label} className={`${UI.surface.cardInset} px-3 py-2`}>
+                      <div className={UI.text.metricLabel}>
                         {stat.label}
                       </div>
                       <div className="mt-1 text-sm font-semibold text-text-primary">
@@ -365,16 +366,16 @@ export default function TaskDashboard({
                     valueClassName={task.cwd ? "font-mono text-[11px]" : undefined}
                   />
                   {taskGitStatus && (
-                    <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
-                      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                    <div className={`${UI.surface.cardInset} px-3 py-2`}>
+                      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-text-muted">
                         <FolderOpen size={12} />
                         Git status
                       </div>
                       <TaskGitStatusSummary gitStatus={taskGitStatus} className="text-[11px]" />
                     </div>
                   )}
-                  <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
-                    <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+                  <div className={`${UI.surface.cardInset} px-3 py-2`}>
+                    <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-text-muted">
                       <Tags size={12} />
                       Tags
                     </div>
@@ -393,7 +394,7 @@ export default function TaskDashboard({
                 icon={<CheckCircle2 size={14} />}
                 title="Readiness intelligence"
               >
-                <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-4">
+                <div className={`${UI.surface.card} space-y-4 p-4`}>
                   <div className={`rounded-lg border px-4 py-3 ${SIGNAL_TONE_CLASS[readiness.tone]}`}>
                     <div className="flex items-start gap-3">
                       <div className="mt-0.5">
@@ -414,7 +415,7 @@ export default function TaskDashboard({
                     {readiness.signals.map((signal) => (
                       <div
                         key={signal.label}
-                        className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2"
+                        className={`${UI.surface.cardInset} px-3 py-2`}
                       >
                         <div className="flex items-center justify-between gap-3">
                           <div className="text-xs font-medium text-text-primary">
@@ -447,12 +448,12 @@ export default function TaskDashboard({
                 <LoadingSkeletonRegion
                   isLoading
                   label="Loading session usage"
-                  className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5"
+                  className={`${UI.surface.card} space-y-5 p-4`}
                 >
                   <SessionUsageSkeleton />
                 </LoadingSkeletonRegion>
               ) : (
-                <div className="rounded-xl border border-border bg-bg-secondary/70 p-4 space-y-5">
+                <div className={`${UI.surface.card} space-y-5 p-4`}>
                 <div className={sessionUsage.cost.hasCostEstimate
                   ? "grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7"
                   : "grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6"}
@@ -476,7 +477,7 @@ export default function TaskDashboard({
                   />
                 </div>
 
-                <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
+                <div className={`${UI.surface.cardInset} p-3`}>
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <h3 className="text-xs font-semibold text-text-primary">Tokens by day</h3>
@@ -518,7 +519,7 @@ export default function TaskDashboard({
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
+                  <div className={`${UI.surface.cardInset} p-3`}>
                     <h3 className="mb-2 text-xs font-semibold text-text-primary">Heaviest sessions</h3>
                     {sessionUsage.topSessions.length > 0 ? (
                       <div className="space-y-2">
@@ -560,7 +561,7 @@ export default function TaskDashboard({
                     )}
                   </div>
 
-                  <div className="rounded-lg border border-border/70 bg-bg-surface p-3">
+                  <div className={`${UI.surface.cardInset} p-3`}>
                     <h3 className="mb-2 text-xs font-semibold text-text-primary">Models used</h3>
                     {sessionUsage.modelRows.length > 0 ? (
                       <div className="space-y-2">
@@ -592,7 +593,7 @@ export default function TaskDashboard({
                 </div>
 
                   {sessionUsage.sessionsWithoutUsage > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/10 px-3 py-2 text-xs text-info">
+                    <div className="flex items-start gap-2 rounded-lg border border-info-border bg-info-surface px-3 py-2 text-xs text-info">
                       <Info size={14} className="mt-0.5 shrink-0" />
                       <p>
                         {sessionUsage.sessionsWithoutUsage} linked {sessionUsage.sessionsWithoutUsage === 1 ? "session has" : "sessions have"} no token total yet.
@@ -630,8 +631,8 @@ function MetricCard({
   sub: string;
 }) {
   return (
-    <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+    <div className={`${UI.surface.cardInset} px-3 py-2`}>
+      <div className={UI.text.metricLabel}>
         {label}
       </div>
       <div className="mt-1 text-sm font-semibold text-text-primary">
@@ -712,7 +713,7 @@ function Section({
   return (
     <section>
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+        <h2 className={UI.text.sectionTitle}>
           {icon}
           {title}
           {count !== undefined && (
@@ -737,8 +738,8 @@ function BriefRow({
   valueClassName?: string;
 }) {
   return (
-    <div className="rounded-lg border border-border/70 bg-bg-surface px-3 py-2">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+    <div className={`${UI.surface.cardInset} px-3 py-2`}>
+      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-text-muted">
         {icon}
         {label}
       </div>

@@ -46,7 +46,7 @@ export default function ScheduleRow({
       } transition-colors group`}
     >
       <div className={`flex items-center ${isCompact ? "gap-1.5" : "gap-2"}`}>
-        <Clock size={iconSize} className={schedule.enabled ? "text-accent" : "text-text-faint"} />
+        <Clock size={iconSize} className={schedule.enabled ? "text-info" : "text-text-faint"} />
         <button
           onClick={() => onOpen(schedule)}
           className={`${isCompact ? "font-medium" : "text-sm font-medium"} truncate flex-1 text-left hover:text-accent transition-colors ${
