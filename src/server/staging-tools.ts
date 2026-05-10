@@ -45,6 +45,7 @@ const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
 const DEMO_PREVIEW_SUFFIX = "-demo";
 const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
 const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
 const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
   process.env[STAGING_PREVIEW_DIR_ENV],
   join(PRODUCTION_DATA_DIR, "staging-previews"),
@@ -430,6 +431,46 @@ function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
   }
 }
 
+function forceStagingModelSettings(dbPath: string): void {
+  const settingsRowSql = "SELECT value FROM settings WHERE key = 'app'";
+  let stagingDb: DatabaseSync | null = null;
+  try {
+    stagingDb = new DatabaseSync(dbPath);
+    stagingDb.exec("PRAGMA journal_mode = WAL");
+    stagingDb.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+
+    const row = stagingDb.prepare(settingsRowSql).get() as { value?: string } | undefined;
+    let settings: Record<string, unknown> = {};
+    if (row?.value) {
+      try {
+        const parsed = JSON.parse(row.value) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          settings = parsed as Record<string, unknown>;
+        } else {
+          log("Warning: staging settings row was not a JSON object; replacing with staging model settings");
+        }
+      } catch (err) {
+        log(`Warning: could not parse staging settings JSON; replacing with staging model settings: ${err}`);
+      }
+    }
+
+    const nextSettings: Record<string, unknown> = { ...settings, model: STAGING_PREVIEW_MODEL };
+    delete nextSettings.reasoningEffort;
+    stagingDb.prepare(
+      "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run(JSON.stringify(nextSettings));
+  } finally {
+    if (stagingDb) {
+      stagingDb.close();
+    }
+  }
+}
+
 function disableSchedulesInStagingDb(dbPath: string): void {
   let stagingDb: DatabaseSync | null = null;
   try {
@@ -492,6 +533,7 @@ function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {
   }
   disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
   clearPushSubscriptionsInStagingDb(join(dataDir, "bridge.db"));
+  forceStagingModelSettings(join(dataDir, "bridge.db"));
 
   // Copy docs directory (source of truth is filesystem, not SQLite)
   const docsSrc = join(productionDataDir, "docs");
@@ -724,7 +766,7 @@ async function createStagingContext(
     // automatically without updating this file (see createSessionManager in session-manager.ts)
     const sm = sessionManagerMod.createSessionManager(ctx, {
       tools: stagingTools,
-      config: { get sessionMcpServers() { return settingsStore.getMcpServers(); }, model: "claude-haiku-4.5" },
+      config: { get sessionMcpServers() { return settingsStore.getMcpServers(); }, model: STAGING_PREVIEW_MODEL },
       clientEnv: runtimePaths.env,
       copilotHome,
       runtimePaths,

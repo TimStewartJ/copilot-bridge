@@ -244,6 +244,15 @@ function createProductionDataDir(): string {
       '2026-01-01T00:00:00.000Z',
       '2026-01-01T00:00:00.000Z'
     );
+
+    CREATE TABLE settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT INTO settings (key, value) VALUES (
+      'app',
+      '{"model":"gpt-5.5","reasoningEffort":"xhigh","theme":"dark","customInstructions":"keep me"}'
+    );
   `);
   db.close();
 
@@ -485,11 +494,61 @@ describe("staging tools", () => {
       expect(schedules).toEqual([{ enabled: 0 }]);
       const pushSubscriptions = stagingDb.prepare("SELECT COUNT(*) AS count FROM push_subscriptions").get() as { count: number };
       expect(pushSubscriptions.count).toBe(0);
+      const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
+      const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
+      expect(settings.model).toBe("claude-haiku-4.5");
+      expect("reasoningEffort" in settings).toBe(false);
+      expect(settings.theme).toBe("dark");
+      expect(settings.customInstructions).toBe("keep me");
     } finally {
       stagingDb.close();
     }
 
     expect(existsSync(join(seededDataDir, "docs", "note.md"))).toBe(true);
+  });
+
+  it("inserts staging model settings when the production app settings row is missing", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const productionDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    try {
+      productionDb.exec("DELETE FROM settings WHERE key = 'app'");
+    } finally {
+      productionDb.close();
+    }
+    const stagingDir = createTempDir("bridge-stage-staging-");
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    try {
+      const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
+      const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
+      expect(settings).toEqual({ model: "claude-haiku-4.5" });
+    } finally {
+      stagingDb.close();
+    }
+  });
+
+  it("replaces malformed production app settings JSON with staging model settings", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const productionDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    try {
+      productionDb.prepare("UPDATE settings SET value = ? WHERE key = 'app'").run("not-json");
+    } finally {
+      productionDb.close();
+    }
+    const stagingDir = createTempDir("bridge-stage-staging-");
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    try {
+      const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
+      const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
+      expect(settings).toEqual({ model: "claude-haiku-4.5" });
+    } finally {
+      stagingDb.close();
+    }
   });
 
   it("fails explicitly when production bridge.db is missing", async () => {
