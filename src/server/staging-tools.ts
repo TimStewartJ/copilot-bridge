@@ -57,6 +57,9 @@ const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
 const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
 const STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS = 5_000;
+const STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS = 1_000;
+const STAGING_ARTIFACT_CLEANUP_MAX_RETRIES = 20;
+const STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS = 50;
 const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
   process.env[STAGING_PREVIEW_DIR_ENV],
   join(PRODUCTION_DATA_DIR, "staging-previews"),
@@ -288,7 +291,7 @@ function removeStagingDist(prefix: string): void {
   for (const previewParent of listStagingPreviewParents()) {
     const distDir = join(previewParent, prefix);
     if (existsSync(distDir)) {
-      rmSync(distDir, { recursive: true, force: true });
+      removeDirectoryWithRetries(distDir);
     }
   }
   activePreviews.delete(prefix);
@@ -296,8 +299,17 @@ function removeStagingDist(prefix: string): void {
 
 function removePreviewData(dataDir: string): void {
   if (existsSync(dataDir)) {
-    rmSync(dataDir, { recursive: true, force: true });
+    removeDirectoryWithRetries(dataDir);
   }
+}
+
+function removeDirectoryWithRetries(dir: string): void {
+  rmSync(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: STAGING_ARTIFACT_CLEANUP_MAX_RETRIES,
+    retryDelay: STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS,
+  });
 }
 
 interface SeedStagingDataOptions {
@@ -630,24 +642,50 @@ function buildStagingBackendSpawnConfig(
   };
 }
 
-function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+const closedStagingBackendChildren = new WeakSet<ChildProcess>();
+
+function trackChildClose(child: ChildProcess): void {
+  child.once("close", () => {
+    closedStagingBackendChildren.add(child);
+  });
+}
+
+function streamIsClosed(stream: NodeJS.ReadableStream | NodeJS.WritableStream | null | undefined): boolean {
+  if (!stream) return true;
+  const state = stream as { closed?: boolean; destroyed?: boolean };
+  return state.destroyed === true || state.closed === true;
+}
+
+function childHasClosed(child: ChildProcess): boolean {
+  if (closedStagingBackendChildren.has(child)) return true;
+  if (child.exitCode === null && child.signalCode === null) return false;
+  return !child.connected
+    && streamIsClosed(child.stdout)
+    && streamIsClosed(child.stderr)
+    && streamIsClosed(child.stdin);
+}
+
+function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasClosed(child)) return Promise.resolve(true);
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
-      child.off("exit", onExit);
-      resolve(false);
+      child.off("close", onClose);
+      resolve(childHasClosed(child));
     }, timeoutMs);
-    const onExit = () => {
+    const onClose = () => {
       clearTimeout(timeout);
       resolve(true);
     };
-    child.once("exit", onExit);
+    child.once("close", onClose);
   });
 }
 
 async function stopStagingBackendChild(child: ChildProcess): Promise<void> {
   const pid = child.pid;
-  if (!pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!pid) {
+    await waitForChildClose(child, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
+    return;
+  }
 
   let snapshot: ReturnType<typeof getProcessTreeSnapshot> | null = null;
   try {
@@ -656,11 +694,17 @@ async function stopStagingBackendChild(child: ChildProcess): Promise<void> {
     snapshot = null;
   }
 
-  child.kill("SIGTERM");
-  if (await waitForChildExit(child, STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS)) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM");
+  }
+  if (await waitForChildClose(child, STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS)) {
+    await waitForProcessTreeExit(snapshot, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
+    return;
+  }
 
   killProcessTree(pid);
-  await waitForProcessTreeExit(snapshot, 1_000);
+  await waitForProcessTreeExit(snapshot, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
+  await waitForChildClose(child, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
 }
 
 let backendProcessExitCleanupInstalled = false;
@@ -707,6 +751,7 @@ async function startStagingBackendProcess(
     windowsHide: true,
     detached: shouldSpawnDetachedProcessGroup(),
   });
+  trackChildClose(child);
 
   child.stdout?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stdout", output, chunk));
   child.stderr?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stderr", output, chunk));

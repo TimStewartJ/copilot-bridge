@@ -1,20 +1,18 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "vitest";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { __testing } from "../staging-tools.js";
 import type { RuntimePaths } from "../runtime-paths.js";
+import { makeTestDir } from "./helpers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-const tempDirs: string[] = [];
 
 function createTempStagingDir(): string {
-  const stagingDir = mkdtempSync(join(tmpdir(), "bridge-stage-child-backend-"));
-  tempDirs.push(stagingDir);
+  const stagingDir = makeTestDir("stage-child-backend");
   mkdirSync(join(stagingDir, "src", "server"), { recursive: true });
   writeFileSync(join(stagingDir, "package.json"), '{"type":"module"}\n');
   symlinkSync(
@@ -92,14 +90,6 @@ function runtimePathsFor(stagingDir: string): RuntimePaths {
     },
   };
 }
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    if (existsSync(dir)) {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
-    }
-  }
-});
 
 describe("staging preview backend child process", () => {
   it("proxies opaque staged backend dependencies and reloads nested imports per child process", async () => {

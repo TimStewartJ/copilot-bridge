@@ -39,8 +39,8 @@ import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
 
 const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
-const TEST_CLEANUP_MAX_RETRIES = 5;
-const TEST_CLEANUP_RETRY_DELAY_MS = 25;
+const TEST_CLEANUP_MAX_RETRIES = 20;
+const TEST_CLEANUP_RETRY_DELAY_MS = 50;
 const testCleanupPaths = new Set<string>();
 const testAppCleanups = new Set<() => Promise<void>>();
 
