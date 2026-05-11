@@ -176,6 +176,31 @@ body {
   animation: ctx-menu-in 0.12s ease-out;
 }
 
+@keyframes streaming-text-soft-in {
+  from {
+    opacity: 0.42;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.streaming-text-fade {
+  animation: streaming-text-soft-in 0.32s ease-out;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 2.25rem), rgba(0, 0, 0, 0.18) 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 2.25rem), rgba(0, 0, 0, 0.18) 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-text-fade {
+    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
 @keyframes session-exit {
   from {
     opacity: 1;

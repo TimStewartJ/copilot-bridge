@@ -12,6 +12,7 @@ import { APP_PROSE } from "./shared/prose-classes";
 interface MessageBubbleProps {
   message: ChatMessage;
   actionSlot?: ReactNode;
+  isStreaming?: boolean;
 }
 
 function BubbleActions({ side, children }: { side: "left" | "right"; children?: ReactNode }) {
@@ -36,14 +37,14 @@ function renderToolCalls(toolCalls: NonNullable<ChatMessage["toolCalls"]>) {
   ));
 }
 
-export default memo(function MessageBubble({ message, actionSlot }: MessageBubbleProps) {
+export default memo(function MessageBubble({ message, actionSlot, isStreaming = false }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
     const hasAttachments = message.attachments && message.attachments.length > 0;
     return (
       <div className="flex justify-end">
-        <div className="group/message-bubble relative max-w-[85%]">
+        <div className="group/message-bubble relative max-w-[85%] sm:max-w-[78%] md:max-w-[72%]">
           <BubbleActions side="right">{actionSlot}</BubbleActions>
           <div className="rounded-2xl rounded-br-sm border border-accent-border bg-accent-surface px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words">
             {hasAttachments && (
@@ -86,7 +87,7 @@ export default memo(function MessageBubble({ message, actionSlot }: MessageBubbl
   if (!hasContent && hasTools) {
     return (
       <div className="flex justify-start min-w-0">
-        <div className="group/message-bubble relative w-full max-w-full min-w-0 space-y-1 md:w-auto md:max-w-[85%]">
+        <div className="group/message-bubble relative w-full max-w-full min-w-0 space-y-1">
           <BubbleActions side="left">{actionSlot}</BubbleActions>
           {renderToolCalls(message.toolCalls!)}
         </div>
@@ -96,13 +97,18 @@ export default memo(function MessageBubble({ message, actionSlot }: MessageBubbl
 
   return (
     <div className="flex justify-start min-w-0">
-      <div className="group/message-bubble relative w-full max-w-full min-w-0 break-words space-y-2 md:w-auto md:max-w-[85%]">
+      <div className="group/message-bubble relative w-full max-w-full min-w-0 break-words space-y-2">
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
-          <div className={`px-4 py-3 bg-bg-surface text-text-primary rounded-2xl rounded-bl-sm text-sm leading-relaxed ${APP_PROSE} prose-pre:bg-bg-primary prose-th:bg-bg-primary`}>
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
-              {message.content}
-            </ReactMarkdown>
+          <div
+            className={`py-1 text-sm leading-relaxed text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
+            aria-busy={isStreaming || undefined}
+          >
+            <div className={isStreaming ? "streaming-text-fade" : undefined}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
+                {message.content}
+              </ReactMarkdown>
+            </div>
           </div>
         )}
         {hasTools && (

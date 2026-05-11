@@ -45,7 +45,24 @@ vi.mock("./McpStatusBar", () => ({
 }));
 
 vi.mock("./MessageBubble", () => ({
-  default: ({ actionSlot }: { actionSlot?: ReactNode }) => createElement("div", null, actionSlot),
+  default: ({
+    message,
+    actionSlot,
+    isStreaming,
+  }: {
+    message: { role: string; content: string };
+    actionSlot?: ReactNode;
+    isStreaming?: boolean;
+  }) => createElement(
+    "div",
+    {
+      "data-testid": "message-bubble",
+      "data-role": message.role,
+      "data-streaming": isStreaming ? "true" : "false",
+    },
+    message.content,
+    actionSlot,
+  ),
 }));
 
 vi.mock("./ToolCallTree", () => ({
@@ -180,6 +197,57 @@ function findInputByPlaceholder(root: any, placeholder: string): any {
   return input;
 }
 
+function findScrollContainer(root: any): any {
+  const container = findAllByTag(root, "DIV").find((candidate) => {
+    const props = getReactProps(candidate);
+    return typeof props?.onScroll === "function"
+      && typeof props?.className === "string"
+      && props.className.includes("overflow-y-auto");
+  });
+  if (!container) throw new Error("Scroll container not found");
+  return container;
+}
+
+function setScrollGeometry(
+  element: any,
+  geometry: { scrollHeight: number; clientHeight: number; scrollTop: number },
+) {
+  Object.defineProperty(element, "scrollHeight", { configurable: true, value: geometry.scrollHeight });
+  Object.defineProperty(element, "clientHeight", { configurable: true, value: geometry.clientHeight });
+  Object.defineProperty(element, "scrollTop", { configurable: true, writable: true, value: geometry.scrollTop });
+}
+
+function setElementTop(element: any, top: number) {
+  element.getBoundingClientRect = () => ({
+    x: 0,
+    y: top,
+    width: 0,
+    height: 0,
+    top,
+    left: 0,
+    right: 0,
+    bottom: top,
+    toJSON: () => ({}),
+  });
+}
+
+function findMessageWrapperByAnchorKey(root: any, key: string): any {
+  const wrapper = findAllByTag(root, "DIV").find((candidate) => (
+    candidate.getAttribute?.("data-chat-message-key") === key
+  ));
+  if (!wrapper) throw new Error(`Message wrapper not found for key: ${key}`);
+  return wrapper;
+}
+
+function findMessageBubble(root: any, streaming: boolean): any {
+  const bubble = findAllByTag(root, "DIV").find((candidate) => (
+    candidate.getAttribute?.("data-testid") === "message-bubble"
+    && candidate.getAttribute?.("data-streaming") === (streaming ? "true" : "false")
+  ));
+  if (!bubble) throw new Error(`Message bubble not found for streaming=${streaming}`);
+  return bubble;
+}
+
 function waitTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -210,6 +278,9 @@ async function renderChatView(
   const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const sendMessageMock = vi.fn();
+  const startFleetMock = vi.fn();
+  const abortSessionMock = vi.fn();
+  const reconnectMock = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -234,22 +305,24 @@ async function renderChatView(
     answer: "ok",
     wasFreeform: false,
   });
-  useSessionStreamMock.mockReturnValue({
+  const buildStreamState = (nextOptions: RenderChatViewOptions) => ({
     streamingContent: "",
     intentText: "",
     activeTools: [],
+    currentTurnTools: [],
     isStreaming: true,
     streamStatus: "thinking",
     hadVisibleOutput: false,
     pendingOrigin: "message",
-    pendingUserInputs,
+    pendingUserInputs: nextOptions.pendingUserInputs ?? pendingUserInputs,
     mcpServers: [],
     sendMessage: sendMessageMock,
-    startFleet: vi.fn(),
-    abortSession: vi.fn(),
-    reconnect: vi.fn(),
-    ...options.streamOverrides,
+    startFleet: startFleetMock,
+    abortSession: abortSessionMock,
+    reconnect: reconnectMock,
+    ...nextOptions.streamOverrides,
   });
+  useSessionStreamMock.mockReturnValue(buildStreamState(options));
 
   const [{ createRoot }, { act }, { default: ChatView }] = await Promise.all([
     import("react-dom/client"),
@@ -259,7 +332,15 @@ async function renderChatView(
   const root = createRoot(dom.container as unknown as Element);
 
   const render = async (overrideOptions: Partial<RenderChatViewOptions> = {}) => {
-    const nextOptions = { ...options, ...overrideOptions };
+    const nextOptions = {
+      ...options,
+      ...overrideOptions,
+      streamOverrides: {
+        ...(options.streamOverrides ?? {}),
+        ...(overrideOptions.streamOverrides ?? {}),
+      },
+    };
+    useSessionStreamMock.mockReturnValue(buildStreamState(nextOptions));
     await act(async () => {
       root.render(
         createElement(
@@ -1014,6 +1095,135 @@ describe("ChatView cached resume loading state", () => {
         warm: true,
         hasMore: true,
       });
+      await cleanup();
+    }
+  });
+});
+
+describe("ChatView live streaming UX", () => {
+  it("renders streamed assistant text as the normal assistant bubble without the old status card", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      streamOverrides: {
+        streamingContent: "Hello **there**",
+        streamStatus: "streaming",
+        hadVisibleOutput: true,
+        intentText: "Streaming response",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => {
+        try {
+          return findMessageBubble(dom.container, true).textContent?.includes("Hello **there**") ?? false;
+        } catch {
+          return false;
+        }
+      });
+
+      const bubble = findMessageBubble(dom.container, true);
+      expect(bubble.getAttribute("data-role")).toBe("assistant");
+      expect(findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream").getAttribute("data-latest-chat-message")).toBe("true");
+      expect(dom.container.textContent).not.toContain("Responding");
+      expect(dom.container.textContent).not.toContain("Streaming response");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("shows a compact status before the first streamed text arrives", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      streamOverrides: {
+        streamingContent: "",
+        streamStatus: "thinking",
+        intentText: "Planning the response",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Planning the response") ?? false);
+      expect(() => findMessageBubble(dom.container, true)).toThrow();
+      expect(dom.container.textContent).not.toContain("The assistant is working before any text or tool activity is visible.");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("pauses follow mode and offers jump to latest when the user scrolls away during streaming", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      streamOverrides: {
+        streamingContent: "A longer streamed response",
+        streamStatus: "streaming",
+        hadVisibleOutput: true,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("A longer streamed response") ?? false);
+      const scrollContainer = findScrollContainer(dom.container);
+      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 400, scrollTop: 200 });
+
+      await act(async () => {
+        const props = getReactProps(scrollContainer);
+        props?.onWheel?.();
+        props?.onScroll?.();
+        await waitTick();
+      });
+
+      expect(dom.container.textContent).toContain("Jump to latest");
+
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(dom.container, "Jump to latest"));
+        await waitTick();
+      });
+
+      expect(dom.container.textContent).not.toContain("Jump to latest");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("stops following the bottom once the live message top reaches the viewport top", async () => {
+    const { dom, act, cleanup, render } = await renderChatView({
+      streamOverrides: {
+        streamingContent: "A streamed response",
+        streamStatus: "streaming",
+        hadVisibleOutput: true,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("A streamed response") ?? false);
+      const scrollContainer = findScrollContainer(dom.container);
+      const liveMessage = findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream");
+      setElementTop(scrollContainer, 0);
+      setElementTop(liveMessage, 5);
+      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 400, scrollTop: 500 });
+
+      await render({
+        streamOverrides: {
+          streamingContent: "A streamed response with a little more text",
+          streamStatus: "streaming",
+          hadVisibleOutput: true,
+        },
+      });
+      await waitUntilAct(act, () => scrollContainer.scrollTop === 505);
+
+      setElementTop(liveMessage, 0);
+      setScrollGeometry(scrollContainer, { scrollHeight: 1400, clientHeight: 400, scrollTop: scrollContainer.scrollTop });
+
+      await render({
+        streamOverrides: {
+          streamingContent: "A streamed response with enough extra text to keep growing below the viewport",
+          streamStatus: "streaming",
+          hadVisibleOutput: true,
+        },
+      });
+      await act(async () => {
+        await waitTick();
+      });
+
+      expect(scrollContainer.scrollTop).toBe(505);
+    } finally {
       await cleanup();
     }
   });

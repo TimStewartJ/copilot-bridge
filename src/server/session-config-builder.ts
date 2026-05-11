@@ -159,6 +159,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     onPermissionRequest: approveAll,
     onUserInputRequest: (request: NativeUserInputRequest, invocation: { sessionId: string }) =>
       callbacks.handleUserInputRequest(request, invocation),
+    streaming: true,
+    includeSubAgentStreamingEvents: false,
     tools: deps.tools,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
     mcpServers: resolveSessionMcpServers(deps),
