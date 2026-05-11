@@ -51,7 +51,7 @@ const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
 const FOLLOW_SCROLL_EASE = 0.35;
 const FOLLOW_SCROLL_SETTLE_PX = 1.5;
 const LATEST_MESSAGE_TOP_THRESHOLD_PX = 8;
-const CHAT_RAIL_CLASS = "mx-auto w-full max-w-3xl px-3 sm:px-4 md:px-6 lg:px-8";
+const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
 
 type PendingStatusTone = "sending" | "thinking" | "creating";
 

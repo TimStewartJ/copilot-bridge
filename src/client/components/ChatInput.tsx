@@ -22,7 +22,7 @@ import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
-const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-3xl px-3 py-3 sm:px-4 md:px-6 md:py-4 lg:px-8";
+const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 py-3 sm:px-4 md:px-6 md:py-4 lg:px-8";
 
 /** Read a File as base64 (fallback for draft mode without sessionId) */
 function readFileAsBase64(file: File): Promise<string> {
