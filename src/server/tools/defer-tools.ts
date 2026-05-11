@@ -250,6 +250,7 @@ export function createDeferTools(ctx: AppContext) {
         }
         const cancelled = ctx.deferLoopStore.cancelById(parsed.id);
         if (!cancelled) return toolFailure(`Failed to cancel defer ${deferId}.`);
+        ctx.sessionManager.markSessionAttention(sessionId);
         emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
         ctx.deferLoopRunner?.poke();
         return { success: true, deferId, kind: "interval", message: `Defer ${deferId} cancelled.` };

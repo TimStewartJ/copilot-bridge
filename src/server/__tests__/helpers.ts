@@ -212,6 +212,7 @@ export function createMockSessionManager() {
     setSessionName: async () => {},
     startWork: () => {},
     startFleet: () => {},
+    markSessionAttention: () => {},
     abortSession: async () => true,
     getSessionMessages: async () => ({ messages: [], total: 0, hasMore: false }),
     readMessagesFromDisk: () => ({ messages: [], total: 0, hasMore: false }),

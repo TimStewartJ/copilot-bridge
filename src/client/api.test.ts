@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getSessionActivityTime,
+  getSessionReadThroughActivityTime,
   getSessionRunState,
   isSessionActive,
   serializeSettingsPatch,
@@ -54,6 +55,39 @@ describe("getSessionActivityTime", () => {
       lastVisibleActivityAt: "2026-04-17T16:00:00.000Z",
       lastAttentionAt: "2026-04-17T15:00:00.000Z",
     })).toBe("2026-04-17T16:00:00.000Z");
+  });
+});
+
+describe("getSessionReadThroughActivityTime", () => {
+  it("includes non-visible attention activity when a session is rendered", () => {
+    expect(getSessionReadThroughActivityTime(
+      {
+        sessionId: "session-1",
+        lastAttentionAt: "2026-05-07T21:05:00.000Z",
+      },
+      "2026-05-07T21:00:00.000Z",
+    )).toBe("2026-05-07T21:05:00.000Z");
+  });
+
+  it("does not use visible activity that has not been rendered", () => {
+    expect(getSessionReadThroughActivityTime(
+      {
+        sessionId: "session-1",
+        lastVisibleActivityAt: "2026-05-07T21:10:00.000Z",
+        lastAttentionAt: "2026-05-07T21:05:00.000Z",
+      } as Session,
+      "2026-05-07T21:00:00.000Z",
+    )).toBe("2026-05-07T21:05:00.000Z");
+  });
+
+  it("falls back to the rendered visible cursor when attention is older", () => {
+    expect(getSessionReadThroughActivityTime(
+      {
+        sessionId: "session-1",
+        lastAttentionAt: "2026-05-07T20:55:00.000Z",
+      },
+      "2026-05-07T21:00:00.000Z",
+    )).toBe("2026-05-07T21:00:00.000Z");
   });
 });
 
