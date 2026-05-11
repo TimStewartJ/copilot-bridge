@@ -72,6 +72,11 @@ export function createDeferredPromptRunner(
     for (const sessionId of new Set(sessionIds)) emitDeferSummary(sessionId);
   }
 
+  function recordSessionAttention(sessionId: string, at = new Date().toISOString()): void {
+    if (typeof sessionManager.markSessionAttention !== "function") return;
+    sessionManager.markSessionAttention(sessionId, at);
+  }
+
   function armNext(): void {
     if (!started) return;
     clearTimeout(nextTimer);
@@ -146,7 +151,10 @@ export function createDeferredPromptRunner(
       // Can't claim (no valid token), just directly cancel
       const cancelled = store.cancelById(id);
       console.error(`[deferred-runner] Deferral ${id} exceeded max attempts; cancelling`);
-      if (cancelled) emitDeferSummary(item.sessionId);
+      if (cancelled) {
+        recordSessionAttention(item.sessionId);
+        emitDeferSummary(item.sessionId);
+      }
       return cancelled ? "changed" : "unchanged";
     }
 
@@ -204,7 +212,7 @@ export function createDeferredPromptRunner(
   ): Promise<void> {
     let shouldProcessNextDuePrompt = false;
     try {
-      await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt);
+      await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
       const completed = store.markCompleted(id, claimToken);
       if (!completed) {
         const completedById = store.markCompletedById(id);
@@ -254,6 +262,7 @@ export function createDeferredPromptRunner(
         if (!failed) {
           console.error(`[deferred-runner] Failed to mark deferral ${id} failed`);
         } else {
+          recordSessionAttention(sessionId);
           emitDeferSummary(sessionId);
           shouldProcessNextDuePrompt = true;
         }

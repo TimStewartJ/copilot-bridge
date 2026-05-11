@@ -194,6 +194,7 @@ function initSchema(db: DatabaseSync): void {
       scheduleId TEXT,
       scheduleName TEXT,
       lastVisibleActivityAt TEXT,
+      lastAttentionAt TEXT,
       hiddenReason TEXT,
       hiddenAt TEXT,
       createdAt TEXT NOT NULL,

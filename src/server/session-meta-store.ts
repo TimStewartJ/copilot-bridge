@@ -10,6 +10,7 @@ export interface SessionMeta {
   scheduleId?: string;
   scheduleName?: string;
   lastVisibleActivityAt?: string;
+  lastAttentionAt?: string;
 }
 
 export interface ScheduleRunRecord {
@@ -31,7 +32,8 @@ export function createSessionMetaStore(db: DatabaseSync) {
       || state.triggeredBy !== undefined
       || state.scheduleId !== undefined
       || state.scheduleName !== undefined
-      || state.lastVisibleActivityAt !== undefined;
+      || state.lastVisibleActivityAt !== undefined
+      || state.lastAttentionAt !== undefined;
   }
 
   function hydrate(state: BridgeSessionState): SessionMeta {
@@ -42,6 +44,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
       scheduleId: state.scheduleId,
       scheduleName: state.scheduleName,
       lastVisibleActivityAt: state.lastVisibleActivityAt,
+      lastAttentionAt: state.lastAttentionAt,
     };
   }
 
@@ -69,6 +72,10 @@ export function createSessionMetaStore(db: DatabaseSync) {
 
   function setLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt: string): void {
     bridgeSessionStateStore.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
+  }
+
+  function setLastAttentionAt(sessionId: string, lastAttentionAt: string): void {
+    bridgeSessionStateStore.setLastAttentionAt(sessionId, lastAttentionAt);
   }
 
   function recordScheduleRun(scheduleId: string, sessionId: string, recordedAt = new Date().toISOString()): void {
@@ -114,6 +121,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
     deleteMeta,
     setScheduleMeta,
     setLastVisibleActivityAt,
+    setLastAttentionAt,
     recordScheduleRun,
     listMeta,
     listScheduleRuns,

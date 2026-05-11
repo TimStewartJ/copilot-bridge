@@ -33,4 +33,23 @@ describe("bridge session state store", () => {
 
     expect(store.getState("session-1")?.lastVisibleActivityAt).toBe("2026-05-07T10:00:00.000Z");
   });
+
+  it("preserves the latest attention timestamp", () => {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
+    store.setLastAttentionAt("session-1", "2026-05-07T09:00:00.000Z");
+
+    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
+  });
+
+  it("keeps attention-only rows when other fields are cleared", () => {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
+    store.setPinnedCwd("session-1", "D:\\repo");
+    store.clearPinnedCwd("session-1");
+
+    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
+  });
 });

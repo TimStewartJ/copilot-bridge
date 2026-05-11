@@ -86,6 +86,7 @@ function summarizeFields(state: BridgeSessionState): string[] {
   if (state.scheduleId) fields.push("scheduleId");
   if (state.scheduleName) fields.push("scheduleName");
   if (state.lastVisibleActivityAt) fields.push("lastVisibleActivityAt");
+  if (state.lastAttentionAt) fields.push("lastAttentionAt");
   if (state.hiddenReason) fields.push("hiddenReason");
   if (state.hiddenAt) fields.push("hiddenAt");
   return fields;

@@ -17,6 +17,7 @@ function makeMockSessionManager(overrides: Partial<{
 }> = {}) {
   const { sessions = [], busySessions = new Set(), startWorkError } = overrides;
   const started: Array<{ sessionId: string; prompt: string; options?: unknown }> = [];
+  const attention: Array<{ sessionId: string; at?: string }> = [];
   return {
     listSessionsFromDisk: async (options: { includeArchived?: boolean } = {}) =>
       sessions.map((s) => ({ sessionId: s, archived: false, ...options })),
@@ -25,7 +26,11 @@ function makeMockSessionManager(overrides: Partial<{
       if (startWorkError) throw startWorkError;
       started.push({ sessionId, prompt, options });
     },
+    markSessionAttention: (sessionId: string, at?: string) => {
+      attention.push({ sessionId, at });
+    },
     _started: started,
+    _attention: attention,
   };
 }
 
@@ -67,10 +72,12 @@ describe("defer-loop-runner", () => {
     expect(sm._started[0].prompt).toContain("kind: interval");
     expect(sm._started[0].prompt).toContain("attentionMode: quiet");
     expect(sm._started[0].prompt).toContain("runCount: 1");
-    expect(sm._started[0].prompt).toContain("If user input, approval, a decision, credentials, clarification, or prioritization is needed, you MUST use ask_user");
+    expect(sm._started[0].prompt).toContain("If user action is needed, clearly state the required next step and stop.");
+    expect(sm._started[0].prompt).not.toContain("ask_user");
     expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
     expect(sm._started[0].options).toEqual({
       attentionMode: "quiet",
+      completionAttention: true,
       historyTruncation: {
         mode: "replace-quiet-interval-defer-tail",
         deferId: loop.deferId,
@@ -139,6 +146,7 @@ describe("defer-loop-runner", () => {
     expect(store.get(maxRunLoop.id)!.status).toBe("completed");
     expect(store.get(expiredLoop.id)!.status).toBe("expired");
     expect(sm._started).toHaveLength(1);
+    expect(sm._attention).toEqual([{ sessionId: "session-2", at: expect.any(String) }]);
     runner.shutdown();
   });
 

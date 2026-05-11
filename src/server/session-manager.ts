@@ -349,6 +349,7 @@ export class SessionManager {
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
+      recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
     });
@@ -370,6 +371,20 @@ export class SessionManager {
     } catch (err) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to persist visible activity:`, err);
     }
+  }
+
+  private persistLastAttentionAt(sessionId: string, lastAttentionAt?: string): void {
+    if (!lastAttentionAt) return;
+    try {
+      this.deps.sessionMetaStore?.setLastAttentionAt(sessionId, lastAttentionAt);
+      this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to persist attention activity:`, err);
+    }
+  }
+
+  markSessionAttention(sessionId: string, at = new Date().toISOString()): void {
+    this.persistLastAttentionAt(sessionId, at);
   }
 
   private createRunController(
@@ -1100,8 +1115,9 @@ export class SessionManager {
     bus: ReturnType<typeof getOrCreateBus>,
     runController?: SessionRunController,
     attachments?: StartWorkAttachment[],
+    options?: StartWorkOptions,
   ): Promise<void> {
-    return this.sessionRunner.doWork(sessionId, prompt, bus, runController, attachments);
+    return this.sessionRunner.doWork(sessionId, prompt, bus, runController, attachments, options);
   }
 
   async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {

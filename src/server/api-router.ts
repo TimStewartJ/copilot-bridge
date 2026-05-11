@@ -554,6 +554,17 @@ function hasExplicitUnreadActivity(
   return Number.isFinite(activityMs) && Number.isFinite(readMs) && activityMs > readMs;
 }
 
+function maxIsoTime(...values: Array<string | null | undefined>): string | undefined {
+  let latest: { value: string; time: number } | undefined;
+  for (const value of values) {
+    if (!value) continue;
+    const time = Date.parse(value);
+    if (!Number.isFinite(time)) continue;
+    if (!latest || time > latest.time) latest = { value, time };
+  }
+  return latest?.value;
+}
+
 function shouldIncludeMaterializedSession(opts: {
   includeArchived: boolean;
   archived: boolean;
@@ -561,7 +572,7 @@ function shouldIncludeMaterializedSession(opts: {
   status: ReturnType<typeof getSessionStatus>;
   readState: Record<string, string>;
   sessionId: string;
-  lastVisibleActivityAt?: string;
+  lastActivityAt?: string;
   hasSessionName: boolean;
   hasReadState: boolean;
   hasBridgeActivitySignal: boolean;
@@ -573,7 +584,7 @@ function shouldIncludeMaterializedSession(opts: {
     && isLinkedOnlyToArchivedTasks(opts.linkedTasks)
     && !opts.status.busy
     && !opts.status.needsUserInput
-    && !hasExplicitUnreadActivity(opts.readState, opts.sessionId, opts.lastVisibleActivityAt)
+    && !hasExplicitUnreadActivity(opts.readState, opts.sessionId, opts.lastActivityAt)
   ) {
     return false;
   }
@@ -582,7 +593,7 @@ function shouldIncludeMaterializedSession(opts: {
     && opts.linkedTasks.length === 0
     && !opts.hasSessionName
     && !opts.hasBridgeActivitySignal
-    && !(opts.hasReadState && opts.lastVisibleActivityAt)
+    && !(opts.hasReadState && opts.lastActivityAt)
     && !opts.hasDeferredWork
     && opts.status.runState === "idle"
     && !opts.status.busy
@@ -612,10 +623,15 @@ function listSessionsFromCliCatalog(ctx: AppContext): any[] | undefined {
   const meta = ctx.sessionMetaStore.listMeta();
   return catalogSessions.map((session) => {
     const sessionMeta = meta[session.sessionId];
+    const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt;
+    const lastAttentionAt = sessionMeta?.lastAttentionAt;
+    const lastActivityAt = maxIsoTime(lastVisibleActivityAt, lastAttentionAt);
     return {
       ...session,
-      lastVisibleActivityAt: sessionMeta?.lastVisibleActivityAt,
-      modifiedTime: sessionMeta?.lastVisibleActivityAt ?? session.modifiedTime ?? session.startTime,
+      lastVisibleActivityAt,
+      lastAttentionAt,
+      lastActivityAt,
+      modifiedTime: lastActivityAt ?? session.modifiedTime ?? session.startTime,
       archived: sessionMeta?.archived ?? false,
       intentText: ctx.eventBusRegistry.getBus(session.sessionId)?.getIntentText() ?? null,
     };
@@ -1050,6 +1066,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const sessionMeta = currentMeta[id];
       const archived = sessionMeta?.archived ?? s.archived ?? false;
       const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
+      const lastAttentionAt = sessionMeta?.lastAttentionAt ?? s.lastAttentionAt;
+      const lastActivityAt = maxIsoTime(lastVisibleActivityAt, lastAttentionAt);
       const deferSummary = getSessionDeferSummary(ctx, id);
       if (!shouldIncludeMaterializedSession({
         includeArchived,
@@ -1058,10 +1076,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
         status,
         readState,
         sessionId: id,
-        lastVisibleActivityAt,
+        lastActivityAt,
         hasSessionName: typeof s.summary === "string" && s.summary.trim().length > 0,
         hasReadState: !!readState[id],
-        hasBridgeActivitySignal: !!sessionMeta?.lastVisibleActivityAt,
+        hasBridgeActivitySignal: !!sessionMeta?.lastVisibleActivityAt || !!sessionMeta?.lastAttentionAt,
         hasDeferredWork: deferSummary.count > 0,
       })) return [];
       const summary = resolveSessionSummary(s, {
@@ -1072,7 +1090,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
         ...s,
         summary,
         lastVisibleActivityAt,
-        modifiedTime: lastVisibleActivityAt ?? s.modifiedTime,
+        lastAttentionAt,
+        lastActivityAt,
+        modifiedTime: lastActivityAt ?? s.modifiedTime,
         ...status,
         deferSummary,
         archived,
@@ -1174,6 +1194,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
             const id = s.sessionId;
             const archived = meta[id]?.archived === true;
             const lastVisibleActivityAt = meta[id]?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
+            const lastAttentionAt = meta[id]?.lastAttentionAt ?? s.lastAttentionAt;
+            const lastActivityAt = maxIsoTime(lastVisibleActivityAt, lastAttentionAt);
             const deferSummary = getSessionDeferSummary(ctx, id);
             const shouldBuildDetails = shouldIncludeMaterializedSession({
               includeArchived: buildIncludesArchived,
@@ -1182,10 +1204,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
               status,
               readState,
               sessionId: id,
-              lastVisibleActivityAt,
+              lastActivityAt,
               hasSessionName: typeof s.summary === "string" && s.summary.trim().length > 0,
               hasReadState: !!readState[id],
-              hasBridgeActivitySignal: !!meta[id]?.lastVisibleActivityAt,
+              hasBridgeActivitySignal: !!meta[id]?.lastVisibleActivityAt || !!meta[id]?.lastAttentionAt,
               hasDeferredWork: deferSummary.count > 0,
             });
 
@@ -1193,6 +1215,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
               return {
                 ...s,
                 ...status,
+                lastVisibleActivityAt,
+                lastAttentionAt,
+                lastActivityAt,
+                modifiedTime: lastActivityAt ?? s.modifiedTime,
                 archived,
                 archivedAt: meta[id]?.archivedAt ?? null,
                 triggeredBy: meta[id]?.triggeredBy,
@@ -1218,6 +1244,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
               context: Object.keys(context).length > 0 ? context : undefined,
               workspace,
               ...status,
+              lastVisibleActivityAt,
+              lastAttentionAt,
+              lastActivityAt,
+              modifiedTime: lastActivityAt ?? s.modifiedTime,
               hasPlan,
               archived,
               archivedAt,
@@ -1281,6 +1311,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
         break;
       case "schedule:changed":
         invalidateEnrichedCache("bus:schedule:changed");
+        break;
+      case "sessions:changed":
+        invalidateEnrichedCache("bus:sessions:changed");
         break;
     }
   });
@@ -2888,7 +2921,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       // Unread sessions (not busy — busy is separate)
       const unreadSessions = enrichedSessions
-        .filter((s: any) => !s.busy && isUnread(s.sessionId, s.lastVisibleActivityAt))
+        .filter((s: any) => !s.busy && isUnread(s.sessionId, s.lastActivityAt))
         .map((s: any) => {
           const taskId = taskLookup.resolveTask(s.sessionId)?.id;
           return {
@@ -2896,6 +2929,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
             title: s.summary,
             taskId: taskId ?? null,
             lastVisibleActivityAt: s.lastVisibleActivityAt,
+            lastAttentionAt: s.lastAttentionAt,
+            lastActivityAt: s.lastActivityAt,
           };
         });
 
@@ -2945,13 +2980,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const session = sessionById.get(sid);
           return !!session && (
             needsUserInput(session)
-            || (!session.busy && isUnread(sid, session.lastVisibleActivityAt))
+            || (!session.busy && isUnread(sid, session.lastActivityAt))
           );
         });
 
         // Last activity across task sessions
         const sessionTimes = task.sessionIds
-          .map((sid) => sessionById.get(sid)?.lastVisibleActivityAt)
+          .map((sid) => sessionById.get(sid)?.lastActivityAt)
           .filter(Boolean) as string[];
         const lastActivity = sessionTimes.length > 0
           ? sessionTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
@@ -3033,18 +3068,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const orphanSessions = enrichedSessions
         .filter((s: any) => {
           if (taskSessionIds.has(s.sessionId)) return false;
-          const unread = isUnread(s.sessionId, s.lastVisibleActivityAt);
-          const recent = s.lastVisibleActivityAt && new Date(s.lastVisibleActivityAt).getTime() > oneDayAgo;
+          const unread = isUnread(s.sessionId, s.lastActivityAt);
+          const recent = s.lastActivityAt && new Date(s.lastActivityAt).getTime() > oneDayAgo;
           return s.busy || unread || recent;
         })
         .map((s: any) => ({
           sessionId: s.sessionId,
           title: s.summary,
           lastVisibleActivityAt: s.lastVisibleActivityAt,
+          lastAttentionAt: s.lastAttentionAt,
+          lastActivityAt: s.lastActivityAt,
           branch: s.context?.branch ?? null,
           runState: s.runState ?? "idle",
           busy: s.busy ?? false,
-          unread: isUnread(s.sessionId, s.lastVisibleActivityAt),
+          unread: isUnread(s.sessionId, s.lastActivityAt),
         }));
       // Open checklist items across all active tasks and global checklist items
       const taskGroups = ctx.taskGroupStore.listGroups();

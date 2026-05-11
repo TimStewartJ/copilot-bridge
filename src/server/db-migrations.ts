@@ -298,6 +298,14 @@ function addSessionMetaLastVisibleActivity(db: DatabaseSync): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_session_meta_lastVisibleActivityAt ON session_meta(lastVisibleActivityAt)");
 }
 
+function addBridgeSessionStateLastAttention(db: DatabaseSync): void {
+  const bridgeSessionStateCols = db.prepare("PRAGMA table_info(bridge_session_state)").all() as any[];
+  if (!bridgeSessionStateCols.some((c: any) => c.name === "lastAttentionAt")) {
+    db.exec("ALTER TABLE bridge_session_state ADD COLUMN lastAttentionAt TEXT");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt ON bridge_session_state(lastAttentionAt)");
+}
+
 function backfillBridgeSessionState(db: DatabaseSync): void {
   if (sqliteTableExists(db, "session_meta")) {
     db.exec(`
@@ -610,6 +618,13 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     runMode: "every-open",
     description: "Add lastVisibleActivityAt to legacy session_meta rows.",
     apply: addSessionMetaLastVisibleActivity,
+  },
+  {
+    id: "bridge-session-state-last-attention-column",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    description: "Add lastAttentionAt to bridge_session_state rows.",
+    apply: addBridgeSessionStateLastAttention,
   },
   {
     id: BRIDGE_SESSION_STATE_LEGACY_BACKFILL,
