@@ -385,73 +385,9 @@ describe("staging tools", () => {
     expect(mod.parsePreviewPrefix("missing", activeWorktrees)).toBeNull();
   });
 
-  it("creates a staging context for legacy worktrees that only provide todoStore", async () => {
+  it("launches staging backends through a single opaque staged entrypoint", async () => {
     const mod = await loadStagingToolsModule();
-    const stagingDir = createTempDir("bridge-stage-legacy-worktree-");
-    const serverDir = join(stagingDir, "src", "server");
-    mkdirSync(serverDir, { recursive: true });
-
-    const writeServerModule = (filename: string, source: string) => {
-      writeFileSync(join(serverDir, filename), source);
-    };
-
-    writeServerModule("global-bus.ts", `export function createGlobalBus() { return { emit() {} }; }`);
-    writeServerModule("event-bus.ts", `export function createEventBusRegistry() { return {}; }`);
-    writeServerModule(
-      "db.ts",
-      `export function openDatabase() {
-         return {
-           close() {},
-           exec() {},
-           prepare() {
-             return {
-               get() { return undefined; },
-               all() { return []; },
-               run() {},
-             };
-           },
-         };
-       }`,
-    );
-    writeServerModule("task-store.ts", `export function createTaskStore() { return {}; }`);
-    writeServerModule("task-group-store.ts", `export function createTaskGroupStore() { return {}; }`);
-    writeServerModule("schedule-store.ts", `export function createScheduleStore() { return {}; }`);
-    writeServerModule(
-      "settings-store.ts",
-      `export function createSettingsStore() { return { getMcpServers() { return {}; } }; }`,
-    );
-    writeServerModule("session-meta-store.ts", `export function createSessionMetaStore() { return {}; }`);
-    writeServerModule("session-titles.ts", `export function createSessionTitlesStore() { return {}; }`);
-    writeServerModule("read-state-store.ts", `export function createReadStateStore() { return {}; }`);
-    writeServerModule(
-      "todo-store.ts",
-      `export function createTodoStore() {
-         return {
-           listTodos() { return []; },
-           getTodo() { return undefined; },
-           createTodo() { return {}; },
-           updateTodo() { return {}; },
-           deleteTodo() {},
-           reorderTodos() { return []; },
-           listAllOpen() { return []; },
-           listRecentlyCompleted() { return []; },
-         };
-       }`,
-    );
-    writeServerModule(
-      "session-manager.ts",
-      `export function createBridgeTools(ctx) {
-         if (!ctx.todoStore) throw new Error("missing todoStore");
-         return [];
-       }
-       export function createSessionManager(ctx) {
-         return {
-           legacyTodoStorePresent: Boolean(ctx.todoStore),
-           gracefulShutdown: async () => {},
-         };
-       }`,
-    );
-    writeServerModule("api-router.ts", `export function createApiRouter() { return null; }`);
+    const stagingDir = createTempDir("bridge-stage-child-entrypoint-");
 
     const runtimePaths = {
       demoMode: false,
@@ -461,19 +397,23 @@ describe("staging tools", () => {
       copilotHome: join(stagingDir, ".copilot"),
       env: {},
     };
-    mkdirSync(runtimePaths.workspaceDir, { recursive: true });
-    mkdirSync(runtimePaths.dataDir, { recursive: true });
-    mkdirSync(runtimePaths.docsDir, { recursive: true });
+    const spawnConfig = mod.__testing.buildStagingBackendSpawnConfig(
+      stagingDir,
+      runtimePaths,
+      "/staging/test/api",
+      { tsxLoader: "file:///tmp/tsx-loader.mjs" },
+    );
 
-    const { ctx, db } = await mod.__testing.createStagingContext(stagingDir, runtimePaths, "/staging/test/api");
-    try {
-      expect((ctx as any).todoStore).toBeTruthy();
-      expect((ctx.sessionManager as any).legacyTodoStorePresent).toBe(true);
-    } finally {
-      await ctx.voiceJobManager.shutdown();
-      await ctx.sessionManager.gracefulShutdown();
-      db.close();
-    }
+    expect(spawnConfig.command).toBe(process.execPath);
+    expect(spawnConfig.args).toEqual([
+      "--import",
+      "file:///tmp/tsx-loader.mjs",
+      join(stagingDir, "src", "server", "staging-preview-server.ts"),
+    ]);
+    expect(spawnConfig.env.BRIDGE_STAGING_API_BASE_PATH).toBe("/staging/test/api");
+    expect(spawnConfig.env.BRIDGE_STAGING_BACKEND_PORT).toBe("0");
+    expect(spawnConfig.env.BRIDGE_STAGING_MODEL).toBe("claude-haiku-4.5");
+    expect(spawnConfig.args.join("\n")).not.toContain("task-store.ts");
   });
 
   it("reseeds a staging SQLite database even when stale target files already exist", async () => {

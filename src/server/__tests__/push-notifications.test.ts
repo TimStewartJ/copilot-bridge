@@ -339,7 +339,7 @@ describe("push notification API", () => {
     });
   });
 
-  it("creates push storage from runtime paths when staging preview context has not injected it yet", async () => {
+  it("fails clearly when push storage is not injected into the app context", async () => {
     await withTestEnv(PUSH_ENV, async () => {
       const { app } = createTestApp({
         pushSubscriptionStore: undefined,
@@ -350,14 +350,8 @@ describe("push notification API", () => {
         .post("/api/push/subscriptions")
         .send({ subscription: TEST_SUBSCRIPTION });
 
-      expect(createRes.status).toBe(201);
-
-      const statusRes = await request(app).get("/api/push/status");
-      expect(statusRes.status).toBe(200);
-      expect(statusRes.body).toMatchObject({
-        configured: true,
-        subscriptionCount: 1,
-      });
+      expect(createRes.status).toBe(500);
+      expect(createRes.body.error).toContain("Push subscription store is not configured");
     });
   });
 
