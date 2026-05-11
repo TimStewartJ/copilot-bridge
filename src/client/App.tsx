@@ -44,7 +44,7 @@ import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
-import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath, type SessionNavigationTarget } from "./lib/session-path";
+import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
@@ -784,10 +784,6 @@ export default function App() {
     navigate(getSessionPath({ sessionId, taskId }), { replace });
   }, [navigate]);
 
-  const handleSelectDashboardSession = useCallback((target: SessionNavigationTarget) => {
-    navigate(getSessionPath(target));
-  }, [navigate]);
-
   // Actually create a session on the server (called on first message send)
   const materializeSession = useCallback(async (taskId?: string): Promise<string> => {
     if (taskId) {
@@ -1490,10 +1486,6 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
-                  onSelectSession={handleSelectDashboardSession}
-                  onNewSession={handleNewQuickChat}
-                  onResumeTask={handleResumeTask}
-                  sessions={sessions}
                 />
               }
             />
@@ -1502,10 +1494,6 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
-                  onSelectSession={handleSelectDashboardSession}
-                  onNewSession={handleNewQuickChat}
-                  onResumeTask={handleResumeTask}
-                  sessions={sessions}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
