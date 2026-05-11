@@ -101,6 +101,16 @@ describe("session-meta-store", () => {
     expect(store.listMeta()).toEqual({});
   });
 
+  it("includes attention-only rows in meta reads", () => {
+    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
+
+    expect(store.getMeta("session-1")).toMatchObject({
+      archived: false,
+      lastAttentionAt: "2026-05-07T10:00:00.000Z",
+    });
+    expect(store.listMeta()["session-1"]?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
+  });
+
   it("listSessionIdsBySchedule returns sessions for a schedule", () => {
     store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
     store.recordScheduleRun("sched-a", "s2", "2026-01-02T00:00:00.000Z");

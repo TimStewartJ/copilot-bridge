@@ -73,6 +73,8 @@ export interface Session {
   startTime?: string;
   modifiedTime?: string;
   lastVisibleActivityAt?: string;
+  lastAttentionAt?: string;
+  lastActivityAt?: string;
   diskSizeBytes?: number;
   eventLogSizeBytes?: number;
   runState?: SessionRunState;
@@ -108,8 +110,24 @@ export function isSessionActive(session: Pick<Session, "runState" | "busy">): bo
   return getSessionRunState(session) !== "idle";
 }
 
-export function getSessionActivityTime(session: Pick<Session, "lastVisibleActivityAt" | "modifiedTime" | "startTime">): string | undefined {
-  return session.lastVisibleActivityAt ?? session.modifiedTime ?? session.startTime;
+function maxIsoTime(...values: Array<string | null | undefined>): string | undefined {
+  let latest: { value: string; time: number } | undefined;
+  for (const value of values) {
+    if (!value) continue;
+    const time = Date.parse(value);
+    if (!Number.isFinite(time)) continue;
+    if (!latest || time > latest.time) latest = { value, time };
+  }
+  return latest?.value;
+}
+
+export function getSessionActivityTime(
+  session: Pick<Session, "lastActivityAt" | "lastVisibleActivityAt" | "lastAttentionAt" | "modifiedTime" | "startTime">,
+): string | undefined {
+  return session.lastActivityAt
+    ?? maxIsoTime(session.lastVisibleActivityAt, session.lastAttentionAt)
+    ?? session.modifiedTime
+    ?? session.startTime;
 }
 
 export interface ToolCall {
@@ -1114,6 +1132,8 @@ export interface DashboardUnreadSession {
   title: string;
   taskId: string | null;
   lastVisibleActivityAt?: string;
+  lastAttentionAt?: string;
+  lastActivityAt?: string;
 }
 
 export interface DashboardActiveTask {
@@ -1130,6 +1150,8 @@ export interface DashboardOrphanSession {
   sessionId: string;
   title: string;
   lastVisibleActivityAt?: string;
+  lastAttentionAt?: string;
+  lastActivityAt?: string;
   branch: string | null;
   runState: SessionRunState;
   busy: boolean;

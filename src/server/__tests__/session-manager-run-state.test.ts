@@ -16,6 +16,7 @@ import {
 } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { createSessionMetaStore } from "../session-meta-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeTestRuntimePaths } from "./helpers.js";
 
@@ -35,6 +36,7 @@ describe("SessionManager run state", () => {
       globalBus,
       eventBusRegistry,
       sessionTitles: createSessionTitlesStore(db),
+      sessionMetaStore: createSessionMetaStore(db),
       taskStore: {
         findTaskBySessionId: vi.fn().mockReturnValue(null),
       } as any,
@@ -48,7 +50,7 @@ describe("SessionManager run state", () => {
       runtimePaths,
     }) as any;
 
-    return { manager, globalBus, eventBusRegistry };
+    return { manager, globalBus, eventBusRegistry, db };
   }
 
   function makeSession(opts: { replayOnSubscribe?: any | (() => any) } = {}) {
@@ -709,6 +711,58 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("records completion attention on natural idle when enabled", async () => {
+    const { manager, db } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const accepted = manager.startWorkAndWaitForDelivery("session-1", "hello", undefined, {
+      completionAttention: true,
+    });
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "user.message",
+      data: {},
+      timestamp: "2026-05-09T10:00:00.000Z",
+    });
+    await expect(accepted).resolves.toBeUndefined();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-05-09T10:01:00.000Z",
+    });
+    await flushMicrotasks();
+
+    const row = db.prepare("SELECT lastAttentionAt FROM bridge_session_state WHERE sessionId = ?").get("session-1") as any;
+    expect(row?.lastAttentionAt).toBe("2026-05-09T10:01:00.000Z");
+  });
+
+  it("does not record completion attention on aborts", async () => {
+    const { manager, db } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello", undefined, { completionAttention: true });
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "abort",
+      data: { reason: "user initiated" },
+      timestamp: "2026-05-09T10:01:00.000Z",
+    });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    const row = db.prepare("SELECT lastAttentionAt FROM bridge_session_state WHERE sessionId = ?").get("session-1") as any;
+    expect(row?.lastAttentionAt).toBeUndefined();
   });
 
   it("startWorkAndWaitForDelivery rejects when send fails before acceptance", async () => {

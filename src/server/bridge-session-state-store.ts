@@ -12,6 +12,7 @@ export interface BridgeSessionState {
   scheduleId?: string;
   scheduleName?: string;
   lastVisibleActivityAt?: string;
+  lastAttentionAt?: string;
   hiddenReason?: string;
   hiddenAt?: string;
   createdAt: string;
@@ -38,6 +39,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       scheduleId: row.scheduleId ?? undefined,
       scheduleName: row.scheduleName ?? undefined,
       lastVisibleActivityAt: row.lastVisibleActivityAt ?? undefined,
+      lastAttentionAt: row.lastAttentionAt ?? undefined,
       hiddenReason: row.hiddenReason ?? undefined,
       hiddenAt: row.hiddenAt ?? undefined,
       createdAt: row.createdAt,
@@ -71,6 +73,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND scheduleId IS NULL
         AND scheduleName IS NULL
         AND lastVisibleActivityAt IS NULL
+        AND lastAttentionAt IS NULL
         AND hiddenReason IS NULL
         AND hiddenAt IS NULL
     `).run(sessionId);
@@ -147,6 +150,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND scheduleId IS NULL
         AND scheduleName IS NULL
         AND lastVisibleActivityAt IS NULL
+        AND lastAttentionAt IS NULL
         AND hiddenReason IS NULL
         AND hiddenAt IS NULL
     `).run();
@@ -213,6 +217,28 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     return getState(sessionId)!;
   }
 
+  function setLastAttentionAt(sessionId: string, lastAttentionAt: string): BridgeSessionState {
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO bridge_session_state (sessionId, lastAttentionAt, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(sessionId) DO UPDATE SET
+        lastAttentionAt = CASE
+          WHEN bridge_session_state.lastAttentionAt IS NULL
+            OR bridge_session_state.lastAttentionAt < excluded.lastAttentionAt
+          THEN excluded.lastAttentionAt
+          ELSE bridge_session_state.lastAttentionAt
+        END,
+        updatedAt = CASE
+          WHEN bridge_session_state.lastAttentionAt IS NULL
+            OR bridge_session_state.lastAttentionAt < excluded.lastAttentionAt
+          THEN excluded.updatedAt
+          ELSE bridge_session_state.updatedAt
+        END
+    `).run(sessionId, lastAttentionAt, now, now);
+    return getState(sessionId)!;
+  }
+
   function setHidden(sessionId: string, hiddenReason: string): BridgeSessionState {
     const now = nowIso();
     db.prepare(`
@@ -253,6 +279,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     clearPinnedCwd,
     setScheduleMeta,
     setLastVisibleActivityAt,
+    setLastAttentionAt,
     setHidden,
     clearHidden,
     deleteState,

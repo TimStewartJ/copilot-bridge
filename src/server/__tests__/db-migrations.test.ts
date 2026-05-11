@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../db.js";
 import { listDatabaseMigrations } from "../db-migrations.js";
 import { makeTestDir } from "./helpers.js";
@@ -50,6 +52,7 @@ describe("database migration registry", () => {
       "mcp-registry-from-legacy-settings-and-tag-configs",
       "task-sessions-linked-at-column",
       "session-meta-last-visible-activity-column",
+      "bridge-session-state-last-attention-column",
       "bridge_session_state_legacy_backfill_v1",
       "schedule-reuse-fields-normalization",
       "schedule-reuse-final-new-session-normalization-v1",
@@ -116,5 +119,38 @@ describe("database migration registry", () => {
       scheduleId: null,
     });
     expect(scheduleRunCount).toBe(0);
+  });
+
+  it("adds lastAttentionAt before creating its index on existing bridge session state tables", () => {
+    const dataDir = createTempDataDir();
+    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    legacyDb.exec(`
+      CREATE TABLE bridge_session_state (
+        sessionId TEXT PRIMARY KEY,
+        archived INTEGER NOT NULL DEFAULT 0,
+        archivedAt TEXT,
+        titleOverride TEXT,
+        titleOverrideUpdatedAt TEXT,
+        pinnedCwd TEXT,
+        pinnedCwdUpdatedAt TEXT,
+        triggeredBy TEXT,
+        scheduleId TEXT,
+        scheduleName TEXT,
+        lastVisibleActivityAt TEXT,
+        hiddenReason TEXT,
+        hiddenAt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+    `);
+    legacyDb.close();
+
+    const db = openDatabase(dataDir);
+    const columns = db.prepare("PRAGMA table_info(bridge_session_state)").all() as Array<{ name: string }>;
+    const indexes = db.prepare("PRAGMA index_list(bridge_session_state)").all() as Array<{ name: string }>;
+    db.close();
+
+    expect(columns.map((column) => column.name)).toContain("lastAttentionAt");
+    expect(indexes.map((index) => index.name)).toContain("idx_bridge_session_state_lastAttentionAt");
   });
 });

@@ -26,13 +26,34 @@ describe("session run-state helpers", () => {
 });
 
 describe("getSessionActivityTime", () => {
-  it("prefers the latest visible activity timestamp over modified and start times", () => {
+  it("prefers explicit merged activity over modified and start times", () => {
     expect(getSessionActivityTime({
       sessionId: "session-1",
       startTime: "2026-04-17T13:00:00.000Z",
       modifiedTime: "2026-04-17T14:00:00.000Z",
       lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
-    })).toBe("2026-04-17T15:00:00.000Z");
+      lastAttentionAt: "2026-04-17T16:00:00.000Z",
+      lastActivityAt: "2026-04-17T17:00:00.000Z",
+    })).toBe("2026-04-17T17:00:00.000Z");
+  });
+
+  it("falls back to the latest visible or attention activity timestamp", () => {
+    expect(getSessionActivityTime({
+      sessionId: "session-1",
+      startTime: "2026-04-17T13:00:00.000Z",
+      modifiedTime: "2026-04-17T14:00:00.000Z",
+      lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
+      lastAttentionAt: "2026-04-17T16:00:00.000Z",
+    })).toBe("2026-04-17T16:00:00.000Z");
+  });
+
+  it("uses visible activity when it is newer than attention activity", () => {
+    expect(getSessionActivityTime({
+      sessionId: "session-1",
+      modifiedTime: "2026-04-17T14:00:00.000Z",
+      lastVisibleActivityAt: "2026-04-17T16:00:00.000Z",
+      lastAttentionAt: "2026-04-17T15:00:00.000Z",
+    })).toBe("2026-04-17T16:00:00.000Z");
   });
 });
 

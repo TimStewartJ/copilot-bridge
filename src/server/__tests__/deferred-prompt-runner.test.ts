@@ -26,6 +26,8 @@ function makeMockSessionManager(overrides: Partial<{
 }> = {}) {
   const { sessions = [], archivedSessions = new Set(), busySessions = new Set(), startWorkError } = overrides;
   const started: Array<{ sessionId: string; prompt: string }> = [];
+  const deliveryOptions: unknown[] = [];
+  const attention: Array<{ sessionId: string; at?: string }> = [];
   return {
     listSessionsFromDisk: async (options: { includeArchived?: boolean } = {}) =>
       sessions
@@ -36,11 +38,17 @@ function makeMockSessionManager(overrides: Partial<{
       if (startWorkError) throw startWorkError;
       started.push({ sessionId, prompt });
     },
-    startWorkAndWaitForDelivery: async (sessionId: string, prompt: string) => {
+    startWorkAndWaitForDelivery: async (sessionId: string, prompt: string, _attachments?: unknown, options?: unknown) => {
       if (startWorkError) throw startWorkError;
       started.push({ sessionId, prompt });
+      deliveryOptions.push(options);
+    },
+    markSessionAttention: (sessionId: string, at?: string) => {
+      attention.push({ sessionId, at });
     },
     _started: started,
+    _deliveryOptions: deliveryOptions,
+    _attention: attention,
   };
 }
 
@@ -76,6 +84,7 @@ describe("deferred-prompt-runner", () => {
 
       expect(sm._started).toHaveLength(1);
       expect(sm._started[0]).toEqual({ sessionId: "session-1", prompt: "Do something" });
+      expect(sm._deliveryOptions[0]).toEqual({ completionAttention: true });
       const dp = store.listForSession("session-1")[0];
       expect(dp.status).toBe("completed");
       expect(summaryEvents).toEqual([
@@ -549,6 +558,7 @@ describe("deferred-prompt-runner", () => {
       const updated = store.get(dp.id)!;
       expect(updated.status).toBe("failed");
       expect(updated.lastError).toContain("Fatal error");
+      expect(sm._attention).toEqual([{ sessionId: "session-1", at: expect.any(String) }]);
       runner.shutdown();
     });
   });

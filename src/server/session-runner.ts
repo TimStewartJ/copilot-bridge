@@ -51,8 +51,14 @@ export interface McpServerStatus {
 
 export type SessionAttentionMode = "normal" | "quiet";
 
+export interface CompletionAttentionOptions {
+  done?: boolean;
+  error?: boolean;
+}
+
 export interface StartWorkOptions {
   attentionMode?: SessionAttentionMode;
+  completionAttention?: boolean | CompletionAttentionOptions;
   historyTruncation?: QuietIntervalDeferTailTruncationRequest;
 }
 
@@ -118,6 +124,7 @@ export interface SessionRunnerDeps {
     reason: UserInputCancelReason,
     message?: string,
   ): void;
+  recordSessionAttention(sessionId: string, at?: string): void;
   invalidateSessionListCache(reason?: string): void;
   maybeAutoNameSession(
     sessionId: string,
@@ -144,6 +151,14 @@ export class SessionRunner {
       this.deps.sessionMetaStore?.setLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
     } catch (err) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to persist visible activity:`, err);
+    }
+  }
+
+  private recordSessionAttention(sessionId: string, at?: string): void {
+    try {
+      this.deps.recordSessionAttention(sessionId, at);
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to persist attention activity:`, err);
     }
   }
 
@@ -270,6 +285,7 @@ export class SessionRunner {
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
       attentionMode: options.attentionMode ?? "normal",
+      completionAttention: options.completionAttention,
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       historyTruncation: options.historyTruncation,
@@ -310,6 +326,7 @@ export class SessionRunner {
       startLog: string;
       execute: (session: any) => Promise<void>;
       attentionMode?: SessionAttentionMode;
+      completionAttention?: boolean | CompletionAttentionOptions;
       historyTruncation?: QuietIntervalDeferTailTruncationRequest;
     },
   ): Promise<void> {
@@ -403,6 +420,20 @@ export class SessionRunner {
       if (typeof rawTimestamp !== "string") return undefined;
       const eventTime = Date.parse(rawTimestamp);
       return Number.isFinite(eventTime) ? eventTime : undefined;
+    };
+    const getEventTimestampIso = (event: any): string | undefined => {
+      const eventTime = getEventTimestampMs(event);
+      return eventTime === undefined ? undefined : new Date(eventTime).toISOString();
+    };
+    const shouldRecordCompletionAttention = (reason: "done" | "error"): boolean => {
+      const attention = opts.completionAttention;
+      if (attention === true) return true;
+      if (!attention || typeof attention !== "object") return false;
+      return reason === "done" ? attention.done === true : attention.error === true;
+    };
+    const recordCompletionAttention = (reason: "done" | "error", event: any) => {
+      if (!shouldRecordCompletionAttention(reason)) return;
+      this.recordSessionAttention(sessionId, getEventTimestampIso(event));
     };
 
     const getEventReplayKey = (event: any): string | undefined => {
@@ -580,6 +611,7 @@ export class SessionRunner {
           break;
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
+          recordCompletionAttention("error", event);
           runController.completeError(data?.message ?? "unknown");
           break;
         case "abort": {
@@ -611,6 +643,7 @@ export class SessionRunner {
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
+          recordCompletionAttention("done", event);
           runController.completeDone(content);
           break;
         }

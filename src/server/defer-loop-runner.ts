@@ -67,6 +67,11 @@ export function createDeferLoopRunner(
     for (const sessionId of new Set(sessionIds)) emitDeferSummary(sessionId);
   }
 
+  function recordSessionAttention(sessionId: string, at = new Date().toISOString()): void {
+    if (typeof sessionManager.markSessionAttention !== "function") return;
+    sessionManager.markSessionAttention(sessionId, at);
+  }
+
   function armNext(): void {
     if (!started) return;
     clearTimeout(nextTimer);
@@ -134,18 +139,27 @@ export function createDeferLoopRunner(
     const now = new Date();
     if (loop.maxRuns !== undefined && loop.runCount >= loop.maxRuns) {
       const completed = store.markCompleted(id);
-      if (completed) emitDeferSummary(loop.sessionId);
+      if (completed) {
+        recordSessionAttention(loop.sessionId);
+        emitDeferSummary(loop.sessionId);
+      }
       return completed ? "changed" : "unchanged";
     }
     if (loop.expiresAt && Date.parse(loop.expiresAt) <= now.getTime()) {
       const expired = store.markExpired(id);
-      if (expired) emitDeferSummary(loop.sessionId);
+      if (expired) {
+        recordSessionAttention(loop.sessionId);
+        emitDeferSummary(loop.sessionId);
+      }
       return expired ? "changed" : "unchanged";
     }
     if (loop.attempts >= MAX_ATTEMPTS) {
       const failed = store.markFailedById(id, `Exceeded max attempts (${MAX_ATTEMPTS})`);
       const cancelled = !failed && store.cancelById(id);
-      if (failed || cancelled) emitDeferSummary(loop.sessionId);
+      if (failed || cancelled) {
+        recordSessionAttention(loop.sessionId);
+        emitDeferSummary(loop.sessionId);
+      }
       console.error(`[defer-loop-runner] Loop ${id} exceeded max attempts; stopping`);
       return "changed";
     }
@@ -206,8 +220,7 @@ export function createDeferLoopRunner(
       "Quiet recurring deferral instructions:",
       "- This is an automated polling check. If there is nothing actionable for the user, give a concise status and stop.",
       "- Do not ask a question just to report no change.",
-      "- If user input, approval, a decision, credentials, clarification, or prioritization is needed, you MUST use ask_user instead of asking in plain text.",
-      "- Only ask_user raises user attention for this quiet check.",
+      "- If user action is needed, clearly state the required next step and stop.",
       "",
       "User prompt:",
       loop.prompt,
@@ -228,6 +241,7 @@ export function createDeferLoopRunner(
         undefined,
         {
           attentionMode: "quiet",
+          completionAttention: true,
           historyTruncation: {
             mode: "replace-quiet-interval-defer-tail",
             deferId: loop.deferId,
@@ -285,6 +299,7 @@ export function createDeferLoopRunner(
             console.error(`[defer-loop-runner] Failed to mark loop ${loop.id} failed`);
           }
         } else {
+          recordSessionAttention(loop.sessionId);
           emitDeferSummary(loop.sessionId);
         }
         console.error(`[defer-loop-runner] Loop ${loop.id} failed after ${nextAttempts} attempt(s): ${msg}`);

@@ -376,6 +376,41 @@ describe("Session routes (mocked)", () => {
     ]);
   });
 
+  it("GET /api/sessions uses attention activity for unread inclusion and ordering", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "attention-session",
+        summary: "Attention session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+      },
+      {
+        sessionId: "visible-session",
+        summary: "Visible session",
+        modifiedTime: "2026-04-16T11:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:30:00.000Z",
+      },
+    ]);
+    ({ app, ctx, db } = createTestApp({ sessionManager }));
+    ctx.sessionMetaStore.setLastAttentionAt("attention-session", "2026-04-16T13:00:00.000Z");
+    db.prepare("INSERT INTO read_state (sessionId, lastReadAt) VALUES (?, ?)")
+      .run("attention-session", "2026-04-16T12:59:00.000Z");
+
+    const res = await request(app).get("/api/sessions");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions.map((session: any) => session.sessionId)).toEqual([
+      "attention-session",
+      "visible-session",
+    ]);
+    expect(res.body.sessions[0]).toMatchObject({
+      sessionId: "attention-session",
+      lastAttentionAt: "2026-04-16T13:00:00.000Z",
+      lastActivityAt: "2026-04-16T13:00:00.000Z",
+      modifiedTime: "2026-04-16T13:00:00.000Z",
+    });
+  });
+
   it("GET /api/sessions keeps busy archived-task sessions visible by default", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
@@ -642,6 +677,32 @@ describe("Session routes (mocked)", () => {
     expect(listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
     expect(res.body.unreadSessions).toEqual([
       expect.objectContaining({ sessionId: "active-session", title: "Active session" }),
+    ]);
+  });
+
+  it("GET /api/dashboard treats attention-only activity as unread", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "attention-session",
+        summary: "Attention session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    ({ app, ctx, db } = createTestApp({ sessionManager }));
+    ctx.sessionMetaStore.setLastAttentionAt("attention-session", "2026-04-16T13:00:00.000Z");
+    db.prepare("INSERT INTO read_state (sessionId, lastReadAt) VALUES (?, ?)")
+      .run("attention-session", "2026-04-16T12:59:00.000Z");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.unreadSessions).toEqual([
+      expect.objectContaining({
+        sessionId: "attention-session",
+        lastAttentionAt: "2026-04-16T13:00:00.000Z",
+        lastActivityAt: "2026-04-16T13:00:00.000Z",
+      }),
     ]);
   });
 
