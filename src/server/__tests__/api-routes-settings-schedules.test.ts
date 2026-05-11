@@ -166,16 +166,40 @@ describe("Read state routes", () => {
     expect(state.body["sess-1"]).toBe("2026-05-07T21:00:00.000Z");
   });
 
-  it("POST /api/read-state/:sessionId clamps explicit cursors to server-known visible activity", async () => {
+  it("POST /api/read-state/:sessionId marks attention-only activity as read", async () => {
+    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:03:00.000Z");
+
+    const res = await request(app).post("/api/read-state/sess-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:03:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:03:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId honors explicit cursors through server-known attention activity", async () => {
     ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
+    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:05:00.000Z");
 
     const res = await request(app)
       .post("/api/read-state/sess-1")
       .send({ readThroughActivityAt: "2026-05-07T21:05:00.000Z" });
 
     expect(res.status).toBe(200);
-    expect(res.body.lastReadAt).toBe("2026-05-07T21:00:00.000Z");
-    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:00:00.000Z");
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:05:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:05:00.000Z");
+  });
+
+  it("POST /api/read-state/:sessionId clamps explicit cursors to server-known activity", async () => {
+    ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
+    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:03:00.000Z");
+
+    const res = await request(app)
+      .post("/api/read-state/sess-1")
+      .send({ readThroughActivityAt: "2026-05-07T21:05:00.000Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastReadAt).toBe("2026-05-07T21:03:00.000Z");
+    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:03:00.000Z");
   });
 
   it("POST /api/read-state/:sessionId rejects invalid read-through cursors", async () => {

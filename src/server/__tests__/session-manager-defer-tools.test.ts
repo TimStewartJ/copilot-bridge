@@ -157,6 +157,7 @@ describe("unified defer tools", () => {
     const tools = createBridgeTools(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
+    const markAttention = vi.spyOn(ctx.sessionManager, "markSessionAttention");
     const summaryEvents: any[] = [];
     const unsubscribe = ctx.globalBus.subscribe((event) => {
       if (event.type === "session:defer-summary") summaryEvents.push(event);
@@ -172,6 +173,8 @@ describe("unified defer tools", () => {
 
     expect(ctx.deferredPromptStore!.get(parseDeferId(once.deferId)!.id)!.status).toBe("cancelled");
     expect(ctx.deferLoopStore!.get(parseDeferId(interval.deferId)!.id)!.status).toBe("cancelled");
+    expect(markAttention).toHaveBeenCalledTimes(1);
+    expect(markAttention).toHaveBeenCalledWith("session-A");
     expect(summaryEvents).toHaveLength(4);
     expect(summaryEvents.map((event) => event.deferSummary.count)).toEqual([1, 2, 1, 0]);
     expect(summaryEvents[0]).toMatchObject({

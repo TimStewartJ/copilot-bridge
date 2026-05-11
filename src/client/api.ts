@@ -130,6 +130,13 @@ export function getSessionActivityTime(
     ?? session.startTime;
 }
 
+export function getSessionReadThroughActivityTime(
+  session: Pick<Session, "lastAttentionAt"> | null | undefined,
+  renderedReadThroughActivityAt?: string,
+): string | undefined {
+  return maxIsoTime(renderedReadThroughActivityAt, session?.lastAttentionAt);
+}
+
 export interface ToolCall {
   toolCallId: string;
   name: string;

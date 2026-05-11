@@ -72,12 +72,11 @@ describe("defer-loop-runner", () => {
     expect(sm._started[0].prompt).toContain("kind: interval");
     expect(sm._started[0].prompt).toContain("attentionMode: quiet");
     expect(sm._started[0].prompt).toContain("runCount: 1");
-    expect(sm._started[0].prompt).toContain("If user action is needed, clearly state the required next step and stop.");
+    expect(sm._started[0].prompt).toContain("If user action is needed, cancel this recurring deferral with defer_cancel using the deferId above, then clearly state the required next step and stop.");
     expect(sm._started[0].prompt).not.toContain("ask_user");
     expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
     expect(sm._started[0].options).toEqual({
       attentionMode: "quiet",
-      completionAttention: true,
       historyTruncation: {
         mode: "replace-quiet-interval-defer-tail",
         deferId: loop.deferId,
@@ -91,6 +90,7 @@ describe("defer-loop-runner", () => {
       { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, nextRunAt: null } },
       { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, nextRunAt: updated.nextRunAt } },
     ]);
+    expect(sm._attention).toEqual([]);
     runner.shutdown();
   });
 
@@ -146,7 +146,11 @@ describe("defer-loop-runner", () => {
     expect(store.get(maxRunLoop.id)!.status).toBe("completed");
     expect(store.get(expiredLoop.id)!.status).toBe("expired");
     expect(sm._started).toHaveLength(1);
-    expect(sm._attention).toEqual([{ sessionId: "session-2", at: expect.any(String) }]);
+    expect(sm._attention).toHaveLength(2);
+    expect(sm._attention).toEqual(expect.arrayContaining([
+      { sessionId: "session-2", at: expect.any(String) },
+      { sessionId: "session-1", at: expect.any(String) },
+    ]));
     runner.shutdown();
   });
 

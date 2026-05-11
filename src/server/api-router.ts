@@ -2848,7 +2848,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   }
 
   function resolveReadThroughActivityAt(sessionId: string, requested?: string): string {
-    const latestActivityAt = ctx.sessionMetaStore.getMeta(sessionId)?.lastVisibleActivityAt;
+    const meta = ctx.sessionMetaStore.getMeta(sessionId);
+    const latestActivityAt = maxIsoTime(meta?.lastVisibleActivityAt, meta?.lastAttentionAt);
     const latestActivityTime = latestActivityAt ? Date.parse(latestActivityAt) : Number.NaN;
     const latestActivity = Number.isFinite(latestActivityTime)
       ? new Date(latestActivityTime).toISOString()

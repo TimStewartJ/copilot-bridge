@@ -25,6 +25,7 @@ import {
   setTaskTags,
   setGroupTags,
   getSessionActivityTime,
+  getSessionReadThroughActivityTime,
   isSessionActive,
   markSessionReadOnPageHide,
   API_BASE,
@@ -241,10 +242,14 @@ export default function App() {
     });
   }, []);
   const markReadThroughRendered = useCallback((sessionId: string) => {
-    const readThroughActivityAt = renderedReadThroughRef.current[sessionId];
+    const session = sessions.find((candidate) => candidate.sessionId === sessionId);
+    const readThroughActivityAt = getSessionReadThroughActivityTime(
+      session,
+      renderedReadThroughRef.current[sessionId],
+    );
     if (!readThroughActivityAt || !isUnread(sessionId, readThroughActivityAt)) return;
     markRead(sessionId, readThroughActivityAt);
-  }, [isUnread, markRead]);
+  }, [isUnread, markRead, sessions]);
   // Ref for read-state SSE handler (avoids stale closure in useCallback)
   const applyServerStateRef = useRef(applyServerState);
   applyServerStateRef.current = applyServerState;
@@ -573,7 +578,11 @@ export default function App() {
     const onPageHide = () => {
       if (!pageHasAttentionRef.current) return;
       if (dwelledSessionIdRef.current !== activeSessionId) return;
-      const readThroughActivityAt = renderedReadThroughRef.current[activeSessionId];
+      const session = sessions.find((candidate) => candidate.sessionId === activeSessionId);
+      const readThroughActivityAt = getSessionReadThroughActivityTime(
+        session,
+        renderedReadThroughRef.current[activeSessionId],
+      );
       if (!readThroughActivityAt) return;
       markSessionReadOnPageHide(activeSessionId, { readThroughActivityAt });
     };
@@ -582,7 +591,7 @@ export default function App() {
     return () => {
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [activeSessionId]);
+  }, [activeSessionId, sessions]);
 
   // Track last-active task and quick chat for tab restore
   useEffect(() => {
@@ -595,18 +604,24 @@ export default function App() {
   }, [activeSessionId, activeTaskId, quickChatsMode]);
 
   const activeRenderedReadThrough = activeSessionId ? renderedReadThroughState[activeSessionId] : undefined;
+  const activeReadThroughActivityAt = activeSessionId
+    ? getSessionReadThroughActivityTime(
+      sessions.find((candidate) => candidate.sessionId === activeSessionId),
+      activeRenderedReadThrough,
+    )
+    : undefined;
 
   useEffect(() => {
     if (
       !pageHasAttention ||
       !activeSessionId ||
-      !activeRenderedReadThrough ||
+      !activeReadThroughActivityAt ||
       dwelledSessionIdRef.current !== activeSessionId
     ) {
       return;
     }
     markReadThroughRendered(activeSessionId);
-  }, [activeSessionId, activeRenderedReadThrough, markReadThroughRendered, pageHasAttention]);
+  }, [activeSessionId, activeReadThroughActivityAt, markReadThroughRendered, pageHasAttention]);
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string) => {
