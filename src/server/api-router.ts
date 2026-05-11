@@ -8,7 +8,6 @@ import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
-import { openDatabase, type DatabaseSync } from "./db.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import {
   clearRestartPending,
@@ -26,8 +25,7 @@ import { normalizeScheduleAutoArchiveKeep } from "./schedule-validation.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
-import { createVoiceJobStore } from "./voice-job-store.js";
-import { createVoiceJobManager, type VoiceJobManager } from "./voice-job-manager.js";
+import type { VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
@@ -39,8 +37,8 @@ import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
 import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
-import { createPushNotificationService, getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
-import { createPushSubscriptionStore, isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
+import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
+import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
@@ -739,18 +737,6 @@ function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     unpricedModels: (summary.unpricedModels ?? []).map(serializeUnpricedModelRow),
   };
 }
-
-type RouterCompatContext = Omit<AppContext, "voiceJobManager"> & {
-  taskGroupStore?: AppContext["taskGroupStore"];
-  scheduleStore?: AppContext["scheduleStore"];
-  checklistStore?: AppContext["checklistStore"];
-  voiceJobManager?: VoiceJobManager;
-  __voiceJobFallbackDb?: DatabaseSync;
-  __voiceJobFallbackCleanupInstalled?: boolean;
-  __voiceJobFallbackResumed?: boolean;
-  __pushFallbackDb?: DatabaseSync;
-  __pushFallbackCleanupInstalled?: boolean;
-};
 
 class InvalidWavError extends Error {}
 
@@ -2857,7 +2843,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/dashboard", async (_req, res) => {
     try {
-      const compatCtx = ctx as RouterCompatContext;
+      if (!ctx.taskGroupStore || !ctx.scheduleStore || !ctx.checklistStore) {
+        throw new Error("Dashboard stores are not configured.");
+      }
       const t0 = Date.now();
       const readState = ctx.readStateStore.getReadState();
       const tasks = ctx.taskStore.listTasks();
@@ -2975,7 +2963,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         );
 
         // Checklist summary
-        const checklistItems = compatCtx.checklistStore?.listChecklistItems(task.id) ?? [];
+        const checklistItems = ctx.checklistStore.listChecklistItems(task.id);
         const checklistDone = checklistItems.filter((t) => t.done).length;
         const today = new Date().toISOString().slice(0, 10);
         const checklistOverdue = checklistItems.filter((t) => !t.done && t.deadline && t.deadline < today).length;
@@ -3059,12 +3047,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
           unread: isUnread(s.sessionId, s.lastVisibleActivityAt),
         }));
       // Open checklist items across all active tasks and global checklist items
-      const taskGroups = compatCtx.taskGroupStore?.listGroups() ?? [];
+      const taskGroups = ctx.taskGroupStore.listGroups();
       const enrichChecklistItem = (checklistItem: { taskId: string | null }) => {
         const task = checklistItem.taskId ? tasks.find((t) => t.id === checklistItem.taskId) : null;
         const taskTitle = task?.title ?? (checklistItem.taskId ? "Unknown" : null);
         const taskGroupColor = task?.groupId
-          ? compatCtx.taskGroupStore?.getGroup(task.groupId)?.color ?? null
+          ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
           : null;
         const taskOrder = task?.order ?? 0;
         const taskStatus = task?.status ?? null;
@@ -3075,20 +3063,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return { ...checklistItem, taskTitle, taskGroupColor, taskOrder, taskStatus, taskGroupId, taskGroupOrder };
       };
 
-      const openChecklistItems = (compatCtx.checklistStore?.listAllOpenChecklistItems() ?? []).map(enrichChecklistItem);
+      const openChecklistItems = ctx.checklistStore.listAllOpenChecklistItems().map(enrichChecklistItem);
 
       // Recently completed checklist items
-      const completedChecklistItems = (compatCtx.checklistStore?.listRecentlyCompletedChecklistItems() ?? []).map(enrichChecklistItem);
+      const completedChecklistItems = ctx.checklistStore.listRecentlyCompletedChecklistItems().map(enrichChecklistItem);
 
       // Active schedules
-      const allSchedules = compatCtx.scheduleStore?.listSchedules() ?? [];
+      const allSchedules = ctx.scheduleStore.listSchedules();
       const dashboardSchedules = allSchedules.map((sched) => {
         const task = tasks.find((t) => t.id === sched.taskId);
         return {
           ...serializeSchedule(sched),
           taskTitle: task?.title ?? null,
           taskGroupColor: task?.groupId
-            ? compatCtx.taskGroupStore?.getGroup(task.groupId)?.color ?? null
+            ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
             : null,
         };
       });
@@ -3824,85 +3812,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
 }
 
 function ensureVoiceJobManager(ctx: AppContext, transcriptionService: TranscriptionService): VoiceJobManager {
-  const compatCtx = ctx as RouterCompatContext;
-  if (compatCtx.voiceJobManager) {
-    return compatCtx.voiceJobManager;
-  }
-
-  const dataDir = dirname(getCopilotHome(ctx));
-  compatCtx.__voiceJobFallbackDb ??= openDatabase(dataDir);
-  compatCtx.voiceJobManager = createVoiceJobManager({
-    dataDir,
-    store: createVoiceJobStore(compatCtx.__voiceJobFallbackDb),
-    transcriptionService,
-    sessionManager: ctx.sessionManager,
-    taskStore: ctx.taskStore,
-    taskGroupStore: ctx.taskGroupStore,
-  });
-
-  if (!compatCtx.__voiceJobFallbackCleanupInstalled) {
-    const originalShutdown = ctx.sessionManager.gracefulShutdown.bind(ctx.sessionManager);
-    ctx.sessionManager.gracefulShutdown = async () => {
-      try {
-        await compatCtx.voiceJobManager?.shutdown();
-        await originalShutdown();
-      } finally {
-        try {
-          compatCtx.__voiceJobFallbackDb?.close();
-        } catch {
-          // Best-effort close for preview compatibility; the primary DB handle is managed elsewhere.
-        }
-        compatCtx.__voiceJobFallbackDb = undefined;
-        compatCtx.__voiceJobFallbackCleanupInstalled = false;
-      }
-    };
-    compatCtx.__voiceJobFallbackCleanupInstalled = true;
-  }
-
-  if (!compatCtx.__voiceJobFallbackResumed) {
-    compatCtx.voiceJobManager.resumePendingJobs();
-    compatCtx.__voiceJobFallbackResumed = true;
-  }
-
-  return compatCtx.voiceJobManager;
+  void transcriptionService;
+  return ctx.voiceJobManager;
 }
 
 function ensurePushSubscriptionStore(ctx: AppContext): PushSubscriptionStore {
-  const compatCtx = ctx as RouterCompatContext;
-  if (compatCtx.pushSubscriptionStore) {
-    return compatCtx.pushSubscriptionStore;
+  if (!ctx.pushSubscriptionStore) {
+    throw new Error("Push subscription store is not configured.");
   }
-
-  const dataDir = ctx.runtimePaths?.dataDir ?? dirname(getCopilotHome(ctx));
-  compatCtx.__pushFallbackDb ??= openDatabase(dataDir);
-  compatCtx.pushSubscriptionStore = createPushSubscriptionStore(compatCtx.__pushFallbackDb);
-
-  if (!compatCtx.__pushFallbackCleanupInstalled) {
-    const originalShutdown = ctx.sessionManager.gracefulShutdown.bind(ctx.sessionManager);
-    ctx.sessionManager.gracefulShutdown = async () => {
-      try {
-        await originalShutdown();
-      } finally {
-        try {
-          compatCtx.__pushFallbackDb?.close();
-        } catch {
-          // Best-effort close for preview compatibility; the primary DB handle is managed elsewhere.
-        }
-        compatCtx.__pushFallbackDb = undefined;
-        compatCtx.__pushFallbackCleanupInstalled = false;
-      }
-    };
-    compatCtx.__pushFallbackCleanupInstalled = true;
-  }
-
-  return compatCtx.pushSubscriptionStore;
+  return ctx.pushSubscriptionStore;
 }
 
 function ensurePushNotificationService(ctx: AppContext): PushNotificationService {
-  const compatCtx = ctx as RouterCompatContext;
-  compatCtx.pushNotificationService ??= createPushNotificationService({
-    subscriptionStore: ensurePushSubscriptionStore(ctx),
-    env: ctx.runtimePaths?.env ?? process.env,
-  });
-  return compatCtx.pushNotificationService;
+  if (!ctx.pushNotificationService) {
+    throw new Error("Push notification service is not configured.");
+  }
+  return ctx.pushNotificationService;
 }

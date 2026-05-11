@@ -6,46 +6,18 @@ import express from "express";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config, setMcpServersGetter } from "./config.js";
-import { SessionManager, createBridgeTools, createSessionManager } from "./session-manager.js";
-import { openDatabase } from "./db.js";
-import { createTaskStore } from "./task-store.js";
-import { createTaskGroupStore } from "./task-group-store.js";
-import { createSessionMetaStore } from "./session-meta-store.js";
-import { createSessionWorkspaceStore } from "./session-workspace-store.js";
-import { createSettingsStore } from "./settings-store.js";
-import { createSessionTitlesStore } from "./session-titles.js";
-import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
-import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
-import { createScheduleStore } from "./schedule-store.js";
-import { createReadStateStore } from "./read-state-store.js";
-import { createChecklistStore } from "./checklist-store.js";
-import { createDocsStore } from "./docs-store.js";
-import { createDocsIndex } from "./docs-index.js";
-import { createDocsSnapshotStore, STARTUP_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
-import { createTagStore } from "./tag-store.js";
-import { createMcpServerStore } from "./mcp-server-store.js";
-import { createTelemetryStore } from "./telemetry-store.js";
-import { createVoiceJobStore } from "./voice-job-store.js";
-import { createPushNotificationService, initPushEventNotifications } from "./push-notification-service.js";
-import { createPushSubscriptionStore } from "./push-subscription-store.js";
-import * as scheduler from "./scheduler.js";
-import { defaultEventBusRegistry } from "./event-bus.js";
+import { config } from "./config.js";
 import { notifyWebhook, gitHash, getPublicBaseUrl, discoverTunnelUrl, rememberRequestOrigin, shouldTrustProxyHeaders } from "./tunnel.js";
-import { defaultGlobalBus } from "./global-bus.js";
 import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerExpressApp } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
-import type { AppContext } from "./app-context.js";
 import { createApiRouter } from "./api-router.js";
-import { createTranscriptionService } from "./transcription-service.js";
-import { createVoiceJobManager } from "./voice-job-manager.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
-import { createDeferredPromptStore } from "./deferred-prompt-store.js";
-import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
-import { createDeferLoopStore } from "./defer-loop-store.js";
-import { createDeferLoopRunner } from "./defer-loop-runner.js";
-import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
+import {
+  createAppContext,
+  initializeSchedulerAndDeferredRunners,
+  shutdownAppContextServices,
+} from "./app-context-factory.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -61,95 +33,14 @@ if (shouldTrustProxyHeaders()) {
 // Register Express app with staging tools so they can mount/unmount staged routers
 registerExpressApp(app);
 
-// ── Database ──────────────────────────────────────────────────────
 const runtimePaths = resolveRuntimePaths(process.env);
-Object.assign(process.env, runtimePaths.env);
-const dataDir = runtimePaths.dataDir;
-const db = openDatabase(dataDir);
-
-// ── Stores (all backed by shared SQLite db) ───────────────────────
-const taskStore = createTaskStore(db, defaultGlobalBus, { runtimePaths });
-const taskGroupStore = createTaskGroupStore(db);
-const scheduleStore = createScheduleStore(db);
-const settingsStore = createSettingsStore(db);
-const sessionMetaStore = createSessionMetaStore(db);
-const sessionWorkspaceStore = createSessionWorkspaceStore(db);
-const sessionTitles = createSessionTitlesStore(db);
-const bridgeSessionStateStore = createBridgeSessionStateStore(db);
-const readStateStore = createReadStateStore(db);
-const checklistStore = createChecklistStore(db, defaultGlobalBus);
-const tagStore = createTagStore(db);
-const mcpServerStore = createMcpServerStore(db);
-const telemetryStore = createTelemetryStore(db);
-const cliSessionCatalog = createCopilotCliSessionCatalog({
-  copilotHome: runtimePaths.copilotHome,
-  recordSpan: (name, duration, sessionId, metadata) =>
-    telemetryStore.recordSpan({ name, duration, sessionId, metadata, source: "server" }),
-});
-const voiceJobStore = createVoiceJobStore(db);
-const pushSubscriptionStore = createPushSubscriptionStore(db);
-const docsDir = runtimePaths.docsDir;
-const copilotHome = runtimePaths.copilotHome;
-const docsStore = createDocsStore(docsDir);
-const docsIndex = createDocsIndex(db, docsStore);
-const docsSnapshotStore = createDocsSnapshotStore(
-  docsDir,
-  runtimePaths.docsSnapshotsDir ?? join(dataDir, "backups", "docs", "snapshots"),
-);
-docsIndex.reindex();
-try {
-  docsSnapshotStore.createSnapshot({
-    reason: "startup",
-    allowEmpty: false,
-    skipIfRecentMs: STARTUP_SNAPSHOT_MIN_INTERVAL_MS,
-    skipIfUnchanged: true,
-  });
-} catch (error) {
-  console.warn(`[docs-snapshots] Startup snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
-}
-const deferredPromptStore = createDeferredPromptStore(db);
-const deferLoopStore = createDeferLoopStore(db);
-const deferDeliveryGuard = createDeferDeliveryGuard();
-
-// Wire config getter now that settings store is ready
-setMcpServersGetter(() => settingsStore.getMcpServers());
-
-// Build default AppContext for production
-const defaultContext: AppContext = {
-  taskStore, taskGroupStore, scheduleStore, settingsStore,
-  sessionMetaStore, sessionWorkspaceStore, sessionTitles, bridgeSessionStateStore, cliSessionCatalog, readStateStore, checklistStore, docsStore, docsIndex, docsSnapshotStore, tagStore, mcpServerStore, telemetryStore,
-  globalBus: defaultGlobalBus,
-  eventBusRegistry: defaultEventBusRegistry,
-  sessionManager: null as any, // assigned below after construction
-  transcriptionService: createTranscriptionService(),
-  voiceJobManager: null as any, // assigned below after construction
-  pushSubscriptionStore,
-  deferredPromptStore,
-  deferLoopStore,
-  scheduler,
-  copilotHome,
+const { ctx: defaultContext } = createAppContext({
+  runtimePaths,
   apiBasePath: "/api",
-  runtimePaths,
   launcherLogPath: process.env.BRIDGE_LAUNCHER_LOG_PATH,
-};
-const tools = createBridgeTools(defaultContext);
-const sessionManager = createSessionManager(defaultContext, {
-  tools,
-  config: { get sessionMcpServers() { return config.sessionMcpServers; } },
-  ...(copilotHome ? { copilotHome } : {}),
-  runtimePaths,
+  enableStartupDocsSnapshot: true,
 });
-defaultContext.sessionManager = sessionManager;
-defaultContext.voiceJobManager = createVoiceJobManager({
-  dataDir,
-  store: voiceJobStore,
-  transcriptionService: defaultContext.transcriptionService,
-  sessionManager,
-  taskStore,
-  taskGroupStore,
-});
-defaultContext.pushNotificationService = createPushNotificationService({ subscriptionStore: pushSubscriptionStore });
-initPushEventNotifications(defaultContext, defaultContext.pushNotificationService);
+const sessionManager = defaultContext.sessionManager;
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
 app.use("/api", (_req, res, next) => {
@@ -216,41 +107,14 @@ async function main(): Promise<void> {
   defaultContext.voiceJobManager.resumePendingJobs();
 
   // Prune old telemetry data
-  const pruned = telemetryStore.pruneOldSpans(7);
+  const pruned = defaultContext.telemetryStore?.pruneOldSpans(7) ?? 0;
   if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
 
   // Clean up orphaned staging worktrees and restore surviving previews (incl. backends)
   await pruneOrphanedWorktrees();
 
   // Initialize scheduler after session manager is ready
-  scheduler.initialize(sessionManager, {
-    scheduleStore,
-    taskStore,
-    sessionMetaStore,
-    globalBus: defaultGlobalBus,
-    deferredPromptStore,
-    deferLoopStore,
-  });
-
-  // Initialize deferred prompt runner after session manager is ready
-  const deferredPromptRunner = createDeferredPromptRunner(
-    deferredPromptStore,
-    sessionManager,
-    defaultGlobalBus,
-    deferDeliveryGuard,
-    { deferredPromptStore, deferLoopStore },
-  );
-  defaultContext.deferredPromptRunner = deferredPromptRunner;
-  const deferLoopRunner = createDeferLoopRunner(
-    deferLoopStore,
-    sessionManager,
-    defaultGlobalBus,
-    deferDeliveryGuard,
-    { deferredPromptStore, deferLoopStore },
-  );
-  defaultContext.deferLoopRunner = deferLoopRunner;
-  deferredPromptRunner.start();
-  deferLoopRunner.start();
+  initializeSchedulerAndDeferredRunners(defaultContext);
 
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();
@@ -265,7 +129,7 @@ async function main(): Promise<void> {
     const lag = now - lastTick - LAG_INTERVAL;
     lastTick = now;
     if (lag > LAG_THRESHOLD) {
-      telemetryStore.recordSpan({
+      defaultContext.telemetryStore?.recordSpan({
         name: "eventloop.lag",
         duration: lag,
         metadata: { activeSessions: sessionManager.getActiveSessions().length },
@@ -299,11 +163,8 @@ async function main(): Promise<void> {
 async function gracefulExit(signal: string) {
   console.log(`\n[web] ${signal} received — graceful shutdown...`);
   try {
-    scheduler.setGlobalPause(true);
-    defaultContext.deferredPromptRunner?.shutdown();
-    defaultContext.deferLoopRunner?.shutdown();
-    await sessionManager.gracefulShutdown();
-    scheduler.shutdown();
+    defaultContext.scheduler?.setGlobalPause(true);
+    await shutdownAppContextServices(defaultContext);
   } catch (err) {
     console.error("[web] Error during graceful shutdown:", err);
   }

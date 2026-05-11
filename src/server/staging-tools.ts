@@ -3,16 +3,26 @@
 // and deploy only after validation passes.
 
 import { defineTool } from "@github/copilot-sdk";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, copyFileSync, cpSync } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
+import { request as httpRequest } from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartPending, triggerRestartPending } from "./session-manager.js";
-import { createDirectoryLink, killProcessTree, removeDirectoryLink } from "./platform.js";
+import {
+  createDirectoryLink,
+  getProcessTreeSnapshot,
+  killProcessTree,
+  removeDirectoryLink,
+  shouldSpawnDetachedProcessGroup,
+  waitForProcessTreeExit,
+} from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
 import { DEPLOY_GATE, PREVIEW_GATE, runValidationGateAsync } from "./validation-pipeline.js";
 import { config } from "./config.js";
@@ -25,9 +35,9 @@ import {
   writeValidationCommandLog,
 } from "./validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
-import type { AppContext } from "./app-context.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import type express from "express";
+import type { RequestHandler } from "express";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
@@ -37,7 +47,6 @@ const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
 const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
 const LEGACY_STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
 const STAGING_PREVIEW_DIR_ENV = "BRIDGE_STAGING_PREVIEW_DIR";
-const OPTIONAL_STAGING_MODULE_ERROR_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
 const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
@@ -46,6 +55,8 @@ const DEMO_PREVIEW_SUFFIX = "-demo";
 const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
 const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
+const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
+const STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS = 5_000;
 const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
   process.env[STAGING_PREVIEW_DIR_ENV],
   join(PRODUCTION_DATA_DIR, "staging-previews"),
@@ -61,27 +72,16 @@ interface PreviewTarget {
   outDir: string;
 }
 
-interface ActiveStagingBackend {
-  ctx: AppContext;
-  router?: express.Router;
-  db?: DatabaseSync;
+export interface ActiveStagingBackend {
+  child: ChildProcess;
+  baseUrl: string;
+  port: number;
+  output: CapturedCommandOutput;
+  stopping: boolean;
   cleanup: () => Promise<void>;
   stagingDir: string;
   runtimePaths: RuntimePaths;
 }
-
-type LegacyTodoStore = {
-  listTodos: (taskId: string) => unknown[];
-  getTodo: (id: string) => unknown;
-  createTodo: (taskId: string | null, text: string, deadline?: string) => unknown;
-  updateTodo: (id: string, updates: Record<string, unknown>) => unknown;
-  deleteTodo: (id: string) => void;
-  reorderTodos: (taskId: string, todoIds: string[]) => unknown[];
-  listAllOpen: () => unknown[];
-  listRecentlyCompleted: () => unknown[];
-};
-
-type StagingAppContext = AppContext & { todoStore?: LegacyTodoStore };
 
 function resolveConfiguredPath(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim();
@@ -102,70 +102,6 @@ function uniqueResolvedPaths(paths: string[]): string[] {
 
 function listStagingPreviewParents(): string[] {
   return uniqueResolvedPaths([STAGING_PREVIEW_PARENT, LEGACY_STAGING_DIST_PARENT]);
-}
-
-function createNoopSessionWorkspaceStore() {
-  return {
-    getWorkspace: () => undefined,
-    setWorkspace: (_sessionId: string, cwd: string) => ({ cwd, updatedAt: new Date().toISOString() }),
-    deleteWorkspace: () => {},
-    listWorkspaces: () => ({}),
-  };
-}
-
-function createNoopChecklistStore() {
-  return {
-    listChecklistItems: () => [],
-    getChecklistItem: () => undefined,
-    createChecklistItem: (_taskId: string | null, text: string, _deadline?: string) => ({
-      id: "",
-      taskId: null,
-      text,
-      done: false,
-      order: 0,
-      createdAt: new Date().toISOString(),
-    }),
-    updateChecklistItem: () => {
-      throw new Error("Checklist store is not available in this staging worktree.");
-    },
-    deleteChecklistItem: () => {},
-    reorderChecklistItems: () => [],
-    listAllOpenChecklistItems: () => [],
-    listRecentlyCompletedChecklistItems: () => [],
-  };
-}
-
-function createNoopBridgeSessionStateStore() {
-  return {
-    getState: () => undefined,
-    listStates: () => ({}),
-    setArchived: () => undefined,
-    setTitleOverride: (sessionId: string, title: string) => {
-      const now = new Date().toISOString();
-      return { sessionId, archived: false, titleOverride: title, titleOverrideUpdatedAt: now, createdAt: now, updatedAt: now };
-    },
-    clearTitleOverride: () => {},
-    setPinnedCwd: (sessionId: string, cwd: string) => {
-      const now = new Date().toISOString();
-      return { sessionId, archived: false, pinnedCwd: cwd, pinnedCwdUpdatedAt: now, createdAt: now, updatedAt: now };
-    },
-    clearPinnedCwd: () => {},
-    setScheduleMeta: (sessionId: string, scheduleId: string, scheduleName: string) => {
-      const now = new Date().toISOString();
-      return { sessionId, archived: false, triggeredBy: "schedule" as const, scheduleId, scheduleName, createdAt: now, updatedAt: now };
-    },
-    setLastVisibleActivityAt: (sessionId: string, lastVisibleActivityAt: string) => {
-      const now = new Date().toISOString();
-      return { sessionId, archived: false, lastVisibleActivityAt, createdAt: now, updatedAt: now };
-    },
-    setHidden: (sessionId: string, hiddenReason: string) => {
-      const now = new Date().toISOString();
-      return { sessionId, archived: false, hiddenReason, hiddenAt: now, createdAt: now, updatedAt: now };
-    },
-    clearHidden: () => {},
-    deleteState: () => {},
-    pruneIfDefault: () => {},
-  };
 }
 
 function resolvePreviewProfile(value?: string): StagingPreviewProfile {
@@ -271,45 +207,6 @@ export function shouldManageStagingArtifacts(): boolean {
   return process.env.BRIDGE_DEMO_MODE !== "true" && !isBridgeReleaseMode(process.env, PRODUCTION_ROOT);
 }
 
-function isMissingOptionalStagingModule(error: unknown, specifier: string): boolean {
-  if (!error || typeof error !== "object") return false;
-  const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
-  if (!OPTIONAL_STAGING_MODULE_ERROR_CODES.has(code)) return false;
-
-  const rawSpecifier = specifier.replace(/\?.*$/, "");
-  const resolvedSpecifier = rawSpecifier.startsWith("file:") ? fileURLToPath(rawSpecifier) : rawSpecifier;
-  const message = error instanceof Error ? error.message : String(error);
-  const missingTarget = message.match(/Cannot find (?:module|package) ['"]([^'"]+)['"]/)?.[1];
-  if (!missingTarget) return false;
-  const rawMissingTarget = missingTarget.replace(/\?.*$/, "");
-  if (
-    missingTarget === specifier
-    || missingTarget === rawSpecifier
-    || missingTarget === resolvedSpecifier
-    || rawMissingTarget === rawSpecifier
-    || rawMissingTarget === resolvedSpecifier
-  ) {
-    return true;
-  }
-  if (!rawMissingTarget.startsWith("file:")) return false;
-  try {
-    return fileURLToPath(rawMissingTarget) === resolvedSpecifier;
-  } catch {
-    return false;
-  }
-}
-
-async function importOptionalStagingModule(specifier: string) {
-  try {
-    return await import(specifier);
-  } catch (error) {
-    if (isMissingOptionalStagingModule(error, specifier)) {
-      return null;
-    }
-    throw error;
-  }
-}
-
 /**
  * Compare dependency inputs between staging and production.
  * If package files or patch-package files differ, replace the node_modules
@@ -366,8 +263,8 @@ const activeStagingBackends = new Map<string, ActiveStagingBackend>();
 /** Preview data directories created by this process: prefix → data dir */
 const activePreviewDataDirs = new Map<string, string>();
 
-/** Active staged API routers: prefix → router (for delegating middleware in index.ts) */
-const activeStagingRouters = new Map<string, express.Router>();
+/** Active staged API handlers: prefix → proxy handler (for delegating middleware in index.ts) */
+const activeStagingRouters = new Map<string, RequestHandler>();
 
 /** Registered Express app — set by registerExpressApp() from index.ts */
 let _expressApp: express.Application | null = null;
@@ -377,8 +274,8 @@ export function registerExpressApp(app: express.Application): void {
   _expressApp = app;
 }
 
-/** Get the staged API router for a prefix (used by delegating middleware in index.ts) */
-export function getStagingRouter(prefix: string): express.Router | undefined {
+/** Get the staged API handler for a prefix (used by delegating middleware in index.ts) */
+export function getStagingRouter(prefix: string): RequestHandler | undefined {
   return activeStagingRouters.get(prefix);
 }
 
@@ -606,288 +503,296 @@ async function preparePreviewRuntime(
     ? seedDemoPreviewData(stagingDir)
     : Promise.resolve(seedStagingData(stagingDir));
 }
-/** Dynamically import staged backend modules and create an isolated AppContext */
-async function createStagingContext(
-  stagingDir: string,
-  runtimePaths: RuntimePaths,
-  apiBasePath: string,
-): Promise<{ ctx: AppContext; db: DatabaseSync }> {
-  const base = pathToFileURL(join(stagingDir, "src", "server")).href;
-  const ts = (file: string) => `${base}/${file}?v=${Date.now()}`;
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
-  // Dynamic imports from the staging worktree
-  const [globalBusMod, eventBusMod, dbMod,
-    taskStoreMod, taskGroupStoreMod,
-    scheduleStoreMod, settingsStoreMod, sessionMetaStoreMod, sessionWorkspaceStoreMod,
-    sessionTitlesMod, bridgeSessionStateStoreMod, cliSessionCatalogMod, readStateStoreMod, checklistStoreMod, todoStoreMod,
-    docsStoreMod, docsIndexMod, docsSnapshotStoreMod, sessionManagerMod, apiRouterMod,
-    tagStoreMod,
-    mcpServerStoreMod,
-    telemetryStoreMod,
-    transcriptionServiceMod,
-    voiceJobStoreMod,
-    voiceJobManagerMod,
-    deferredPromptStoreMod,
-    deferLoopStoreMod,
-    deferredPromptRunnerMod,
-    deferLoopRunnerMod,
-    deferDeliveryGuardMod,
-    schedulerMod,
-    pushSubscriptionStoreMod,
-    pushNotificationServiceMod,
-  ] = await Promise.all([
-    import(ts("global-bus.ts")),
-    import(ts("event-bus.ts")),
-    import(ts("db.ts")),
-    import(ts("task-store.ts")),
-    import(ts("task-group-store.ts")),
-    import(ts("schedule-store.ts")),
-    import(ts("settings-store.ts")),
-    import(ts("session-meta-store.ts")),
-    importOptionalStagingModule(ts("session-workspace-store.ts")),
-    import(ts("session-titles.ts")),
-    importOptionalStagingModule(ts("bridge-session-state-store.ts")),
-    importOptionalStagingModule(ts("copilot-cli-session-catalog.ts")),
-    import(ts("read-state-store.ts")),
-    importOptionalStagingModule(ts("checklist-store.ts")),
-    importOptionalStagingModule(ts("todo-store.ts")),
-    importOptionalStagingModule(ts("docs-store.ts")),
-    importOptionalStagingModule(ts("docs-index.ts")),
-    importOptionalStagingModule(ts("docs-snapshot-store.ts")),
-    import(ts("session-manager.ts")),
-    import(ts("api-router.ts")),
-    importOptionalStagingModule(ts("tag-store.ts")),
-    importOptionalStagingModule(ts("mcp-server-store.ts")),
-    importOptionalStagingModule(ts("telemetry-store.ts")),
-    importOptionalStagingModule(ts("transcription-service.ts")),
-    importOptionalStagingModule(ts("voice-job-store.ts")),
-    importOptionalStagingModule(ts("voice-job-manager.ts")),
-    importOptionalStagingModule(ts("deferred-prompt-store.ts")),
-    importOptionalStagingModule(ts("defer-loop-store.ts")),
-    importOptionalStagingModule(ts("deferred-prompt-runner.ts")),
-    importOptionalStagingModule(ts("defer-loop-runner.ts")),
-    importOptionalStagingModule(ts("defer-delivery-guard.ts")),
-    importOptionalStagingModule(ts("scheduler.ts")),
-    importOptionalStagingModule(ts("push-subscription-store.ts")),
-    importOptionalStagingModule(ts("push-notification-service.ts")),
-  ]);
-  // Open isolated staging database
-  const db = dbMod.openDatabase(runtimePaths.dataDir);
-  try {
-    // Create isolated instances
-    const globalBus = globalBusMod.createGlobalBus();
-    const eventBusRegistry = eventBusMod.createEventBusRegistry();
-    const taskStore = taskStoreMod.createTaskStore(db, globalBus, { runtimePaths });
-    const taskGroupStore = taskGroupStoreMod.createTaskGroupStore(db);
-    const scheduleStore = scheduleStoreMod.createScheduleStore(db);
-    const settingsStore = settingsStoreMod.createSettingsStore(db);
-    const sessionMetaStore = sessionMetaStoreMod.createSessionMetaStore(db);
-    const sessionWorkspaceStore = sessionWorkspaceStoreMod?.createSessionWorkspaceStore?.(db)
-      ?? createNoopSessionWorkspaceStore();
-    const sessionTitles = sessionTitlesMod.createSessionTitlesStore(db);
-    const bridgeSessionStateStore = bridgeSessionStateStoreMod?.createBridgeSessionStateStore?.(db)
-      ?? createNoopBridgeSessionStateStore();
-    const readStateStore = readStateStoreMod.createReadStateStore(db);
-    const checklistStore = checklistStoreMod?.createChecklistStore?.(db, globalBus)
-      ?? createNoopChecklistStore();
-    const todoStore = todoStoreMod?.createTodoStore?.(db, globalBus);
-    const tagStore = tagStoreMod?.createTagStore(db);
-    const mcpServerStore = mcpServerStoreMod?.createMcpServerStore(db);
-    const telemetryStore = telemetryStoreMod?.createTelemetryStore(db);
-    const transcriptionService = transcriptionServiceMod?.createTranscriptionService();
-    const docsStore = docsStoreMod?.createDocsStore(runtimePaths.docsDir);
-    const docsIndex = docsStore && docsIndexMod ? docsIndexMod.createDocsIndex(db, docsStore) : null;
-    const docsSnapshotStore = docsStore && docsSnapshotStoreMod
-      ? docsSnapshotStoreMod.createDocsSnapshotStore(
-          runtimePaths.docsDir,
-          runtimePaths.docsSnapshotsDir ?? join(runtimePaths.dataDir, "backups", "docs", "snapshots"),
-        )
-      : null;
-    if (docsIndex) docsIndex.reindex();
-    const deferredPromptStore = deferredPromptStoreMod?.createDeferredPromptStore?.(db);
-    const deferLoopStore = deferLoopStoreMod?.createDeferLoopStore?.(db);
-    const deferDeliveryGuard = deferDeliveryGuardMod?.createDeferDeliveryGuard?.();
-    const pushSubscriptionStore = pushSubscriptionStoreMod?.createPushSubscriptionStore?.(db);
-
-    // COPILOT_HOME isolates session storage so listSessions() only returns staging sessions
-    const copilotHome = runtimePaths.copilotHome ?? join(runtimePaths.dataDir, ".copilot");
-    mkdirSync(copilotHome, { recursive: true });
-    const cliSessionCatalog = cliSessionCatalogMod?.createCopilotCliSessionCatalog?.({
-      copilotHome,
-      recordSpan: telemetryStore
-        ? (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) =>
-            telemetryStore.recordSpan({ name, duration, sessionId, metadata, source: "server" })
-        : undefined,
-    });
-
-    const ctx: StagingAppContext = {
-      taskStore, taskGroupStore, scheduleStore, settingsStore,
-      sessionMetaStore, sessionWorkspaceStore, sessionTitles, readStateStore, checklistStore,
-      bridgeSessionStateStore,
-      cliSessionCatalog,
-      ...(todoStore && { todoStore }),
-      ...(docsStore && { docsStore }),
-      ...(docsIndex && { docsIndex }),
-      ...(docsSnapshotStore && { docsSnapshotStore }),
-      ...(tagStore && { tagStore }),
-      ...(mcpServerStore && { mcpServerStore }),
-      ...(telemetryStore && { telemetryStore }),
-      ...(deferredPromptStore && { deferredPromptStore }),
-      ...(deferLoopStore && { deferLoopStore }),
-      ...(schedulerMod && { scheduler: schedulerMod }),
-      globalBus, eventBusRegistry,
-      sessionManager: null as any,
-      transcriptionService: transcriptionService ?? {
-        getStatus: () => ({
-          available: false,
-          provider: "disabled",
-          label: "Unavailable",
-          reason: "Voice input is not configured on the staging server.",
-          maxDurationSeconds: 120,
-        }),
-        transcribe: async () => {
-          throw new Error("Voice input is not configured on the staging server.");
-        },
-      },
-      voiceJobManager: null as any,
-      ...(pushSubscriptionStore && { pushSubscriptionStore }),
-      copilotHome,
-      apiBasePath,
-      runtimePaths,
-      isStaging: true,
-    };
-
-    // Create bridge tools for staging (exclude dangerous tools)
-    const allTools = sessionManagerMod.createBridgeTools(ctx);
-    const excludeTools = new Set(["self_restart", "staging_init", "staging_preview", "staging_deploy", "staging_cleanup"]);
-    const stagingTools = allTools.filter((t: any) => !excludeTools.has(t.name));
-
-    // Create a real SessionManager via the worktree's factory — new deps are picked up
-    // automatically without updating this file (see createSessionManager in session-manager.ts)
-    const sm = sessionManagerMod.createSessionManager(ctx, {
-      tools: stagingTools,
-      config: { get sessionMcpServers() { return settingsStore.getMcpServers(); }, model: STAGING_PREVIEW_MODEL },
-      clientEnv: runtimePaths.env,
-      copilotHome,
-      runtimePaths,
-    });
-    ctx.sessionManager = sm;
-    if (deferredPromptStore && deferredPromptRunnerMod?.createDeferredPromptRunner) {
-      ctx.deferredPromptRunner = deferredPromptRunnerMod.createDeferredPromptRunner(
-        deferredPromptStore,
-        sm,
-        globalBus,
-        deferDeliveryGuard,
-        { deferredPromptStore, deferLoopStore },
-      );
-    }
-    if (deferLoopStore && deferLoopRunnerMod?.createDeferLoopRunner) {
-      ctx.deferLoopRunner = deferLoopRunnerMod.createDeferLoopRunner(
-        deferLoopStore,
-        sm,
-        globalBus,
-        deferDeliveryGuard,
-        { deferredPromptStore, deferLoopStore },
-      );
-    }
-    ctx.voiceJobManager = voiceJobStoreMod && voiceJobManagerMod
-      ? voiceJobManagerMod.createVoiceJobManager({
-          dataDir: runtimePaths.dataDir,
-          store: voiceJobStoreMod.createVoiceJobStore(db),
-          transcriptionService: ctx.transcriptionService,
-          sessionManager: sm,
-          taskStore,
-          taskGroupStore,
-        })
-      : {
-          acceptVoiceJob: async () => {
-            throw new Error("Voice jobs are not available in this staging worktree.");
-          },
-          getVoiceJob: () => undefined,
-          findLatestRelevantForComposer: () => undefined,
-          markRecovered: () => undefined,
-          resumePendingJobs: () => {},
-          shutdown: async () => {},
-        } as any;
-    if (pushSubscriptionStore && pushNotificationServiceMod?.createPushNotificationService) {
-      ctx.pushNotificationService = pushNotificationServiceMod.createPushNotificationService({
-        subscriptionStore: pushSubscriptionStore,
-        env: runtimePaths.env,
-      });
-      pushNotificationServiceMod.initPushEventNotifications?.(ctx, ctx.pushNotificationService);
-    }
-
-    // Store the apiRouter factory for mounting
-    (ctx as any)._createApiRouter = apiRouterMod.createApiRouter;
-
-    return { ctx, db };
-  } catch (err) {
-    try {
-      db.close();
-    } catch (closeErr) {
-      log(`Warning: staging DB close error after context failure: ${closeErr}`);
-    }
-    throw err;
-  }
+export interface StagingBackendStartOptions {
+  entrypoint?: string;
+  startupTimeoutMs?: number;
+  tsxLoader?: string;
 }
-function createActiveStagingBackendRecord(
-  ctx: AppContext,
-  stagingDir: string,
-  runtimePaths: RuntimePaths,
-  db?: DatabaseSync,
-): ActiveStagingBackend {
-  return {
-    ctx,
-    db,
-    stagingDir,
-    runtimePaths,
-    cleanup: createStagingBackendCleanup(ctx),
+
+function backendOutputTail(output: CapturedCommandOutput): string {
+  return truncateFailureText(renderCapturedCommandOutput("staging backend", output), FAILURE_SESSION_LOG_OUTPUT_LIMIT)
+    ?? "(no child output captured)";
+}
+
+function proxyHeaders(headers: IncomingHttpHeaders, targetHost: string): IncomingHttpHeaders {
+  const nextHeaders: IncomingHttpHeaders = { ...headers, host: targetHost };
+  const connectionTokens = String(headers.connection ?? "")
+    .split(",")
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
+  for (const header of [...HOP_BY_HOP_HEADERS, ...connectionTokens]) {
+    delete nextHeaders[header];
+  }
+  return nextHeaders;
+}
+
+function createUnavailableStagingHandler(prefix: string, detail: string): RequestHandler {
+  return (_req, res) => {
+    res.status(502).json({
+      error: "Staging backend is not available",
+      prefix,
+      detail,
+    });
   };
 }
 
-/** Tear down a staging backend: shutdown SDK, close DB, remove data */
+function createStagingProxyHandler(prefix: string, backendBaseUrl: string): RequestHandler {
+  return (req, res) => {
+    const upstreamPath = `/api${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
+    const upstreamUrl = new URL(upstreamPath, backendBaseUrl);
+    const upstreamReq = httpRequest(
+      upstreamUrl,
+      {
+        method: req.method,
+        headers: proxyHeaders(req.headers, upstreamUrl.host),
+        agent: false,
+      },
+      (upstreamRes) => {
+        res.statusCode = upstreamRes.statusCode ?? 502;
+        res.statusMessage = upstreamRes.statusMessage ?? res.statusMessage;
+        for (const [name, value] of Object.entries(upstreamRes.headers)) {
+          if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase()) && value !== undefined) {
+            res.setHeader(name, value);
+          }
+        }
+        res.flushHeaders();
+        upstreamRes.pipe(res);
+      },
+    );
+
+    upstreamReq.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Staging backend proxy error for ${prefix}: ${message}`);
+      if (!res.headersSent) {
+        res.status(502).json({ error: "Staging backend proxy error", detail: message });
+      } else {
+        res.destroy(error instanceof Error ? error : new Error(message));
+      }
+    });
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        upstreamReq.destroy();
+      }
+    });
+    req.pipe(upstreamReq);
+  };
+}
+
+function captureStagingBackendOutput(
+  prefix: string,
+  stream: "stdout" | "stderr",
+  output: CapturedCommandOutput,
+  chunk: unknown,
+): void {
+  appendCapturedCommandOutput(output, chunk);
+  const text = String(chunk);
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim()) {
+      log(`${prefix} ${stream}: ${line}`);
+    }
+  }
+}
+
+function buildStagingBackendSpawnConfig(
+  stagingDir: string,
+  runtimePaths: RuntimePaths,
+  apiBasePath: string,
+  options: StagingBackendStartOptions = {},
+): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
+  const requireFromStaging = createRequire(join(stagingDir, "package.json"));
+  const tsxLoader = options.tsxLoader ?? pathToFileURL(requireFromStaging.resolve("tsx/esm")).href;
+  const entrypoint = options.entrypoint ?? join(stagingDir, "src", "server", "staging-preview-server.ts");
+  const env = prependNodePath({
+    ...process.env,
+    ...runtimePaths.env,
+    BRIDGE_STAGING_PREVIEW: "true",
+    BRIDGE_STAGING_API_BASE_PATH: apiBasePath,
+    BRIDGE_STAGING_BACKEND_PORT: "0",
+    BRIDGE_STAGING_MODEL: STAGING_PREVIEW_MODEL,
+  }, dirname(process.execPath));
+  delete env.PORT;
+
+  return {
+    command: process.execPath,
+    args: ["--import", tsxLoader, entrypoint],
+    env,
+  };
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    child.once("exit", onExit);
+  });
+}
+
+async function stopStagingBackendChild(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (!pid || child.exitCode !== null || child.signalCode !== null) return;
+
+  let snapshot: ReturnType<typeof getProcessTreeSnapshot> | null = null;
+  try {
+    snapshot = getProcessTreeSnapshot(pid);
+  } catch {
+    snapshot = null;
+  }
+
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS)) return;
+
+  killProcessTree(pid);
+  await waitForProcessTreeExit(snapshot, 1_000);
+}
+
+let backendProcessExitCleanupInstalled = false;
+
+function installBackendProcessExitCleanup(): void {
+  if (backendProcessExitCleanupInstalled) return;
+  backendProcessExitCleanupInstalled = true;
+  process.once("exit", () => {
+    for (const backend of activeStagingBackends.values()) {
+      if (backend.child.pid) {
+        killProcessTree(backend.child.pid);
+      }
+    }
+  });
+}
+
+function handleStagingBackendExit(
+  prefix: string,
+  backend: ActiveStagingBackend,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): void {
+  if (backend.stopping) return;
+  const detail = `Child process exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`;
+  log(`Staging backend crashed for ${prefix}: ${detail}`);
+  activeStagingBackends.delete(prefix);
+  activeStagingRouters.set(prefix, createUnavailableStagingHandler(prefix, detail));
+}
+
+async function startStagingBackendProcess(
+  prefix: string,
+  stagingDir: string,
+  runtimePaths: RuntimePaths,
+  apiBasePath: string,
+  options: StagingBackendStartOptions = {},
+): Promise<ActiveStagingBackend> {
+  installBackendProcessExitCleanup();
+  const spawnConfig = buildStagingBackendSpawnConfig(stagingDir, runtimePaths, apiBasePath, options);
+  const output: CapturedCommandOutput = { output: "", truncatedChars: 0 };
+  const child = spawn(spawnConfig.command, spawnConfig.args, {
+    cwd: stagingDir,
+    env: spawnConfig.env,
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+    windowsHide: true,
+    detached: shouldSpawnDetachedProcessGroup(),
+  });
+
+  child.stdout?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stdout", output, chunk));
+  child.stderr?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stderr", output, chunk));
+
+  const startupTimeoutMs = options.startupTimeoutMs ?? STAGING_BACKEND_STARTUP_TIMEOUT_MS;
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let backend: ActiveStagingBackend | null = null;
+    const timeout = setTimeout(() => {
+      fail(new Error(`Staging backend did not become ready within ${Math.ceil(startupTimeoutMs / 1_000)} seconds.`));
+    }, startupTimeoutMs);
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      stopStagingBackendChild(child).catch((cleanupError) => {
+        log(`Warning: failed to stop staging backend after startup failure: ${cleanupError}`);
+      });
+      reject(new Error(`${error.message}\n\nChild output:\n${backendOutputTail(output)}`));
+    };
+
+    child.on("message", (message: unknown) => {
+      if (settled) return;
+      if (!message || typeof message !== "object") return;
+      const typed = message as { type?: unknown; port?: unknown; error?: unknown };
+      if (typed.type === "error") {
+        fail(new Error(String(typed.error ?? "Staging backend startup failed")));
+        return;
+      }
+      if (typed.type !== "ready") return;
+      const port = Number(typed.port);
+      if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+        fail(new Error(`Staging backend reported invalid port: ${String(typed.port)}`));
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      backend = {
+        child,
+        baseUrl,
+        port,
+        output,
+        stopping: false,
+        stagingDir,
+        runtimePaths,
+        cleanup: async () => {
+          backend!.stopping = true;
+          await stopStagingBackendChild(child);
+        },
+      };
+      resolve(backend);
+    });
+
+    child.once("error", (error) => {
+      fail(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (!settled) {
+        fail(new Error(`Staging backend exited before it was ready with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`));
+        return;
+      }
+      if (backend) {
+        handleStagingBackendExit(prefix, backend, code, signal);
+      }
+    });
+  });
+}
+
+/** Tear down a staging backend: shutdown SDK child process and remove data */
 async function teardownStagingBackend(prefix: string): Promise<void> {
   const staging = activeStagingBackends.get(prefix);
+  activeStagingRouters.delete(prefix);
   if (!staging) return;
 
   log(`Tearing down staging backend: ${prefix}`);
-  activeStagingRouters.delete(prefix);
   try {
     await staging.cleanup();
   } catch (err) {
     log(`Warning: staging cleanup error: ${err}`);
   }
-  // Close the SQLite handle before deleting data files (prevents EPERM on Windows)
-  if (staging.db) {
-    try { staging.db.close(); } catch (err) { log(`Warning: staging DB close error: ${err}`); }
-  }
   activeStagingBackends.delete(prefix);
   removePreviewData(staging.runtimePaths.dataDir);
   activePreviewDataDirs.delete(prefix);
   log(`Staging backend torn down: ${prefix}`);
-}
-
-function createStagingBackendCleanup(ctx: AppContext): () => Promise<void> {
-  return async () => {
-    try {
-      ctx.deferredPromptRunner?.shutdown();
-      ctx.deferLoopRunner?.shutdown();
-      ctx.scheduler?.shutdown();
-      await ctx.voiceJobManager.shutdown();
-      await ctx.sessionManager.gracefulShutdown();
-    } catch (err) {
-      log(`Warning: staging SDK shutdown error: ${err}`);
-    }
-  };
-}
-
-function initializeStagingScheduler(ctx: AppContext): void {
-  ctx.scheduler?.initialize?.(ctx.sessionManager, {
-    scheduleStore: ctx.scheduleStore,
-    taskStore: ctx.taskStore,
-    sessionMetaStore: ctx.sessionMetaStore,
-    globalBus: ctx.globalBus,
-  });
 }
 
 async function initializeStagingBackend(
@@ -901,52 +806,22 @@ async function initializeStagingBackend(
   removePreviewData(stalePreviewDataDir);
   activePreviewDataDirs.delete(prefix);
 
-  let ctx: AppContext | null = null;
-  let stagingDb: DatabaseSync | undefined;
   let runtimePaths: RuntimePaths | null = null;
 
   try {
     runtimePaths = await preparePreviewRuntime(stagingDir, profile);
     activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
 
-    log(`Creating staging backend context from ${stagingDir}...`);
-    const created = await createStagingContext(stagingDir, runtimePaths, `/staging/${prefix}/api`);
-    ctx = created.ctx;
-    stagingDb = created.db;
-    const stagingBackend = createActiveStagingBackendRecord(ctx, stagingDir, runtimePaths, stagingDb);
+    log(`Starting staged backend child process from ${stagingDir}...`);
+    const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
     activeStagingBackends.set(prefix, stagingBackend);
-
-    log("Initializing staging Copilot SDK...");
-    await ctx.sessionManager.initialize();
-    initializeStagingScheduler(ctx);
-    ctx.deferredPromptRunner?.start();
-    ctx.deferLoopRunner?.start();
-    ctx.voiceJobManager.resumePendingJobs();
-
-    const createRouter = (ctx as any)._createApiRouter;
-    const stagedRouter = createRouter(ctx);
-    activeStagingRouters.set(prefix, stagedRouter);
-    stagingBackend.router = stagedRouter;
+    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend.baseUrl));
 
     log(`Staged API registered for prefix ${prefix}`);
     log("Staging backend ready");
   } catch (err) {
     activeStagingRouters.delete(prefix);
     activeStagingBackends.delete(prefix);
-    if (ctx) {
-      try {
-        await createStagingBackendCleanup(ctx)();
-      } catch {
-        // createStagingBackendCleanup already logs concrete shutdown failures
-      }
-    }
-    if (stagingDb) {
-      try {
-        stagingDb.close();
-      } catch (dbErr) {
-        log(`Warning: staging DB close error: ${dbErr}`);
-      }
-    }
     if (runtimePaths) {
       removePreviewData(runtimePaths.dataDir);
     }
@@ -962,52 +837,22 @@ async function restoreStagingBackend(
 ): Promise<void> {
   await teardownStagingBackend(prefix);
 
-  let ctx: AppContext | null = null;
-  let stagingDb: DatabaseSync | undefined;
   let runtimePaths: RuntimePaths | null = null;
 
   try {
     runtimePaths = await preparePreviewRuntime(stagingDir, profile, { preserveExisting: true });
     activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
 
-    log(`Creating staging backend context from ${stagingDir}...`);
-    const created = await createStagingContext(stagingDir, runtimePaths, `/staging/${prefix}/api`);
-    ctx = created.ctx;
-    stagingDb = created.db;
-    const stagingBackend = createActiveStagingBackendRecord(ctx, stagingDir, runtimePaths, stagingDb);
+    log(`Restoring staged backend child process from ${stagingDir}...`);
+    const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
     activeStagingBackends.set(prefix, stagingBackend);
-
-    log("Initializing staging Copilot SDK...");
-    await ctx.sessionManager.initialize();
-    initializeStagingScheduler(ctx);
-    ctx.deferredPromptRunner?.start();
-    ctx.deferLoopRunner?.start();
-    ctx.voiceJobManager.resumePendingJobs();
-
-    const createRouter = (ctx as any)._createApiRouter;
-    const stagedRouter = createRouter(ctx);
-    activeStagingRouters.set(prefix, stagedRouter);
-    stagingBackend.router = stagedRouter;
+    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend.baseUrl));
 
     log(`Staged API registered for prefix ${prefix}`);
     log("Staging backend ready");
   } catch (err) {
     activeStagingRouters.delete(prefix);
     activeStagingBackends.delete(prefix);
-    if (ctx) {
-      try {
-        await createStagingBackendCleanup(ctx)();
-      } catch {
-        // createStagingBackendCleanup already logs concrete shutdown failures
-      }
-    }
-    if (stagingDb) {
-      try {
-        stagingDb.close();
-      } catch (dbErr) {
-        log(`Warning: staging DB close error: ${dbErr}`);
-      }
-    }
     activePreviewDataDirs.delete(prefix);
     throw err;
   }
@@ -1045,7 +890,7 @@ function log(msg: string) {
   console.log(`[staging] ${msg}`);
 }
 
-type CapturedCommandOutput = {
+export type CapturedCommandOutput = {
   output: string;
   truncatedChars: number;
 };
@@ -1436,7 +1281,9 @@ export const __testing = {
   seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}) {
     return seedStagingData(stagingDir, options).dataDir;
   },
-  createStagingContext,
+  startStagingBackendProcess,
+  createStagingProxyHandler,
+  buildStagingBackendSpawnConfig,
   restoreStagingBackendWithRetry,
   listStagingBranchPrefixes,
   pruneOrphanedWorktreesImpl,

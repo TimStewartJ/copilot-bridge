@@ -668,7 +668,7 @@ describe("Session routes (mocked)", () => {
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
-  it("GET /api/dashboard tolerates preview contexts without dashboard stores", async () => {
+  it("GET /api/dashboard fails clearly when dashboard stores are missing", async () => {
     ({ app, ctx } = createTestApp({
       taskGroupStore: undefined as any,
       scheduleStore: undefined as any,
@@ -679,14 +679,8 @@ describe("Session routes (mocked)", () => {
 
     const res = await request(app).get("/api/dashboard");
 
-    expect(res.status).toBe(200);
-    expect(res.body.lastActiveTask).toEqual(expect.objectContaining({
-      task: expect.objectContaining({ title: "Dashboard Task" }),
-      checklistSummary: { total: 0, done: 0, open: 0, overdue: 0 },
-    }));
-    expect(res.body.openChecklistItems).toEqual([]);
-    expect(res.body.completedChecklistItems).toEqual([]);
-    expect(res.body.schedules).toEqual([]);
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Dashboard stores are not configured.");
   });
 
   it("GET /api/dashboard keeps sessions visible when a CLI-owned summary exists", async () => {
