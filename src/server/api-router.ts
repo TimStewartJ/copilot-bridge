@@ -43,6 +43,7 @@ import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernate
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
+import type { ChecklistItem } from "./checklist-store.js";
 import {
   checkForUpdate,
   readUpdateInstallStatus,
@@ -101,6 +102,20 @@ async function getSessionEventLogSizeBytes(ctx: AppContext, sessionId: string): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface DashboardChecklistItem extends ChecklistItem {
+  taskTitle: string | null;
+  taskGroupColor: string | null;
+  taskOrder: number;
+  taskStatus: string | null;
+  taskGroupId: string | null;
+  taskGroupOrder: number | null;
+}
+
+interface DashboardChecklistData {
+  openChecklistItems: DashboardChecklistItem[];
+  completedChecklistItems: DashboardChecklistItem[];
 }
 
 function toCopilotModelMetadataForPricing(value: unknown): CopilotModelMetadataForPricing | null {
@@ -2874,6 +2889,47 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   // ── Dashboard endpoint ───────────────────────────────────────────
 
+  const buildDashboardChecklistData = (tasks: Task[] = ctx.taskStore.listTasks()): DashboardChecklistData => {
+    if (!ctx.taskGroupStore || !ctx.checklistStore) {
+      throw new Error("Dashboard checklist stores are not configured.");
+    }
+
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const taskGroups = ctx.taskGroupStore.listGroups();
+    const taskGroupOrderById = new Map(taskGroups.map((group) => [group.id, group.order]));
+
+    const enrichChecklistItem = (checklistItem: ChecklistItem): DashboardChecklistItem => {
+      const task = checklistItem.taskId ? taskById.get(checklistItem.taskId) : null;
+      const taskGroupId = task?.groupId ?? null;
+      const taskGroup = taskGroupId ? ctx.taskGroupStore?.getGroup(taskGroupId) : null;
+      return {
+        ...checklistItem,
+        taskTitle: task?.title ?? (checklistItem.taskId ? "Unknown" : null),
+        taskGroupColor: taskGroup?.color ?? null,
+        taskOrder: task?.order ?? 0,
+        taskStatus: task?.status ?? null,
+        taskGroupId,
+        taskGroupOrder: taskGroupId ? taskGroupOrderById.get(taskGroupId) ?? null : null,
+      };
+    };
+
+    return {
+      openChecklistItems: ctx.checklistStore.listAllOpenChecklistItems().map(enrichChecklistItem),
+      completedChecklistItems: ctx.checklistStore.listRecentlyCompletedChecklistItems().map(enrichChecklistItem),
+    };
+  };
+
+  router.get("/dashboard/checklist", (_req, res) => {
+    try {
+      const t0 = Date.now();
+      res.json(buildDashboardChecklistData());
+      ctx.telemetryStore?.recordSpan({ name: "dashboard.checklist", duration: Date.now() - t0, source: "server" });
+    } catch (err) {
+      console.error("[dashboard:checklist] Error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   router.get("/dashboard", async (_req, res) => {
     try {
       if (!ctx.taskGroupStore || !ctx.scheduleStore || !ctx.checklistStore) {
@@ -3083,27 +3139,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           busy: s.busy ?? false,
           unread: isUnread(s.sessionId, s.lastActivityAt),
         }));
-      // Open checklist items across all active tasks and global checklist items
-      const taskGroups = ctx.taskGroupStore.listGroups();
-      const enrichChecklistItem = (checklistItem: { taskId: string | null }) => {
-        const task = checklistItem.taskId ? tasks.find((t) => t.id === checklistItem.taskId) : null;
-        const taskTitle = task?.title ?? (checklistItem.taskId ? "Unknown" : null);
-        const taskGroupColor = task?.groupId
-          ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
-          : null;
-        const taskOrder = task?.order ?? 0;
-        const taskStatus = task?.status ?? null;
-        const taskGroupId = task?.groupId ?? null;
-        const taskGroupOrder = taskGroupId
-          ? taskGroups.find((g) => g.id === taskGroupId)?.order ?? null
-          : null;
-        return { ...checklistItem, taskTitle, taskGroupColor, taskOrder, taskStatus, taskGroupId, taskGroupOrder };
-      };
-
-      const openChecklistItems = ctx.checklistStore.listAllOpenChecklistItems().map(enrichChecklistItem);
-
-      // Recently completed checklist items
-      const completedChecklistItems = ctx.checklistStore.listRecentlyCompletedChecklistItems().map(enrichChecklistItem);
+      const dashboardChecklistData = buildDashboardChecklistData(tasks);
 
       // Active schedules
       const allSchedules = ctx.scheduleStore.listSchedules();
@@ -3123,8 +3159,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         unreadSessions,
         lastActiveTask,
         orphanSessions,
-        openChecklistItems,
-        completedChecklistItems,
+        openChecklistItems: dashboardChecklistData.openChecklistItems,
+        completedChecklistItems: dashboardChecklistData.completedChecklistItems,
         schedules: dashboardSchedules,
         taskMomentum: {
           summary: {

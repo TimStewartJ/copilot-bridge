@@ -1190,6 +1190,11 @@ export interface DashboardData {
   taskMomentum: DashboardTaskMomentum;
 }
 
+export interface DashboardChecklistData {
+  openChecklistItems: DashboardChecklistItem[];
+  completedChecklistItems: DashboardChecklistItem[];
+}
+
 export interface DashboardTaskMomentumSummary {
   needsDecision: number;
   followUpNow: number;
@@ -1207,8 +1212,8 @@ export interface DashboardTaskMomentum {
   stale: DashboardActiveTask[];
 }
 
-export async function fetchDashboard(): Promise<DashboardData> {
-  return apiFetch<DashboardData>("/api/dashboard");
+export async function fetchDashboard(): Promise<DashboardChecklistData> {
+  return apiFetch<DashboardChecklistData>("/api/dashboard/checklist");
 }
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
