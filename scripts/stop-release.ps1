@@ -17,9 +17,16 @@ foreach ($process in $allProcesses) {
 }
 $processesToStop = @{}
 
+function Test-ReleaseInstallProcess($Process) {
+  return $Process.CommandLine -and $Process.CommandLine -match $installRootPattern
+}
+
 function Add-ProcessTree($Process) {
   $processId = [int]$Process.ProcessId
-  if ($processId -eq $PID -or $processesToStop.ContainsKey($processId)) {
+  if ($processId -le 4 -or $processId -eq $PID -or $processesToStop.ContainsKey($processId)) {
+    return
+  }
+  if (-not (Test-ReleaseInstallProcess $Process)) {
     return
   }
   $processesToStop[$processId] = $Process
@@ -30,8 +37,7 @@ function Add-ProcessTree($Process) {
 
 $allProcesses | Where-Object {
   $_.ProcessId -ne $PID -and
-  $_.CommandLine -and
-  $_.CommandLine -match $installRootPattern -and
+  (Test-ReleaseInstallProcess $_) -and
   $_.CommandLine -match $releaseProcessPattern
 } | ForEach-Object {
   Add-ProcessTree $_
