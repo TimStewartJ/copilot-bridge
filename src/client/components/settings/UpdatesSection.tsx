@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, Loader2, RotateCw, ShieldCheck } from "lucide-react";
 import {
   fetchUpdateInstallStatus,
@@ -7,6 +7,7 @@ import {
   type UpdateChannel,
   type UpdateCheckResponse,
   type UpdateCheckStatus,
+  type UpdateInstallPhase,
   type UpdateInstallStatus,
 } from "../../update-api";
 import { SettingsSection } from "./SettingsSection";
@@ -19,13 +20,61 @@ const STATUS_LABELS: Record<UpdateCheckStatus, string> = {
   update_available: "Update available",
 };
 
+const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; description: string }> = {
+  started: {
+    label: "Preparing update",
+    description: "The verified updater is launching.",
+  },
+  downloading: {
+    label: "Downloading package",
+    description: "Bridge is downloading the signed release package.",
+  },
+  verifying: {
+    label: "Verifying download",
+    description: "Bridge is checking the package SHA256 from the signed manifest.",
+  },
+  staging: {
+    label: "Extracting package",
+    description: "Windows extraction is the quietest step and can take a while for many small files.",
+  },
+  stopping: {
+    label: "Stopping Bridge",
+    description: "The updater is stopping the current Bridge process before replacing app files.",
+  },
+  installing: {
+    label: "Copying app files",
+    description: "Bridge is backing up the old app and copying the new app into place.",
+  },
+  starting: {
+    label: "Starting Bridge",
+    description: "The updated app is starting and waiting for the health check.",
+  },
+  succeeded: {
+    label: "Update complete",
+    description: "Bridge restarted with the updated package.",
+  },
+  failed: {
+    label: "Update failed",
+    description: "Bridge kept user data and attempted to restore the previous app.",
+  },
+  rollback_failed: {
+    label: "Rollback needs attention",
+    description: "The update failed and the automatic rollback did not finish cleanly.",
+  },
+};
+
+const TERMINAL_INSTALL_PHASES = new Set<UpdateInstallPhase>(["succeeded", "failed", "rollback_failed"]);
+
 export function UpdatesSection() {
   const [channel, setChannel] = useState<UpdateChannel>("stable");
   const [status, setStatus] = useState<UpdateCheckResponse | null>(null);
   const [installStatus, setInstallStatus] = useState<UpdateInstallStatus | null>(null);
+  const [installLogTail, setInstallLogTail] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const installStatusRef = useRef<UpdateInstallStatus | null>(null);
+  const refreshedCompletedInstallRef = useRef<string | null>(null);
 
   const refresh = useCallback((selectedChannel = channel) => {
     setLoading(true);
@@ -41,15 +90,42 @@ export function UpdatesSection() {
       .finally(() => setLoading(false));
   }, [channel]);
 
+  const refreshInstallStatus = useCallback((quiet = false) => {
+    void fetchUpdateInstallStatus()
+      .then((value) => {
+        setInstallStatus(value.status);
+        setInstallLogTail(value.logTail ?? []);
+      })
+      .catch((reason: unknown) => {
+        if (quiet || isInstallActive(installStatusRef.current)) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+  }, []);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
 
   useEffect(() => {
-    void fetchUpdateInstallStatus()
-      .then((value) => setInstallStatus(value.status))
-      .catch(() => {});
-  }, []);
+    refreshInstallStatus(true);
+  }, [refreshInstallStatus]);
+
+  useEffect(() => {
+    installStatusRef.current = installStatus;
+  }, [installStatus]);
+
+  useEffect(() => {
+    if (!isInstallActive(installStatus)) return undefined;
+    const timer = window.setInterval(() => refreshInstallStatus(true), 2000);
+    return () => window.clearInterval(timer);
+  }, [installStatus?.id, installStatus?.phase, refreshInstallStatus]);
+
+  useEffect(() => {
+    if (!installStatus || isInstallActive(installStatus)) return;
+    if (refreshedCompletedInstallRef.current === installStatus.id) return;
+    refreshedCompletedInstallRef.current = installStatus.id;
+    refresh(channel);
+  }, [channel, installStatus, refresh]);
 
   const handleInstall = useCallback(() => {
     if (!status?.update) return;
@@ -57,6 +133,7 @@ export function UpdatesSection() {
     if (!confirmed) return;
     setInstalling(true);
     setError(null);
+    setInstallLogTail([]);
     void installUpdate(channel)
       .then((value) => {
         setInstallStatus(value.install);
@@ -66,6 +143,16 @@ export function UpdatesSection() {
       })
       .finally(() => setInstalling(false));
   }, [channel, status?.update]);
+
+  const activeInstall = isInstallActive(installStatus);
+  const installCopy = installStatus ? INSTALL_PHASE_COPY[installStatus.phase] : null;
+  const installTone = !installStatus
+    ? "border-border bg-bg-primary text-text-muted"
+    : installStatus.phase === "succeeded"
+      ? "border-success/30 bg-success/10 text-success"
+      : installStatus.phase === "failed" || installStatus.phase === "rollback_failed"
+        ? "border-error/30 bg-error/10 text-error"
+        : "border-accent/30 bg-accent/10 text-accent";
 
   const statusTone = status?.status === "update_available"
     ? "text-accent"
@@ -107,6 +194,7 @@ export function UpdatesSection() {
             Channel
             <select
               value={channel}
+              disabled={activeInstall}
               onChange={(event) => {
                 const next = event.target.value as UpdateChannel;
                 setChannel(next);
@@ -148,11 +236,11 @@ export function UpdatesSection() {
               <button
                 type="button"
                 onClick={handleInstall}
-                disabled={installing}
+                disabled={installing || activeInstall}
                 className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent px-2.5 py-1 text-xs font-medium text-bg-primary hover:opacity-90 disabled:opacity-60"
               >
-                {installing ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
-                Install and restart
+                {installing || activeInstall ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                {activeInstall ? "Install in progress" : "Install and restart"}
               </button>
               {status.update.releaseNotesUrl && (
                 <a
@@ -179,16 +267,36 @@ export function UpdatesSection() {
         )}
 
         {installStatus && (
-          <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
-            <div className="font-medium text-text-secondary">
-              Last install: {installStatus.phase} - {installStatus.fromVersion} to {installStatus.toVersion}
+          <div className={`rounded-md border px-3 py-3 text-xs ${installTone}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-medium">
+                {activeInstall && <Loader2 size={13} className="animate-spin" />}
+                {installCopy?.label ?? installStatus.phase}
+              </div>
+              <div className="text-[11px] text-text-faint">
+                {installStatus.fromVersion} to {installStatus.toVersion}
+              </div>
             </div>
-            <div className="mt-1">
-              Updated {formatDate(installStatus.updatedAt)}
-              {installStatus.error ? ` - ${installStatus.error}` : ""}
+            <p className="mt-1 text-text-muted">
+              {installStatus.error ?? installStatus.message ?? installCopy?.description}
+            </p>
+            <div className="mt-2 grid gap-1 text-[11px] text-text-faint sm:grid-cols-3">
+              <div>Phase: {installStatus.phase}</div>
+              <div>Elapsed: {formatElapsed(installStatus.startedAt, installStatus.completedAt)}</div>
+              <div>Updated: {formatDate(installStatus.updatedAt)}</div>
             </div>
             {installStatus.logPath && (
-              <div className="mt-1 text-text-faint">Log: {installStatus.logPath}</div>
+              <div className="mt-2 break-all text-[11px] text-text-faint">Log: {installStatus.logPath}</div>
+            )}
+            {installLogTail.length > 0 && (
+              <details className="mt-2 rounded-md border border-border/70 bg-bg-elevated/70 px-2 py-1 text-text-muted">
+                <summary className="cursor-pointer text-[11px] font-medium text-text-secondary">
+                  Recent update log
+                </summary>
+                <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-text-muted">
+                  {installLogTail.join("\n")}
+                </pre>
+              </details>
             )}
           </div>
         )}
@@ -210,4 +318,19 @@ function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function isInstallActive(status: UpdateInstallStatus | null | undefined): boolean {
+  return Boolean(status && !TERMINAL_INSTALL_PHASES.has(status.phase));
+}
+
+function formatElapsed(startValue: string, endValue?: string): string {
+  const startedAt = new Date(startValue).getTime();
+  const endedAt = endValue ? new Date(endValue).getTime() : Date.now();
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) return "unknown";
+  const totalSeconds = Math.floor((endedAt - startedAt) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }

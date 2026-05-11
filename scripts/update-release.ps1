@@ -116,6 +116,86 @@ function Copy-ReleaseWrappers($SourceRoot, $DestinationRoot) {
   }
 }
 
+function Reset-Directory($Path) {
+  if (Test-Path $Path) {
+    Remove-Item -Path $Path -Recurse -Force
+  }
+  New-Item -ItemType Directory -Path $Path -Force | Out-Null
+}
+
+function Expand-UpdateArchive($PackagePath, $DestinationPath) {
+  Reset-Directory $DestinationPath
+  $tarCommand = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+  if ($tarCommand) {
+    Write-Output "Extracting update package with tar.exe."
+    $tarError = $null
+    $tarExitCode = 1
+    try {
+      & $tarCommand.Source -xf $PackagePath -C $DestinationPath
+      $tarExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    } catch {
+      $tarError = $_.Exception.Message
+      $tarExitCode = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }
+    }
+    if ($tarExitCode -eq 0) {
+      $global:LASTEXITCODE = 0
+      return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($tarError)) {
+      Write-Warning "tar.exe extraction failed with exit code $tarExitCode. Falling back to Expand-Archive."
+    } else {
+      Write-Warning "tar.exe extraction failed with exit code $tarExitCode ($tarError). Falling back to Expand-Archive."
+    }
+    Reset-Directory $DestinationPath
+  } else {
+    Write-Warning "tar.exe was not found. Falling back to Expand-Archive."
+  }
+
+  Expand-Archive -Path $PackagePath -DestinationPath $DestinationPath -Force
+}
+
+function Copy-DirectoryTree($SourcePath, $DestinationPath) {
+  $destinationParent = Split-Path -Parent $DestinationPath
+  if (-not [string]::IsNullOrWhiteSpace($destinationParent)) {
+    New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+  }
+  if (Test-Path $DestinationPath) {
+    Remove-Item -Path $DestinationPath -Recurse -Force
+  }
+
+  $robocopyCommand = Get-Command "robocopy.exe" -ErrorAction SilentlyContinue
+  if ($robocopyCommand) {
+    Write-Output "Copying directory tree with robocopy.exe."
+    $robocopyError = $null
+    $robocopyExitCode = 16
+    try {
+      & $robocopyCommand.Source $SourcePath $DestinationPath /E /NFL /NDL /NJH /NJS /NC /NS /NP /MT:8
+      $robocopyExitCode = if ($null -eq $LASTEXITCODE) { 16 } else { $LASTEXITCODE }
+    } catch {
+      $robocopyError = $_.Exception.Message
+      $robocopyExitCode = if ($null -eq $LASTEXITCODE) { 16 } else { $LASTEXITCODE }
+    }
+    if ($robocopyExitCode -le 7) {
+      $global:LASTEXITCODE = 0
+      return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($robocopyError)) {
+      Write-Warning "robocopy.exe failed with exit code $robocopyExitCode. Falling back to Copy-Item."
+    } else {
+      Write-Warning "robocopy.exe failed with exit code $robocopyExitCode ($robocopyError). Falling back to Copy-Item."
+    }
+    if (Test-Path $DestinationPath) {
+      Remove-Item -Path $DestinationPath -Recurse -Force
+    }
+  } else {
+    Write-Warning "robocopy.exe was not found. Falling back to Copy-Item."
+  }
+
+  Copy-Item -Path $SourcePath -Destination $DestinationPath -Recurse -Force
+}
+
 function Assert-BackupPathSafe($Path) {
   if ((Test-SameOrChildPath $backupRoot $Path) -or (Test-SameOrChildPath $Path $backupRoot)) {
     throw "Configured durable path $Path overlaps the backup root $backupRoot. Choose a data/docs/COPILOT_HOME path outside the backups folder before updating."
@@ -248,7 +328,7 @@ if ([string]::IsNullOrWhiteSpace($LogPath)) {
 New-Item -ItemType Directory -Path (Split-Path -Parent $StatusPath), (Split-Path -Parent $LogPath) -Force | Out-Null
 $statusStartedAt = (Get-Date).ToUniversalTime().ToString("o")
 
-function Write-UpdateStatus($Phase, [string]$ErrorMessage = $null, [bool]$RollbackAttempted = $false) {
+function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAttempted = $false) {
   $now = (Get-Date).ToUniversalTime().ToString("o")
   $status = [ordered]@{
     id = if (-not [string]::IsNullOrWhiteSpace($InstallId)) { $InstallId } else { $timestamp }
@@ -267,8 +347,11 @@ function Write-UpdateStatus($Phase, [string]$ErrorMessage = $null, [bool]$Rollba
   if ($Phase -eq "succeeded" -or $Phase -eq "failed" -or $Phase -eq "rollback_failed") {
     $status.completedAt = $now
   }
-  if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) {
-    $status.error = $ErrorMessage
+  if (-not [string]::IsNullOrWhiteSpace($Message)) {
+    $status.message = $Message
+  }
+  if (($Phase -eq "failed" -or $Phase -eq "rollback_failed") -and -not [string]::IsNullOrWhiteSpace($Message)) {
+    $status.error = $Message
   }
   if ($RollbackAttempted) {
     $status.rollbackAttempted = $true
@@ -278,17 +361,17 @@ function Write-UpdateStatus($Phase, [string]$ErrorMessage = $null, [bool]$Rollba
 }
 
 try {
-  Write-UpdateStatus "started"
+  Write-UpdateStatus "started" "Preparing update from $FromVersion to $TargetVersion."
   $resolvedPackage = $PackagePath
   if ($DownloadUrl) {
-    Write-UpdateStatus "downloading"
+    Write-UpdateStatus "downloading" "Downloading update package."
     $resolvedPackage = Join-Path $tempDir "copilot-bridge-update.zip"
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $resolvedPackage
   }
   $resolvedPackage = (Resolve-Path $resolvedPackage).Path
 
   if ($ExpectedSha256) {
-    Write-UpdateStatus "verifying"
+    Write-UpdateStatus "verifying" "Verifying package SHA256."
     $hash = (Get-FileHash -Path $resolvedPackage -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
       throw "Package SHA256 mismatch. Expected $ExpectedSha256 but got $hash."
@@ -296,8 +379,9 @@ try {
   }
 
   $expandedDir = Join-Path $tempDir "expanded"
-  Write-UpdateStatus "staging"
-  Expand-Archive -Path $resolvedPackage -DestinationPath $expandedDir -Force
+  Write-UpdateStatus "staging" "Extracting update package with tar.exe when available."
+  Expand-UpdateArchive $resolvedPackage $expandedDir
+  Write-UpdateStatus "staging" "Validating extracted update package."
   $newApp = Join-Path $expandedDir "CopilotBridge\app"
   if (-not (Test-Path $newApp)) {
     $newApp = Join-Path $expandedDir "app"
@@ -311,7 +395,7 @@ try {
 
   $stopScript = Join-Path $installRoot "stop.ps1"
   if (Test-Path $stopScript) {
-    Write-UpdateStatus "stopping"
+    Write-UpdateStatus "stopping" "Stopping current Bridge instance."
     & $stopScript
     $bridgeStopped = $true
     Start-Sleep -Seconds 2
@@ -319,23 +403,25 @@ try {
 
   $appExistedBefore = Test-Path $appDir
   if ($appExistedBefore) {
-    Copy-Item -Path $appDir -Destination (Join-Path $backupDir "app") -Recurse -Force
+    Write-UpdateStatus "installing" "Backing up current app with robocopy when available."
+    Copy-DirectoryTree $appDir (Join-Path $backupDir "app")
   }
   $appBackedUp = $true
   Copy-ReleaseWrappers $installRoot $backupDir
   Backup-ConfiguredDirectories
 
-  Write-UpdateStatus "installing"
+  Write-UpdateStatus "installing" "Copying new app files into place with robocopy when available."
   if (Test-Path $appDir) {
     Remove-Item -Path $appDir -Recurse -Force
   }
-  Copy-Item -Path $newApp -Destination $appDir -Recurse -Force
+  Copy-DirectoryTree $newApp $appDir
+  Write-UpdateStatus "installing" "Refreshing release wrapper scripts."
   $newReleaseRoot = Split-Path -Parent $newApp
   Copy-ReleaseWrappers $newReleaseRoot $installRoot
 
   $startScript = Join-Path $installRoot "start.ps1"
   if (Test-Path $startScript) {
-    Write-UpdateStatus "starting"
+    Write-UpdateStatus "starting" "Starting updated Bridge and waiting for health."
     & $startScript
     Wait-BridgeHealth
     if ($stateRootFromInput) {
@@ -345,7 +431,7 @@ try {
     throw "Installed start.ps1 not found after update."
   }
 
-  Write-UpdateStatus "succeeded"
+  Write-UpdateStatus "succeeded" "Update completed successfully."
   Write-Output "Copilot Bridge updated. Backup: $backupDir"
 } catch {
   $updateError = $_.Exception.Message

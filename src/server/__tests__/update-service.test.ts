@@ -2,7 +2,13 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { checkForUpdate, compareVersions, readUpdateInstallStatus, startUpdateInstall } from "../update-service.js";
+import {
+  checkForUpdate,
+  compareVersions,
+  readUpdateInstallStatus,
+  startUpdateInstall,
+  type UpdateInstallStatus,
+} from "../update-service.js";
 import { makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 function createKeyPair() {
@@ -54,6 +60,10 @@ function fetchManifest(manifest: string, signature: string): typeof fetch {
     const text = String(url).endsWith(".sig") ? `${signature}\n` : manifest;
     return new Response(text, { status: 200, headers: { "content-type": "text/plain" } });
   }) as typeof fetch;
+}
+
+function writeInstallStatus(runtimePaths: ReturnType<typeof makeTestRuntimePaths>, status: UpdateInstallStatus) {
+  writeFileSync(join(runtimePaths.dataDir, "update-status.json"), `${JSON.stringify(status, null, 2)}\n`);
 }
 
 describe("update service", () => {
@@ -229,5 +239,73 @@ describe("update service", () => {
     expect(launcherScript).toContain("*>>");
     expect(options.detached).toBeUndefined();
     expect(readUpdateInstallStatus({ runtimePaths }).status?.phase).toBe("started");
+  });
+
+  it("returns a sanitized and bounded update log tail", () => {
+    const runtimePaths = makeTestRuntimePaths("update-log-tail", { distributionMode: "release" });
+    const id = "log-tail-test";
+    const logDir = join(runtimePaths.dataDir, "logs");
+    const logPath = join(logDir, `update-${id}.log`);
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(
+      logPath,
+      Array.from({ length: 45 }, (_, index) => {
+        const suffix = index === 44 ? "x".repeat(700) : "";
+        return `line-${index + 1} \u001b[31mred\u001b[0m ${suffix}\u0001`;
+      }).join("\n"),
+    );
+    writeInstallStatus(runtimePaths, {
+      id,
+      phase: "installing",
+      channel: "preview",
+      fromVersion: "0.1.0-preview.1",
+      toVersion: "0.1.0-preview.2",
+      packageUrl: "https://github.com/timstewartj/copilot-bridge/releases/download/preview/test.zip",
+      packageSha256: "a".repeat(64),
+      startedAt: "2026-05-08T20:00:00.000Z",
+      updatedAt: "2026-05-08T20:01:00.000Z",
+      logPath,
+    });
+
+    const result = readUpdateInstallStatus({ runtimePaths });
+
+    expect(result.status?.phase).toBe("installing");
+    expect(result.logTail).toHaveLength(40);
+    expect(result.logTail?.[0]).toContain("line-6");
+    expect(result.logTail?.some((line) => line.includes("\u001b") || line.includes("\u0001"))).toBe(false);
+    expect(result.logTail?.at(-1)?.length).toBeLessThanOrEqual(503);
+  });
+
+  it("does not expose update log paths outside the update logs directory", () => {
+    const runtimePaths = makeTestRuntimePaths("update-log-outside", { distributionMode: "release" });
+    const logDir = join(runtimePaths.dataDir, "logs");
+    const outsideDir = makeTestDir("update-log-outside-target");
+    const outsideLogPath = join(outsideDir, "update-evil.log");
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(outsideLogPath, "secret line\n");
+    writeInstallStatus(runtimePaths, {
+      id: "outside",
+      phase: "installing",
+      channel: "preview",
+      fromVersion: "0.1.0-preview.1",
+      toVersion: "0.1.0-preview.2",
+      packageUrl: "https://github.com/timstewartj/copilot-bridge/releases/download/preview/test.zip",
+      packageSha256: "a".repeat(64),
+      startedAt: "2026-05-08T20:00:00.000Z",
+      updatedAt: "2026-05-08T20:01:00.000Z",
+      logPath: outsideLogPath,
+    });
+
+    const result = readUpdateInstallStatus({ runtimePaths });
+
+    expect(result.status?.phase).toBe("installing");
+    expect(result.logTail).toBeUndefined();
+  });
+
+  it("treats a partial update status write as no readable status", () => {
+    const runtimePaths = makeTestRuntimePaths("update-partial-status", { distributionMode: "release" });
+    writeFileSync(join(runtimePaths.dataDir, "update-status.json"), "{");
+
+    expect(readUpdateInstallStatus({ runtimePaths })).toEqual({ status: null });
   });
 });

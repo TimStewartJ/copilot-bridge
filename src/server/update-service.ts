@@ -1,7 +1,7 @@
 import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RuntimePaths } from "./runtime-paths.js";
 
@@ -64,7 +64,8 @@ export type UpdateInstallPhase =
   | "installing"
   | "starting"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "rollback_failed";
 
 export interface UpdateInstallStatus {
   id: string;
@@ -78,6 +79,7 @@ export interface UpdateInstallStatus {
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
+  message?: string;
   error?: string;
   rollbackAttempted?: boolean;
   logPath?: string;
@@ -85,6 +87,7 @@ export interface UpdateInstallStatus {
 
 export interface UpdateInstallStatusResponse {
   status: UpdateInstallStatus | null;
+  logTail?: string[];
 }
 
 export interface UpdateInstallStartResponse {
@@ -122,6 +125,9 @@ const DEFAULT_PLATFORM = process.platform === "win32" && process.arch === "x64" 
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_MANIFEST_BYTES = 64 * 1024;
 const ACTIVE_INSTALL_STALE_MS = 30 * 60 * 1000;
+const UPDATE_LOG_TAIL_BYTES = 64 * 1024;
+const UPDATE_LOG_TAIL_LINES = 40;
+const UPDATE_LOG_TAIL_LINE_LENGTH = 500;
 
 function getInstalledAppRoot(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -131,6 +137,15 @@ function getInstalledAppRoot(): string {
 function readJsonFile(path: string): any | null {
   if (!existsSync(path)) return null;
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function readStatusJsonFile(path: string): UpdateInstallStatus | null {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as UpdateInstallStatus;
+  } catch {
+    return null;
+  }
 }
 
 function writeJsonFile(path: string, value: unknown): void {
@@ -156,12 +171,72 @@ function getUpdateLogPath(runtimePaths: RuntimePaths, installId: string): string
   return join(runtimePaths.dataDir, "logs", `update-${installId}.log`);
 }
 
+function isPathWithinDirectory(childPath: string, parentDir: string): boolean {
+  const normalizedChild = childPath.toLowerCase();
+  const normalizedParent = parentDir.toLowerCase();
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${sep}`);
+}
+
+function safeRealPath(path: string): string | null {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeLogLine(line: string): string {
+  const withoutAnsi = line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+  const withoutControls = withoutAnsi.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  if (withoutControls.length <= UPDATE_LOG_TAIL_LINE_LENGTH) return withoutControls;
+  return `${withoutControls.slice(0, UPDATE_LOG_TAIL_LINE_LENGTH)}...`;
+}
+
+function readFileTail(path: string, maxBytes: number): string {
+  const stats = statSync(path);
+  const bytesToRead = Math.min(stats.size, maxBytes);
+  if (bytesToRead <= 0) return "";
+  const buffer = Buffer.alloc(bytesToRead);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buffer, 0, bytesToRead, Math.max(0, stats.size - bytesToRead));
+  } finally {
+    closeSync(fd);
+  }
+  return buffer.toString("utf8");
+}
+
+function readUpdateInstallLogTail(status: UpdateInstallStatus | null, runtimePaths: RuntimePaths): string[] | undefined {
+  if (!status?.logPath) return undefined;
+  const fileName = basename(status.logPath);
+  if (!/^update-[a-z0-9-]+\.log$/i.test(fileName)) return undefined;
+  const logsDir = join(runtimePaths.dataDir, "logs");
+  const resolvedLogPath = safeRealPath(status.logPath);
+  const resolvedLogsDir = safeRealPath(logsDir);
+  if (!resolvedLogPath || !resolvedLogsDir) return undefined;
+  if (!isPathWithinDirectory(resolve(resolvedLogPath), resolve(resolvedLogsDir))) return undefined;
+
+  try {
+    const tail = readFileTail(resolvedLogPath, UPDATE_LOG_TAIL_BYTES)
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .map((line) => sanitizeLogLine(line))
+      .filter((line) => line.trim().length > 0)
+      .slice(-UPDATE_LOG_TAIL_LINES);
+    return tail.length > 0 ? tail : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function readUpdateInstallStatus(options: { runtimePaths: RuntimePaths }): UpdateInstallStatusResponse {
   const statusPath = getUpdateStatusPath(options.runtimePaths);
-  if (!existsSync(statusPath)) {
+  const status = readStatusJsonFile(statusPath);
+  if (!status) {
     return { status: null };
   }
-  return { status: readJsonFile(statusPath) as UpdateInstallStatus };
+  const logTail = readUpdateInstallLogTail(status, options.runtimePaths);
+  return logTail ? { status, logTail } : { status };
 }
 
 function writeUpdateInstallStatus(runtimePaths: RuntimePaths, status: UpdateInstallStatus): void {
@@ -610,6 +685,7 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
     packageSha256: check.update.package.sha256,
     startedAt: timestamp,
     updatedAt: timestamp,
+    message: `Launching updater for ${check.update.version}.`,
     logPath,
   };
   writeUpdateInstallStatus(runtimePaths, installStatus);
