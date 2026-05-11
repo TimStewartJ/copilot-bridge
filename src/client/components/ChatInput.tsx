@@ -22,6 +22,7 @@ import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
+const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-3xl px-3 py-3 sm:px-4 md:px-6 md:py-4 lg:px-8";
 
 /** Read a File as base64 (fallback for draft mode without sessionId) */
 function readFileAsBase64(file: File): Promise<string> {
@@ -443,173 +444,175 @@ export default function ChatInput({
       : "text-text-faint";
 
   return (
-    <div className="border-t border-border/80 bg-bg-secondary/95 p-3 md:p-4">
-      {uploading > 0 && (
-        <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
-          <Loader2 size={12} className="animate-spin" />
-          Uploading…
-        </div>
-      )}
+    <div className="border-t border-border/80 bg-bg-secondary/95">
+      <div className={COMPOSER_RAIL_CLASS}>
+        {uploading > 0 && (
+          <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
+            <Loader2 size={12} className="animate-spin" />
+            Uploading…
+          </div>
+        )}
 
-      {voiceUi.message && (
-        <div
-          className={`mb-2 flex flex-wrap items-center gap-x-1 text-xs ${voiceMessageClassName}`}
-        >
-          <span
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
+        {voiceUi.message && (
+          <div
+            className={`mb-2 flex flex-wrap items-center gap-x-1 text-xs ${voiceMessageClassName}`}
           >
-            {voiceUi.message}
-          </span>
-          {canRetryVoiceJobUpload && (
-            <button
-              type="button"
-              onClick={() => onRetryVoiceJobUpload?.(composerKey)}
-              aria-label="Try sending voice message again"
-              className="rounded-sm font-medium underline underline-offset-2 transition-colors hover:text-error-hover focus:outline-none focus:ring-2 focus:ring-error/40"
+            <span
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
             >
-              Try again
-            </button>
-          )}
-        </div>
-      )}
-
-      {attachments.length > 0 && (
-        <div className="flex gap-2 mb-2 flex-wrap">
-          {attachments.map((att, i) => (
-            <div key={i} className="relative group">
-              {att.type === "blob" && att.mimeType.startsWith("image/") ? (
-                <img
-                  src={`data:${att.mimeType};base64,${att.data}`}
-                  alt={att.displayName ?? "attachment"}
-                  className="h-16 w-16 object-cover rounded-md border border-border"
-                />
-              ) : att.type === "uploaded" && att.previewUrl ? (
-                <img
-                  src={att.previewUrl}
-                  alt={att.displayName ?? "attachment"}
-                  className="h-16 w-16 object-cover rounded-md border border-border"
-                />
-              ) : (
-                <div className="h-16 px-3 flex items-center gap-2 rounded-md border border-border bg-bg-elevated text-text-secondary text-xs max-w-[180px]">
-                  <FileText size={16} className="flex-shrink-0 text-text-faint" />
-                  <span className="truncate">{att.displayName ?? "file"}</span>
-                </div>
-              )}
+              {voiceUi.message}
+            </span>
+            {canRetryVoiceJobUpload && (
               <button
-                onClick={() => removeAttachment(i)}
-                className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-text-secondary hover:text-error"
+                type="button"
+                onClick={() => onRetryVoiceJobUpload?.(composerKey)}
+                aria-label="Try sending voice message again"
+                className="rounded-sm font-medium underline underline-offset-2 transition-colors hover:text-error-hover focus:outline-none focus:ring-2 focus:ring-error/40"
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        )}
+
+        {attachments.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {attachments.map((att, i) => (
+              <div key={i} className="relative group">
+                {att.type === "blob" && att.mimeType.startsWith("image/") ? (
+                  <img
+                    src={`data:${att.mimeType};base64,${att.data}`}
+                    alt={att.displayName ?? "attachment"}
+                    className="h-16 w-16 object-cover rounded-md border border-border"
+                  />
+                ) : att.type === "uploaded" && att.previewUrl ? (
+                  <img
+                    src={att.previewUrl}
+                    alt={att.displayName ?? "attachment"}
+                    className="h-16 w-16 object-cover rounded-md border border-border"
+                  />
+                ) : (
+                  <div className="h-16 px-3 flex items-center gap-2 rounded-md border border-border bg-bg-elevated text-text-secondary text-xs max-w-[180px]">
+                    <FileText size={16} className="flex-shrink-0 text-text-faint" />
+                    <span className="truncate">{att.displayName ?? "file"}</span>
+                  </div>
+                )}
+                <button
+                  onClick={() => removeAttachment(i)}
+                  className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-text-secondary hover:text-error"
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 md:gap-3">
+          <div
+            className="flex-1 flex items-center gap-1 rounded-xl border border-border bg-bg-primary shadow-sm transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent-border"
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+          >
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="h-12 px-3 text-text-faint hover:text-text-secondary transition-colors flex flex-shrink-0 items-center justify-center"
+              title="Attach file"
+              type="button"
+            >
+              <Paperclip size={18} />
+            </button>
+            {voiceUi.showButton && (
+              <button
+                onClick={() => {
+                  if (voice.phase === "recording") {
+                    pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
+                      text: inputRef.current,
+                      attachmentCount: attachmentsRef.current.length,
+                      sendBlocked: sendBlockedRef.current,
+                      uploadingCount: uploadingRef.current,
+                    });
+                    void voice.stopRecording();
+                  } else {
+                    onClearVoiceJobError?.(composerKey);
+                    updateRecordingStartMode(resolveVoiceSubmitMode({
+                      text: inputRef.current,
+                      attachmentCount: attachmentsRef.current.length,
+                      sendBlocked: sendBlockedRef.current,
+                      uploadingCount: uploadingRef.current,
+                    }));
+                    pendingCaptureSubmitModeRef.current = null;
+                    void voice.startRecording();
+                  }
+                }}
+                disabled={voiceUi.buttonDisabled}
+                className={`h-12 px-3 transition-colors flex flex-shrink-0 items-center justify-center ${
+                  voice.phase === "recording"
+                    ? "text-error hover:text-error-hover"
+                    : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
+                }`}
+                title={voiceUi.buttonTitle}
                 type="button"
               >
-                <X size={12} />
+                {voiceUi.buttonState === "spinner" ? (
+                  <Loader2 size={18} className="animate-spin" />
+                ) : voiceUi.buttonState === "stop" ? (
+                  <Square size={16} fill="currentColor" />
+                ) : (
+                  <Mic size={18} />
+                )}
               </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex items-center gap-2 md:gap-3">
-        <div
-          className="flex-1 flex items-center gap-1 rounded-xl border border-border bg-bg-primary shadow-sm transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent-border"
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-        >
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="h-12 px-3 text-text-faint hover:text-text-secondary transition-colors flex flex-shrink-0 items-center justify-center"
-            title="Attach file"
-            type="button"
-          >
-            <Paperclip size={18} />
-          </button>
-          {voiceUi.showButton && (
-            <button
-              onClick={() => {
-                if (voice.phase === "recording") {
-                  pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
-                    text: inputRef.current,
-                    attachmentCount: attachmentsRef.current.length,
-                    sendBlocked: sendBlockedRef.current,
-                    uploadingCount: uploadingRef.current,
-                  });
-                  void voice.stopRecording();
-                } else {
-                  onClearVoiceJobError?.(composerKey);
-                  updateRecordingStartMode(resolveVoiceSubmitMode({
-                    text: inputRef.current,
-                    attachmentCount: attachmentsRef.current.length,
-                    sendBlocked: sendBlockedRef.current,
-                    uploadingCount: uploadingRef.current,
-                  }));
-                  pendingCaptureSubmitModeRef.current = null;
-                  void voice.startRecording();
-                }
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) void addFiles(Array.from(e.target.files));
+                e.target.value = "";
               }}
-              disabled={voiceUi.buttonDisabled}
-              className={`h-12 px-3 transition-colors flex flex-shrink-0 items-center justify-center ${
-                voice.phase === "recording"
-                  ? "text-error hover:text-error-hover"
-                  : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
-              }`}
-              title={voiceUi.buttonTitle}
+            />
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInput}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder="Type a message, use the mic, or attach a file..."
+              rows={1}
+              className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
+            />
+          </div>
+          {onAbort ? (
+            <button
+              onClick={onAbort}
+              className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-center transition-colors flex items-center justify-center"
+              title="Stop generating"
               type="button"
             >
-              {voiceUi.buttonState === "spinner" ? (
-                <Loader2 size={18} className="animate-spin" />
-              ) : voiceUi.buttonState === "stop" ? (
-                <Square size={16} fill="currentColor" />
-              ) : (
-                <Mic size={18} />
-              )}
+              <Square size={14} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!canSend}
+              className={`flex h-10 w-10 items-center justify-center self-center rounded-lg transition-colors ${
+                canSend
+                  ? "bg-accent text-white hover:bg-accent-hover"
+                  : "text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint"
+              }`}
+              title={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
+              aria-label={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
+              type="button"
+            >
+              <SendHorizontal size={18} />
             </button>
           )}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files) void addFiles(Array.from(e.target.files));
-              e.target.value = "";
-            }}
-          />
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInput}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder="Type a message, use the mic, or attach a file..."
-            rows={1}
-            className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
-          />
         </div>
-        {onAbort ? (
-          <button
-            onClick={onAbort}
-            className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-center transition-colors flex items-center justify-center"
-            title="Stop generating"
-            type="button"
-          >
-            <Square size={14} fill="currentColor" />
-          </button>
-        ) : (
-          <button
-            onClick={handleSend}
-            disabled={!canSend}
-            className={`flex h-10 w-10 items-center justify-center self-center rounded-lg transition-colors ${
-              canSend
-                ? "bg-accent text-white hover:bg-accent-hover"
-                : "text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint"
-            }`}
-            title={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
-            aria-label={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
-            type="button"
-          >
-            <SendHorizontal size={18} />
-          </button>
-        )}
       </div>
     </div>
   );

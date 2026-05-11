@@ -78,6 +78,8 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBe("gpt-test");
     expect(cfg.reasoningEffort).toBe("high");
+    expect(cfg.streaming).toBe(true);
+    expect(cfg.includeSubAgentStreamingEvents).toBe(false);
     expect(cfg.mcpServers).toEqual({ configured: { command: "configured-mcp", args: [] } });
     expect(cfg.systemMessage.sections.identity).toEqual({ action: "replace", content: "Custom Bridge identity" });
     expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
@@ -246,6 +248,8 @@ describe("session-config-builder", () => {
 
     expect(cfg.model).toBeUndefined();
     expect(cfg.reasoningEffort).toBeUndefined();
+    expect(cfg.streaming).toBe(true);
+    expect(cfg.includeSubAgentStreamingEvents).toBe(false);
     expect(Object.keys(cfg.mcpServers)).toEqual(["Shared Tagged MCP"]);
     expect(cfg.mcpServers).toEqual({
       "Shared Tagged MCP": { command: "shared-tagged-mcp", args: ["serve"] },

@@ -45,6 +45,13 @@ const INITIAL_PAGE_SIZE = 50;
 const MANUAL_LOAD_PAGE_SIZE = 200;
 const AUTO_LOAD_TOP_THRESHOLD = 24;
 const AUTO_LOAD_DELAY_MS = 400;
+const STREAM_RENDER_INTERVAL_MS = 60;
+const LIVE_STREAMING_MESSAGE_ID = "live-assistant-stream";
+const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
+const FOLLOW_SCROLL_EASE = 0.35;
+const FOLLOW_SCROLL_SETTLE_PX = 1.5;
+const LATEST_MESSAGE_TOP_THRESHOLD_PX = 8;
+const CHAT_RAIL_CLASS = "mx-auto w-full max-w-3xl px-3 sm:px-4 md:px-6 lg:px-8";
 
 type PendingStatusTone = "sending" | "thinking" | "creating";
 
@@ -73,10 +80,78 @@ interface ChatViewProps {
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 }
 
-function renderPendingStatusCard(
+function useThrottledText(value: string, intervalMs: number): string {
+  const [displayValue, setDisplayValue] = useState(value);
+  const lastUpdateRef = useRef(0);
+
+  useEffect(() => {
+    if (value === displayValue) return;
+    if (!value || !value.startsWith(displayValue)) {
+      lastUpdateRef.current = Date.now();
+      setDisplayValue(value);
+      return;
+    }
+
+    const elapsed = Date.now() - lastUpdateRef.current;
+    const delay = Math.max(0, intervalMs - elapsed);
+    const timeout = setTimeout(() => {
+      lastUpdateRef.current = Date.now();
+      setDisplayValue(value);
+    }, delay);
+    return () => clearTimeout(timeout);
+  }, [displayValue, intervalMs, value]);
+
+  return displayValue;
+}
+
+function getDistanceFromBottom(el: HTMLElement): number {
+  return Math.max(0, getMaxScrollTop(el) - getSafeScrollTop(el));
+}
+
+function getSafeScrollTop(el: HTMLElement): number {
+  return Number.isFinite(el.scrollTop) ? el.scrollTop : 0;
+}
+
+function getMaxScrollTop(el: HTMLElement): number {
+  const scrollHeight = Number.isFinite(el.scrollHeight) ? el.scrollHeight : 0;
+  const clientHeight = Number.isFinite(el.clientHeight) ? el.clientHeight : 0;
+  return Math.max(0, scrollHeight - clientHeight);
+}
+
+function isChatMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "message" } {
+  return !entry.type || entry.type === "message";
+}
+
+function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): string {
+  if (message.turnId) return `turn:${message.turnId}:${message.role}`;
+  return message.id ?? `${message.role}:${fallbackIndex}`;
+}
+
+function getLatestMessageAnchorKey(entries: ChatEntry[]): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (isChatMessageEntry(entry)) return getMessageAnchorKey(entry, index);
+  }
+  return null;
+}
+
+function getLatestMessageRole(entries: ChatEntry[]): ChatMessage["role"] | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (isChatMessageEntry(entry)) return entry.role;
+  }
+  return null;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function renderLiveStatusPill(
   key: string,
   tone: PendingStatusTone,
-  label: string,
   title: string,
   detail: string,
 ) {
@@ -101,23 +176,18 @@ function renderPendingStatusCard(
         };
 
   return (
-    <div key={key} className="px-3 md:px-5">
+    <div key={key} className={CHAT_RAIL_CLASS}>
       <div
-        className="inline-flex max-w-lg items-start gap-3 rounded-2xl border px-4 py-3 shadow-sm"
+        className="inline-flex max-w-lg items-center gap-2 rounded-full border px-3 py-1.5 text-sm shadow-sm"
         style={style}
+        title={detail}
       >
         {sending ? (
-          <ArrowUpCircle size={18} className="mt-0.5 shrink-0" />
+          <ArrowUpCircle size={14} className="shrink-0" />
         ) : (
-          <Loader2 size={18} className="mt-0.5 shrink-0 animate-spin" />
+          <Loader2 size={14} className="shrink-0 animate-spin" />
         )}
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] opacity-80">
-            {label}
-          </div>
-          <div className="text-sm font-medium">{title}</div>
-          <div className="text-xs opacity-80">{detail}</div>
-        </div>
+        <span className="min-w-0 truncate font-medium">{title}</span>
       </div>
     </div>
   );
@@ -132,12 +202,12 @@ function renderRefreshingHistoryTailSkeleton(isLoading: boolean) {
       delayMs={200}
     >
       <div className="space-y-3">
-        <div className="px-3 md:px-5">
+        <div className={CHAT_RAIL_CLASS}>
           <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
             <SkeletonText lines={3} widths={["84%", "68%", "42%"]} />
           </div>
         </div>
-        <div className="px-3 md:px-5">
+        <div className={CHAT_RAIL_CLASS}>
           <div className="inline-flex w-full max-w-md items-center gap-3 rounded-xl border border-border/70 bg-bg-secondary/70 px-3 py-2">
             <Skeleton shape="circle" width={16} height={16} className="shrink-0" />
             <div className="min-w-0 flex-1">
@@ -268,7 +338,7 @@ function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps
   }, [freeform, submitResponse]);
 
   return (
-    <div className="px-3 md:px-5">
+    <div className={CHAT_RAIL_CLASS}>
       <div className="max-w-xl rounded-2xl border border-accent/30 bg-bg-secondary px-4 py-3 shadow-sm">
         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
           Question
@@ -381,6 +451,7 @@ export default function ChatView({
   const [forkingBoundaryEventId, setForkingBoundaryEventId] = useState<string | null>(null);
   const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const {
     bind: bindMessageMenu,
     menu: messageMenu,
@@ -407,6 +478,13 @@ export default function ChatView({
   const staleTailRefreshRetryRef = useRef<string | undefined>(undefined);
   const tailSkeletonRefreshEligibleRef = useRef(false);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const followScrollFrameRef = useRef<number | null>(null);
+  const resetProgrammaticScrollFrameRef = useRef<number | null>(null);
+  const programmaticScrollRef = useRef(false);
+  const messageElementRefs = useRef(new Map<string, HTMLDivElement>());
+  const latestMessageAnchorKeyRef = useRef<string | null>(null);
+  const anchoredMessageKeyRef = useRef<string | null>(null);
+  const pendingLiveAnchorCarryRef = useRef(false);
   const pendingRenderedReadThroughRef = useRef<{
     sessionId: string;
     readThroughActivityAt: string;
@@ -540,6 +618,135 @@ export default function ChatView({
     return result;
   }, [sessionId]);
 
+  const cancelFollowScroll = useCallback(() => {
+    if (followScrollFrameRef.current != null) {
+      window.cancelAnimationFrame(followScrollFrameRef.current);
+      followScrollFrameRef.current = null;
+    }
+  }, []);
+
+  const clearProgrammaticScroll = useCallback(() => {
+    if (resetProgrammaticScrollFrameRef.current != null) {
+      window.cancelAnimationFrame(resetProgrammaticScrollFrameRef.current);
+      resetProgrammaticScrollFrameRef.current = null;
+    }
+    programmaticScrollRef.current = false;
+  }, []);
+
+  const settleProgrammaticScroll = useCallback(() => {
+    if (resetProgrammaticScrollFrameRef.current != null) {
+      window.cancelAnimationFrame(resetProgrammaticScrollFrameRef.current);
+    }
+    resetProgrammaticScrollFrameRef.current = window.requestAnimationFrame(() => {
+      resetProgrammaticScrollFrameRef.current = null;
+      programmaticScrollRef.current = false;
+    });
+  }, []);
+
+  const getMessageTopWithinScroller = useCallback((messageKey: string): number | null => {
+    const scroller = scrollContainerRef.current;
+    const messageEl = messageElementRefs.current.get(messageKey);
+    if (!scroller || !messageEl) return null;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const messageRect = messageEl.getBoundingClientRect();
+    return messageRect.top - scrollerRect.top + getSafeScrollTop(scroller);
+  }, []);
+
+  const scrollToLatest = useCallback((opts: { immediate?: boolean; force?: boolean; anchorKey?: string | null } = {}) => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    if (opts.force) {
+      stickToBottomRef.current = true;
+      anchoredMessageKeyRef.current = null;
+      setShowJumpToLatest(false);
+    } else if (!stickToBottomRef.current) {
+      return;
+    }
+
+    cancelFollowScroll();
+    const reducedMotion = prefersReducedMotion();
+    const immediate = opts.immediate || reducedMotion;
+
+    const step = () => {
+      const anchorKey = opts.anchorKey ?? null;
+      const currentScrollTop = getSafeScrollTop(el);
+      const bottomTarget = getMaxScrollTop(el);
+      const anchorTop = anchorKey ? getMessageTopWithinScroller(anchorKey) : null;
+      const hasAnchorTarget = anchorTop != null && Number.isFinite(anchorTop);
+      const canAnchorToMessage = hasAnchorTarget
+        && bottomTarget > 0
+        && bottomTarget >= anchorTop - LATEST_MESSAGE_TOP_THRESHOLD_PX;
+      if (!opts.force && anchorKey && canAnchorToMessage && anchorTop <= currentScrollTop + LATEST_MESSAGE_TOP_THRESHOLD_PX) {
+        programmaticScrollRef.current = true;
+        if (Math.abs(anchorTop - currentScrollTop) <= LATEST_MESSAGE_TOP_THRESHOLD_PX) {
+          el.scrollTop = Math.max(0, Math.min(bottomTarget, anchorTop));
+        }
+        followScrollFrameRef.current = null;
+        stickToBottomRef.current = true;
+        anchoredMessageKeyRef.current = anchorKey;
+        setShowJumpToLatest(false);
+        settleProgrammaticScroll();
+        return;
+      }
+
+      const target = hasAnchorTarget ? Math.min(bottomTarget, anchorTop) : bottomTarget;
+      const delta = target - currentScrollTop;
+      programmaticScrollRef.current = true;
+
+      if (immediate || Math.abs(delta) <= FOLLOW_SCROLL_SETTLE_PX) {
+        el.scrollTop = target;
+        followScrollFrameRef.current = null;
+        stickToBottomRef.current = true;
+        anchoredMessageKeyRef.current = anchorKey && canAnchorToMessage && Math.abs(target - anchorTop) <= LATEST_MESSAGE_TOP_THRESHOLD_PX
+          ? anchorKey
+          : null;
+        setShowJumpToLatest(false);
+        settleProgrammaticScroll();
+        return;
+      }
+
+      const nextScrollTop = currentScrollTop + delta * FOLLOW_SCROLL_EASE;
+      if (anchorKey && canAnchorToMessage && Math.abs(target - anchorTop) <= LATEST_MESSAGE_TOP_THRESHOLD_PX && nextScrollTop >= anchorTop - LATEST_MESSAGE_TOP_THRESHOLD_PX) {
+        el.scrollTop = Math.max(0, Math.min(bottomTarget, anchorTop));
+        followScrollFrameRef.current = null;
+        stickToBottomRef.current = true;
+        anchoredMessageKeyRef.current = anchorKey;
+        setShowJumpToLatest(false);
+        settleProgrammaticScroll();
+        return;
+      }
+
+      anchoredMessageKeyRef.current = null;
+      el.scrollTop = nextScrollTop;
+      followScrollFrameRef.current = window.requestAnimationFrame(step);
+    };
+
+    if (immediate) {
+      step();
+    } else {
+      followScrollFrameRef.current = window.requestAnimationFrame(step);
+    }
+  }, [cancelFollowScroll, getMessageTopWithinScroller, settleProgrammaticScroll]);
+
+  const handleUserScrollIntent = useCallback(() => {
+    cancelFollowScroll();
+    clearProgrammaticScroll();
+    stickToBottomRef.current = false;
+    anchoredMessageKeyRef.current = null;
+    if (isStreaming || creating || pendingUserInputs.length > 0) {
+      setShowJumpToLatest(true);
+    }
+  }, [cancelFollowScroll, clearProgrammaticScroll, creating, isStreaming, pendingUserInputs.length]);
+
+  const handleJumpToLatest = useCallback(() => {
+    scrollToLatest({ force: true });
+  }, [scrollToLatest]);
+
+  useEffect(() => () => {
+    cancelFollowScroll();
+    clearProgrammaticScroll();
+  }, [cancelFollowScroll, clearProgrammaticScroll]);
+
 
   // Load history + MCP status when session changes.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
@@ -575,8 +782,15 @@ export default function ChatView({
       setCreating(false);
       setLoadingMore(false);
       setHasMore(false);
+      setShowJumpToLatest(false);
       setMcpStatus([]);
       setManualMcpOverride(null);
+      cancelFollowScroll();
+      clearProgrammaticScroll();
+      anchoredMessageKeyRef.current = null;
+      latestMessageAnchorKeyRef.current = null;
+      pendingLiveAnchorCarryRef.current = false;
+      messageElementRefs.current.clear();
       firstItemIndex.current = 0;
       totalEntriesRef.current = 0;
       historyLastVisibleActivityAtRef.current = undefined;
@@ -606,6 +820,13 @@ export default function ChatView({
     // Reset stick-to-bottom so the new session starts following output,
     // regardless of scroll position in the previous session.
     stickToBottomRef.current = true;
+    anchoredMessageKeyRef.current = null;
+    latestMessageAnchorKeyRef.current = null;
+    pendingLiveAnchorCarryRef.current = false;
+    messageElementRefs.current.clear();
+    setShowJumpToLatest(false);
+    cancelFollowScroll();
+    clearProgrammaticScroll();
 
     const controller = new AbortController();
 
@@ -809,7 +1030,7 @@ export default function ChatView({
       clearPendingAutoLoad();
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [composerKey, reconnect, sessionId, applyHistory, queryClient, clearPendingAutoLoad]);
+  }, [cancelFollowScroll, clearPendingAutoLoad, clearProgrammaticScroll, composerKey, reconnect, sessionId, applyHistory, queryClient]);
 
   // Reconnect when an external source starts work on this session
   const prevBusySignalRef = useRef(busySignal);
@@ -900,11 +1121,12 @@ export default function ChatView({
       return;
     }
 
-    // Otherwise auto-scroll to bottom (initial load, new messages appended, etc.)
-    if (stickToBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
+    // Otherwise auto-scroll to bottom for initial load and ordinary appends.
+    // When a message is top-anchored, message-key changes handle the next scroll.
+    if (stickToBottomRef.current && !anchoredMessageKeyRef.current) {
+      scrollToLatest({ immediate: true });
     }
-  }, [entries]);
+  }, [entries, scrollToLatest]);
 
   const loadOlderMessages = useCallback((opts: {
     limit?: number;
@@ -1016,7 +1238,17 @@ export default function ChatView({
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (programmaticScrollRef.current) return;
+
+    const following = getDistanceFromBottom(el) <= FOLLOW_BOTTOM_THRESHOLD_PX;
+    stickToBottomRef.current = following;
+    anchoredMessageKeyRef.current = null;
+    if (following) {
+      setShowJumpToLatest(false);
+    } else if (isStreaming || creating || pendingUserInputs.length > 0) {
+      setShowJumpToLatest(true);
+    }
+
     const nearTop = el.scrollTop <= AUTO_LOAD_TOP_THRESHOLD;
     if (!nearTop) {
       autoLoadArmedRef.current = true;
@@ -1027,7 +1259,7 @@ export default function ChatView({
     }
     if (!autoLoadArmedRef.current) return;
     scheduleAutoLoad();
-  }, [clearPendingAutoLoad, scheduleAutoLoad]);
+  }, [clearPendingAutoLoad, creating, isStreaming, pendingUserInputs.length, scheduleAutoLoad]);
 
   // If the first page doesn't overflow, schedule the same delayed auto-load from the top.
   useEffect(() => {
@@ -1158,6 +1390,8 @@ export default function ChatView({
     () => new Set(liveToolCalls.map((tool) => tool.toolCallId)),
     [liveToolCalls],
   );
+  const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
+  const hasStreamingText = displayedStreamingContent.trim().length > 0;
   const historicalEntries = useMemo(() => {
     if ((!isStreaming && !creating) || liveToolCallIds.size === 0) return entries;
     return entries.filter((entry) => (
@@ -1166,13 +1400,52 @@ export default function ChatView({
       || !liveToolCallIds.has(entry.toolCall.toolCallId)
     ));
   }, [creating, entries, isStreaming, liveToolCallIds]);
+  const liveEntries = useMemo<ChatEntry[]>(() => {
+    const nextEntries: ChatEntry[] = liveToolCalls.map((tool, index) => ({
+      id: `live-tool-${tool.toolCallId}-${index}`,
+      type: "tool",
+      turnId: tool.turnId,
+      toolCall: tool,
+      liveSource: "snapshot",
+    }));
+    if (isStreaming && hasStreamingText) {
+      nextEntries.push({
+        id: LIVE_STREAMING_MESSAGE_ID,
+        type: "message",
+        role: "assistant",
+        content: displayedStreamingContent,
+        turnId: liveToolCalls.find((tool) => tool.turnId)?.turnId,
+      });
+    }
+    return nextEntries;
+  }, [displayedStreamingContent, hasStreamingText, isStreaming, liveToolCalls]);
+  const displayEntries = useMemo(
+    () => liveEntries.length > 0 ? [...historicalEntries, ...liveEntries] : historicalEntries,
+    [historicalEntries, liveEntries],
+  );
+  const messageAnchorKeys = useMemo(() => {
+    const keys = new WeakMap<object, string>();
+    displayEntries.forEach((entry, index) => {
+      if (isChatMessageEntry(entry)) {
+        keys.set(entry, getMessageAnchorKey(entry, index));
+      }
+    });
+    return keys;
+  }, [displayEntries]);
+  const latestMessageAnchorKey = useMemo(
+    () => getLatestMessageAnchorKey(displayEntries),
+    [displayEntries],
+  );
+  const latestMessageRole = useMemo(
+    () => getLatestMessageRole(displayEntries),
+    [displayEntries],
+  );
   const toolEntries = useMemo(
-    () => historicalEntries.flatMap((entry) => entry.type === "tool" && entry.toolCall ? [entry.toolCall] : []),
-    [historicalEntries],
+    () => displayEntries.flatMap((entry) => entry.type === "tool" && entry.toolCall ? [entry.toolCall] : []),
+    [displayEntries],
   );
   const toolForest = useMemo(() => buildToolCallForest(toolEntries), [toolEntries]);
   const activeToolForest = useMemo(() => buildToolCallForest(activeToolCalls), [activeToolCalls]);
-  const liveToolForest = useMemo(() => buildToolCallForest(liveToolCalls), [liveToolCalls]);
   const activeRootNodes = useMemo(() => getActiveToolCallRoots(activeToolForest.roots), [activeToolForest.roots]);
   const runHeaderState = useMemo(() => deriveLiveRunHeaderState({
     creating,
@@ -1185,46 +1458,76 @@ export default function ChatView({
     hadVisibleOutput,
   }), [creating, isStreaming, streamStatus, pendingOrigin, streamingContent, activeRootNodes.length, intentText, hadVisibleOutput]);
 
-  // Auto-scroll during streaming (content grows within the pending block).
-  useEffect(() => {
-    if (!stickToBottomRef.current) return;
-    const el = scrollContainerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [streamingContent, runHeaderState?.phase, isStreaming, creating, currentTurnTools, pendingUserInputRequests.length]);
+  useLayoutEffect(() => {
+    const previousMessageKey = latestMessageAnchorKeyRef.current;
+    if (previousMessageKey === latestMessageAnchorKey) return;
 
-  // Build pending indicator content (run header + streaming text).
+    const wasAnchored = Boolean(previousMessageKey && anchoredMessageKeyRef.current === previousMessageKey);
+    const isLiveMessageReplacement = previousMessageKey === LIVE_STREAMING_MESSAGE_ID
+      && latestMessageAnchorKey !== null;
+    latestMessageAnchorKeyRef.current = latestMessageAnchorKey;
+
+    if (!latestMessageAnchorKey) {
+      anchoredMessageKeyRef.current = null;
+      pendingLiveAnchorCarryRef.current = false;
+      return;
+    }
+
+    if (isLiveMessageReplacement) {
+      if (wasAnchored && latestMessageRole === "assistant") {
+        anchoredMessageKeyRef.current = latestMessageAnchorKey;
+        pendingLiveAnchorCarryRef.current = false;
+      } else if (wasAnchored) {
+        anchoredMessageKeyRef.current = null;
+        pendingLiveAnchorCarryRef.current = true;
+      }
+      return;
+    }
+
+    if (pendingLiveAnchorCarryRef.current && latestMessageRole === "assistant") {
+      anchoredMessageKeyRef.current = latestMessageAnchorKey;
+      pendingLiveAnchorCarryRef.current = false;
+      return;
+    }
+
+    pendingLiveAnchorCarryRef.current = false;
+    anchoredMessageKeyRef.current = null;
+    if (previousMessageKey && stickToBottomRef.current) {
+      scrollToLatest({ anchorKey: latestMessageAnchorKey });
+    }
+  }, [latestMessageAnchorKey, latestMessageRole, scrollToLatest]);
+
+  // Auto-scroll during streaming until the newest message itself reaches the viewport top.
+  useEffect(() => {
+    if (!isStreaming && !creating && !hasPendingUserInputs) return;
+    if (latestMessageAnchorKey && anchoredMessageKeyRef.current === latestMessageAnchorKey) return;
+    scrollToLatest({ anchorKey: latestMessageAnchorKey });
+  }, [
+    creating,
+    currentTurnTools,
+    displayedStreamingContent,
+    hasPendingUserInputs,
+    isStreaming,
+    latestMessageAnchorKey,
+    liveEntries.length,
+    pendingUserInputRequests.length,
+    runHeaderState?.phase,
+    scrollToLatest,
+  ]);
+
+  // Build lightweight pending-only UI. Live tools and assistant text render in the normal chat flow.
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
+    const showStatusPill = runHeaderState && !hasStreamingText && activeRootNodes.length === 0;
 
-    if (runHeaderState) {
+    if (showStatusPill) {
       parts.push(
-        renderPendingStatusCard(
+        renderLiveStatusPill(
           "run-header",
           runHeaderState.tone,
-          runHeaderState.label,
           runHeaderState.title,
           runHeaderState.detail,
         ),
-      );
-    }
-
-    if (liveToolForest.roots.length > 0) {
-      parts.push(
-        <div key="live-tools" className="px-3 md:px-5">
-          <ToolCallNodeGroup
-            nodes={liveToolForest.roots}
-            defaultExpanded={liveToolForest.roots.some((node) => node.children.length > 0)}
-            activeToolCallIds={activeToolCallIds}
-          />
-        </div>,
-      );
-    }
-
-    if (streamingContent) {
-      parts.push(
-        <div key="streaming" className="px-3 md:px-5">
-          <MessageBubble message={{ role: "assistant", content: streamingContent }} />
-        </div>,
       );
     }
 
@@ -1239,8 +1542,8 @@ export default function ChatView({
     }
 
     if (parts.length === 0) return null;
-    return <div className="space-y-4 pb-4">{parts}</div>;
-  }, [activeToolCallIds, handleSubmitUserInput, liveToolForest.roots, pendingUserInputRequests, runHeaderState, streamingContent]);
+    return <div className="space-y-3 pb-4">{parts}</div>;
+  }, [activeRootNodes.length, handleSubmitUserInput, hasStreamingText, pendingUserInputRequests, runHeaderState]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
   const runFleetDisabledReason = !hasPlan
@@ -1319,7 +1622,7 @@ export default function ChatView({
   /** Render messages in order, but group each tool turn into real parallel root tracks. */
   const renderedEntries = useMemo(() => {
     const result: React.ReactNode[] = [];
-    const segments = segmentChatEntries(historicalEntries);
+    const segments = segmentChatEntries(displayEntries);
 
     segments.forEach((segment, index) => {
       if (segment.type === "tool-segment") {
@@ -1329,10 +1632,11 @@ export default function ChatView({
           ? `tool-turn-${segment.turnId}`
           : segment.entries[0]?.id ?? `tool-segment-${index}`;
         result.push(
-          <div key={segmentKey} className="px-3 md:px-5 pt-2">
+          <div key={segmentKey} className={`${CHAT_RAIL_CLASS} pt-2`}>
             <ToolCallNodeGroup
               nodes={roots}
               defaultExpanded={roots.some((node) => node.children.length > 0)}
+              activeToolCallIds={activeToolCallIds}
             />
           </div>,
         );
@@ -1342,7 +1646,7 @@ export default function ChatView({
       if (segment.type === "visual-segment") {
         const { entry } = segment;
         result.push(
-          <div key={entry.id ?? `visual-${index}`} className="px-3 md:px-5 pt-3">
+          <div key={entry.id ?? `visual-${index}`} className={`${CHAT_RAIL_CLASS} pt-3`}>
             <VisualArtifactCard visual={entry.visual} />
           </div>,
         );
@@ -1351,9 +1655,11 @@ export default function ChatView({
 
       const msg = segment.entry as ChatMessage;
       const messageKey = msg.id ?? msg.turnId ?? `${msg.role}-${index}`;
-      const menuBindings = bindMessageMenu(messageKey, () => {});
-      const isLongPressTarget = isMessageLongPressTarget(messageKey);
-      const actionSlot = (
+      const messageAnchorKey = messageAnchorKeys.get(msg) ?? getMessageAnchorKey(msg, index);
+      const isLiveStreamingMessage = msg.id === LIVE_STREAMING_MESSAGE_ID;
+      const menuBindings = isLiveStreamingMessage ? null : bindMessageMenu(messageKey, () => {});
+      const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageKey);
+      const actionSlot = isLiveStreamingMessage ? undefined : (
         <MessageActionToolbar
           messageKey={messageKey}
           message={msg}
@@ -1365,19 +1671,29 @@ export default function ChatView({
       result.push(
         <div
           key={messageKey}
-          className={`relative px-3 pt-4 transition-colors md:px-5 ${
+          ref={(node) => {
+            if (node) {
+              messageElementRefs.current.set(messageAnchorKey, node);
+            } else {
+              messageElementRefs.current.delete(messageAnchorKey);
+            }
+          }}
+          data-chat-message-key={messageAnchorKey}
+          data-latest-chat-message={messageAnchorKey === latestMessageAnchorKey ? "true" : undefined}
+          className={`${CHAT_RAIL_CLASS} relative pt-4 transition-colors ${
             isLongPressTarget ? "bg-accent/5" : ""
           }`}
-          onClick={menuBindings.onClick}
+          onClick={menuBindings?.onClick}
           onTouchStart={(event) => {
+            if (!menuBindings) return;
             setMessageMenuTarget({ key: messageKey, message: msg });
             menuBindings.onTouchStart(event);
           }}
-          onTouchMove={menuBindings.onTouchMove}
-          onTouchEnd={menuBindings.onTouchEnd}
-          onTouchCancel={menuBindings.onTouchCancel}
+          onTouchMove={menuBindings?.onTouchMove}
+          onTouchEnd={menuBindings?.onTouchEnd}
+          onTouchCancel={menuBindings?.onTouchCancel}
         >
-          <MessageBubble message={msg} actionSlot={actionSlot} />
+          <MessageBubble message={msg} actionSlot={actionSlot} isStreaming={isLiveStreamingMessage} />
         </div>,
       );
     });
@@ -1386,8 +1702,11 @@ export default function ChatView({
   }, [
     bindMessageMenu,
     copiedMessageKey,
+    displayEntries,
+    latestMessageAnchorKey,
+    messageAnchorKeys,
+    activeToolCallIds,
     handleCopySpecificMessage,
-    historicalEntries,
     isMessageLongPressTarget,
     openMessageActionsMenu,
     toolForest,
@@ -1427,9 +1746,9 @@ export default function ChatView({
         <LoadingSkeletonRegion
           isLoading
           label="Loading chat history"
-          className="flex-1 flex items-end overflow-hidden px-3 pb-6 md:px-5"
+          className="flex-1 flex items-end overflow-hidden pb-6"
         >
-          <div className="w-full space-y-4">
+          <div className={`${CHAT_RAIL_CLASS} space-y-4`}>
             <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
               <SkeletonText lines={3} widths={["88%", "72%", "46%"]} />
             </div>
@@ -1454,6 +1773,8 @@ export default function ChatView({
           ref={scrollContainerRef}
           className="flex-1 overflow-y-auto overflow-x-hidden"
           onScroll={handleScroll}
+          onWheel={handleUserScrollIntent}
+          onTouchMove={handleUserScrollIntent}
         >
           {refreshingHistory && (
             <div className="sticky top-0 z-10 flex justify-center px-3 pt-3">
@@ -1487,7 +1808,19 @@ export default function ChatView({
           {renderedEntries}
           {renderRefreshingHistoryTailSkeleton(showRefreshingTailSkeleton)}
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
-          <div className="h-4" />
+          {showJumpToLatest && (
+            <div className="sticky bottom-3 z-20 flex justify-center px-3 pointer-events-none">
+              <button
+                type="button"
+                aria-label="Jump to latest"
+                onClick={handleJumpToLatest}
+                className="pointer-events-auto rounded-full border border-border bg-bg-secondary/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm backdrop-blur transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              >
+                Jump to latest
+              </button>
+            </div>
+          )}
+          <div aria-hidden="true" className="h-4" />
         </div>
       )}
       {messageMenu && messageMenuTarget && (
