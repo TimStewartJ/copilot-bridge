@@ -101,7 +101,7 @@ export default memo(function MessageBubble({ message, actionSlot, isStreaming = 
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
           <div
-            className={`py-1 text-sm leading-relaxed text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
+            className={`max-w-none py-1 text-sm leading-relaxed text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>
