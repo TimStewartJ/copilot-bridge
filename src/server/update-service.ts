@@ -1,6 +1,6 @@
 import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -489,18 +489,80 @@ function releaseStateRootArg(env: NodeJS.ProcessEnv, runtimePaths: RuntimePaths)
   return basename(runtimePaths.dataDir).toLowerCase() === "data" ? dirname(runtimePaths.dataDir) : undefined;
 }
 
-function openUpdateLog(logPath: string): { stdoutFd: number; stderrFd: number; close: () => void } {
-  mkdirSync(dirname(logPath), { recursive: true });
-  const stdoutFd = openSync(logPath, "a");
-  const stderrFd = openSync(logPath, "a");
-  return {
-    stdoutFd,
-    stderrFd,
-    close: () => {
-      closeSync(stdoutFd);
-      closeSync(stderrFd);
-    },
-  };
+function quotePowerShellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function renderPowerShellCommandArgument(value: string): string {
+  return /^-[A-Za-z][A-Za-z0-9]*$/.test(value) ? value : quotePowerShellLiteral(value);
+}
+
+function renderPowerShellArray(values: string[]): string {
+  return values.map((value) => `  ${quotePowerShellLiteral(value)}`).join(",\n");
+}
+
+interface UpdateLauncherScriptOptions {
+  updaterPowerShellCommand: string;
+  updateScript: string;
+  updateScriptArgs: string[];
+  releaseRoot: string;
+  logPath: string;
+  runtimePaths: RuntimePaths;
+  installStatus: UpdateInstallStatus;
+}
+
+function writeUpdateLauncherScript(options: UpdateLauncherScriptOptions): string {
+  mkdirSync(dirname(options.logPath), { recursive: true });
+  const launcherPath = join(dirname(options.logPath), `update-launcher-${options.installStatus.id}.ps1`);
+  const updaterCommand = [
+    "&",
+    quotePowerShellLiteral(options.updateScript),
+    ...options.updateScriptArgs.map(renderPowerShellCommandArgument),
+    "*>>",
+    quotePowerShellLiteral(options.logPath),
+  ].join(" ");
+  const updaterProcessArgs = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `& { ${updaterCommand} }`,
+  ];
+  const statusJson = JSON.stringify(options.installStatus);
+  const script = `$ErrorActionPreference = "Stop"
+$logPath = ${quotePowerShellLiteral(options.logPath)}
+$statusPath = ${quotePowerShellLiteral(getUpdateStatusPath(options.runtimePaths))}
+$statusJson = @'
+${statusJson}
+'@
+
+function Write-BridgeUpdateLaunchFailure([string]$Message) {
+  $now = (Get-Date).ToUniversalTime().ToString("o")
+  $status = $statusJson | ConvertFrom-Json
+  $status.phase = "failed"
+  $status.updatedAt = $now
+  $status | Add-Member -NotePropertyName completedAt -NotePropertyValue $now -Force
+  $status | Add-Member -NotePropertyName error -NotePropertyValue $Message -Force
+  $status | ConvertTo-Json -Depth 6 | Set-Content -Path $statusPath -Encoding UTF8
+}
+
+try {
+  New-Item -ItemType Directory -Path (Split-Path -Parent $logPath), (Split-Path -Parent $statusPath) -Force | Out-Null
+  "Launching updater process." | Add-Content -Path $logPath
+  $argumentList = @(
+${renderPowerShellArray(updaterProcessArgs)}
+  )
+  $process = Start-Process -FilePath ${quotePowerShellLiteral(options.updaterPowerShellCommand)} -ArgumentList $argumentList -WorkingDirectory ${quotePowerShellLiteral(options.releaseRoot)} -WindowStyle Hidden -PassThru
+  "Updater process started with PID $($process.Id)." | Add-Content -Path $logPath
+} catch {
+  $message = $_.Exception.Message
+  $message | Add-Content -Path $logPath
+  Write-BridgeUpdateLaunchFailure $message
+  exit 1
+}
+`;
+  writeFileSync(launcherPath, script, "utf8");
+  return launcherPath;
 }
 
 export async function startUpdateInstall(options: StartUpdateInstallOptions): Promise<UpdateInstallStartResponse> {
@@ -552,12 +614,7 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
   };
   writeUpdateInstallStatus(runtimePaths, installStatus);
 
-  const args = [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    updateScript,
+  const updateScriptArgs = [
     "-DownloadUrl",
     check.update.package.url,
     "-ExpectedSha256",
@@ -579,19 +636,33 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
   ];
   const stateRoot = releaseStateRootArg(env, runtimePaths);
   if (stateRoot) {
-    args.push("-StateRoot", stateRoot);
+    updateScriptArgs.push("-StateRoot", stateRoot);
   }
 
-  const log = openUpdateLog(logPath);
+  const powerShellCommand = resolvePowerShellCommand(env, options.powerShellCommand);
+  const launcherScript = writeUpdateLauncherScript({
+    updaterPowerShellCommand: powerShellCommand,
+    updateScript,
+    updateScriptArgs,
+    releaseRoot,
+    logPath,
+    runtimePaths,
+    installStatus,
+  });
   let child: ChildProcess;
   try {
     child = (options.spawnImpl ?? spawn)(
-      resolvePowerShellCommand(env, options.powerShellCommand),
-      args,
+      powerShellCommand,
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        launcherScript,
+      ],
       {
         cwd: releaseRoot,
-        detached: true,
-        stdio: ["ignore", log.stdoutFd, log.stderrFd],
+        stdio: "ignore",
         windowsHide: true,
         env: {
           ...process.env,
@@ -611,8 +682,6 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
-  } finally {
-    log.close();
   }
 
   child.once?.("error", (error) => {

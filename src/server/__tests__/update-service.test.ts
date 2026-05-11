@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { checkForUpdate, compareVersions, readUpdateInstallStatus, startUpdateInstall } from "../update-service.js";
@@ -217,10 +217,17 @@ describe("update service", () => {
     if (!call) throw new Error("Expected updater spawn call.");
     const [command, args, options] = call;
     expect(command).toBe("pwsh-test");
-    expect(args).toContain("-DownloadUrl");
-    expect(args).toContain("https://github.com/timstewartj/copilot-bridge/releases/download/v0.2.0/copilot-bridge-0.2.0-stable-win-x64.zip");
-    expect(args).toContain("-ExpectedSha256");
-    expect(options.detached).toBe(true);
+    expect(args).toContain("-File");
+    const launcherPath = args[args.indexOf("-File") + 1];
+    if (!launcherPath) throw new Error("Expected launcher script path.");
+    expect(launcherPath).toContain("update-launcher-");
+    const launcherScript = readFileSync(launcherPath, "utf8");
+    expect(launcherScript).toContain("Start-Process");
+    expect(launcherScript).toContain("-DownloadUrl");
+    expect(launcherScript).toContain("https://github.com/timstewartj/copilot-bridge/releases/download/v0.2.0/copilot-bridge-0.2.0-stable-win-x64.zip");
+    expect(launcherScript).toContain("-ExpectedSha256");
+    expect(launcherScript).toContain("*>>");
+    expect(options.detached).toBeUndefined();
     expect(readUpdateInstallStatus({ runtimePaths }).status?.phase).toBe("started");
   });
 });
