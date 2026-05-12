@@ -53,6 +53,14 @@ describe("SETTINGS_CATEGORIES", () => {
     const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
     expect(new Set(allSections)).toEqual(new Set(expected));
   });
+
+  it("shows updates first in general settings", () => {
+    const general = getCategoryMeta("general");
+    const diagnostics = getCategoryMeta("diagnostics");
+
+    expect(general!.sections[0]).toBe("updates");
+    expect(diagnostics!.sections).not.toContain("updates");
+  });
 });
 
 describe("DEFAULT_CATEGORY", () => {

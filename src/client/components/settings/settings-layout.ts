@@ -25,7 +25,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "general",
     label: "General",
-    sections: ["system-prompt", "model", "reasoning-effort", "appearance", "notifications", "device-management"],
+    sections: ["updates", "system-prompt", "model", "reasoning-effort", "appearance", "notifications", "device-management"],
   },
   {
     id: "integrations",
@@ -35,7 +35,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "diagnostics",
     label: "Diagnostics",
-    sections: ["updates", "voice-input", "bridge-status", "local-copilot-usage"],
+    sections: ["voice-input", "bridge-status", "local-copilot-usage"],
   },
 ];
 
