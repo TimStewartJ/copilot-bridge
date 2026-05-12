@@ -398,6 +398,22 @@ export function createDocsStore(docsDir: string) {
     };
   }
 
+  function writeDocFile(filePath: string, rawContent: string): void {
+    const { data, content } = matter(rawContent);
+    validateTaggedDocContent(rawContent);
+    const now = new Date().toISOString();
+
+    if (existsSync(filePath)) {
+      const existing = matter(readFileSync(filePath, "utf-8")).data;
+      data.created = existing.created || data.created || now;
+    } else {
+      data.created = data.created || now;
+    }
+    data.modified = now;
+
+    writeFileSync(filePath, matter.stringify(content, data), "utf-8");
+  }
+
   function writePage(pagePath: string, rawContent: string): DocPage {
     const parsed = parsePagePath(pagePath);
 
@@ -438,21 +454,7 @@ export function createDocsStore(docsDir: string) {
     const dir = dirname(filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-    // Parse incoming content for frontmatter
-    const { data, content } = matter(rawContent);
-    validateTaggedDocContent(rawContent);
-    const now = new Date().toISOString();
-
-    // Preserve created timestamp from existing file
-    if (existsSync(filePath)) {
-      const existing = matter(readFileSync(filePath, "utf-8")).data;
-      data.created = existing.created || data.created || now;
-    } else {
-      data.created = data.created || now;
-    }
-    data.modified = now;
-
-    writeFileSync(filePath, matter.stringify(content, data), "utf-8");
+    writeDocFile(filePath, rawContent);
     return readPage(parsed.isFolderIndexAlias ? parsed.canonicalPath + "/index" : parsed.canonicalPath)!;
   }
 
@@ -490,9 +492,12 @@ export function createDocsStore(docsDir: string) {
     return page;
   }
 
-  function deleteUserPage(pagePath: string): boolean {
-    readUserPage(pagePath);
-    return deletePage(pagePath);
+  function deleteUserPage(pagePath: string, beforeDelete?: () => void): { path: string; deleted: boolean } {
+    const page = readUserPage(pagePath);
+    const canonicalPath = page?.path ?? pagePath;
+    if (!page) return { path: canonicalPath, deleted: false };
+    beforeDelete?.();
+    return { path: canonicalPath, deleted: deletePage(canonicalPath) };
   }
 
   // ── Tree listing ──────────────────────────────────────────────
@@ -717,7 +722,7 @@ export function createDocsStore(docsDir: string) {
 
       tags[tagIdx] = newName;
       data.tags = tags;
-      writeFileSync(resolved.filePath, matter.stringify(content, data), "utf-8");
+      writeDocFile(resolved.filePath, matter.stringify(content, data));
       updated++;
     }
     return updated;

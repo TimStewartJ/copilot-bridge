@@ -39,7 +39,6 @@ describe("schedule-store", () => {
       expect(s.name).toBe("Daily standup");
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
-      expect(s.sessionMode).toBe("new");
       expect(s.autoArchiveKeep).toBe(8);
     });
 
@@ -63,10 +62,9 @@ describe("schedule-store", () => {
 
     it("updateSchedule changes fields", () => {
       const s = store.createSchedule(baseCron);
-      const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false, sessionMode: "reuse-last" });
+      const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false });
       expect(updated.name).toBe("Renamed");
       expect(updated.enabled).toBe(false);
-      expect(updated.sessionMode).toBe("new");
     });
 
     it("updateSchedule changes and clears autoArchiveKeep", () => {
@@ -75,30 +73,7 @@ describe("schedule-store", () => {
       expect(store.updateSchedule(s.id, { autoArchiveKeep: null }).autoArchiveKeep).toBeUndefined();
     });
 
-    it("normalizes legacy reuse-target rows to new-session behavior without exposing targets", () => {
-      const s = store.createSchedule(baseCron);
-      db.prepare("UPDATE schedules SET sessionMode = ?, targetSessionId = ? WHERE id = ?")
-        .run("reuse-target", "session-123", s.id);
-      const hydrated = store.getSchedule(s.id)!;
-      expect(hydrated.sessionMode).toBe("new");
-      expect(hydrated.lastSessionId).toBe("session-123");
-      expect((hydrated as any).targetSessionId).toBeUndefined();
-    });
-
-    it("explicit sessionMode update keeps schedules new-session-only", () => {
-      const s = store.createSchedule({ ...baseCron, sessionMode: "reuse-last" });
-      db.prepare("UPDATE schedules SET lastSessionId = ?, reuseLastRequiresExistingSession = 1 WHERE id = ?")
-        .run("session-123", s.id);
-
-      expect(store.getSchedule(s.id)!.sessionMode).toBe("new");
-      const renamed = store.updateSchedule(s.id, { name: "Still strict" });
-      expect(renamed.sessionMode).toBe("new");
-
-      const updated = store.updateSchedule(s.id, { sessionMode: "reuse-last" });
-      expect(updated.sessionMode).toBe("new");
-    });
-
-    it("normalizes legacy reuse data during database migration", () => {
+    it("removes legacy reuse schema while preserving run history during database migration", () => {
       const dataDir = mkdtempSync(join(process.cwd(), ".schedule-migration-"));
       try {
         const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
@@ -159,51 +134,46 @@ describe("schedule-store", () => {
         const migratedDb = openDatabase(dataDir);
         try {
           const rows = migratedDb.prepare(`
-            SELECT id, autoArchiveKeep, sessionMode, targetSessionId, lastSessionId, reuseLastRequiresExistingSession
+            SELECT id, autoArchiveKeep, lastSessionId
             FROM schedules
             ORDER BY id
           `).all() as Array<{
             id: string;
             autoArchiveKeep: number | null;
-            sessionMode: string;
-            targetSessionId: string | null;
             lastSessionId: string | null;
-            reuseLastRequiresExistingSession: number;
           }>;
           expect(rows).toEqual([
             {
               id: "reuse-last-schedule",
               autoArchiveKeep: null,
-              sessionMode: "new",
-              targetSessionId: null,
               lastSessionId: "last-session",
-              reuseLastRequiresExistingSession: 0,
             },
             {
               id: "reuse-target-schedule",
               autoArchiveKeep: null,
-              sessionMode: "new",
-              targetSessionId: null,
               lastSessionId: "target-session",
-              reuseLastRequiresExistingSession: 0,
             },
           ]);
-          const claims = migratedDb.prepare("SELECT COUNT(*) AS count FROM schedule_session_claims").get() as { count: number };
-          expect(claims.count).toBe(0);
-          migratedDb.prepare(`
-            INSERT INTO schedule_session_claims (sessionId, scheduleId, claimedAt, leaseExpiresAt)
-            VALUES (?, ?, ?, ?)
-          `).run("post-migration-claim", "reuse-last-schedule", now, "2026-01-01T00:02:00.000Z");
+
+          const scheduleColumns = (migratedDb.prepare("PRAGMA table_info(schedules)").all() as Array<{ name: string }>)
+            .map((column) => column.name);
+          expect(scheduleColumns).not.toContain("sessionMode");
+          expect(scheduleColumns).not.toContain("targetSessionId");
+          expect(scheduleColumns).not.toContain("reuseLastRequiresExistingSession");
+          expect(scheduleColumns).toContain("autoArchiveKeep");
+          const claimsTable = migratedDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedule_session_claims'").get();
+          expect(claimsTable).toBeUndefined();
+          const runs = migratedDb.prepare(`
+            SELECT scheduleId, sessionId
+            FROM schedule_runs
+            ORDER BY scheduleId, sessionId
+          `).all();
+          expect(runs).toEqual([
+            { scheduleId: "reuse-last-schedule", sessionId: "last-session" },
+            { scheduleId: "reuse-target-schedule", sessionId: "target-session" },
+          ]);
         } finally {
           migratedDb.close();
-        }
-
-        const reopenedDb = openDatabase(dataDir);
-        try {
-          const claims = reopenedDb.prepare("SELECT sessionId FROM schedule_session_claims").all() as Array<{ sessionId: string }>;
-          expect(claims.map((claim) => claim.sessionId)).toEqual(["post-migration-claim"]);
-        } finally {
-          reopenedDb.close();
         }
       } finally {
         rmSync(dataDir, { recursive: true, force: true });
@@ -393,23 +363,6 @@ describe("schedule-store", () => {
       });
     });
 
-    it("serializes reused-session claims across schedules until released", () => {
-      const first = store.createSchedule(baseCron);
-      const second = store.createSchedule({ ...baseCron, taskId: "task-2", name: "Other schedule" });
-
-      const firstClaim = store.claimSessionReuse("shared-session", first.id, "2026-01-01T08:00:00.000Z");
-      const secondClaim = store.claimSessionReuse("shared-session", second.id, "2026-01-01T08:00:01.000Z");
-      expect(firstClaim.acquired).toBe(true);
-      expect(secondClaim).toMatchObject({ acquired: false });
-      if (!firstClaim.acquired) {
-        throw new Error("expected first session reuse claim to be acquired");
-      }
-
-      expect(store.releaseClaimedSessionReuse("shared-session", firstClaim.claim)).toBe(true);
-      expect(store.claimSessionReuse("shared-session", second.id, "2026-01-01T08:00:02.000Z")).toMatchObject({
-        acquired: true,
-      });
-    });
   });
 
   describe("helpers", () => {

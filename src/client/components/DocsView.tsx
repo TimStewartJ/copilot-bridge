@@ -884,6 +884,7 @@ export default function DocsView() {
   const [creatingNew, setCreatingNew] = useState(false);
   const [newPagePath, setNewPagePath] = useState("");
   const [newPageContent, setNewPageContent] = useState("");
+  const [docError, setDocError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<DocSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -1087,6 +1088,7 @@ export default function DocsView() {
 
   const handleSave = useCallback(async () => {
     if (!selectedPath) return;
+    setDocError(null);
     try {
       await writeDocPage(selectedPath, editorContent);
       const nextPage = await fetchDocPage(selectedPath);
@@ -1094,12 +1096,14 @@ export default function DocsView() {
       setEditing(false);
     } catch (err) {
       console.error("Save failed:", err);
+      setDocError(err instanceof Error ? err.message : String(err));
     }
   }, [selectedPath, editorContent]);
 
   const handleDelete = useCallback(async () => {
     if (!selectedPath) return;
     if (!confirm("Delete this page?")) return;
+    setDocError(null);
     try {
       await deleteDocPage(selectedPath);
       setPage(null);
@@ -1107,6 +1111,7 @@ export default function DocsView() {
       navigate("/docs", { replace: true });
     } catch (err) {
       console.error("Delete failed:", err);
+      setDocError(err instanceof Error ? err.message : String(err));
     }
   }, [selectedPath, loadTree, navigate]);
 
@@ -1116,6 +1121,7 @@ export default function DocsView() {
 
   const handleCreateNew = useCallback(async () => {
     if (!newPagePath.trim()) return;
+    setDocError(null);
     try {
       await writeDocPage(newPagePath, newPageContent || "---\ntitle: New Page\n---\n\n");
       setCreatingNew(false);
@@ -1125,11 +1131,13 @@ export default function DocsView() {
       handleSelectNode(newPagePath);
     } catch (err) {
       console.error("Create failed:", err);
+      setDocError(err instanceof Error ? err.message : String(err));
     }
   }, [newPagePath, newPageContent, loadTree, handleSelectNode]);
 
   const startEdit = useCallback(() => {
     if (!page) return;
+    setDocError(null);
     const frontmatter = Object.keys(page.frontmatter).length
       ? `---\n${Object.entries(page.frontmatter)
           .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
@@ -1478,6 +1486,7 @@ export default function DocsView() {
   const openCreatePage = useCallback(() => {
     setCreatingNew(true);
     setEditing(false);
+    setDocError(null);
     setPage(null);
     setDbFolder(null);
     setNavigatorOpen(false);
@@ -1791,6 +1800,11 @@ export default function DocsView() {
           </div>
         </div>
         <div className="space-y-4 px-5 py-5">
+          {docError && (
+            <div className="rounded-2xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+              {docError}
+            </div>
+          )}
           <div>
             <label htmlFor={newPagePathInputId} className="mb-1 block text-xs font-medium uppercase tracking-wide text-text-faint">
               Page path
@@ -1851,6 +1865,11 @@ export default function DocsView() {
           </div>
         </div>
         <div className="space-y-4 px-5 py-5">
+          {docError && (
+            <div className="rounded-2xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+              {docError}
+            </div>
+          )}
           <label htmlFor={editorContentInputId} className="block text-xs font-medium uppercase tracking-wide text-text-faint">
             Markdown content
           </label>

@@ -37,7 +37,7 @@ The seeded demo opens into a fictional Acme launch workspace so the first-run ex
 - **Task workspace** - tasks, task groups, tags, notes, checklist items, linked sessions, linked work items, linked pull requests, and task dashboards.
 - **Persistent Copilot sessions** - quick chats and task-scoped chats with SSE streaming, tool call indicators, unread state, drafts, and archive support.
 - **Knowledge base** - markdown pages, wikilinks, preview sheets, and database-style collections for structured notes.
-- **Schedules** - cron or one-shot prompts that can create a fresh session or reuse an existing one.
+- **Schedules** - cron or one-shot prompts that create fresh task-linked sessions.
 - **Provider enrichment** - optional Azure DevOps, GitHub, and Linear integrations for richer work item and pull request cards.
 - **Tool-rich automation** - built-in task/doc/schedule tools, web search, browser fetch/exec/session tools, and optional computer-use tools.
 - **Workspace customization** - model, reasoning effort, agent identity, custom instructions, theme, favicon, and MCP server registry from the UI.

@@ -270,7 +270,7 @@ describe("Schedule routes", () => {
     expect(res.body.error).toMatch(/cron/);
   });
 
-  it("POST /api/schedules serializes new schedules without reuse fields", async () => {
+  it("POST /api/schedules creates a fresh-session schedule", async () => {
     const res = await request(app)
       .post("/api/schedules")
       .send({
@@ -282,9 +282,11 @@ describe("Schedule routes", () => {
       });
 
     expect(res.status).toBe(201);
-    expect(res.body).not.toHaveProperty("sessionMode");
-    expect(res.body).not.toHaveProperty("reuseSession");
-    expect(res.body).not.toHaveProperty("targetSessionId");
+    expect(res.body).toMatchObject({
+      taskId,
+      name: "Fresh schedule",
+      type: "cron",
+    });
   });
 
   it("POST /api/schedules accepts autoArchiveKeep", async () => {
@@ -320,38 +322,7 @@ describe("Schedule routes", () => {
     expect(res.body.error).toMatch(/autoArchiveKeep/);
   });
 
-  it("GET /api/schedules omits legacy reuse fields", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Legacy response",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    db.prepare(`
-      UPDATE schedules
-      SET sessionMode = 'reuse-last',
-          targetSessionId = 'target-session',
-          lastSessionId = 'last-session'
-      WHERE id = ?
-    `).run(schedule.id);
-
-    const res = await request(app).get("/api/schedules");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0]).toMatchObject({
-      id: schedule.id,
-      taskId,
-      name: "Legacy response",
-      lastSessionId: "last-session",
-    });
-    expect(res.body[0]).not.toHaveProperty("sessionMode");
-    expect(res.body[0]).not.toHaveProperty("reuseSession");
-    expect(res.body[0]).not.toHaveProperty("targetSessionId");
-  });
-
-  it("POST /api/schedules ignores legacy reuse input", async () => {
+  it("POST /api/schedules rejects unknown fields", async () => {
     const res = await request(app)
       .post("/api/schedules")
       .send({
@@ -360,22 +331,14 @@ describe("Schedule routes", () => {
         prompt: "Continue the conversation",
         type: "cron",
         cron: "0 0 * * *",
-        reuseSession: true,
-        sessionMode: "new",
-        targetSessionId: "linked-session",
+        unexpectedField: true,
       });
 
-    expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({
-      name: "Legacy reuse",
-      type: "cron",
-    });
-    expect(res.body).not.toHaveProperty("sessionMode");
-    expect(res.body).not.toHaveProperty("reuseSession");
-    expect(res.body).not.toHaveProperty("targetSessionId");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("unexpectedField");
   });
 
-  it("PATCH /api/schedules ignores legacy reuse input", async () => {
+  it("PATCH /api/schedules rejects unknown fields", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
       name: "Keep target",
@@ -388,36 +351,21 @@ describe("Schedule routes", () => {
       .patch(`/api/schedules/${schedule.id}`)
       .send({
         name: "Renamed",
-        sessionMode: "new",
-        reuseSession: false,
-        targetSessionId: "linked-session",
+        unexpectedField: false,
       });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      id: schedule.id,
-      name: "Renamed",
-    });
-    expect(res.body).not.toHaveProperty("sessionMode");
-    expect(res.body).not.toHaveProperty("reuseSession");
-    expect(res.body).not.toHaveProperty("targetSessionId");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("unexpectedField");
   });
 
-  it("PATCH /api/schedules serializes updated schedules without reuse fields", async () => {
+  it("PATCH /api/schedules updates schedules", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
-      name: "Legacy successful patch",
+      name: "Successful patch",
       prompt: "Continue the conversation",
       type: "cron",
       cron: "0 0 * * *",
     });
-    db.prepare(`
-      UPDATE schedules
-      SET sessionMode = 'reuse-last',
-          targetSessionId = 'target-session',
-          lastSessionId = 'last-session'
-      WHERE id = ?
-    `).run(schedule.id);
 
     const res = await request(app)
       .patch(`/api/schedules/${schedule.id}`)
@@ -427,11 +375,7 @@ describe("Schedule routes", () => {
     expect(res.body).toMatchObject({
       id: schedule.id,
       name: "Renamed schedule",
-      lastSessionId: "last-session",
     });
-    expect(res.body).not.toHaveProperty("sessionMode");
-    expect(res.body).not.toHaveProperty("reuseSession");
-    expect(res.body).not.toHaveProperty("targetSessionId");
   });
 
   it("PATCH /api/schedules applies autoArchiveKeep retention immediately", async () => {

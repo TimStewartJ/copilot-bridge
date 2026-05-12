@@ -253,6 +253,16 @@ function createProductionDataDir(): string {
       'app',
       '{"model":"gpt-5.5","reasoningEffort":"xhigh","theme":"dark","customInstructions":"keep me"}'
     );
+
+    CREATE TABLE mcp_servers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      config TEXT NOT NULL,
+      enabledByDefault INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX idx_mcp_servers_enabledByDefault ON mcp_servers(enabledByDefault);
   `);
   db.close();
 

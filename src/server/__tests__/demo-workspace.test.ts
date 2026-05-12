@@ -62,13 +62,6 @@ describe("demo workspace", () => {
 
       const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(reviewSchedule).toBeDefined();
-      expect(reviewSchedule?.sessionMode).toBe("new");
-      const reuseSeedRows = db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM schedules
-        WHERE sessionMode != 'new' OR targetSessionId IS NOT NULL
-      `).get() as { count: number };
-      expect(reuseSeedRows.count).toBe(0);
 
       const startHereDoc = docsStore.readPage("acme/start-here");
       expect(startHereDoc?.title).toBe("Start Here");
@@ -115,7 +108,7 @@ describe("demo workspace", () => {
       const reviewSchedule = scheduleStore.listSchedules().find((schedule) => schedule.name === "Friday launch review");
       expect(followUp?.enabled).toBe(true);
       expect(new Date(followUp!.runAt!).getTime()).toBeGreaterThan(Date.now());
-      expect(reviewSchedule?.sessionMode).toBe("new");
+      expect(reviewSchedule).toBeDefined();
       expect(settingsStore.getSettings().reasoningEffort).toBeUndefined();
     } finally {
       refreshedDb.close();

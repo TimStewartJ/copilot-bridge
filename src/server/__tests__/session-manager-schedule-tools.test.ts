@@ -8,7 +8,7 @@ describe("schedule tools", () => {
     scheduler.shutdown();
   });
 
-  it("ignores legacy reuse fields for schedule_create", async () => {
+  it("rejects unknown fields for schedule_create", async () => {
     const sessionManager = createMockSessionManager();
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
@@ -29,9 +29,7 @@ describe("schedule tools", () => {
         prompt: "continue working",
         type: "cron",
         cron: "0 0 * * *",
-        targetSessionId: "session-1",
-        sessionMode: "reuse-last",
-        reuseSession: true,
+        unexpectedField: true,
       },
       {
         sessionId: "session-1",
@@ -41,11 +39,12 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toMatchObject({ success: true });
-    expect(ctx.scheduleStore.listSchedules(task.id)).toHaveLength(1);
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect((result as any).textResultForLlm).toContain("unexpectedField");
+    expect(ctx.scheduleStore.listSchedules(task.id)).toHaveLength(0);
   });
 
-  it("ignores legacy reuse fields for schedule_update", async () => {
+  it("rejects unknown fields for schedule_update", async () => {
     const sessionManager = createMockSessionManager();
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
@@ -70,9 +69,7 @@ describe("schedule tools", () => {
       {
         scheduleId: schedule.id,
         name: "Retargeted name",
-        targetSessionId: "session-1",
-        sessionMode: "reuse-last",
-        reuseSession: false,
+        unexpectedField: false,
       },
       {
         sessionId: "session-1",
@@ -82,29 +79,22 @@ describe("schedule tools", () => {
       },
     );
 
-    expect(result).toMatchObject({ success: true });
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.name).toBe("Retargeted name");
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect((result as any).textResultForLlm).toContain("unexpectedField");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.name).toBe("Retarget me");
   });
 
-  it("omits legacy reuse fields from schedule_list results", async () => {
+  it("lists schedules with current schedule fields", async () => {
     const sessionManager = createMockSessionManager();
-    const { ctx, db } = createTestApp({ sessionManager });
+    const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Legacy metadata",
+      name: "Current metadata",
       prompt: "continue working",
       type: "cron",
       cron: "0 0 * * *",
     });
-    db.prepare(`
-      UPDATE schedules
-      SET sessionMode = 'reuse-last',
-          targetSessionId = 'target-session',
-          lastSessionId = 'last-session'
-      WHERE id = ?
-    `).run(schedule.id);
-
     const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_list");
     if (!tool) throw new Error("schedule_list tool not found");
 
@@ -122,11 +112,8 @@ describe("schedule tools", () => {
     expect(result.schedules[0]).toMatchObject({
       id: schedule.id,
       taskId: task.id,
-      name: "Legacy metadata",
+      name: "Current metadata",
     });
     expect(result.schedules[0]).not.toHaveProperty("sessionMode");
-    expect(result.schedules[0]).not.toHaveProperty("reuseSession");
-    expect(result.schedules[0]).not.toHaveProperty("targetSessionId");
-    expect(result.schedules[0]).not.toHaveProperty("lastSessionId");
   });
 });
