@@ -231,6 +231,34 @@ jobs:
           $notes = "release/preview-notes.md"
           $tag = $env:PREVIEW_POINTER_TAG
 
+          function Test-ReleaseAsset([string]$Tag, [string]$AssetName) {
+            $releaseJson = gh release view $Tag --json assets
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to read $Tag release assets."
+            }
+            $release = $releaseJson | ConvertFrom-Json
+            return @($release.assets | Where-Object { $_.name -eq $AssetName }).Count -gt 0
+          }
+
+          function Upload-ReleaseAsset([string]$Tag, [string]$Path, [string]$Description) {
+            $assetName = Split-Path -Leaf $Path
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              gh release upload $Tag $Path --clobber
+              if ($LASTEXITCODE -eq 0 -and (Test-ReleaseAsset $Tag $assetName)) {
+                return
+              }
+              if (Test-ReleaseAsset $Tag $assetName) {
+                Write-Warning "Upload of $Description reported failure, but $assetName exists on $Tag."
+                return
+              }
+              if ($attempt -lt 3) {
+                Write-Warning "Failed to upload $Description to $Tag on attempt $attempt. Retrying..."
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+            throw "Failed to upload $Description to $Tag."
+          }
+
           git tag -f $tag $env:GITHUB_SHA
           git push -f origin "refs/tags/$tag"
           if ($LASTEXITCODE -ne 0) {
@@ -248,28 +276,16 @@ jobs:
               throw "Failed to update $tag prerelease metadata."
             }
 
-            gh release upload $tag $aliasZip --clobber
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload $tag package alias."
-            }
-            gh release upload $tag $installer --clobber
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload $tag installer."
-            }
-            gh release upload $tag $manifest --clobber
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload $tag manifest."
-            }
-            gh release upload $tag $signature --clobber
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload $tag manifest signature."
-            }
+            Upload-ReleaseAsset $tag $aliasZip "package alias"
+            Upload-ReleaseAsset $tag $installer "installer"
+            Upload-ReleaseAsset $tag $signature "manifest signature"
+            Upload-ReleaseAsset $tag $manifest "manifest"
           } else {
             gh release create $tag `
               $aliasZip `
               $installer `
-              $manifest `
               $signature `
+              $manifest `
               --prerelease `
               --target $env:GITHUB_SHA `
               --title "Copilot Bridge Latest Preview" `
