@@ -145,6 +145,8 @@ The release boundary is intentional: app files can be replaced during updates, b
 
 Changing launcher-owned release settings after the release launcher is already running requires a full `stop.ps1` then `start.ps1`. This includes `BRIDGE_DATA_DIR`, tunnel/webhook settings such as `BRIDGE_ENABLE_TUNNEL`, `BRIDGE_TUNNEL_NAME`, and `BRIDGE_WEBHOOK_URL`, and launcher log paths. Server-child config values can be reloaded with `self_restart`.
 
+When `BRIDGE_TUNNEL_NAME` is not configured, source/dev mode still uses `copilot-bridge`, while release mode derives a stable per-install name such as `copilot-bridge-a1b2c3d4` from the user, machine, and release state path. Set `BRIDGE_TUNNEL_NAME` in the release `.env` if you want a specific tunnel name.
+
 To start the packaged release automatically when you sign in, run this from the extracted release root:
 
 ```powershell
