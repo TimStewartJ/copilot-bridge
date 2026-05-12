@@ -116,9 +116,30 @@ function Copy-ReleaseWrappers($SourceRoot, $DestinationRoot) {
   }
 }
 
+function Remove-PathWithRetry($Path, [int]$TimeoutSeconds = 30) {
+  if (-not (Test-Path $Path)) {
+    return
+  }
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $lastError = $null
+  do {
+    try {
+      Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+      return
+    } catch {
+      $lastError = $_.Exception.Message
+      if ((Get-Date) -ge $deadline) {
+        throw "Timed out waiting to remove $Path. Last error: $lastError"
+      }
+      Start-Sleep -Milliseconds 500
+    }
+  } while ($true)
+}
+
 function Reset-Directory($Path) {
   if (Test-Path $Path) {
-    Remove-Item -Path $Path -Recurse -Force
+    Remove-PathWithRetry $Path
   }
   New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
@@ -161,7 +182,7 @@ function Copy-DirectoryTree($SourcePath, $DestinationPath) {
     New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
   }
   if (Test-Path $DestinationPath) {
-    Remove-Item -Path $DestinationPath -Recurse -Force
+    Remove-PathWithRetry $DestinationPath
   }
 
   $robocopyCommand = Get-Command "robocopy.exe" -ErrorAction SilentlyContinue
@@ -187,7 +208,7 @@ function Copy-DirectoryTree($SourcePath, $DestinationPath) {
       Write-Warning "robocopy.exe failed with exit code $robocopyExitCode ($robocopyError). Falling back to Copy-Item."
     }
     if (Test-Path $DestinationPath) {
-      Remove-Item -Path $DestinationPath -Recurse -Force
+      Remove-PathWithRetry $DestinationPath
     }
   } else {
     Write-Warning "robocopy.exe was not found. Falling back to Copy-Item."
@@ -251,7 +272,7 @@ function Restore-BackupEntry($Entry) {
     return
   }
   if (Test-Path $Entry.Path) {
-    Remove-Item -Path $Entry.Path -Recurse -Force
+    Remove-PathWithRetry $Entry.Path
   }
   if ($Entry.ExistedBefore) {
     Copy-Item -Path $Entry.BackupPath -Destination $Entry.Path -Recurse -Force
@@ -412,7 +433,7 @@ try {
 
   Write-UpdateStatus "installing" "Copying new app files into place with robocopy when available."
   if (Test-Path $appDir) {
-    Remove-Item -Path $appDir -Recurse -Force
+    Remove-PathWithRetry $appDir
   }
   Copy-DirectoryTree $newApp $appDir
   Write-UpdateStatus "installing" "Refreshing release wrapper scripts."
@@ -435,29 +456,52 @@ try {
   Write-Output "Copilot Bridge updated. Backup: $backupDir"
 } catch {
   $updateError = $_.Exception.Message
+  $rollbackFailures = @()
+  function Add-RollbackFailure([string]$Step, $ErrorRecord) {
+    $message = "$Step failed: $($ErrorRecord.Exception.Message)"
+    $script:rollbackFailures += $message
+    Write-Warning $message
+  }
+
   if ($bridgeStopped) {
     $stopScript = Join-Path $installRoot "stop.ps1"
     if (Test-Path $stopScript) {
-      & $stopScript
-      Start-Sleep -Seconds 2
+      try {
+        & $stopScript
+        Start-Sleep -Seconds 2
+      } catch {
+        Add-RollbackFailure "Stopping failed update candidate during rollback" $_
+      }
     }
   }
 
   $appBackup = Join-Path $backupDir "app"
   if ($appBackedUp) {
-    if ($appExistedBefore -and -not (Test-Path $appBackup)) {
-      Write-Warning "Skipping app restore because its backup was not found at $appBackup."
-    } else {
+    try {
+      if ($appExistedBefore -and -not (Test-Path $appBackup)) {
+        throw "App backup was not found at $appBackup."
+      }
       if (Test-Path $appDir) {
-        Remove-Item -Path $appDir -Recurse -Force
+        Remove-PathWithRetry $appDir
       }
       if ($appExistedBefore) {
-        Copy-Item -Path $appBackup -Destination $appDir -Recurse -Force
+        Copy-DirectoryTree $appBackup $appDir
       }
+    } catch {
+      Add-RollbackFailure "Restoring previous app" $_
     }
   }
   Write-Warning "Preserving mutable data/config directories after failed update. Backup remains available at $backupDir."
-  Copy-ReleaseWrappers $backupDir $installRoot
+  try {
+    Copy-ReleaseWrappers $backupDir $installRoot
+  } catch {
+    Add-RollbackFailure "Restoring release wrapper scripts" $_
+  }
+  if ($rollbackFailures.Count -gt 0) {
+    $rollbackMessage = "$updateError Rollback failed: $($rollbackFailures -join '; ')"
+    Write-UpdateStatus "rollback_failed" $rollbackMessage $true
+    throw "Update failed: $rollbackMessage"
+  }
   if ($bridgeStopped) {
     $startScript = Join-Path $installRoot "start.ps1"
     if (Test-Path $startScript) {
