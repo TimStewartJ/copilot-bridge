@@ -1,7 +1,7 @@
 // Copilot SDK session manager
 // Universal tools — taskId is a parameter, same tools for every session
 
-import { CopilotClient, defineTool } from "@github/copilot-sdk";
+import { CopilotClient, defineTool, type CopilotClientOptions } from "@github/copilot-sdk";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -151,6 +151,27 @@ export type {
 
 // Universal tools — same instance for every session
 export { createBridgeTools } from "./bridge-tools.js";
+
+export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
+
+function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function buildCopilotClientOptions(
+  clientEnv?: Record<string, string | undefined>,
+): CopilotClientOptions | undefined {
+  const gitHubToken = normalizeOptionalEnvValue(
+    clientEnv?.[BRIDGE_COPILOT_GITHUB_TOKEN_ENV] ?? process.env[BRIDGE_COPILOT_GITHUB_TOKEN_ENV],
+  );
+  if (!clientEnv && !gitHubToken) return undefined;
+
+  return {
+    ...(clientEnv ? { env: clientEnv } : {}),
+    ...(gitHubToken ? { gitHubToken, useLoggedInUser: false } : {}),
+  };
+}
 
 function isMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -534,9 +555,7 @@ export class SessionManager {
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
     configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
-    this.client = new CopilotClient(
-      this.deps.clientEnv ? { env: this.deps.clientEnv } : undefined,
-    );
+    this.client = new CopilotClient(buildCopilotClientOptions(this.deps.clientEnv));
     await this.client.start();
     console.log("[sdk] Copilot SDK client ready");
     this.sweepLeakedDisposableTitleSessions();
