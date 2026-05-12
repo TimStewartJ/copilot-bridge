@@ -2,14 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
-import { SessionManager } from "../session-manager.js";
+import {
+  BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
+  buildCopilotClientOptions,
+  SessionManager,
+} from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
-import { setupTestDb, createTestBus } from "./helpers.js";
+import { setupTestDb, createTestBus, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
   const tempDirs: string[] = [];
@@ -18,6 +22,50 @@ describe("SessionManager session config", () => {
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("keeps default SDK auth discovery when no Bridge Copilot token is configured", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-client-options-"));
+    tempDirs.push(copilotHome);
+
+    await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: undefined }, () => {
+      expect(buildCopilotClientOptions()).toBeUndefined();
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
+        env: { COPILOT_HOME: copilotHome },
+      });
+    });
+  });
+
+  it("uses the Bridge Copilot token explicitly when configured", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-client-options-"));
+    tempDirs.push(copilotHome);
+
+    await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
+      expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
+        env: { COPILOT_HOME: copilotHome },
+        gitHubToken: "github_pat_bridge",
+        useLoggedInUser: false,
+      });
+    });
+  });
+
+  it("prefers the client environment Bridge token over process env", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-client-options-"));
+    tempDirs.push(copilotHome);
+
+    await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_process" }, () => {
+      expect(buildCopilotClientOptions({
+        COPILOT_HOME: copilotHome,
+        [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
+      })).toEqual({
+        env: {
+          COPILOT_HOME: copilotHome,
+          [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
+        },
+        gitHubToken: "github_pat_client",
+        useLoggedInUser: false,
+      });
+    });
   });
 
   it("injects research guidance into the default system message", () => {
