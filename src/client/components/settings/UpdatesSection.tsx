@@ -66,7 +66,7 @@ const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; descriptio
 const TERMINAL_INSTALL_PHASES = new Set<UpdateInstallPhase>(["succeeded", "failed", "rollback_failed"]);
 
 export function UpdatesSection() {
-  const [channel, setChannel] = useState<UpdateChannel>("stable");
+  const [channel, setChannel] = useState<UpdateChannel | null>(null);
   const [status, setStatus] = useState<UpdateCheckResponse | null>(null);
   const [installStatus, setInstallStatus] = useState<UpdateInstallStatus | null>(null);
   const [installLogTail, setInstallLogTail] = useState<string[]>([]);
@@ -75,8 +75,9 @@ export function UpdatesSection() {
   const [error, setError] = useState<string | null>(null);
   const installStatusRef = useRef<UpdateInstallStatus | null>(null);
   const refreshedCompletedInstallRef = useRef<string | null>(null);
+  const selectedChannel = channel ?? status?.channel ?? "stable";
 
-  const refresh = useCallback((selectedChannel = channel) => {
+  const refresh = useCallback((selectedChannel?: UpdateChannel) => {
     setLoading(true);
     setError(null);
     void fetchUpdateStatus(selectedChannel)
@@ -88,7 +89,7 @@ export function UpdatesSection() {
         setError(reason instanceof Error ? reason.message : String(reason));
       })
       .finally(() => setLoading(false));
-  }, [channel]);
+  }, []);
 
   const refreshInstallStatus = useCallback((quiet = false) => {
     void fetchUpdateInstallStatus()
@@ -124,8 +125,8 @@ export function UpdatesSection() {
     if (!installStatus || isInstallActive(installStatus)) return;
     if (refreshedCompletedInstallRef.current === installStatus.id) return;
     refreshedCompletedInstallRef.current = installStatus.id;
-    refresh(channel);
-  }, [channel, installStatus, refresh]);
+    refresh(selectedChannel);
+  }, [installStatus, refresh, selectedChannel]);
 
   const handleInstall = useCallback(() => {
     if (!status?.update) return;
@@ -134,7 +135,7 @@ export function UpdatesSection() {
     setInstalling(true);
     setError(null);
     setInstallLogTail([]);
-    void installUpdate(channel)
+    void installUpdate(selectedChannel)
       .then((value) => {
         setInstallStatus(value.install);
       })
@@ -142,7 +143,7 @@ export function UpdatesSection() {
         setError(reason instanceof Error ? reason.message : String(reason));
       })
       .finally(() => setInstalling(false));
-  }, [channel, status?.update]);
+  }, [selectedChannel, status?.update]);
 
   const activeInstall = isInstallActive(installStatus);
   const installCopy = installStatus ? INSTALL_PHASE_COPY[installStatus.phase] : null;
@@ -161,6 +162,7 @@ export function UpdatesSection() {
       : status?.status === "not_configured" || status?.status === "disabled"
         ? "text-warning"
         : "text-success";
+  const channelSelectionDisabled = activeInstall || status?.status === "disabled";
 
   return (
     <SettingsSection
@@ -169,7 +171,7 @@ export function UpdatesSection() {
       action={(
         <button
           type="button"
-          onClick={() => refresh(channel)}
+          onClick={() => refresh(selectedChannel)}
           disabled={loading}
           className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors inline-flex items-center gap-1.5"
         >
@@ -190,17 +192,17 @@ export function UpdatesSection() {
             </p>
           </div>
 
-          <label className="flex items-center gap-2 text-xs text-text-muted">
+          <label className={`flex items-center gap-2 text-xs ${channelSelectionDisabled ? "cursor-not-allowed text-text-faint" : "text-text-muted"}`}>
             Channel
             <select
-              value={channel}
-              disabled={activeInstall}
+              value={selectedChannel}
+              disabled={channelSelectionDisabled}
               onChange={(event) => {
                 const next = event.target.value as UpdateChannel;
                 setChannel(next);
                 refresh(next);
               }}
-              className="rounded-md border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+              className="rounded-md border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               <option value="stable">stable</option>
               <option value="preview">preview</option>

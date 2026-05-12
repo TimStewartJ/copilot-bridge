@@ -95,6 +95,36 @@ describe("update service", () => {
     expect(result.update?.version).toBe("0.2.0");
   });
 
+  it("defaults update checks to the installed release channel", async () => {
+    const keys = createKeyPair();
+    const manifest = manifestText("0.2.0-preview.1", {
+      channel: "preview",
+      package: {
+        name: "copilot-bridge-0.2.0-preview.1-preview-win-x64.zip",
+        url: "https://github.com/timstewartj/copilot-bridge/releases/download/preview-0.2.0-preview.1/copilot-bridge-0.2.0-preview.1-preview-win-x64.zip",
+        sha256: "a".repeat(64),
+        sizeBytes: 1024,
+      },
+    });
+    const runtimePaths = makeTestRuntimePaths("update-release-preview-default", { distributionMode: "release" });
+    const appRoot = writeReleaseAppRoot("0.1.0-preview.1", "preview");
+    const result = await checkForUpdate({
+      appRoot,
+      runtimePaths,
+      env: {
+        ...runtimePaths.env,
+        BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM: keys.publicPem,
+        BRIDGE_UPDATE_MANIFEST_PREVIEW_URL: "https://updates.example.test/preview-win-x64.manifest.json",
+      },
+      fetchImpl: fetchManifest(manifest, keys.signManifest(manifest)),
+    });
+
+    expect(result.channel).toBe("preview");
+    expect(result.current.channel).toBe("preview");
+    expect(result.status).toBe("update_available");
+    expect(result.update?.channel).toBe("preview");
+  });
+
   it("rejects a tampered manifest signature", async () => {
     const keys = createKeyPair();
     const originalManifest = manifestText("0.2.0");
