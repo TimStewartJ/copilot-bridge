@@ -31,7 +31,7 @@ import {
   type ReleaseFailureState,
   writeRestartState,
 } from "./server/restart-state.js";
-import { canUseDevtunnelCli, getDevtunnelCliStatus } from "./server/tunnel.js";
+import { canUseDevtunnelCli, getDevtunnelCliStatus, resolveBridgeTunnelName } from "./server/tunnel.js";
 import { resolveBridgeDistribution } from "./server/distribution-mode.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
@@ -96,7 +96,7 @@ const HEALTH_POLL_TIMEOUT = 5_000;
 const HEALTH_FAILURE_THRESHOLD = 2;
 
 // Notification config
-const TUNNEL_NAME = process.env.BRIDGE_TUNNEL_NAME || "copilot-bridge";
+const TUNNEL_NAME = resolveBridgeTunnelName(process.env);
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 
 const BUSY_CHECK_INTERVAL = 3_000;

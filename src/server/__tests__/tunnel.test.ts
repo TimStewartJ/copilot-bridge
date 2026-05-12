@@ -9,9 +9,16 @@ vi.mock("node:child_process", () => ({
 
 const ENV_KEYS = [
   "BRIDGE_PUBLIC_BASE_URL",
+  "BRIDGE_TUNNEL_NAME",
   "BRIDGE_TUNNEL_URL",
   "BRIDGE_TRUST_PROXY",
   "BRIDGE_ENABLE_TUNNEL",
+  "BRIDGE_DISTRIBUTION_MODE",
+  "BRIDGE_STATE_ROOT",
+  "BRIDGE_DATA_DIR",
+  "USERDOMAIN",
+  "USERNAME",
+  "COMPUTERNAME",
 ] as const;
 
 async function loadTunnelModule(env: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {}) {
@@ -29,6 +36,47 @@ afterEach(() => {
 });
 
 describe("public URL helpers", () => {
+  it("keeps the shared tunnel name in development mode", async () => {
+    const tunnel = await loadTunnelModule({
+      BRIDGE_DISTRIBUTION_MODE: "development",
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\CopilotBridge\\data",
+    });
+
+    expect(tunnel.resolveBridgeTunnelName(process.env)).toBe("copilot-bridge");
+  });
+
+  it("uses a deterministic per-install tunnel name in release mode", async () => {
+    const tunnel = await loadTunnelModule({
+      BRIDGE_DISTRIBUTION_MODE: "release",
+      USERDOMAIN: "CONTOSO",
+      USERNAME: "ada",
+      COMPUTERNAME: "ADA-PC",
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\CopilotBridge\\data",
+    });
+
+    const first = tunnel.resolveBridgeTunnelName(process.env);
+    const second = tunnel.resolveBridgeTunnelName(process.env);
+    const differentStateRoot = tunnel.resolveBridgeTunnelName({
+      ...process.env,
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\OtherBridge\\data",
+    });
+
+    expect(first).toMatch(/^copilot-bridge-[a-f0-9]{8}$/);
+    expect(second).toBe(first);
+    expect(differentStateRoot).toMatch(/^copilot-bridge-[a-f0-9]{8}$/);
+    expect(differentStateRoot).not.toBe(first);
+  });
+
+  it("lets explicit tunnel names override release defaults", async () => {
+    const tunnel = await loadTunnelModule({
+      BRIDGE_DISTRIBUTION_MODE: "release",
+      BRIDGE_TUNNEL_NAME: "tim-bridge",
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\CopilotBridge\\data",
+    });
+
+    expect(tunnel.resolveBridgeTunnelName(process.env)).toBe("tim-bridge");
+  });
+
   it("builds preview URLs from an explicit public base URL", async () => {
     const tunnel = await loadTunnelModule({
       BRIDGE_PUBLIC_BASE_URL: "https://bridge.example.com/base/",
@@ -173,6 +221,26 @@ describe("public URL helpers", () => {
     expect(tunnel.canUseDevtunnelCli()).toBe(false);
     expect(tunnel.discoverTunnelUrl()).toBeUndefined();
     expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the deterministic release tunnel name for devtunnel discovery", async () => {
+    execSyncMock.mockImplementation((command: string) => {
+      if (command.includes("devtunnel show")) {
+        return "Connect via browser: https://generated.devtunnels.ms";
+      }
+      return testExecutablePath("devtunnel");
+    });
+    const tunnel = await loadTunnelModule({
+      BRIDGE_DISTRIBUTION_MODE: "release",
+      USERDOMAIN: "CONTOSO",
+      USERNAME: "ada",
+      COMPUTERNAME: "ADA-PC",
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\CopilotBridge\\data",
+    });
+
+    expect(tunnel.discoverTunnelUrl()).toBe("https://generated.devtunnels.ms");
+    const showCall = execSyncMock.mock.calls.find(([command]) => String(command).startsWith("devtunnel show"));
+    expect(showCall?.[0]).toMatch(/^devtunnel show copilot-bridge-[a-f0-9]{8}$/);
   });
 
   it("reports missing devtunnel binary as unavailable", async () => {

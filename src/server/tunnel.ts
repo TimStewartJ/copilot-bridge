@@ -2,13 +2,17 @@
 // and staging tools. These are pure utilities with no restart or checkpoint logic.
 
 import { execSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { hostname, userInfo } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Request } from "express";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
-const TUNNEL_NAME = process.env.BRIDGE_TUNNEL_NAME || "copilot-bridge";
+const DEFAULT_TUNNEL_NAME = "copilot-bridge";
+const TUNNEL_NAME_HASH_LENGTH = 8;
+const TUNNEL_NAME = resolveBridgeTunnelName(process.env);
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 const PUBLIC_BASE_URL = normalizeBaseUrl(process.env.BRIDGE_PUBLIC_BASE_URL);
 const ENV_TUNNEL_URL = normalizeBaseUrl(process.env.BRIDGE_TUNNEL_URL);
@@ -20,6 +24,61 @@ let cachedDevtunnelAvailable: boolean | undefined;
 
 function isTunnelEnabled(): boolean {
   return !/^(0|false|no|off)$/i.test(process.env.BRIDGE_ENABLE_TUNNEL || "");
+}
+
+function optionalEnvValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function isReleaseMode(env: NodeJS.ProcessEnv): boolean {
+  const mode = optionalEnvValue(env.BRIDGE_DISTRIBUTION_MODE)?.toLowerCase();
+  return mode === "release" || mode === "packaged";
+}
+
+function safeUserName(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return "";
+  }
+}
+
+function releaseStateRootIdentity(env: NodeJS.ProcessEnv): string {
+  const stateRoot = optionalEnvValue(env.BRIDGE_STATE_ROOT);
+  if (stateRoot) {
+    return resolve(stateRoot);
+  }
+  const dataDir = optionalEnvValue(env.BRIDGE_DATA_DIR);
+  if (!dataDir) {
+    return "";
+  }
+  const resolvedDataDir = resolve(dataDir);
+  return basename(resolvedDataDir).toLowerCase() === "data" ? dirname(resolvedDataDir) : resolvedDataDir;
+}
+
+function normalizeTunnelIdentityPart(value: string | undefined): string {
+  const trimmed = optionalEnvValue(value) ?? "";
+  return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+}
+
+export function resolveBridgeTunnelName(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = optionalEnvValue(env.BRIDGE_TUNNEL_NAME);
+  if (configured) {
+    return configured;
+  }
+  if (!isReleaseMode(env)) {
+    return DEFAULT_TUNNEL_NAME;
+  }
+
+  const identity = [
+    env.USERDOMAIN,
+    env.USERNAME ?? env.USER ?? safeUserName(),
+    env.COMPUTERNAME ?? hostname(),
+    releaseStateRootIdentity(env),
+  ].map(normalizeTunnelIdentityPart).join("|");
+  const suffix = createHash("sha256").update(identity).digest("hex").slice(0, TUNNEL_NAME_HASH_LENGTH);
+  return `${DEFAULT_TUNNEL_NAME}-${suffix}`;
 }
 
 function firstForwardedValue(value: string | string[] | undefined): string | undefined {
