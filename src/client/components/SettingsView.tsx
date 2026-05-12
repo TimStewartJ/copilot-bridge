@@ -286,6 +286,7 @@ export default function SettingsView() {
 
           <div className="min-w-0">
             <CategoryPanel category="general" activeCategory={activeCategory}>
+              <UpdatesSection />
               <SystemPromptSection draft={draft} setDraft={setDraft} />
               <ModelSection draft={draft} setDraft={setDraft} />
               <ReasoningEffortSection draft={draft} setDraft={setDraft} />
@@ -303,7 +304,6 @@ export default function SettingsView() {
             </CategoryPanel>
 
             <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
-              <UpdatesSection />
               <BridgeCommitsSection />
               <CopilotUsageSection />
               <VoiceInputSection />
