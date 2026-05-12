@@ -39,4 +39,40 @@ describe("release scripts", () => {
     expect(script).toContain("$stoppedProcessIds");
     expect(script).toContain("Timed out waiting for stopped Bridge process IDs to exit");
   });
+
+  it("bootstraps preview installs from a signed manifest and verified package", () => {
+    const script = readFileSync(join(process.cwd(), "scripts", "install-preview.ps1"), "utf-8");
+
+    expect(script).toContain("latest-preview/preview-win-x64.manifest.json");
+    expect(script).toContain("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__");
+    expect(script).toContain("createPublicKey");
+    expect(script).toContain("verify(null, manifest, publicKey, signature)");
+    expect(script).toContain("Downloaded package SHA256 mismatch");
+    expect(script).toContain('Resolve-CommandPath "tar.exe"');
+    expect(script).toContain("Expand-Archive -Path $PackagePath");
+    expect(script).toContain('Join-Path $env:LOCALAPPDATA "Programs\\CopilotBridge"');
+    expect(script).toContain('Join-Path $env:LOCALAPPDATA "CopilotBridge"');
+    expect(script).toContain("Set-Content -Path (Join-Path $InstallRoot \".bridge-state-root\")");
+    expect(script).toContain("& (Join-Path $InstallRoot \"stop.ps1\")");
+    expect(script).toContain("& (Join-Path $InstallRoot \"start.ps1\")");
+  });
+
+  it("publishes latest-preview installer and package alias assets", () => {
+    const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "preview.yml"), "utf-8");
+
+    expect(workflow).toContain("Prepare latest preview aliases");
+    expect(workflow).toContain("release/copilot-bridge-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip");
+    expect(workflow).toContain("release/install-preview.ps1");
+    expect(workflow).toContain('$installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem)');
+
+    const pointerStep = workflow.slice(workflow.indexOf("Publish latest preview pointer"));
+    const aliasUpload = pointerStep.indexOf("gh release upload $tag $aliasZip --clobber");
+    const installerUpload = pointerStep.indexOf("gh release upload $tag $installer --clobber");
+    const manifestUpload = pointerStep.indexOf("gh release upload $tag $manifest --clobber");
+    const signatureUpload = pointerStep.indexOf("gh release upload $tag $signature --clobber");
+    expect(aliasUpload).toBeGreaterThanOrEqual(0);
+    expect(installerUpload).toBeGreaterThan(aliasUpload);
+    expect(manifestUpload).toBeGreaterThan(installerUpload);
+    expect(signatureUpload).toBeGreaterThan(manifestUpload);
+  });
 });
