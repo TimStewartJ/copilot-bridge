@@ -14,6 +14,7 @@ $ErrorActionPreference = "Stop"
 $embeddedManifestPublicKeyPem = @'
 __BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__
 '@
+$embeddedManifestPublicKeyPlaceholder = "__BRIDGE_UPDATE_MANIFEST_" + "PUBLIC_KEY_PEM__"
 
 try {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -85,23 +86,6 @@ function Remove-PathWithRetry($Path, [int]$TimeoutSeconds = 30) {
   } while ((Get-Date) -lt $deadline)
 
   throw "Timed out waiting to remove $Path. Last error: $($lastError.Exception.Message)"
-}
-
-function Resolve-ManifestPublicKeyPem {
-  if (-not [string]::IsNullOrWhiteSpace($ManifestPublicKeyPem)) {
-    return $ManifestPublicKeyPem
-  }
-  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM)) {
-    return $env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM
-  }
-  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64)) {
-    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64.Trim()))
-  }
-  $embedded = $embeddedManifestPublicKeyPem.Trim()
-  if (-not [string]::IsNullOrWhiteSpace($embedded) -and $embedded -ne "__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__") {
-    return $embedded
-  }
-  throw "The update manifest public key is not embedded in this installer. Download the published install-preview.ps1 asset or set BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM."
 }
 
 function Resolve-CommandPath($CommandName) {
@@ -197,11 +181,11 @@ function Test-BridgeReleaseRoot($ReleaseRoot) {
     (Test-Path (Join-Path $ReleaseRoot "app\.bridge-release.json"))
 }
 
-function Assert-ExistingInstallRootCanBeReplaced($Path) {
+function Assert-ExistingInstallRootCanBeReplaced($Path, [bool]$AllowReplace) {
   if (-not (Test-Path $Path)) {
     return
   }
-  if ($Force -or (Test-BridgeReleaseRoot $Path) -or (Test-Path (Join-Path $Path ".bridge-install.json"))) {
+  if ($AllowReplace -or (Test-BridgeReleaseRoot $Path) -or (Test-Path (Join-Path $Path ".bridge-install.json"))) {
     return
   }
   throw "InstallRoot already exists but does not look like a Copilot Bridge install: $Path. Choose another -InstallRoot or pass -Force."
@@ -264,7 +248,19 @@ Assert-AbsolutePath "InstallRoot" $InstallRoot
 Assert-AbsolutePath "StateRoot" $StateRoot
 
 $nodePath = Resolve-NodePath
-$publicKeyPem = Resolve-ManifestPublicKeyPem
+if (-not [string]::IsNullOrWhiteSpace($ManifestPublicKeyPem)) {
+  $publicKeyPem = $ManifestPublicKeyPem
+} elseif (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM)) {
+  $publicKeyPem = $env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM
+} elseif (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64)) {
+  $publicKeyPem = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_BASE64.Trim()))
+} else {
+  $embedded = $embeddedManifestPublicKeyPem.Trim()
+  if ([string]::IsNullOrWhiteSpace($embedded) -or $embedded -eq $embeddedManifestPublicKeyPlaceholder) {
+    throw "The update manifest public key is not embedded in this installer. Download the published install-preview.ps1 asset or set BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM."
+  }
+  $publicKeyPem = $embedded
+}
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "copilot-bridge-install-$timestamp-$PID"
 $manifestPath = Join-Path $tempDir "manifest.json"
@@ -318,7 +314,7 @@ try {
   }
   Invoke-UnblockTree $extractedReleaseRoot
 
-  Assert-ExistingInstallRootCanBeReplaced $InstallRoot
+  Assert-ExistingInstallRootCanBeReplaced $InstallRoot ([bool]$Force)
   $storedStateRoot = Get-StoredStateRoot $stateRootFile
   Assert-StateRootDoesNotSwitch $storedStateRoot $StateRoot $stateRootFile
 

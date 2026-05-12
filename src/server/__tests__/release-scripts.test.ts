@@ -27,6 +27,13 @@ describe("release scripts", () => {
     expect(script).toContain("$global:LASTEXITCODE = 0");
   });
 
+  it("forces packaged starts to release mode instead of inheriting dev mode", () => {
+    const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
+
+    expect(script).toContain('Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"');
+    expect(script).not.toContain('Set-DefaultEnv "BRIDGE_DISTRIBUTION_MODE" "release"');
+  });
+
   it("does not stop the active updater when stopping release processes", () => {
     const script = readFileSync(join(process.cwd(), "scripts", "stop-release.ps1"), "utf-8");
 
@@ -47,6 +54,8 @@ describe("release scripts", () => {
     expect(script).toContain("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__");
     expect(script).toContain("createPublicKey");
     expect(script).toContain("verify(null, manifest, publicKey, signature)");
+    expect(script).toContain('$embeddedManifestPublicKeyPlaceholder = "__BRIDGE_UPDATE_MANIFEST_" + "PUBLIC_KEY_PEM__"');
+    expect(script).toContain("$embedded = $embeddedManifestPublicKeyPem.Trim()");
     expect(script).toContain("Downloaded package SHA256 mismatch");
     expect(script).toContain('Resolve-CommandPath "tar.exe"');
     expect(script).toContain("Expand-Archive -Path $PackagePath");

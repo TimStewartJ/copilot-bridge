@@ -68,7 +68,7 @@ if (-not (Test-Path $envFile)) {
 Import-BridgeEnvFile $envFile
 Set-Item -Path "Env:BRIDGE_ENV_FILE" -Value $envFile
 
-Set-DefaultEnv "BRIDGE_DISTRIBUTION_MODE" "release"
+Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"
 Set-DefaultEnv "BRIDGE_DATA_DIR" $defaultDataDir
 $effectiveDataDir = (Get-Item -Path "Env:BRIDGE_DATA_DIR").Value
 Set-DefaultEnv "BRIDGE_DOCS_DIR" (Join-Path $effectiveDataDir "docs")
