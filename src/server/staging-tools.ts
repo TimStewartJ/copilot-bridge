@@ -36,6 +36,7 @@ import {
 } from "./validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
+import { createSettingsStore } from "./settings-store.js";
 import type express from "express";
 import type { RequestHandler } from "express";
 
@@ -341,38 +342,14 @@ function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
 }
 
 function forceStagingModelSettings(dbPath: string): void {
-  const settingsRowSql = "SELECT value FROM settings WHERE key = 'app'";
   let stagingDb: DatabaseSync | null = null;
   try {
     stagingDb = new DatabaseSync(dbPath);
     stagingDb.exec("PRAGMA journal_mode = WAL");
-    stagingDb.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    `);
-
-    const row = stagingDb.prepare(settingsRowSql).get() as { value?: string } | undefined;
-    let settings: Record<string, unknown> = {};
-    if (row?.value) {
-      try {
-        const parsed = JSON.parse(row.value) as unknown;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          settings = parsed as Record<string, unknown>;
-        } else {
-          log("Warning: staging settings row was not a JSON object; replacing with staging model settings");
-        }
-      } catch (err) {
-        log(`Warning: could not parse staging settings JSON; replacing with staging model settings: ${err}`);
-      }
-    }
-
-    const nextSettings: Record<string, unknown> = { ...settings, model: STAGING_PREVIEW_MODEL };
-    delete nextSettings.reasoningEffort;
-    stagingDb.prepare(
-      "INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    ).run(JSON.stringify(nextSettings));
+    createSettingsStore(stagingDb).updateSettings({
+      model: STAGING_PREVIEW_MODEL,
+      reasoningEffort: undefined,
+    });
   } finally {
     if (stagingDb) {
       stagingDb.close();

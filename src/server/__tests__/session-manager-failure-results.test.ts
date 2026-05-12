@@ -140,6 +140,16 @@ Original body
     expect(ctx.docsStore!.readPage("notes/tagged-edit-with-description")?.body).toBe("Updated body");
   });
 
+  it("rejects docs_delete for database entries", async () => {
+    const { ctx } = createTestApp();
+    const docsDeleteTool = getTool(ctx, "docs_delete");
+    ctx.docsStore!.writeSchema("incidents", { name: "Incidents", fields: [] });
+    const entry = ctx.docsStore!.addDbEntry("incidents", { title: "Database entry" });
+
+    await expect(docsDeleteTool.handler({ path: entry.path }, createInvocation("docs_delete")))
+      .resolves.toEqual(toolFailure(`"${entry.path}" is a database entry. Use docs_db_delete with { folder, slug } to remove it.`));
+  });
+
   it("supports docs snapshot tools and requires restore confirmation", async () => {
     const { ctx } = createTestApp();
     const createTool = getTool(ctx, "docs_snapshot_create");

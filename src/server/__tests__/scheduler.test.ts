@@ -296,8 +296,8 @@ describe("scheduler restart gating", () => {
     expect(ctx.sessionMetaStore.getMeta("sched-session")).toBeUndefined();
   });
 
-  it("creates a fresh session even for schedules with legacy reuse metadata", async () => {
-    const { ctx, db } = createTestApp();
+  it("creates a fresh session even when a schedule has previous run metadata", async () => {
+    const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockImplementation((sessionId: string) => sessionId === "last-session"),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
@@ -316,18 +316,12 @@ describe("scheduler restart gating", () => {
     ctx.taskStore.linkSession(task.id, "last-session");
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Legacy reused schedule",
+      name: "Schedule with prior run",
       prompt: "continue work",
       type: "cron",
       cron: "0 0 * * *",
     });
-    db.prepare(`
-      UPDATE schedules
-      SET sessionMode = 'reuse-last',
-          lastSessionId = 'last-session',
-          reuseLastRequiresExistingSession = 1
-      WHERE id = ?
-    `).run(schedule.id);
+    ctx.scheduleStore.recordRun(schedule.id, "last-session");
 
     const result = await scheduler.triggerSchedule(schedule.id);
 
@@ -339,7 +333,7 @@ describe("scheduler restart gating", () => {
     expect(ctx.sessionMetaStore.getMeta("new-session")).toMatchObject({
       triggeredBy: "schedule",
       scheduleId: schedule.id,
-      scheduleName: "Legacy reused schedule",
+      scheduleName: "Schedule with prior run",
     });
   });
 
@@ -537,11 +531,11 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("creates a fresh session for one-shot schedules with legacy reuse metadata", async () => {
+  it("creates a fresh session for one-shot schedules", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx, db } = createTestApp();
+    const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(true),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "fresh-one-shot-session" }),
@@ -561,13 +555,11 @@ describe("scheduler restart gating", () => {
     const runAt = new Date().toISOString();
     const schedule = ctx.scheduleStore.createSchedule({
       taskId: task.id,
-      name: "Legacy one-shot",
+      name: "One-shot",
       prompt: "continue work",
       type: "once",
       runAt,
     });
-    db.prepare("UPDATE schedules SET sessionMode = ?, lastSessionId = ? WHERE id = ?")
-      .run("reuse-last", "target-session", schedule.id);
 
     expect(
       await scheduler.triggerSchedule(schedule.id, { source: "once", scheduledFor: runAt }),

@@ -3,7 +3,7 @@ import { basename, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schedulerModule from "../scheduler.js";
 import { enforceScheduleSessionRetention } from "../schedule-session-retention.js";
-import { normalizeScheduleAutoArchiveKeep } from "../schedule-validation.js";
+import { findUnknownFields, formatUnknownFieldsError, normalizeScheduleAutoArchiveKeep } from "../schedule-validation.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTask } from "./helpers.js";
@@ -60,6 +60,36 @@ async function enforceRetentionForSchedule(ctx: AppContext, schedule: Parameters
   }
 }
 
+const SCHEDULE_CREATE_FIELDS = [
+  "taskId",
+  "name",
+  "prompt",
+  "type",
+  "cron",
+  "runAt",
+  "timezone",
+  "maxRuns",
+  "expiresAt",
+  "autoArchiveKeep",
+] as const;
+const SCHEDULE_UPDATE_FIELDS = [
+  "scheduleId",
+  "name",
+  "prompt",
+  "cron",
+  "runAt",
+  "timezone",
+  "enabled",
+  "maxRuns",
+  "expiresAt",
+  "autoArchiveKeep",
+] as const;
+
+function rejectUnknownFields(args: unknown, allowedFields: readonly string[]) {
+  const unknownFields = findUnknownFields(args, allowedFields);
+  return unknownFields.length > 0 ? toolFailure(formatUnknownFieldsError(unknownFields)) : undefined;
+}
+
 export function createScheduleTools(ctx: AppContext) {
   return [
   defineTool("schedule_create", {
@@ -81,6 +111,8 @@ export function createScheduleTools(ctx: AppContext) {
       required: ["taskId", "name", "prompt", "type"],
     },
     handler: async (args: any) => {
+      const unknownFieldFailure = rejectUnknownFields(args, SCHEDULE_CREATE_FIELDS);
+      if (unknownFieldFailure) return unknownFieldFailure;
       if (args.type === "cron" && !args.cron) return toolFailure("cron expression is required for cron schedules");
       if (args.type === "once" && !args.runAt) return toolFailure("runAt is required for one-shot schedules");
       const scheduler = getScheduler(ctx);
@@ -136,6 +168,8 @@ export function createScheduleTools(ctx: AppContext) {
       required: ["scheduleId"],
     },
     handler: async (args: any) => {
+      const unknownFieldFailure = rejectUnknownFields(args, SCHEDULE_UPDATE_FIELDS);
+      if (unknownFieldFailure) return unknownFieldFailure;
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       const scheduler = getScheduler(ctx);

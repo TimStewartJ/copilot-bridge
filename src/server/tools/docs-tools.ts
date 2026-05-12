@@ -203,14 +203,9 @@ export function createDocsTools(ctx: AppContext) {
       handler: async (args: any) => {
         try {
           const pagePath: string = args.path;
-          const page = ctx.docsStore!.readUserPage(pagePath);
-          const canonicalPath = page?.path ?? pagePath;
-          if (page) {
-            createPreDeleteSnapshot(ctx);
-          }
-          const deleted = ctx.docsStore!.deleteUserPage(pagePath);
-          if (deleted) ctx.docsIndex!.removePage(canonicalPath);
-          return { path: canonicalPath, deleted };
+          const result = ctx.docsStore!.deleteUserPage(pagePath, () => createPreDeleteSnapshot(ctx));
+          if (result.deleted) ctx.docsIndex!.removePage(result.path);
+          return result;
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }

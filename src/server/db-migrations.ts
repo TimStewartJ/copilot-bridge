@@ -10,6 +10,7 @@ import {
 // fallback, staging preview context fallbacks, and attachment blob handling.
 const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
 const BRIDGE_SESSION_STATE_LEGACY_BACKFILL = "bridge_session_state_legacy_backfill_v1";
+const SCHEDULE_REUSE_COLUMNS_DROP = "schedule-reuse-columns-drop-v1";
 const SCHEDULE_RUNS_LEGACY_BACKFILL = "schedule_runs_legacy_backfill_v1";
 
 type DatabaseMigrationCategory =
@@ -390,46 +391,107 @@ function backfillBridgeSessionState(db: DatabaseSync): void {
   }
 }
 
-function ensureLegacyScheduleReuseColumns(db: DatabaseSync): void {
-  const scheduleCols = db.prepare("PRAGMA table_info(schedules)").all() as any[];
-  if (!scheduleCols.some((c: any) => c.name === "sessionMode")) {
-    db.exec("ALTER TABLE schedules ADD COLUMN sessionMode TEXT NOT NULL DEFAULT 'new'");
-    if (scheduleCols.some((c: any) => c.name === "reuseSession")) {
-      db.exec("UPDATE schedules SET sessionMode = CASE WHEN reuseSession = 1 THEN 'reuse-last' ELSE 'new' END");
-    }
-  }
-  if (!scheduleCols.some((c: any) => c.name === "targetSessionId")) {
-    db.exec("ALTER TABLE schedules ADD COLUMN targetSessionId TEXT");
-  }
-  if (!scheduleCols.some((c: any) => c.name === "reuseLastRequiresExistingSession")) {
-    db.exec("ALTER TABLE schedules ADD COLUMN reuseLastRequiresExistingSession INTEGER NOT NULL DEFAULT 0");
-  }
+function ensureScheduleAutoArchiveKeepColumn(db: DatabaseSync): void {
+  const scheduleCols = getTableInfo(db, "schedules");
   if (!scheduleCols.some((c: any) => c.name === "autoArchiveKeep")) {
     db.exec("ALTER TABLE schedules ADD COLUMN autoArchiveKeep INTEGER");
   }
 }
 
-function finalizeLegacyScheduleReuseState(db: DatabaseSync): void {
-  db.exec(`
-    UPDATE schedules
-    SET sessionMode = 'reuse-last',
-        lastSessionId = targetSessionId,
-        reuseLastRequiresExistingSession = 1,
-        targetSessionId = NULL
-    WHERE sessionMode = 'reuse-target';
-  `);
+function scheduleColumnExpr(cols: any[], name: string, fallback: string): string {
+  return cols.some((c: any) => c.name === name) ? name : fallback;
+}
 
+function backfillScheduleRunsFromScheduleColumn(db: DatabaseSync, columnName: string): void {
   db.exec(`
-    UPDATE schedules
-    SET sessionMode = 'new',
-        targetSessionId = NULL,
-        reuseLastRequiresExistingSession = 0
-    WHERE sessionMode != 'new'
-       OR targetSessionId IS NOT NULL
-       OR reuseLastRequiresExistingSession != 0;
-
-    DELETE FROM schedule_session_claims;
+    INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt)
+    SELECT s.id, s.${columnName}, COALESCE(NULLIF(s.lastRunAt, ''), NULLIF(s.updatedAt, ''), NULLIF(s.createdAt, ''), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    FROM schedules s
+    WHERE s.${columnName} IS NOT NULL
+      AND s.${columnName} != ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM schedule_runs sr
+        WHERE sr.scheduleId = s.id AND sr.sessionId = s.${columnName}
+      );
   `);
+}
+
+function dropScheduleReuseState(db: DatabaseSync): void {
+  if (!sqliteTableExists(db, "schedules")) return;
+
+  const scheduleCols = getTableInfo(db, "schedules");
+  const hasColumn = (name: string) => scheduleCols.some((c: any) => c.name === name);
+  const hasReuseColumns = ["sessionMode", "targetSessionId", "reuseLastRequiresExistingSession", "reuseSession"]
+    .some(hasColumn);
+
+  if (hasColumn("targetSessionId")) {
+    backfillScheduleRunsFromScheduleColumn(db, "targetSessionId");
+  }
+  if (hasColumn("lastSessionId")) {
+    backfillScheduleRunsFromScheduleColumn(db, "lastSessionId");
+  }
+
+  if (hasReuseColumns) {
+    const lastSessionExpr = hasColumn("lastSessionId") && hasColumn("targetSessionId")
+      ? "COALESCE(lastSessionId, targetSessionId)"
+      : scheduleColumnExpr(scheduleCols, "lastSessionId", scheduleColumnExpr(scheduleCols, "targetSessionId", "NULL"));
+
+    db.exec(`
+      CREATE TABLE schedules_new (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        name TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        type TEXT NOT NULL,
+        cron TEXT,
+        runAt TEXT,
+        timezone TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        lastSessionId TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastRunAt TEXT,
+        nextRunAt TEXT,
+        runCount INTEGER NOT NULL DEFAULT 0,
+        maxRuns INTEGER,
+        expiresAt TEXT,
+        autoArchiveKeep INTEGER
+      );
+
+      INSERT INTO schedules_new (
+        id, taskId, name, prompt, type, cron, runAt, timezone, enabled, lastSessionId,
+        createdAt, updatedAt, lastRunAt, nextRunAt, runCount, maxRuns, expiresAt, autoArchiveKeep
+      )
+      SELECT
+        id,
+        taskId,
+        name,
+        prompt,
+        type,
+        ${scheduleColumnExpr(scheduleCols, "cron", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "runAt", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "timezone", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "enabled", "1")},
+        ${lastSessionExpr},
+        ${scheduleColumnExpr(scheduleCols, "createdAt", "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")},
+        ${scheduleColumnExpr(scheduleCols, "updatedAt", "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")},
+        ${scheduleColumnExpr(scheduleCols, "lastRunAt", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "nextRunAt", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "runCount", "0")},
+        ${scheduleColumnExpr(scheduleCols, "maxRuns", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "expiresAt", "NULL")},
+        ${scheduleColumnExpr(scheduleCols, "autoArchiveKeep", "NULL")}
+      FROM schedules;
+
+      DROP TABLE schedules;
+      ALTER TABLE schedules_new RENAME TO schedules;
+      CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
+      CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+    `);
+  }
+
+  db.exec("DROP TABLE IF EXISTS schedule_session_claims");
 }
 
 function backfillScheduleRuns(db: DatabaseSync): void {
@@ -634,18 +696,18 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     apply: backfillBridgeSessionState,
   },
   {
-    id: "schedule-reuse-fields-normalization",
+    id: "schedule-auto-archive-keep-column",
     category: "schema-upgrade",
     runMode: "every-open",
-    description: "Add former schedule reuse columns when needed so legacy databases remain readable.",
-    apply: ensureLegacyScheduleReuseColumns,
+    description: "Add schedule autoArchiveKeep to legacy schedules tables.",
+    apply: ensureScheduleAutoArchiveKeepColumn,
   },
   {
-    id: "schedule-reuse-final-new-session-normalization-v1",
-    category: "data-repair",
+    id: SCHEDULE_REUSE_COLUMNS_DROP,
+    category: "schema-upgrade",
     runMode: "once",
-    description: "One-time normalization of removed schedule reuse modes to fresh-session schedules.",
-    apply: finalizeLegacyScheduleReuseState,
+    description: "Remove schedule reuse columns and claim table after preserving legacy run references.",
+    apply: dropScheduleReuseState,
   },
   {
     id: SCHEDULE_RUNS_LEGACY_BACKFILL,

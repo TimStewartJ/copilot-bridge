@@ -495,12 +495,6 @@ export class SessionRunner {
             bus.emit({ type: "delta", content: data.deltaContent });
           }
           break;
-        case "assistant.streaming_delta":
-          if (data?.parentToolCallId) break;
-          if (data?.content) {
-            bus.emit({ type: "delta", content: data.content });
-          }
-          break;
         case "assistant.intent":
           console.log(`[sdk] [${sid}] 🎯 Intent: ${data?.intent}`);
           bus.emit({ type: "intent", intent: data?.intent ?? "" });

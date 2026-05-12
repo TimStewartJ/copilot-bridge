@@ -31,7 +31,6 @@ const SQLITE_STATE_TABLES = [
   "schedules",
   "schedule_runs",
   "schedule_run_claims",
-  "schedule_session_claims",
   "read_state",
   "checklist_items",
   "voice_jobs",
@@ -223,13 +222,6 @@ function initSchema(db: DatabaseSync): void {
       sessionId TEXT,
       PRIMARY KEY (scheduleId, runKey)
     );
-    CREATE TABLE IF NOT EXISTS schedule_session_claims (
-      sessionId TEXT PRIMARY KEY,
-      scheduleId TEXT NOT NULL,
-      claimedAt TEXT NOT NULL,
-      leaseExpiresAt TEXT NOT NULL
-    );
-
     -- Settings (key-value, main entry is key='app')
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -252,8 +244,6 @@ function initSchema(db: DatabaseSync): void {
       runAt TEXT,
       timezone TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
-      sessionMode TEXT NOT NULL DEFAULT 'new',
-      targetSessionId TEXT,
       lastSessionId TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL,
@@ -262,8 +252,7 @@ function initSchema(db: DatabaseSync): void {
       runCount INTEGER NOT NULL DEFAULT 0,
       maxRuns INTEGER,
       expiresAt TEXT,
-      autoArchiveKeep INTEGER,
-      reuseLastRequiresExistingSession INTEGER NOT NULL DEFAULT 0
+      autoArchiveKeep INTEGER
     );
 
     -- Read state

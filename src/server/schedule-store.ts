@@ -9,16 +9,10 @@ export function getServerTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-export type ScheduleSessionMode = "new" | "reuse-last";
 export type ScheduleTriggerSource = "manual" | "cron" | "once" | "catchup";
 export type AutomaticScheduleTriggerSource = Exclude<ScheduleTriggerSource, "manual">;
 export interface AutomaticRunClaim {
   runKey: string;
-  claimedAt: string;
-  leaseExpiresAt: string;
-}
-export interface SessionReuseClaim {
-  sessionId: string;
   claimedAt: string;
   leaseExpiresAt: string;
 }
@@ -45,7 +39,6 @@ export interface Schedule {
 
   // Behavior
   enabled: boolean;
-  sessionMode: ScheduleSessionMode;
   lastSessionId?: string;
 
   // Lifecycle
@@ -62,10 +55,10 @@ export interface Schedule {
 }
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "sessionMode" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
+  Partial<Pick<Schedule, "cron" | "runAt" | "timezone" | "maxRuns" | "expiresAt" | "autoArchiveKeep">>;
 
 export type ScheduleUpdate = Partial<Pick<Schedule,
-  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "sessionMode" | "maxRuns" | "expiresAt"
+  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
   autoArchiveKeep?: number | null;
 };
@@ -101,29 +94,6 @@ export function createScheduleStore(db: DatabaseSync) {
     SET status = ?, sessionId = ?, finishedAt = ?, leaseExpiresAt = ?
     WHERE scheduleId = ? AND runKey = ? AND status = 'claimed' AND claimedAt = ? AND leaseExpiresAt = ?
   `);
-  const insertSessionReuseClaim = db.prepare(`
-    INSERT INTO schedule_session_claims (sessionId, scheduleId, claimedAt, leaseExpiresAt)
-    VALUES (?, ?, ?, ?)
-  `);
-  const getSessionReuseClaim = db.prepare(`
-    SELECT scheduleId, claimedAt, leaseExpiresAt
-    FROM schedule_session_claims
-    WHERE sessionId = ?
-  `);
-  const reclaimSessionReuseClaim = db.prepare(`
-    UPDATE schedule_session_claims
-    SET scheduleId = ?, claimedAt = ?, leaseExpiresAt = ?
-    WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
-  `);
-  const renewSessionReuseClaim = db.prepare(`
-    UPDATE schedule_session_claims
-    SET leaseExpiresAt = ?
-    WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
-  `);
-  const releaseSessionReuseClaim = db.prepare(`
-    DELETE FROM schedule_session_claims
-    WHERE sessionId = ? AND claimedAt = ? AND leaseExpiresAt = ?
-  `);
 
   function hydrate(row: any): Schedule {
     return {
@@ -136,8 +106,7 @@ export function createScheduleStore(db: DatabaseSync) {
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
       enabled: row.enabled === 1,
-      sessionMode: "new",
-      lastSessionId: row.lastSessionId ?? row.targetSessionId ?? undefined,
+      lastSessionId: row.lastSessionId ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastRunAt: row.lastRunAt ?? undefined,
@@ -167,12 +136,12 @@ export function createScheduleStore(db: DatabaseSync) {
 
     db.prepare(`
       INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone,
-        enabled, sessionMode, targetSessionId, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?, ?)
+        enabled, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
-      "new", null, now, now,
+      now, now,
       input.maxRuns ?? null, input.expiresAt ?? null, input.autoArchiveKeep ?? null,
     );
 
@@ -301,54 +270,6 @@ export function createScheduleStore(db: DatabaseSync) {
     return claimRun(id, SCHEDULE_LOCK_RUN_KEY, source, claimedAt);
   }
 
-  function claimSessionReuse(
-    sessionId: string,
-    scheduleId: string,
-    claimedAt = new Date().toISOString(),
-  ): { acquired: true; claim: SessionReuseClaim } | { acquired: false; reason: string } {
-    const normalizedClaimedAt = new Date(claimedAt).toISOString();
-    const leaseExpiresAt = new Date(Date.parse(normalizedClaimedAt) + SCHEDULE_RUN_CLAIM_TTL_MS).toISOString();
-
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const existing = getSessionReuseClaim.get(sessionId) as
-        | { scheduleId: string; claimedAt: string; leaseExpiresAt: string }
-        | undefined;
-      if (!existing) {
-        insertSessionReuseClaim.run(sessionId, scheduleId, normalizedClaimedAt, leaseExpiresAt);
-        db.exec("COMMIT");
-        return {
-          acquired: true,
-          claim: { sessionId, claimedAt: normalizedClaimedAt, leaseExpiresAt },
-        };
-      }
-
-      if (Date.parse(existing.leaseExpiresAt) <= Date.parse(normalizedClaimedAt)) {
-        const result = reclaimSessionReuseClaim.run(
-          scheduleId,
-          normalizedClaimedAt,
-          leaseExpiresAt,
-          sessionId,
-          existing.claimedAt,
-          existing.leaseExpiresAt,
-        ) as { changes?: number };
-        if ((result.changes ?? 0) > 0) {
-          db.exec("COMMIT");
-          return {
-            acquired: true,
-            claim: { sessionId, claimedAt: normalizedClaimedAt, leaseExpiresAt },
-          };
-        }
-      }
-
-      db.exec("COMMIT");
-      return { acquired: false, reason: "This session is already being reused by another scheduled run" };
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
-  }
-
   function completeAutomaticRun(id: string, claim: AutomaticRunClaim, sessionId: string, nextRunAt?: string): boolean {
     const finishedAt = new Date().toISOString();
 
@@ -439,28 +360,6 @@ export function createScheduleStore(db: DatabaseSync) {
     return true;
   }
 
-  function releaseClaimedSessionReuse(sessionId: string, claim: SessionReuseClaim): boolean {
-    const result = releaseSessionReuseClaim.run(
-      sessionId,
-      claim.claimedAt,
-      claim.leaseExpiresAt,
-    ) as { changes?: number };
-    return (result.changes ?? 0) > 0;
-  }
-
-  function renewClaimedSessionReuse(sessionId: string, claim: SessionReuseClaim, renewedAt = new Date().toISOString()): boolean {
-    const newLeaseExpiresAt = new Date(Date.parse(renewedAt) + SCHEDULE_RUN_CLAIM_TTL_MS).toISOString();
-    const result = renewSessionReuseClaim.run(
-      newLeaseExpiresAt,
-      sessionId,
-      claim.claimedAt,
-      claim.leaseExpiresAt,
-    ) as { changes?: number };
-    if ((result.changes ?? 0) === 0) return false;
-    claim.leaseExpiresAt = newLeaseExpiresAt;
-    return true;
-  }
-
   function updateNextRunAt(id: string, nextRunAt: string): void {
     db.prepare("UPDATE schedules SET nextRunAt = ? WHERE id = ?").run(nextRunAt, id);
   }
@@ -474,13 +373,12 @@ export function createScheduleStore(db: DatabaseSync) {
   }
 
   function listClaimedSessionIds(): string[] {
-    const sessionClaims = db.prepare("SELECT sessionId FROM schedule_session_claims").all() as Array<{ sessionId: string }>;
     const automaticRunClaims = db.prepare(`
       SELECT sessionId
       FROM schedule_run_claims
       WHERE sessionId IS NOT NULL
     `).all() as Array<{ sessionId: string }>;
-    return [...new Set([...sessionClaims, ...automaticRunClaims].map((row) => row.sessionId))];
+    return [...new Set(automaticRunClaims.map((row) => row.sessionId))];
   }
 
   function listScheduleRunSessionIds(): string[] {
@@ -512,10 +410,9 @@ export function createScheduleStore(db: DatabaseSync) {
 
   return {
     listSchedules, getSchedule, createSchedule, updateSchedule, deleteSchedule,
-    recordRun, claimScheduleRun, claimAutomaticRun, claimSessionReuse,
+    recordRun, claimScheduleRun, claimAutomaticRun,
     completeAutomaticRun, skipAutomaticRun,
     releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
-    releaseClaimedSessionReuse, renewClaimedSessionReuse,
     updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
     listClaimedSessionIds, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
   };

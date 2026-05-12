@@ -21,7 +21,7 @@ import {
 import * as scheduler from "./scheduler.js";
 import type { Schedule } from "./schedule-store.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
-import { normalizeScheduleAutoArchiveKeep } from "./schedule-validation.js";
+import { findUnknownFields, formatUnknownFieldsError, normalizeScheduleAutoArchiveKeep } from "./schedule-validation.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
 import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
@@ -653,10 +653,29 @@ function listSessionsFromCliCatalog(ctx: AppContext): any[] | undefined {
   });
 }
 
-function serializeSchedule(schedule: Schedule) {
-  const { sessionMode: _sessionMode, ...publicSchedule } = schedule;
-  return publicSchedule;
-}
+const SCHEDULE_CREATE_FIELDS = [
+  "taskId",
+  "name",
+  "prompt",
+  "type",
+  "cron",
+  "runAt",
+  "timezone",
+  "maxRuns",
+  "expiresAt",
+  "autoArchiveKeep",
+] as const;
+const SCHEDULE_UPDATE_FIELDS = [
+  "name",
+  "prompt",
+  "cron",
+  "runAt",
+  "timezone",
+  "enabled",
+  "maxRuns",
+  "expiresAt",
+  "autoArchiveKeep",
+] as const;
 
 async function enforceRetentionForSchedule(ctx: AppContext, schedule: Schedule): Promise<void> {
   try {
@@ -3147,7 +3166,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const dashboardSchedules = allSchedules.map((sched) => {
         const task = tasks.find((t) => t.id === sched.taskId);
         return {
-          ...serializeSchedule(sched),
+          ...sched,
           taskTitle: task?.title ?? null,
           taskGroupColor: task?.groupId
             ? ctx.taskGroupStore.getGroup(task.groupId)?.color ?? null
@@ -3185,11 +3204,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/schedules", (_req, res) => {
     const taskId = typeof _req.query.taskId === "string" ? _req.query.taskId : undefined;
-    res.json(ctx.scheduleStore.listSchedules(taskId).map(serializeSchedule));
+    res.json(ctx.scheduleStore.listSchedules(taskId));
   });
 
   router.post("/schedules", async (req, res) => {
     try {
+      const unknownFields = findUnknownFields(req.body, SCHEDULE_CREATE_FIELDS);
+      if (unknownFields.length > 0) {
+        return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
+      }
       const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt, autoArchiveKeep } = req.body;
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
       const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(autoArchiveKeep);
@@ -3238,7 +3261,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
       ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      res.status(201).json(serializeSchedule(schedule));
+      res.status(201).json(schedule);
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -3246,6 +3269,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.patch("/schedules/:id", async (req, res) => {
     try {
+      const unknownFields = findUnknownFields(req.body, SCHEDULE_UPDATE_FIELDS);
+      if (unknownFields.length > 0) {
+        return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
+      }
       if (req.body.timezone && !schedulerModule().isValidTimezone(req.body.timezone)) {
         return res.status(400).json({ error: `Invalid timezone: ${req.body.timezone}` });
       }
@@ -3280,7 +3307,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       console.log(`[schedules] Updated schedule "${schedule.name}"`);
       ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      res.json(serializeSchedule(schedule));
+      res.json(schedule);
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -3704,14 +3731,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
       try {
         const raw = (req.params as any).path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
-        const page = docs.readUserPage(pagePath);
-        const canonicalPath = page?.path ?? pagePath;
-        if (page) {
-          createPreDeleteDocsSnapshot();
+        const result = docs.deleteUserPage(pagePath, createPreDeleteDocsSnapshot);
+        if (result.deleted) {
+          docsIdx.removePage(result.path);
         }
-        const deleted = docs.deleteUserPage(pagePath);
-        if (deleted) docsIdx.removePage(canonicalPath);
-        res.json({ path: canonicalPath, deleted });
+        res.json(result);
       } catch (err: any) {
         const message = err?.message || String(err);
         res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
