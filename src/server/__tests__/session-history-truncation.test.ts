@@ -50,11 +50,39 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
     ], "interval_loop-1")).toBeUndefined();
   });
 
-  it("preserves quiet interval tails that raised attention, produced artifacts, or used mutating tools", () => {
-    for (const toolName of ["ask_user", "send_attachment", "publish_visual", "bash", "task_create"]) {
+  it("preserves quiet interval tails that asked for input or wrote docs/tasks", () => {
+    for (const toolName of [
+      "ask_user",
+      "docs_write",
+      "docs_edit",
+      "docs_delete",
+      "docs_db_create",
+      "docs_db_add",
+      "docs_db_update",
+      "docs_db_delete",
+      "docs_snapshot_create",
+      "docs_snapshot_restore",
+      "task_create",
+      "task_update",
+      "task_update_momentum",
+      "task_link_work_item",
+      "task_unlink_work_item",
+      "task_link_pr",
+      "task_unlink_pr",
+      "task_group_create",
+      "task_group_update",
+      "task_group_delete",
+      "checklist_add",
+      "checklist_update",
+      "checklist_remove",
+      "tag_create",
+      "tag_update",
+      "tag_delete",
+    ]) {
       expect(findQuietIntervalDeferTailTruncationCandidate([
         quietIntervalUserMessage("quiet-user"),
         { id: `${toolName}-start`, type: "tool.execution_start", data: { toolCallId: "tool-1", toolName } },
+        { id: `${toolName}-done`, type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
         { id: "idle", type: "session.idle", data: {} },
       ], "interval_loop-1")).toBeUndefined();
     }
@@ -77,6 +105,13 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
 
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("quiet-user"),
+      { id: "tool-start", type: "tool.execution_start", data: { toolCallId: "tool-1" } },
+      { id: "tool-done", type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
+      { id: "idle", type: "session.idle", data: {} },
+    ], "interval_loop-1")).toBeUndefined();
+
+    expect(findQuietIntervalDeferTailTruncationCandidate([
+      quietIntervalUserMessage("quiet-user"),
       { id: "error", type: "session.error", data: { message: "failed" } },
     ], "interval_loop-1")).toBeUndefined();
 
@@ -86,13 +121,15 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
     ], "interval_loop-1")).toBeUndefined();
   });
 
-  it("allows completed read-only tool work inside an otherwise quiet tail", () => {
-    expect(findQuietIntervalDeferTailTruncationCandidate([
-      quietIntervalUserMessage("quiet-user"),
-      { id: "tool-start", type: "tool.execution_start", data: { toolCallId: "tool-1", toolName: "web_search" } },
-      { id: "tool-done", type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
-      { id: "idle", type: "session.idle", data: {} },
-    ], "interval_loop-1")).toEqual({ eventId: "quiet-user", eventsToRemove: 4 });
+  it("allows completed state-checking, browser, bash, and custom MCP tool work inside an otherwise quiet tail", () => {
+    for (const toolName of ["web_search", "bash", "browser_exec", "mcp__weather__get_forecast"]) {
+      expect(findQuietIntervalDeferTailTruncationCandidate([
+        quietIntervalUserMessage("quiet-user"),
+        { id: `${toolName}-start`, type: "tool.execution_start", data: { toolCallId: "tool-1", toolName } },
+        { id: `${toolName}-done`, type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
+        { id: "idle", type: "session.idle", data: {} },
+      ], "interval_loop-1")).toEqual({ eventId: "quiet-user", eventsToRemove: 4 });
+    }
   });
 
   it("rejects turn activity after the idle terminal because truncation would remove newer work", () => {

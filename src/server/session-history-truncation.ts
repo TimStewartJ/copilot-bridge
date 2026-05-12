@@ -48,67 +48,33 @@ const TURN_ACTIVITY_EVENT_TYPES = new Set([
   "subagent.completed",
   "subagent.failed",
 ]);
-const TRUNCATABLE_TOOL_NAMES = new Set([
-  "browser_fetch",
-  "browser_session_get_state",
-  "computer_clipboard_read",
-  "computer_cursor_position",
-  "computer_display_info",
-  "computer_screenshot",
-  "defer_list",
-  "docs_db_query",
-  "docs_db_schema",
-  "docs_list",
-  "docs_read",
-  "docs_search",
-  "github-get_commit",
-  "github-get_file_contents",
-  "github-get_latest_release",
-  "github-get_release_by_tag",
-  "github-get_tag",
-  "github-list_branches",
-  "github-list_commits",
-  "github-list_pull_requests",
-  "github-list_releases",
-  "github-list_tags",
-  "github-pull_request_read",
-  "github-search_code",
-  "github-search_pull_requests",
-  "github-search_repositories",
-  "glob",
-  "linear-extract_images",
-  "linear-get_attachment",
-  "linear-get_diff",
-  "linear-get_diff_threads",
-  "linear-get_document",
-  "linear-get_issue",
-  "linear-get_issue_status",
-  "linear-get_milestone",
-  "linear-get_project",
-  "linear-get_team",
-  "linear-get_user",
-  "linear-list_comments",
-  "linear-list_cycles",
-  "linear-list_diffs",
-  "linear-list_documents",
-  "linear-list_issue_labels",
-  "linear-list_issue_statuses",
-  "linear-list_issues",
-  "linear-list_milestones",
-  "linear-list_project_labels",
-  "linear-list_projects",
-  "linear-list_teams",
-  "linear-list_users",
-  "linear-search_documentation",
-  "list_agents",
-  "read_agent",
-  "read_bash",
-  "report_intent",
-  "rg",
-  "schedule_list",
-  "view",
-  "web_fetch",
-  "web_search",
+const TRUNCATION_BLOCKED_TOOL_NAMES = new Set([
+  "ask_user",
+  "docs_write",
+  "docs_edit",
+  "docs_delete",
+  "docs_db_create",
+  "docs_db_add",
+  "docs_db_update",
+  "docs_db_delete",
+  "docs_snapshot_create",
+  "docs_snapshot_restore",
+  "task_create",
+  "task_update",
+  "task_update_momentum",
+  "task_link_work_item",
+  "task_unlink_work_item",
+  "task_link_pr",
+  "task_unlink_pr",
+  "task_group_create",
+  "task_group_update",
+  "task_group_delete",
+  "checklist_add",
+  "checklist_update",
+  "checklist_remove",
+  "tag_create",
+  "tag_update",
+  "tag_delete",
 ]);
 
 function getToolName(event: any): string {
@@ -116,8 +82,8 @@ function getToolName(event: any): string {
   return typeof name === "string" ? name : "";
 }
 
-function isTruncatableToolName(toolName: string): boolean {
-  return TRUNCATABLE_TOOL_NAMES.has(toolName);
+function blocksQuietDeferTruncation(toolName: string): boolean {
+  return !toolName.trim() || TRUNCATION_BLOCKED_TOOL_NAMES.has(toolName);
 }
 
 function isTerminalEvent(event: any): boolean {
@@ -162,7 +128,7 @@ export function findQuietIntervalDeferTailTruncationCandidate(
 
     if (event?.type === "tool.execution_start") {
       const toolName = getToolName(event);
-      if (!isTruncatableToolName(toolName)) return undefined;
+      if (blocksQuietDeferTruncation(toolName)) return undefined;
     }
     if (event?.type === "tool.execution_complete" && event?.data?.success !== true) {
       return undefined;
