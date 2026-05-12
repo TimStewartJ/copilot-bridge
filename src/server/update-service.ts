@@ -157,8 +157,12 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isUpdateChannel(value: string | undefined): value is UpdateChannel {
+  return value === "preview" || value === "stable";
+}
+
 function assertUpdateChannel(value: string | undefined): UpdateChannel {
-  if (value === "preview" || value === "stable") return value;
+  if (isUpdateChannel(value)) return value;
   if (!value) return "stable";
   throw new Error(`Unsupported update channel "${value}". Expected "stable" or "preview".`);
 }
@@ -460,7 +464,9 @@ export async function checkForUpdate(options: CheckForUpdateOptions = {}): Promi
   const now = options.now ?? (() => new Date());
   const appRoot = options.appRoot ?? getInstalledAppRoot();
   const current = resolveCurrentUpdateInfo({ ...options, env, appRoot });
-  const channel = options.channel ?? assertUpdateChannel(env.BRIDGE_UPDATE_CHANNEL);
+  const channel = options.channel
+    ?? (isUpdateChannel(current.channel) ? current.channel : undefined)
+    ?? assertUpdateChannel(env.BRIDGE_UPDATE_CHANNEL);
   const checkedAt = now().toISOString();
 
   if (current.distributionMode !== "release") {
@@ -646,7 +652,9 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
   const now = options.now ?? (() => new Date());
   const appRoot = options.appRoot ?? getInstalledAppRoot();
   const current = resolveCurrentUpdateInfo({ ...options, env, appRoot, runtimePaths });
-  const channel = options.channel ?? assertUpdateChannel(env.BRIDGE_UPDATE_CHANNEL);
+  const channel = options.channel
+    ?? (isUpdateChannel(current.channel) ? current.channel : undefined)
+    ?? assertUpdateChannel(env.BRIDGE_UPDATE_CHANNEL);
   const timestamp = now().toISOString();
 
   if (current.distributionMode !== "release") {
