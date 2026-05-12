@@ -73,15 +73,17 @@ describe("release scripts", () => {
     expect(workflow).toContain("release/copilot-bridge-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip");
     expect(workflow).toContain("release/install-preview.ps1");
     expect(workflow).toContain('$installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem)');
+    expect(workflow).toContain("function Test-ReleaseAsset");
+    expect(workflow).toContain("function Upload-ReleaseAsset");
 
     const pointerStep = workflow.slice(workflow.indexOf("Publish latest preview pointer"));
-    const aliasUpload = pointerStep.indexOf("gh release upload $tag $aliasZip --clobber");
-    const installerUpload = pointerStep.indexOf("gh release upload $tag $installer --clobber");
-    const manifestUpload = pointerStep.indexOf("gh release upload $tag $manifest --clobber");
-    const signatureUpload = pointerStep.indexOf("gh release upload $tag $signature --clobber");
+    const aliasUpload = pointerStep.indexOf('Upload-ReleaseAsset $tag $aliasZip "package alias"');
+    const installerUpload = pointerStep.indexOf('Upload-ReleaseAsset $tag $installer "installer"');
+    const signatureUpload = pointerStep.indexOf('Upload-ReleaseAsset $tag $signature "manifest signature"');
+    const manifestUpload = pointerStep.indexOf('Upload-ReleaseAsset $tag $manifest "manifest"');
     expect(aliasUpload).toBeGreaterThanOrEqual(0);
     expect(installerUpload).toBeGreaterThan(aliasUpload);
-    expect(manifestUpload).toBeGreaterThan(installerUpload);
-    expect(signatureUpload).toBeGreaterThan(manifestUpload);
+    expect(signatureUpload).toBeGreaterThan(installerUpload);
+    expect(manifestUpload).toBeGreaterThan(signatureUpload);
   });
 });
