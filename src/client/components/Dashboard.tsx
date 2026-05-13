@@ -1,15 +1,15 @@
 import { useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { getDashboardTabFromPathname, getDashboardTabPath } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useFeedQuery } from "../hooks/queries/useFeed";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
 import DashboardChecklist from "./DashboardChecklist";
 import DashboardFeed from "./DashboardFeed";
-import DashboardTabs, { type DashboardTab } from "./DashboardTabs";
+import DashboardTabs from "./DashboardTabs";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { dashboardChecklistCountClass } from "./dashboard-checklist-helpers";
-
-const DASHBOARD_TAB_STORAGE_KEY = "dashboard-active-tab";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
@@ -50,24 +50,18 @@ function DashboardSkeleton() {
   );
 }
 
-function getSavedDashboardTab(): DashboardTab {
-  try {
-    const val = localStorage.getItem(DASHBOARD_TAB_STORAGE_KEY);
-    if (val === "checklist" || val === "feed") return val;
-  } catch {}
-  return "checklist";
-}
-
 export default function Dashboard({
   onSelectTask,
   onSelectSession,
   onStartPromptSession,
   scrollRestoration,
 }: DashboardProps) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
   const checklist = useDashboardChecklist(data);
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
-  const [activeTab, setActiveTab] = useState<DashboardTab>(getSavedDashboardTab);
+  const activeTab = getDashboardTabFromPathname(location.pathname);
   const feedFilters = useMemo(() => ({
     limit: 100,
     ...(showResolvedFeed ? { includeDismissed: true } : {}),
@@ -77,11 +71,6 @@ export default function Dashboard({
     isLoading: feedLoading,
     refetch: refetchFeed,
   } = useFeedQuery(feedFilters);
-
-  const handleTabChange = (tab: DashboardTab) => {
-    setActiveTab(tab);
-    try { localStorage.setItem(DASHBOARD_TAB_STORAGE_KEY, tab); } catch {}
-  };
 
   const handleRefresh = async () => {
     await Promise.all([refetchDashboard(), refetchFeed()]);
@@ -107,7 +96,7 @@ export default function Dashboard({
         <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-3">
           <DashboardTabs
             activeTab={activeTab}
-            onTabChange={handleTabChange}
+            onTabChange={(tab) => navigate(getDashboardTabPath(tab))}
             checklistCount={checklist.visibleOpenChecklistItems.length}
             checklistCountClass={dashboardChecklistCountClass(checklist.checklistIndicator.state)}
             checklistCountTitle={checklist.checklistIndicatorLabel ?? undefined}

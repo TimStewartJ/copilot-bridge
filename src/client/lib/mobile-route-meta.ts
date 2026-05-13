@@ -1,4 +1,5 @@
 import { matchPath } from "react-router-dom";
+import { isDashboardRoutePath } from "./dashboard-routes";
 
 export type MobileNavTab = "home" | "tasks" | "chats" | "docs" | "settings";
 
@@ -70,7 +71,7 @@ function buildMeta(overrides: Partial<MobileRouteMeta> & Pick<MobileRouteMeta, "
 export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMeta {
   const normalizedPath = normalizePathname(pathname);
 
-  if (normalizedPath === "/dashboard") {
+  if (isDashboardRoutePath(normalizedPath)) {
     return buildMeta({
       route: "dashboard",
       activeTab: "home",

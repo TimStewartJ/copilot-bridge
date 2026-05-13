@@ -10,6 +10,8 @@ import {
 describe("getMobileScrollRestorationPolicy", () => {
   it.each([
     ["/dashboard", "mobile:dashboard"],
+    ["/dashboard/checklist", "mobile:dashboard"],
+    ["/dashboard/feed", "mobile:dashboard"],
     ["/", "mobile:tasks:list"],
     ["/chats", "mobile:chats:list"],
   ])("restores root tab route %s by default", (pathname, key) => {
