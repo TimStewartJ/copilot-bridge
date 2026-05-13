@@ -242,7 +242,7 @@ interface SessionListProps {
   // Session deletion
   onDeleteSession?: (sessionId: string) => void;
   // Session fork
-  onForkSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => Promise<void> | void;
   // Session reload
   onReloadSession?: (sessionId: string) => void;
   // Mark unread
@@ -308,9 +308,10 @@ export default function SessionList({
   const [reasoningDraft, setReasoningDraft] = useState<"" | ReasoningEffort>("");
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
+  const [menuError, setMenuError] = useState<string | null>(null);
   const sessionModelLookupVersionRef = useRef<Record<string, number>>({});
 
-  const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); }, [rawCloseMenu]);
+  const closeMenu = useCallback(() => { rawCloseMenu(); setCopied(false); setMenuError(null); }, [rawCloseMenu]);
 
   const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.id) : null;
 
@@ -864,10 +865,17 @@ export default function SessionList({
               disabled={ctxSession.busy}
               title={ctxSession.busy ? "This session is busy" : "Create a new branch from this session"}
               onClick={() => {
-                onForkSession(ctxSession.sessionId);
-                closeMenu();
+                setMenuError(null);
+                void Promise.resolve(onForkSession(ctxSession.sessionId))
+                  .then(closeMenu)
+                  .catch((error) => setMenuError(`Fork failed: ${getErrorMessage(error)}`));
               }}
             />
+          )}
+          {menuError && (
+            <div className="mx-3 my-2 rounded-md border border-error/20 bg-error/10 px-2 py-1.5 text-xs text-error" role="alert">
+              {menuError}
+            </div>
           )}
           {canArchiveFromMenu && (
             <CtxItem

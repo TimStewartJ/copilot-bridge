@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -490,6 +490,7 @@ describe("SessionManager forkSession", () => {
     expect(result).toEqual({ sessionId: "forked-session" });
     expect(fork).toHaveBeenCalledWith({ sessionId: "source-session" });
     expect(sessionWorkspaceStore.getWorkspace("forked-session")).toMatchObject({ cwd: sourceWorkspace });
+    expect(existsSync(join(copilotHome, "session-state", "forked-session", "workspace.yaml"))).toBe(false);
   });
 
   it("passes safe raw event boundaries to the native SDK fork RPC", async () => {
@@ -504,6 +505,28 @@ describe("SessionManager forkSession", () => {
     await manager.forkSession("source-session", { toEventId: " next-event " });
 
     expect(fork).toHaveBeenCalledWith({ sessionId: "source-session", toEventId: "next-event" });
+  });
+
+  it("sets a CLI-owned fork name without requiring workspace.yaml", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-fork-name-"));
+    tempDirs.push(copilotHome);
+    const { manager } = createManager(copilotHome);
+    const disconnect = vi.fn();
+    const set = vi.fn();
+    const resumeSession = vi.fn(async () => ({
+      disconnect,
+      rpc: { name: { set } },
+    }));
+    manager.client = {
+      resumeSession,
+    };
+
+    await manager.setSessionName("forked-session", "Fork of Original session");
+
+    expect(existsSync(join(copilotHome, "session-state", "forked-session", "workspace.yaml"))).toBe(false);
+    expect(resumeSession).toHaveBeenCalledWith("forked-session", expect.objectContaining({ disableResume: true }));
+    expect(set).toHaveBeenCalledWith({ name: "Fork of Original session" });
+    expect(disconnect).toHaveBeenCalled();
   });
 
 });

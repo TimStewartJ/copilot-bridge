@@ -1288,6 +1288,53 @@ describe("ChatView message actions", () => {
       await cleanup();
     }
   });
+
+  it("surfaces bounded fork failures instead of silently closing the menu", async () => {
+    const onForkSession = vi.fn().mockRejectedValue(new Error("Session not found: fork-session"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          content: "assistant reply",
+          timestamp: "2026-04-29T12:00:00.000Z",
+          forkBoundaryEventId: "event-after-assistant-1",
+        }],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: false },
+      onForkSession,
+    });
+
+    try {
+      await waitUntilAct(act, () => {
+        try {
+          findButtonByAriaLabel(dom.container, "Open message actions");
+          return true;
+        } catch {
+          return false;
+        }
+      });
+
+      await act(async () => {
+        clickButton(findButtonByAriaLabel(dom.container, "Open message actions"));
+      });
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Fork from here"));
+        await waitTick();
+      });
+
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Fork failed: Session not found: fork-session") ?? false);
+      expect(onForkSession).toHaveBeenCalledWith("session-1", { toEventId: "event-after-assistant-1" });
+    } finally {
+      errorSpy.mockRestore();
+      await cleanup();
+    }
+  });
 });
 
 describe("ChatView user input question cards", () => {

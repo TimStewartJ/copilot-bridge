@@ -1928,6 +1928,7 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/fork passes safe event boundaries to the session manager", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.forkSession = vi.fn().mockResolvedValue({ sessionId: "bounded-fork" });
+    sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
     sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
@@ -1946,7 +1947,11 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ sessionId: "bounded-fork" });
     expect(sessionManager.forkSession).toHaveBeenCalledWith("test-id", { toEventId: "next-event" });
+    expect(sessionManager.warmSession).toHaveBeenCalledWith("bounded-fork");
     expect(sessionManager.setSessionName).toHaveBeenCalledWith("bounded-fork", "Fork from Original session");
+    expect(sessionManager.warmSession.mock.invocationCallOrder[0]).toBeLessThan(
+      sessionManager.setSessionName.mock.invocationCallOrder[0],
+    );
   });
 
   it("POST /api/sessions/:id/fork rejects empty event boundaries", async () => {
@@ -1973,8 +1978,89 @@ describe("Session manager routes", () => {
     expect(res.body.error).toContain("persisted conversation history");
   });
 
-  it("POST /api/sessions/:id/fork seeds the forked title from the source summary", async () => {
+  it("POST /api/sessions/:id/fork seeds the forked title from the CLI source summary", async () => {
+    const copilotHome = join(makeTestDir("api-fork-cli-catalog"), ".copilot");
+    mkdirSync(copilotHome, { recursive: true });
+    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
+    try {
+      cliDb.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          cwd TEXT,
+          summary TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        );
+      `);
+      cliDb.prepare(`
+        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run("test-id", "/work", "Original session", "2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z");
+    } finally {
+      cliDb.close();
+    }
     const sessionManager = createMockSessionManager();
+    sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
+    sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
+    sessionManager.listSessionsFromDisk = vi.fn(async () => {
+      throw new Error("source title should come from CLI catalog");
+    });
+    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
+
+    const res = await request(app).post("/api/sessions/test-id/fork");
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
+    expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
+    expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/sessions/:id/fork still succeeds when fork title seeding fails", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.warmSession = vi.fn().mockResolvedValue(undefined);
+    sessionManager.setSessionName = vi.fn().mockRejectedValue(new Error("Session not found: fork-session"));
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      {
+        sessionId: "test-id",
+        summary: "Original session",
+        modifiedTime: "2026-04-16T12:00:00.000Z",
+        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
+      },
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      ({ app, ctx } = createTestApp({ sessionManager }));
+      const task = ctx.taskStore.createTask("Linked task");
+      ctx.taskStore.linkSession(task.id, "test-id");
+      const events: any[] = [];
+      const unsubscribe = ctx.globalBus.subscribe((event) => events.push(event));
+
+      try {
+        const res = await request(app).post("/api/sessions/test-id/fork");
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ sessionId: "fork-session" });
+        expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
+        expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fork-session");
+        expect(events).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: "sessions:changed", sessionId: "fork-session" }),
+        ]));
+        expect(warn).toHaveBeenCalledWith(
+          "[sessions] Fork fork-ses created but could not be renamed:",
+          "Session not found: fork-session",
+        );
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("POST /api/sessions/:id/fork returns the created fork when immediate warm fails", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.warmSession = vi.fn().mockRejectedValue(new Error("warm failed"));
     sessionManager.setSessionName = vi.fn().mockResolvedValue(undefined);
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
@@ -1984,12 +2070,30 @@ describe("Session manager routes", () => {
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const res = await request(app).post("/api/sessions/test-id/fork");
+    try {
+      ({ app, ctx } = createTestApp({ sessionManager }));
+      const task = ctx.taskStore.createTask("Linked task");
+      ctx.taskStore.linkSession(task.id, "test-id");
 
-    expect(res.status).toBe(200);
-    expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
+      const res = await request(app).post("/api/sessions/test-id/fork");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ sessionId: "fork-session" });
+      expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fork-session");
+      expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
+      expect(sessionManager.setSessionName).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        "[sessions] Fork fork-ses created but could not be warmed:",
+        "warm failed",
+      );
+      expect(warn).toHaveBeenCalledWith(
+        "[sessions] Fork fork-ses rename skipped because warm resume failed",
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("POST /api/sessions/:id/fork preserves all task links from the source session", async () => {
@@ -1999,6 +2103,10 @@ describe("Session manager routes", () => {
     ctx.taskStore.linkSession(taskA.id, "test-id");
     const taskB = ctx.taskStore.createTask("Task B");
     ctx.taskStore.linkSession(taskB.id, "test-id");
+    sessionManager.warmSession = vi.fn().mockImplementation(async (sessionId: string) => {
+      expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain(sessionId);
+      expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain(sessionId);
+    });
 
     const res = await request(app).post("/api/sessions/test-id/fork");
 

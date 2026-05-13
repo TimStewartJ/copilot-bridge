@@ -55,6 +55,7 @@ import type { TaskStore } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
@@ -186,6 +187,7 @@ export interface SessionManagerDeps {
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
   sessionMetaStore?: SessionMetaStore;
+  cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
   taskStore: TaskStore;
   taskGroupStore?: TaskGroupStore;
   checklistStore?: ChecklistStore;
@@ -238,6 +240,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     sessionTitles: ctx.sessionTitles,
     sessionWorkspaceStore: ctx.sessionWorkspaceStore,
     sessionMetaStore: ctx.sessionMetaStore,
+    cliSessionCatalog: ctx.cliSessionCatalog,
     taskStore: ctx.taskStore,
     taskGroupStore: ctx.taskGroupStore,
     checklistStore: ctx.checklistStore,
@@ -708,7 +711,7 @@ export class SessionManager {
     const cachedSession = this.sessionObjects.get(sessionId);
     if (cachedSession) return operation(cachedSession);
 
-    if (!this.hasSessionOnDisk(sessionId)) {
+    if (!this.isSessionStatePathSegment(sessionId)) {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
@@ -747,7 +750,7 @@ export class SessionManager {
   async migrateLegacySessionTitles(): Promise<void> {
     await migrateLegacySessionTitlesWithDeps({
       sessionTitles: this.deps.sessionTitles,
-      hasSessionOnDisk: (sessionId) => this.hasSessionOnDisk(sessionId),
+      hasSessionOnDisk: (sessionId) => this.hasKnownPersistedSession(sessionId),
       readSessionNameFromWorkspace: (sessionId) => this.sessionNameRpc.readSessionNameFromWorkspace(sessionId),
       setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
       invalidateSessionListCache: (reason) => this.invalidateSessionListCache(reason),
@@ -910,9 +913,26 @@ export class SessionManager {
     return sessionId !== "." && sessionId !== ".." && !sessionId.includes("/") && !sessionId.includes("\\");
   }
 
-  private hasSessionOnDisk(sessionId: string): boolean {
+  private hasWorkspaceYamlOnDisk(sessionId: string): boolean {
     if (!this.isSessionStatePathSegment(sessionId)) return false;
     return existsSync(join(this.getSessionStateDir(sessionId), "workspace.yaml"));
+  }
+
+  private hasCliCatalogSession(sessionId: string): boolean {
+    if (!this.isSessionStatePathSegment(sessionId)) return false;
+    try {
+      return this.deps.cliSessionCatalog?.hasSession(sessionId) === true;
+    } catch (error) {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Failed to check CLI session catalog:`,
+        error instanceof Error ? error.message : error,
+      );
+      return false;
+    }
+  }
+
+  private hasKnownPersistedSession(sessionId: string): boolean {
+    return this.hasCliCatalogSession(sessionId) || this.hasWorkspaceYamlOnDisk(sessionId);
   }
 
   private async canAddressSession(sessionId: string): Promise<boolean> {
@@ -926,7 +946,7 @@ export class SessionManager {
       return true;
     }
 
-    return this.hasSessionOnDisk(sessionId);
+    return this.hasKnownPersistedSession(sessionId);
   }
 
   async submitUserInputResponse(
@@ -1309,6 +1329,8 @@ export class SessionManager {
         ]);
         const cachedSession = this.cacheResumedSession(sessionId, session);
         this.probeMcpStatus(sessionId, cachedSession);
+        this.invalidateSessionListCache("session:warm");
+        this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
 
         const duration = Date.now() - t0;
         this.recordSpan("session.warm.coldResume", duration, sessionId);
