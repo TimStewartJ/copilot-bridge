@@ -32,7 +32,8 @@ interface TruncateQuietIntervalDeferTailOptions {
   recordSpan?: (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) => void;
 }
 
-const TERMINAL_EVENT_TYPES = new Set(["session.idle", "session.error", "abort", "session.shutdown"]);
+const COMPLETION_TERMINAL_EVENT_TYPES = new Set(["assistant.turn_end", "session.idle"]);
+const FAILURE_TERMINAL_EVENT_TYPES = new Set(["session.error", "abort", "session.shutdown"]);
 const TURN_ACTIVITY_EVENT_TYPES = new Set([
   "user.message",
   "assistant.turn_start",
@@ -86,8 +87,12 @@ function blocksQuietDeferTruncation(toolName: string): boolean {
   return !toolName.trim() || TRUNCATION_BLOCKED_TOOL_NAMES.has(toolName);
 }
 
-function isTerminalEvent(event: any): boolean {
-  return TERMINAL_EVENT_TYPES.has(event?.type);
+function isCompletionTerminalEvent(event: any): boolean {
+  return COMPLETION_TERMINAL_EVENT_TYPES.has(event?.type);
+}
+
+function isFailureTerminalEvent(event: any): boolean {
+  return FAILURE_TERMINAL_EVENT_TYPES.has(event?.type);
 }
 
 function isTurnActivityEvent(event: any): boolean {
@@ -118,12 +123,10 @@ export function findQuietIntervalDeferTailTruncationCandidate(
   const candidate = events[candidateIndex] as any;
   if (typeof candidate?.id !== "string" || !candidate.id.trim()) return undefined;
 
-  let idleTerminalCount = 0;
-  let terminalSeen = false;
+  let completionTerminalIndex = -1;
   for (let index = candidateIndex + 1; index < events.length; index += 1) {
     const event = events[index] as any;
 
-    if (terminalSeen && isTurnActivityEvent(event)) return undefined;
     if (event?.type === "user.message") return undefined;
 
     if (event?.type === "tool.execution_start") {
@@ -136,15 +139,18 @@ export function findQuietIntervalDeferTailTruncationCandidate(
     if (event?.type === "subagent.started" || event?.type === "subagent.completed" || event?.type === "subagent.failed") {
       return undefined;
     }
+    if (isFailureTerminalEvent(event)) return undefined;
 
-    if (!isTerminalEvent(event)) continue;
-    if (event.type !== "session.idle") return undefined;
-    terminalSeen = true;
-    idleTerminalCount += 1;
-    if (idleTerminalCount > 1) return undefined;
+    if (isCompletionTerminalEvent(event)) {
+      completionTerminalIndex = index;
+    }
   }
 
-  if (idleTerminalCount !== 1) return undefined;
+  if (completionTerminalIndex < 0) return undefined;
+  for (let index = completionTerminalIndex + 1; index < events.length; index += 1) {
+    if (isTurnActivityEvent(events[index])) return undefined;
+  }
+
   return {
     eventId: candidate.id,
     eventsToRemove: events.length - candidateIndex,
