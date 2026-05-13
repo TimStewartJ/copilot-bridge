@@ -822,6 +822,19 @@ export default function App() {
     }
   }, [addOptimisticSession, queryClient]);
 
+  const handleStartPromptSession = useCallback(async (prompt: string, taskId?: string) => {
+    const newSessionId = await materializeSession(taskId);
+    // Send before navigating so the destination reconnect sees an active stream.
+    try {
+      await sendChatMessage(newSessionId, prompt);
+    } catch (error) {
+      setDraftImmediate(newSessionId, prompt);
+      navigateToSession(newSessionId, taskId);
+      throw error;
+    }
+    return newSessionId;
+  }, [materializeSession, navigateToSession, setDraftImmediate]);
+
   const isSessionBusy = useCallback((sessionId: string) => {
     const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
     if (busyHintExpiresAt && busyHintExpiresAt > Date.now()) {
@@ -1509,6 +1522,7 @@ export default function App() {
                 <Dashboard
                   onSelectTask={handleSelectTask}
                   onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
                 />
               }
             />
@@ -1518,6 +1532,7 @@ export default function App() {
                 <Dashboard
                   onSelectTask={handleSelectTask}
                   onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }

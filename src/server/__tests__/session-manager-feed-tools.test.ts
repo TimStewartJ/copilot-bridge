@@ -90,6 +90,46 @@ describe("session manager feed tools", () => {
     expect(explicit.card.status).toBe("active");
   });
 
+  it("feed_save stores, preserves, and clears prompt actions", async () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+
+    const created = await saveTool.handler({
+      key: "action:one",
+      title: "Review action",
+      action: {
+        label: "Review now",
+        prompt: "Review this feed card.",
+      },
+    }, createInvocation("feed_save")) as any;
+    expect(created.card.action).toEqual({
+      label: "Review now",
+      prompt: "Review this feed card.",
+    });
+
+    const preserved = await saveTool.handler({
+      key: "action:one",
+      title: "Review action renamed",
+    }, createInvocation("feed_save")) as any;
+    expect(preserved.card.action).toEqual(created.card.action);
+
+    const cleared = await saveTool.handler({
+      key: "action:one",
+      action: null,
+    }, createInvocation("feed_save")) as any;
+    expect(cleared.card.action).toBeNull();
+  });
+
+  it("feed_save rejects invalid prompt actions", async () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+
+    await expect(saveTool.handler({
+      title: "Bad action",
+      action: { label: "No prompt" },
+    }, createInvocation("feed_save"))).resolves.toEqual(toolFailure("action.prompt is required"));
+  });
+
   it("feed_list defaults to active cards", async () => {
     const { ctx } = createTestApp();
     const saveTool = getTool(ctx, "feed_save");

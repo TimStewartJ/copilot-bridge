@@ -5,6 +5,7 @@ import {
   patchChecklistItem,
   patchFeedCard,
   type DashboardChecklistItem,
+  type FeedCard as FeedCardData,
   type FeedCardStatus,
 } from "../api";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
@@ -12,9 +13,9 @@ import { useFeedQuery } from "../hooks/queries/useFeed";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
 import ChecklistItemRow from "./ChecklistItemRow";
-import FeedCard from "./FeedCard";
+import FeedCard, { DEFAULT_FEED_ACTION_LABEL } from "./FeedCard";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
-import { ArrowUpDown, Check, CheckSquare, ChevronDown, ChevronRight, Inbox, Plus } from "lucide-react";
+import { ArrowUpDown, Check, CheckSquare, ChevronDown, ChevronRight, Inbox, MessageSquare, Plus, X } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
 import { describeHomeChecklistIndicator, getHomeChecklistIndicator, type HomeChecklistIndicatorState } from "../checklist-helpers";
@@ -34,7 +35,14 @@ const DASHBOARD_TAB_STORAGE_KEY = "dashboard-active-tab";
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
   onSelectSession: (sessionId: string, taskId?: string) => void;
+  onStartPromptSession: (prompt: string, taskId?: string) => Promise<string>;
   scrollRestoration?: PullToRefreshScrollRestoration;
+}
+
+interface FeedActionDraft {
+  card: FeedCardData;
+  prompt: string;
+  taskId: string | null;
 }
 
 interface ChecklistGroup {
@@ -112,6 +120,13 @@ export function dashboardChecklistCountClass(state: HomeChecklistIndicatorState)
     default:
       return "border-border bg-bg-hover text-text-faint";
   }
+}
+
+export function resolveFeedActionTaskId(card: Pick<FeedCardData, "taskId" | "action">): string | null {
+  if (!card.action) return null;
+  return Object.prototype.hasOwnProperty.call(card.action, "taskId")
+    ? card.action.taskId ?? null
+    : card.taskId ?? null;
 }
 
 function deadlineSortKey(deadline: string | undefined): number {
@@ -213,6 +228,7 @@ function groupChecklistItemsByTask(checklistItems: DashboardChecklistItem[]): Ch
 export default function Dashboard({
   onSelectTask,
   onSelectSession,
+  onStartPromptSession,
   scrollRestoration,
 }: DashboardProps) {
   const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
@@ -225,7 +241,11 @@ export default function Dashboard({
   const [checklistSort, setChecklistSort] = useState<ChecklistSort>(getSavedSort);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(getCollapsedSet);
   const [activeTab, setActiveTab] = useState<DashboardTab>(getSavedDashboardTab);
+  const [actionDraft, setActionDraft] = useState<FeedActionDraft | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSubmitting, setActionSubmitting] = useState(false);
   const lastLocalChange = useRef(0);
+  const actionPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const feedFilters = useMemo(() => ({
     limit: 100,
     ...(showResolvedFeed ? { includeDismissed: true } : {}),
@@ -244,6 +264,19 @@ export default function Dashboard({
       setLocalCompletedChecklistItems(data.completedChecklistItems);
     }
   }, [data]);
+
+  useEffect(() => {
+    if (!actionDraft) return;
+    actionPromptRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !actionSubmitting) {
+        setActionDraft(null);
+        setActionError(null);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [actionDraft?.card.id, actionSubmitting]);
 
   const sortedOpenChecklistItems = useMemo(
     () => sortChecklistItems(localOpenChecklistItems, checklistSort),
@@ -362,6 +395,66 @@ export default function Dashboard({
     await refetchFeed();
   };
 
+  const openFeedAction = (card: FeedCardData) => {
+    if (!card.action) return;
+    setActionDraft({
+      card,
+      prompt: card.action.prompt,
+      taskId: resolveFeedActionTaskId(card),
+    });
+    setActionError(null);
+  };
+
+  const closeFeedAction = () => {
+    if (actionSubmitting) return;
+    setActionDraft(null);
+    setActionError(null);
+  };
+
+  const handleStartFeedAction = async () => {
+    if (!actionDraft) return;
+    const draft = actionDraft;
+    const prompt = actionDraft.prompt.trim();
+    if (!prompt) {
+      setActionError("Prompt is required.");
+      return;
+    }
+    const latestCard = feedCards.find((card) => card.id === actionDraft.card.id);
+    const latestActionTaskId = latestCard ? resolveFeedActionTaskId(latestCard) : null;
+    if (
+      !latestCard
+      || latestCard.status !== "active"
+      || !latestCard.action
+      || latestCard.action.prompt !== actionDraft.card.action?.prompt
+      || latestActionTaskId !== actionDraft.taskId
+    ) {
+      if (!latestCard || latestCard.status !== "active" || !latestCard.action) {
+        setActionError("This action is no longer available. Close the preview and reopen the card if needed.");
+        return;
+      }
+      setActionDraft({
+        card: latestCard,
+        prompt: latestCard.action.prompt,
+        taskId: latestActionTaskId,
+      });
+      setActionError("This card changed while the preview was open. Review the latest prompt before starting.");
+      return;
+    }
+    setActionSubmitting(true);
+    setActionError(null);
+    try {
+      const sessionId = await onStartPromptSession(prompt, draft.taskId ?? undefined);
+      await patchFeedCard(draft.card.id, { status: "done", sessionId });
+      await refetchFeed();
+      setActionDraft(null);
+      setActionSubmitting(false);
+      onSelectSession(sessionId, draft.taskId ?? undefined);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      setActionSubmitting(false);
+    }
+  };
+
   const handleRefresh = async () => {
     await Promise.all([refetchDashboard(), refetchFeed()]);
   };
@@ -472,6 +565,7 @@ export default function Dashboard({
                     card={card}
                     onSelectTask={(taskId) => onSelectTask(taskId)}
                     onSelectSession={onSelectSession}
+                    onAction={openFeedAction}
                     onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
                     onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
                   />
@@ -678,6 +772,92 @@ export default function Dashboard({
           )}
         </div>
       </PullToRefresh>
+      {actionDraft && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeFeedAction();
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="feed-action-title"
+            className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-bg-primary shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs font-medium text-text-muted">
+                  <MessageSquare size={14} />
+                  Feed action preview
+                </div>
+                <h2 id="feed-action-title" className="mt-1 truncate text-lg font-semibold text-text-primary">
+                  {actionDraft.card.action?.label ?? DEFAULT_FEED_ACTION_LABEL}
+                </h2>
+                <p className="mt-1 text-xs text-text-muted">
+                  Review or edit the prompt before starting a new session.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeFeedAction}
+                disabled={actionSubmitting}
+                className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+                aria-label="Close action preview"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+              <div className="rounded-lg border border-border bg-bg-secondary/70 p-3">
+                <div className="text-xs font-medium text-text-muted">Card</div>
+                <div className="mt-1 text-sm font-semibold text-text-primary">{actionDraft.card.title}</div>
+                {actionDraft.taskId && (
+                  <div className="mt-1 text-xs text-text-muted">Session will be linked to task {actionDraft.taskId}.</div>
+                )}
+              </div>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-text-secondary">Prompt to send</span>
+                <textarea
+                  ref={actionPromptRef}
+                  value={actionDraft.prompt}
+                  onChange={(event) => {
+                    setActionDraft((current) => current ? { ...current, prompt: event.target.value } : current);
+                    setActionError(null);
+                  }}
+                  className="min-h-56 w-full resize-y rounded-lg border border-border bg-bg-surface px-3 py-2 text-sm leading-relaxed text-text-primary outline-none transition-colors focus:border-accent"
+                  disabled={actionSubmitting}
+                />
+              </label>
+              {actionError && (
+                <div className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-sm text-error">
+                  {actionError}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4">
+              <button
+                type="button"
+                onClick={closeFeedAction}
+                disabled={actionSubmitting}
+                className={UI.button.secondary}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleStartFeedAction}
+                disabled={actionSubmitting || actionDraft.prompt.trim().length === 0}
+                className={`${UI.button.primary} inline-flex items-center gap-1.5`}
+              >
+                <MessageSquare size={14} />
+                {actionSubmitting ? "Starting..." : "Start session"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

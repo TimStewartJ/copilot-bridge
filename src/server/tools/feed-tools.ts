@@ -20,6 +20,7 @@ const FEED_SAVE_FIELDS = [
   "url",
   "links",
   "metadata",
+  "action",
   "visual",
   "pinned",
 ] as const;
@@ -99,7 +100,7 @@ function normalizeVisualPayload(value: unknown): Record<string, unknown> | null 
 export function createFeedTools(ctx: AppContext) {
   return [
     defineTool("feed_save", {
-      description: "Create or update a durable dashboard feed card. Use this only for concise, browseable state that should remain visible outside chat — not for narration. Use key for ongoing cards you plan to update in place; omit key for distinct historical cards. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
+      description: "Create or update a durable dashboard feed card. Use this only for concise, browseable state that should remain visible outside chat — not for narration. Use key for ongoing cards you plan to update in place; omit key for distinct historical cards. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
       parameters: {
         type: "object",
         properties: {
@@ -126,6 +127,21 @@ export function createFeedTools(ctx: AppContext) {
             },
           },
           metadata: { type: "object", description: "Optional small JSON object for agent-owned structured data. Replaces existing metadata when updating." },
+          action: {
+            anyOf: [{
+              type: "object",
+              properties: {
+                label: { type: "string", description: "Optional short button label. Defaults to Start session." },
+                prompt: { type: "string", description: "Prompt shown to the user before starting the session. Required when action is provided." },
+                taskId: {
+                  anyOf: [{ type: "string" }, { type: "null" }],
+                  description: "Optional task context override. Omit to inherit the card taskId; pass null to force a standalone session.",
+                },
+              },
+              required: ["prompt"],
+            }, { type: "null" }],
+            description: "Optional prompt action. First click previews the prompt; user confirmation starts a normal session with this prompt. Null clears the action.",
+          },
           visual: {
             anyOf: [{
               type: "object",

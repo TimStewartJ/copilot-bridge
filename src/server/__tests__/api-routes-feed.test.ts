@@ -49,6 +49,7 @@ describe("Feed routes", () => {
         priority: "high",
         links: [{ label: "Preview", url: "https://example.test/preview" }],
         metadata: { prefix: "abc" },
+        action: { label: "Open review", prompt: "Review the preview.", taskId: null },
         pinned: true,
       });
 
@@ -62,6 +63,7 @@ describe("Feed routes", () => {
       priority: "high",
       links: [{ label: "Preview", url: "https://example.test/preview" }],
       metadata: { prefix: "abc" },
+      action: { label: "Open review", prompt: "Review the preview.", taskId: null },
       pinned: true,
     }));
 
@@ -79,6 +81,7 @@ describe("Feed routes", () => {
     expect(update.body.card).toEqual(expect.objectContaining({
       title: "Preview ready",
       body: "Open the preview",
+      action: { label: "Open review", prompt: "Review the preview.", taskId: null },
       status: "active",
     }));
   });
@@ -134,9 +137,19 @@ describe("Feed routes", () => {
 
     const patch = await request(app)
       .patch(`/api/feed/${id}`)
-      .send({ status: "done", pinned: true });
+      .send({ status: "done", pinned: true, action: { prompt: "Resolve this card." } });
     expect(patch.status).toBe(200);
-    expect(patch.body.card).toEqual(expect.objectContaining({ status: "done", pinned: true }));
+    expect(patch.body.card).toEqual(expect.objectContaining({
+      status: "done",
+      pinned: true,
+      action: { prompt: "Resolve this card." },
+    }));
+
+    const clearAction = await request(app)
+      .patch(`/api/feed/${id}`)
+      .send({ action: null });
+    expect(clearAction.status).toBe(200);
+    expect(clearAction.body.card.action).toBeNull();
 
     const remove = await request(app).delete(`/api/feed/${id}`);
     expect(remove.status).toBe(200);
@@ -191,6 +204,10 @@ describe("Feed routes", () => {
     const unsafeUrl = await request(app).post("/api/feed").send({ title: "Bad", url: "javascript:alert(1)" });
     expect(unsafeUrl.status).toBe(400);
     expect(unsafeUrl.body.error).toContain("url must be http");
+
+    const invalidAction = await request(app).post("/api/feed").send({ title: "Bad", action: { label: "Run" } });
+    expect(invalidAction.status).toBe(400);
+    expect(invalidAction.body.error).toContain("action.prompt is required");
 
     const rejectedVisual = await request(app).post("/api/feed").send({ title: "Bad", visual: { kind: "mermaid" } });
     expect(rejectedVisual.status).toBe(400);

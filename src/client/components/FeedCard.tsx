@@ -16,6 +16,7 @@ interface FeedCardProps {
   card: FeedCardData;
   onSelectTask: (taskId: string) => void;
   onSelectSession: (sessionId: string, taskId?: string) => void;
+  onAction: (card: FeedCardData) => void;
   onStatusChange: (card: FeedCardData, status: FeedCardStatus) => void | Promise<void>;
   onDelete: (card: FeedCardData) => void | Promise<void>;
 }
@@ -28,6 +29,8 @@ const KIND_LABELS: Record<string, string> = {
   artifact: "Artifact",
   link: "Link",
 };
+
+export const DEFAULT_FEED_ACTION_LABEL = "Start session";
 
 const PRIORITY_CLASS: Record<FeedCardData["priority"], string> = {
   low: UI.chip.muted,
@@ -62,6 +65,7 @@ export default function FeedCard({
   card,
   onSelectTask,
   onSelectSession,
+  onAction,
   onStatusChange,
   onDelete,
 }: FeedCardProps) {
@@ -69,6 +73,7 @@ export default function FeedCard({
     ...(card.url ? [{ label: "Open", url: card.url }] : []),
     ...card.links,
   ];
+  const hasPromptAction = card.status === "active" && Boolean(card.action);
 
   return (
     <article className={`${UI.surface.card} p-4 space-y-3 ${card.priority === "high" ? "border-warning/50" : ""}`}>
@@ -148,8 +153,18 @@ export default function FeedCard({
         </div>
       )}
 
-      {(card.taskId || card.sessionId || relatedLinks.length > 0) && (
+      {(hasPromptAction || card.taskId || card.sessionId || relatedLinks.length > 0) && (
         <div className="flex flex-wrap items-center gap-2">
+          {hasPromptAction && (
+            <button
+              type="button"
+              onClick={() => onAction(card)}
+              className={`${UI.button.primary} inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs`}
+            >
+              <MessageSquare size={13} />
+              {card.action?.label ?? DEFAULT_FEED_ACTION_LABEL}
+            </button>
+          )}
           {card.taskId && (
             <button
               type="button"

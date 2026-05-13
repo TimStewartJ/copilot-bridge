@@ -1133,6 +1133,12 @@ export interface FeedCardLink {
   url: string;
 }
 
+export interface FeedCardAction {
+  label?: string;
+  prompt: string;
+  taskId?: string | null;
+}
+
 export interface FeedCard {
   id: string;
   dedupeKey: string | null;
@@ -1147,6 +1153,7 @@ export interface FeedCard {
   links: FeedCardLink[];
   metadata: Record<string, unknown> | null;
   visual: VisualArtifact | null;
+  action: FeedCardAction | null;
   pinned: boolean;
   statusChangedAt: string;
   createdAt: string;
@@ -1164,7 +1171,7 @@ export interface FeedQueryFilters {
 
 export type FeedCardMutation = Partial<Pick<
   FeedCard,
-  "title" | "body" | "kind" | "priority" | "status" | "taskId" | "sessionId" | "url" | "links" | "metadata" | "pinned"
+  "title" | "body" | "kind" | "priority" | "status" | "taskId" | "sessionId" | "url" | "links" | "metadata" | "action" | "pinned"
 >> & {
   key?: string;
 };

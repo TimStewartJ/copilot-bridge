@@ -22,6 +22,12 @@ export interface FeedCardVisual {
   altText?: string;
 }
 
+export interface FeedCardAction {
+  label?: string;
+  prompt: string;
+  taskId?: string | null;
+}
+
 export interface FeedCard {
   id: string;
   dedupeKey: string | null;
@@ -36,6 +42,7 @@ export interface FeedCard {
   links: FeedCardLink[];
   metadata: Record<string, unknown> | null;
   visual: FeedCardVisual | null;
+  action: FeedCardAction | null;
   pinned: boolean;
   statusChangedAt: string;
   createdAt: string;
@@ -64,6 +71,7 @@ export interface FeedCardMutationInput {
   url?: unknown;
   links?: unknown;
   metadata?: unknown;
+  action?: unknown;
   pinned?: unknown;
 }
 
@@ -108,6 +116,9 @@ const FIELD_LIMITS = {
   linksJson: 4 * 1024,
   metadataJson: 4 * 1024,
   visualJson: 4 * 1024,
+  actionJson: 12 * 1024,
+  actionLabel: 80,
+  actionPrompt: 8 * 1024,
 } as const;
 
 const MUTATION_FIELDS = new Set([
@@ -123,6 +134,7 @@ const MUTATION_FIELDS = new Set([
   "url",
   "links",
   "metadata",
+  "action",
   "pinned",
 ]);
 
@@ -138,6 +150,7 @@ type MutableFeedCardField =
   | "linksJson"
   | "metadataJson"
   | "visualJson"
+  | "actionJson"
   | "pinned";
 
 type NormalizedCreateFields = {
@@ -153,6 +166,7 @@ type NormalizedCreateFields = {
   linksJson: string;
   metadataJson: string | null;
   visualJson: string | null;
+  actionJson: string | null;
   pinned: boolean;
 };
 
@@ -300,6 +314,53 @@ function normalizeMetadata(value: unknown): string | null {
   return json;
 }
 
+function normalizeActionLabel(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") throw new FeedCardValidationError("action.label must be a string");
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new FeedCardValidationError("action.label cannot contain control characters");
+  }
+  assertByteLimit("actionLabel", trimmed);
+  return trimmed;
+}
+
+function normalizeActionPrompt(value: unknown): string {
+  if (typeof value !== "string") throw new FeedCardValidationError("action.prompt is required");
+  const trimmed = value.trim();
+  if (!trimmed) throw new FeedCardValidationError("action.prompt is required");
+  assertByteLimit("actionPrompt", trimmed);
+  return trimmed;
+}
+
+function normalizeActionTaskId(record: Record<string, unknown>, action: FeedCardAction): void {
+  if (!hasOwn(record, "taskId")) return;
+  action.taskId = normalizeOptionalNullableString("taskId", record.taskId);
+}
+
+function normalizeAction(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new FeedCardValidationError("action must be an object or null");
+  }
+  const record = value as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((field) => field !== "label" && field !== "prompt" && field !== "taskId");
+  if (unknown.length > 0) {
+    throw new FeedCardValidationError(`Unknown action field(s): ${unknown.join(", ")}`);
+  }
+  const action: FeedCardAction = {
+    prompt: normalizeActionPrompt(record.prompt),
+  };
+  const label = normalizeActionLabel(record.label);
+  if (label) action.label = label;
+  normalizeActionTaskId(record, action);
+
+  const json = JSON.stringify(action);
+  assertByteLimit("actionJson", json);
+  return json;
+}
+
 function normalizeVisualKind(value: unknown): FeedCardVisual["kind"] {
   if (value === "image" || value === "mermaid" || value === "vega-lite" || value === "html") return value;
   throw new FeedCardValidationError("visual.kind must be one of: image, mermaid, vega-lite, html");
@@ -406,6 +467,22 @@ function parseVisualJson(value: string | null): FeedCardVisual | null {
   return visual;
 }
 
+function parseActionJson(value: string | null): FeedCardAction | null {
+  if (value === null) return null;
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Stored feed card action is invalid");
+  }
+  const record = parsed as Record<string, unknown>;
+  const action: FeedCardAction = {
+    prompt: normalizeActionPrompt(record.prompt),
+  };
+  const label = normalizeActionLabel(record.label);
+  if (label) action.label = label;
+  normalizeActionTaskId(record, action);
+  return action;
+}
+
 function normalizeCreateInput(input: FeedCardMutationInput): NormalizedCreateFields {
   assertKnownMutationFields(input);
   return {
@@ -421,6 +498,7 @@ function normalizeCreateInput(input: FeedCardMutationInput): NormalizedCreateFie
     linksJson: normalizeLinks(input.links),
     metadataJson: normalizeMetadata(input.metadata),
     visualJson: null,
+    actionJson: normalizeAction(input.action),
     pinned: normalizePinned(input.pinned),
   };
 }
@@ -439,6 +517,7 @@ function normalizeUpdateInput(input: FeedCardMutationInput): NormalizedUpdateFie
   if (hasOwn(record, "url")) normalized.url = normalizeOptionalUrl("url", input.url);
   if (hasOwn(record, "links")) normalized.linksJson = normalizeLinks(input.links);
   if (hasOwn(record, "metadata")) normalized.metadataJson = normalizeMetadata(input.metadata);
+  if (hasOwn(record, "action")) normalized.actionJson = normalizeAction(input.action);
   if (hasOwn(record, "pinned")) normalized.pinned = normalizePinned(input.pinned) ? 1 : 0;
   return normalized;
 }
@@ -473,6 +552,7 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
       links: parseLinksJson(row.linksJson),
       metadata: parseMetadataJson(row.metadataJson ?? null),
       visual: parseVisualJson(row.visualJson ?? null),
+      action: parseActionJson(row.actionJson ?? null),
       pinned: row.pinned === 1,
       statusChangedAt: row.statusChangedAt,
       createdAt: row.createdAt,
@@ -520,9 +600,9 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     db.prepare(`
       INSERT INTO feed_cards (
         id, dedupeKey, title, body, kind, priority, status, taskId, sessionId, url,
-        linksJson, metadataJson, visualJson, pinned, statusChangedAt, createdAt, updatedAt
+        linksJson, metadataJson, visualJson, actionJson, pinned, statusChangedAt, createdAt, updatedAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       fields.dedupeKey,
@@ -537,6 +617,7 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
       fields.linksJson,
       fields.metadataJson,
       fields.visualJson,
+      fields.actionJson,
       fields.pinned ? 1 : 0,
       now,
       now,

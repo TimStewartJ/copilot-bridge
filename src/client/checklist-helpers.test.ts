@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dashboardChecklistCountClass } from "./components/Dashboard";
+import { dashboardChecklistCountClass, resolveFeedActionTaskId } from "./components/Dashboard";
 import { describeHomeChecklistIndicator, getHomeChecklistIndicator } from "./checklist-helpers";
 
 describe("getHomeChecklistIndicator", () => {
@@ -64,5 +64,25 @@ describe("dashboardChecklistCountClass", () => {
 
   it("uses error styling for overdue checklist deadlines", () => {
     expect(dashboardChecklistCountClass("overdue")).toContain("text-error");
+  });
+});
+
+describe("resolveFeedActionTaskId", () => {
+  it("uses the card task when action taskId is omitted", () => {
+    expect(resolveFeedActionTaskId({
+      taskId: "task-card",
+      action: { prompt: "Continue this" },
+    })).toBe("task-card");
+  });
+
+  it("supports explicit action task override and standalone null", () => {
+    expect(resolveFeedActionTaskId({
+      taskId: "task-card",
+      action: { prompt: "Continue this", taskId: "task-action" },
+    })).toBe("task-action");
+    expect(resolveFeedActionTaskId({
+      taskId: "task-card",
+      action: { prompt: "Continue this", taskId: null },
+    })).toBeNull();
   });
 });
