@@ -3,6 +3,35 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("release scripts", () => {
+  function expectBridgeLogRotationBeforeRedirect(script: string, stdoutRoot: string, stderrRoot: string) {
+    expect(script).toContain("function Remove-OldBridgeLogArchives($Path, $MaxArchives)");
+    expect(script).toContain("function Move-ExistingBridgeLog($Path, $MaxArchives)");
+    expect(script).toContain(`$bridgeStdoutLog = Join-Path $${stdoutRoot} "bridge.log"`);
+    expect(script).toContain(`$bridgeStderrLog = Join-Path $${stderrRoot} "bridge-error.log"`);
+    expect(script).toContain("$bridgeLogArchiveRetention = 20");
+    expect(script).toContain("Test-Path -LiteralPath $logDirectory -PathType Container");
+    expect(script).toContain("Where-Object { $_.Name -match $archivePattern }");
+    expect(script).toContain("Select-Object -Skip $MaxArchives");
+    expect(script).toContain("Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop");
+    expect(script).toContain("Remove-OldBridgeLogArchives $Path $MaxArchives");
+    expect(script).toContain("Remove-Item -LiteralPath $archive.FullName -Force -ErrorAction Stop");
+    expect(script).toContain('Write-Warning "Could not remove old Bridge log archive $($archive.FullName): $($_.Exception.Message)"');
+    expect(script).toContain('throw "Could not rotate existing Bridge log $Path to $archivePath after $attempt attempts: $($_.Exception.Message)"');
+
+    const moveExistingLog = script.indexOf("Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop");
+    const pruneArchives = script.indexOf("Remove-OldBridgeLogArchives $Path $MaxArchives");
+    const stdoutRotation = script.indexOf("Move-ExistingBridgeLog $bridgeStdoutLog $bridgeLogArchiveRetention");
+    const stderrRotation = script.indexOf("Move-ExistingBridgeLog $bridgeStderrLog $bridgeLogArchiveRetention");
+    const stdoutRedirect = script.indexOf("-RedirectStandardOutput $bridgeStdoutLog");
+    const stderrRedirect = script.indexOf("-RedirectStandardError $bridgeStderrLog");
+
+    expect(pruneArchives).toBeGreaterThan(moveExistingLog);
+    expect(stdoutRotation).toBeGreaterThanOrEqual(0);
+    expect(stderrRotation).toBeGreaterThanOrEqual(0);
+    expect(stdoutRedirect).toBeGreaterThan(stdoutRotation);
+    expect(stderrRedirect).toBeGreaterThan(stderrRotation);
+  }
+
   it("preserves mutable directories and health-checks rollback after failed updates", () => {
     const script = readFileSync(join(process.cwd(), "scripts", "update-release.ps1"), "utf-8");
 
@@ -32,6 +61,22 @@ describe("release scripts", () => {
 
     expect(script).toContain('Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"');
     expect(script).not.toContain('Set-DefaultEnv "BRIDGE_DISTRIBUTION_MODE" "release"');
+  });
+
+  it("rotates release stdout and stderr logs before redirecting to active log paths", () => {
+    const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
+
+    expectBridgeLogRotationBeforeRedirect(script, "logsDir", "logsDir");
+    expect(script).not.toMatch(/-RedirectStandardOutput\s+\(Join-Path\s+\$logsDir\s+"bridge\.log"\)/);
+    expect(script).not.toMatch(/-RedirectStandardError\s+\(Join-Path\s+\$logsDir\s+"bridge-error\.log"\)/);
+  });
+
+  it("rotates local stdout and stderr logs before redirecting to active log paths", () => {
+    const script = readFileSync(join(process.cwd(), "scripts", "start-bridge.ps1"), "utf-8");
+
+    expectBridgeLogRotationBeforeRedirect(script, "dataDir", "dataDir");
+    expect(script).not.toMatch(/-RedirectStandardOutput\s+"\$dataDir\\bridge\.log"/);
+    expect(script).not.toMatch(/-RedirectStandardError\s+"\$dataDir\\bridge-error\.log"/);
   });
 
   it("does not stop the active updater when stopping release processes", () => {
