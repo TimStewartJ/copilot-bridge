@@ -18,6 +18,10 @@ export function ModelSection({
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const currentModel = draft.model ?? "";
+  const formatMultiplier = (multiplier: unknown) =>
+    typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier !== 1
+      ? ` (${multiplier}×)`
+      : "";
 
   return (
     <SettingsSection
@@ -53,7 +57,7 @@ export function ModelSection({
               <option value="">Default (SDK default)</option>
               {availableModels.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name}{m.billing && m.billing.multiplier !== 1 ? ` (${m.billing.multiplier}×)` : ""}
+                  {m.name}{formatMultiplier(m.billing?.multiplier)}
                 </option>
               ))}
             </select>

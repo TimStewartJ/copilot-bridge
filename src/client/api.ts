@@ -1598,7 +1598,7 @@ export interface ModelInfo {
   id: string;
   name: string;
   policy?: { state: "enabled" | "disabled" | "unconfigured" };
-  billing?: { multiplier: number };
+  billing?: { multiplier?: number };
   supportedReasoningEfforts?: ReasoningEffort[];
   defaultReasoningEffort?: ReasoningEffort;
 }

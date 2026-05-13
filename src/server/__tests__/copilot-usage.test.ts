@@ -671,6 +671,33 @@ describe("readCopilotUsageSummary", () => {
     ]);
   });
 
+  it("uses assistant message model metadata when live usage events include it", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-live-message-model", [
+      {
+        type: "session.start",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        data: { selectedModel: "gpt-5.5" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:05.000Z",
+        data: { model: "claude-opus-4.7", requestId: "request-1", outputTokens: 10 },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:06.000Z",
+        data: { model: "claude-opus-4.7", requestId: "request-1", outputTokens: 12 },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.models).toEqual([
+      expect.objectContaining({ model: "claude-opus-4.7", requests: 1, outputTokens: 12, totalTokens: 12 }),
+    ]);
+  });
+
   it("prefers shutdown model metrics over assistant message output tokens", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
