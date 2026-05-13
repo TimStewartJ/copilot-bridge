@@ -373,11 +373,12 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
           const requestId = typeof data?.requestId === "string" && data.requestId.trim()
             ? data.requestId.trim()
             : `event:${fallbackEventIndex++}`;
-          const key = `${selectedModel}\u0000${requestId}`;
+          const messageModel = normalizeModelName(data?.model) ?? selectedModel;
+          const key = `${messageModel}\u0000${requestId}`;
           const existing = assistantUsageByRequest.get(key);
           if (!existing || outputTokens > existing.outputTokens) {
             assistantUsageByRequest.set(key, {
-              model: selectedModel,
+              model: messageModel,
               outputTokens,
               timestamp: eventAt,
             });

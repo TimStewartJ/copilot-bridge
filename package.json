@@ -40,7 +40,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@fontsource-variable/inter": "^5.2.8",
-    "@github/copilot-sdk": "1.0.0-beta.3",
+    "@github/copilot-sdk": "1.0.0-beta.4",
     "@tanstack/react-query": "^5.96.2",
     "@types/multer": "^2.1.0",
     "@types/web-push": "^3.6.4",
@@ -65,7 +65,7 @@
     "yaml": "^2.8.3"
   },
   "overrides": {
-    "@github/copilot": "1.0.44"
+    "@github/copilot": "1.0.47"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",

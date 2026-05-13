@@ -80,6 +80,12 @@ function getAvailableModels(models: readonly ModelInfo[] | null): ModelInfo[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function formatModelMultiplier(multiplier: unknown, suffix: "x" | "×"): string {
+  return typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier !== 1
+    ? ` (${multiplier}${suffix})`
+    : "";
+}
+
 function isReasoningEffort(value: string): value is ReasoningEffort {
   return REASONING_EFFORT_OPTIONS.some((option) => option.value === value);
 }
@@ -1010,7 +1016,7 @@ export default function SessionList({
                   )}
                   {availableModels.map((model) => (
                     <option key={model.id} value={model.id}>
-                      {model.name}{model.billing && model.billing.multiplier !== 1 ? ` (${model.billing.multiplier}x)` : ""}
+                      {model.name}{formatModelMultiplier(model.billing?.multiplier, "x")}
                     </option>
                   ))}
                 </select>
