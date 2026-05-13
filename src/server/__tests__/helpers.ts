@@ -20,6 +20,7 @@ import { createBridgeSessionStateStore } from "../bridge-session-state-store.js"
 import { createCopilotCliSessionCatalog } from "../copilot-cli-session-catalog.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
+import { createFeedStore } from "../feed-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
@@ -37,6 +38,7 @@ import type { AppContext } from "../app-context.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
+import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "../visual-artifacts.js";
 
 const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
 const TEST_CLEANUP_MAX_RETRIES = 20;
@@ -326,6 +328,12 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     cliSessionCatalog: createCopilotCliSessionCatalog({ copilotHome: runtimePaths.copilotHome }),
     readStateStore: createReadStateStore(db),
     checklistStore: createChecklistStore(db, globalBus),
+    feedStore: createFeedStore(db, globalBus, {
+      onVisualUnreferenced: (visual, card) => {
+        const result = deleteVisualArtifactForOwner(copilotHome, feedCardVisualOwner(card.id), visual.artifactId);
+        if (!result.ok) console.warn(`[test-feed] Failed to delete unreferenced visual ${visual.artifactId}: ${result.error}`);
+      },
+    }),
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
     telemetryStore: createTelemetryStore(db),

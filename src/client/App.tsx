@@ -303,6 +303,8 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
   const invalidateDashboard = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }), [queryClient]);
+  const invalidateFeed = useCallback(() =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.feed() }), [queryClient]);
   const invalidateOpenChecklistItems = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems }), [queryClient]);
   const invalidateTaskGroups = useCallback(() =>
@@ -466,6 +468,9 @@ export default function App() {
       case "task:changed":
         taskChangeInvalidator.handleTaskChange(event.taskId);
         break;
+      case "feed:changed":
+        invalidateFeed();
+        break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
         break;
@@ -474,10 +479,11 @@ export default function App() {
         // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
         invalidateDashboard();
+        invalidateFeed();
         invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateFeed, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
@@ -1502,6 +1508,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onSelectSession={navigateToSession}
                 />
               }
             />
@@ -1510,6 +1517,7 @@ export default function App() {
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
+                  onSelectSession={navigateToSession}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }

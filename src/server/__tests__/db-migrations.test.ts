@@ -55,6 +55,7 @@ describe("database migration registry", () => {
       "bridge-session-state-last-attention-column",
       "bridge_session_state_legacy_backfill_v1",
       "schedule-auto-archive-keep-column",
+      "feed-cards-visual-json-column",
       "schedule-reuse-columns-drop-v1",
       "schedule_runs_legacy_backfill_v1",
       "checklist-items-from-legacy-todos",
@@ -152,5 +153,53 @@ describe("database migration registry", () => {
 
     expect(columns.map((column) => column.name)).toContain("lastAttentionAt");
     expect(indexes.map((index) => index.name)).toContain("idx_bridge_session_state_lastAttentionAt");
+  });
+
+  it("adds visualJson to existing feed_cards tables", () => {
+    const dataDir = createTempDataDir();
+    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    legacyDb.exec(`
+      CREATE TABLE feed_cards (
+        id TEXT PRIMARY KEY,
+        dedupeKey TEXT,
+        title TEXT NOT NULL,
+        body TEXT,
+        kind TEXT NOT NULL DEFAULT 'note',
+        priority TEXT NOT NULL DEFAULT 'normal',
+        status TEXT NOT NULL DEFAULT 'active',
+        taskId TEXT,
+        sessionId TEXT,
+        url TEXT,
+        linksJson TEXT NOT NULL DEFAULT '[]',
+        metadataJson TEXT,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        statusChangedAt TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      INSERT INTO feed_cards (
+        id, title, kind, priority, status, linksJson, pinned, statusChangedAt, createdAt, updatedAt
+      ) VALUES (
+        'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        'Legacy feed card',
+        'note',
+        'normal',
+        'active',
+        '[]',
+        0,
+        '2026-05-13T10:00:00.000Z',
+        '2026-05-13T10:00:00.000Z',
+        '2026-05-13T10:00:00.000Z'
+      );
+    `);
+    legacyDb.close();
+
+    const db = openDatabase(dataDir);
+    const columns = db.prepare("PRAGMA table_info(feed_cards)").all() as Array<{ name: string }>;
+    const row = db.prepare("SELECT title, visualJson FROM feed_cards").get() as { title: string; visualJson: string | null };
+    db.close();
+
+    expect(columns.map((column) => column.name)).toContain("visualJson");
+    expect(row).toEqual({ title: "Legacy feed card", visualJson: null });
   });
 });

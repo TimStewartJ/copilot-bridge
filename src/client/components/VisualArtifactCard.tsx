@@ -18,7 +18,7 @@ export default function VisualArtifactCard({ visual }: VisualArtifactCardProps) 
       : visual.kind === "vega-lite" ? VegaLiteVisual
       : HtmlSandboxVisual;
     return (
-      <div className="inline-flex flex-col gap-2 max-w-lg">
+      <div className="flex w-full min-w-0 flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-text-primary truncate">{visual.title}</span>
           <button
@@ -42,7 +42,7 @@ export default function VisualArtifactCard({ visual }: VisualArtifactCardProps) 
 
   return (
     <>
-      <div className="inline-flex flex-col gap-2 max-w-sm">
+      <div className="flex w-full min-w-0 flex-col gap-2">
         {/* Title row */}
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-text-primary truncate">{visual.title}</span>
@@ -70,13 +70,13 @@ export default function VisualArtifactCard({ visual }: VisualArtifactCardProps) 
         {/* Image preview */}
         <button
           onClick={() => setModalOpen(true)}
-          className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-lg"
+          className="flex w-full justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-lg"
           aria-label={`View full size: ${visual.title}`}
         >
           <img
             src={visual.url}
             alt={altText}
-            className="max-w-full max-h-64 rounded-lg border border-border object-contain bg-bg-primary cursor-zoom-in hover:opacity-95 transition-opacity"
+            className="max-h-80 w-full rounded-lg border border-border object-contain bg-bg-primary cursor-zoom-in hover:opacity-95 transition-opacity"
           />
         </button>
 
@@ -92,4 +92,3 @@ export default function VisualArtifactCard({ visual }: VisualArtifactCardProps) 
     </>
   );
 }
-

@@ -18,6 +18,7 @@ import { createSessionMetaStore } from "../session-meta-store.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
+import { createFeedStore } from "../feed-store.js";
 import { toolFailure } from "../tool-results.js";
 
 describe("SessionManager workspace resolution", () => {
@@ -104,6 +105,7 @@ describe("SessionManager workspace resolution", () => {
       bridgeSessionStateStore: createBridgeSessionStateStore(db),
       readStateStore: createReadStateStore(db),
       checklistStore: createChecklistStore(db, globalBus),
+      feedStore: createFeedStore(db, globalBus),
       globalBus,
       eventBusRegistry,
       sessionManager: manager,

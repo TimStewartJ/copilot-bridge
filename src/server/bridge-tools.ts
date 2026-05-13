@@ -10,6 +10,7 @@ import { createAttachmentTools } from "./tools/attachment-tools.js";
 import { createChecklistTools } from "./tools/checklist-tools.js";
 import { createDeferTools } from "./tools/defer-tools.js";
 import { createDocsTools } from "./tools/docs-tools.js";
+import { createFeedTools } from "./tools/feed-tools.js";
 import { BRIDGE_TOOLS_REPO_ROOT, isDemoMode } from "./tools/helpers.js";
 import { createScheduleTools } from "./tools/schedule-tools.js";
 import { createSelfAdminTools } from "./tools/self-admin-tools.js";
@@ -34,6 +35,7 @@ export function createBridgeTools(ctx: AppContext) {
     ...createSessionTools(ctx),
     ...createAttachmentTools(ctx),
     ...createVisualTools(ctx),
+    ...createFeedTools(ctx),
     ...createSelfAdminTools(ctx),
     ...createScheduleTools(ctx),
     ...createDeferTools(ctx),

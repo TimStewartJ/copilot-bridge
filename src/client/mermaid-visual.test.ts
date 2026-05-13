@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { VisualArtifact } from "./api";
+import { makeMermaidSvgResponsive } from "./components/MermaidVisual";
 
 // Test pure helper logic extracted from MermaidVisual —
 // avoids needing a real browser or React rendering environment.
@@ -31,6 +32,33 @@ describe("mermaid visual helpers", () => {
     it("produces a string safe for use as an HTML id", () => {
       const id = deriveMermaidId("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
       expect(/^[a-z][a-z0-9_-]*$/.test(id)).toBe(true);
+    });
+  });
+
+  describe("makeMermaidSvgResponsive", () => {
+    it("removes fixed svg dimensions and adds responsive sizing", () => {
+      const svg = '<svg id="graph" width="420" height="180" viewBox="0 0 420 180"><g /></svg>';
+      const responsive = makeMermaidSvgResponsive(svg);
+
+      expect(responsive).toContain('<svg id="graph" viewBox="0 0 420 180" style="width: 100%; max-width: 100%; height: auto;">');
+      expect(responsive).not.toContain('width="420"');
+      expect(responsive).not.toContain('height="180"');
+    });
+
+    it("preserves existing svg styles while appending responsive sizing", () => {
+      const svg = '<svg style="max-width: 320px;" width="320" height="100"><g /></svg>';
+      const responsive = makeMermaidSvgResponsive(svg);
+
+      expect(responsive).toContain('style="max-width: 320px; width: 100%; max-width: 100%; height: auto;"');
+    });
+
+    it("keeps fixed dimensions when an svg has no viewBox to preserve aspect ratio", () => {
+      const svg = '<svg width="320" height="100"><g /></svg>';
+      const responsive = makeMermaidSvgResponsive(svg);
+
+      expect(responsive).toContain('width="320"');
+      expect(responsive).toContain('height="100"');
+      expect(responsive).toContain('style="width: 100%; max-width: 100%; height: auto;"');
     });
   });
 

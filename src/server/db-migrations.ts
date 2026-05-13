@@ -398,6 +398,14 @@ function ensureScheduleAutoArchiveKeepColumn(db: DatabaseSync): void {
   }
 }
 
+function ensureFeedCardsVisualJsonColumn(db: DatabaseSync): void {
+  if (!sqliteTableExists(db, "feed_cards")) return;
+  const feedCols = getTableInfo(db, "feed_cards");
+  if (!feedCols.some((c: any) => c.name === "visualJson")) {
+    db.exec("ALTER TABLE feed_cards ADD COLUMN visualJson TEXT");
+  }
+}
+
 function scheduleColumnExpr(cols: any[], name: string, fallback: string): string {
   return cols.some((c: any) => c.name === name) ? name : fallback;
 }
@@ -701,6 +709,13 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     runMode: "every-open",
     description: "Add schedule autoArchiveKeep to legacy schedules tables.",
     apply: ensureScheduleAutoArchiveKeepColumn,
+  },
+  {
+    id: "feed-cards-visual-json-column",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    description: "Add visualJson to feed_cards for dashboard visual artifacts.",
+    apply: ensureFeedCardsVisualJsonColumn,
   },
   {
     id: SCHEDULE_REUSE_COLUMNS_DROP,

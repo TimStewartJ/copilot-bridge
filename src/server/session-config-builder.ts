@@ -16,6 +16,7 @@ import {
   BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
   DEMO_MODE_INSTRUCTIONS,
+  FEED_GUIDANCE,
   RESEARCH_GUIDANCE,
   STAGING_INSTRUCTIONS,
 } from "./session-instructions.js";
@@ -272,6 +273,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   }
 
   contextParts.push(RESEARCH_GUIDANCE);
+  contextParts.push(FEED_GUIDANCE);
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
   if (task && deps.tagStore) {
