@@ -132,7 +132,7 @@ describe("vega-lite visual helpers", () => {
       expect(result.spec.autosize).toEqual({ type: "pad" });
     });
 
-    it("does not force-fit compound specs", () => {
+    it("uses view config defaults for compound specs instead of top-level dimensions", () => {
       const result = prepareResponsiveVegaSpec({
         hconcat: [VALID_SPEC, VALID_SPEC],
       }, { width: 640 });
@@ -140,8 +140,15 @@ describe("vega-lite visual helpers", () => {
       expect(result.skippedCompound).toBe(true);
       expect(result.injectedWidth).toBe(false);
       expect(result.injectedHeight).toBe(false);
+      expect(result.injectedViewConfig).toBe(true);
       expect(result.spec).not.toHaveProperty("width");
       expect(result.spec).not.toHaveProperty("autosize");
+      expect(result.spec.config).toEqual({
+        view: {
+          continuousWidth: 640,
+          continuousHeight: 358,
+        },
+      });
     });
 
     it("does not inject dimensions before a container width is known", () => {
@@ -149,8 +156,30 @@ describe("vega-lite visual helpers", () => {
 
       expect(result.injectedWidth).toBe(false);
       expect(result.injectedHeight).toBe(false);
+      expect(result.injectedViewConfig).toBe(false);
       expect(result.spec).not.toHaveProperty("width");
       expect(result.spec).not.toHaveProperty("height");
+    });
+
+    it("caps injected focus-mode height to the available viewport height", () => {
+      const result = prepareResponsiveVegaSpec(VALID_SPEC, { width: 1400, height: 500, mode: "focus" });
+
+      expect(result.injectedWidth).toBe(true);
+      expect(result.injectedHeight).toBe(true);
+      expect(result.spec.width).toBe(1400);
+      expect(result.spec.height).toBe(500);
+      expect(result.spec.autosize).toEqual({ type: "fit", contains: "padding" });
+    });
+
+    it("preserves existing compound view config values", () => {
+      const result = prepareResponsiveVegaSpec({
+        hconcat: [VALID_SPEC, VALID_SPEC],
+        config: { view: { continuousWidth: 240, continuousHeight: 120 } },
+      }, { width: 900, height: 700, mode: "focus" });
+
+      expect(result.skippedCompound).toBe(true);
+      expect(result.injectedViewConfig).toBe(false);
+      expect(result.spec.config).toEqual({ view: { continuousWidth: 240, continuousHeight: 120 } });
     });
   });
 

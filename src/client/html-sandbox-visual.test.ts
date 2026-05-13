@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VisualArtifact } from "./api";
+import { HTML_SANDBOX_PERMISSIONS } from "./components/visualDisplay";
 
 // Tests for HtmlSandboxVisual helper logic and type contracts.
 // Avoids browser/React rendering environment — tests pure type and logic properties.
@@ -15,9 +16,6 @@ const BASE_HTML_VISUAL: VisualArtifact = {
   downloadUrl: "/api/sessions/test/visuals/aa0e8400-e29b-41d4-a716-446655440000/download",
   source: "<html><body>Hello</body></html>",
 };
-
-/** The sandbox attribute used by HtmlSandboxVisual */
-const IFRAME_SANDBOX_ATTR = "allow-scripts";
 
 describe("html sandbox visual helpers", () => {
   describe("VisualArtifact type — html kind", () => {
@@ -48,19 +46,23 @@ describe("html sandbox visual helpers", () => {
 
   describe("iframe sandbox attribute", () => {
     it("sandbox attribute includes allow-scripts", () => {
-      expect(IFRAME_SANDBOX_ATTR).toContain("allow-scripts");
+      expect(HTML_SANDBOX_PERMISSIONS).toBe("allow-scripts");
     });
 
     it("sandbox attribute does NOT include allow-same-origin", () => {
-      expect(IFRAME_SANDBOX_ATTR).not.toContain("allow-same-origin");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-same-origin");
     });
 
     it("sandbox attribute does NOT grant full top-navigation", () => {
-      expect(IFRAME_SANDBOX_ATTR).not.toContain("allow-top-navigation");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-top-navigation");
     });
 
     it("sandbox attribute does NOT allow forms", () => {
-      expect(IFRAME_SANDBOX_ATTR).not.toContain("allow-forms");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-forms");
+    });
+
+    it("sandbox attribute does NOT allow popups", () => {
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-popups");
     });
   });
 

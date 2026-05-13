@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VisualArtifact } from "./api";
+import { HTML_SANDBOX_PERMISSIONS, VISUAL_DISPLAY_MODES } from "./components/visualDisplay";
 
 // Tests for visual artifact UX contracts:
 // - Source controls: non-image kinds can use embedded live source or fetch from url
@@ -132,13 +133,18 @@ describe("visual artifact accessibility contracts", () => {
     expect(TITLE_ID).toMatch(/^[a-z][a-z0-9-]*$/);
   });
 
-  it("iframe sandbox excludes allow-same-origin and allow-forms", () => {
-    const IFRAME_SANDBOX = "allow-scripts";
-    expect(IFRAME_SANDBOX).not.toContain("allow-same-origin");
-    expect(IFRAME_SANDBOX).not.toContain("allow-forms");
-    expect(IFRAME_SANDBOX).not.toContain("allow-top-navigation");
+    it("iframe sandbox excludes allow-same-origin and allow-forms", () => {
+      expect(HTML_SANDBOX_PERMISSIONS).toBe("allow-scripts");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-same-origin");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-forms");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-top-navigation");
+      expect(HTML_SANDBOX_PERMISSIONS).not.toContain("allow-popups");
+    });
+
+    it("visual display modes are inline preview and focus viewer", () => {
+      expect(VISUAL_DISPLAY_MODES).toEqual(["inline", "focus"]);
+    });
   });
-});
 
 describe("visual artifact URL consistency", () => {
   it("url and downloadUrl are both present", () => {
