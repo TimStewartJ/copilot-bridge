@@ -18,15 +18,15 @@ const BASE_VISUAL: VisualArtifact = {
 };
 
 // Utility used internally by MermaidVisual to derive a stable ID safe for mermaid.render()
-function deriveMermaidId(artifactId: string): string {
-  return `mermaid-${artifactId.replace(/-/g, "")}`;
+function deriveMermaidId(artifactId: string, mode = "inline"): string {
+  return `mermaid-${mode}-${artifactId.replace(/-/g, "")}`;
 }
 
 describe("mermaid visual helpers", () => {
   describe("deriveMermaidId", () => {
     it("strips dashes from UUID", () => {
       expect(deriveMermaidId("770e8400-e29b-41d4-a716-446655440000"))
-        .toBe("mermaid-770e8400e29b41d4a716446655440000");
+        .toBe("mermaid-inline-770e8400e29b41d4a716446655440000");
     });
 
     it("produces a string safe for use as an HTML id", () => {
@@ -59,6 +59,24 @@ describe("mermaid visual helpers", () => {
       expect(responsive).toContain('width="320"');
       expect(responsive).toContain('height="100"');
       expect(responsive).toContain('style="width: 100%; max-width: 100%; height: auto;"');
+    });
+
+    it("focus mode scales viewBox SVGs against both available axes", () => {
+      const svg = '<svg id="graph" width="420" height="180" viewBox="0 0 420 180"><g /></svg>';
+      const responsive = makeMermaidSvgResponsive(svg, "focus");
+
+      expect(responsive).toContain('<svg id="graph" viewBox="0 0 420 180" style="width: 100%; height: 100%; max-width: 100%; max-height: 100%;">');
+      expect(responsive).not.toContain('width="420"');
+      expect(responsive).not.toContain('height="180"');
+    });
+
+    it("focus mode preserves fixed dimensions when an SVG has no viewBox", () => {
+      const svg = '<svg width="320" height="100"><g /></svg>';
+      const responsive = makeMermaidSvgResponsive(svg, "focus");
+
+      expect(responsive).toContain('width="320"');
+      expect(responsive).toContain('height="100"');
+      expect(responsive).toContain('style="max-width: 100%; max-height: 100%; width: auto; height: auto;"');
     });
   });
 

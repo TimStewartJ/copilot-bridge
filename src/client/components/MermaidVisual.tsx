@@ -1,23 +1,33 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, Download, Check } from "lucide-react";
 import type { VisualArtifact } from "../api";
 import { useVisualSource } from "./useVisualSource";
+import type { VisualDisplayMode, VisualViewport } from "./visualDisplay";
 
 interface MermaidVisualProps {
   visual: VisualArtifact;
-  /** When true, renders expanded (modal-style); otherwise compact card view */
-  expanded?: boolean;
+  mode?: VisualDisplayMode;
+  viewport?: VisualViewport;
 }
 
 let mermaidConfigured = false;
 
-function appendResponsiveSvgStyle(style: string): string {
-  const trimmed = style.trim();
-  const prefix = trimmed && !trimmed.endsWith(";") ? `${trimmed};` : trimmed;
-  return `${prefix} width: 100%; max-width: 100%; height: auto;`;
+function responsiveSvgStyle(mode: VisualDisplayMode, hasViewBox: boolean): string {
+  if (mode === "focus" && hasViewBox) {
+    return "width: 100%; height: 100%; max-width: 100%; max-height: 100%;";
+  }
+  if (mode === "focus") {
+    return "max-width: 100%; max-height: 100%; width: auto; height: auto;";
+  }
+  return "width: 100%; max-width: 100%; height: auto;";
 }
 
-export function makeMermaidSvgResponsive(svg: string): string {
+function appendResponsiveSvgStyle(style: string, mode: VisualDisplayMode, hasViewBox: boolean): string {
+  const trimmed = style.trim();
+  const prefix = trimmed && !trimmed.endsWith(";") ? `${trimmed};` : trimmed;
+  return `${prefix} ${responsiveSvgStyle(mode, hasViewBox)}`.trim();
+}
+
+export function makeMermaidSvgResponsive(svg: string, mode: VisualDisplayMode = "inline"): string {
   return svg.replace(/<svg\b([^>]*)>/i, (_match, attrs: string) => {
     const hasViewBox = /\sviewBox=(["']).*?\1/i.test(attrs);
     let nextAttrs = hasViewBox
@@ -29,17 +39,17 @@ export function makeMermaidSvgResponsive(svg: string): string {
     if (/\sstyle=/.test(nextAttrs)) {
       nextAttrs = nextAttrs.replace(
         /\sstyle=(["'])(.*?)\1/i,
-        (_styleMatch, quote: string, style: string) => ` style=${quote}${appendResponsiveSvgStyle(style)}${quote}`,
+        (_styleMatch, quote: string, style: string) => ` style=${quote}${appendResponsiveSvgStyle(style, mode, hasViewBox)}${quote}`,
       );
     } else {
-      nextAttrs += ' style="width: 100%; max-width: 100%; height: auto;"';
+      nextAttrs += ` style="${responsiveSvgStyle(mode, hasViewBox)}"`;
     }
 
     return `<svg${nextAttrs}>`;
   });
 }
 
-async function renderMermaid(id: string, source: string): Promise<string> {
+async function renderMermaid(id: string, source: string, mode: VisualDisplayMode): Promise<string> {
   const mermaid = (await import("mermaid")).default;
   if (!mermaidConfigured) {
     mermaid.initialize({
@@ -50,14 +60,14 @@ async function renderMermaid(id: string, source: string): Promise<string> {
     mermaidConfigured = true;
   }
   const { svg } = await mermaid.render(id, source);
-  return makeMermaidSvgResponsive(svg);
+  return makeMermaidSvgResponsive(svg, mode);
 }
 
-export default function MermaidVisual({ visual, expanded = false }: MermaidVisualProps) {
+export default function MermaidVisual({ visual, mode = "inline", viewport }: MermaidVisualProps) {
   const [svg, setSvg] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const idRef = useRef(`mermaid-${visual.artifactId.replace(/-/g, "")}`);
+  const idRef = useRef(`mermaid-${mode}-${visual.artifactId.replace(/-/g, "")}`);
+  const focusMode = mode === "focus";
 
   const { source, loading: sourceLoading, error: sourceError } = useVisualSource(visual);
 
@@ -74,7 +84,7 @@ export default function MermaidVisual({ visual, expanded = false }: MermaidVisua
       return;
     }
     let cancelled = false;
-    renderMermaid(idRef.current, source).then(
+    renderMermaid(idRef.current, source, mode).then(
       (result) => { if (!cancelled) setSvg(result); },
       (err) => {
         if (!cancelled) {
@@ -83,25 +93,15 @@ export default function MermaidVisual({ visual, expanded = false }: MermaidVisua
       },
     );
     return () => { cancelled = true; };
-  }, [source, sourceError, sourceLoading]);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(source);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard not available — ignore
-    }
-  };
+  }, [mode, source, sourceError, sourceLoading]);
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-2">
-      {/* Diagram render area */}
+    <div className={`flex w-full min-w-0 flex-col ${focusMode ? "h-full min-h-0" : ""}`}>
       <div
         className={`w-full rounded-lg border border-border bg-white dark:bg-bg-primary overflow-auto p-4 ${
-          expanded ? "min-h-[40vh] max-h-[75vh]" : "min-h-[160px] max-h-96"
+          focusMode ? "flex h-full min-h-0 items-center justify-center" : "min-h-[160px] max-h-96"
         }`}
+        style={focusMode && viewport?.height ? { maxHeight: viewport.height } : undefined}
       >
         {renderError ? (
           <div className="text-sm text-red-500 font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
@@ -109,7 +109,7 @@ export default function MermaidVisual({ visual, expanded = false }: MermaidVisua
           </div>
         ) : svg ? (
           <div
-            className="w-full min-w-0"
+            className={focusMode ? "flex h-full min-h-0 w-full items-center justify-center" : "w-full min-w-0"}
             // eslint-disable-next-line react/no-danger
             dangerouslySetInnerHTML={{ __html: svg }}
           />
@@ -119,34 +119,6 @@ export default function MermaidVisual({ visual, expanded = false }: MermaidVisua
           </div>
         )}
       </div>
-
-      {/* Controls */}
-      <div className="flex items-center gap-1 justify-end">
-        <button
-          onClick={handleCopy}
-          title="Copy diagram source"
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-bg-primary text-text-muted hover:text-text-primary transition-colors"
-          aria-label="Copy diagram source"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? "Copied" : "Copy source"}
-        </button>
-        <a
-          href={visual.downloadUrl}
-          download={visual.displayName}
-          title={`Download ${visual.displayName}`}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-bg-primary text-text-muted hover:text-text-primary transition-colors"
-          aria-label={`Download ${visual.displayName}`}
-        >
-          <Download size={12} />
-          Download
-        </a>
-      </div>
-
-      {/* Caption */}
-      {visual.caption && (
-        <p className="text-xs text-text-muted leading-relaxed">{visual.caption}</p>
-      )}
     </div>
   );
 }

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, Download, Check } from "lucide-react";
 import type { VisualArtifact } from "../api";
 import { useVisualSource } from "./useVisualSource";
+import type { VisualDisplayMode, VisualViewport } from "./visualDisplay";
 
 interface VegaLiteVisualProps {
   visual: VisualArtifact;
-  /** When true, renders expanded (modal-style); otherwise compact card view */
-  expanded?: boolean;
+  mode?: VisualDisplayMode;
+  viewport?: VisualViewport;
 }
 
 type VegaSpecObject = Record<string, unknown>;
@@ -18,17 +18,21 @@ type VegaEmbedResult = {
 const RESIZE_DEBOUNCE_MS = 120;
 const MIN_WIDTH_DELTA = 8;
 const MIN_RESPONSIVE_WIDTH = 120;
+const MIN_RESPONSIVE_HEIGHT = 120;
+const VIEWER_PADDING = 32;
 const COMPOUND_SPEC_KEYS = ["layer", "hconcat", "vconcat", "concat", "facet", "repeat", "spec"] as const;
 
 interface ResponsiveVegaOptions {
   width: number;
-  expanded?: boolean;
+  height?: number;
+  mode?: VisualDisplayMode;
 }
 
 export interface ResponsiveVegaSpecResult {
   spec: VegaSpecObject;
   injectedWidth: boolean;
   injectedHeight: boolean;
+  injectedViewConfig: boolean;
   skippedCompound: boolean;
 }
 
@@ -44,34 +48,82 @@ function isCompoundSpec(spec: VegaSpecObject): boolean {
   return COMPOUND_SPEC_KEYS.some((key) => hasOwn(spec, key));
 }
 
-function responsiveHeight(width: number, expanded: boolean): number {
-  const min = expanded ? 320 : 180;
-  const max = expanded ? 640 : 360;
-  return Math.round(Math.min(Math.max(width * 0.56, min), max));
+function responsiveHeight(width: number, mode: VisualDisplayMode, height?: number): number {
+  const fallbackMax = mode === "focus" ? 640 : 360;
+  const availableMax = height && height > 0 ? Math.max(MIN_RESPONSIVE_HEIGHT, Math.floor(height)) : fallbackMax;
+  const targetMin = mode === "focus" ? 320 : 180;
+  const min = Math.min(targetMin, availableMax);
+  return Math.round(Math.min(Math.max(width * 0.56, min), availableMax));
+}
+
+function withResponsiveViewConfig(
+  spec: VegaSpecObject,
+  width: number,
+  height: number,
+): { spec: VegaSpecObject; injected: boolean } {
+  const config = isRecord(spec.config) ? { ...spec.config } : {};
+  const view = isRecord(config.view) ? { ...config.view } : {};
+  let injected = false;
+
+  if (!hasOwn(view, "continuousWidth")) {
+    view.continuousWidth = width;
+    injected = true;
+  }
+  if (!hasOwn(view, "continuousHeight")) {
+    view.continuousHeight = height;
+    injected = true;
+  }
+
+  if (!injected) return { spec, injected: false };
+  return {
+    spec: {
+      ...spec,
+      config: {
+        ...config,
+        view,
+      },
+    },
+    injected: true,
+  };
 }
 
 export function prepareResponsiveVegaSpec(
   rawSpec: unknown,
-  { width, expanded = false }: ResponsiveVegaOptions,
+  { width, height, mode = "inline" }: ResponsiveVegaOptions,
 ): ResponsiveVegaSpecResult {
   if (!isRecord(rawSpec)) throw new Error("Vega-Lite spec must be a JSON object");
 
   const spec = { ...rawSpec };
-  if (width <= 0 || isCompoundSpec(spec)) {
+  const compound = isCompoundSpec(spec);
+  if (width <= 0) {
     return {
       spec,
       injectedWidth: false,
       injectedHeight: false,
-      skippedCompound: isCompoundSpec(spec),
+      injectedViewConfig: false,
+      skippedCompound: compound,
     };
   }
 
   const measuredWidth = Math.max(MIN_RESPONSIVE_WIDTH, Math.floor(width));
+  const measuredHeight = responsiveHeight(measuredWidth, mode, height);
+
+  if (compound) {
+    const configured = withResponsiveViewConfig(spec, measuredWidth, measuredHeight);
+    return {
+      spec: configured.spec,
+      injectedWidth: false,
+      injectedHeight: false,
+      injectedViewConfig: configured.injected,
+      skippedCompound: true,
+    };
+  }
+
   const injectedWidth = !hasOwn(spec, "width");
   const injectedHeight = !hasOwn(spec, "height");
 
   if (injectedWidth) spec.width = measuredWidth;
-  if (injectedHeight) spec.height = responsiveHeight(measuredWidth, expanded);
+  if (injectedHeight) spec.height = measuredHeight;
 
   if ((injectedWidth || injectedHeight) && hasOwn(spec, "width") && hasOwn(spec, "height") && !hasOwn(spec, "autosize")) {
     spec.autosize = { type: "fit", contains: "padding" };
@@ -81,6 +133,7 @@ export function prepareResponsiveVegaSpec(
     spec,
     injectedWidth,
     injectedHeight,
+    injectedViewConfig: false,
     skippedCompound: false,
   };
 }
@@ -103,19 +156,31 @@ function finalizeVegaEmbed(result: VegaEmbedResult | null): void {
   result.view?.finalize();
 }
 
-export default function VegaLiteVisual({ visual, expanded = false }: VegaLiteVisualProps) {
+function contentWidth(viewport?: VisualViewport): number | undefined {
+  return viewport?.width ? Math.max(MIN_RESPONSIVE_WIDTH, Math.floor(viewport.width - VIEWER_PADDING)) : undefined;
+}
+
+function contentHeight(viewport?: VisualViewport): number | undefined {
+  return viewport?.height ? Math.max(MIN_RESPONSIVE_HEIGHT, Math.floor(viewport.height - VIEWER_PADDING)) : undefined;
+}
+
+export default function VegaLiteVisual({ visual, mode = "inline", viewport }: VegaLiteVisualProps) {
   const measureRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const embedResultRef = useRef<VegaEmbedResult | null>(null);
   const renderTokenRef = useRef(0);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [rendered, setRendered] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [measuredWidth, setMeasuredWidth] = useState(0);
 
   const { source, loading: sourceLoading, error: sourceError } = useVisualSource(visual);
+  const viewportWidth = contentWidth(viewport);
+  const viewportHeight = contentHeight(viewport);
+  const effectiveWidth = viewportWidth ?? measuredWidth;
+  const focusMode = mode === "focus";
 
   useEffect(() => {
+    if (viewportWidth) return;
     const el = measureRef.current;
     if (!el) return;
 
@@ -147,7 +212,7 @@ export default function VegaLiteVisual({ visual, expanded = false }: VegaLiteVis
       observer.disconnect();
       if (timeout) clearTimeout(timeout);
     };
-  }, []);
+  }, [viewportWidth]);
 
   useEffect(() => {
     setRenderError(null);
@@ -162,12 +227,12 @@ export default function VegaLiteVisual({ visual, expanded = false }: VegaLiteVis
       setRenderError("Vega-Lite spec is empty");
       return;
     }
-    if (measuredWidth <= 0) return;
+    if (effectiveWidth <= 0) return;
 
     let spec: VegaSpecObject;
     try {
       const parsed = JSON.parse(source);
-      spec = prepareResponsiveVegaSpec(parsed, { width: measuredWidth, expanded }).spec;
+      spec = prepareResponsiveVegaSpec(parsed, { width: effectiveWidth, height: viewportHeight, mode }).spec;
     } catch (err) {
       setRenderError(err instanceof SyntaxError ? "Vega-Lite spec is not valid JSON" : err instanceof Error ? err.message : String(err));
       return;
@@ -205,28 +270,17 @@ export default function VegaLiteVisual({ visual, expanded = false }: VegaLiteVis
       embedResultRef.current = null;
       if (el) el.innerHTML = "";
     };
-  }, [expanded, measuredWidth, source, sourceError, sourceLoading]);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(source);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard not available — ignore
-    }
-  };
+  }, [effectiveWidth, mode, source, sourceError, sourceLoading, viewportHeight]);
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-2">
-      {/* Chart render area */}
+    <div className={`flex w-full min-w-0 flex-col ${focusMode ? "h-full min-h-0" : ""}`}>
       <div
         className={`w-full rounded-lg border border-border bg-white dark:bg-bg-primary overflow-auto p-4 ${
-          expanded ? "min-h-[40vh] max-h-[75vh]" : "min-h-[180px] max-h-[28rem]"
+          focusMode ? "h-full min-h-0" : "min-h-[180px] max-h-[28rem]"
         }`}
         style={{ scrollbarGutter: "stable" }}
       >
-        <div ref={measureRef} className="relative flex w-full min-w-0 justify-center">
+        <div ref={measureRef} className="relative flex min-h-full w-full min-w-0 justify-center">
           {renderError ? (
             <div className="text-sm text-red-500 font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
               Vega-Lite render error: {renderError}
@@ -243,34 +297,6 @@ export default function VegaLiteVisual({ visual, expanded = false }: VegaLiteVis
           )}
         </div>
       </div>
-
-      {/* Controls */}
-      <div className="flex items-center gap-1 justify-end">
-        <button
-          onClick={handleCopy}
-          title="Copy chart spec"
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-bg-primary text-text-muted hover:text-text-primary transition-colors"
-          aria-label="Copy chart spec"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? "Copied" : "Copy spec"}
-        </button>
-        <a
-          href={visual.downloadUrl}
-          download={visual.displayName}
-          title={`Download ${visual.displayName}`}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-bg-primary text-text-muted hover:text-text-primary transition-colors"
-          aria-label={`Download ${visual.displayName}`}
-        >
-          <Download size={12} />
-          Download
-        </a>
-      </div>
-
-      {/* Caption */}
-      {visual.caption && (
-        <p className="text-xs text-text-muted leading-relaxed">{visual.caption}</p>
-      )}
     </div>
   );
 }

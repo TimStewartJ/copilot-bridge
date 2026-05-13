@@ -7,11 +7,41 @@ export interface VisualSourceState {
   error: string | null;
 }
 
+interface UseVisualSourceOptions {
+  enabled?: boolean;
+}
+
+const sourceTextCache = new Map<string, string>();
+const sourcePromiseCache = new Map<string, Promise<string>>();
+
+function loadVisualSource(url: string): Promise<string> {
+  const cachedSource = sourceTextCache.get(url);
+  if (cachedSource !== undefined) return Promise.resolve(cachedSource);
+
+  const cachedPromise = sourcePromiseCache.get(url);
+  if (cachedPromise) return cachedPromise;
+
+  const promise = fetch(url).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`Failed to load source (${response.status})`);
+    }
+    const source = await response.text();
+    sourceTextCache.set(url, source);
+    return source;
+  }).finally(() => {
+    sourcePromiseCache.delete(url);
+  });
+
+  sourcePromiseCache.set(url, promise);
+  return promise;
+}
+
 export function hasVisualSource(visual: VisualArtifact): boolean {
   return visual.kind !== "image" && Boolean(visual.source || visual.url);
 }
 
-export function useVisualSource(visual: VisualArtifact): VisualSourceState {
+export function useVisualSource(visual: VisualArtifact, options: UseVisualSourceOptions = {}): VisualSourceState {
+  const enabled = options.enabled ?? true;
   const embeddedSource = visual.kind !== "image" && typeof visual.source === "string"
     ? visual.source
     : undefined;
@@ -32,6 +62,11 @@ export function useVisualSource(visual: VisualArtifact): VisualSourceState {
       return;
     }
 
+    if (!enabled) {
+      setState({ source: "", loading: false, error: null });
+      return;
+    }
+
     if (!visual.url) {
       setState({ source: "", loading: false, error: "Source is unavailable" });
       return;
@@ -40,14 +75,7 @@ export function useVisualSource(visual: VisualArtifact): VisualSourceState {
     let cancelled = false;
     setState({ source: "", loading: true, error: null });
 
-    fetch(visual.url).then(
-      async (response) => {
-        if (!response.ok) {
-          throw new Error(`Failed to load source (${response.status})`);
-        }
-        return response.text();
-      },
-    ).then(
+    loadVisualSource(visual.url).then(
       (source) => {
         if (!cancelled) setState({ source, loading: false, error: null });
       },
@@ -65,7 +93,7 @@ export function useVisualSource(visual: VisualArtifact): VisualSourceState {
     return () => {
       cancelled = true;
     };
-  }, [embeddedSource, visual.kind, visual.url]);
+  }, [embeddedSource, enabled, visual.kind, visual.url]);
 
   return state;
 }
