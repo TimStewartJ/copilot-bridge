@@ -1,6 +1,5 @@
 import { CheckSquare, Inbox } from "lucide-react";
-
-export type DashboardTab = "checklist" | "feed";
+import type { DashboardTab } from "../lib/dashboard-routes";
 
 interface DashboardTabsProps {
   activeTab: DashboardTab;

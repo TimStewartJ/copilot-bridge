@@ -43,6 +43,7 @@ import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type Voice
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
+import { isDashboardRoutePath } from "./lib/dashboard-routes";
 import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
@@ -751,7 +752,7 @@ export default function App() {
   }, [handleOpenDocsRoot, navigate]);
 
   const isDocsActive = mobileRouteMeta.activeTab === "docs";
-  const isDashboardActive = location.pathname === "/" || location.pathname === "/dashboard";
+  const isDashboardActive = location.pathname === "/" || isDashboardRoutePath(location.pathname);
 
   // ── Mobile bottom nav state ──────────────────────────────────
   const mobileActiveTab = mobileRouteMeta.activeTab;
@@ -1528,6 +1529,28 @@ export default function App() {
             />
             <Route
               path="dashboard"
+              element={
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
+                  scrollRestoration={mobileDashboardScrollRestoration}
+                />
+              }
+            />
+            <Route
+              path="dashboard/checklist"
+              element={
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
+                  scrollRestoration={mobileDashboardScrollRestoration}
+                />
+              }
+            />
+            <Route
+              path="dashboard/feed"
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}

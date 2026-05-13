@@ -14,6 +14,26 @@ describe("getMobileRouteMeta", () => {
       },
     },
     {
+      pathname: "/dashboard/checklist",
+      expected: {
+        route: "dashboard",
+        activeTab: "home",
+        showBottomNav: true,
+        isRoot: true,
+        isDetail: false,
+      },
+    },
+    {
+      pathname: "/dashboard/feed",
+      expected: {
+        route: "dashboard",
+        activeTab: "home",
+        showBottomNav: true,
+        isRoot: true,
+        isDetail: false,
+      },
+    },
+    {
       pathname: "/",
       expected: {
         route: "task-list",
@@ -48,6 +68,14 @@ describe("getMobileRouteMeta", () => {
 
     expect(meta).toMatchObject(expected);
     expect(meta.upTarget).toBeUndefined();
+  });
+
+  it("does not treat unknown dashboard subroutes as dashboard roots", () => {
+    expect(getMobileRouteMeta("/dashboard/anything")).toMatchObject({
+      route: "unknown",
+      activeTab: "tasks",
+      isDetail: false,
+    });
   });
 
   it.each([
