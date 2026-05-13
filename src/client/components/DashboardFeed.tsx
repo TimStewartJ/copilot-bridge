@@ -19,6 +19,23 @@ interface FeedActionDraft {
   taskId: string | null;
 }
 
+function formatFeedMutationError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function feedStatusActionLabel(status: FeedCardStatus): string {
+  switch (status) {
+    case "done":
+      return "mark feed card done";
+    case "dismissed":
+      return "dismiss feed card";
+    case "active":
+      return "reactivate feed card";
+    default:
+      return "update feed card";
+  }
+}
+
 interface DashboardFeedProps {
   active: boolean;
   feedCards: FeedCardData[];
@@ -45,15 +62,44 @@ export default function DashboardFeed({
   const [actionDraft, setActionDraft] = useState<FeedActionDraft | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSubmitting, setActionSubmitting] = useState(false);
+  const [feedMutationError, setFeedMutationError] = useState<string | null>(null);
+
+  const refetchAfterFeedMutationFailure = async () => {
+    try {
+      await onRefetchFeed();
+      return null;
+    } catch (error) {
+      return formatFeedMutationError(error);
+    }
+  };
+
+  const runFeedMutation = async (actionLabel: string, mutate: () => Promise<unknown>) => {
+    setFeedMutationError(null);
+    try {
+      await mutate();
+    } catch (error) {
+      const refreshError = await refetchAfterFeedMutationFailure();
+      setFeedMutationError(
+        refreshError
+          ? `Failed to ${actionLabel}: ${formatFeedMutationError(error)} Also failed to refresh feed: ${refreshError}`
+          : `Failed to ${actionLabel}: ${formatFeedMutationError(error)}`,
+      );
+      return;
+    }
+
+    try {
+      await onRefetchFeed();
+    } catch (error) {
+      setFeedMutationError(`Feed card updated, but refreshing the feed failed: ${formatFeedMutationError(error)}`);
+    }
+  };
 
   const handleFeedStatusChange = async (cardId: string, status: FeedCardStatus) => {
-    await patchFeedCard(cardId, { status });
-    await onRefetchFeed();
+    await runFeedMutation(feedStatusActionLabel(status), () => patchFeedCard(cardId, { status }));
   };
 
   const handleFeedDelete = async (cardId: string) => {
-    await deleteFeedCard(cardId);
-    await onRefetchFeed();
+    await runFeedMutation("delete feed card", () => deleteFeedCard(cardId));
   };
 
   const openFeedAction = (card: FeedCardData) => {
@@ -136,6 +182,15 @@ export default function DashboardFeed({
             {showResolvedFeed ? "Hide resolved" : "Show resolved"}
           </button>
         </div>
+
+        {feedMutationError && (
+          <div
+            className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-sm text-error"
+            role="alert"
+          >
+            {feedMutationError}
+          </div>
+        )}
 
         {feedLoading && feedCards.length === 0 ? (
           <div className="space-y-2">

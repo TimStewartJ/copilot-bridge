@@ -73,6 +73,12 @@ export default function FeedCard({
     ...card.links,
   ];
   const hasPromptAction = card.status === "active" && Boolean(card.action);
+  const handleStatusClick = (status: FeedCardStatus) => {
+    void onStatusChange(card, status);
+  };
+  const handleDeleteClick = () => {
+    void onDelete(card);
+  };
 
   return (
     <article className={`${UI.surface.card} p-4 space-y-3 ${card.priority === "high" ? "border-warning/50" : ""}`}>
@@ -102,7 +108,7 @@ export default function FeedCard({
             <>
               <button
                 type="button"
-                onClick={() => onStatusChange(card, "done")}
+                onClick={() => handleStatusClick("done")}
                 className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-success/10 hover:text-success"
                 title="Mark done"
                 aria-label="Mark done"
@@ -111,7 +117,7 @@ export default function FeedCard({
               </button>
               <button
                 type="button"
-                onClick={() => onStatusChange(card, "dismissed")}
+                onClick={() => handleStatusClick("dismissed")}
                 className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
                 title="Dismiss"
                 aria-label="Dismiss"
@@ -122,7 +128,7 @@ export default function FeedCard({
           ) : (
             <button
               type="button"
-              onClick={() => onStatusChange(card, "active")}
+              onClick={() => handleStatusClick("active")}
               className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-accent-surface hover:text-accent"
               title="Reactivate"
               aria-label="Reactivate"
@@ -132,7 +138,7 @@ export default function FeedCard({
           )}
           <button
             type="button"
-            onClick={() => onDelete(card)}
+            onClick={handleDeleteClick}
             className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-error/10 hover:text-error"
             title="Delete"
             aria-label="Delete"
