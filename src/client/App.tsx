@@ -1164,6 +1164,7 @@ export default function App() {
       await Promise.all([invalidateAllSessionQueries(), invalidateTasks()]);
     } catch (err) {
       console.error("Failed to fork session:", err);
+      throw err;
     }
   };
 

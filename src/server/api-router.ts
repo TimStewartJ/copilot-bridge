@@ -1803,21 +1803,46 @@ export function createApiRouter(ctx: AppContext): express.Router {
   async function finishForkedSession(sourceId: string, forkedSessionId: string, opts: { bounded?: boolean } = {}) {
     let originalTitle = ctx.sessionTitles.getTitle(sourceId);
     if (!originalTitle) {
-      const sourceSession = (await ctx.sessionManager.listSessionsFromDisk())
-        .find((session: any) => session.sessionId === sourceId);
+      const sourceSession = ctx.cliSessionCatalog?.getSession(sourceId)
+        ?? (await ctx.sessionManager.listSessionsFromDisk())
+          .find((session: any) => session.sessionId === sourceId);
       originalTitle = sourceSession ? resolveSessionSummary(sourceSession) : undefined;
     }
 
     invalidateEnrichedCache("route:session:fork");
-    if (originalTitle) {
-      await ctx.sessionManager.setSessionName(
-        forkedSessionId,
-        `${opts.bounded ? "Fork from" : "Fork of"} ${originalTitle}`.slice(0, 100).trim(),
-      );
-    }
     for (const linkedTask of ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sourceId))) {
       ctx.taskStore.linkSession(linkedTask.id, forkedSessionId);
     }
+
+    let warmed = false;
+    try {
+      await ctx.sessionManager.warmSession(forkedSessionId);
+      warmed = true;
+    } catch (error) {
+      console.warn(
+        `[sessions] Fork ${forkedSessionId.slice(0, 8)} created but could not be warmed:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    if (originalTitle) {
+      const forkTitle = `${opts.bounded ? "Fork from" : "Fork of"} ${originalTitle}`.slice(0, 100).trim();
+      if (warmed) {
+        try {
+          await ctx.sessionManager.setSessionName(forkedSessionId, forkTitle);
+        } catch (error) {
+          console.warn(
+            `[sessions] Fork ${forkedSessionId.slice(0, 8)} created but could not be renamed:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      } else {
+        console.warn(
+          `[sessions] Fork ${forkedSessionId.slice(0, 8)} rename skipped because warm resume failed`,
+        );
+      }
+    }
+    ctx.globalBus.emit({ type: "sessions:changed", sessionId: forkedSessionId });
   }
 
   function handleForkError(res: express.Response, err: unknown) {

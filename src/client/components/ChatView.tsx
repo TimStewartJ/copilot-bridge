@@ -220,6 +220,10 @@ function renderRefreshingHistoryTailSkeleton(isLoading: boolean) {
   );
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function isNewerActivityTimestamp(currentActivityAt?: string, cachedActivityAt?: string): boolean {
   if (!currentActivityAt || !cachedActivityAt) return false;
   const currentTime = Date.parse(currentActivityAt);
@@ -449,6 +453,7 @@ export default function ChatView({
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [forkingBoundaryEventId, setForkingBoundaryEventId] = useState<string | null>(null);
+  const [forkError, setForkError] = useState<string | null>(null);
   const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -760,6 +765,7 @@ export default function ChatView({
       && prevComposerKey !== composerKey;
     prevSessionRef.current = sessionId;
     prevComposerKeyRef.current = composerKey;
+    setForkError(null);
 
     if (!sessionId) {
       // Clear draft-only state when entering draft mode from an existing
@@ -1563,11 +1569,13 @@ export default function ChatView({
   const forkFromHereDisabled = loading || isStreaming || creating || warming || refreshingHistory;
   const handleForkFromHere = useCallback(async (message: ChatMessage) => {
     if (!sessionId || !onForkSession || !message.forkBoundaryEventId) return;
+    setForkError(null);
     setForkingBoundaryEventId(message.forkBoundaryEventId);
     try {
       await onForkSession(sessionId, { toEventId: message.forkBoundaryEventId });
     } catch (err) {
       console.error("Failed to fork session from message:", err);
+      setForkError(`Fork failed: ${getErrorMessage(err)}`);
     } finally {
       setForkingBoundaryEventId((current) =>
         current === message.forkBoundaryEventId ? null : current,
@@ -1834,6 +1842,16 @@ export default function ChatView({
           onCopy={handleCopyMessage}
           onFork={handleForkMessageMenu}
         />
+      )}
+      {forkError && (
+        <div className={`${CHAT_RAIL_CLASS} pb-2`}>
+          <div
+            className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error"
+            role="alert"
+          >
+            {forkError}
+          </div>
+        </div>
       )}
       <ChatInput
         onSend={handleSend}

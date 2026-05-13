@@ -11,6 +11,8 @@ describe("copilot CLI session catalog", () => {
     const catalog = createCopilotCliSessionCatalog({ copilotHome });
 
     expect(catalog.listSessions()).toBeUndefined();
+    expect(catalog.getSession("session-1")).toBeUndefined();
+    expect(catalog.hasSession("session-1")).toBeUndefined();
   });
 
   it("lists sessions from the CLI session store without reading workspace files or hiding helper-looking rows", () => {
@@ -66,6 +68,18 @@ Reply with ONLY the title text for a stale helper',
     db.close();
     const catalog = createCopilotCliSessionCatalog({ copilotHome });
 
+    expect(catalog.hasSession("session-1")).toBe(true);
+    expect(catalog.hasSession("missing-session")).toBe(false);
+    expect(catalog.getSession("session-1")).toEqual({
+      sessionId: "session-1",
+      summary: "Review catalog adapter",
+      startTime: "2026-05-07T10:00:00.000Z",
+      modifiedTime: "2026-05-07T11:00:00.000Z",
+      context: { cwd: "D:\\repo" },
+      repository: "owner/repo",
+      branch: "main",
+      hostType: "github",
+    });
     expect(catalog.listSessions()).toEqual([
       {
         sessionId: "legacy-title-helper",
