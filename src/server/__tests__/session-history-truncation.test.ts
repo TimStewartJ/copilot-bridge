@@ -22,31 +22,40 @@ function quietIntervalUserMessage(id: string, deferId = "interval_loop-1") {
 }
 
 describe("findQuietIntervalDeferTailTruncationCandidate", () => {
-  it("returns the matching quiet interval user message when it is the completed tail", () => {
+  it("returns the matching quiet interval user message when persisted history has a completed turn tail", () => {
     const candidate = findQuietIntervalDeferTailTruncationCandidate([
       { id: "normal-user", type: "user.message", data: { content: "hello" } },
-      { id: "normal-idle", type: "session.idle", data: {} },
+      { id: "normal-turn-end", type: "assistant.turn_end", data: {} },
       quietIntervalUserMessage("quiet-user"),
       { id: "turn-start", type: "assistant.turn_start", data: {} },
       { id: "assistant", type: "assistant.message", data: { content: "No change" } },
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
       { id: "resume", type: "session.resume", data: {} },
     ], "interval_loop-1");
 
     expect(candidate).toEqual({ eventId: "quiet-user", eventsToRemove: 5 });
   });
 
+  it("keeps accepting live-shaped session idle completion tails", () => {
+    expect(findQuietIntervalDeferTailTruncationCandidate([
+      quietIntervalUserMessage("quiet-user"),
+      { id: "turn-start", type: "assistant.turn_start", data: {} },
+      { id: "assistant", type: "assistant.message", data: { content: "No change" } },
+      { id: "idle", type: "session.idle", data: {} },
+    ], "interval_loop-1")).toEqual({ eventId: "quiet-user", eventsToRemove: 4 });
+  });
+
   it("rejects tails when the latest user message is not the same quiet interval defer", () => {
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("quiet-user"),
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
       { id: "normal-user", type: "user.message", data: { content: "hello" } },
-      { id: "normal-idle", type: "session.idle", data: {} },
+      { id: "normal-turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
 
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("other-quiet-user", "interval_other"),
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
   });
 
@@ -83,7 +92,7 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
         quietIntervalUserMessage("quiet-user"),
         { id: `${toolName}-start`, type: "tool.execution_start", data: { toolCallId: "tool-1", toolName } },
         { id: `${toolName}-done`, type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
-        { id: "idle", type: "session.idle", data: {} },
+        { id: "turn-end", type: "assistant.turn_end", data: {} },
       ], "interval_loop-1")).toBeUndefined();
     }
   });
@@ -93,21 +102,21 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
       quietIntervalUserMessage("quiet-user"),
       { id: "tool-start", type: "tool.execution_start", data: { toolCallId: "tool-1", toolName: "bash" } },
       { id: "tool-done", type: "tool.execution_complete", data: { toolCallId: "tool-1", success: false } },
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
 
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("quiet-user"),
       { id: "tool-start", type: "tool.execution_start", data: { toolCallId: "tool-1", toolName: "web_search" } },
       { id: "tool-done", type: "tool.execution_complete", data: { toolCallId: "tool-1" } },
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
 
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("quiet-user"),
       { id: "tool-start", type: "tool.execution_start", data: { toolCallId: "tool-1" } },
       { id: "tool-done", type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
     ], "interval_loop-1")).toBeUndefined();
 
     expect(findQuietIntervalDeferTailTruncationCandidate([
@@ -127,15 +136,30 @@ describe("findQuietIntervalDeferTailTruncationCandidate", () => {
         quietIntervalUserMessage("quiet-user"),
         { id: `${toolName}-start`, type: "tool.execution_start", data: { toolCallId: "tool-1", toolName } },
         { id: `${toolName}-done`, type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
-        { id: "idle", type: "session.idle", data: {} },
+        { id: "turn-end", type: "assistant.turn_end", data: {} },
       ], "interval_loop-1")).toEqual({ eventId: "quiet-user", eventsToRemove: 4 });
     }
   });
 
-  it("rejects turn activity after the idle terminal because truncation would remove newer work", () => {
+  it("allows multiple assistant turns before the final completed quiet tail", () => {
     expect(findQuietIntervalDeferTailTruncationCandidate([
       quietIntervalUserMessage("quiet-user"),
-      { id: "idle", type: "session.idle", data: {} },
+      { id: "turn-start-1", type: "assistant.turn_start", data: {} },
+      { id: "assistant-tools", type: "assistant.message", data: { content: "Checking...", toolRequests: [{}] } },
+      { id: "tool-start", type: "tool.execution_start", data: { toolCallId: "tool-1", toolName: "web_search" } },
+      { id: "tool-done", type: "tool.execution_complete", data: { toolCallId: "tool-1", success: true } },
+      { id: "turn-end-1", type: "assistant.turn_end", data: {} },
+      { id: "turn-start-2", type: "assistant.turn_start", data: {} },
+      { id: "assistant-final", type: "assistant.message", data: { content: "No change" } },
+      { id: "turn-end-2", type: "assistant.turn_end", data: {} },
+      { id: "system", type: "system.message", data: {} },
+    ], "interval_loop-1")).toEqual({ eventId: "quiet-user", eventsToRemove: 10 });
+  });
+
+  it("rejects turn activity after the completion terminal because truncation would remove newer work", () => {
+    expect(findQuietIntervalDeferTailTruncationCandidate([
+      quietIntervalUserMessage("quiet-user"),
+      { id: "turn-end", type: "assistant.turn_end", data: {} },
       { id: "late-assistant", type: "assistant.message", data: { content: "late" } },
     ], "interval_loop-1")).toBeUndefined();
   });
