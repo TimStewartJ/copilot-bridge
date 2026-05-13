@@ -7,6 +7,7 @@ import type { CopilotClient } from "@github/copilot-sdk";
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
 import { getVisibleEventTimestamp } from "./event-transform.js";
 import type { getOrCreateBus } from "./event-bus.js";
@@ -85,6 +86,18 @@ function getSyncShellInitialWaitUntil(toolName: string, args: unknown, startedAt
 
 function getSessionShutdownType(data: any): string | undefined {
   return typeof data?.shutdownType === "string" ? data.shutdownType.toLowerCase() : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === "string" ? error : "unknown error";
+}
+
+function isStaleCachedSessionError(error: unknown): boolean {
+  if (error instanceof ConnectionError) {
+    return error.code === ConnectionErrors.Closed || error.code === ConnectionErrors.Disposed;
+  }
+  return error instanceof Error && error.message.includes("Session not found");
 }
 
 export interface SessionRunnerDeps {
@@ -923,12 +936,14 @@ export class SessionRunner {
         await opts.execute(session);
         runController.markPromptAccepted();
       } catch (operationErr) {
-        if (operationErr instanceof Error && operationErr.message.includes("Session not found") && usedCache) {
-          console.warn(`[sdk] [${sid}] Stale cached session — evicting and re-resuming...`);
+        if (usedCache && isStaleCachedSessionError(operationErr)) {
+          console.warn(`[sdk] [${sid}] Stale cached session (${getErrorMessage(operationErr)}) — evicting and re-resuming...`);
           unsub?.();
           unsub = undefined;
-          this.deps.sessionObjects.delete(sessionId);
+          abandonSession(session);
           session = await resumeSession();
+          lastEventTime = Date.now();
+          sendStart = lastEventTime;
           if (runController.isCompleted()) {
             abandonSession(session);
             return;
