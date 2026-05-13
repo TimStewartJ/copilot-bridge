@@ -19,6 +19,7 @@ function makeCard(overrides: Partial<FeedCardData> = {}): FeedCardData {
     links: [{ label: "Notes", url: "https://example.test/notes" }],
     metadata: { source: "agent" },
     visual: null,
+    action: null,
     pinned: true,
     statusChangedAt: "2026-05-13T10:00:00.000Z",
     createdAt: "2026-05-13T10:00:00.000Z",
@@ -32,6 +33,7 @@ function renderCard(card: FeedCardData): string {
     card,
     onSelectTask: vi.fn(),
     onSelectSession: vi.fn(),
+    onAction: vi.fn(),
     onStatusChange: vi.fn(),
     onDelete: vi.fn(),
   }));
@@ -88,5 +90,17 @@ describe("FeedCard", () => {
     expect(html).toContain("Chart preview");
     expect(html).toContain("/api/feed/card-1/visuals/11111111-1111-4111-8111-111111111111");
     expect(html).toContain("Download chart.png");
+  });
+
+  it("renders prompt actions for active cards", () => {
+    const html = renderCard(makeCard({
+      action: {
+        label: "Review this",
+        prompt: "Open a session and review this card.",
+      },
+    }));
+
+    expect(html).toContain("Review this");
+    expect(html).toContain("button");
   });
 });

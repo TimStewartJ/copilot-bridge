@@ -56,6 +56,7 @@ describe("database migration registry", () => {
       "bridge_session_state_legacy_backfill_v1",
       "schedule-auto-archive-keep-column",
       "feed-cards-visual-json-column",
+      "feed-cards-action-json-column",
       "schedule-reuse-columns-drop-v1",
       "schedule_runs_legacy_backfill_v1",
       "checklist-items-from-legacy-todos",
@@ -155,7 +156,7 @@ describe("database migration registry", () => {
     expect(indexes.map((index) => index.name)).toContain("idx_bridge_session_state_lastAttentionAt");
   });
 
-  it("adds visualJson to existing feed_cards tables", () => {
+  it("adds visualJson and actionJson to existing feed_cards tables", () => {
     const dataDir = createTempDataDir();
     const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
     legacyDb.exec(`
@@ -196,10 +197,15 @@ describe("database migration registry", () => {
 
     const db = openDatabase(dataDir);
     const columns = db.prepare("PRAGMA table_info(feed_cards)").all() as Array<{ name: string }>;
-    const row = db.prepare("SELECT title, visualJson FROM feed_cards").get() as { title: string; visualJson: string | null };
+    const row = db.prepare("SELECT title, visualJson, actionJson FROM feed_cards").get() as {
+      title: string;
+      visualJson: string | null;
+      actionJson: string | null;
+    };
     db.close();
 
     expect(columns.map((column) => column.name)).toContain("visualJson");
-    expect(row).toEqual({ title: "Legacy feed card", visualJson: null });
+    expect(columns.map((column) => column.name)).toContain("actionJson");
+    expect(row).toEqual({ title: "Legacy feed card", visualJson: null, actionJson: null });
   });
 });

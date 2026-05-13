@@ -406,6 +406,14 @@ function ensureFeedCardsVisualJsonColumn(db: DatabaseSync): void {
   }
 }
 
+function ensureFeedCardsActionJsonColumn(db: DatabaseSync): void {
+  if (!sqliteTableExists(db, "feed_cards")) return;
+  const feedCols = getTableInfo(db, "feed_cards");
+  if (!feedCols.some((c: any) => c.name === "actionJson")) {
+    db.exec("ALTER TABLE feed_cards ADD COLUMN actionJson TEXT");
+  }
+}
+
 function scheduleColumnExpr(cols: any[], name: string, fallback: string): string {
   return cols.some((c: any) => c.name === name) ? name : fallback;
 }
@@ -716,6 +724,13 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     runMode: "every-open",
     description: "Add visualJson to feed_cards for dashboard visual artifacts.",
     apply: ensureFeedCardsVisualJsonColumn,
+  },
+  {
+    id: "feed-cards-action-json-column",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    description: "Add actionJson to feed_cards for prompt-based session launch actions.",
+    apply: ensureFeedCardsActionJsonColumn,
   },
   {
     id: SCHEDULE_REUSE_COLUMNS_DROP,

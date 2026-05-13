@@ -91,6 +91,66 @@ describe("feed-store", () => {
     expect(updated.links).toEqual([{ label: "Spec", url: "https://example.test/spec" }]);
   });
 
+  it("stores, preserves, replaces, and clears prompt actions", () => {
+    const created = store.saveCard({
+      key: "action:one",
+      title: "Action card",
+      action: {
+        label: "Review now",
+        prompt: "Review this staged change.",
+        taskId: "task-action",
+      },
+    }).card;
+
+    expect(created.action).toEqual({
+      label: "Review now",
+      prompt: "Review this staged change.",
+      taskId: "task-action",
+    });
+
+    const preserved = store.saveCard({
+      key: "action:one",
+      title: "Action card renamed",
+    }).card;
+    expect(preserved.action).toEqual(created.action);
+
+    const replaced = store.updateCardById(created.id, {
+      action: {
+        prompt: "Use this replacement prompt.",
+        taskId: null,
+      },
+    });
+    expect(replaced.action).toEqual({
+      prompt: "Use this replacement prompt.",
+      taskId: null,
+    });
+
+    const cleared = store.updateCardById(created.id, { action: null });
+    expect(cleared.action).toBeNull();
+  });
+
+  it("preserves omitted action taskId separately from explicit standalone null", () => {
+    const bus = createTestBus();
+    const taskStore = createTaskStore(db, bus);
+    store = createFeedStore(db, bus);
+    const task = taskStore.createTask("Card task");
+
+    const omitted = store.saveCard({
+      title: "Inherit task",
+      taskId: task.id,
+      action: { prompt: "Continue with card task." },
+    }).card;
+    const standalone = store.saveCard({
+      title: "Standalone",
+      taskId: task.id,
+      action: { prompt: "Start standalone.", taskId: null },
+    }).card;
+
+    expect(omitted.action).toEqual({ prompt: "Continue with card task." });
+    expect(Object.prototype.hasOwnProperty.call(omitted.action!, "taskId")).toBe(false);
+    expect(standalone.action).toEqual({ prompt: "Start standalone.", taskId: null });
+  });
+
   it("sorts pinned cards first and then by updated time", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
@@ -213,6 +273,9 @@ describe("feed-store", () => {
     expect(() => store.saveCard({ title: "Bad", url: "javascript:alert(1)" })).toThrow("url must be http");
     expect(() => store.saveCard({ title: "Bad", links: [{ label: "Bad", url: "data:text/html,hi" }] })).toThrow("links[0].url must be http");
     expect(() => store.saveCard({ title: "Bad", metadata: [] })).toThrow("metadata must be an object");
+    expect(() => store.saveCard({ title: "Bad", action: {} })).toThrow("action.prompt is required");
+    expect(() => store.saveCard({ title: "Bad", action: { prompt: "Ok", label: "Bad\nlabel" } })).toThrow("action.label cannot contain control characters");
+    expect(() => store.saveCard({ title: "Bad", action: { prompt: "Ok", extra: true } })).toThrow("Unknown action field");
     expect(() => store.saveCard({ title: "Bad", body: "x".repeat(9 * 1024) })).toThrow("body must be");
     expect(() => store.saveCard({ title: "Bad", pinnned: true } as any)).toThrow("Unknown feed card field");
   });

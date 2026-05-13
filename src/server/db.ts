@@ -298,6 +298,7 @@ function initSchema(db: DatabaseSync): void {
       linksJson TEXT NOT NULL DEFAULT '[]',
       metadataJson TEXT,
       visualJson TEXT,
+      actionJson TEXT,
       pinned INTEGER NOT NULL DEFAULT 0,
       statusChangedAt TEXT NOT NULL,
       createdAt TEXT NOT NULL,
