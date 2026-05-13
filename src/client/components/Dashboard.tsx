@@ -1,19 +1,26 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createGlobalChecklistItem,
+  deleteFeedCard,
   patchChecklistItem,
+  patchFeedCard,
   type DashboardChecklistItem,
+  type FeedCardStatus,
 } from "../api";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
+import { useFeedQuery } from "../hooks/queries/useFeed";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import EmptyState from "./shared/EmptyState";
 import ChecklistItemRow from "./ChecklistItemRow";
+import FeedCard from "./FeedCard";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
-import { ArrowUpDown, Check, CheckSquare, ChevronDown, ChevronRight, Plus } from "lucide-react";
+import { ArrowUpDown, Check, CheckSquare, ChevronDown, ChevronRight, Inbox, Plus } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
+import { describeHomeChecklistIndicator, getHomeChecklistIndicator, type HomeChecklistIndicatorState } from "../checklist-helpers";
 
 type ChecklistSort = "deadline" | "task";
+type DashboardTab = "checklist" | "feed";
 
 const SORT_LABELS: Record<ChecklistSort, string> = {
   deadline: "Deadline",
@@ -22,9 +29,11 @@ const SORT_LABELS: Record<ChecklistSort, string> = {
 
 const SORT_STORAGE_KEY = "dashboard-checklist-sort";
 const COLLAPSE_STORAGE_KEY = "dashboard-checklist-collapsed";
+const DASHBOARD_TAB_STORAGE_KEY = "dashboard-active-tab";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
+  onSelectSession: (sessionId: string, taskId?: string) => void;
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
@@ -84,6 +93,25 @@ function getCollapsedSet(): Set<string> {
     if (val) return new Set(JSON.parse(val));
   } catch {}
   return new Set();
+}
+
+function getSavedDashboardTab(): DashboardTab {
+  try {
+    const val = localStorage.getItem(DASHBOARD_TAB_STORAGE_KEY);
+    if (val === "checklist" || val === "feed") return val;
+  } catch {}
+  return "checklist";
+}
+
+export function dashboardChecklistCountClass(state: HomeChecklistIndicatorState): string {
+  switch (state) {
+    case "overdue":
+      return "border-error/30 bg-error/10 text-error";
+    case "due-today":
+      return "border-warning/30 bg-warning/10 text-warning";
+    default:
+      return "border-border bg-bg-hover text-text-faint";
+  }
 }
 
 function deadlineSortKey(deadline: string | undefined): number {
@@ -184,17 +212,29 @@ function groupChecklistItemsByTask(checklistItems: DashboardChecklistItem[]): Ch
 
 export default function Dashboard({
   onSelectTask,
+  onSelectSession,
   scrollRestoration,
 }: DashboardProps) {
-  const { data, isLoading: loading, refetch } = useDashboardQuery();
+  const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
   const [localOpenChecklistItems, setLocalOpenChecklistItems] = useState<DashboardChecklistItem[]>([]);
   const [localCompletedChecklistItems, setLocalCompletedChecklistItems] = useState<DashboardChecklistItem[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
+  const [showResolvedFeed, setShowResolvedFeed] = useState(false);
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
   const [newChecklistItemText, setNewChecklistItemText] = useState("");
   const [checklistSort, setChecklistSort] = useState<ChecklistSort>(getSavedSort);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(getCollapsedSet);
+  const [activeTab, setActiveTab] = useState<DashboardTab>(getSavedDashboardTab);
   const lastLocalChange = useRef(0);
+  const feedFilters = useMemo(() => ({
+    limit: 100,
+    ...(showResolvedFeed ? { includeDismissed: true } : {}),
+  }), [showResolvedFeed]);
+  const {
+    data: feedCards = [],
+    isLoading: feedLoading,
+    refetch: refetchFeed,
+  } = useFeedQuery(feedFilters);
 
   useEffect(() => {
     if (!data) return;
@@ -209,10 +249,24 @@ export default function Dashboard({
     () => sortChecklistItems(localOpenChecklistItems, checklistSort),
     [localOpenChecklistItems, checklistSort],
   );
+  const visibleOpenChecklistItems = useMemo(
+    () => localOpenChecklistItems.filter((item) => !exitingIds.has(item.id)),
+    [localOpenChecklistItems, exitingIds],
+  );
+  const checklistIndicator = useMemo(
+    () => getHomeChecklistIndicator(visibleOpenChecklistItems),
+    [visibleOpenChecklistItems],
+  );
+  const checklistIndicatorLabel = describeHomeChecklistIndicator(checklistIndicator);
   const checklistGroups = useMemo(
     () => groupChecklistItemsByTask(localOpenChecklistItems),
     [localOpenChecklistItems],
   );
+
+  const handleTabChange = (tab: DashboardTab) => {
+    setActiveTab(tab);
+    try { localStorage.setItem(DASHBOARD_TAB_STORAGE_KEY, tab); } catch {}
+  };
 
   const handleSortChange = (sort: ChecklistSort) => {
     setChecklistSort(sort);
@@ -298,7 +352,19 @@ export default function Dashboard({
     ));
   };
 
-  const handleRefresh = async () => { await refetch(); };
+  const handleFeedStatusChange = async (cardId: string, status: FeedCardStatus) => {
+    await patchFeedCard(cardId, { status });
+    await refetchFeed();
+  };
+
+  const handleFeedDelete = async (cardId: string) => {
+    await deleteFeedCard(cardId);
+    await refetchFeed();
+  };
+
+  const handleRefresh = async () => {
+    await Promise.all([refetchDashboard(), refetchFeed()]);
+  };
 
   if (loading && !data) return <DashboardSkeleton />;
 
@@ -318,13 +384,117 @@ export default function Dashboard({
         scrollRestoration={scrollRestoration}
       >
         <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-3">
+          <div className="flex rounded-lg border border-border bg-bg-surface p-1" role="tablist" aria-label="Dashboard sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "checklist"}
+              onClick={() => handleTabChange("checklist")}
+              className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                activeTab === "checklist"
+                  ? "bg-bg-primary text-text-primary shadow-sm"
+                  : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
+              }`}
+            >
+              <CheckSquare size={14} />
+              <span>Checklist</span>
+              {visibleOpenChecklistItems.length > 0 && (
+                <span
+                  className={`rounded-full border px-1.5 py-0.5 text-[11px] font-semibold leading-none ${dashboardChecklistCountClass(checklistIndicator.state)}`}
+                  title={checklistIndicatorLabel ?? undefined}
+                >
+                  {visibleOpenChecklistItems.length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "feed"}
+              onClick={() => handleTabChange("feed")}
+              className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                activeTab === "feed"
+                  ? "bg-bg-primary text-text-primary shadow-sm"
+                  : "text-text-muted hover:bg-bg-hover hover:text-text-primary"
+              }`}
+            >
+              <Inbox size={14} />
+              <span>Feed</span>
+              {feedCards.length > 0 && (
+                <span className="rounded-full border border-border bg-bg-hover px-1.5 py-0.5 text-[11px] font-semibold leading-none text-text-faint">
+                  {feedCards.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {activeTab === "feed" && (
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h2 className={UI.text.sectionTitle}>
+                <Inbox size={14} />
+                Feed
+                {feedCards.length > 0 && (
+                  <span className="text-text-faint font-normal">({feedCards.length})</span>
+                )}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowResolvedFeed((value) => !value)}
+                className="text-[11px] px-1.5 py-0.5 rounded text-text-faint hover:text-text-secondary transition-colors"
+              >
+                {showResolvedFeed ? "Hide resolved" : "Show resolved"}
+              </button>
+            </div>
+
+            {feedLoading && feedCards.length === 0 ? (
+              <div className="space-y-2">
+                <SkeletonCard className="space-y-3">
+                  <div className="flex gap-2">
+                    <Skeleton width={52} height={18} shape="pill" />
+                    <Skeleton width={44} height={18} shape="pill" />
+                  </div>
+                  <SkeletonText lines={3} widths={["72%", "100%", "58%"]} />
+                </SkeletonCard>
+                <SkeletonCard className="space-y-3">
+                  <div className="flex gap-2">
+                    <Skeleton width={60} height={18} shape="pill" />
+                    <Skeleton width={52} height={18} shape="pill" />
+                  </div>
+                  <SkeletonText lines={2} widths={["64%", "82%"]} />
+                </SkeletonCard>
+              </div>
+            ) : feedCards.length > 0 ? (
+              <div className="space-y-2">
+                {feedCards.map((card) => (
+                  <FeedCard
+                    key={card.id}
+                    card={card}
+                    onSelectTask={(taskId) => onSelectTask(taskId)}
+                    onSelectSession={onSelectSession}
+                    onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
+                    onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                message="No feed cards"
+                sub="Agents can publish durable cards here for decisions, previews, artifacts, and summaries."
+              />
+            )}
+          </section>
+          )}
+
+          {activeTab === "checklist" && (
+          <>
           <div className="flex items-center justify-between">
             <h2 className={UI.text.sectionTitle}>
               <CheckSquare size={14} />
               Open Checklist
-              {localOpenChecklistItems.length > 0 && (
+              {visibleOpenChecklistItems.length > 0 && (
                 <span className="text-text-faint font-normal">
-                  ({localOpenChecklistItems.filter((item) => !exitingIds.has(item.id)).length})
+                  ({visibleOpenChecklistItems.length})
                 </span>
               )}
             </h2>
@@ -503,6 +673,8 @@ export default function Dashboard({
                 </>
               )}
             </>
+          )}
+          </>
           )}
         </div>
       </PullToRefresh>

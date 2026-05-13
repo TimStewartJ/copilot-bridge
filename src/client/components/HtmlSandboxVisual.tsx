@@ -34,7 +34,7 @@ export default function HtmlSandboxVisual({ visual, expanded = false }: HtmlSand
   }
 
   return (
-    <div className={`flex flex-col gap-2 ${expanded ? "w-full" : "max-w-lg"}`}>
+    <div className="flex w-full min-w-0 flex-col gap-2">
       {/* Sandbox label */}
       <div className="flex items-center gap-1.5">
         <span className="text-xs font-medium text-text-muted bg-bg-primary rounded px-1.5 py-0.5 border border-border">
@@ -44,8 +44,8 @@ export default function HtmlSandboxVisual({ visual, expanded = false }: HtmlSand
 
       {/* iframe sandbox area */}
       <div
-        className={`rounded-lg border border-border overflow-hidden bg-white ${
-          expanded ? "min-h-[50vh]" : "min-h-[180px] max-h-72"
+        className={`w-full rounded-lg border border-border overflow-hidden bg-white ${
+          expanded ? "min-h-[50vh]" : "min-h-[220px]"
         }`}
       >
         <iframe
@@ -54,7 +54,7 @@ export default function HtmlSandboxVisual({ visual, expanded = false }: HtmlSand
           title={visual.title}
           aria-label={visual.title}
           className="w-full h-full border-none"
-          style={{ minHeight: expanded ? "50vh" : 180 }}
+          style={{ height: expanded ? "60vh" : 280, minHeight: expanded ? "50vh" : 220 }}
           loading="lazy"
         />
       </div>

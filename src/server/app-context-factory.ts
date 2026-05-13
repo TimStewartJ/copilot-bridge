@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
 import { setMcpServersGetter } from "./config.js";
 import { openDatabase } from "./db.js";
@@ -13,6 +14,7 @@ import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createChecklistStore } from "./checklist-store.js";
+import { createFeedStore } from "./feed-store.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
 import { createDocsSnapshotStore, STARTUP_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
@@ -35,6 +37,7 @@ import { createDeferLoopStore } from "./defer-loop-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createBridgeTools, createSessionManager } from "./session-manager.js";
+import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
 
 export interface CreateAppContextOptions {
   runtimePaths: RuntimePaths;
@@ -67,6 +70,18 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
   const checklistStore = createChecklistStore(db, defaultGlobalBus);
+  const feedStore = createFeedStore(db, defaultGlobalBus, {
+    onVisualUnreferenced: (visual, card) => {
+      const result = deleteVisualArtifactForOwner(
+        runtimePaths.copilotHome ?? join(homedir(), ".copilot"),
+        feedCardVisualOwner(card.id),
+        visual.artifactId,
+      );
+      if (!result.ok) {
+        console.warn(`[feed] Failed to delete unreferenced visual ${visual.artifactId}: ${result.error}`);
+      }
+    },
+  });
   const tagStore = createTagStore(db);
   const mcpServerStore = createMcpServerStore(db);
   const telemetryStore = createTelemetryStore(db);
@@ -115,6 +130,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     cliSessionCatalog,
     readStateStore,
     checklistStore,
+    feedStore,
     docsStore,
     docsIndex,
     docsSnapshotStore,

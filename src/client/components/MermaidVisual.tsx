@@ -11,6 +11,34 @@ interface MermaidVisualProps {
 
 let mermaidConfigured = false;
 
+function appendResponsiveSvgStyle(style: string): string {
+  const trimmed = style.trim();
+  const prefix = trimmed && !trimmed.endsWith(";") ? `${trimmed};` : trimmed;
+  return `${prefix} width: 100%; max-width: 100%; height: auto;`;
+}
+
+export function makeMermaidSvgResponsive(svg: string): string {
+  return svg.replace(/<svg\b([^>]*)>/i, (_match, attrs: string) => {
+    const hasViewBox = /\sviewBox=(["']).*?\1/i.test(attrs);
+    let nextAttrs = hasViewBox
+      ? attrs
+        .replace(/\swidth=(["']).*?\1/i, "")
+        .replace(/\sheight=(["']).*?\1/i, "")
+      : attrs;
+
+    if (/\sstyle=/.test(nextAttrs)) {
+      nextAttrs = nextAttrs.replace(
+        /\sstyle=(["'])(.*?)\1/i,
+        (_styleMatch, quote: string, style: string) => ` style=${quote}${appendResponsiveSvgStyle(style)}${quote}`,
+      );
+    } else {
+      nextAttrs += ' style="width: 100%; max-width: 100%; height: auto;"';
+    }
+
+    return `<svg${nextAttrs}>`;
+  });
+}
+
 async function renderMermaid(id: string, source: string): Promise<string> {
   const mermaid = (await import("mermaid")).default;
   if (!mermaidConfigured) {
@@ -22,7 +50,7 @@ async function renderMermaid(id: string, source: string): Promise<string> {
     mermaidConfigured = true;
   }
   const { svg } = await mermaid.render(id, source);
-  return svg;
+  return makeMermaidSvgResponsive(svg);
 }
 
 export default function MermaidVisual({ visual, expanded = false }: MermaidVisualProps) {
@@ -68,11 +96,11 @@ export default function MermaidVisual({ visual, expanded = false }: MermaidVisua
   };
 
   return (
-    <div className={`flex flex-col gap-2 ${expanded ? "w-full" : "max-w-lg"}`}>
+    <div className="flex w-full min-w-0 flex-col gap-2">
       {/* Diagram render area */}
       <div
-        className={`rounded-lg border border-border bg-white dark:bg-bg-primary overflow-auto flex items-center justify-center p-4 ${
-          expanded ? "min-h-[40vh]" : "min-h-[120px] max-h-64"
+        className={`w-full rounded-lg border border-border bg-white dark:bg-bg-primary overflow-auto p-4 ${
+          expanded ? "min-h-[40vh] max-h-[75vh]" : "min-h-[160px] max-h-96"
         }`}
       >
         {renderError ? (
@@ -81,7 +109,7 @@ export default function MermaidVisual({ visual, expanded = false }: MermaidVisua
           </div>
         ) : svg ? (
           <div
-            className="w-full h-full flex items-center justify-center"
+            className="w-full min-w-0"
             // eslint-disable-next-line react/no-danger
             dangerouslySetInnerHTML={{ __html: svg }}
           />

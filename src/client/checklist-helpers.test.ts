@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { dashboardChecklistCountClass } from "./components/Dashboard";
 import { describeHomeChecklistIndicator, getHomeChecklistIndicator } from "./checklist-helpers";
 
 describe("getHomeChecklistIndicator", () => {
@@ -49,5 +50,19 @@ describe("getHomeChecklistIndicator", () => {
       urgentCount: 2,
     });
     expect(describeHomeChecklistIndicator(indicator)).toBe("1 overdue checklist item");
+  });
+});
+
+describe("dashboardChecklistCountClass", () => {
+  it("uses muted styling when there are no urgent checklist deadlines", () => {
+    expect(dashboardChecklistCountClass("none")).toContain("text-text-faint");
+  });
+
+  it("uses warning styling for due-today checklist deadlines", () => {
+    expect(dashboardChecklistCountClass("due-today")).toContain("text-warning");
+  });
+
+  it("uses error styling for overdue checklist deadlines", () => {
+    expect(dashboardChecklistCountClass("overdue")).toContain("text-error");
   });
 });

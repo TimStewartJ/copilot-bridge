@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { err, ok, type Result } from "./tool-results.js";
@@ -33,6 +33,15 @@ const MIME_TO_EXT: Record<string, string> = {
 const ARTIFACT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_VISUAL_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
+export type VisualArtifactOwner =
+  | { type: "session"; id: string }
+  | { type: "feed-card"; id: string };
+
+interface VisualOwnerInput {
+  owner?: VisualArtifactOwner;
+  sessionId?: string;
+}
+
 /** Phase 1: allow raster images only — SVG excluded for security */
 export function isAllowedImageMime(mimeType: string): boolean {
   return ALLOWED_IMAGE_MIME_TYPES.has(mimeType.toLowerCase().trim());
@@ -42,8 +51,28 @@ export function isCanonicalArtifactId(id: string): boolean {
   return ARTIFACT_ID_RE.test(id);
 }
 
-export function getVisualsDir(copilotHome: string, sessionId: string): string {
-  return join(copilotHome, "session-state", sessionId, "files", "visuals");
+export function sessionVisualOwner(sessionId: string): VisualArtifactOwner {
+  return { type: "session", id: sessionId };
+}
+
+export function feedCardVisualOwner(cardId: string): VisualArtifactOwner {
+  return { type: "feed-card", id: cardId };
+}
+
+function normalizeOwner(input: VisualOwnerInput): Result<VisualArtifactOwner> {
+  const owner = input.owner ?? (input.sessionId ? sessionVisualOwner(input.sessionId) : undefined);
+  if (!owner) return err("sessionId is invalid");
+  if (owner.type === "session") {
+    return isCanonicalSessionId(owner.id) ? ok(owner) : err("sessionId is invalid");
+  }
+  return isCanonicalArtifactId(owner.id) ? ok(owner) : err("feed card id is invalid");
+}
+
+export function getVisualsDir(copilotHome: string, ownerOrSessionId: VisualArtifactOwner | string): string {
+  const owner = typeof ownerOrSessionId === "string" ? sessionVisualOwner(ownerOrSessionId) : ownerOrSessionId;
+  return owner.type === "session"
+    ? join(copilotHome, "session-state", owner.id, "files", "visuals")
+    : join(copilotHome, "feed-cards", owner.id, "visuals");
 }
 
 function artifactFilePath(visualsDir: string, artifactId: string, ext: string): string {
@@ -71,7 +100,8 @@ export interface VisualArtifactMeta {
 
 export interface PublishVisualInput {
   copilotHome: string;
-  sessionId: string;
+  sessionId?: string;
+  owner?: VisualArtifactOwner;
   kind: "image";
   title: string;
   mimeType: string;
@@ -87,7 +117,8 @@ export interface PublishVisualInput {
 
 export interface PublishMermaidInput {
   copilotHome: string;
-  sessionId: string;
+  sessionId?: string;
+  owner?: VisualArtifactOwner;
   title: string;
   /** Plain text Mermaid diagram source */
   source: string;
@@ -125,14 +156,17 @@ function normalizeApiBase(apiBasePath: string | undefined): string {
   return (trimmed.startsWith("/") ? trimmed : `/${trimmed}`).replace(/\/+$/, "");
 }
 
-function buildVisualUrl(apiBase: string, sessionId: string, artifactId: string, suffix: string): string {
-  return `${apiBase}/sessions/${encodeURIComponent(sessionId)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
+function buildVisualUrl(apiBase: string, owner: VisualArtifactOwner, artifactId: string, suffix: string): string {
+  if (owner.type === "session") {
+    return `${apiBase}/sessions/${encodeURIComponent(owner.id)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
+  }
+  return `${apiBase}/feed/${encodeURIComponent(owner.id)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
 }
 
 export function publishVisualArtifact(input: PublishVisualInput): Result<PublishedVisualArtifact> {
-  if (!isCanonicalSessionId(input.sessionId)) {
-    return err("sessionId is invalid");
-  }
+  const ownerResult = normalizeOwner(input);
+  if (!ownerResult.ok) return err(ownerResult.error);
+  const owner = ownerResult.value;
 
   const mimeType = input.mimeType?.toLowerCase().trim() ?? "";
   if (!isAllowedImageMime(mimeType)) {
@@ -157,7 +191,7 @@ export function publishVisualArtifact(input: PublishVisualInput): Result<Publish
       ? basename(input.sourcePath!.trim())
       : `image.${ext}`;
 
-  const visualsDir = getVisualsDir(input.copilotHome, input.sessionId);
+  const visualsDir = getVisualsDir(input.copilotHome, owner);
 
   try {
     mkdirSync(visualsDir, { recursive: true });
@@ -212,9 +246,9 @@ export function publishVisualArtifact(input: PublishVisualInput): Result<Publish
       displayName,
       mimeType,
       size,
-      url: buildVisualUrl(apiBase, input.sessionId, artifactId, ""),
-      downloadUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/download"),
-      metaUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/meta"),
+      url: buildVisualUrl(apiBase, owner, artifactId, ""),
+      downloadUrl: buildVisualUrl(apiBase, owner, artifactId, "/download"),
+      metaUrl: buildVisualUrl(apiBase, owner, artifactId, "/meta"),
       ...(meta.caption ? { caption: meta.caption } : {}),
       ...(meta.altText ? { altText: meta.altText } : {}),
     });
@@ -224,15 +258,16 @@ export function publishVisualArtifact(input: PublishVisualInput): Result<Publish
   }
 }
 
-export function resolveVisualArtifact(
+export function resolveVisualArtifactForOwner(
   copilotHome: string,
-  sessionId: string,
+  owner: VisualArtifactOwner,
   artifactId: string,
 ): Result<ResolvedVisualArtifact> {
-  if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
+  const ownerResult = normalizeOwner({ owner });
+  if (!ownerResult.ok) return err(ownerResult.error);
   if (!isCanonicalArtifactId(artifactId)) return err("artifactId is invalid");
 
-  const visualsDir = getVisualsDir(copilotHome, sessionId);
+  const visualsDir = getVisualsDir(copilotHome, ownerResult.value);
   const metaPath = artifactMetaPath(visualsDir, artifactId);
 
   if (!existsSync(metaPath)) return err("Visual artifact not found");
@@ -260,15 +295,24 @@ export function resolveVisualArtifact(
   return ok({ filePath: realPath, displayName: meta.displayName, mimeType: meta.mimeType });
 }
 
-export function loadVisualArtifactMeta(
+export function resolveVisualArtifact(
   copilotHome: string,
   sessionId: string,
   artifactId: string,
+): Result<ResolvedVisualArtifact> {
+  return resolveVisualArtifactForOwner(copilotHome, sessionVisualOwner(sessionId), artifactId);
+}
+
+export function loadVisualArtifactMetaForOwner(
+  copilotHome: string,
+  owner: VisualArtifactOwner,
+  artifactId: string,
 ): Result<VisualArtifactMeta> {
-  if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
+  const ownerResult = normalizeOwner({ owner });
+  if (!ownerResult.ok) return err(ownerResult.error);
   if (!isCanonicalArtifactId(artifactId)) return err("artifactId is invalid");
 
-  const visualsDir = getVisualsDir(copilotHome, sessionId);
+  const visualsDir = getVisualsDir(copilotHome, ownerResult.value);
   const metaPath = artifactMetaPath(visualsDir, artifactId);
 
   if (!existsSync(metaPath)) return err("Visual artifact not found");
@@ -280,10 +324,46 @@ export function loadVisualArtifactMeta(
   }
 }
 
-export function publishMermaidArtifact(input: PublishMermaidInput): Result<PublishedVisualArtifact> {
-  if (!isCanonicalSessionId(input.sessionId)) {
-    return err("sessionId is invalid");
+export function loadVisualArtifactMeta(
+  copilotHome: string,
+  sessionId: string,
+  artifactId: string,
+): Result<VisualArtifactMeta> {
+  return loadVisualArtifactMetaForOwner(copilotHome, sessionVisualOwner(sessionId), artifactId);
+}
+
+export function deleteVisualArtifactForOwner(
+  copilotHome: string,
+  owner: VisualArtifactOwner,
+  artifactId: string,
+): Result<void> {
+  const ownerResult = normalizeOwner({ owner });
+  if (!ownerResult.ok) return err(ownerResult.error);
+  if (!isCanonicalArtifactId(artifactId)) return err("artifactId is invalid");
+  const visualsDir = getVisualsDir(copilotHome, ownerResult.value);
+  const metaPath = artifactMetaPath(visualsDir, artifactId);
+  let ext: string | undefined;
+  if (existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as VisualArtifactMeta;
+      ext = typeof meta.ext === "string" ? meta.ext : undefined;
+    } catch {
+      return err("Visual artifact metadata is corrupted");
+    }
   }
+  try {
+    if (ext) rmSync(artifactFilePath(visualsDir, artifactId, ext), { force: true });
+    rmSync(metaPath, { force: true });
+    return ok(undefined);
+  } catch (error) {
+    return err(`Failed to delete visual artifact: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function publishMermaidArtifact(input: PublishMermaidInput): Result<PublishedVisualArtifact> {
+  const ownerResult = normalizeOwner(input);
+  if (!ownerResult.ok) return err(ownerResult.error);
+  const owner = ownerResult.value;
 
   const title = input.title?.trim() ?? "";
   if (!title) return err("title is required");
@@ -298,7 +378,7 @@ export function publishMermaidArtifact(input: PublishMermaidInput): Result<Publi
     ? input.displayName.trim()
     : `${title.replace(/[^a-z0-9_-]/gi, "_")}.mmd`;
 
-  const visualsDir = getVisualsDir(input.copilotHome, input.sessionId);
+  const visualsDir = getVisualsDir(input.copilotHome, owner);
 
   try {
     mkdirSync(visualsDir, { recursive: true });
@@ -337,9 +417,9 @@ export function publishMermaidArtifact(input: PublishMermaidInput): Result<Publi
       displayName,
       mimeType: MERMAID_MIME_TYPE,
       size,
-      url: buildVisualUrl(apiBase, input.sessionId, artifactId, ""),
-      downloadUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/download"),
-      metaUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/meta"),
+      url: buildVisualUrl(apiBase, owner, artifactId, ""),
+      downloadUrl: buildVisualUrl(apiBase, owner, artifactId, "/download"),
+      metaUrl: buildVisualUrl(apiBase, owner, artifactId, "/meta"),
       source,
       ...(meta.caption ? { caption: meta.caption } : {}),
     });
@@ -351,7 +431,8 @@ export function publishMermaidArtifact(input: PublishMermaidInput): Result<Publi
 
 export interface PublishVegaLiteInput {
   copilotHome: string;
-  sessionId: string;
+  sessionId?: string;
+  owner?: VisualArtifactOwner;
   title: string;
   /** Vega-Lite spec as a JSON string or a pre-parsed object */
   spec: string | object;
@@ -418,9 +499,9 @@ function checkVegaLiteNetworkData(spec: object): string | null {
 }
 
 export function publishVegaLiteArtifact(input: PublishVegaLiteInput): Result<PublishedVisualArtifact> {
-  if (!isCanonicalSessionId(input.sessionId)) {
-    return err("sessionId is invalid");
-  }
+  const ownerResult = normalizeOwner(input);
+  if (!ownerResult.ok) return err(ownerResult.error);
+  const owner = ownerResult.value;
 
   const title = input.title?.trim() ?? "";
   if (!title) return err("title is required");
@@ -469,7 +550,7 @@ export function publishVegaLiteArtifact(input: PublishVegaLiteInput): Result<Pub
     ? input.displayName.trim()
     : `${title.replace(/[^a-z0-9_-]/gi, "_")}.vl.json`;
 
-  const visualsDir = getVisualsDir(input.copilotHome, input.sessionId);
+  const visualsDir = getVisualsDir(input.copilotHome, owner);
 
   try {
     mkdirSync(visualsDir, { recursive: true });
@@ -508,9 +589,9 @@ export function publishVegaLiteArtifact(input: PublishVegaLiteInput): Result<Pub
       displayName,
       mimeType: VEGA_LITE_MIME_TYPE,
       size,
-      url: buildVisualUrl(apiBase, input.sessionId, artifactId, ""),
-      downloadUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/download"),
-      metaUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/meta"),
+      url: buildVisualUrl(apiBase, owner, artifactId, ""),
+      downloadUrl: buildVisualUrl(apiBase, owner, artifactId, "/download"),
+      metaUrl: buildVisualUrl(apiBase, owner, artifactId, "/meta"),
       source,
       ...(meta.caption ? { caption: meta.caption } : {}),
     });
@@ -522,7 +603,8 @@ export function publishVegaLiteArtifact(input: PublishVegaLiteInput): Result<Pub
 
 export interface PublishHtmlInput {
   copilotHome: string;
-  sessionId: string;
+  sessionId?: string;
+  owner?: VisualArtifactOwner;
   title: string;
   /** Plain text HTML content */
   content: string;
@@ -532,9 +614,9 @@ export interface PublishHtmlInput {
 }
 
 export function publishHtmlArtifact(input: PublishHtmlInput): Result<PublishedVisualArtifact> {
-  if (!isCanonicalSessionId(input.sessionId)) {
-    return err("sessionId is invalid");
-  }
+  const ownerResult = normalizeOwner(input);
+  if (!ownerResult.ok) return err(ownerResult.error);
+  const owner = ownerResult.value;
 
   const title = input.title?.trim() ?? "";
   if (!title) return err("title is required");
@@ -551,7 +633,7 @@ export function publishHtmlArtifact(input: PublishHtmlInput): Result<PublishedVi
     ? input.displayName.trim()
     : `${title.replace(/[^a-z0-9_-]/gi, "_")}.html`;
 
-  const visualsDir = getVisualsDir(input.copilotHome, input.sessionId);
+  const visualsDir = getVisualsDir(input.copilotHome, owner);
 
   try {
     mkdirSync(visualsDir, { recursive: true });
@@ -590,9 +672,9 @@ export function publishHtmlArtifact(input: PublishHtmlInput): Result<PublishedVi
       displayName,
       mimeType: HTML_MIME_TYPE,
       size,
-      url: buildVisualUrl(apiBase, input.sessionId, artifactId, ""),
-      downloadUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/download"),
-      metaUrl: buildVisualUrl(apiBase, input.sessionId, artifactId, "/meta"),
+      url: buildVisualUrl(apiBase, owner, artifactId, ""),
+      downloadUrl: buildVisualUrl(apiBase, owner, artifactId, "/download"),
+      metaUrl: buildVisualUrl(apiBase, owner, artifactId, "/meta"),
       source: content,
       ...(meta.caption ? { caption: meta.caption } : {}),
     });

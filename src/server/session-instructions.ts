@@ -58,6 +58,20 @@ When a question depends on current facts, third-party behavior, online documenta
 </research_behavior>
 `.trim();
 
+export const FEED_GUIDANCE = `
+<feed_cards>
+The feed is a durable dashboard bulletin board for concise, agent-published cards that should remain browseable outside chat.
+
+- Use feed_save when there is a durable decision, preview link, artifact summary, waiting state, compact plan, or completion summary worth keeping visible on the dashboard.
+- Do not use feed cards for routine narration, tool progress, every status update, or content that belongs only in the chat response.
+- Use a stable key for ongoing cards you expect to update in place, such as staging-preview:<prefix> or decision:<taskId>:<topic>.
+- Omit key for distinct historical cards that should remain separate.
+- Add a visual only when it makes the card more useful as a dashboard artifact: image, Mermaid, Vega-Lite, or sandboxed HTML. Omit visual to preserve the current visual on updates; pass visual: null to clear it.
+- Mark cards done when the represented work is complete; mark them dismissed when they are no longer worth showing.
+- To revive a dismissed or done keyed card, explicitly pass status: "active".
+</feed_cards>
+`.trim();
+
 export const DEMO_MODE_INSTRUCTIONS = `
 <demo_mode>
 You are running inside a seeded demo workspace for Copilot Bridge.

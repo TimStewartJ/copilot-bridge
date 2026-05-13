@@ -1123,6 +1123,100 @@ export async function markSessionUnread(sessionId: string): Promise<void> {
   await fetch(`${API_BASE}/api/read-state/${sessionId}`, { method: "DELETE" });
 }
 
+// ── Feed API ──────────────────────────────────────────────────────
+
+export type FeedCardStatus = "active" | "done" | "dismissed";
+export type FeedCardPriority = "low" | "normal" | "high";
+
+export interface FeedCardLink {
+  label: string;
+  url: string;
+}
+
+export interface FeedCard {
+  id: string;
+  dedupeKey: string | null;
+  title: string;
+  body: string | null;
+  kind: string;
+  priority: FeedCardPriority;
+  status: FeedCardStatus;
+  taskId: string | null;
+  sessionId: string | null;
+  url: string | null;
+  links: FeedCardLink[];
+  metadata: Record<string, unknown> | null;
+  visual: VisualArtifact | null;
+  pinned: boolean;
+  statusChangedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeedQueryFilters {
+  status?: FeedCardStatus;
+  kind?: string;
+  taskId?: string;
+  sessionId?: string;
+  limit?: number;
+  includeDismissed?: boolean;
+}
+
+export type FeedCardMutation = Partial<Pick<
+  FeedCard,
+  "title" | "body" | "kind" | "priority" | "status" | "taskId" | "sessionId" | "url" | "links" | "metadata" | "pinned"
+>> & {
+  key?: string;
+};
+
+export interface FeedSaveResult {
+  card: FeedCard;
+  created: boolean;
+}
+
+function buildFeedQuery(filters: FeedQueryFilters = {}): string {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.kind) params.set("kind", filters.kind);
+  if (filters.taskId) params.set("taskId", filters.taskId);
+  if (filters.sessionId) params.set("sessionId", filters.sessionId);
+  if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+  if (filters.includeDismissed !== undefined) params.set("includeDismissed", String(filters.includeDismissed));
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export async function fetchFeed(filters: FeedQueryFilters = {}): Promise<FeedCard[]> {
+  const data = await apiFetch<{ cards: FeedCard[] }>(`/api/feed${buildFeedQuery(filters)}`);
+  return data.cards;
+}
+
+export async function saveFeedCard(input: FeedCardMutation): Promise<FeedSaveResult> {
+  return apiFetch<FeedSaveResult>("/api/feed", input);
+}
+
+export async function patchFeedCard(id: string, updates: FeedCardMutation): Promise<FeedCard> {
+  const res = await fetch(`${API_BASE}/api/feed/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  const data = await res.json();
+  return data.card;
+}
+
+export async function deleteFeedCard(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/feed/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+}
+
 // ── Dashboard API ─────────────────────────────────────────────────
 
 export interface DashboardBusySession {

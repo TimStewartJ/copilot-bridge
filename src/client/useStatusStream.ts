@@ -22,6 +22,7 @@ export type StatusEvent =
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string }
   | { type: "schedule:changed"; scheduleId?: string }
   | { type: "task:changed"; taskId?: string }
+  | { type: "feed:changed"; cardId?: string; dedupeKey?: string; taskId?: string; sessionId?: string }
   | { type: "readstate:changed"; readState?: Record<string, string> };
 
 type StatusHandler = (event: StatusEvent) => void;

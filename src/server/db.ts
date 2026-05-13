@@ -33,6 +33,7 @@ const SQLITE_STATE_TABLES = [
   "schedule_run_claims",
   "read_state",
   "checklist_items",
+  "feed_cards",
   "voice_jobs",
   "tags",
   "entity_tags",
@@ -281,6 +282,34 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(scheduleId, recordedAt DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_schedule_run_claims_status ON schedule_run_claims(status, leaseExpiresAt);
     CREATE INDEX IF NOT EXISTS idx_checklist_items_taskId ON checklist_items(taskId);
+
+    -- Agent-published dashboard feed cards
+    CREATE TABLE IF NOT EXISTS feed_cards (
+      id TEXT PRIMARY KEY,
+      dedupeKey TEXT,
+      title TEXT NOT NULL,
+      body TEXT,
+      kind TEXT NOT NULL DEFAULT 'note',
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'active',
+      taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      sessionId TEXT,
+      url TEXT,
+      linksJson TEXT NOT NULL DEFAULT '[]',
+      metadataJson TEXT,
+      visualJson TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      statusChangedAt TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_cards_dedupeKey
+      ON feed_cards(dedupeKey) WHERE dedupeKey IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_status_updated
+      ON feed_cards(status, pinned DESC, updatedAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_taskId ON feed_cards(taskId);
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_sessionId ON feed_cards(sessionId);
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_kind ON feed_cards(kind);
 
     -- Voice jobs
     CREATE TABLE IF NOT EXISTS voice_jobs (

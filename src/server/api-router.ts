@@ -30,10 +30,19 @@ import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
-import { isCanonicalArtifactId, HTML_MIME_TYPE, loadVisualArtifactMeta, resolveVisualArtifact } from "./visual-artifacts.js";
+import {
+  feedCardVisualOwner,
+  HTML_MIME_TYPE,
+  isCanonicalArtifactId,
+  loadVisualArtifactMetaForOwner,
+  resolveVisualArtifactForOwner,
+  sessionVisualOwner,
+  type VisualArtifactOwner,
+} from "./visual-artifacts.js";
 import { createCopilotUsageReader, type CopilotUsageSummary } from "./copilot-usage.js";
 import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
+import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { UserInputBrokerError } from "./user-input-broker.js";
 import { mergeDeferSummaries, type DeferSummary } from "./defer-summary.js";
@@ -1628,6 +1637,42 @@ export function createApiRouter(ctx: AppContext): express.Router {
     return res.download(attachment.value.filePath, attachment.value.displayName, { dotfiles: "allow" }, onSendError);
   });
 
+  function sendVisualArtifact(owner: VisualArtifactOwner, artifactId: string, res: express.Response, mode: "inline" | "download"): void {
+    const resolved = resolveVisualArtifactForOwner(getCopilotHome(ctx), owner, artifactId);
+    if (!resolved.ok) {
+      const status = resolved.error.includes("unsafe") ? 403 : 404;
+      res.status(status).json({ error: resolved.error });
+      return;
+    }
+    const onErr = (err: NodeJS.ErrnoException | null) => {
+      if (!err || res.headersSent) return;
+      res.status((err as any).statusCode ?? 500).json({ error: err.message });
+    };
+    if (mode === "download") {
+      res.download(resolved.value.filePath, resolved.value.displayName, { dotfiles: "allow" }, onErr);
+      return;
+    }
+    res.type(resolved.value.mimeType);
+    if (resolved.value.mimeType === HTML_MIME_TYPE) {
+      res.setHeader(
+        "Content-Security-Policy",
+        "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'",
+      );
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    }
+    res.sendFile(resolved.value.filePath, { dotfiles: "allow" }, onErr);
+  }
+
+  function sendVisualMeta(owner: VisualArtifactOwner, artifactId: string, res: express.Response): void {
+    const meta = loadVisualArtifactMetaForOwner(getCopilotHome(ctx), owner, artifactId);
+    if (!meta.ok) {
+      res.status(meta.error.includes("invalid") ? 400 : 404).json({ error: meta.error });
+      return;
+    }
+    res.json(meta.value);
+  }
+
   // Visual artifact routes — serve published visual artifacts by artifactId (UUID)
   // GET /sessions/:id/visuals/:artifactId — serve artifact inline
   router.get("/sessions/:id/visuals/:artifactId", (req, res) => {
@@ -1638,26 +1683,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!isCanonicalArtifactId(artifactId)) {
       return res.status(400).json({ error: "artifactId must be a valid UUID" });
     }
-    const resolved = resolveVisualArtifact(getCopilotHome(ctx), req.params.id, artifactId);
-    if (!resolved.ok) {
-      const status = resolved.error.includes("unsafe") ? 403 : 404;
-      return res.status(status).json({ error: resolved.error });
-    }
-    const onErr = (err: NodeJS.ErrnoException | null) => {
-      if (!err || res.headersSent) return;
-      res.status((err as any).statusCode ?? 500).json({ error: err.message });
-    };
-    res.type(resolved.value.mimeType);
-    // Strict headers for HTML artifacts served into sandboxed iframes
-    if (resolved.value.mimeType === HTML_MIME_TYPE) {
-      res.setHeader(
-        "Content-Security-Policy",
-        "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'",
-      );
-      res.setHeader("Referrer-Policy", "no-referrer");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-    }
-    return res.sendFile(resolved.value.filePath, { dotfiles: "allow" }, onErr);
+    return sendVisualArtifact(sessionVisualOwner(req.params.id), artifactId, res, "inline");
   });
 
   // GET /sessions/:id/visuals/:artifactId/download — force-download the image
@@ -1669,16 +1695,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!isCanonicalArtifactId(artifactId)) {
       return res.status(400).json({ error: "artifactId must be a valid UUID" });
     }
-    const resolved = resolveVisualArtifact(getCopilotHome(ctx), req.params.id, artifactId);
-    if (!resolved.ok) {
-      const status = resolved.error.includes("unsafe") ? 403 : 404;
-      return res.status(status).json({ error: resolved.error });
-    }
-    const onErr = (err: NodeJS.ErrnoException | null) => {
-      if (!err || res.headersSent) return;
-      res.status((err as any).statusCode ?? 500).json({ error: err.message });
-    };
-    return res.download(resolved.value.filePath, resolved.value.displayName, { dotfiles: "allow" }, onErr);
+    return sendVisualArtifact(sessionVisualOwner(req.params.id), artifactId, res, "download");
   });
 
   // GET /sessions/:id/visuals/:artifactId/meta — return visual artifact metadata as JSON
@@ -1690,12 +1707,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!isCanonicalArtifactId(artifactId)) {
       return res.status(400).json({ error: "artifactId must be a valid UUID" });
     }
-    const meta = loadVisualArtifactMeta(getCopilotHome(ctx), req.params.id, artifactId);
-    if (!meta.ok) {
-      return res.status(meta.error === "sessionId is invalid" || meta.error === "artifactId is invalid" ? 400 : 404)
-        .json({ error: meta.error });
-    }
-    return res.json(meta.value);
+    return sendVisualMeta(sessionVisualOwner(req.params.id), artifactId, res);
   });
 
   // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
@@ -2875,6 +2887,143 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   router.get("/checklist-items/open", (_req, res) => {
     res.json({ checklistItems: ctx.checklistStore.listAllOpenChecklistItems() });
+  });
+
+  // ── Feed card routes ──────────────────────────────────────────────
+
+  function parseFeedBody(body: unknown): Record<string, unknown> {
+    if (!isRecord(body)) throw new FeedCardValidationError("Request body must be an object");
+    return body;
+  }
+
+  function parseFeedQueryString(field: string, value: unknown): string | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (typeof value !== "string") throw new FeedCardValidationError(`${field} must be a string`);
+    return value;
+  }
+
+  function parseFeedStatus(value: unknown): FeedCardStatus | undefined {
+    const status = parseFeedQueryString("status", value);
+    if (status === undefined) return undefined;
+    if (status === "active" || status === "done" || status === "dismissed") return status;
+    throw new FeedCardValidationError("status must be one of: active, done, dismissed");
+  }
+
+  function parseFeedLimit(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (typeof value !== "string") throw new FeedCardValidationError("limit must be a positive integer");
+    const limit = Number(value);
+    if (!Number.isInteger(limit) || limit < 1) throw new FeedCardValidationError("limit must be a positive integer");
+    return limit;
+  }
+
+  function parseFeedBoolean(field: string, value: unknown): boolean | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new FeedCardValidationError(`${field} must be true or false`);
+  }
+
+  function sendFeedError(res: express.Response, error: unknown): void {
+    if (error instanceof FeedCardValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error instanceof FeedCardNotFoundError) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    console.error("[feed] Error:", error);
+    res.status(500).json({ error: String(error) });
+  }
+
+  router.get("/feed", (req, res) => {
+    try {
+      const t0 = Date.now();
+      const cards = ctx.feedStore.listCards({
+        status: parseFeedStatus(req.query.status),
+        kind: parseFeedQueryString("kind", req.query.kind),
+        taskId: parseFeedQueryString("taskId", req.query.taskId),
+        sessionId: parseFeedQueryString("sessionId", req.query.sessionId),
+        limit: parseFeedLimit(req.query.limit),
+        includeDismissed: parseFeedBoolean("includeDismissed", req.query.includeDismissed),
+      });
+      res.json({ cards });
+      ctx.telemetryStore?.recordSpan({ name: "feed.list", duration: Date.now() - t0, source: "server" });
+    } catch (error) {
+      sendFeedError(res, error);
+    }
+  });
+
+  router.post("/feed", (req, res) => {
+    try {
+      const t0 = Date.now();
+      const result = ctx.feedStore.saveCard(parseFeedBody(req.body));
+      res.status(result.created ? 201 : 200).json(result);
+      ctx.telemetryStore?.recordSpan({ name: "feed.save", duration: Date.now() - t0, source: "server" });
+    } catch (error) {
+      sendFeedError(res, error);
+    }
+  });
+
+  router.patch("/feed/:id", (req, res) => {
+    try {
+      const t0 = Date.now();
+      const card = ctx.feedStore.updateCardById(req.params.id, parseFeedBody(req.body));
+      res.json({ card });
+      ctx.telemetryStore?.recordSpan({ name: "feed.update", duration: Date.now() - t0, source: "server" });
+    } catch (error) {
+      sendFeedError(res, error);
+    }
+  });
+
+  function getFeedVisualOwner(req: express.Request, res: express.Response): VisualArtifactOwner | undefined {
+    const cardId = String(req.params.id ?? "").trim();
+    const artifactId = String(req.params.artifactId ?? "").trim();
+    if (!isCanonicalArtifactId(cardId)) {
+      res.status(400).json({ error: "Feed card id must be a valid UUID" });
+      return undefined;
+    }
+    if (!isCanonicalArtifactId(artifactId)) {
+      res.status(400).json({ error: "artifactId must be a valid UUID" });
+      return undefined;
+    }
+    const card = ctx.feedStore.getCard(cardId);
+    if (!card || card.visual?.artifactId !== artifactId) {
+      res.status(404).json({ error: "Feed visual artifact not found" });
+      return undefined;
+    }
+    return feedCardVisualOwner(cardId);
+  }
+
+  router.get("/feed/:id/visuals/:artifactId", (req, res) => {
+    const owner = getFeedVisualOwner(req, res);
+    if (!owner) return;
+    return sendVisualArtifact(owner, req.params.artifactId, res, "inline");
+  });
+
+  router.get("/feed/:id/visuals/:artifactId/download", (req, res) => {
+    const owner = getFeedVisualOwner(req, res);
+    if (!owner) return;
+    return sendVisualArtifact(owner, req.params.artifactId, res, "download");
+  });
+
+  router.get("/feed/:id/visuals/:artifactId/meta", (req, res) => {
+    const owner = getFeedVisualOwner(req, res);
+    if (!owner) return;
+    return sendVisualMeta(owner, req.params.artifactId, res);
+  });
+
+  router.delete("/feed/:id", (req, res) => {
+    try {
+      const t0 = Date.now();
+      const deleted = ctx.feedStore.deleteCardById(req.params.id);
+      if (!deleted) throw new FeedCardNotFoundError(`Feed card ${req.params.id} not found`);
+      res.json({ ok: true });
+      ctx.telemetryStore?.recordSpan({ name: "feed.delete", duration: Date.now() - t0, source: "server" });
+    } catch (error) {
+      sendFeedError(res, error);
+    }
   });
 
   // ── Read State routes ─────────────────────────────────────────────
