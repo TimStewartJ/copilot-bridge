@@ -1,4 +1,5 @@
 import type { FeedCard as FeedCardData, FeedCardStatus } from "../api";
+import { DEFAULT_FEED_ACTION_LABEL } from "../feed-action-helpers";
 import { UI } from "./shared/design-system";
 import VisualArtifactCard from "./VisualArtifactCard";
 import {
@@ -29,8 +30,6 @@ const KIND_LABELS: Record<string, string> = {
   artifact: "Artifact",
   link: "Link",
 };
-
-export const DEFAULT_FEED_ACTION_LABEL = "Start session";
 
 const PRIORITY_CLASS: Record<FeedCardData["priority"], string> = {
   low: UI.chip.muted,

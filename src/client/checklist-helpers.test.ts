@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dashboardChecklistCountClass, resolveFeedActionTaskId } from "./components/Dashboard";
+import { dashboardChecklistCountClass } from "./components/dashboard-checklist-helpers";
+import { resolveFeedActionTaskId } from "./feed-action-helpers";
 import { describeHomeChecklistIndicator, getHomeChecklistIndicator } from "./checklist-helpers";
 
 describe("getHomeChecklistIndicator", () => {
