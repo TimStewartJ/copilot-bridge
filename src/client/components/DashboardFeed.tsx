@@ -238,7 +238,7 @@ export default function DashboardFeed({
         ) : (
           <EmptyState
             message="No feed cards"
-            sub="Agents can publish durable cards here for decisions, previews, artifacts, and summaries."
+            sub="Agents can publish durable cards here for curated alerts, follow-ups, decisions, and artifacts."
           />
         )}
       </section>
