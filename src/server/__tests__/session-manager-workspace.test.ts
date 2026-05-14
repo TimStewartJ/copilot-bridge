@@ -509,15 +509,21 @@ describe("SessionManager forkSession", () => {
     expect(fork).toHaveBeenCalledWith({ sessionId: "source-session", toEventId: "next-event" });
   });
 
-  it("sets a CLI-owned fork name without requiring workspace.yaml", async () => {
+  it("sets a CLI-owned fork name through one resumed session", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-fork-name-"));
     tempDirs.push(copilotHome);
     const { manager } = createManager(copilotHome);
+    const sessionDir = join(copilotHome, "session-state", "forked-session");
+    mkdirSync(sessionDir, { recursive: true });
     const disconnect = vi.fn();
-    const set = vi.fn();
+    let visibleName: string | null = null;
+    const set = vi.fn(async ({ name }: { name: string }) => {
+      visibleName = name;
+    });
+    const get = vi.fn(async () => ({ name: visibleName }));
     const resumeSession = vi.fn(async () => ({
       disconnect,
-      rpc: { name: { set } },
+      rpc: { name: { set, get } },
     }));
     manager.client = {
       resumeSession,
@@ -525,9 +531,11 @@ describe("SessionManager forkSession", () => {
 
     await manager.setSessionName("forked-session", "Fork of Original session");
 
-    expect(existsSync(join(copilotHome, "session-state", "forked-session", "workspace.yaml"))).toBe(false);
+    const workspacePath = join(copilotHome, "session-state", "forked-session", "workspace.yaml");
+    expect(existsSync(workspacePath)).toBe(false);
     expect(resumeSession).toHaveBeenCalledWith("forked-session", expect.objectContaining({ disableResume: true }));
     expect(set).toHaveBeenCalledWith({ name: "Fork of Original session" });
+    expect(get).toHaveBeenCalled();
     expect(disconnect).toHaveBeenCalled();
   });
 

@@ -2,6 +2,13 @@ export function isSessionStatePathSegment(sessionId: string): boolean {
   return sessionId !== "." && sessionId !== ".." && !sessionId.includes("/") && !sessionId.includes("\\");
 }
 
+export interface WorkspaceSessionNameMetadata {
+  name?: string;
+  summary?: string;
+  effectiveName?: string;
+  userNamed?: boolean;
+}
+
 function normalizeWorkspaceString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -67,6 +74,25 @@ export function parseWorkspaceYamlScalar(content: string, key: string): string |
   return undefined;
 }
 
+export function parseWorkspaceYamlBoolean(content: string, key: string): boolean | undefined {
+  const value = parseWorkspaceYamlScalar(content, key)?.toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
+}
+
 export function parseWorkspaceYamlSessionName(content: string): string | undefined {
   return parseWorkspaceYamlScalar(content, "name") ?? parseWorkspaceYamlScalar(content, "summary");
+}
+
+export function parseWorkspaceYamlSessionNameMetadata(content: string): WorkspaceSessionNameMetadata {
+  const name = parseWorkspaceYamlScalar(content, "name");
+  const summary = parseWorkspaceYamlScalar(content, "summary");
+  const userNamed = parseWorkspaceYamlBoolean(content, "user_named");
+  return {
+    name,
+    summary,
+    effectiveName: name ?? summary,
+    userNamed,
+  };
 }
