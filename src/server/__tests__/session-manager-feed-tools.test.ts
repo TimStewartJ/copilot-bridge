@@ -21,7 +21,37 @@ function createInvocation(toolName: string) {
   };
 }
 
+function getParameterDescription(ctx: AppContext, toolName: string, parameterName: string): string {
+  const parameters = getTool(ctx, toolName).parameters;
+  if (!parameters || typeof parameters !== "object" || !("properties" in parameters)) {
+    throw new Error(`${toolName} has no JSON object parameters`);
+  }
+  const properties = parameters.properties;
+  if (!properties || typeof properties !== "object" || !(parameterName in properties)) {
+    throw new Error(`${toolName}.${parameterName} parameter not found`);
+  }
+  const parameter = (properties as Record<string, unknown>)[parameterName];
+  if (!parameter || typeof parameter !== "object" || !("description" in parameter)) {
+    throw new Error(`${toolName}.${parameterName} has no description`);
+  }
+  const description = parameter.description;
+  if (typeof description !== "string") {
+    throw new Error(`${toolName}.${parameterName} description is not a string`);
+  }
+  return description;
+}
+
 describe("session manager feed tools", () => {
+  it("describes feed body as concise escaped markdown for agents", () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const bodyDescription = getParameterDescription(ctx, "feed_save", "body");
+
+    expect(saveTool.description).toContain("Optional body supports concise Markdown");
+    expect(bodyDescription).toContain("Optional concise Markdown body text");
+    expect(bodyDescription).toContain("Raw HTML is escaped");
+  });
+
   it("feed_save creates and updates keyed cards", async () => {
     const { ctx } = createTestApp();
     const saveTool = getTool(ctx, "feed_save");

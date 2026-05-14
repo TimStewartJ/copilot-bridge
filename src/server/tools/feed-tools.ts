@@ -100,14 +100,14 @@ function normalizeVisualPayload(value: unknown): Record<string, unknown> | null 
 export function createFeedTools(ctx: AppContext) {
   return [
     defineTool("feed_save", {
-      description: "Create or update a durable dashboard feed card. Use this sparingly for finite, user-relevant queue items that should remain visible after chat, not for narration, progress logs, routine status updates, staging previews, or generic completion summaries. Use key for recurring or ongoing cards you plan to update in place; omit key for distinct historical cards. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
+      description: "Create or update a durable dashboard feed card. Use this sparingly for finite, user-relevant queue items that should remain visible after chat, not for narration, progress logs, routine status updates, staging previews, or generic completion summaries. Use key for recurring or ongoing cards you plan to update in place; omit key for distinct historical cards. Optional body supports concise Markdown for scannable text. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
       parameters: {
         type: "object",
         properties: {
           id: { type: "string", description: "Existing card ID to update. Mutually exclusive with key." },
           key: { type: "string", description: "Stable agent-chosen key for upsert/dedupe, e.g. 'platform-audit:slug' or 'decision:task-id:topic'. Mutually exclusive with id." },
           title: { type: "string", description: "Short card title. Required when creating a new card." },
-          body: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional concise body text. Null clears it." },
+          body: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional concise Markdown body text. Supports GFM-style bullets, links, tables, task lists, and code. Raw HTML is escaped. Null clears it." },
           kind: { type: "string", description: "Card kind. Recommended: note, status, todo, decision, artifact, link. Unknown kinds are allowed." },
           priority: { type: "string", enum: ["low", "normal", "high"], description: "Card priority. Defaults to normal." },
           status: { type: "string", enum: ["active", "done", "dismissed"], description: "Card status. Defaults to active. Set done or dismissed when resolved." },

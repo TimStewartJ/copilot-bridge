@@ -1,9 +1,14 @@
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, type ComponentPropsWithoutRef, type MouseEvent as ReactMouseEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import type { FeedCard as FeedCardData, FeedCardStatus } from "../api";
 import { DEFAULT_FEED_ACTION_LABEL } from "../feed-action-helpers";
 import { UI } from "./shared/design-system";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
+import CodeBlock from "./CodeBlock";
 import VisualArtifactCard from "./VisualArtifactCard";
+import { APP_PROSE } from "./shared/prose-classes";
 import {
   Bell,
   CheckCircle2,
@@ -76,6 +81,15 @@ const BODY_STATUS_CLASS: Record<FeedCardStatus, string> = {
   dismissed: "text-text-muted",
 };
 
+const BODY_MARKDOWN_CLASS = [
+  "max-w-none break-words text-sm leading-relaxed",
+  APP_PROSE,
+  "prose-pre:bg-bg-primary prose-th:bg-bg-primary",
+  "prose-p:text-inherit prose-li:text-inherit prose-headings:text-inherit prose-strong:text-inherit",
+  "prose-blockquote:text-inherit prose-td:text-inherit prose-th:text-inherit",
+  "prose-a:break-words",
+].join(" ");
+
 const AVATAR_CLASS: Record<string, string> = {
   note: "border-info-border bg-info-surface text-info",
   status: "border-accent-border bg-accent-surface text-accent",
@@ -94,6 +108,8 @@ const DESKTOP_ACTION_BUTTON_BASE =
 const LINK_BUTTON_CLASS = `${UI.button.secondary} inline-flex min-h-11 items-center gap-1.5 px-3 text-sm sm:min-h-8 sm:px-2.5 sm:text-xs`;
 const METADATA_SOURCE_MAX_LENGTH = 32;
 const CONTEXT_MENU_ESTIMATED_WIDTH = 180;
+const URI_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i;
+const SAFE_MARKDOWN_URL_SCHEME_PATTERN = /^(https?|mailto|tel):/i;
 
 function labelForKind(kind: string): string {
   return kind in KIND_LABELS
@@ -112,6 +128,30 @@ function statusLabel(status: FeedCardStatus): string {
     default:
       return status;
   }
+}
+
+function sanitizeMarkdownHref(href: string | undefined): string | undefined {
+  if (!href) return href;
+  return URI_SCHEME_PATTERN.test(href) && !SAFE_MARKDOWN_URL_SCHEME_PATTERN.test(href)
+    ? undefined
+    : href;
+}
+
+function opensInNewTab(href: string | undefined): boolean {
+  return Boolean(href && (SAFE_MARKDOWN_URL_SCHEME_PATTERN.test(href) || href.startsWith("//")));
+}
+
+function FeedMarkdownLink({ href, node: _node, ...props }: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+  const safeHref = sanitizeMarkdownHref(href);
+  const newTab = opensInNewTab(safeHref);
+  return (
+    <a
+      {...props}
+      href={safeHref}
+      target={newTab ? "_blank" : undefined}
+      rel={newTab ? "noopener noreferrer" : undefined}
+    />
+  );
 }
 
 function sanitizeMetadataSource(metadata: Record<string, unknown> | null): string | null {
@@ -447,7 +487,14 @@ export default function FeedCard({
         <div className="space-y-2">
           <h3 className={`text-base font-semibold leading-snug sm:text-[15px] ${TITLE_STATUS_CLASS[card.status]}`}>{card.title}</h3>
           {card.body && (
-            <p className={`whitespace-pre-wrap text-sm leading-relaxed ${BODY_STATUS_CLASS[card.status]}`}>{card.body}</p>
+            <div className={`${BODY_MARKDOWN_CLASS} ${BODY_STATUS_CLASS[card.status]}`}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkBreaks]}
+                components={{ pre: CodeBlock, a: FeedMarkdownLink }}
+              >
+                {card.body}
+              </ReactMarkdown>
+            </div>
           )}
         </div>
 
