@@ -10,11 +10,18 @@ import DashboardTabs from "./DashboardTabs";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { dashboardChecklistCountClass } from "./dashboard-checklist-helpers";
+import type { Task, TaskGroup } from "../api";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
   onSelectSession: (sessionId: string, taskId?: string) => void;
-  onStartPromptSession: (prompt: string, taskId?: string) => Promise<string>;
+  onStartPromptSession: (
+    prompt: string,
+    taskId?: string,
+    options?: { navigateOnError?: boolean },
+  ) => Promise<string>;
+  tasks?: Task[];
+  taskGroups?: TaskGroup[];
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
@@ -54,6 +61,8 @@ export default function Dashboard({
   onSelectTask,
   onSelectSession,
   onStartPromptSession,
+  tasks = [],
+  taskGroups = [],
   scrollRestoration,
 }: DashboardProps) {
   const location = useLocation();
@@ -110,6 +119,8 @@ export default function Dashboard({
           <DashboardFeed
             active={activeTab === "feed"}
             feedCards={feedCards}
+            tasks={tasks}
+            taskGroups={taskGroups}
             feedLoading={feedLoading}
             showResolvedFeed={showResolvedFeed}
             onToggleResolvedFeed={() => setShowResolvedFeed((value) => !value)}

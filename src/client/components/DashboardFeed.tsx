@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Inbox, Undo2, X } from "lucide-react";
 import {
   deleteFeedCard,
   patchFeedCard,
   type FeedCard as FeedCardData,
   type FeedCardStatus,
+  type Task,
+  type TaskGroup,
 } from "../api";
 import { resolveFeedActionTaskId } from "../feed-action-helpers";
 import EmptyState from "./shared/EmptyState";
-import FeedActionDialog from "./FeedActionDialog";
+import FeedActionDialog, { type FeedActionSubmitMode, type FeedActionTaskPreview } from "./FeedActionDialog";
 import FeedCard from "./FeedCard";
 import { Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
@@ -91,18 +93,26 @@ function feedStatusFeedbackMessage(status: FeedCardStatus, title: string): strin
 interface DashboardFeedProps {
   active: boolean;
   feedCards: FeedCardData[];
+  tasks?: Task[];
+  taskGroups?: TaskGroup[];
   feedLoading: boolean;
   showResolvedFeed: boolean;
   onToggleResolvedFeed: () => void;
   onSelectTask: (id: string) => void;
   onSelectSession: (sessionId: string, taskId?: string) => void;
-  onStartPromptSession: (prompt: string, taskId?: string) => Promise<string>;
+  onStartPromptSession: (
+    prompt: string,
+    taskId?: string,
+    options?: { navigateOnError?: boolean },
+  ) => Promise<string>;
   onRefetchFeed: () => Promise<unknown>;
 }
 
 export default function DashboardFeed({
   active,
   feedCards,
+  tasks = [],
+  taskGroups = [],
   feedLoading,
   showResolvedFeed,
   onToggleResolvedFeed,
@@ -113,7 +123,7 @@ export default function DashboardFeed({
 }: DashboardFeedProps) {
   const [actionDraft, setActionDraft] = useState<FeedActionDraft | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [actionSubmitting, setActionSubmitting] = useState(false);
+  const [actionSubmitMode, setActionSubmitMode] = useState<FeedActionSubmitMode | null>(null);
   const [feedMutationError, setFeedMutationError] = useState<string | null>(null);
   const [feedFeedback, setFeedFeedback] = useState<FeedFeedback | null>(null);
   const [startedFeedActions, setStartedFeedActions] = useState<Record<string, StartedFeedAction>>({});
@@ -124,6 +134,21 @@ export default function DashboardFeed({
   const pendingDeletesRef = useRef<Record<string, FeedCardData>>({});
   const startedDeleteIdsRef = useRef<Set<string>>(new Set());
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const actionSubmitting = actionSubmitMode !== null;
+
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const taskGroupById = useMemo(() => new Map(taskGroups.map((group) => [group.id, group])), [taskGroups]);
+  const actionTaskPreview = useMemo<FeedActionTaskPreview | null>(() => {
+    if (!actionDraft?.taskId) return null;
+    const task = taskById.get(actionDraft.taskId);
+    if (!task) return null;
+    const group = task.groupId ? taskGroupById.get(task.groupId) ?? null : null;
+    return {
+      id: task.id,
+      title: task.title,
+      group: group ? { name: group.name, color: group.color } : null,
+    };
+  }, [actionDraft?.taskId, taskById, taskGroupById]);
 
   useEffect(() => {
     pendingDeletesRef.current = pendingDeletes;
@@ -417,8 +442,8 @@ export default function DashboardFeed({
     setActionError(null);
   };
 
-  const handleStartFeedAction = async () => {
-    if (!actionDraft) return;
+  const handleStartFeedAction = async (mode: FeedActionSubmitMode) => {
+    if (!actionDraft || actionSubmitting) return;
     const draft = actionDraft;
     const prompt = actionDraft.prompt.trim();
     if (!prompt) {
@@ -446,15 +471,17 @@ export default function DashboardFeed({
       setActionError("This card changed while the preview was open. Review the latest prompt before starting.");
       return;
     }
-    setActionSubmitting(true);
+    setActionSubmitMode(mode);
     setActionError(null);
     setFeedMutationError(null);
     let sessionId: string;
     try {
-      sessionId = await onStartPromptSession(prompt, draft.taskId ?? undefined);
+      sessionId = mode === "background"
+        ? await onStartPromptSession(prompt, draft.taskId ?? undefined, { navigateOnError: false })
+        : await onStartPromptSession(prompt, draft.taskId ?? undefined);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
-      setActionSubmitting(false);
+      setActionSubmitMode(null);
       return;
     }
 
@@ -467,8 +494,16 @@ export default function DashboardFeed({
       },
     }));
     setActionDraft(null);
-    setActionSubmitting(false);
-    onSelectSession(sessionId, draft.taskId ?? undefined);
+    setActionSubmitMode(null);
+    if (mode === "foreground") {
+      onSelectSession(sessionId, draft.taskId ?? undefined);
+    } else {
+      setFeedFeedback((current) => (
+        current?.kind === "delete"
+          ? current
+          : { kind: "notice", message: `Started "${draft.card.title}" in background.` }
+      ));
+    }
 
     let patchError: string | null = null;
     try {
@@ -623,15 +658,18 @@ export default function DashboardFeed({
           cardTitle={actionDraft.card.title}
           actionLabel={actionDraft.card.action?.label}
           taskId={actionDraft.taskId}
+          taskPreview={actionTaskPreview}
           prompt={actionDraft.prompt}
           error={actionError}
           submitting={actionSubmitting}
+          submitMode={actionSubmitMode}
           onPromptChange={(prompt) => {
             setActionDraft((current) => current ? { ...current, prompt } : current);
             setActionError(null);
           }}
           onClose={closeFeedAction}
-          onStart={handleStartFeedAction}
+          onStart={() => void handleStartFeedAction("foreground")}
+          onStartInBackground={() => void handleStartFeedAction("background")}
         />
       )}
     </>

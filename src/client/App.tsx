@@ -79,6 +79,10 @@ const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
 const TASK_COMPLETION_TOAST_MS = 6_000;
 
+interface StartPromptSessionOptions {
+  navigateOnError?: boolean;
+}
+
 function isTaskCompleted(task: Pick<Task, "status" | "completedAt">): boolean {
   return task.status === "done" || Boolean(task.completedAt);
 }
@@ -828,14 +832,20 @@ export default function App() {
     }
   }, [addOptimisticSession, queryClient]);
 
-  const handleStartPromptSession = useCallback(async (prompt: string, taskId?: string) => {
+  const handleStartPromptSession = useCallback(async (
+    prompt: string,
+    taskId?: string,
+    options?: StartPromptSessionOptions,
+  ) => {
     const newSessionId = await materializeSession(taskId);
     // Send before navigating so the destination reconnect sees an active stream.
     try {
       await sendChatMessage(newSessionId, prompt);
     } catch (error) {
       setDraftImmediate(newSessionId, prompt);
-      navigateToSession(newSessionId, taskId);
+      if (options?.navigateOnError !== false) {
+        navigateToSession(newSessionId, taskId);
+      }
       throw error;
     }
     return newSessionId;
@@ -1529,6 +1539,8 @@ export default function App() {
                   onSelectTask={handleSelectTask}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
                 />
               }
             />
@@ -1539,6 +1551,8 @@ export default function App() {
                   onSelectTask={handleSelectTask}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -1550,6 +1564,8 @@ export default function App() {
                   onSelectTask={handleSelectTask}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -1561,6 +1577,8 @@ export default function App() {
                   onSelectTask={handleSelectTask}
                   onSelectSession={navigateToSession}
                   onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }

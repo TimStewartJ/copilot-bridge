@@ -1,32 +1,51 @@
 import { useEffect, useRef } from "react";
-import { MessageSquare, X } from "lucide-react";
+import { MessageSquare, Send, X } from "lucide-react";
 import { DEFAULT_FEED_ACTION_LABEL } from "../feed-action-helpers";
+import { GROUP_COLOR_DOT } from "../group-colors";
 import { UI } from "./shared/design-system";
+
+export type FeedActionSubmitMode = "foreground" | "background";
+
+export interface FeedActionTaskPreview {
+  id: string;
+  title: string;
+  group: {
+    name: string;
+    color: string;
+  } | null;
+}
 
 interface FeedActionDialogProps {
   cardTitle: string;
   actionLabel?: string;
   taskId: string | null;
+  taskPreview: FeedActionTaskPreview | null;
   prompt: string;
   error: string | null;
   submitting: boolean;
+  submitMode: FeedActionSubmitMode | null;
   onPromptChange: (prompt: string) => void;
   onClose: () => void;
   onStart: () => void;
+  onStartInBackground: () => void;
 }
 
 export default function FeedActionDialog({
   cardTitle,
   actionLabel,
   taskId,
+  taskPreview,
   prompt,
   error,
   submitting,
+  submitMode,
   onPromptChange,
   onClose,
   onStart,
+  onStartInBackground,
 }: FeedActionDialogProps) {
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const promptEmpty = prompt.trim().length === 0;
 
   useEffect(() => {
     promptRef.current?.focus();
@@ -79,7 +98,27 @@ export default function FeedActionDialog({
             <div className="text-xs font-medium text-text-muted">Card</div>
             <div className="mt-1 text-sm font-semibold text-text-primary">{cardTitle}</div>
             {taskId && (
-              <div className="mt-1 text-xs text-text-muted">Session will be linked to task {taskId}.</div>
+              <div className="mt-1 text-xs text-text-muted">
+                {taskPreview ? (
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span>Session will be linked to</span>
+                    {taskPreview.group && (
+                      <span
+                        aria-label={`${taskPreview.group.name} group`}
+                        className={`h-2 w-2 shrink-0 rounded-full ${GROUP_COLOR_DOT[taskPreview.group.color] ?? "bg-slate-500"}`}
+                        role="img"
+                        title={`Group: ${taskPreview.group.name}`}
+                      />
+                    )}
+                    <span className="min-w-0 truncate font-medium text-text-secondary" title={taskPreview.title}>
+                      {taskPreview.title}
+                    </span>
+                    <span aria-hidden="true">.</span>
+                  </div>
+                ) : (
+                  <>Session will be linked to task {taskId}.</>
+                )}
+              </div>
             )}
           </div>
           <label className="block space-y-1.5">
@@ -109,12 +148,21 @@ export default function FeedActionDialog({
           </button>
           <button
             type="button"
+            onClick={onStartInBackground}
+            disabled={submitting || promptEmpty}
+            className={`${UI.button.secondary} inline-flex items-center gap-1.5`}
+          >
+            <Send size={14} />
+            {submitMode === "background" ? "Sending..." : "Send in background"}
+          </button>
+          <button
+            type="button"
             onClick={onStart}
-            disabled={submitting || prompt.trim().length === 0}
+            disabled={submitting || promptEmpty}
             className={`${UI.button.primary} inline-flex items-center gap-1.5`}
           >
             <MessageSquare size={14} />
-            {submitting ? "Starting..." : "Start session"}
+            {submitMode === "foreground" ? "Starting..." : "Start session"}
           </button>
         </div>
       </div>
