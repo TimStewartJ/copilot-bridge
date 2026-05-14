@@ -99,6 +99,7 @@ describe("AdoProvider", () => {
 
     vi.advanceTimersByTime(61_000);
     fetchMock.mockResolvedValueOnce(htmlResponse());
+    fetchMock.mockResolvedValueOnce(htmlResponse());
 
     const stale = await provider.fetchPullRequests([prRef]);
 
@@ -139,6 +140,7 @@ describe("AdoProvider", () => {
     expect(fresh[0]?.title).toBe("ADO work item");
 
     vi.advanceTimersByTime((24 * 60 * 60_000) + 61_000);
+    fetchMock.mockResolvedValueOnce(htmlResponse());
     fetchMock.mockResolvedValueOnce(htmlResponse());
 
     const expired = await provider.fetchWorkItems(["123"]);
@@ -226,6 +228,7 @@ describe("AdoProvider", () => {
     vi.advanceTimersByTime(61_000);
     providersModule.clearProviderCache();
     fetchMock.mockResolvedValueOnce(htmlResponse());
+    fetchMock.mockResolvedValueOnce(htmlResponse());
 
     const cleared = await provider.fetchWorkItems(["123"]);
 
@@ -271,5 +274,97 @@ describe("AdoProvider", () => {
     expect(execSyncMock).toHaveBeenCalledTimes(2);
     expect(execSyncMock.mock.calls[0]?.[1]).toMatchObject({ timeout: 30_000 });
     expect(execSyncMock.mock.calls[1]?.[1]).toMatchObject({ timeout: 30_000 });
+  });
+
+  it("invalidates the cached token and retries once when ADO returns the sign-in HTML page", async () => {
+    execSyncMock
+      .mockReturnValueOnce("stale-token\n")
+      .mockReturnValueOnce("fresh-token\n");
+    const fetchMock = getFetchMock();
+    fetchMock
+      .mockResolvedValueOnce(htmlResponse())
+      .mockResolvedValueOnce(jsonResponse({
+        value: [{
+          id: 123,
+          fields: {
+            "System.Title": "Recovered work item",
+            "System.State": "Active",
+            "System.WorkItemType": "Task",
+            "System.AssignedTo": { displayName: "Tim Stewart" },
+            "System.AreaPath": "One\\Bridge",
+          },
+        }],
+      }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchWorkItems(["123"]);
+
+    expect(result[0]?.title).toBe("Recovered work item");
+    expect(result[0]?.state).toBe("Active");
+    expect(execSyncMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstAuth = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string> | undefined;
+    const secondAuth = (fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.headers as Record<string, string> | undefined;
+    expect(firstAuth?.Authorization).toBe("Bearer stale-token");
+    expect(secondAuth?.Authorization).toBe("Bearer fresh-token");
+  });
+
+  it("falls back when both the initial request and the sign-in HTML retry come back as HTML", async () => {
+    execSyncMock
+      .mockReturnValueOnce("stale-token\n")
+      .mockReturnValueOnce("still-bad-token\n");
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValue(htmlResponse());
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchWorkItems(["123"]);
+
+    expect(result).toEqual([
+      {
+        id: "123",
+        provider: "ado",
+        title: null,
+        state: null,
+        type: null,
+        assignedTo: null,
+        areaPath: null,
+        url: "https://msazure.visualstudio.com/One/_workitems/edit/123",
+      },
+    ]);
+    expect(execSyncMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("only triggers one extra token fetch when many parallel requests hit the sign-in HTML page", async () => {
+    execSyncMock
+      .mockReturnValueOnce("stale-token\n")
+      .mockReturnValueOnce("fresh-token\n");
+    const fetchMock = getFetchMock();
+    // Both initial PR requests get HTML on the first call; both retries succeed.
+    fetchMock.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
+      if (auth === "Bearer stale-token") return htmlResponse();
+      return jsonResponse({
+        repository: { name: "AzureStack-ZTP-OOBE" },
+        title: "Recovered PR",
+        status: "active",
+        createdBy: { displayName: "Tim Stewart" },
+        reviewers: [{}],
+      });
+    });
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchPullRequests([
+      { repoId: "503e1343-325a-43f5-a33b-04405569f3d5", repoName: "AzureStack-ZTP-OOBE", prId: 1, provider: "ado" },
+      { repoId: "503e1343-325a-43f5-a33b-04405569f3d5", repoName: "AzureStack-ZTP-OOBE", prId: 2, provider: "ado" },
+      { repoId: "503e1343-325a-43f5-a33b-04405569f3d5", repoName: "AzureStack-ZTP-OOBE", prId: 3, provider: "ado" },
+    ]);
+
+    expect(result.map((pr) => pr.title)).toEqual(["Recovered PR", "Recovered PR", "Recovered PR"]);
+    // 1 stale fetch + 1 fresh fetch — not one az invocation per failing request.
+    expect(execSyncMock).toHaveBeenCalledTimes(2);
   });
 });

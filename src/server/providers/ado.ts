@@ -87,6 +87,10 @@ function isHtmlResponse(contentType: string, body: string): boolean {
 }
 
 async function adoFetch(url: string): Promise<any> {
+  return adoFetchAttempt(url, false);
+}
+
+async function adoFetchAttempt(url: string, isRetry: boolean): Promise<any> {
   const token = getAccessToken();
   const res = await fetch(url, {
     headers: {
@@ -104,6 +108,16 @@ async function adoFetch(url: string): Promise<any> {
     );
   }
   if (isHtmlResponse(contentType, body)) {
+    if (!isRetry) {
+      // ADO silently followed a redirect to its sign-in page, which means the
+      // bearer token was rejected. Invalidate the cached token (only if it's
+      // still the one we just sent — avoids burning extra `az` calls when many
+      // parallel requests fail at once) and retry once with a fresh token.
+      if (cachedToken?.value === token) {
+        cachedToken = null;
+      }
+      return adoFetchAttempt(url, true);
+    }
     throw new AdoRequestError(
       `ADO API returned HTML instead of JSON (${describeResponse(contentType, body)})`,
       true,
