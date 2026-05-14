@@ -469,6 +469,11 @@ export class SessionRunner {
       if (runController.isCompleted()) return true;
       lastAssistantContent = persistedTerminal.assistantContent ?? lastAssistantContent;
       console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
+      if (persistedTerminal.event.type === "assistant.turn_end") {
+        recordCompletionAttention("done", persistedTerminal.event);
+        runController.completeDone(lastAssistantContent ?? "(no response)");
+        return true;
+      }
       handleEvent(persistedTerminal.event);
       return true;
     };
@@ -782,6 +787,7 @@ export class SessionRunner {
             terminalEvent = null;
             break;
           case "session.idle":
+          case "assistant.turn_end":
           case "session.error":
           case "abort":
           case "session.shutdown":
