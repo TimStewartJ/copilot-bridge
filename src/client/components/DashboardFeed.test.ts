@@ -66,6 +66,15 @@ function findButtonByText(root: any, text: string): any {
   return button;
 }
 
+function findById(root: any, id: string): any {
+  if (root.getAttribute?.("id") === id) return root;
+  for (const child of root.childNodes ?? []) {
+    const result = findById(child, id);
+    if (result) return result;
+  }
+  return null;
+}
+
 function getReactProps(el: any): Record<string, any> | null {
   if (!el) return null;
   const key = Object.keys(el).find((candidate) => candidate.startsWith("__reactProps$"));
@@ -74,6 +83,10 @@ function getReactProps(el: any): Record<string, any> | null {
 
 function waitTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function clickButton(button: any): unknown {
+  return getReactProps(button)?.onClick?.({ currentTarget: button });
 }
 
 async function waitUntilAct(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -158,26 +171,118 @@ describe("DashboardFeed feed mutations", () => {
     expect(dom?.container.textContent).toContain("Failed to mark feed card done: Patch failed");
   });
 
-  it("surfaces delete failures and keeps refresh failures visible without rethrowing", async () => {
+  it("optimistically updates status and lets the snackbar undo it", async () => {
+    const onRefetchFeed = vi.fn(async () => undefined);
+    await renderDashboardFeed({ onRefetchFeed });
+
+    const markDoneButton = findButtonByLabel(dom?.container, "Mark done");
+    await act(async () => {
+      getReactProps(markDoneButton)?.onClick?.();
+      await waitTick();
+    });
+    await waitUntilAct(() => dom?.container.textContent?.includes('Marked "Preview ready" done.') ?? false);
+
+    expect(apiMocks.patchFeedCard).toHaveBeenCalledWith("card-1", { status: "done" });
+    expect(dom?.container.textContent).toContain('Marked "Preview ready" done.');
+    expect(dom?.container.textContent).toContain("Undo");
+
+    await act(async () => {
+      await getReactProps(findButtonByText(dom?.container, "Undo"))?.onClick?.();
+    });
+    await waitUntilAct(() => dom?.container.textContent?.includes("Undone.") ?? false);
+
+    expect(apiMocks.patchFeedCard).toHaveBeenCalledWith("card-1", { status: "active" });
+    expect(onRefetchFeed).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers delete so the snackbar can undo before the server request", async () => {
+    vi.useFakeTimers();
+    try {
+      await renderDashboardFeed();
+
+      await act(async () => {
+        clickButton(findButtonByLabel(dom?.container, "More actions"));
+      });
+      await act(async () => {
+        clickButton(findButtonByText(dom?.container, "Delete card"));
+      });
+
+      expect(dom?.container.textContent).toContain('Deleted "Preview ready".');
+      expect(dom?.container.textContent).toContain("Undo");
+      expect(apiMocks.deleteFeedCard).not.toHaveBeenCalled();
+
+      await act(async () => {
+        getReactProps(findButtonByText(dom?.container, "Undo"))?.onClick?.();
+      });
+      expect(dom?.container.textContent).toContain('Restored "Preview ready".');
+      expect(dom?.container.textContent).toContain("Preview ready");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(apiMocks.deleteFeedCard).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces prompt CTAs on the card and moves mobile done into the floating More menu", async () => {
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          action: {
+            label: "Launch prompt",
+            prompt: "Investigate this from the feed.",
+          },
+        }),
+      ],
+    });
+
+    expect(findButtonByText(dom?.container, "Launch prompt")).toBeTruthy();
+    expect(findAllByTag(dom?.container, "BUTTON").filter((button) => button.textContent === "Mark done")).toHaveLength(1);
+
+    await act(async () => {
+      clickButton(findButtonByLabel(dom?.container, "More actions"));
+    });
+
+    const moreMenu = findById(dom?.container, "feed-card-card-1-more-actions");
+    expect(moreMenu).toBeTruthy();
+    expect(dom?.container.textContent).toContain("Delete card");
+    expect(findAllByTag(dom?.container, "BUTTON").filter((button) => button.textContent === "Mark done")).toHaveLength(2);
+  });
+
+  it("surfaces deferred delete failures and keeps refresh failures visible without rethrowing", async () => {
+    vi.useFakeTimers();
     apiMocks.deleteFeedCard.mockRejectedValueOnce(new Error("Delete failed"));
     const onRefetchFeed = vi.fn(async () => {
       throw new Error("Refresh failed");
     });
-    await renderDashboardFeed({ onRefetchFeed });
+    try {
+      await renderDashboardFeed({ onRefetchFeed });
 
-    let clickResult: unknown;
-    const deleteButton = findButtonByLabel(dom?.container, "Delete");
-    await act(async () => {
-      clickResult = getReactProps(deleteButton)?.onClick?.();
-      await waitTick();
-    });
-    await waitUntilAct(() => dom?.container.textContent?.includes("Failed to delete feed card: Delete failed") ?? false);
+      let clickResult: unknown;
+      await act(async () => {
+        clickButton(findButtonByLabel(dom?.container, "More actions"));
+      });
+      const deleteButton = findButtonByText(dom?.container, "Delete card");
+      await act(async () => {
+        clickResult = clickButton(deleteButton);
+      });
+      expect(clickResult).toBeUndefined();
+      expect(apiMocks.deleteFeedCard).not.toHaveBeenCalled();
 
-    expect(clickResult).toBeUndefined();
-    expect(apiMocks.deleteFeedCard).toHaveBeenCalledWith("card-1");
-    expect(onRefetchFeed).toHaveBeenCalledTimes(1);
-    expect(dom?.container.textContent).toContain("Failed to delete feed card: Delete failed");
-    expect(dom?.container.textContent).toContain("Also failed to refresh feed: Refresh failed");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(apiMocks.deleteFeedCard).toHaveBeenCalledWith("card-1");
+      expect(onRefetchFeed).toHaveBeenCalledTimes(1);
+      expect(dom?.container.textContent).toContain("Failed to delete feed card: Delete failed");
+      expect(dom?.container.textContent).toContain("Also failed to refresh feed: Refresh failed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("navigates to a started prompt session when marking the feed card done fails", async () => {
