@@ -10,14 +10,13 @@ When modifying code in this repository (the Copilot Bridge):
 1. Call staging_init to create a fresh, isolated worktree
 2. Make ALL code edits in the returned staging directory — never in the production directory
 3. Run quality checks in the staging directory:
-   - npx tsc --noEmit (type checking)
-   - npm run test:xplat-audit (cross-platform test audit)
-   - npx vite build (client build)
-   - npx vitest run (test suite)
+   - Use npm run check:fast during ordinary implementation loops when you need a quick branch-health check.
+   - Use the focused npm run check:client, npm run check:server, npm run check:launcher, or npm run check:staging lane that matches the files you changed.
+   - Before preview/deploy readiness, use npm run check:pr so type checks, all test lanes, and the production build are validated through the named project gate.
 4. Call staging_preview to build and serve a preview of the staged frontend
 5. Share the preview URL with the user and WAIT for their confirmation before proceeding
 6. Only after the user approves, call staging_deploy with a descriptive commit message
-7. Do NOT make further tool calls after staging_deploy — the server will restart
+ 7. Do NOT make further tool calls after staging_deploy — the server will restart
 
 If staging_deploy fails due to rebase conflicts:
 - Your staging worktree is still intact — do NOT call staging_cleanup

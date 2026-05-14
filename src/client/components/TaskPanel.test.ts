@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -263,7 +263,7 @@ describe("TaskPanel", () => {
       expect(consoleError.mock.calls.flat().join(" ")).not.toContain("Rendered more hooks than during the previous render");
       expect(dom.container.textContent).toContain("Workspace task");
 
-      flushSync(() => {
+      await act(async () => {
         root.unmount();
       });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -334,7 +334,7 @@ describe("TaskPanel", () => {
       expect(props.onRequestArchived).toBeUndefined();
       expect(props.archivedLoaded).toBe(true);
 
-      flushSync(() => {
+      await act(async () => {
         root.unmount();
       });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -396,7 +396,7 @@ describe("TaskPanel", () => {
       expect(props.archivedLoaded).toBe(false);
       expect(props.archivedLoading).toBe(true);
 
-      flushSync(() => {
+      await act(async () => {
         root.unmount();
       });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -496,7 +496,7 @@ describe("TaskPanel", () => {
         refresh: true,
       });
 
-      flushSync(() => {
+      await act(async () => {
         root.unmount();
       });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
