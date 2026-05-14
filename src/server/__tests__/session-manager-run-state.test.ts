@@ -1129,6 +1129,45 @@ describe("SessionManager run state", () => {
     }
   });
 
+  it("resolves a stalled turn from persisted assistant.turn_end without waiting for session.idle", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-turn-end-terminal-"));
+    try {
+      const sessionId = "session-turn-end-terminal";
+      const sessionStateDir = join(tmpDir, "session-state", sessionId);
+      mkdirSync(sessionStateDir, { recursive: true });
+
+      const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
+      const initial = makeSession();
+      const resumeSession = vi.fn().mockResolvedValue(initial.session);
+      manager.client = { resumeSession };
+
+      const bus = eventBusRegistry.getOrCreateBus(sessionId);
+      manager.startWork(sessionId, "hello");
+      await flushMicrotasks();
+      initial.getReleaseSend()?.();
+      await flushMicrotasks();
+      const baseTime = Date.now();
+
+      writeFileSync(join(sessionStateDir, "events.jsonl"), [
+        JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "hello" } }),
+        JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 2_000).toISOString(), data: { content: "done from turn_end" } }),
+        JSON.stringify({ type: "assistant.turn_end", timestamp: new Date(baseTime + 3_000).toISOString(), data: {} }),
+      ].join("\n") + "\n");
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      await flushMicrotasks();
+
+      expect(manager.getSessionRunState(sessionId)).toBe("idle");
+      expect(resumeSession).toHaveBeenCalledTimes(1);
+      expect(bus.getSnapshot()).toMatchObject({
+        terminalType: "done",
+        finalContent: "done from turn_end",
+      });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("treats routine session.shutdown as a shutdown terminal event", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
