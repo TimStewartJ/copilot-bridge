@@ -173,4 +173,33 @@ describe("DashboardFeed feed mutations", () => {
     expect(dom?.container.textContent).toContain("Failed to delete feed card: Delete failed");
     expect(dom?.container.textContent).toContain("Also failed to refresh feed: Refresh failed");
   });
+
+  it("groups resolved cards after active cards with a divider when both are visible", async () => {
+    await renderDashboardFeed({
+      showResolvedFeed: true,
+      feedCards: [
+        makeCard({ id: "resolved-pinned", title: "Pinned resolved", status: "done", pinned: true }),
+        makeCard({ id: "active-card", title: "Active card", status: "active" }),
+        makeCard({ id: "dismissed-card", title: "Dismissed card", status: "dismissed" }),
+      ],
+    });
+
+    const text = dom?.container.textContent ?? "";
+    expect(text.indexOf("Active card")).toBeLessThan(text.indexOf("Resolved"));
+    expect(text.indexOf("Resolved")).toBeLessThan(text.indexOf("Pinned resolved"));
+    expect(text.indexOf("Pinned resolved")).toBeLessThan(text.indexOf("Dismissed card"));
+  });
+
+  it("does not show a resolved divider for a resolved-only feed", async () => {
+    await renderDashboardFeed({
+      showResolvedFeed: true,
+      feedCards: [
+        makeCard({ id: "done-card", title: "Done card", status: "done" }),
+      ],
+    });
+
+    const text = dom?.container.textContent ?? "";
+    expect(text).toContain("Done card");
+    expect(text).not.toContain("Resolved");
+  });
 });

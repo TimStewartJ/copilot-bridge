@@ -43,6 +43,30 @@ const STATUS_CLASS: Record<FeedCardStatus, string> = {
   dismissed: UI.chip.faint,
 };
 
+const CARD_STATUS_CLASS: Record<FeedCardStatus, string> = {
+  active: "",
+  done: "border-success/25 bg-success/5 shadow-none",
+  dismissed: "border-border/60 bg-bg-secondary/55 shadow-none",
+};
+
+const CARD_RAIL_CLASS: Record<FeedCardStatus, string> = {
+  active: "hidden",
+  done: "bg-success/70",
+  dismissed: "bg-text-faint/50",
+};
+
+const TITLE_STATUS_CLASS: Record<FeedCardStatus, string> = {
+  active: "text-text-primary",
+  done: "text-text-secondary",
+  dismissed: "text-text-muted",
+};
+
+const BODY_STATUS_CLASS: Record<FeedCardStatus, string> = {
+  active: "text-text-secondary",
+  done: "text-text-muted",
+  dismissed: "text-text-muted",
+};
+
 function labelForKind(kind: string): string {
   return KIND_LABELS[kind] ?? kind.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
@@ -79,9 +103,11 @@ export default function FeedCard({
   const handleDeleteClick = () => {
     void onDelete(card);
   };
+  const highPriorityClass = card.status === "active" && card.priority === "high" ? "border-warning/50" : "";
 
   return (
-    <article className={`${UI.surface.card} p-4 space-y-3 ${card.priority === "high" ? "border-warning/50" : ""}`}>
+    <article className={`${UI.surface.card} relative overflow-hidden p-4 pl-5 space-y-3 transition-colors ${CARD_STATUS_CLASS[card.status]} ${highPriorityClass}`}>
+      <div aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${CARD_RAIL_CLASS[card.status]}`} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -101,7 +127,7 @@ export default function FeedCard({
               {labelForKind(card.kind)}
             </span>
           </div>
-          <h3 className="text-sm font-semibold leading-snug text-text-primary">{card.title}</h3>
+          <h3 className={`text-sm font-semibold leading-snug ${TITLE_STATUS_CLASS[card.status]}`}>{card.title}</h3>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {card.status === "active" ? (
@@ -149,7 +175,7 @@ export default function FeedCard({
       </div>
 
       {card.body && (
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-text-secondary">{card.body}</p>
+        <p className={`whitespace-pre-wrap text-sm leading-relaxed ${BODY_STATUS_CLASS[card.status]}`}>{card.body}</p>
       )}
 
       {card.visual && (
