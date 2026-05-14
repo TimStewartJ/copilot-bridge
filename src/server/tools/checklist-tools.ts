@@ -2,6 +2,14 @@ import { defineTool } from "@github/copilot-sdk";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureChecklistItem, ensureTask } from "./helpers.js";
+import { ChecklistNotFoundError, ChecklistValidationError } from "../checklist-store.js";
+
+function checklistToolFailure(error: unknown) {
+  if (error instanceof ChecklistValidationError || error instanceof ChecklistNotFoundError) {
+    return toolFailure(error.message);
+  }
+  throw error;
+}
 
 export function createChecklistTools(ctx: AppContext) {
   return [
@@ -13,12 +21,16 @@ export function createChecklistTools(ctx: AppContext) {
         const task = ensureTask(ctx, args.taskId);
         if (!task.ok) return toolFailure(task.error);
       }
-      const checklistItem = ctx.checklistStore.createChecklistItem(args.taskId ?? null, args.text, args.deadline);
-      return {
-        success: true,
-        message: `Checklist item added: "${checklistItem.text}"${checklistItem.deadline ? ` (due ${checklistItem.deadline})` : ""}`,
-        checklistItemId: checklistItem.id,
-      };
+      try {
+        const checklistItem = ctx.checklistStore.createChecklistItem(args.taskId ?? null, args.text, args.deadline);
+        return {
+          success: true,
+          message: `Checklist item added: "${checklistItem.text}"${checklistItem.deadline ? ` (due ${checklistItem.deadline})` : ""}`,
+          checklistItemId: checklistItem.id,
+        };
+      } catch (error) {
+        return checklistToolFailure(error);
+      }
     },
   }),
   defineTool("checklist_list", {
@@ -36,25 +48,35 @@ export function createChecklistTools(ctx: AppContext) {
   }),
   defineTool("checklist_update", {
     description: "Update a checklist item's text, done status, or deadline",
-    parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: "string", description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["checklistItemId"] },
+    parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: ["string", "null"], description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
       const updates: Record<string, any> = {};
       if (args.text !== undefined) updates.text = args.text;
       if (args.done !== undefined) updates.done = args.done;
-      if (args.deadline !== undefined) updates.deadline = args.deadline || undefined;
+      if (args.deadline !== undefined) updates.deadline = args.deadline;
       if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: text, done, deadline");
       const checklistItem = ensureChecklistItem(ctx, args.checklistItemId);
       if (!checklistItem.ok) return toolFailure(checklistItem.error);
-      const updatedChecklistItem = ctx.checklistStore.updateChecklistItem(args.checklistItemId, updates);
-      return { success: true, message: `Checklist item ${args.done ? "completed" : "updated"}: "${updatedChecklistItem.text}"` };
+      try {
+        const updatedChecklistItem = ctx.checklistStore.updateChecklistItem(args.checklistItemId, updates);
+        return { success: true, message: `Checklist item ${args.done ? "completed" : "updated"}: "${updatedChecklistItem.text}"` };
+      } catch (error) {
+        return checklistToolFailure(error);
+      }
     },
   }),
   defineTool("checklist_remove", {
     description: "Remove a checklist item from a task's checklist",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
-      ctx.checklistStore.deleteChecklistItem(args.checklistItemId);
-      return { success: true, message: "Checklist item removed" };
+      const checklistItem = ensureChecklistItem(ctx, args.checklistItemId);
+      if (!checklistItem.ok) return toolFailure(checklistItem.error);
+      try {
+        ctx.checklistStore.deleteChecklistItem(args.checklistItemId);
+        return { success: true, message: "Checklist item removed" };
+      } catch (error) {
+        return checklistToolFailure(error);
+      }
     },
   }),
   ];

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { createChecklistStore } from "../checklist-store.js";
+import { ChecklistNotFoundError, ChecklistValidationError, createChecklistStore } from "../checklist-store.js";
 import { createTaskStore } from "../task-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import type { TaskStore } from "../task-store.js";
@@ -35,7 +35,20 @@ describe("checklist-store", () => {
     });
 
     it("createChecklistItem throws for missing task", () => {
-      expect(() => checklistStore.createChecklistItem("nonexistent", "test")).toThrow("not found");
+      expect(() => checklistStore.createChecklistItem("nonexistent", "test")).toThrow(ChecklistNotFoundError);
+    });
+
+    it("createChecklistItem validates text and deadline", () => {
+      const invalidInputs: Array<[string, () => void]> = [
+        ["text must be a non-empty string", () => checklistStore.createChecklistItem(null, 42 as any)],
+        ["text must be a non-empty string", () => checklistStore.createChecklistItem(null, "")],
+        ["deadline must be null or a YYYY-MM-DD date", () => checklistStore.createChecklistItem(null, "Due", "tomorrow")],
+      ];
+
+      for (const [message, action] of invalidInputs) {
+        expect(action).toThrow(ChecklistValidationError);
+        expect(action).toThrow(message);
+      }
     });
 
     it("createChecklistItem assigns incrementing order", () => {
@@ -82,8 +95,36 @@ describe("checklist-store", () => {
       expect(undone.completedAt).toBeUndefined();
     });
 
+    it("updateChecklistItem clears deadline with null", () => {
+      const task = taskStore.createTask("Test");
+      const checklistItem = checklistStore.createChecklistItem(task.id, "Do this", "2026-04-01");
+      const updated = checklistStore.updateChecklistItem(checklistItem.id, { deadline: null });
+      expect(updated.deadline).toBeUndefined();
+    });
+
+    it("updateChecklistItem rejects invalid mutation fields", () => {
+      const task = taskStore.createTask("Test");
+      const checklistItem = checklistStore.createChecklistItem(task.id, "Original");
+      const invalidUpdates: Array<[Record<string, unknown>, string]> = [
+        [{ done: "false" }, "done must be boolean"],
+        [{ deadline: "tomorrow" }, "deadline must be null or a YYYY-MM-DD date"],
+        [{ text: 42 }, "text must be a non-empty string"],
+        [{ text: "" }, "text must be a non-empty string"],
+        [{ extra: true }, 'Unknown field: "extra"'],
+      ];
+
+      for (const [updates, message] of invalidUpdates) {
+        expect(() => checklistStore.updateChecklistItem(checklistItem.id, updates as any)).toThrow(ChecklistValidationError);
+        expect(() => checklistStore.updateChecklistItem(checklistItem.id, updates as any)).toThrow(message);
+      }
+
+      const unchanged = checklistStore.getChecklistItem(checklistItem.id);
+      expect(unchanged).toMatchObject({ text: "Original", done: false });
+      expect(unchanged?.deadline).toBeUndefined();
+    });
+
     it("updateChecklistItem throws for missing checklist item", () => {
-      expect(() => checklistStore.updateChecklistItem("nope", { text: "x" })).toThrow("not found");
+      expect(() => checklistStore.updateChecklistItem("nope", { text: "x" })).toThrow(ChecklistNotFoundError);
     });
 
     it("deleteChecklistItem removes the checklist item", () => {
@@ -93,8 +134,8 @@ describe("checklist-store", () => {
       expect(checklistStore.getChecklistItem(checklistItem.id)).toBeUndefined();
     });
 
-    it("deleteChecklistItem is idempotent for missing id", () => {
-      expect(() => checklistStore.deleteChecklistItem("nonexistent")).not.toThrow();
+    it("deleteChecklistItem throws for missing id", () => {
+      expect(() => checklistStore.deleteChecklistItem("nonexistent")).toThrow(ChecklistNotFoundError);
     });
   });
 

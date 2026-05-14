@@ -53,7 +53,13 @@ import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernate
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
-import type { ChecklistItem } from "./checklist-store.js";
+import {
+  ChecklistNotFoundError,
+  ChecklistValidationError,
+  normalizeChecklistItemCreate,
+  normalizeChecklistItemUpdate,
+  type ChecklistItem,
+} from "./checklist-store.js";
 import {
   checkForUpdate,
   readUpdateInstallStatus,
@@ -2839,44 +2845,60 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   // ── Checklist routes ─────────────────────────────────────────────
 
+  function sendChecklistError(res: express.Response, error: unknown): void {
+    if (error instanceof ChecklistValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error instanceof ChecklistNotFoundError) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    console.error("[checklist] Error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+
   router.get("/tasks/:taskId/checklist-items", (req, res) => {
     res.json({ checklistItems: ctx.checklistStore.listChecklistItems(req.params.taskId) });
   });
 
   router.post("/tasks/:taskId/checklist-items", (req, res) => {
-    const { text, deadline } = req.body;
-    if (!text) return res.status(400).json({ error: "text is required" });
     try {
+      const { text, deadline } = normalizeChecklistItemCreate(req.body);
       const checklistItem = ctx.checklistStore.createChecklistItem(req.params.taskId, text, deadline);
       res.json({ checklistItem });
     } catch (err) {
-      res.status(404).json({ error: String(err) });
+      sendChecklistError(res, err);
     }
   });
 
   router.post("/checklist-items", (req, res) => {
-    const { text, deadline } = req.body;
-    if (!text) return res.status(400).json({ error: "text is required" });
     try {
+      const { text, deadline } = normalizeChecklistItemCreate(req.body);
       const checklistItem = ctx.checklistStore.createChecklistItem(null, text, deadline);
       res.json({ checklistItem });
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      sendChecklistError(res, err);
     }
   });
 
   router.patch("/checklist-items/:id", (req, res) => {
     try {
-      const checklistItem = ctx.checklistStore.updateChecklistItem(req.params.id, req.body);
+      const updates = normalizeChecklistItemUpdate(req.body);
+      const checklistItem = ctx.checklistStore.updateChecklistItem(req.params.id, updates);
       res.json({ checklistItem });
     } catch (err) {
-      res.status(404).json({ error: String(err) });
+      sendChecklistError(res, err);
     }
   });
 
   router.delete("/checklist-items/:id", (req, res) => {
-    ctx.checklistStore.deleteChecklistItem(req.params.id);
-    res.json({ ok: true });
+    try {
+      ctx.checklistStore.deleteChecklistItem(req.params.id);
+      res.json({ ok: true });
+    } catch (err) {
+      sendChecklistError(res, err);
+    }
   });
 
   router.put("/tasks/:taskId/checklist-items/reorder", (req, res) => {
