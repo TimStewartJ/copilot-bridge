@@ -1,7 +1,7 @@
 // Shared public URL / tunnel / webhook / git utilities used by both the server
 // and staging tools. These are pure utilities with no restart or checkpoint logic.
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -12,6 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
 const DEFAULT_TUNNEL_NAME = "copilot-bridge";
 const TUNNEL_NAME_HASH_LENGTH = 8;
+const EXPLICIT_TUNNEL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;
 const TUNNEL_NAME = resolveBridgeTunnelName(process.env);
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 const PUBLIC_BASE_URL = normalizeBaseUrl(process.env.BRIDGE_PUBLIC_BASE_URL);
@@ -62,11 +63,19 @@ function normalizeTunnelIdentityPart(value: string | undefined): string {
   return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
 }
 
+function normalizeExplicitTunnelName(name: string): string | undefined {
+  const normalized = name.toLowerCase();
+  if (EXPLICIT_TUNNEL_NAME_RE.test(normalized)) return normalized;
+  console.warn(
+    `[tunnel] Ignoring invalid BRIDGE_TUNNEL_NAME "${name}". Use 3-60 letters, numbers, and hyphens, starting and ending with a letter or number.`,
+  );
+  return undefined;
+}
+
 export function resolveBridgeTunnelName(env: NodeJS.ProcessEnv = process.env): string {
   const configured = optionalEnvValue(env.BRIDGE_TUNNEL_NAME);
-  if (configured) {
-    return configured;
-  }
+  const normalizedConfigured = configured ? normalizeExplicitTunnelName(configured) : undefined;
+  if (normalizedConfigured) return normalizedConfigured;
   if (!isReleaseMode(env)) {
     return DEFAULT_TUNNEL_NAME;
   }
@@ -111,7 +120,7 @@ function isPublicOrigin(url: string | undefined): boolean {
 export function discoverTunnelUrl(): string | undefined {
   if (!canUseDevtunnelCli()) return undefined;
   try {
-    const output = execSync(`devtunnel show ${TUNNEL_NAME}`, { encoding: "utf-8", timeout: 10_000 });
+    const output = execFileSync("devtunnel", ["show", TUNNEL_NAME], { encoding: "utf-8", timeout: 10_000 });
     const match = output.match(/(https:\/\/\S+)/);
     const url = match?.[1]?.replace(/\/$/, "");
     if (url) cachedTunnelUrl = url;

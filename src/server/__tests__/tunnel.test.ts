@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { testExecutablePath } from "./test-paths.js";
 
 const execSyncMock = vi.hoisted(() => vi.fn());
+const execFileSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({
   execSync: execSyncMock,
+  execFileSync: execFileSyncMock,
 }));
 
 const ENV_KEYS = [
@@ -30,8 +32,10 @@ async function loadTunnelModule(env: Partial<Record<(typeof ENV_KEYS)[number], s
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   execSyncMock.mockReset();
+  execFileSyncMock.mockReset();
   vi.resetModules();
 });
 
@@ -75,6 +79,28 @@ describe("public URL helpers", () => {
     });
 
     expect(tunnel.resolveBridgeTunnelName(process.env)).toBe("tim-bridge");
+  });
+
+  it("normalizes uppercase explicit tunnel names", async () => {
+    const tunnel = await loadTunnelModule({
+      BRIDGE_DISTRIBUTION_MODE: "release",
+      BRIDGE_TUNNEL_NAME: "Tim-Bridge",
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\CopilotBridge\\data",
+    });
+
+    expect(tunnel.resolveBridgeTunnelName(process.env)).toBe("tim-bridge");
+  });
+
+  it("ignores unsafe explicit tunnel names and falls back to deterministic release names", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const tunnel = await loadTunnelModule({
+      BRIDGE_DISTRIBUTION_MODE: "release",
+      BRIDGE_TUNNEL_NAME: "tim.bridge;rm",
+      BRIDGE_DATA_DIR: "C:\\Users\\Ada\\AppData\\Local\\CopilotBridge\\data",
+    });
+
+    expect(tunnel.resolveBridgeTunnelName(process.env)).toMatch(/^copilot-bridge-[a-f0-9]{8}$/);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Ignoring invalid BRIDGE_TUNNEL_NAME"));
   });
 
   it("builds preview URLs from an explicit public base URL", async () => {
@@ -194,6 +220,7 @@ describe("public URL helpers", () => {
     expect(tunnel.canUseDevtunnelCli()).toBe(false);
     expect(tunnel.discoverTunnelUrl()).toBeUndefined();
     expect(execSyncMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
   it("ignores stale tunnel URLs when BRIDGE_ENABLE_TUNNEL is false", async () => {
@@ -221,15 +248,14 @@ describe("public URL helpers", () => {
     expect(tunnel.canUseDevtunnelCli()).toBe(false);
     expect(tunnel.discoverTunnelUrl()).toBeUndefined();
     expect(execSyncMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
   it("uses the deterministic release tunnel name for devtunnel discovery", async () => {
     execSyncMock.mockImplementation((command: string) => {
-      if (command.includes("devtunnel show")) {
-        return "Connect via browser: https://generated.devtunnels.ms";
-      }
       return testExecutablePath("devtunnel");
     });
+    execFileSyncMock.mockReturnValue("Connect via browser: https://generated.devtunnels.ms");
     const tunnel = await loadTunnelModule({
       BRIDGE_DISTRIBUTION_MODE: "release",
       USERDOMAIN: "CONTOSO",
@@ -239,8 +265,11 @@ describe("public URL helpers", () => {
     });
 
     expect(tunnel.discoverTunnelUrl()).toBe("https://generated.devtunnels.ms");
-    const showCall = execSyncMock.mock.calls.find(([command]) => String(command).startsWith("devtunnel show"));
-    expect(showCall?.[0]).toMatch(/^devtunnel show copilot-bridge-[a-f0-9]{8}$/);
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      "devtunnel",
+      ["show", expect.stringMatching(/^copilot-bridge-[a-f0-9]{8}$/)],
+      expect.objectContaining({ encoding: "utf-8", timeout: 10_000 }),
+    );
   });
 
   it("reports missing devtunnel binary as unavailable", async () => {

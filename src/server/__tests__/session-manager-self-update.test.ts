@@ -157,6 +157,52 @@ describe("self_update", () => {
     mod.clearRestartPending();
   });
 
+  it("clears restart state when self_update cannot write the restart signal", async () => {
+    const oldSha = "1111111111111111111111111111111111111111";
+    const newSha = "2222222222222222222222222222222222222222";
+    let headReads = 0;
+
+    existsSyncOverrideMock.mockImplementation((path) => {
+      const normalized = String(path);
+      if (isDataFilePath(normalized, "restart.signal")) return false;
+      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
+      return undefined;
+    });
+    writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
+      if (isDataFilePath(String(args[0]), "restart.signal")) {
+        throw new Error("disk full");
+      }
+    });
+
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git pull --rebase origin main") return "Updating 1111111..2222222\n";
+      if (cmd === "git rev-parse --short HEAD") return "22222222\n";
+      if (cmd === "git rev-parse HEAD") {
+        headReads += 1;
+        return `${headReads === 1 ? oldSha : newSha}\n`;
+      }
+      if (cmd === `git diff "${oldSha}" HEAD --name-only -- package.json package-lock.json patches`) return "";
+      throw new Error(`Unexpected command: ${cmd}`);
+    });
+
+    const mod = await loadSessionManagerModule();
+    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    if (!tool) throw new Error("self_update tool not found");
+
+    const result = await tool.handler({}, {
+      sessionId: "session-1",
+      toolCallId: "tool-1",
+      toolName: "self_update",
+      arguments: {},
+    } satisfies ToolInvocation) as any;
+
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Updated code but restart signal could not be written.");
+    expect(mod.isRestartPending()).toBe(false);
+    expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(true);
+  });
+
   it("preserves an existing rollback checkpoint when pulling new commits", async () => {
     const oldSha = "1111111111111111111111111111111111111111";
     const newSha = "2222222222222222222222222222222222222222";
@@ -405,6 +451,7 @@ describe("self_update", () => {
 
     mod.clearRestartPending();
   });
+
 });
 
 describe("self_restart", () => {
@@ -463,5 +510,30 @@ describe("self_restart", () => {
     expect(callOrder.indexOf("triggerRestartPending")).toBeLessThan(callOrder.indexOf("writeSignalFile"));
 
     mod.clearRestartPending();
+  });
+
+  it("clears restart state when self_restart cannot write the restart signal", async () => {
+    existsSyncOverrideMock.mockImplementation(() => undefined);
+    writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
+      if (isDataFilePath(String(args[0]), "restart.signal")) {
+        throw new Error("disk full");
+      }
+    });
+
+    const mod = await loadSessionManagerModule();
+    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    if (!tool) throw new Error("self_restart tool not found");
+
+    const result = await tool.handler({}, {
+      sessionId: "session-1",
+      toolCallId: "tool-1",
+      toolName: "self_restart",
+      arguments: {},
+    } satisfies ToolInvocation) as any;
+
+    expect(result).toMatchObject({ resultType: "failure" });
+    expect(result.textResultForLlm).toContain("Restart signal could not be written.");
+    expect(mod.isRestartPending()).toBe(false);
+    expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(true);
   });
 });
