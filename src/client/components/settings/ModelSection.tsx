@@ -1,6 +1,9 @@
-import type { AppSettings } from "../../api";
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { refreshModels, type AppSettings } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
-import { AlertTriangle } from "lucide-react";
+import { queryKeys } from "../../queryClient";
+import { AlertTriangle, RotateCw } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
 
@@ -12,6 +15,9 @@ export function ModelSection({
   setDraft: (d: AppSettings) => void;
 }) {
   const { data: models, isLoading, error } = useModelsQuery();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const availableModels = (models ?? [])
     .filter((m) => !m.policy || m.policy.state !== "disabled")
@@ -22,6 +28,18 @@ export function ModelSection({
     typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier !== 1
       ? ` (${multiplier}×)`
       : "";
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      const refreshedModels = await refreshModels();
+      queryClient.setQueryData(queryKeys.models, refreshedModels);
+    } catch (refreshErr) {
+      setRefreshError(refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <SettingsSection
@@ -45,6 +63,25 @@ export function ModelSection({
           </div>
         ) : (
           <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-text-faint">
+                Refresh rotates the SDK client when no sessions are active, so newly entitled models appear without restarting Bridge.
+              </p>
+              <button
+                type="button"
+                onClick={() => { void handleRefresh(); }}
+                disabled={refreshing}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-surface disabled:opacity-50"
+              >
+                <RotateCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+                {refreshing ? "Refreshing" : "Refresh"}
+              </button>
+            </div>
+            {refreshError && (
+              <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                {refreshError}
+              </div>
+            )}
             <select
               value={currentModel}
               onChange={(e) => {

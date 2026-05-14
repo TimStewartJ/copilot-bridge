@@ -5,6 +5,7 @@ import {
   getSessionActivityTime,
   getSessionRunState,
   patchSessionModel,
+  refreshModels,
   type BatchAction,
   type ModelInfo,
   type ReasoningEffort,
@@ -12,6 +13,7 @@ import {
   type SessionModelState,
   type Task,
 } from "../api";
+import { queryClient, queryKeys } from "../queryClient";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot } from "lucide-react";
 import TaskPickerDialog from "./TaskPickerDialog";
@@ -430,11 +432,14 @@ export default function SessionList({
       });
   }, [ctxSession?.sessionId]);
 
-  const loadModelOptions = useCallback(async () => {
+  const loadModelOptions = useCallback(async (forceRefresh = false) => {
     setModelOptionsLoading(true);
     setModelOptionsError(null);
     try {
-      const models = await fetchModels();
+      const models = forceRefresh ? await refreshModels() : await fetchModels();
+      if (forceRefresh) {
+        queryClient.setQueryData(queryKeys.models, models);
+      }
       setModelOptions(models);
     } catch (error) {
       setModelOptionsError(getErrorMessage(error));
@@ -1020,6 +1025,17 @@ export default function SessionList({
                     </option>
                   ))}
                 </select>
+              )}
+              {!modelOptionsError && (
+                <button
+                  type="button"
+                  onClick={() => { void loadModelOptions(true); }}
+                  disabled={modelOptionsLoading || modelSwitchSaving}
+                  className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary disabled:opacity-50"
+                >
+                  <RotateCw className={`h-3.5 w-3.5 ${modelOptionsLoading ? "animate-spin" : ""}`} />
+                  Refresh model list
+                </button>
               )}
               {modelDraft && (
                 <div className="text-[11px] text-text-faint truncate">

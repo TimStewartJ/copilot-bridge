@@ -27,6 +27,7 @@ import { buildPublicUrl } from "./tunnel.js";
 import { DEPLOY_GATE, PREVIEW_GATE, runValidationGateAsync } from "./validation-pipeline.js";
 import { config } from "./config.js";
 import { isBridgeReleaseMode } from "./distribution-mode.js";
+import { writeRestartSignalFile, type RestartValidationMode } from "./restart-signal.js";
 import { toolFailure } from "./tool-results.js";
 import {
   buildCommandFailureOutput,
@@ -333,10 +334,14 @@ function cleanupFailedRestartSignal(signalFile: string): void {
   try { unlinkSync(signalFile); } catch {}
 }
 
-function writeRestartSignalOrRollback(signalFile: string): number {
+function writeRestartSignalOrRollback(
+  signalFile: string,
+  validationMode: RestartValidationMode = "deploy",
+  source = "staging_deploy",
+): number {
   const otherBusy = triggerRestartPending();
   try {
-    writeFileSync(signalFile, new Date().toISOString());
+    writeRestartSignalFile(signalFile, { validationMode, source });
   } catch (error) {
     cleanupFailedRestartSignal(signalFile);
     throw error;

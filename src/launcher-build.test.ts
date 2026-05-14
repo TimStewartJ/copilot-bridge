@@ -45,6 +45,46 @@ describe("runLauncherBuild", () => {
 
     expect(log).toHaveBeenCalledWith("Deploy validation failed:\nplain vitest failed");
   });
+
+  it("skips deploy validation for operational restarts when source is unchanged", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
+    const log = vi.fn();
+
+    expect(runLauncherBuild({
+      ensureDeps,
+      run,
+      log,
+      validationMode: "operational",
+      hasSourceChanges: () => false,
+    })).toBe(true);
+
+    expect(ensureDeps).toHaveBeenCalledOnce();
+    expect(run).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Operational restart validation skipped — no source changes detected");
+  });
+
+  it("keeps deploy validation for operational restarts when source changed", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
+    const log = vi.fn();
+
+    expect(runLauncherBuild({
+      ensureDeps,
+      run,
+      log,
+      validationMode: "operational",
+      hasSourceChanges: () => true,
+    })).toBe(true);
+
+    expect(run.mock.calls.map(([cmd]) => cmd)).toEqual([
+      "npm run test:xplat-audit",
+      "npx tsc --noEmit",
+      "npx vitest run",
+      "npx vite build",
+    ]);
+    expect(log).toHaveBeenCalledWith("Operational restart found source changes — running deploy validation");
+  });
 });
 
 describe("rebuildAfterRollback", () => {

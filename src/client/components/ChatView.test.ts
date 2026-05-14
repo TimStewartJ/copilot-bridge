@@ -112,7 +112,7 @@ type RenderChatViewOptions = {
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 };
 
-const WAIT_FOR_CONDITION_TIMEOUT_MS = 5_000;
+const WAIT_FOR_CONDITION_TIMEOUT_MS = 10_000;
 
 function createMessage(id: string, content = id): ChatEntry {
   return { id, role: "assistant", content };

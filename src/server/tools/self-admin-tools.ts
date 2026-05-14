@@ -1,11 +1,12 @@
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "../dependency-sync.js";
 import { isBridgeReleaseMode } from "../distribution-mode.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "../pre-deploy-checkpoint.js";
 import { clearRestartPending, isRestartPending, triggerRestartPending } from "../restart-controller.js";
+import { writeRestartSignalFile, type RestartValidationMode } from "../restart-signal.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
@@ -40,10 +41,14 @@ function cleanupFailedRestartSignal(signalFile: string): void {
   try { unlinkSync(signalFile); } catch {}
 }
 
-function writeRestartSignalOrRollback(signalFile: string): number {
+function writeRestartSignalOrRollback(
+  signalFile: string,
+  validationMode: RestartValidationMode,
+  source: string,
+): number {
   const otherBusy = triggerRestartPending();
   try {
-    writeFileSync(signalFile, new Date().toISOString());
+    writeRestartSignalFile(signalFile, { validationMode, source });
   } catch (error) {
     cleanupFailedRestartSignal(signalFile);
     throw error;
@@ -54,7 +59,7 @@ function writeRestartSignalOrRollback(signalFile: string): number {
 export function createSelfAdminTools(ctx: AppContext) {
   return [
   defineTool("self_restart", {
-    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will auto-checkpoint, rebuild, and swap processes. IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
+    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will run operational restart checks, sync dependencies if needed, and swap processes without the full deploy validation gate unless source files changed. IMPORTANT: This session counts as active — do not make further tool calls after invoking this, or you will block the restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const signalFile = getSignalFile(ctx);
@@ -66,7 +71,7 @@ export function createSelfAdminTools(ctx: AppContext) {
 
       let otherBusy = 0;
       try {
-        otherBusy = writeRestartSignalOrRollback(signalFile);
+        otherBusy = writeRestartSignalOrRollback(signalFile, "operational", "self_restart");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return toolFailure("Restart signal could not be written.", {
@@ -147,7 +152,7 @@ export function createSelfAdminTools(ctx: AppContext) {
         })();
       let otherBusy = 0;
       try {
-        otherBusy = writeRestartSignalOrRollback(signalFile);
+        otherBusy = writeRestartSignalOrRollback(signalFile, "deploy", "self_update");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return toolFailure("Updated code but restart signal could not be written.", {

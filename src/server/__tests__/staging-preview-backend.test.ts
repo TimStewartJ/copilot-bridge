@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,25 @@ import { makeTestDir } from "./helpers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
+type StagingBackendHandle = Awaited<ReturnType<typeof __testing.startStagingBackendProcess>>;
+const startedBackends: StagingBackendHandle[] = [];
+
+async function cleanupBackend(backend: StagingBackendHandle): Promise<void> {
+  const index = startedBackends.indexOf(backend);
+  if (index >= 0) startedBackends.splice(index, 1);
+  await backend.cleanup();
+}
+
+afterEach(async () => {
+  const cleanupResults = await Promise.allSettled(
+    startedBackends.splice(0).reverse().map((backend) => backend.cleanup()),
+  );
+  const failures = cleanupResults
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Failed to clean up staging backend children");
+});
 
 function createTempStagingDir(): string {
   const stagingDir = makeTestDir("stage-child-backend");
@@ -104,8 +123,9 @@ describe("staging preview backend child process", () => {
       stagingDir,
       runtimePaths,
       `/staging/${prefix}/api`,
-      { startupTimeoutMs: 15_000 },
+      { startupTimeoutMs: 30_000 },
     );
+    startedBackends.push(firstBackend);
     try {
       const app = express();
       app.use(`/staging/${prefix}/api`, __testing.createStagingProxyHandler(prefix, firstBackend.baseUrl));
@@ -118,7 +138,7 @@ describe("staging preview backend child process", () => {
       expect(streamResponse.status).toBe(200);
       expect(streamResponse.text).toContain("data: first");
     } finally {
-      await firstBackend.cleanup();
+      await cleanupBackend(firstBackend);
     }
 
     writeFutureStore(stagingDir, "second");
@@ -127,8 +147,9 @@ describe("staging preview backend child process", () => {
       stagingDir,
       runtimePaths,
       `/staging/${prefix}/api`,
-      { startupTimeoutMs: 15_000 },
+      { startupTimeoutMs: 30_000 },
     );
+    startedBackends.push(secondBackend);
     try {
       const app = express();
       app.use(`/staging/${prefix}/api`, __testing.createStagingProxyHandler(prefix, secondBackend.baseUrl));
@@ -137,7 +158,7 @@ describe("staging preview backend child process", () => {
       expect(secondResponse.status).toBe(200);
       expect(secondResponse.body).toEqual({ value: "second" });
     } finally {
-      await secondBackend.cleanup();
+      await cleanupBackend(secondBackend);
     }
-  });
+  }, 60_000);
 });

@@ -23,6 +23,7 @@ import {
   writeValidationCommandLog,
 } from "./server/validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
+import { readRestartSignalFile, type RestartValidationMode } from "./server/restart-signal.js";
 import {
   buildRestartStateWithReleaseFailure,
   clearRestartState,
@@ -108,6 +109,17 @@ const FORCED_EXIT_WAIT = 5_000; // wait for SIGKILLed child to actually exit bef
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
 const CRASH_WINDOW = 60_000; // reset crash counter after 60s of stability
+const OPERATIONAL_RESTART_SOURCE_PATHS = [
+  "package.json",
+  "package-lock.json",
+  "patches",
+  "public",
+  "scripts",
+  "src",
+  "tsconfig.json",
+  "vite.config.ts",
+  "vitest.config.ts",
+];
 
 // Tunnel resilience config
 const MAX_TUNNEL_RESTARTS = 5;
@@ -231,6 +243,14 @@ function depsHash(): string {
   return dependencySyncHash(ROOT);
 }
 
+function dependencyInputsChangedSinceLastSync(): boolean {
+  try {
+    return !existsSync(DEPS_HASH_FILE) || readFileSync(DEPS_HASH_FILE, "utf-8").trim() !== depsHash();
+  } catch {
+    return true;
+  }
+}
+
 /** Run npm install if dependency inputs have changed since last install. */
 function ensureDeps(): boolean {
   if (DISTRIBUTION.mode === "release") {
@@ -266,12 +286,49 @@ function ensureDeps(): boolean {
   return true;
 }
 
-function build(): boolean {
+function hasOperationalRestartSourceChanges(): boolean {
+  if (dependencyInputsChangedSinceLastSync()) {
+    return true;
+  }
+
+  if (DISTRIBUTION.mode !== "development" || !DISTRIBUTION.gitAvailable) {
+    return false;
+  }
+
+  const pathspec = OPERATIONAL_RESTART_SOURCE_PATHS.join(" ");
+  try {
+    execSync(`git diff --quiet HEAD -- ${pathspec}`, {
+      cwd: ROOT,
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+    const untracked = execSync(`git ls-files --others --exclude-standard -- ${pathspec}`, {
+      cwd: ROOT,
+      encoding: "utf-8",
+      timeout: 10_000,
+    }).trim();
+    return untracked.length > 0;
+  } catch (error: any) {
+    if (error?.status === 1) {
+      return true;
+    }
+    log(`Unable to determine operational restart source changes — running deploy validation: ${error instanceof Error ? error.message : String(error)}`);
+    return true;
+  }
+}
+
+function build(validationMode: RestartValidationMode): boolean {
   if (DISTRIBUTION.mode === "release") {
     log("Release mode - skipping source validation build");
     return true;
   }
-  return runLauncherBuild({ ensureDeps, run, log });
+  return runLauncherBuild({
+    ensureDeps,
+    run,
+    log,
+    validationMode,
+    hasSourceChanges: hasOperationalRestartSourceChanges,
+  });
 }
 
 function rollback(): boolean {
@@ -460,7 +517,8 @@ async function processRestartSignal(): Promise<void> {
   restarting = true;
   let restartOutcome: RestartOutcome = "failed";
   try {
-    restartOutcome = await restart();
+    const signal = readRestartSignalFile(SIGNAL_FILE);
+    restartOutcome = await restart(signal.validationMode);
   } finally {
     clearSignal();
     if (restartOutcome === "failed" && pendingReleaseFailure) {
@@ -796,7 +854,7 @@ async function gracefulStopServer(): Promise<boolean> {
   return true;
 }
 
-async function restart(): Promise<RestartOutcome> {
+async function restart(validationMode: RestartValidationMode): Promise<RestartOutcome> {
   log("═══ Restart requested ═══");
   const hadRunningServerAtStart = serverProcess !== null;
   pendingReleaseFailure = null;
@@ -818,7 +876,7 @@ async function restart(): Promise<RestartOutcome> {
   // Transition: waiting-for-sessions → restarting (build / shutdown / swap begins now)
   await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
 
-  if (!build()) {
+  if (!build(validationMode)) {
     log("Build failed — rolling back");
     await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
     const rollbackSucceeded = rollback();

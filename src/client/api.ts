@@ -1709,6 +1709,11 @@ export async function fetchModels(): Promise<ModelInfo[]> {
   return result.models;
 }
 
+export async function refreshModels(): Promise<ModelInfo[]> {
+  const result = await apiFetch<{ models: ModelInfo[] }>("/api/models/refresh", {});
+  return result.models;
+}
+
 // ── Server Info ───────────────────────────────────────────────────
 
 export async function fetchServerTimezone(): Promise<string> {
