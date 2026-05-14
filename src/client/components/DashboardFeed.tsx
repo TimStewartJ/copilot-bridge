@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Inbox } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Inbox, Undo2, X } from "lucide-react";
 import {
   deleteFeedCard,
   patchFeedCard,
@@ -25,8 +25,41 @@ interface StartedFeedAction {
   prompt: string;
 }
 
+interface PendingStatusMutation {
+  status: FeedCardStatus;
+  previousStatus: FeedCardStatus;
+  requestId: number;
+}
+
+type FeedFeedback =
+  | {
+      kind: "status";
+      cardId: string;
+      message: string;
+      currentStatus: FeedCardStatus;
+      undoStatus: FeedCardStatus;
+      undoing?: boolean;
+    }
+  | {
+      kind: "delete";
+      cardId: string;
+      message: string;
+    }
+  | {
+      kind: "notice";
+      message: string;
+    };
+
+const DELETE_UNDO_DELAY_MS = 5_000;
+
 function formatFeedMutationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function removeRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
 
 function feedStatusActionLabel(status: FeedCardStatus): string {
@@ -39,6 +72,19 @@ function feedStatusActionLabel(status: FeedCardStatus): string {
       return "reactivate feed card";
     default:
       return "update feed card";
+  }
+}
+
+function feedStatusFeedbackMessage(status: FeedCardStatus, title: string): string {
+  switch (status) {
+    case "done":
+      return `Marked "${title}" done.`;
+    case "dismissed":
+      return `Dismissed "${title}".`;
+    case "active":
+      return `Reactivated "${title}".`;
+    default:
+      return `Updated "${title}".`;
   }
 }
 
@@ -69,9 +115,84 @@ export default function DashboardFeed({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [feedMutationError, setFeedMutationError] = useState<string | null>(null);
+  const [feedFeedback, setFeedFeedback] = useState<FeedFeedback | null>(null);
   const [startedFeedActions, setStartedFeedActions] = useState<Record<string, StartedFeedAction>>({});
-  const activeFeedCards = feedCards.filter((card) => card.status === "active");
-  const resolvedFeedCards = feedCards.filter((card) => card.status !== "active");
+  const [pendingStatuses, setPendingStatuses] = useState<Record<string, PendingStatusMutation>>({});
+  const [pendingDeletes, setPendingDeletes] = useState<Record<string, FeedCardData>>({});
+  const mutationRequestIdRef = useRef(0);
+  const deleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const pendingDeletesRef = useRef<Record<string, FeedCardData>>({});
+  const startedDeleteIdsRef = useRef<Set<string>>(new Set());
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    pendingDeletesRef.current = pendingDeletes;
+  }, [pendingDeletes]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(deleteTimersRef.current)) {
+        clearTimeout(timer);
+      }
+      deleteTimersRef.current = {};
+      for (const card of Object.values(pendingDeletesRef.current)) {
+        if (startedDeleteIdsRef.current.has(card.id)) continue;
+        startedDeleteIdsRef.current.add(card.id);
+        void deleteFeedCard(card.id).catch((error) => {
+          console.error(`Failed to flush pending feed delete for ${card.id} during unmount:`, error);
+        });
+      }
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+        feedbackTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (feedbackTimerRef.current) {
+      clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
+    }
+    if (!feedFeedback || feedFeedback.kind === "delete") return;
+
+    feedbackTimerRef.current = setTimeout(() => {
+      setFeedFeedback(null);
+    }, feedFeedback.kind === "status" ? 6_000 : 3_000);
+
+    return () => {
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+        feedbackTimerRef.current = null;
+      }
+    };
+  }, [feedFeedback]);
+
+  useEffect(() => {
+    const visibleCardIds = new Set(feedCards.map((card) => card.id));
+    setPendingDeletes((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const cardId of Object.keys(next)) {
+        if (!visibleCardIds.has(cardId) && !deleteTimersRef.current[cardId]) {
+          delete next[cardId];
+          pendingDeletesRef.current = removeRecordKey(pendingDeletesRef.current, cardId);
+          startedDeleteIdsRef.current.delete(cardId);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [feedCards]);
+
+  const displayFeedCards = feedCards
+    .filter((card) => !pendingDeletes[card.id])
+    .map((card) => {
+      const pendingStatus = pendingStatuses[card.id];
+      return pendingStatus ? { ...card, status: pendingStatus.status } : card;
+    });
+  const activeFeedCards = displayFeedCards.filter((card) => card.status === "active");
+  const resolvedFeedCards = displayFeedCards.filter((card) => card.status !== "active");
   const showResolvedDivider = activeFeedCards.length > 0 && resolvedFeedCards.length > 0;
 
   const refetchAfterFeedMutationFailure = async () => {
@@ -83,18 +204,63 @@ export default function DashboardFeed({
     }
   };
 
-  const runFeedMutation = async (actionLabel: string, mutate: () => Promise<unknown>) => {
+  const clearMatchingStatusFeedback = (cardId: string, status: FeedCardStatus) => {
+    setFeedFeedback((current) => {
+      if (current?.kind === "status" && current.cardId === cardId && current.currentStatus === status) {
+        return null;
+      }
+      return current;
+    });
+  };
+
+  const commitFeedStatusChange = async ({
+    cardId,
+    title,
+    status,
+    previousStatus,
+    showFeedback = true,
+  }: {
+    cardId: string;
+    title: string;
+    status: FeedCardStatus;
+    previousStatus: FeedCardStatus;
+    showFeedback?: boolean;
+  }) => {
+    const requestId = mutationRequestIdRef.current + 1;
+    mutationRequestIdRef.current = requestId;
     setFeedMutationError(null);
+    setPendingStatuses((current) => ({
+      ...current,
+      [cardId]: {
+        status,
+        previousStatus,
+        requestId,
+      },
+    }));
+    if (showFeedback) {
+      setFeedFeedback({
+        kind: "status",
+        cardId,
+        message: feedStatusFeedbackMessage(status, title),
+        currentStatus: status,
+        undoStatus: previousStatus,
+      });
+    }
+
     try {
-      await mutate();
+      await patchFeedCard(cardId, { status });
     } catch (error) {
       const refreshError = await refetchAfterFeedMutationFailure();
+      setPendingStatuses((current) => (
+        current[cardId]?.requestId === requestId ? removeRecordKey(current, cardId) : current
+      ));
+      clearMatchingStatusFeedback(cardId, status);
       setFeedMutationError(
         refreshError
-          ? `Failed to ${actionLabel}: ${formatFeedMutationError(error)} Also failed to refresh feed: ${refreshError}`
-          : `Failed to ${actionLabel}: ${formatFeedMutationError(error)}`,
+          ? `Failed to ${feedStatusActionLabel(status)}: ${formatFeedMutationError(error)} Also failed to refresh feed: ${refreshError}`
+          : `Failed to ${feedStatusActionLabel(status)}: ${formatFeedMutationError(error)}`,
       );
-      return;
+      return false;
     }
 
     try {
@@ -102,14 +268,128 @@ export default function DashboardFeed({
     } catch (error) {
       setFeedMutationError(`Feed card updated, but refreshing the feed failed: ${formatFeedMutationError(error)}`);
     }
+
+    setPendingStatuses((current) => (
+      current[cardId]?.requestId === requestId ? removeRecordKey(current, cardId) : current
+    ));
+    return true;
   };
 
-  const handleFeedStatusChange = async (cardId: string, status: FeedCardStatus) => {
-    await runFeedMutation(feedStatusActionLabel(status), () => patchFeedCard(cardId, { status }));
+  const performScheduledDelete = async (card: FeedCardData) => {
+    const timer = deleteTimersRef.current[card.id];
+    if (timer) {
+      clearTimeout(timer);
+      delete deleteTimersRef.current[card.id];
+    }
+    setFeedMutationError(null);
+    setFeedFeedback((current) => (
+      current?.kind === "delete" && current.cardId === card.id
+        ? { kind: "notice", message: `Deleted "${card.title}".` }
+        : current
+    ));
+    startedDeleteIdsRef.current.add(card.id);
+
+    try {
+      await deleteFeedCard(card.id);
+    } catch (error) {
+      const refreshError = await refetchAfterFeedMutationFailure();
+      startedDeleteIdsRef.current.delete(card.id);
+      pendingDeletesRef.current = removeRecordKey(pendingDeletesRef.current, card.id);
+      setPendingDeletes((current) => removeRecordKey(current, card.id));
+      setFeedFeedback((current) => (
+        current?.kind === "notice" && current.message === `Deleted "${card.title}".`
+          ? { kind: "notice", message: `Delete failed for "${card.title}".` }
+          : current
+      ));
+      setFeedMutationError(
+        refreshError
+          ? `Failed to delete feed card: ${formatFeedMutationError(error)} Also failed to refresh feed: ${refreshError}`
+          : `Failed to delete feed card: ${formatFeedMutationError(error)}`,
+      );
+      return;
+    }
+
+    try {
+      await onRefetchFeed();
+      pendingDeletesRef.current = removeRecordKey(pendingDeletesRef.current, card.id);
+      setPendingDeletes((current) => removeRecordKey(current, card.id));
+      startedDeleteIdsRef.current.delete(card.id);
+    } catch (error) {
+      setFeedMutationError(`Feed card deleted, but refreshing the feed failed: ${formatFeedMutationError(error)}`);
+    }
   };
 
-  const handleFeedDelete = async (cardId: string) => {
-    await runFeedMutation("delete feed card", () => deleteFeedCard(cardId));
+  const handleFeedStatusChange = async (card: FeedCardData, status: FeedCardStatus) => {
+    await commitFeedStatusChange({
+      cardId: card.id,
+      title: card.title,
+      status,
+      previousStatus: card.status,
+    });
+  };
+
+  const handleFeedDelete = (card: FeedCardData) => {
+    const existingTimer = deleteTimersRef.current[card.id];
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    startedDeleteIdsRef.current.delete(card.id);
+    setFeedMutationError(null);
+    pendingDeletesRef.current = { ...pendingDeletesRef.current, [card.id]: card };
+    setPendingDeletes((current) => ({ ...current, [card.id]: card }));
+    setFeedFeedback({
+      kind: "delete",
+      cardId: card.id,
+      message: `Deleted "${card.title}".`,
+    });
+    deleteTimersRef.current[card.id] = setTimeout(() => {
+      void performScheduledDelete(card);
+    }, DELETE_UNDO_DELAY_MS);
+  };
+
+  const handleUndoFeedback = async () => {
+    if (!feedFeedback) return;
+
+    if (feedFeedback.kind === "delete") {
+      const timer = deleteTimersRef.current[feedFeedback.cardId];
+      if (timer) {
+        clearTimeout(timer);
+        delete deleteTimersRef.current[feedFeedback.cardId];
+      }
+      const deletedCard = pendingDeletes[feedFeedback.cardId];
+      pendingDeletesRef.current = removeRecordKey(pendingDeletesRef.current, feedFeedback.cardId);
+      setPendingDeletes((current) => removeRecordKey(current, feedFeedback.cardId));
+      setFeedFeedback({
+        kind: "notice",
+        message: deletedCard ? `Restored "${deletedCard.title}".` : "Delete canceled.",
+      });
+      return;
+    }
+
+    if (feedFeedback.kind === "status") {
+      const feedback = feedFeedback;
+      setFeedFeedback((current) => (
+        current?.kind === "status" && current.cardId === feedback.cardId
+          ? { ...current, undoing: true }
+          : current
+      ));
+      const success = await commitFeedStatusChange({
+        cardId: feedback.cardId,
+        title: "feed card",
+        status: feedback.undoStatus,
+        previousStatus: feedback.currentStatus,
+        showFeedback: false,
+      });
+      if (success) {
+        setFeedFeedback({ kind: "notice", message: "Undone." });
+      } else {
+        setFeedFeedback((current) => (
+          current?.kind === "status" && current.cardId === feedback.cardId
+            ? { ...current, undoing: false }
+            : current
+        ));
+      }
+    }
   };
 
   const getStartedFeedAction = (card: FeedCardData) => {
@@ -230,25 +510,29 @@ export default function DashboardFeed({
       <FeedCard
         key={card.id}
         card={displayCard}
+        pending={Boolean(pendingStatuses[card.id])}
         onSelectTask={onSelectTask}
         onSelectSession={onSelectSession}
         onAction={openFeedAction}
-        onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
-        onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
+        onStatusChange={handleFeedStatusChange}
+        onDelete={handleFeedDelete}
       />
     );
   };
 
+  const canUndoFeedback = feedFeedback?.kind === "status" || feedFeedback?.kind === "delete";
+  const undoingFeedback = feedFeedback?.kind === "status" && feedFeedback.undoing;
+
   return (
     <>
       {active && (
-      <section className="space-y-2">
+      <section className={`space-y-2 ${feedFeedback ? "pb-24 sm:pb-0" : ""}`}>
         <div className="flex items-center justify-between">
           <h2 className={UI.text.sectionTitle}>
             <Inbox size={14} />
             Feed
-            {feedCards.length > 0 && (
-              <span className="text-text-faint font-normal">({feedCards.length})</span>
+            {displayFeedCards.length > 0 && (
+              <span className="text-text-faint font-normal">({displayFeedCards.length})</span>
             )}
           </h2>
           <button
@@ -269,7 +553,7 @@ export default function DashboardFeed({
           </div>
         )}
 
-        {feedLoading && feedCards.length === 0 ? (
+        {feedLoading && displayFeedCards.length === 0 ? (
           <div className="space-y-2">
             <SkeletonCard className="space-y-3">
               <div className="flex gap-2">
@@ -286,7 +570,7 @@ export default function DashboardFeed({
               <SkeletonText lines={2} widths={["64%", "82%"]} />
             </SkeletonCard>
           </div>
-        ) : feedCards.length > 0 ? (
+        ) : displayFeedCards.length > 0 ? (
           <div className="space-y-2">
             {activeFeedCards.map(renderFeedCard)}
             {showResolvedDivider && (
@@ -305,6 +589,34 @@ export default function DashboardFeed({
           />
         )}
       </section>
+      )}
+      {feedFeedback && (
+        <div className="fixed inset-x-3 bottom-20 z-50 mx-auto max-w-lg sm:bottom-4">
+          <div className="flex items-center gap-3 rounded-xl border border-border/80 bg-bg-surface px-3 py-2 shadow-lg">
+            <p className="min-w-0 flex-1 text-sm text-text-primary" role="status" aria-live="polite">
+              {feedFeedback.message}
+            </p>
+            {canUndoFeedback && (
+              <button
+                type="button"
+                onClick={() => { void handleUndoFeedback(); }}
+                disabled={undoingFeedback}
+                className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg bg-accent-surface px-3 text-sm font-medium text-accent transition-colors hover:bg-accent-border/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Undo2 size={14} />
+                {undoingFeedback ? "Undoing…" : "Undo"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setFeedFeedback(null)}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+              aria-label="Dismiss feed feedback"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
       )}
       {actionDraft && (
         <FeedActionDialog
