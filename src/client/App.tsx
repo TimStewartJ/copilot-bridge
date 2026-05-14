@@ -43,7 +43,7 @@ import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type Voice
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
-import { isDashboardRoutePath } from "./lib/dashboard-routes";
+import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
@@ -721,10 +721,15 @@ export default function App() {
     if (!railExpanded) setRailExpanded(true);
   };
 
-  const handleGoHome = () => {
+  const handleOpenTaskList = useCallback(() => {
     setSelectedTask(null);
     navigate("/");
-  };
+  }, [navigate]);
+
+  const handleOpenDashboard = useCallback(() => {
+    setSelectedTask(null);
+    navigate(getRememberedDashboardPath(location.pathname));
+  }, [location.pathname, navigate]);
 
   const handleOpenQuickChatsList = () => {
     setSelectedTask(null);
@@ -768,7 +773,7 @@ export default function App() {
         }
       }
       setSelectedTask(null);
-      navigate("/");
+      handleOpenTaskList();
     } else {
       handleSelectQuickChats();
     }
@@ -776,13 +781,13 @@ export default function App() {
 
   const handleMobileTab = useCallback((tab: "home" | "tasks" | "chats" | "docs" | "settings") => {
     switch (tab) {
-      case "home": navigate("/dashboard"); break;
-      case "tasks": handleGoHome(); break;
+      case "home": handleOpenDashboard(); break;
+      case "tasks": handleOpenTaskList(); break;
       case "chats": handleOpenQuickChatsList(); break;
       case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [navigate, handleGoHome, handleOpenQuickChatsList, handleOpenDocsRoot, handleOpenSettings]);
+  }, [handleOpenDashboard, handleOpenTaskList, handleOpenQuickChatsList, handleOpenDocsRoot, handleOpenSettings]);
 
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;
@@ -1354,7 +1359,7 @@ export default function App() {
         onSelectTask={handleSelectTask}
         onNewTask={handleNewTask}
         isQuickChatsActive={quickChatsMode && !activeTaskId}
-        onGoHome={handleGoHome}
+        onGoHome={handleOpenDashboard}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
         isDocsActive={isDocsActive}
