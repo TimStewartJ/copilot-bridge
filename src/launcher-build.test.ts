@@ -29,10 +29,7 @@ describe("runLauncherBuild", () => {
     expect(runLauncherBuild({ ensureDeps, run, log })).toBe(true);
 
     expect(run.mock.calls).toEqual([
-      ["npm run test:xplat-audit", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
-      ["npx tsc --noEmit", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
-      ["npx vitest run", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
-      ["npx vite build", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+      ["npm run check:deploy", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
     ]);
   });
 
@@ -78,10 +75,7 @@ describe("runLauncherBuild", () => {
     })).toBe(true);
 
     expect(run.mock.calls.map(([cmd]) => cmd)).toEqual([
-      "npm run test:xplat-audit",
-      "npx tsc --noEmit",
-      "npx vitest run",
-      "npx vite build",
+      "npm run check:deploy",
     ]);
     expect(log).toHaveBeenCalledWith("Operational restart found source changes — running deploy validation");
   });

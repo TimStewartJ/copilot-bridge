@@ -124,6 +124,7 @@ import {
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { migrateLegacySessionTitles as migrateLegacySessionTitlesWithDeps } from "./migrate-legacy-session-titles.js";
+import { buildCopilotClientOptions } from "./copilot-client-options.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -153,8 +154,10 @@ export type {
 
 // Universal tools — same instance for every session
 export { createBridgeTools } from "./bridge-tools.js";
-
-export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
+export {
+  BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
+  buildCopilotClientOptions,
+} from "./copilot-client-options.js";
 
 type CopilotClientFactory = (options: CopilotClientOptions | undefined) => CopilotClient;
 type CopilotModelList = Awaited<ReturnType<CopilotClient["listModels"]>>;
@@ -171,25 +174,6 @@ export interface ModelRefreshResult {
   refreshed: true;
   activeSessions: number;
   refreshedAt: string;
-}
-
-function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-export function buildCopilotClientOptions(
-  clientEnv?: Record<string, string | undefined>,
-): CopilotClientOptions | undefined {
-  const gitHubToken = normalizeOptionalEnvValue(
-    clientEnv?.[BRIDGE_COPILOT_GITHUB_TOKEN_ENV] ?? process.env[BRIDGE_COPILOT_GITHUB_TOKEN_ENV],
-  );
-  if (!clientEnv && !gitHubToken) return undefined;
-
-  return {
-    ...(clientEnv ? { env: clientEnv } : {}),
-    ...(gitHubToken ? { gitHubToken, useLoggedInUser: false } : {}),
-  };
 }
 
 function isMissingSessionError(error: unknown): boolean {

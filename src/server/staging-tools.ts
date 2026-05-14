@@ -1330,7 +1330,7 @@ export const STAGING_TOOLS = [
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
       "Returns the staging directory path where you should make all edits. " +
-      "Run quality checks (npx tsc --noEmit, npm run test:xplat-audit, npx vite build, npx vitest run) in that directory before calling staging_deploy.",
+      "Use npm run check:fast plus the focused check lane that matches your edit while iterating, then npm run check:pr before calling staging_preview or staging_deploy.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const prefix = randomBytes(4).toString("hex");

@@ -222,12 +222,17 @@ You can get a lot of value on first run without any external work-tracking provi
 ```bash
 npx vitest run <file> # targeted dev test
 npm test              # full Vitest regression suite
-npm run test:preview  # x-plat audit + typecheck + plain Vitest
-npm run test:deploy   # preview validation + Vite build
-npm run test:full     # x-plat audit + typecheck + coverage + full build
+npm run check:fast    # x-plat audit + client/server type-checking
+npm run check:client  # client type-check + client lane
+npm run check:server  # server type-check + server/shared lane
+npm run check:launcher # server type-check + launcher lane
+npm run check:staging # server type-check + staging/integration lane
+npm run check:pr      # fast gate + all lanes + full build
+npm run check:deploy  # PR gate + coverage + preview smoke
+npm run test:slow-report # full Vitest pass + top slowest files
 ```
 
-`test:deploy` is the fast local deploy gate. It intentionally uses plain Vitest instead of coverage so interactive deploys are not blocked by the slowest validation mode. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior. Use `test:full` or `test:coverage` for deeper scheduled/manual confidence checks.
+Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Client type-checking is now explicit and baseline-gated: `npm run typecheck:client` fails only when client diagnostics change from the committed debt baseline, while `npm run typecheck:client:update-baseline` is reserved for intentional debt movement. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior. The legacy `test:preview`, `test:deploy`, and `test:full` aliases remain available and now map onto the clearer validation tiers.
 
 ### Cross-Platform Test Rules
 

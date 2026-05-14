@@ -52,43 +52,43 @@ export type ValidationGateRunResult<Result extends ValidationCommandResult> =
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
 
-const XPLAT_AUDIT_STEP: ValidationStep = {
-  command: "npm run test:xplat-audit",
+const FAST_CHECK_STEP: ValidationStep = {
+  command: "npm run check:fast",
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
-const TYPECHECK_STEP: ValidationStep = {
-  command: "npx tsc --noEmit",
+const PR_CHECK_STEP: ValidationStep = {
+  command: "npm run check:pr",
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
-const VITEST_STEP: ValidationStep = {
-  command: "npx vitest run",
+const DEPLOY_CHECK_STEP: ValidationStep = {
+  command: "npm run check:deploy",
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
 const VITE_BUILD_STEP: ValidationStep = {
   command: "npx vite build",
-  timeoutMs: VALIDATION_TIMEOUT_MS,
+  timeoutMs: ROLLBACK_VALIDATION_TIMEOUT_MS,
 };
 
 export const PREVIEW_GATE: ValidationGate = {
   id: "preview",
   label: "Preview validation",
-  steps: [XPLAT_AUDIT_STEP, TYPECHECK_STEP, VITEST_STEP],
+  steps: [FAST_CHECK_STEP, PR_CHECK_STEP],
 };
 
 export const DEPLOY_GATE: ValidationGate = {
   id: "deploy",
   label: "Deploy validation",
-  steps: [...PREVIEW_GATE.steps, VITE_BUILD_STEP],
+  steps: [DEPLOY_CHECK_STEP],
 };
 
 export const ROLLBACK_GATE: ValidationGate = {
   id: "rollback",
   label: "Rollback validation",
   steps: [
-    { ...VITE_BUILD_STEP, timeoutMs: ROLLBACK_VALIDATION_TIMEOUT_MS },
+    VITE_BUILD_STEP,
   ],
 };
 

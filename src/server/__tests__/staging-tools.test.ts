@@ -275,14 +275,12 @@ function createProductionDataDir(): string {
 }
 
 const PREVIEW_VALIDATION_COMMANDS = [
-  "npm run test:xplat-audit",
-  "npx tsc --noEmit",
-  "npx vitest run",
+  "npm run check:fast",
+  "npm run check:pr",
 ] as const;
 
 const DEPLOY_VALIDATION_COMMANDS = [
-  ...PREVIEW_VALIDATION_COMMANDS,
-  "npx vite build",
+  "npm run check:deploy",
 ] as const;
 
 function expectIsolatedValidationEnv(env: NodeJS.ProcessEnv | undefined) {
@@ -756,9 +754,9 @@ describe("staging tools", () => {
       if (cmd === "git stash --include-untracked") return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
-      if (cmd === "npx vite build") {
-        const error = new Error("vite failed") as Error & { stderr: string };
-        error.stderr = "vite exploded\n";
+      if (cmd === "npm run check:deploy") {
+        const error = new Error("deploy gate failed") as Error & { stderr: string };
+        error.stderr = "deploy gate exploded\n";
         throw error;
       }
       if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
@@ -777,9 +775,9 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       resultType: "failure",
-      sessionLog: expect.stringContaining("Command: npx vite build"),
+      sessionLog: expect.stringContaining("Command: npm run check:deploy"),
       toolTelemetry: {
-        command: "npx vite build",
+        command: "npm run check:deploy",
         cwd: stagingDir,
         stagingDir,
         prodBranch: "main",
@@ -789,7 +787,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("Staging deploy validation failed.");
     expect(result.textResultForLlm).toContain("deploy validation gate");
     expect(result.textResultForLlm).toContain("retry-after-fix");
-    expect(result.textResultForLlm).toContain("vite exploded");
+    expect(result.textResultForLlm).toContain("deploy gate exploded");
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
@@ -1114,8 +1112,8 @@ describe("staging tools", () => {
 
   it("returns a normalized failure result when staging_preview validation fails", async () => {
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "npx vitest run") {
-        const error = new Error("tests failed") as Error & { stderr: string };
+      if (cmd === "npm run check:pr") {
+        const error = new Error("PR gate failed") as Error & { stderr: string };
         error.stderr = "FAIL src/server/__tests__/staging-tools.test.ts\n1 failed\n";
         throw error;
       }
@@ -1136,9 +1134,9 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       resultType: "failure",
-      sessionLog: expect.stringContaining("Command: npx vitest run"),
+      sessionLog: expect.stringContaining("Command: npm run check:pr"),
       toolTelemetry: {
-        command: "npx vitest run",
+        command: "npm run check:pr",
         cwd: stagingDir,
         stagingDir,
       },
@@ -1152,8 +1150,8 @@ describe("staging tools", () => {
 
   it("caps noisy staging command output while preserving the diagnostic tail", async () => {
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "npx vitest run") {
-        const error = new Error("tests failed") as Error & { stderr: string };
+      if (cmd === "npm run check:pr") {
+        const error = new Error("PR gate failed") as Error & { stderr: string };
         error.stderr = "dropped-prefix\n" + "x".repeat(1024 * 1024 + 100) + "\nkept-tail-marker\n";
         throw error;
       }
@@ -1175,7 +1173,7 @@ describe("staging tools", () => {
     expect(result).toMatchObject({
       resultType: "failure",
       toolTelemetry: {
-        command: "npx vitest run",
+        command: "npm run check:pr",
         cwd: stagingDir,
         stagingDir,
       },
