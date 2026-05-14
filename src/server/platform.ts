@@ -1,8 +1,9 @@
 // Platform abstraction — encapsulates OS-specific operations behind a unified API.
-// Windows uses taskkill, wmic, mklink /J; Linux uses kill, pkill, ln -s.
+// Windows uses taskkill/wmic; Linux uses kill/pkill. Filesystem links use Node APIs.
 
 import { execFile, execFileSync, execSync } from "node:child_process";
-import { lstatSync, rmSync } from "node:fs";
+import { lstatSync, rmSync, symlinkSync } from "node:fs";
+import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
@@ -303,21 +304,8 @@ export function createDirectoryLink(
   cwd: string,
 ): { ok: boolean; output: string } {
   try {
-    if (isWindows()) {
-      const output = execSync(`cmd /c mklink /J "${linkPath}" "${targetPath}"`, {
-        cwd,
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      return { ok: true, output };
-    } else {
-      const output = execSync(`ln -s "${targetPath}" "${linkPath}"`, {
-        cwd,
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      return { ok: true, output };
-    }
+    symlinkSync(resolve(cwd, targetPath), resolve(cwd, linkPath), isWindows() ? "junction" : "dir");
+    return { ok: true, output: "" };
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
   }

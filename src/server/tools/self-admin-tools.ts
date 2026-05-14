@@ -1,11 +1,11 @@
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "../dependency-sync.js";
 import { isBridgeReleaseMode } from "../distribution-mode.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "../pre-deploy-checkpoint.js";
-import { isRestartPending, triggerRestartPending } from "../restart-controller.js";
+import { clearRestartPending, isRestartPending, triggerRestartPending } from "../restart-controller.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
@@ -35,6 +35,22 @@ function isReleaseMode(ctx: AppContext): boolean {
   return ctx.runtimePaths?.distributionMode === "release" || isBridgeReleaseMode(process.env, BRIDGE_TOOLS_REPO_ROOT);
 }
 
+function cleanupFailedRestartSignal(signalFile: string): void {
+  clearRestartPending();
+  try { unlinkSync(signalFile); } catch {}
+}
+
+function writeRestartSignalOrRollback(signalFile: string): number {
+  const otherBusy = triggerRestartPending();
+  try {
+    writeFileSync(signalFile, new Date().toISOString());
+  } catch (error) {
+    cleanupFailedRestartSignal(signalFile);
+    throw error;
+  }
+  return otherBusy;
+}
+
 export function createSelfAdminTools(ctx: AppContext) {
   return [
   defineTool("self_restart", {
@@ -48,8 +64,17 @@ export function createSelfAdminTools(ctx: AppContext) {
       const dataDir = getDataDir(ctx);
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
-      const otherBusy = triggerRestartPending();
-      writeFileSync(signalFile, new Date().toISOString());
+      let otherBusy = 0;
+      try {
+        otherBusy = writeRestartSignalOrRollback(signalFile);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return toolFailure("Restart signal could not be written.", {
+          detail: `The bridge did not queue a restart because ${signalFile} could not be written.\n\n${message}`,
+          sessionLog: `Failed to write restart signal ${signalFile}: ${message}`,
+          toolTelemetry: { signalFile },
+        });
+      }
 
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
@@ -120,8 +145,19 @@ export function createSelfAdminTools(ctx: AppContext) {
           const diffResult = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
           return diffResult.ok && !!diffResult.output.trim();
         })();
-      const otherBusy = triggerRestartPending();
-      writeFileSync(signalFile, new Date().toISOString());
+      let otherBusy = 0;
+      try {
+        otherBusy = writeRestartSignalOrRollback(signalFile);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return toolFailure("Updated code but restart signal could not be written.", {
+          detail:
+            `The repository was updated to ${newSha}, but ${signalFile} could not be written. ` +
+            `Manual restart is required to run the updated code.\n\n${message}`,
+          sessionLog: `Updated ${preUpdateSha.slice(0, 8)} -> ${newSha}, but failed to write restart signal ${signalFile}: ${message}`,
+          toolTelemetry: { signalFile, previousSha: preUpdateSha.slice(0, 8), newSha },
+        });
+      }
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";

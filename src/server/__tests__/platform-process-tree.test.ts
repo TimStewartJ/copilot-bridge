@@ -1,9 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { makeTestDir } from "./helpers.js";
 import {
+  createDirectoryLink,
   getDeviceHibernateCommand,
   killProcessTree,
   listDescendantPids,
+  removeDirectoryLink,
   shouldSpawnDetachedProcessGroup,
   waitForProcessTreeExit,
   type ProcessTreeSnapshot,
@@ -179,5 +184,23 @@ describe("process tree platform helpers", () => {
     }) as typeof process.kill);
 
     await expect(waitForProcessTreeExit(snapshot, 2, 1)).resolves.toBe(false);
+  });
+
+  it("creates directory links with native filesystem APIs for paths needing shell escaping", () => {
+    setPlatform("linux");
+    const root = makeTestDir("directory-link");
+    const target = join(root, 'target "quoted"');
+    const link = join(root, 'link "quoted"');
+    mkdirSync(target);
+    writeFileSync(join(target, "marker.txt"), "ok");
+
+    const result = createDirectoryLink(link, target, root);
+
+    expect(result).toEqual({ ok: true, output: "" });
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(link, "marker.txt"))).toBe(true);
+    expect(removeDirectoryLink(link, root)).toEqual({ ok: true, output: "" });
+    expect(existsSync(link)).toBe(false);
+    expect(existsSync(target)).toBe(true);
   });
 });

@@ -80,6 +80,7 @@ const spawnMock = vi.hoisted(() => {
   });
 });
 const triggerRestartPendingMock = vi.fn();
+const clearRestartPendingMock = vi.fn();
 const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
 const dependencySyncHashMock = vi.fn<(path: string) => string>(() => "same-hash");
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
@@ -178,6 +179,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 vi.mock("../session-manager.js", () => ({
   triggerRestartPending: triggerRestartPendingMock,
+  clearRestartPending: clearRestartPendingMock,
   isRestartPending: isRestartPendingMock,
 }));
 
@@ -316,6 +318,7 @@ afterEach(() => {
   }
   vi.unstubAllEnvs();
   triggerRestartPendingMock.mockReset();
+  clearRestartPendingMock.mockReset();
   isRestartPendingMock.mockReset();
   isRestartPendingMock.mockReturnValue(false);
   dependencySyncHashMock.mockReset();
@@ -509,6 +512,43 @@ describe("staging tools", () => {
     expect(() =>
       mod.__testing.seedStagingData(stagingDir, { productionDataDir }),
     ).toThrow(/Production SQLite database not found/);
+  });
+
+  it("fails instead of file-copying when a safe SQLite snapshot cannot be created", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createTempDir("bridge-stage-invalid-db-");
+    writeFileSync(join(productionDataDir, "bridge.db"), "not a sqlite database");
+    const stagingDir = createTempDir("bridge-stage-staging-");
+
+    expect(() =>
+      mod.__testing.seedStagingData(stagingDir, { productionDataDir }),
+    ).toThrow(/Unable to create safe staging SQLite snapshot/);
+    expect(existsSync(join(stagingDir, "data", "bridge.db"))).toBe(false);
+  });
+
+  it("clears restart state if staging restart signal write fails", async () => {
+    const mod = await loadStagingToolsModule();
+    const signalFile = join(createTempDir("bridge-stage-signal-"), "data", "restart.signal");
+
+    writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
+      if (isDataFilePath(String(args[0]), "restart.signal")) {
+        throw new Error("disk full");
+      }
+    });
+
+    expect(() => mod.__testing.writeRestartSignalOrRollback(signalFile)).toThrow(/disk full/);
+    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(clearRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(true);
+    expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
+      writeFileSyncCallMock.mock.invocationCallOrder[0],
+    );
+    expect(writeFileSyncCallMock.mock.invocationCallOrder[0]).toBeLessThan(
+      clearRestartPendingMock.mock.invocationCallOrder[0],
+    );
+    expect(clearRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
+      unlinkSyncCallMock.mock.invocationCallOrder[0],
+    );
   });
 
   it("retries startup restore once after the first failure", async () => {
@@ -1377,5 +1417,8 @@ describe("staging tools", () => {
     expect(checkpointWriteIndex, "pre-deploy-sha must be written").toBeGreaterThan(-1);
     expect(signalWriteIndex, "restart.signal must be written").toBeGreaterThan(-1);
     expect(checkpointWriteIndex).toBeLessThan(signalWriteIndex);
+    expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
+      writeFileSyncCallMock.mock.invocationCallOrder[signalWriteIndex],
+    );
   });
 });

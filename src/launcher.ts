@@ -977,7 +977,7 @@ function startTunnel(): Promise<string> {
     log(`Starting dev tunnel for local port ${port}...`);
     tunnelProcess = spawn("devtunnel", ["host", TUNNEL_NAME], {
       stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
+      shell: process.platform === "win32",
     });
 
     let stdout = "";

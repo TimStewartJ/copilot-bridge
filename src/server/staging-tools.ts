@@ -4,7 +4,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, copyFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, cpSync } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -14,7 +14,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
-import { isRestartPending, triggerRestartPending } from "./session-manager.js";
+import { clearRestartPending, isRestartPending, triggerRestartPending } from "./session-manager.js";
 import {
   createDirectoryLink,
   getProcessTreeSnapshot,
@@ -142,19 +142,6 @@ export function parsePreviewPrefix(
 
 function escapeSqliteStringLiteral(value: string): string {
   return value.replaceAll("'", "''");
-}
-
-function copySqliteSnapshot(dbSrc: string, destDb: string): void {
-  copyFileSync(dbSrc, destDb);
-  for (const suffix of ["-wal", "-shm"]) {
-    const src = `${dbSrc}${suffix}`;
-    const dest = `${destDb}${suffix}`;
-    if (existsSync(src)) {
-      copyFileSync(src, dest);
-    } else if (existsSync(dest)) {
-      rmSync(dest, { force: true });
-    }
-  }
 }
 
 function createPreviewTarget(stagingDir: string, profile: StagingPreviewProfile = "clone"): PreviewTarget {
@@ -341,6 +328,22 @@ function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
   }
 }
 
+function cleanupFailedRestartSignal(signalFile: string): void {
+  clearRestartPending();
+  try { unlinkSync(signalFile); } catch {}
+}
+
+function writeRestartSignalOrRollback(signalFile: string): number {
+  const otherBusy = triggerRestartPending();
+  try {
+    writeFileSync(signalFile, new Date().toISOString());
+  } catch (error) {
+    cleanupFailedRestartSignal(signalFile);
+    throw error;
+  }
+  return otherBusy;
+}
+
 function forceStagingModelSettings(dbPath: string): void {
   let stagingDb: DatabaseSync | null = null;
   try {
@@ -414,8 +417,11 @@ function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {
   try {
     snapshotProductionDatabase(dbSrc, dataDir);
   } catch (err) {
-    log(`Warning: SQLite VACUUM INTO failed, falling back to file copy: ${err}`);
-    copySqliteSnapshot(dbSrc, join(dataDir, "bridge.db"));
+    clearSeededSqliteFiles(dataDir);
+    throw new Error(
+      `Unable to create safe staging SQLite snapshot with VACUUM INTO: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Staging preview aborted to avoid copying a live SQLite database non-atomically.`,
+    );
   }
   disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
   clearPushSubscriptionsInStagingDb(join(dataDir, "bridge.db"));
@@ -1307,6 +1313,7 @@ export const __testing = {
   createStagingProxyHandler,
   buildStagingBackendSpawnConfig,
   restoreStagingBackendWithRetry,
+  writeRestartSignalOrRollback,
   listStagingBranchPrefixes,
   pruneOrphanedWorktreesImpl,
   getStagingPreviewParent: () => STAGING_PREVIEW_PARENT,
@@ -1820,8 +1827,29 @@ export const STAGING_TOOLS = [
       // Signal launcher to restart
       const dataDir = join(PRODUCTION_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-      triggerRestartPending();
-      writeFileSync(SIGNAL_FILE, new Date().toISOString());
+      try {
+        writeRestartSignalOrRollback(SIGNAL_FILE);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`Restart signal failed after deploy: ${message}`);
+        let cleanupNote = "";
+        try {
+          await cleanupPreviewArtifactsForStagingDir(stagingDir);
+          await removeWorktree(stagingDir, branch);
+          log("Staging worktree cleaned up after restart signal failure");
+        } catch (cleanupErr) {
+          cleanupNote = `\n\nPost-deploy cleanup also failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`;
+          log(`Warning: post-deploy cleanup failed after restart signal failure: ${cleanupErr}`);
+        }
+        return stagingFailure(
+          "Deployment pushed but restart signal failed.",
+          `Deployment ${commitSha} was pushed to ${prodBranch}, but the launcher restart signal could not be written. Manual restart is required.\n\n${message}${cleanupNote}`,
+          {
+            sessionLog: `Deployment ${commitSha} was pushed, but writing ${SIGNAL_FILE} failed: ${message}${cleanupNote}`,
+            toolTelemetry: { stagingDir, branch, prodBranch, commitSha, signalFile: SIGNAL_FILE },
+          },
+        );
+      }
       log("Restart signal sent");
 
       // Cleanup staging worktree and branch (best-effort — deploy already succeeded)
