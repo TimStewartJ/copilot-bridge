@@ -2,7 +2,7 @@ import { createElement, type ComponentProps } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FeedCard as FeedCardData } from "../api";
+import type { FeedCard as FeedCardData, Task, TaskGroup } from "../api";
 import { installDomShim } from "../test-dom-shim";
 
 const apiMocks = vi.hoisted(() => ({
@@ -45,6 +45,38 @@ function makeCard(overrides: Partial<FeedCardData> = {}): FeedCardData {
   };
 }
 
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-1",
+    title: "Southwest return",
+    kind: "task",
+    status: "active",
+    notes: "",
+    priority: 0,
+    order: 0,
+    createdAt: "2026-05-13T10:00:00.000Z",
+    updatedAt: "2026-05-13T10:00:00.000Z",
+    sessionIds: [],
+    workItems: [],
+    pullRequests: [],
+    ...overrides,
+  };
+}
+
+function makeTaskGroup(overrides: Partial<TaskGroup> = {}): TaskGroup {
+  return {
+    id: "group-1",
+    name: "Travel",
+    color: "amber",
+    notes: "",
+    order: 0,
+    collapsed: false,
+    createdAt: "2026-05-13T10:00:00.000Z",
+    updatedAt: "2026-05-13T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function findAllByTag(root: any, tag: string): any[] {
   const results: any[] = [];
   if ((root.tagName ?? "").toUpperCase() === tag.toUpperCase()) results.push(root);
@@ -58,6 +90,16 @@ function findButtonByLabel(root: any, label: string): any {
   const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.getAttribute?.("aria-label") === label);
   if (!button) throw new Error(`Button not found: ${label}`);
   return button;
+}
+
+function findByAriaLabel(root: any, label: string): any {
+  if (!root) return null;
+  if (root.getAttribute?.("aria-label") === label) return root;
+  for (const child of root.childNodes ?? []) {
+    const result = findByAriaLabel(child, label);
+    if (result) return result;
+  }
+  return null;
 }
 
 function findButtonByText(root: any, text: string): any {
@@ -252,6 +294,33 @@ describe("DashboardFeed feed mutations", () => {
     expect(findAllByTag(dom?.container, "BUTTON").filter((button) => button.textContent === "Mark done")).toHaveLength(2);
   });
 
+  it("shows the linked task name and group dot in the prompt preview", async () => {
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          action: {
+            label: "Launch prompt",
+            prompt: "Investigate this from the feed.",
+          },
+        }),
+      ],
+      tasks: [makeTask({ groupId: "group-1" })],
+      taskGroups: [makeTaskGroup()],
+    });
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Launch prompt"))?.onClick?.();
+      await waitTick();
+    });
+
+    const groupDot = findByAriaLabel(dom?.container, "Travel group");
+    expect(dom?.container.textContent).toContain("Session will be linked to");
+    expect(dom?.container.textContent).toContain("Southwest return");
+    expect(dom?.container.textContent).not.toContain("Session will be linked to task task-1.");
+    expect(groupDot).toBeTruthy();
+    expect(groupDot.getAttribute("class")).toContain("bg-amber-500");
+  });
+
   it("surfaces deferred delete failures and keeps refresh failures visible without rethrowing", async () => {
     vi.useFakeTimers();
     apiMocks.deleteFeedCard.mockRejectedValueOnce(new Error("Delete failed"));
@@ -326,6 +395,90 @@ describe("DashboardFeed feed mutations", () => {
     expect(dom?.container.textContent).not.toContain("Start session");
     expect(findAllByTag(dom?.container, "BUTTON").some((button) => button.textContent === "Launch prompt")).toBe(false);
     expect(dom?.container.textContent).toContain("Open session");
+  });
+
+  it("can send a prompt CTA in the background without navigating to the new session", async () => {
+    const onStartPromptSession = vi.fn(async () => "session-bg");
+    const onSelectSession = vi.fn();
+    const onRefetchFeed = vi.fn(async () => undefined);
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          action: {
+            label: "Launch prompt",
+            prompt: "Investigate this from the feed.",
+            taskId: "task-action",
+          },
+        }),
+      ],
+      onStartPromptSession,
+      onSelectSession,
+      onRefetchFeed,
+    });
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Launch prompt"))?.onClick?.();
+      await waitTick();
+    });
+    expect(dom?.container.textContent).toContain("Feed action preview");
+
+    await act(async () => {
+      await getReactProps(findButtonByText(dom?.container, "Send in background"))?.onClick?.();
+    });
+    await waitUntilAct(() => apiMocks.patchFeedCard.mock.calls.length === 1);
+
+    expect(onStartPromptSession).toHaveBeenCalledTimes(1);
+    expect(onStartPromptSession).toHaveBeenCalledWith(
+      "Investigate this from the feed.",
+      "task-action",
+      { navigateOnError: false },
+    );
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(apiMocks.patchFeedCard).toHaveBeenCalledWith("card-1", { status: "done", sessionId: "session-bg" });
+    expect(onRefetchFeed).toHaveBeenCalledTimes(1);
+    expect(dom?.container.textContent).not.toContain("Feed action preview");
+    expect(dom?.container.textContent).not.toContain("Launch prompt");
+    expect(dom?.container.textContent).toContain('Started "Preview ready" in background.');
+    expect(dom?.container.textContent).toContain("Open session");
+  });
+
+  it("keeps the prompt preview open when background send fails without navigating", async () => {
+    const onStartPromptSession = vi.fn(async () => {
+      throw new Error("Send failed");
+    });
+    const onSelectSession = vi.fn();
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          action: {
+            label: "Launch prompt",
+            prompt: "Investigate this from the feed.",
+            taskId: "task-action",
+          },
+        }),
+      ],
+      onStartPromptSession,
+      onSelectSession,
+    });
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Launch prompt"))?.onClick?.();
+      await waitTick();
+    });
+    await act(async () => {
+      await getReactProps(findButtonByText(dom?.container, "Send in background"))?.onClick?.();
+    });
+    await waitUntilAct(() => dom?.container.textContent?.includes("Send failed") ?? false);
+
+    expect(onStartPromptSession).toHaveBeenCalledWith(
+      "Investigate this from the feed.",
+      "task-action",
+      { navigateOnError: false },
+    );
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(apiMocks.patchFeedCard).not.toHaveBeenCalled();
+    expect(dom?.container.textContent).toContain("Feed action preview");
+    expect(dom?.container.textContent).toContain("Send failed");
   });
 
   it("groups resolved cards after active cards with a divider when both are visible", async () => {
