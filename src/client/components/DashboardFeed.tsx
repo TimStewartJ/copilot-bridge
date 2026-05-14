@@ -63,6 +63,9 @@ export default function DashboardFeed({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [feedMutationError, setFeedMutationError] = useState<string | null>(null);
+  const activeFeedCards = feedCards.filter((card) => card.status === "active");
+  const resolvedFeedCards = feedCards.filter((card) => card.status !== "active");
+  const showResolvedDivider = activeFeedCards.length > 0 && resolvedFeedCards.length > 0;
 
   const refetchAfterFeedMutationFailure = async () => {
     try {
@@ -161,6 +164,17 @@ export default function DashboardFeed({
       setActionSubmitting(false);
     }
   };
+  const renderFeedCard = (card: FeedCardData) => (
+    <FeedCard
+      key={card.id}
+      card={card}
+      onSelectTask={onSelectTask}
+      onSelectSession={onSelectSession}
+      onAction={openFeedAction}
+      onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
+      onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
+    />
+  );
 
   return (
     <>
@@ -211,17 +225,15 @@ export default function DashboardFeed({
           </div>
         ) : feedCards.length > 0 ? (
           <div className="space-y-2">
-            {feedCards.map((card) => (
-              <FeedCard
-                key={card.id}
-                card={card}
-                onSelectTask={onSelectTask}
-                onSelectSession={onSelectSession}
-                onAction={openFeedAction}
-                onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
-                onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
-              />
-            ))}
+            {activeFeedCards.map(renderFeedCard)}
+            {showResolvedDivider && (
+              <div className="flex items-center gap-2 px-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-faint">
+                <span className="h-px flex-1 bg-border/60" />
+                Resolved
+                <span className="h-px flex-1 bg-border/60" />
+              </div>
+            )}
+            {resolvedFeedCards.map(renderFeedCard)}
           </div>
         ) : (
           <EmptyState

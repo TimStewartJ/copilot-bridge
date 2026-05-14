@@ -71,6 +71,26 @@ describe("FeedCard", () => {
     expect(html).not.toContain("Pinned");
   });
 
+  it("makes resolved cards visually distinct from active high-priority cards", () => {
+    const doneHtml = renderCard(makeCard({
+      status: "done",
+      priority: "high",
+    }));
+    const dismissedHtml = renderCard(makeCard({
+      status: "dismissed",
+      priority: "high",
+    }));
+
+    expect(doneHtml).toContain("border-success/25");
+    expect(doneHtml).toContain("bg-success/70");
+    expect(doneHtml).toContain("text-text-secondary");
+    expect(doneHtml).not.toContain("border-warning/50");
+    expect(dismissedHtml).toContain("bg-bg-secondary/55");
+    expect(dismissedHtml).toContain("bg-text-faint/50");
+    expect(dismissedHtml).toContain("text-text-muted");
+    expect(dismissedHtml).not.toContain("border-warning/50");
+  });
+
   it("renders visual artifacts with the shared visual card renderer", () => {
     const html = renderCard(makeCard({
       visual: {
