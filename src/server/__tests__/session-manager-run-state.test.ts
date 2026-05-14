@@ -18,7 +18,7 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
-import { setupTestDb, createTestBus, makeTestRuntimePaths } from "./helpers.js";
+import { setupTestDb, createTestBus, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 describe("SessionManager run state", () => {
   function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths } = {}) {
@@ -1130,7 +1130,7 @@ describe("SessionManager run state", () => {
   });
 
   it("resolves a stalled turn from persisted assistant.turn_end without waiting for session.idle", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bridge-stall-turn-end-terminal-"));
+    const tmpDir = makeTestDir("stall-turn-end-terminal");
     try {
       const sessionId = "session-turn-end-terminal";
       const sessionStateDir = join(tmpDir, "session-state", sessionId);
