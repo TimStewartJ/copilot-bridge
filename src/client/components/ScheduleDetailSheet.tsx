@@ -574,8 +574,8 @@ function EditMode({
         <div className="px-5 py-3">
           <div className="text-[10px] uppercase tracking-wider text-text-faint mb-1.5">Prompt</div>
           <textarea
-            className="w-full text-xs bg-bg-surface border border-border rounded-md px-3 py-2 text-text-primary outline-none focus:border-accent resize-none font-mono"
-            rows={5}
+            className="min-h-40 w-full resize-y rounded-md border border-border bg-bg-surface px-3 py-2 font-mono text-xs leading-relaxed text-text-primary outline-none focus:border-accent"
+            rows={8}
             placeholder="What should the agent do when this schedule fires?"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}

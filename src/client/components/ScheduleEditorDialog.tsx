@@ -192,8 +192,8 @@ export default function ScheduleEditorDialog({ taskId, schedule, onClose, onSave
           <div>
             <label className="block text-xs font-medium text-text-muted mb-1">Prompt</label>
             <textarea
-              className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-2 text-text-primary outline-none focus:border-accent resize-none"
-              rows={4}
+              className="min-h-40 w-full resize-y rounded-lg border border-border bg-bg-surface px-3 py-2 text-sm leading-relaxed text-text-primary outline-none focus:border-accent"
+              rows={8}
               placeholder="What should the agent do when this schedule fires?"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
