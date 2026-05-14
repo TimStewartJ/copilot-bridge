@@ -13,6 +13,7 @@ import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createTaskStore } from "../task-store.js";
+import { FEED_GUIDANCE } from "../session-instructions.js";
 import { setupTestDb, createTestBus, withTestEnv } from "./helpers.js";
 
 describe("SessionManager session config", () => {
@@ -101,6 +102,15 @@ describe("SessionManager session config", () => {
       action: "append",
     });
     expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
+  });
+
+  it("frames feed cards as an opt-in durable queue instead of assistant status output", () => {
+    expect(FEED_GUIDANCE).toContain("Default to not creating feed cards");
+    expect(FEED_GUIDANCE).toContain("durable dashboard queue");
+    expect(FEED_GUIDANCE).toContain("It is not a transcript, progress log, or default place for assistant status updates");
+    expect(FEED_GUIDANCE).toContain("Do not create feed cards for routine narration, task progress, test/build results, staging previews");
+    expect(FEED_GUIDANCE).toContain("Share staging preview links in chat");
+    expect(FEED_GUIDANCE).not.toContain("staging-preview:");
   });
 
   it("injects compact task momentum for linked tasks", () => {

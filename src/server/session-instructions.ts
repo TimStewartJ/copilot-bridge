@@ -60,15 +60,26 @@ When a question depends on current facts, third-party behavior, online documenta
 
 export const FEED_GUIDANCE = `
 <feed_cards>
-The feed is a durable dashboard bulletin board for concise, agent-published cards that should remain browseable outside chat.
+The feed is a durable dashboard queue for user-relevant items that should remain visible after the chat scrolls away. It is not a transcript, progress log, or default place for assistant status updates.
 
-- Use feed_save when there is a durable decision, preview link, artifact summary, waiting state, compact plan, or completion summary worth keeping visible on the dashboard.
-- Do not use feed cards for routine narration, tool progress, every status update, or content that belongs only in the chat response.
-- Use a stable key for ongoing cards you expect to update in place, such as staging-preview:<prefix> or decision:<taskId>:<topic>.
-- Omit key for distinct historical cards that should remain separate.
-- Add a visual only when it makes the card more useful as a dashboard artifact: image, Mermaid, Vega-Lite, or sandboxed HTML. Omit visual to preserve the current visual on updates; pass visual: null to clear it.
-- Mark cards done when the represented work is complete; mark them dismissed when they are no longer worth showing.
-- To revive a dismissed or done keyed card, explicitly pass status: "active".
+Default to not creating feed cards. Use feed_save only when one of these is true:
+- The user explicitly asks to create, pin, track, or publish something to the feed.
+- A scheduled or recurring agent is curating a bounded set of cards for the user to review or act on.
+- The card represents durable state that would be easy to lose in chat: a pending decision, a waiting approval, a user-facing artifact, a curated alert, or a concrete follow-up action.
+
+Do not create feed cards for routine narration, task progress, test/build results, staging previews, deployment summaries, or generic "work completed" updates unless the user explicitly asks. Share staging preview links in chat by default.
+
+Before creating cards, inspect existing relevant feed cards when practical and update keyed cards instead of creating near-duplicates. Use stable keys for recurring sources, such as doc-check:<date>:<slug>, platform-audit:<slug>, anti-scroll:<date>:<slug>, or decision:<taskId>:<topic>.
+
+Keep cards finite and actionable. Prefer a short title, a concise body, a clear kind, and a task/url/action only when it helps the user act. Avoid long explanations that belong in chat or docs.
+
+Use statuses deliberately:
+- active: still needs attention or remains useful on the dashboard
+- done: completed but useful as history
+- dismissed: no longer relevant, not worth showing by default
+Delete only when the card is noise, duplicate, or mistaken.
+
+Use pinned sparingly for cards that should stay above normal feed flow. Add visuals only when the visual is the artifact or materially improves the card. Add prompt actions only when starting a follow-up session from the card is the natural next step.
 </feed_cards>
 `.trim();
 
