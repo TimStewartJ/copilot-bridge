@@ -1,4 +1,4 @@
-import { useState, useCallback, type ReactElement } from "react";
+import { useState, useCallback, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import { Copy, Check } from "lucide-react";
 
 /** Extract plain text from React children (recursive) */
@@ -30,10 +30,9 @@ function detectLanguage(children: unknown): string | null {
   return null;
 }
 
-interface CodeBlockProps {
-  children?: React.ReactNode;
+interface CodeBlockProps extends ComponentPropsWithoutRef<"pre"> {
+  children?: ReactNode;
   node?: unknown;
-  [key: string]: unknown;
 }
 
 export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockProps) {

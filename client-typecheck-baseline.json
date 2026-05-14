@@ -245,25 +245,11 @@
     "message": "Object is of type 'unknown'."
   },
   {
-    "code": 2322,
-    "file": "src/client/components/DocPreviewSheet.tsx",
-    "line": 87,
-    "character": 86,
-    "message": "Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'keyof IntrinsicElements | ComponentType<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps> | undefined'.\n  Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'FunctionComponent<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps>'.\n    Types of parameters '__0' and 'props' are incompatible.\n      Type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps' is not assignable to type 'CodeBlockProps'.\n        Index signature for type 'string' is missing in type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps'."
-  },
-  {
     "code": 2345,
     "file": "src/client/components/DocsView.tsx",
     "line": 1626,
     "character": 57,
     "message": "Argument of type 'string | null' is not assignable to parameter of type 'string'.\n  Type 'null' is not assignable to type 'string'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/DocsView.tsx",
-    "line": 1672,
-    "character": 60,
-    "message": "Type '{ pre: ({ children, node: _node, ...rest }: CodeBlockProps) => JSX.Element; h1: ({ children, ...props }: ComponentPropsWithoutRef<\"h2\">) => JSX.Element; h2: ({ children, ...props }: ComponentPropsWithoutRef<\"h2\">) => JSX.Element; ... 4 more ...; a: ({ href, children, node: _node, ...props }: { href?: string; childre...' is not assignable to type 'Components'.\n  Types of property 'pre' are incompatible.\n    Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'keyof IntrinsicElements | ComponentType<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps> | undefined'.\n      Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'FunctionComponent<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps>'.\n        Types of parameters '__0' and 'props' are incompatible.\n          Type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps' is not assignable to type 'CodeBlockProps'.\n            Index signature for type 'string' is missing in type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps'."
   },
   {
     "code": 2345,
@@ -278,27 +264,6 @@
     "line": 1691,
     "character": 30,
     "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/MessageBubble.tsx",
-    "line": 108,
-    "character": 86,
-    "message": "Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'keyof IntrinsicElements | ComponentType<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps> | undefined'.\n  Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'FunctionComponent<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps>'.\n    Types of parameters '__0' and 'props' are incompatible.\n      Type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps' is not assignable to type 'CodeBlockProps'.\n        Index signature for type 'string' is missing in type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/NotesSheet.tsx",
-    "line": 106,
-    "character": 86,
-    "message": "Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'keyof IntrinsicElements | ComponentType<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps> | undefined'.\n  Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'FunctionComponent<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps>'.\n    Types of parameters '__0' and 'props' are incompatible.\n      Type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps' is not assignable to type 'CodeBlockProps'.\n        Index signature for type 'string' is missing in type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/PlanSheet.tsx",
-    "line": 130,
-    "character": 86,
-    "message": "Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'keyof IntrinsicElements | ComponentType<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps> | undefined'.\n  Type '({ children, node: _node, ...rest }: CodeBlockProps) => Element' is not assignable to type 'FunctionComponent<ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps>'.\n    Types of parameters '__0' and 'props' are incompatible.\n      Type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps' is not assignable to type 'CodeBlockProps'.\n        Index signature for type 'string' is missing in type 'ClassAttributes<HTMLPreElement> & HTMLAttributes<HTMLPreElement> & ExtraProps'."
   },
   {
     "code": 7006,
