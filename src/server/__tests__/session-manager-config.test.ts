@@ -110,6 +110,8 @@ describe("SessionManager session config", () => {
     expect(FEED_GUIDANCE).toContain("It is not a transcript, progress log, or default place for assistant status updates");
     expect(FEED_GUIDANCE).toContain("Do not create feed cards for routine narration, task progress, test/build results, staging previews");
     expect(FEED_GUIDANCE).toContain("Share staging preview links in chat");
+    expect(FEED_GUIDANCE).toContain("Use Markdown to make cards easier to scan");
+    expect(FEED_GUIDANCE).toContain("use visuals for rich artifacts instead of large Markdown bodies");
     expect(FEED_GUIDANCE).not.toContain("staging-preview:");
   });
 

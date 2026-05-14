@@ -71,7 +71,7 @@ Do not create feed cards for routine narration, task progress, test/build result
 
 Before creating cards, inspect existing relevant feed cards when practical and update keyed cards instead of creating near-duplicates. Use stable keys for recurring sources, such as doc-check:<date>:<slug>, platform-audit:<slug>, anti-scroll:<date>:<slug>, or decision:<taskId>:<topic>.
 
-Keep cards finite and actionable. Prefer a short title, a concise body, a clear kind, and a task/url/action only when it helps the user act. Avoid long explanations that belong in chat or docs.
+Keep cards finite and actionable. Prefer a short title, a concise body, a clear kind, and a task/url/action only when it helps the user act. Use Markdown to make cards easier to scan, but keep cards finite and concise; use visuals for rich artifacts instead of large Markdown bodies. Avoid long explanations that belong in chat or docs.
 
 Use statuses deliberately:
 - active: still needs attention or remains useful on the dashboard

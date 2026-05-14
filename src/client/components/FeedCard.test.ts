@@ -63,6 +63,30 @@ describe("FeedCard", () => {
     expect(html).not.toContain("Delete card");
   });
 
+  it("renders markdown in card bodies", () => {
+    const html = renderCard(makeCard({
+      body: "**Bold update**\n- Review [preview](https://example.test/preview)\n\nInline `code`",
+    }));
+
+    expect(html).toContain("<strong>Bold update</strong>");
+    expect(html).toContain("<li>Review <a");
+    expect(html).toContain('href="https://example.test/preview"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain("<code>code</code>");
+  });
+
+  it("does not render raw HTML or unsafe markdown links in card bodies", () => {
+    const html = renderCard(makeCard({
+      body: "<img src=x onerror=alert(1)>\n\n[bad](javascript:alert)",
+    }));
+
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+    expect(html).not.toContain('href="javascript:');
+    expect(html).toContain("bad");
+  });
+
   it("uses kind as the header label when no metadata source exists and truncates real source labels", () => {
     const fallbackHtml = renderCard(makeCard({ metadata: { source: "   " }, kind: "decision" }));
     const truncatedHtml = renderCard(makeCard({
