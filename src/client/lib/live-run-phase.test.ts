@@ -49,4 +49,20 @@ describe("deriveLiveRunHeaderState", () => {
       title: "Waiting for the next update",
     });
   });
+
+  it("keeps the current intent visible between later updates", () => {
+    expect(deriveLiveRunHeaderState({
+      creating: false,
+      isStreaming: true,
+      streamStatus: "thinking",
+      pendingOrigin: null,
+      streamingContent: "",
+      activeTrackCount: 0,
+      intentText: "Running validation",
+      hadVisibleOutput: true,
+    })).toMatchObject({
+      phase: "thinking",
+      title: "Running validation",
+    });
+  });
 });
