@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { getDashboardTabFromPathname, getDashboardTabPath } from "../lib/dashboard-routes";
+import { getDashboardTabFromPathname, getDashboardTabPath, getExplicitDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useFeedQuery } from "../hooks/queries/useFeed";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
@@ -62,6 +62,7 @@ export default function Dashboard({
   const checklist = useDashboardChecklist(data);
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
   const activeTab = getDashboardTabFromPathname(location.pathname);
+  const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
   const feedFilters = useMemo(() => ({
     limit: 100,
     ...(showResolvedFeed ? { includeDismissed: true } : {}),
@@ -75,6 +76,10 @@ export default function Dashboard({
   const handleRefresh = async () => {
     await Promise.all([refetchDashboard(), refetchFeed()]);
   };
+
+  useEffect(() => {
+    if (explicitActiveTab) setLastDashboardTab(explicitActiveTab);
+  }, [explicitActiveTab]);
 
   if (loading && !data) return <DashboardSkeleton />;
 
