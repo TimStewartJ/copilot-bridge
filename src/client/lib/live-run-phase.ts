@@ -96,9 +96,11 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
   return {
     phase: "thinking",
     label: "Thinking",
-    title: input.hadVisibleOutput
-      ? "Waiting for the next update"
-      : input.intentText || "Waiting for the first response",
+    title: input.intentText || (
+      input.hadVisibleOutput
+        ? "Waiting for the next update"
+        : "Waiting for the first response"
+    ),
     detail: input.hadVisibleOutput
       ? "The run is still active, but there is no visible text or tool activity right now."
       : "The assistant is working before any text or tool activity is visible.",
