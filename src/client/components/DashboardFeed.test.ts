@@ -60,6 +60,12 @@ function findButtonByLabel(root: any, label: string): any {
   return button;
 }
 
+function findButtonByText(root: any, text: string): any {
+  const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.textContent === text);
+  if (!button) throw new Error(`Button not found: ${text}`);
+  return button;
+}
+
 function getReactProps(el: any): Record<string, any> | null {
   if (!el) return null;
   const key = Object.keys(el).find((candidate) => candidate.startsWith("__reactProps$"));
@@ -172,6 +178,49 @@ describe("DashboardFeed feed mutations", () => {
     expect(onRefetchFeed).toHaveBeenCalledTimes(1);
     expect(dom?.container.textContent).toContain("Failed to delete feed card: Delete failed");
     expect(dom?.container.textContent).toContain("Also failed to refresh feed: Refresh failed");
+  });
+
+  it("navigates to a started prompt session when marking the feed card done fails", async () => {
+    apiMocks.patchFeedCard.mockRejectedValueOnce(new Error("Patch failed"));
+    const onStartPromptSession = vi.fn(async () => "session-new");
+    const onSelectSession = vi.fn();
+    const onRefetchFeed = vi.fn(async () => undefined);
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          action: {
+            label: "Launch prompt",
+            prompt: "Investigate this from the feed.",
+            taskId: "task-action",
+          },
+        }),
+      ],
+      onStartPromptSession,
+      onSelectSession,
+      onRefetchFeed,
+    });
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Launch prompt"))?.onClick?.();
+      await waitTick();
+    });
+    expect(dom?.container.textContent).toContain("Feed action preview");
+
+    await act(async () => {
+      await getReactProps(findButtonByText(dom?.container, "Start session"))?.onClick?.();
+    });
+    await waitUntilAct(() => onSelectSession.mock.calls.length === 1);
+    await waitUntilAct(() => dom?.container.textContent?.includes("Session started, but failed to mark feed card done: Patch failed") ?? false);
+
+    expect(onStartPromptSession).toHaveBeenCalledTimes(1);
+    expect(onStartPromptSession).toHaveBeenCalledWith("Investigate this from the feed.", "task-action");
+    expect(apiMocks.patchFeedCard).toHaveBeenCalledWith("card-1", { status: "done", sessionId: "session-new" });
+    expect(onRefetchFeed).toHaveBeenCalledTimes(1);
+    expect(onSelectSession).toHaveBeenCalledWith("session-new", "task-action");
+    expect(dom?.container.textContent).not.toContain("Feed action preview");
+    expect(dom?.container.textContent).not.toContain("Start session");
+    expect(findAllByTag(dom?.container, "BUTTON").some((button) => button.textContent === "Launch prompt")).toBe(false);
+    expect(dom?.container.textContent).toContain("Open session");
   });
 
   it("groups resolved cards after active cards with a divider when both are visible", async () => {

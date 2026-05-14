@@ -19,6 +19,12 @@ interface FeedActionDraft {
   taskId: string | null;
 }
 
+interface StartedFeedAction {
+  sessionId: string;
+  taskId: string | null;
+  prompt: string;
+}
+
 function formatFeedMutationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -63,6 +69,7 @@ export default function DashboardFeed({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [feedMutationError, setFeedMutationError] = useState<string | null>(null);
+  const [startedFeedActions, setStartedFeedActions] = useState<Record<string, StartedFeedAction>>({});
   const activeFeedCards = feedCards.filter((card) => card.status === "active");
   const resolvedFeedCards = feedCards.filter((card) => card.status !== "active");
   const showResolvedDivider = activeFeedCards.length > 0 && resolvedFeedCards.length > 0;
@@ -103,6 +110,15 @@ export default function DashboardFeed({
 
   const handleFeedDelete = async (cardId: string) => {
     await runFeedMutation("delete feed card", () => deleteFeedCard(cardId));
+  };
+
+  const getStartedFeedAction = (card: FeedCardData) => {
+    const startedAction = startedFeedActions[card.id];
+    if (!startedAction || !card.action) return null;
+    const currentActionTaskId = resolveFeedActionTaskId(card);
+    return card.action.prompt === startedAction.prompt && currentActionTaskId === startedAction.taskId
+      ? startedAction
+      : null;
   };
 
   const openFeedAction = (card: FeedCardData) => {
@@ -152,29 +168,76 @@ export default function DashboardFeed({
     }
     setActionSubmitting(true);
     setActionError(null);
+    setFeedMutationError(null);
+    let sessionId: string;
     try {
-      const sessionId = await onStartPromptSession(prompt, draft.taskId ?? undefined);
-      await patchFeedCard(draft.card.id, { status: "done", sessionId });
-      await onRefetchFeed();
-      setActionDraft(null);
-      setActionSubmitting(false);
-      onSelectSession(sessionId, draft.taskId ?? undefined);
+      sessionId = await onStartPromptSession(prompt, draft.taskId ?? undefined);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       setActionSubmitting(false);
+      return;
+    }
+
+    setStartedFeedActions((current) => ({
+      ...current,
+      [draft.card.id]: {
+        sessionId,
+        taskId: draft.taskId,
+        prompt,
+      },
+    }));
+    setActionDraft(null);
+    setActionSubmitting(false);
+    onSelectSession(sessionId, draft.taskId ?? undefined);
+
+    let patchError: string | null = null;
+    try {
+      await patchFeedCard(draft.card.id, { status: "done", sessionId });
+    } catch (error) {
+      patchError = formatFeedMutationError(error);
+    }
+
+    let refreshError: string | null = null;
+    try {
+      await onRefetchFeed();
+    } catch (error) {
+      refreshError = formatFeedMutationError(error);
+    }
+
+    if (patchError) {
+      setFeedMutationError(
+        refreshError
+          ? `Session started, but failed to mark feed card done: ${patchError} Also failed to refresh feed: ${refreshError}`
+          : `Session started, but failed to mark feed card done: ${patchError}`,
+      );
+    } else if (refreshError) {
+      setFeedMutationError(`Session started, but refreshing the feed failed: ${refreshError}`);
     }
   };
-  const renderFeedCard = (card: FeedCardData) => (
-    <FeedCard
-      key={card.id}
-      card={card}
-      onSelectTask={onSelectTask}
-      onSelectSession={onSelectSession}
-      onAction={openFeedAction}
-      onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
-      onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
-    />
-  );
+
+  const renderFeedCard = (card: FeedCardData) => {
+    const startedAction = getStartedFeedAction(card);
+    const displayCard = startedAction
+      ? {
+          ...card,
+          action: null,
+          taskId: card.taskId ?? startedAction.taskId,
+          sessionId: card.sessionId ?? startedAction.sessionId,
+        }
+      : card;
+
+    return (
+      <FeedCard
+        key={card.id}
+        card={displayCard}
+        onSelectTask={onSelectTask}
+        onSelectSession={onSelectSession}
+        onAction={openFeedAction}
+        onStatusChange={(feedCard, status) => handleFeedStatusChange(feedCard.id, status)}
+        onDelete={(feedCard) => handleFeedDelete(feedCard.id)}
+      />
+    );
+  };
 
   return (
     <>
