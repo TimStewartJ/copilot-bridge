@@ -1,4 +1,5 @@
 import { DEPLOY_GATE, ROLLBACK_GATE, runValidationGate, type ValidationCommandOptions } from "./server/validation-pipeline.js";
+import type { RestartValidationMode } from "./server/restart-signal.js";
 
 export type LauncherCommandResult = { ok: boolean; output: string };
 export type LauncherCommandOptions = ValidationCommandOptions;
@@ -7,6 +8,8 @@ interface LauncherBuildOptions {
   ensureDeps: () => boolean;
   run: (cmd: string, options?: LauncherCommandOptions) => LauncherCommandResult;
   log: (msg: string) => void;
+  validationMode?: RestartValidationMode;
+  hasSourceChanges?: () => boolean;
 }
 
 interface LauncherStartupOptions {
@@ -27,11 +30,26 @@ function logFailure(prefix: string, output: string, log: (msg: string) => void) 
   log(`${prefix}:\n${output.slice(-500)}`);
 }
 
-export function runLauncherBuild({ ensureDeps, run, log }: LauncherBuildOptions): boolean {
+export function runLauncherBuild({
+  ensureDeps,
+  run,
+  log,
+  validationMode = "deploy",
+  hasSourceChanges = () => true,
+}: LauncherBuildOptions): boolean {
   log("Building...");
+  const operationalSourceChanged = validationMode === "operational" ? hasSourceChanges() : true;
   if (!ensureDeps()) {
     log("Dependency sync failed — aborting build");
     return false;
+  }
+
+  if (validationMode === "operational") {
+    if (!operationalSourceChanged) {
+      log("Operational restart validation skipped — no source changes detected");
+      return true;
+    }
+    log("Operational restart found source changes — running deploy validation");
   }
 
   const validation = runValidationGate(DEPLOY_GATE, {

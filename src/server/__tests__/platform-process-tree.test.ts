@@ -189,8 +189,8 @@ describe("process tree platform helpers", () => {
   it("creates directory links with native filesystem APIs for paths needing shell escaping", () => {
     setPlatform("linux");
     const root = makeTestDir("directory-link");
-    const target = join(root, 'target "quoted"');
-    const link = join(root, 'link "quoted"');
+    const target = join(root, "target with spaces & parens");
+    const link = join(root, "link with spaces & parens");
     mkdirSync(target);
     writeFileSync(join(target, "marker.txt"), "ok");
 

@@ -156,6 +156,23 @@ export { createBridgeTools } from "./bridge-tools.js";
 
 export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
 
+type CopilotClientFactory = (options: CopilotClientOptions | undefined) => CopilotClient;
+type CopilotModelList = Awaited<ReturnType<CopilotClient["listModels"]>>;
+
+export class ModelRefreshBlockedError extends Error {
+  constructor(readonly activeSessions: number) {
+    super(`Cannot refresh model list while ${activeSessions} active session(s) are running. Try again after active turns finish.`);
+    this.name = "ModelRefreshBlockedError";
+  }
+}
+
+export interface ModelRefreshResult {
+  models: CopilotModelList;
+  refreshed: true;
+  activeSessions: number;
+  refreshedAt: string;
+}
+
 function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -202,6 +219,7 @@ export interface SessionManagerDeps {
   telemetryStore?: TelemetryStore;
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
+  createCopilotClient?: CopilotClientFactory;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
@@ -212,6 +230,7 @@ export interface CreateSessionManagerOpts {
   tools: ReturnType<typeof defineTool>[];
   config: SessionManagerDeps["config"];
   clientEnv?: SessionManagerDeps["clientEnv"];
+  createCopilotClient?: CopilotClientFactory;
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
 }
@@ -257,6 +276,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     telemetryStore: ctx.telemetryStore,
     config: opts.config,
     clientEnv,
+    createCopilotClient: opts.createCopilotClient,
     copilotHome,
     runtimePaths,
   });
@@ -265,6 +285,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
 export class SessionManager {
   private static DISPOSABLE_TITLE_SWEEP_GRACE_MS = 60_000;
   private client: CopilotClient | null = null;
+  private clientRotation: Promise<CopilotClient> | null = null;
   private deps: SessionManagerDeps;
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
@@ -335,12 +356,12 @@ export class SessionManager {
     this.sessionNameAutogenerator = createSessionNameAutogenerator({
       listModels: () => this.listModels(),
       createSession: async (sessionConfig) => {
-        if (!this.client) throw new Error("SessionManager not initialized");
-        return this.client.createSession(sessionConfig);
+        const client = await this.getClientAfterRotation();
+        return client.createSession(sessionConfig);
       },
       deleteSession: async (sessionId) => {
-        if (!this.client) return;
-        await this.client.deleteSession(sessionId);
+        const client = await this.getClientAfterRotation();
+        await client.deleteSession(sessionId);
       },
       getCopilotHome: () => this.getCopilotHome(),
       getSessionName: (sessionId) => this.getSessionName(sessionId),
@@ -557,10 +578,84 @@ export class SessionManager {
     });
   }
 
+  private createCopilotClient(): CopilotClient {
+    const options = buildCopilotClientOptions(this.deps.clientEnv);
+    return this.deps.createCopilotClient?.(options) ?? new CopilotClient(options);
+  }
+
+  private getClient(): CopilotClient {
+    if (this.clientRotation) {
+      throw new Error("Copilot SDK client refresh is in progress; try again shortly");
+    }
+    if (!this.client) throw new Error("SessionManager not initialized");
+    return this.client;
+  }
+
+  private async getClientAfterRotation(): Promise<CopilotClient> {
+    if (this.clientRotation) {
+      await this.clientRotation;
+    }
+    if (!this.client) throw new Error("SessionManager not initialized");
+    return this.client;
+  }
+
+  private async rotateCopilotClientForModelRefresh(): Promise<CopilotClient> {
+    if (this.clientRotation) {
+      return this.clientRotation;
+    }
+
+    const activeSessions = this.getActiveSessions().length;
+    if (activeSessions > 0) {
+      throw new ModelRefreshBlockedError(activeSessions);
+    }
+
+    const previousClient = this.client;
+    if (!previousClient) throw new Error("SessionManager not initialized");
+
+    this.evictAllCachedSessions();
+    const rotation = Promise.resolve().then(async () => {
+      console.log("[sdk] Rotating Copilot SDK client for model refresh...");
+      this.client = null;
+      try {
+        await previousClient.stop();
+      } catch (error) {
+        this.client = previousClient;
+        throw error;
+      }
+
+      const nextClient = this.createCopilotClient();
+      try {
+        await nextClient.start();
+      } catch (error) {
+        try {
+          await previousClient.start();
+          this.client = previousClient;
+          console.warn("[sdk] Model refresh client rotation failed; restored previous Copilot SDK client");
+        } catch (restoreError) {
+          this.client = null;
+          console.error("[sdk] Model refresh client rotation failed and previous Copilot SDK client could not be restored:", restoreError);
+        }
+        throw error;
+      }
+      this.client = nextClient;
+      console.log("[sdk] Copilot SDK client rotated for model refresh");
+      return nextClient;
+    });
+
+    this.clientRotation = rotation;
+    try {
+      return await rotation;
+    } finally {
+      if (this.clientRotation === rotation) {
+        this.clientRotation = null;
+      }
+    }
+  }
+
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing Copilot SDK client...");
     configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
-    this.client = new CopilotClient(buildCopilotClientOptions(this.deps.clientEnv));
+    this.client = this.createCopilotClient();
     await this.client.start();
     console.log("[sdk] Copilot SDK client ready");
     this.sweepLeakedDisposableTitleSessions();
@@ -594,7 +689,7 @@ export class SessionManager {
   }
 
   async listSessions() {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = await this.getClientAfterRotation();
 
     const now = Date.now();
     if (this.sessionListCache && (now - this.sessionListCache.timestamp) < SessionManager.SESSION_LIST_TTL) {
@@ -602,7 +697,7 @@ export class SessionManager {
     }
 
     const t0 = Date.now();
-    const sessions = await this.client.listSessions();
+    const sessions = await client.listSessions();
     this.recordSpan("session.listSessions", Date.now() - t0);
     this.sessionListCache = { data: sessions, timestamp: Date.now() };
     return sessions;
@@ -610,11 +705,26 @@ export class SessionManager {
 
   /** List available models from the Copilot SDK */
   async listModels() {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = await this.getClientAfterRotation();
     const t0 = Date.now();
-    const models = await this.client.listModels();
+    const models = await client.listModels();
     this.recordSpan("session.listModels", Date.now() - t0);
     return models;
+  }
+
+  async refreshModels(): Promise<ModelRefreshResult> {
+    const t0 = Date.now();
+    const client = await this.rotateCopilotClientForModelRefresh();
+    const models = await client.listModels();
+    this.recordSpan("session.refreshModels", Date.now() - t0, undefined, {
+      count: Array.isArray(models) ? models.length : undefined,
+    });
+    return {
+      models,
+      refreshed: true,
+      activeSessions: 0,
+      refreshedAt: new Date().toISOString(),
+    };
   }
 
   /**
@@ -708,7 +818,7 @@ export class SessionManager {
   }
 
   private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
 
     const cachedSession = this.sessionObjects.get(sessionId);
     if (cachedSession) return operation(cachedSession);
@@ -721,7 +831,7 @@ export class SessionManager {
     let session: any | undefined;
     try {
       session = await Promise.race([
-        this.client.resumeSession(sessionId, buildSessionNameResumeConfig()),
+        client.resumeSession(sessionId, buildSessionNameResumeConfig()),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("name resume timed out after 60s")), 60_000),
         ),
@@ -761,8 +871,8 @@ export class SessionManager {
   }
 
   async getSessionMetadata(sessionId: string) {
-    if (!this.client) throw new Error("SessionManager not initialized");
-    return this.client.getSessionMetadata(sessionId);
+    const client = this.getClient();
+    return client.getSessionMetadata(sessionId);
   }
 
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
@@ -832,7 +942,7 @@ export class SessionManager {
     serverName: string,
     options: { forceReauth?: boolean } = {},
   ): Promise<McpLoginResult> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot authenticate MCP server for a busy session");
     }
@@ -860,7 +970,7 @@ export class SessionManager {
       if (!session) {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
         session = await Promise.race([
-          this.client.resumeSession(sessionId, resumeConfig),
+          client.resumeSession(sessionId, resumeConfig),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("MCP auth resume timed out after 60s")), 60_000),
           ),
@@ -969,14 +1079,14 @@ export class SessionManager {
   }
 
   async createSession(): Promise<{ sessionId: string }> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
     const t0 = Date.now();
     const sessionConfig = this.buildSessionConfig();
-    const session = await this.client.createSession(sessionConfig);
+    const session = await client.createSession(sessionConfig);
     const duration = Date.now() - t0;
 
     this.sessionObjects.set(session.sessionId, session);
@@ -989,14 +1099,14 @@ export class SessionManager {
   }
 
   async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
     const sourceTask = this.findLinkedTask(sourceSessionId);
     const sourceCwd = this.resolveEffectiveSessionCwd({ sessionId: sourceSessionId, task: sourceTask });
-    if (typeof this.client.rpc?.sessions?.fork !== "function") {
+    if (typeof client.rpc?.sessions?.fork !== "function") {
       throw new Error("Session fork is not available in this Copilot SDK build");
     }
 
@@ -1005,7 +1115,7 @@ export class SessionManager {
       ? { sessionId: sourceSessionId, toEventId }
       : { sessionId: sourceSessionId };
     const t0 = Date.now();
-    const result = await this.client.rpc.sessions.fork(params);
+    const result = await client.rpc.sessions.fork(params);
     const duration = Date.now() - t0;
     this.persistSessionWorkspace(result.sessionId, sourceCwd);
 
@@ -1019,7 +1129,7 @@ export class SessionManager {
   }
 
   async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
@@ -1058,7 +1168,7 @@ export class SessionManager {
       scheduleContext,
       groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
     });
-    const session = await this.client.createSession(
+    const session = await client.createSession(
       sessionConfig,
     );
     const duration = Date.now() - t0;
@@ -1162,7 +1272,7 @@ export class SessionManager {
   }
 
   async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
 
     const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
@@ -1193,7 +1303,7 @@ export class SessionManager {
         try {
           this.sessionObjects.delete(sessionId);
           session = await Promise.race([
-            this.client.resumeSession(sessionId, msgResumeConfig),
+            client.resumeSession(sessionId, msgResumeConfig),
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
             ),
@@ -1216,7 +1326,7 @@ export class SessionManager {
       const tResume = Date.now();
       try {
         session = await Promise.race([
-          this.client.resumeSession(sessionId, msgResumeConfig),
+          client.resumeSession(sessionId, msgResumeConfig),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
           ),
@@ -1286,8 +1396,7 @@ export class SessionManager {
    * Returns a promise that resolves when the session is ready for interaction.
    */
   async warmSession(sessionId: string): Promise<void> {
-    const client = this.client;
-    if (!client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (this.sessionObjects.has(sessionId)) {
       this.recordSpan("session.warm.alreadyCached", 0, sessionId);
       return;
@@ -1359,7 +1468,7 @@ export class SessionManager {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot delete a busy session");
     }
@@ -1371,7 +1480,7 @@ export class SessionManager {
     );
     this.evictCachedSession(sessionId);
     try {
-      await this.client.deleteSession(sessionId);
+      await client.deleteSession(sessionId);
     } catch (err: unknown) {
       if (isMissingSessionError(err)) {
         console.log(`[sdk] Session ${sessionId} already gone, continuing cleanup`);
@@ -1402,7 +1511,7 @@ export class SessionManager {
   }
 
   async reloadSession(sessionId: string): Promise<McpServerStatus[]> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot reload a busy session");
     }
@@ -1423,7 +1532,7 @@ export class SessionManager {
 
       console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
       const session = await Promise.race([
-        this.client.resumeSession(sessionId, resumeConfig),
+        client.resumeSession(sessionId, resumeConfig),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("reloadSession timed out after 60s")), 60_000),
         ),
@@ -1505,7 +1614,7 @@ export class SessionManager {
     model: string,
     reasoningEffort?: string,
   ): Promise<{ model: string; reasoningEffort?: string; modelId?: string }> {
-    if (!this.client) throw new Error("SessionManager not initialized");
+    const client = this.getClient();
     if (isRestartPending()) throw new Error("Cannot switch model while a restart is pending");
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
 
@@ -1523,13 +1632,13 @@ export class SessionManager {
           groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
         });
-        this.beginSessionResume(sessionId);
-        try {
-          session = await Promise.race([
-            this.client.resumeSession(sessionId, resumeConfig),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
-            ),
+          this.beginSessionResume(sessionId);
+          try {
+            session = await Promise.race([
+              client.resumeSession(sessionId, resumeConfig),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("resumeSession timed out after 60s")), 60_000),
+              ),
           ]);
           session = this.cacheResumedSession(sessionId, session);
           this.probeMcpStatus(sessionId, session);

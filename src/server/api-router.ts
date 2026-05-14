@@ -14,6 +14,7 @@ import {
   configureRestartStateStore,
   isRestartCutoverInProgress,
   isRestartPendingError,
+  ModelRefreshBlockedError,
   RESTART_PENDING_MESSAGE,
   refreshRestartState,
   type SessionRunState,
@@ -3751,6 +3752,23 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const models = await ctx.sessionManager.listModels();
       res.json({ models });
     } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // POST /models/refresh — rotate the SDK client to refresh its cached model list
+  router.post("/models/refresh", async (_req, res) => {
+    try {
+      const result = await ctx.sessionManager.refreshModels();
+      res.json(result);
+    } catch (err) {
+      if (err instanceof ModelRefreshBlockedError) {
+        res.status(409).json({
+          error: err.message,
+          activeSessions: err.activeSessions,
+        });
+        return;
+      }
       res.status(500).json({ error: String(err) });
     }
   });
