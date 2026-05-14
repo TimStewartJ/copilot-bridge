@@ -596,6 +596,34 @@ describe("Checklist routes", () => {
     expect(res.body.checklistItem.done).toBe(false);
   });
 
+  it("POST /api/tasks/:taskId/checklist-items validates create fields", async () => {
+    const invalidBodies: Array<[Record<string, unknown>, string]> = [
+      [{ text: 42 }, "text must be a non-empty string"],
+      [{ text: "" }, "text must be a non-empty string"],
+      [{ text: "Due soon", deadline: "tomorrow" }, "deadline must be null or a YYYY-MM-DD date"],
+      [{ text: "Write tests", extra: true }, 'Unknown field: "extra"'],
+    ];
+
+    for (const [body, message] of invalidBodies) {
+      const res = await request(app)
+        .post(`/api/tasks/${taskId}/checklist-items`)
+        .send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain(message);
+    }
+
+    const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
+    expect(list.body.checklistItems).toEqual([]);
+  });
+
+  it("POST /api/tasks/:taskId/checklist-items returns 404 for a missing task", async () => {
+    const res = await request(app)
+      .post("/api/tasks/missing/checklist-items")
+      .send({ text: "No host" });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("Task missing not found");
+  });
+
   it("PATCH /api/checklist-items/:id updates a checklist item", async () => {
     const create = await request(app)
       .post(`/api/tasks/${taskId}/checklist-items`)
@@ -610,6 +638,42 @@ describe("Checklist routes", () => {
     expect(res.body.checklistItem.done).toBe(true);
   });
 
+  it("PATCH /api/checklist-items/:id rejects invalid mutation values", async () => {
+    const create = await request(app)
+      .post(`/api/tasks/${taskId}/checklist-items`)
+      .send({ text: "Draft" });
+    const id = create.body.checklistItem.id;
+
+    const invalidBodies: Array<[Record<string, unknown>, string]> = [
+      [{ done: "false" }, "done must be boolean"],
+      [{ deadline: "tomorrow" }, "deadline must be null or a YYYY-MM-DD date"],
+      [{ text: 42 }, "text must be a non-empty string"],
+      [{ text: "" }, "text must be a non-empty string"],
+      [{ extra: true }, 'Unknown field: "extra"'],
+    ];
+
+    for (const [body, message] of invalidBodies) {
+      const res = await request(app)
+        .patch(`/api/checklist-items/${id}`)
+        .send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain(message);
+    }
+
+    const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
+    expect(list.body.checklistItems).toHaveLength(1);
+    expect(list.body.checklistItems[0]).toEqual(expect.objectContaining({ text: "Draft", done: false }));
+    expect(list.body.checklistItems[0].deadline).toBeUndefined();
+  });
+
+  it("PATCH /api/checklist-items/:id returns 404 for a missing item", async () => {
+    const res = await request(app)
+      .patch("/api/checklist-items/missing")
+      .send({ text: "No item" });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("Checklist item missing not found");
+  });
+
   it("DELETE /api/checklist-items/:id removes a checklist item", async () => {
     const create = await request(app)
       .post(`/api/tasks/${taskId}/checklist-items`)
@@ -622,6 +686,12 @@ describe("Checklist routes", () => {
 
     const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
     expect(list.body.checklistItems).toEqual([]);
+  });
+
+  it("DELETE /api/checklist-items/:id returns 404 for a missing item", async () => {
+    const res = await request(app).delete("/api/checklist-items/missing");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("Checklist item missing not found");
   });
 
   it("POST /api/checklist-items creates a global checklist item", async () => {

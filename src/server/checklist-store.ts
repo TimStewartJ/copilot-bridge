@@ -16,7 +16,100 @@ export interface ChecklistItem {
   deadline?: string; // YYYY-MM-DD date string
 }
 
-type ChecklistItemUpdate = Partial<Pick<ChecklistItem, "text" | "done" | "deadline">>;
+export class ChecklistValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChecklistValidationError";
+  }
+}
+
+export class ChecklistNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChecklistNotFoundError";
+  }
+}
+
+export interface ChecklistItemCreateInput {
+  text: string;
+  deadline?: string | null;
+}
+
+export type ChecklistItemUpdate = Partial<Pick<ChecklistItem, "text" | "done">> & {
+  deadline?: string | null;
+};
+
+const CHECKLIST_CREATE_FIELDS = ["text", "deadline"] as const;
+const CHECKLIST_UPDATE_FIELDS = ["text", "done", "deadline"] as const;
+const CHECKLIST_DEADLINE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function findUnknownFields(input: Record<string, unknown>, allowedFields: readonly string[]): string[] {
+  const allowed = new Set(allowedFields);
+  return Object.keys(input).filter((key) => !allowed.has(key)).sort();
+}
+
+function formatUnknownFieldsError(fields: readonly string[]): string {
+  return fields.length === 1
+    ? `Unknown field: "${fields[0]}"`
+    : `Unknown fields: ${fields.map((field) => `"${field}"`).join(", ")}`;
+}
+
+function parseChecklistMutationBody(body: unknown): Record<string, unknown> {
+  if (!isRecord(body)) throw new ChecklistValidationError("Request body must be an object");
+  return body;
+}
+
+function normalizeChecklistText(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ChecklistValidationError("text must be a non-empty string");
+  }
+  return value;
+}
+
+function isValidChecklistDeadline(value: string): boolean {
+  if (!CHECKLIST_DEADLINE_RE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function normalizeChecklistDeadline(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !isValidChecklistDeadline(value)) {
+    throw new ChecklistValidationError("deadline must be null or a YYYY-MM-DD date");
+  }
+  return value;
+}
+
+export function normalizeChecklistItemCreate(body: unknown): ChecklistItemCreateInput {
+  const input = parseChecklistMutationBody(body);
+  const unknownFields = findUnknownFields(input, CHECKLIST_CREATE_FIELDS);
+  if (unknownFields.length > 0) throw new ChecklistValidationError(formatUnknownFieldsError(unknownFields));
+
+  const normalized: ChecklistItemCreateInput = {
+    text: normalizeChecklistText(input.text),
+  };
+  if ("deadline" in input) normalized.deadline = normalizeChecklistDeadline(input.deadline);
+  return normalized;
+}
+
+export function normalizeChecklistItemUpdate(body: unknown): ChecklistItemUpdate {
+  const input = parseChecklistMutationBody(body);
+  const unknownFields = findUnknownFields(input, CHECKLIST_UPDATE_FIELDS);
+  if (unknownFields.length > 0) throw new ChecklistValidationError(formatUnknownFieldsError(unknownFields));
+
+  const normalized: ChecklistItemUpdate = {};
+  if ("text" in input) normalized.text = normalizeChecklistText(input.text);
+  if ("done" in input) {
+    if (typeof input.done !== "boolean") throw new ChecklistValidationError("done must be boolean");
+    normalized.done = input.done;
+  }
+  if ("deadline" in input) normalized.deadline = normalizeChecklistDeadline(input.deadline);
+  return normalized;
+}
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -47,10 +140,12 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     return row ? hydrate(row) : undefined;
   }
 
-  function createChecklistItem(taskId: string | null, text: string, deadline?: string): ChecklistItem {
+  function createChecklistItem(taskId: string | null, text: string, deadline?: string | null): ChecklistItem {
+    const input = normalizeChecklistItemCreate(deadline === undefined ? { text } : { text, deadline });
+
     if (taskId !== null) {
       const task = db.prepare("SELECT id FROM tasks WHERE id = ?").get(taskId) as any;
-      if (!task) throw new Error(`Task ${taskId} not found`);
+      if (!task) throw new ChecklistNotFoundError(`Task ${taskId} not found`);
     }
 
     const id = crypto.randomUUID();
@@ -62,34 +157,35 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     db.prepare(`
       INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, deadline)
       VALUES (?, ?, ?, 0, ?, ?, ?)
-    `).run(id, taskId, text, maxOrder + 1, now, deadline ?? null);
+    `).run(id, taskId, input.text, maxOrder + 1, now, input.deadline ?? null);
 
     emitChange(taskId);
     return getChecklistItem(id)!;
   }
 
   function updateChecklistItem(id: string, updates: ChecklistItemUpdate): ChecklistItem {
+    const normalizedUpdates = normalizeChecklistItemUpdate(updates);
     const checklistItem = getChecklistItem(id);
-    if (!checklistItem) throw new Error(`Checklist item ${id} not found`);
+    if (!checklistItem) throw new ChecklistNotFoundError(`Checklist item ${id} not found`);
 
     const fields: string[] = [];
     const values: any[] = [];
 
-    if (updates.text !== undefined) { fields.push("text = ?"); values.push(updates.text); }
-    if (updates.done !== undefined) {
+    if (normalizedUpdates.text !== undefined) { fields.push("text = ?"); values.push(normalizedUpdates.text); }
+    if (normalizedUpdates.done !== undefined) {
       fields.push("done = ?");
-      values.push(updates.done ? 1 : 0);
-      if (updates.done && !checklistItem.done) {
+      values.push(normalizedUpdates.done ? 1 : 0);
+      if (normalizedUpdates.done && !checklistItem.done) {
         fields.push("completedAt = ?");
         values.push(new Date().toISOString());
-      } else if (!updates.done) {
+      } else if (!normalizedUpdates.done) {
         fields.push("completedAt = ?");
         values.push(null);
       }
     }
-    if ("deadline" in updates) {
+    if ("deadline" in normalizedUpdates) {
       fields.push("deadline = ?");
-      values.push(updates.deadline ?? null);
+      values.push(normalizedUpdates.deadline ?? null);
     }
 
     if (fields.length > 0) {
@@ -103,7 +199,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
 
   function deleteChecklistItem(id: string): void {
     const checklistItem = getChecklistItem(id);
-    if (!checklistItem) return;
+    if (!checklistItem) throw new ChecklistNotFoundError(`Checklist item ${id} not found`);
     db.prepare("DELETE FROM checklist_items WHERE id = ?").run(id);
     emitChange(checklistItem.taskId);
   }
