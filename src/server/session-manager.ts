@@ -344,6 +344,7 @@ export class SessionManager {
       },
       getCopilotHome: () => this.getCopilotHome(),
       getSessionName: (sessionId) => this.getSessionName(sessionId),
+      getSessionNameMetadata: (sessionId) => this.sessionNameRpc.readSessionNameMetadataFromWorkspace(sessionId),
       setSessionName: (sessionId, name, opts) => this.setSessionName(sessionId, name, opts),
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
       logger: console,

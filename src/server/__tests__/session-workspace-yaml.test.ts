@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   isSessionStatePathSegment,
+  parseWorkspaceYamlBoolean,
   parseWorkspaceYamlScalar,
   parseWorkspaceYamlSessionName,
+  parseWorkspaceYamlSessionNameMetadata,
 } from "../session-workspace-yaml.js";
 
 describe("session workspace yaml parsing", () => {
@@ -36,6 +38,28 @@ describe("session workspace yaml parsing", () => {
   it("falls back to summary and ignores invalid yaml", () => {
     expect(parseWorkspaceYamlSessionName("summary: Summary only\n")).toBe("Summary only");
     expect(parseWorkspaceYamlSessionName("name: [unterminated\n")).toBeUndefined();
+  });
+
+  it("reads session name metadata including explicit user naming", () => {
+    const content = [
+      "name: Manual title",
+      "summary: Original prompt",
+      "user_named: true",
+    ].join("\n");
+
+    expect(parseWorkspaceYamlBoolean(content, "user_named")).toBe(true);
+    expect(parseWorkspaceYamlSessionNameMetadata(content)).toEqual({
+      name: "Manual title",
+      summary: "Original prompt",
+      effectiveName: "Manual title",
+      userNamed: true,
+    });
+    expect(parseWorkspaceYamlSessionNameMetadata("summary: Prompt\nuser_named: false\n")).toEqual({
+      name: undefined,
+      summary: "Prompt",
+      effectiveName: "Prompt",
+      userNamed: false,
+    });
   });
 
   it("rejects unsafe session-state path segments", () => {

@@ -12,6 +12,9 @@ import {
   selectSessionTitleModel,
 } from "./session-name-generator.js";
 import {
+  type WorkspaceSessionNameMetadata,
+} from "./session-workspace-yaml.js";
+import {
   isRestartCutoverInProgress,
   refreshRestartStateSync,
 } from "./restart-controller.js";
@@ -26,6 +29,7 @@ export interface SessionNameAutogeneratorDeps {
   deleteSession(sessionId: string): Promise<void>;
   getCopilotHome(): string;
   getSessionName(sessionId: string): Promise<string | undefined>;
+  getSessionNameMetadata(sessionId: string): WorkspaceSessionNameMetadata | undefined;
   setSessionName(sessionId: string, name: string, opts?: SetSessionNameOptions): Promise<void>;
   recordSpan?: (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) => void;
   logger?: Pick<typeof console, "warn">;
@@ -41,6 +45,10 @@ function collectRecentUserMessages(events: any[]): string[] {
     if (typeof content === "string" && content.trim()) messages.push(content.trim());
   }
   return messages.slice(-20);
+}
+
+function hasExplicitSessionName(metadata: WorkspaceSessionNameMetadata | undefined): boolean {
+  return !!metadata?.effectiveName && metadata.userNamed !== false;
 }
 
 export class SessionNameAutogenerator {
@@ -81,12 +89,19 @@ export class SessionNameAutogenerator {
     options: { session?: any; userMessages?: string[] },
   ): Promise<void> {
     const start = Date.now();
-    const existingName = options.session && typeof options.session.rpc?.name?.get === "function"
-      ? (await options.session.rpc.name.get())?.name
-      : await this.deps.getSessionName(sessionId);
-    if (typeof existingName === "string" && existingName.trim()) {
+    const existingMetadata = this.deps.getSessionNameMetadata(sessionId);
+    if (hasExplicitSessionName(existingMetadata)) {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });
       return;
+    }
+    if (!existingMetadata?.effectiveName) {
+      const existingName = options.session && typeof options.session.rpc?.name?.get === "function"
+        ? (await options.session.rpc.name.get())?.name
+        : await this.deps.getSessionName(sessionId);
+      if (typeof existingName === "string" && existingName.trim()) {
+        this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });
+        return;
+      }
     }
 
     let userMessages = (options.userMessages ?? []).map((message) => message.trim()).filter(Boolean).slice(-20);
@@ -103,6 +118,10 @@ export class SessionNameAutogenerator {
     const generatedName = await this.generateSessionName(userMessages);
     if (!generatedName) {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_title" });
+      return;
+    }
+    if (hasExplicitSessionName(this.deps.getSessionNameMetadata(sessionId))) {
+      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation" });
       return;
     }
     await this.deps.setSessionName(sessionId, generatedName, { session: options.session });
