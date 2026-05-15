@@ -191,6 +191,60 @@ describe("push event notification copy", () => {
     });
   });
 
+  it("suppresses event notifications for sessions linked to muted tasks", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createPushTestApp({ "muted-session": "Muted session" });
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      const task = ctx.taskStore.createTask("Muted task");
+      ctx.taskStore.updateTask(task.id, { muted: true });
+      ctx.taskStore.linkSession(task.id, "muted-session");
+
+      ctx.globalBus.emit({ type: "session:user-input", sessionId: "muted-session", needsUserInput: true });
+      ctx.globalBus.emit({ type: "session:busy", sessionId: "muted-session" });
+      ctx.globalBus.emit({ type: "session:idle", sessionId: "muted-session", assistantPreview: "Finished silently." });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sendNotification).not.toHaveBeenCalled();
+      unsubscribe();
+    });
+  });
+
+  it("keeps event notifications when any linked task is unmuted", async () => {
+    await withTestEnv(PUSH_ENV, async () => {
+      const { ctx } = createPushTestApp({ "mixed-muted-session": "Mixed muted session" });
+      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
+      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+      const service = createPushNotificationService({
+        subscriptionStore: ctx.pushSubscriptionStore!,
+        env: PUSH_ENV,
+        sendNotification,
+      });
+      const unsubscribe = initPushEventNotifications(ctx, service);
+      const mutedTask = ctx.taskStore.createTask("Muted task");
+      const unmutedTask = ctx.taskStore.createTask("Unmuted task");
+      ctx.taskStore.updateTask(mutedTask.id, { muted: true });
+      ctx.taskStore.linkSession(mutedTask.id, "mixed-muted-session");
+      ctx.taskStore.linkSession(unmutedTask.id, "mixed-muted-session");
+
+      ctx.globalBus.emit({ type: "session:busy", sessionId: "mixed-muted-session" });
+      ctx.globalBus.emit({ type: "session:idle", sessionId: "mixed-muted-session", assistantPreview: "Still visible." });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
+      expect(getSentPayload(sendNotification)).toMatchObject({
+        title: "Mixed muted session",
+        body: expect.stringContaining("Still visible."),
+      });
+      unsubscribe();
+    });
+  });
+
   it("puts the session title in finished notification titles", async () => {
     await withTestEnv(PUSH_ENV, async () => {
       const { ctx } = createPushTestApp({ "session-finished": "  Push   notification\ncopy polish  " });

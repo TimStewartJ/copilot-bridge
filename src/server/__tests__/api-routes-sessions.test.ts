@@ -675,12 +675,12 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(200);
     expect(listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
-    expect(res.body.unreadSessions).toEqual([
+    expect(res.body.orphanSessions).toEqual([
       expect.objectContaining({ sessionId: "active-session", title: "Active session" }),
     ]);
   });
 
-  it("GET /api/dashboard treats attention-only activity as unread", async () => {
+  it("GET /api/dashboard surfaces attention-only activity on orphan sessions", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
@@ -697,11 +697,12 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/dashboard");
 
     expect(res.status).toBe(200);
-    expect(res.body.unreadSessions).toEqual([
+    expect(res.body.orphanSessions).toEqual([
       expect.objectContaining({
         sessionId: "attention-session",
         lastAttentionAt: "2026-04-16T13:00:00.000Z",
         lastActivityAt: "2026-04-16T13:00:00.000Z",
+        unread: true,
       }),
     ]);
   });
@@ -723,7 +724,7 @@ describe("Session routes (mocked)", () => {
 
     expect(sessionsRes.status).toBe(200);
     expect(dashboardRes.status).toBe(200);
-    expect(dashboardRes.body.unreadSessions).toEqual([
+    expect(dashboardRes.body.orphanSessions).toEqual([
       expect.objectContaining({ sessionId: "cached-dashboard-session", title: "Cached dashboard session" }),
     ]);
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
@@ -759,7 +760,7 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/dashboard");
 
     expect(res.status).toBe(200);
-    expect(res.body.unreadSessions).toEqual([
+    expect(res.body.orphanSessions).toEqual([
       expect.objectContaining({
         sessionId: "fork-session",
         title: "Fork of Original session",
@@ -782,7 +783,7 @@ describe("Session routes (mocked)", () => {
     expect(sched.taskTitle).toBe("Dashboard Task");
   });
 
-  it("GET /api/dashboard treats stalled sessions as active and suppresses unread", async () => {
+  it("GET /api/dashboard treats stalled sessions as active in orphan sessions", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       {
         sessionId: "stall-1",
@@ -802,13 +803,12 @@ describe("Session routes (mocked)", () => {
     expect(res.body.busySessions).toEqual([
       expect.objectContaining({ sessionId: "stall-1", runState: "stalled", busy: true }),
     ]);
-    expect(res.body.unreadSessions).toEqual([]);
     expect(res.body.orphanSessions).toEqual([
       expect.objectContaining({ sessionId: "stall-1", runState: "stalled", busy: true, unread: true }),
     ]);
   });
 
-  it("GET /api/dashboard treats tasks with input-waiting sessions as unread", async () => {
+  it("GET /api/dashboard treats tasks with input-waiting sessions as busy", async () => {
     ctx.sessionManager.listSessionsFromDisk = async () => [
       {
         sessionId: "ask-1",
@@ -830,10 +830,26 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(200);
     expect(res.body.lastActiveTask).toEqual(expect.objectContaining({
       task: expect.objectContaining({ id: task.id }),
-      hasUnread: true,
       hasBusySession: true,
     }));
-    expect(res.body.unreadSessions).toEqual([]);
+  });
+
+  it("GET /api/dashboard omits legacy unread aggregation fields", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      {
+        sessionId: "legacy-unread-1",
+        summary: "Legacy unread",
+        lastVisibleActivityAt: "2026-04-19T01:00:00.000Z",
+      } as any,
+    ];
+    const task = ctx.taskStore.createTask("Linked task");
+    ctx.taskStore.linkSession(task.id, "legacy-unread-1");
+
+    const res = await request(app).get("/api/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("unreadSessions");
+    expect(res.body.lastActiveTask).not.toHaveProperty("hasUnread");
   });
 
   it("GET /api/dashboard returns derived task momentum queues", async () => {

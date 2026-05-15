@@ -6,6 +6,7 @@ const BASE_TASK: Task = {
   id: "task-1",
   title: "Refresh header",
   kind: "task",
+  muted: false,
   status: "active",
   notes: "",
   priority: 3,

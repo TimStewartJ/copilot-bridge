@@ -152,7 +152,7 @@ describe("session manager task tools", () => {
       waitingOn: "Ignored blocker",
       nextTouchAt: "2026-05-02T10:00:00.000Z",
     }, createInvocation("task_update"))).resolves.toEqual(
-      toolFailure("No fields to update. Provide at least one of: title, kind, notes, cwd, groupId, doneWhen, tags"),
+      toolFailure("No fields to update. Provide at least one of: title, kind, muted, notes, cwd, groupId, doneWhen, tags"),
     );
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({

@@ -16,6 +16,7 @@ describe("WorkspaceDetailsSheet", () => {
       id: "task-1",
       title: "Workspace task",
       kind: "task",
+      muted: false,
       status: "active",
       cwd: "/repo",
       notes: "",

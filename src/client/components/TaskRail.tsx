@@ -43,6 +43,7 @@ interface TaskRailProps {
     taskId: string,
     updates: {
       title?: TaskPatch["title"];
+      muted?: TaskPatch["muted"];
       status?: TaskPatch["status"];
       nextTouchAt?: TaskPatch["nextTouchAt"];
       completionAction?: TaskPatch["completionAction"];
@@ -86,9 +87,10 @@ const STATUS_BG: Record<Task["status"], string> = {
 };
 
 function getTaskTitle(task: Task): string {
-  return task.kind === "ongoing"
-    ? `${task.title} · ${getTaskKindLabel(task.kind).toLowerCase()}`
-    : task.title;
+  const suffixes = [];
+  if (task.kind === "ongoing") suffixes.push(getTaskKindLabel(task.kind).toLowerCase());
+  if (task.muted) suffixes.push("muted");
+  return suffixes.length > 0 ? `${task.title} · ${suffixes.join(" · ")}` : task.title;
 }
 
 

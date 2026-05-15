@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { createTaskStore } from "../task-store.js";
+import { areSessionUnreadBubblesMuted, createTaskStore } from "../task-store.js";
 import type { TaskStore } from "../task-store.js";
 import type { DatabaseSync } from "../db.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
@@ -29,6 +29,7 @@ describe("task-store", () => {
       expect(task.id).toBeTruthy();
       expect(task.title).toBe("My Task");
       expect(task.kind).toBe("task");
+      expect(task.muted).toBe(false);
       expect(task.status).toBe("active");
       expect(task.notes).toBe("");
       expect(task.doneWhen).toBeUndefined();
@@ -207,6 +208,34 @@ describe("task-store", () => {
 
       const raw = db.prepare("SELECT kind FROM tasks WHERE id = ?").get(task.id) as any;
       expect(raw.kind).toBe("ongoing");
+    });
+
+    it("updateTask persists muted changes and rejects non-boolean muted values", () => {
+      const task = store.createTask("Original");
+
+      const muted = store.updateTask(task.id, { muted: true });
+      expect(muted.muted).toBe(true);
+      expect((db.prepare("SELECT muted FROM tasks WHERE id = ?").get(task.id) as any).muted).toBe(1);
+
+      const unmuted = store.updateTask(task.id, { muted: false });
+      expect(unmuted.muted).toBe(false);
+      expect((db.prepare("SELECT muted FROM tasks WHERE id = ?").get(task.id) as any).muted).toBe(0);
+
+      expect(() => store.updateTask(task.id, { muted: "yes" as any }))
+        .toThrow("muted must be a boolean");
+    });
+
+    it("treats a linked session as muted only when every visible linked task is muted", () => {
+      const muted = store.updateTask(store.createTask("Muted").id, { muted: true });
+      const unmuted = store.createTask("Unmuted");
+      const archivedMuted = store.updateTask(store.createTask("Archived muted").id, {
+        muted: true,
+        status: "archived",
+      });
+
+      expect(areSessionUnreadBubblesMuted([muted])).toBe(true);
+      expect(areSessionUnreadBubblesMuted([muted, unmuted])).toBe(false);
+      expect(areSessionUnreadBubblesMuted([archivedMuted])).toBe(false);
     });
 
     it("updateTask rejects invalid task kinds", () => {

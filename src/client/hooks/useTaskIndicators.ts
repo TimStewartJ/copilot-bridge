@@ -19,6 +19,7 @@ export function countTaskTabUnread(
   let unread = 0;
   for (const task of tasks) {
     if (task.status === "archived") continue;
+    if (task.muted) continue;
     if (taskIndicators.get(task.id)?.unread) unread++;
   }
   return unread;
@@ -83,10 +84,11 @@ export function getTaskIndicator(
   }
 
   const lastActivity = getTaskLastActivity(task, sessionMap);
+  const hasUnreadActivity = unreadCount > 0 || needsUserInputCount > 0;
   return {
     busy: busyCount > 0,
     stalled: stalledCount > 0,
-    unread: unreadCount > 0 || needsUserInputCount > 0,
+    unread: !task.muted && hasUnreadActivity,
     busyCount,
     unreadCount,
     needsUserInputCount,
@@ -95,9 +97,8 @@ export function getTaskIndicator(
 }
 
 /**
- * Derives active/unread indicators per task from linked sessions. Read-state
- * unread still excludes active sessions, but pending user input keeps a task
- * visibly unread until the prompt is answered.
+ * Derives active/unread indicators per task from linked sessions. Muted tasks
+ * keep their counts, but do not raise task-level unread indicators.
  */
 export default function useTaskIndicators(
   tasks: Task[],

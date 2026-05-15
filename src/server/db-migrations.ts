@@ -35,7 +35,7 @@ export interface DatabaseMigrationInfo {
   description: string;
 }
 
-function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: boolean): void {
+function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: boolean, hasMuted: boolean): void {
   const foreignKeysRow = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number } | undefined;
   const restoreForeignKeys = foreignKeysRow?.foreign_keys !== 0;
   let inTransaction = false;
@@ -49,6 +49,7 @@ function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: b
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         kind TEXT NOT NULL DEFAULT 'task',
+        muted INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'active',
         groupId TEXT,
         cwd TEXT,
@@ -65,7 +66,7 @@ function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: b
       );
 
       INSERT INTO tasks_new (
-        id, title, kind, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+        id, title, kind, muted, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
         priority, "order", createdAt, completedAt, updatedAt
       )
       SELECT
@@ -76,6 +77,7 @@ function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: b
           WHEN kind IN ('task', 'ongoing') THEN kind
           ELSE 'task'
         END,
+        ${hasMuted ? "COALESCE(muted, 0)" : "0"},
         status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
         priority, "order", createdAt, ${hasCompletedAt ? "completedAt" : "NULL"}, updatedAt
       FROM tasks;
@@ -610,6 +612,9 @@ function normalizeTaskSchemaAndStatuses(db: DatabaseSync): void {
   if (!taskCols.some((c: any) => c.name === "kind")) {
     db.exec("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
   }
+  if (!taskCols.some((c: any) => c.name === "muted")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN muted INTEGER NOT NULL DEFAULT 0");
+  }
   if (!taskCols.some((c: any) => c.name === "doneWhen")) {
     db.exec("ALTER TABLE tasks ADD COLUMN doneWhen TEXT");
   }
@@ -634,7 +639,8 @@ function normalizeTaskSchemaAndStatuses(db: DatabaseSync): void {
   `);
   taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
   const hasCompletedAt = taskCols.some((c: any) => c.name === "completedAt");
-  if (taskCols.some((c: any) => c.name === "pinned")) rebuildTasksWithoutLegacyTaskColumn(db, hasCompletedAt);
+  const hasMuted = taskCols.some((c: any) => c.name === "muted");
+  if (taskCols.some((c: any) => c.name === "pinned")) rebuildTasksWithoutLegacyTaskColumn(db, hasCompletedAt, hasMuted);
   db.exec(`
     UPDATE tasks
     SET

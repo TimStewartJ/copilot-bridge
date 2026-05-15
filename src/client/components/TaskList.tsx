@@ -29,6 +29,7 @@ interface TaskListProps {
     taskId: string,
     updates: {
       title?: TaskPatch["title"];
+      muted?: TaskPatch["muted"];
       status?: TaskPatch["status"];
       nextTouchAt?: TaskPatch["nextTouchAt"];
       completionAction?: TaskPatch["completionAction"];

@@ -256,6 +256,7 @@ export interface Task {
   id: string;
   title: string;
   kind: "task" | "ongoing";
+  muted: boolean;
   status: "active" | "done" | "archived";
   groupId?: string;
   cwd?: string;
@@ -280,6 +281,7 @@ export type TaskCompletionAction = "complete-and-archive";
 export interface TaskPatch {
   title?: Task["title"];
   kind?: Task["kind"];
+  muted?: Task["muted"];
   status?: Task["status"];
   notes?: Task["notes"];
   priority?: Task["priority"];
@@ -1235,21 +1237,11 @@ export interface DashboardBusySession {
   busy: boolean;
 }
 
-export interface DashboardUnreadSession {
-  sessionId: string;
-  title: string;
-  taskId: string | null;
-  lastVisibleActivityAt?: string;
-  lastAttentionAt?: string;
-  lastActivityAt?: string;
-}
-
 export interface DashboardActiveTask {
   task: Task;
   workItemSummary: { total: number; byState: Record<string, number> };
   prSummary: { total: number; active: number; completed: number };
   checklistSummary: { total: number; done: number; open: number; overdue: number };
-  hasUnread: boolean;
   hasBusySession: boolean;
   lastActivity: string;
 }
@@ -1289,7 +1281,6 @@ export interface DashboardSchedule extends Schedule {
 
 export interface DashboardData {
   busySessions: DashboardBusySession[];
-  unreadSessions: DashboardUnreadSession[];
   lastActiveTask: DashboardActiveTask | null;
   orphanSessions: DashboardOrphanSession[];
   openChecklistItems: DashboardChecklistItem[];

@@ -9,6 +9,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     id: "task-1",
     title: "Task",
     kind: "task",
+    muted: false,
     status: "active",
     notes: "",
     priority: 0,
@@ -40,11 +41,13 @@ describe("countTaskTabUnread", () => {
     const tasks = [
       createTask({ id: "task-unread" }),
       createTask({ id: "task-read" }),
+      createTask({ id: "task-muted", muted: true }),
       createTask({ id: "task-archived", status: "archived" }),
     ];
     const indicators = new Map([
       ["task-unread", { busy: false, unread: true, busyCount: 0, unreadCount: 1, lastActivity: NOW }],
       ["task-read", { busy: false, unread: false, busyCount: 0, unreadCount: 0, lastActivity: NOW }],
+      ["task-muted", { busy: false, unread: true, busyCount: 0, unreadCount: 1, lastActivity: NOW }],
       ["task-archived", { busy: false, unread: true, busyCount: 0, unreadCount: 1, lastActivity: NOW }],
     ]);
 
@@ -132,6 +135,20 @@ describe("getTaskIndicator", () => {
       unread: true,
       unreadCount: 0,
       needsUserInputCount: 1,
+    });
+  });
+
+  it("keeps unread counts but suppresses the task-level unread indicator for muted tasks", () => {
+    const task = createTask({ muted: true, sessionIds: ["unread-1"] });
+    const sessionMap = new Map<string, Session>([
+      ["unread-1", createSession({ sessionId: "unread-1" })],
+    ]);
+
+    const indicator = getTaskIndicator(task, sessionMap, () => true);
+
+    expect(indicator).toMatchObject({
+      unread: false,
+      unreadCount: 1,
     });
   });
 });
