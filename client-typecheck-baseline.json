@@ -51,7 +51,7 @@
   {
     "code": 2339,
     "file": "src/client/api.ts",
-    "line": 396,
+    "line": 398,
     "character": 31,
     "message": "Property 'env' does not exist on type 'ImportMeta'."
   },
@@ -359,21 +359,21 @@
   {
     "code": 2322,
     "file": "src/client/components/TaskList.tsx",
-    "line": 135,
+    "line": 136,
     "character": 15,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskList.tsx",
-    "line": 238,
+    "line": 239,
     "character": 25,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskList.tsx",
-    "line": 254,
+    "line": 255,
     "character": 26,
     "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
   },
@@ -394,91 +394,91 @@
   {
     "code": 2769,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 237,
+    "line": 238,
     "character": 40,
     "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ task: null; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to parameter of type 'Attributes & TaskPanelProps'.\n      Type '{ task: null; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to type 'TaskPanelProps'.\n        The types returned by 'onUpdateTask(...)' are incompatible between these types.\n          Type 'void' is not assignable to type 'Promise<Task | null>'."
   },
   {
     "code": 2769,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 254,
+    "line": 255,
     "character": 40,
     "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ task: Task; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to parameter of type 'Attributes & TaskPanelProps'.\n      Type '{ task: Task; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to type 'TaskPanelProps'.\n        The types returned by 'onUpdateTask(...)' are incompatible between these types.\n          Type 'void' is not assignable to type 'Promise<Task | null>'."
   },
   {
     "code": 2769,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 311,
+    "line": 312,
     "character": 15,
     "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type '() => void' is not assignable to type '(taskId: string, updates: TaskPatch) => Promise<Task | null>'.\n      Type 'void' is not assignable to type 'Promise<Task | null>'."
   },
   {
     "code": 2352,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 321,
+    "line": 322,
     "character": 21,
     "message": "Conversion of type 'undefined' to type '{ sessions: Session[]; onRequestArchived?: (() => void) | undefined; archivedLoaded?: boolean | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
   },
   {
     "code": 2493,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 321,
+    "line": 322,
     "character": 30,
     "message": "Tuple type '[]' of length '0' has no element at index '0'."
   },
   {
     "code": 2769,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 377,
+    "line": 378,
     "character": 15,
     "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type '() => void' is not assignable to type '(taskId: string, updates: TaskPatch) => Promise<Task | null>'.\n      Type 'void' is not assignable to type 'Promise<Task | null>'."
   },
   {
     "code": 2352,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 388,
+    "line": 389,
     "character": 21,
     "message": "Conversion of type 'undefined' to type '{ sessions: Session[]; onRequestArchived?: (() => void) | undefined; archivedLoaded?: boolean | undefined; archivedLoading?: boolean | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
   },
   {
     "code": 2493,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 388,
+    "line": 389,
     "character": 30,
     "message": "Tuple type '[]' of length '0' has no element at index '0'."
   },
   {
     "code": 2769,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 469,
+    "line": 470,
     "character": 15,
     "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type '() => void' is not assignable to type '(taskId: string, updates: TaskPatch) => Promise<Task | null>'.\n      Type 'void' is not assignable to type 'Promise<Task | null>'."
   },
   {
     "code": 2493,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 475,
+    "line": 476,
     "character": 74,
     "message": "Tuple type '[]' of length '0' has no element at index '0'."
   },
   {
     "code": 2352,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 476,
+    "line": 477,
     "character": 10,
     "message": "Conversion of type 'undefined' to type '{ label?: string | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
   },
   {
     "code": 2352,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 479,
+    "line": 480,
     "character": 8,
     "message": "Conversion of type 'undefined' to type '{ onClick: () => void; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
   },
   {
     "code": 2493,
     "file": "src/client/components/TaskPanel.test.ts",
-    "line": 479,
+    "line": 480,
     "character": 25,
     "message": "Tuple type '[]' of length '0' has no element at index '0'."
   },
@@ -604,42 +604,42 @@
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 264,
+    "line": 266,
     "character": 164,
     "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
   },
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 294,
+    "line": 296,
     "character": 158,
     "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
   },
   {
     "code": 7053,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 327,
+    "line": 329,
     "character": 160,
     "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<\"archived\" | \"active\" | \"done\", string>'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 533,
+    "line": 535,
     "character": 35,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 556,
+    "line": 558,
     "character": 23,
     "message": "Type '(id: string, onClick: () => void) => LongPressBindings' is not assignable to type '(id: string, onClick: () => void) => Record<string, unknown>'.\n  Type 'LongPressBindings' is not assignable to type 'Record<string, unknown>'.\n    Index signature for type 'string' is missing in type 'LongPressBindings'."
   },
   {
     "code": 2322,
     "file": "src/client/components/TaskRail.tsx",
-    "line": 563,
+    "line": 565,
     "character": 32,
     "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
   },
@@ -702,7 +702,7 @@
   {
     "code": 2345,
     "file": "src/client/hooks/useTaskIndicators.test.ts",
-    "line": 51,
+    "line": 54,
     "character": 38,
     "message": "Argument of type 'Map<string, { busy: boolean; unread: boolean; busyCount: number; unreadCount: number; lastActivity: string; }>' is not assignable to parameter of type 'Map<string, TaskIndicator>'.\n  Property 'stalled' is missing in type '{ busy: boolean; unread: boolean; busyCount: number; unreadCount: number; lastActivity: string; }' but required in type 'TaskIndicator'."
   },
@@ -814,16 +814,9 @@
   {
     "code": 2322,
     "file": "src/client/task-momentum-alerts.test.ts",
-    "line": 98,
+    "line": 99,
     "character": 9,
     "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\" | \"done\"'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/task-momentum-fields.test.ts",
-    "line": 15,
-    "character": 3,
-    "message": "Type '{ id: string; title: string; kind: \"task\" | \"ongoing\"; status: \"active\" | \"done\" | \"archived\"; groupId?: string | undefined; cwd?: string | undefined; notes?: string | undefined; doneWhen?: string | undefined; nextAction?: string | undefined; ... 10 more ...; tags: Tag[]; }' is not assignable to type 'Task'.\n  Types of property 'notes' are incompatible.\n    Type 'string | undefined' is not assignable to type 'string'.\n      Type 'undefined' is not assignable to type 'string'."
   },
   {
     "code": 2352,
