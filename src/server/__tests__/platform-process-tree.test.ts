@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeTestDir } from "./helpers.js";
@@ -43,6 +44,33 @@ function makeErrno(code: string): NodeJS.ErrnoException {
   err.code = code;
   return err;
 }
+
+function isDirectoryLinkCapabilityError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EPERM"
+    || code === "EACCES"
+    || code === "ENOSYS"
+    || code === "ENOTSUP"
+    || code === "EOPNOTSUPP";
+}
+
+function probeDirectoryLinkCapability(): boolean {
+  const root = mkdtempSync(join(tmpdir(), "bridge-directory-link-probe-")); // xplat-audit-ignore-line
+  try {
+    const target = join(root, "target");
+    const link = join(root, "link");
+    mkdirSync(target);
+    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    if (isDirectoryLinkCapabilityError(error)) return false;
+    throw error;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const canCreateDirectoryLinks = probeDirectoryLinkCapability();
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -186,8 +214,7 @@ describe("process tree platform helpers", () => {
     await expect(waitForProcessTreeExit(snapshot, 2, 1)).resolves.toBe(false);
   });
 
-  it("creates directory links with native filesystem APIs for paths needing shell escaping", () => {
-    setPlatform("linux");
+  it.skipIf(!canCreateDirectoryLinks)("creates and removes directory links with native filesystem APIs", () => {
     const root = makeTestDir("directory-link");
     const target = join(root, "target with spaces & parens");
     const link = join(root, "link with spaces & parens");
