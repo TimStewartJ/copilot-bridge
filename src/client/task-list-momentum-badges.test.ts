@@ -7,6 +7,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     id: "task-1",
     title: "Example task",
     kind: "task",
+    muted: false,
     status: "active",
     notes: "",
     priority: 0,

@@ -56,13 +56,14 @@ export function createTaskTools(ctx: AppContext) {
     },
   }),
   defineTool("task_update", {
-    description: "Update a task's title, kind, notes, working directory, group, and/or tags. Only provided fields are changed.",
+    description: "Update a task's title, kind, muted state, notes, working directory, group, and/or tags. Only provided fields are changed.",
     parameters: {
       type: "object",
       properties: {
         taskId: { type: "string", description: "The task ID" },
         title: { type: "string", description: "New title" },
         kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
+        muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
         notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { type: "string", description: "Task group ID to assign to (use empty string to ungroup)" },
@@ -75,12 +76,16 @@ export function createTaskTools(ctx: AppContext) {
       const updates: Record<string, unknown> = {};
       if (args.title !== undefined) updates.title = args.title;
       if (args.kind !== undefined) updates.kind = args.kind;
+      if (args.muted !== undefined) {
+        if (typeof args.muted !== "boolean") return toolFailure("muted must be a boolean");
+        updates.muted = args.muted;
+      }
       if (args.notes !== undefined) updates.notes = args.notes;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId || "";
       if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, notes, cwd, groupId, doneWhen, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, notes, cwd, groupId, doneWhen, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
@@ -201,10 +206,10 @@ export function createTaskTools(ctx: AppContext) {
     },
   }),
   defineTool("task_list", {
-    description: "List all tasks with their IDs, titles, kinds, statuses, and group IDs",
+    description: "List all tasks with their IDs, titles, kinds, muted states, statuses, and group IDs",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, kind: t.kind, status: t.status, groupId: t.groupId })) };
+      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, kind: t.kind, muted: t.muted, status: t.status, groupId: t.groupId })) };
     },
   }),
   defineTool("task_create", {

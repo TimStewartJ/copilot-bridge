@@ -3,6 +3,7 @@ import type { AppContext } from "./app-context.js";
 import type { GlobalBus, StatusEvent } from "./global-bus.js";
 import type { PushSubscriptionStore, StoredPushSubscription } from "./push-subscription-store.js";
 import { toWebPushSubscription } from "./push-subscription-store.js";
+import { areSessionUnreadBubblesMuted } from "./task-store.js";
 import { buildPublicUrl } from "./tunnel.js";
 
 const PUSH_TTL_SECONDS = 10 * 60;
@@ -185,6 +186,7 @@ export function initPushEventNotifications(
 ): () => void {
   return subscribeToPushEvents(ctx.globalBus, async (event) => {
     if (event.type === "session:user-input" && event.sessionId && event.needsUserInput) {
+      if (isSessionLinkedToMutedTask(ctx, event.sessionId)) return;
       const target = buildSessionNotificationTarget(ctx, event.sessionId);
       await service.sendToAll({
         title: target.sessionName,
@@ -196,6 +198,7 @@ export function initPushEventNotifications(
     }
 
     if (event.type === "session:idle" && event.sessionId) {
+      if (isSessionLinkedToMutedTask(ctx, event.sessionId)) return;
       const target = buildSessionNotificationTarget(ctx, event.sessionId);
       await service.sendToAll({
         title: target.sessionName,
@@ -206,6 +209,16 @@ export function initPushEventNotifications(
       });
     }
   });
+}
+
+function isSessionLinkedToMutedTask(
+  ctx: Pick<AppContext, "taskStore">,
+  sessionId: string,
+): boolean {
+  const listedTasks = ctx.taskStore.listTasks().filter((task) => task.sessionIds.includes(sessionId));
+  if (listedTasks.length > 0) return areSessionUnreadBubblesMuted(listedTasks);
+  const fallbackTask = ctx.taskStore.findTaskBySessionId(sessionId);
+  return fallbackTask ? areSessionUnreadBubblesMuted([fallbackTask]) : false;
 }
 
 function subscribeToPushEvents(

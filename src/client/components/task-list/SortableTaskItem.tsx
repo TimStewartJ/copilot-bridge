@@ -100,6 +100,7 @@ export default function SortableTaskItem({
             <span>· {needsUserInputCount} answer{needsUserInputCount === 1 ? "" : "s"} needed</span>
           )}
           {(indicator?.unreadCount ?? 0) > 0 && <span>· {indicator!.unreadCount} unread</span>}
+          {task.muted && <span>· muted</span>}
         </div>
       </button>
     </div>

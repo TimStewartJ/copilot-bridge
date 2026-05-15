@@ -1127,6 +1127,7 @@ export class SessionManager {
       id: taskId,
       title: taskTitle,
       kind: fullTask?.kind ?? "task",
+      muted: fullTask?.muted ?? false,
       status: fullTask?.status ?? "active" as const,
       groupId: fullTask?.groupId,
       cwd: fullTask?.cwd ?? cwd,

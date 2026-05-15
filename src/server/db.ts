@@ -129,6 +129,7 @@ function initSchema(db: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       kind TEXT NOT NULL DEFAULT 'task',
+      muted INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
       groupId TEXT,
       cwd TEXT,

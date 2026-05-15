@@ -2638,6 +2638,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const task = ctx.taskStore.updateTask(req.params.id, {
         title: req.body?.title,
         kind: req.body?.kind,
+        muted: req.body?.muted,
         status: req.body?.status,
         completionAction: req.body?.completionAction,
         notes: req.body?.notes,
@@ -3078,9 +3079,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
         if (!lastRead) return true;
         return new Date(activityTime).getTime() > new Date(lastRead).getTime();
       };
-      const needsUserInput = (session: { needsUserInput?: boolean; pendingUserInputCount?: number }): boolean =>
-        session.needsUserInput === true || (session.pendingUserInputCount ?? 0) > 0;
-
       // Busy sessions
       const busySessions = enrichedSessions
         .filter((s: any) => s.busy)
@@ -3094,21 +3092,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
             intentText: bus?.getIntentText() ?? null,
             runState: s.runState,
             busy: s.busy,
-          };
-        });
-
-      // Unread sessions (not busy — busy is separate)
-      const unreadSessions = enrichedSessions
-        .filter((s: any) => !s.busy && isUnread(s.sessionId, s.lastActivityAt))
-        .map((s: any) => {
-          const taskId = taskLookup.resolveTask(s.sessionId)?.id;
-          return {
-            sessionId: s.sessionId,
-            title: s.summary,
-            taskId: taskId ?? null,
-            lastVisibleActivityAt: s.lastVisibleActivityAt,
-            lastAttentionAt: s.lastAttentionAt,
-            lastActivityAt: s.lastActivityAt,
           };
         });
 
@@ -3153,15 +3136,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
           else if (enriched?.status === null || enriched === undefined) prUnknown++;
         }
 
-        // Unread check — busy sessions only count when they are waiting on user input.
-        const hasUnread = task.sessionIds.some((sid) => {
-          const session = sessionById.get(sid);
-          return !!session && (
-            needsUserInput(session)
-            || (!session.busy && isUnread(sid, session.lastActivityAt))
-          );
-        });
-
         // Last activity across task sessions
         const sessionTimes = task.sessionIds
           .map((sid) => sessionById.get(sid)?.lastActivityAt)
@@ -3191,15 +3165,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
             open: checklistItems.length - checklistDone,
             overdue: checklistOverdue,
           },
-          hasUnread,
           hasBusySession,
           lastActivity,
         };
       });
 
-      // Sort: unread first, then busy, then most recent
+      // Sort: busy first, then most recent
       activeTaskEntries.sort((a, b) => {
-        if (a.hasUnread !== b.hasUnread) return a.hasUnread ? -1 : 1;
         if (a.hasBusySession !== b.hasBusySession) return a.hasBusySession ? -1 : 1;
         return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
       });
@@ -3235,7 +3207,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
         ),
         stale: activeTaskEntries.filter((entry) =>
           !entry.hasBusySession
-          && !entry.hasUnread
           && !entry.task.nextTouchAt
           && isStale(entry.lastActivity),
         ),
@@ -3278,7 +3249,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       res.json({
         busySessions,
-        unreadSessions,
         lastActiveTask,
         orphanSessions,
         openChecklistItems: dashboardChecklistData.openChecklistItems,

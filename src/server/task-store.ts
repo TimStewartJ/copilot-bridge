@@ -31,6 +31,7 @@ export interface Task {
   id: string;
   title: string;
   kind: TaskKind;
+  muted: boolean;
   status: TaskStatus;
   groupId?: string;
   cwd?: string;
@@ -51,9 +52,15 @@ export interface Task {
 
 export type TaskCompletionAction = "complete-and-archive";
 
+export function areSessionUnreadBubblesMuted(tasks: Task[]): boolean {
+  const visibleLinkedTasks = tasks.filter((task) => task.status !== "archived");
+  return visibleLinkedTasks.length > 0 && visibleLinkedTasks.every((task) => task.muted);
+}
+
 type TaskUpdate = {
   title?: string;
   kind?: TaskKind;
+  muted?: boolean;
   status?: Task["status"];
   notes?: string;
   priority?: number;
@@ -115,6 +122,11 @@ function normalizeCompletionAction(value: unknown): TaskCompletionAction | undef
   if (value === undefined || value === null || value === "") return undefined;
   if (value === "complete-and-archive") return value;
   throw new InvalidTaskUpdateError("completionAction must be 'complete-and-archive'");
+}
+
+function normalizeTaskMutedUpdate(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  throw new InvalidTaskUpdateError("muted must be a boolean");
 }
 
 function isLeapYear(year: number): boolean {
@@ -206,6 +218,7 @@ export function createTaskStore(
       id,
       title: row.title,
       kind: normalizeTaskKind(row.kind),
+      muted: row.muted === 1 || row.muted === true,
       status: normalizeStoredTaskStatus(row.status),
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
@@ -335,6 +348,7 @@ export function createTaskStore(
 
     if (updates.title !== undefined) { fields.push("title = ?"); values.push(updates.title); }
     if (updates.kind !== undefined) { fields.push("kind = ?"); values.push(nextKind); }
+    if (updates.muted !== undefined) { fields.push("muted = ?"); values.push(normalizeTaskMutedUpdate(updates.muted) ? 1 : 0); }
     if (shouldPersistStatus) { fields.push("status = ?"); values.push(targetStatus); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
     if (updates.priority !== undefined) { fields.push("priority = ?"); values.push(updates.priority); }

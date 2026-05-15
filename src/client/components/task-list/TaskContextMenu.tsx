@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSessionActivityTime, type EnrichedTaskData, type Task, type TaskGroup, type Session, type TaskPatch } from "../../api";
 import { GROUP_COLOR_DOT } from "../../group-colors";
-import { Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
+import { Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
 import { queryKeys } from "../../queryClient";
 import { useTaskChecklistItemsQuery } from "../../hooks/queries/useChecklistItems";
 import {
@@ -16,6 +16,7 @@ import { isOngoingTask } from "../../task-kind";
 
 type TaskMenuUpdates = {
   title?: TaskPatch["title"];
+  muted?: TaskPatch["muted"];
   status?: TaskPatch["status"];
   nextTouchAt?: TaskPatch["nextTouchAt"];
   completionAction?: TaskPatch["completionAction"];
@@ -99,6 +100,13 @@ export default function TaskContextMenu({
             }
             closeMenu();
           }}
+        />
+      )}
+      {onUpdateTask && (
+        <CtxItem
+          icon={task.muted ? <Bell size={14} /> : <BellOff size={14} />}
+          label={task.muted ? "Unmute unread indicators" : "Mute unread indicators"}
+          onClick={() => { onUpdateTask(task.id, { muted: !task.muted }); closeMenu(); }}
         />
       )}
 

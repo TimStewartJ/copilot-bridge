@@ -184,4 +184,44 @@ describe("database task kind migration", () => {
 
     db.close();
   });
+
+  it("preserves muted while rebuilding legacy pinned task tables", () => {
+    const dataDir = createLocalDataDir();
+    const dbPath = join(dataDir, "bridge.db");
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    legacyDb.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        muted INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        groupId TEXT,
+        cwd TEXT,
+        notes TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 0,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        "order" INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+    `);
+    legacyDb.prepare(`
+      INSERT INTO tasks (id, title, kind, muted, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
+      VALUES (?, ?, 'task', 1, 'active', NULL, NULL, '', 0, 1, 0, ?, ?)
+    `).run("legacy-muted-pinned", "Muted pinned task", "2026-04-03T00:00:00.000Z", "2026-04-03T00:00:00.000Z");
+    legacyDb.close();
+
+    const db = openDatabase(dataDir);
+    const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+    expect(taskCols.some((column) => column.name === "pinned")).toBe(false);
+    expect(taskCols.some((column) => column.name === "muted")).toBe(true);
+
+    const row = db.prepare("SELECT kind, muted FROM tasks WHERE id = ?").get("legacy-muted-pinned") as any;
+    expect(row).toEqual({ kind: "ongoing", muted: 1 });
+    const store = createTaskStore(db, createGlobalBus());
+    expect(store.getTask("legacy-muted-pinned")).toMatchObject({ kind: "ongoing", muted: true });
+    db.close();
+  });
 });

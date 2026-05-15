@@ -75,6 +75,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     id: "task-1",
     title: "Kind test",
     kind: "task",
+    muted: false,
     status: "active",
     notes: "",
     priority: 0,

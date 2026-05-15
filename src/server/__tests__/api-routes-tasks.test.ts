@@ -48,6 +48,7 @@ describe("Task routes", () => {
     expect(res.body.task.title).toBe("Test Task");
     expect(res.body.task.id).toBeTruthy();
     expect(res.body.task.kind).toBe("task");
+    expect(res.body.task.muted).toBe(false);
     expect(res.body.task.status).toBe("active");
   });
 
@@ -126,6 +127,7 @@ describe("Task routes", () => {
       .patch(`/api/tasks/${id}`)
       .send({
         title: "Updated",
+        muted: true,
         notes: "Some notes",
         doneWhen: "Shipped to production",
         nextAction: "Verify telemetry",
@@ -134,6 +136,7 @@ describe("Task routes", () => {
       });
     expect(res.status).toBe(200);
     expect(res.body.task.title).toBe("Updated");
+    expect(res.body.task.muted).toBe(true);
     expect(res.body.task.notes).toBe("Some notes");
     expect(res.body.task.doneWhen).toBe("Shipped to production");
     expect(res.body.task.nextAction).toBe("Verify telemetry");
@@ -144,6 +147,7 @@ describe("Task routes", () => {
     expect(get.status).toBe(200);
     expect(get.body.task).toEqual(expect.objectContaining({
       doneWhen: "Shipped to production",
+      muted: true,
       nextAction: "Verify telemetry",
       waitingOn: "Customer confirmation",
       nextTouchAt: "2026-05-02T09:00:00.000Z",
