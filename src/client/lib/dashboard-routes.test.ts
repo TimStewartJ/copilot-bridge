@@ -4,6 +4,7 @@ import {
   getDashboardTabPath,
   getExplicitDashboardTabFromPathname,
   getLastDashboardTab,
+  getRememberedDashboardTabFromPathname,
   getRememberedDashboardPath,
   isDashboardRoutePath,
   setLastDashboardTab,
@@ -67,6 +68,17 @@ describe("dashboard routes", () => {
     stubLocalStorage({ "bridge-last-dashboard-tab": "checklist" });
 
     expect(getRememberedDashboardPath("/dashboard/feed")).toBe("/dashboard/feed");
+  });
+
+  it("resolves dashboard landing routes from remembered tab state", () => {
+    stubLocalStorage({ "bridge-last-dashboard-tab": "feed" });
+
+    expect(getRememberedDashboardTabFromPathname("/")).toBe("feed");
+    expect(getRememberedDashboardTabFromPathname("/dashboard")).toBe("feed");
+    expect(getRememberedDashboardTabFromPathname("/dashboard/")).toBe("feed");
+    expect(getRememberedDashboardTabFromPathname("/dashboard/checklist")).toBe("checklist");
+    expect(getRememberedDashboardPath("/")).toBe("/dashboard/feed");
+    expect(getRememberedDashboardPath("/dashboard")).toBe("/dashboard/feed");
   });
 
   it("falls back to checklist when remembered dashboard state is missing or invalid", () => {

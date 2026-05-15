@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { getDashboardTabFromPathname, getDashboardTabPath, getExplicitDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
+import { getDashboardTabPath, getExplicitDashboardTabFromPathname, getRememberedDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
 import { useFeedQuery } from "../hooks/queries/useFeed";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
@@ -70,7 +70,7 @@ export default function Dashboard({
   const { data, isLoading: loading, refetch: refetchDashboard } = useDashboardQuery();
   const checklist = useDashboardChecklist(data);
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
-  const activeTab = getDashboardTabFromPathname(location.pathname);
+  const activeTab = getRememberedDashboardTabFromPathname(location.pathname);
   const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
   const feedFilters = useMemo(() => ({
     limit: 100,
@@ -110,7 +110,10 @@ export default function Dashboard({
         <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-3">
           <DashboardTabs
             activeTab={activeTab}
-            onTabChange={(tab) => navigate(getDashboardTabPath(tab))}
+            onTabChange={(tab) => {
+              setLastDashboardTab(tab);
+              navigate(getDashboardTabPath(tab));
+            }}
             checklistCount={checklist.visibleOpenChecklistItems.length}
             checklistCountClass={dashboardChecklistCountClass(checklist.checklistIndicator.state)}
             checklistCountTitle={checklist.checklistIndicatorLabel ?? undefined}
