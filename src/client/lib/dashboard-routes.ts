@@ -32,6 +32,13 @@ export function getDashboardTabFromPathname(pathname: string): DashboardTab {
   return normalizePathname(pathname) === DASHBOARD_TAB_PATHS.feed ? "feed" : "checklist";
 }
 
+export function getRememberedDashboardTabFromPathname(pathname: string): DashboardTab {
+  const explicitTab = getExplicitDashboardTabFromPathname(pathname);
+  if (explicitTab) return explicitTab;
+  const normalized = normalizePathname(pathname);
+  return normalized === "/" || normalized === "/dashboard" ? getLastDashboardTab() : "checklist";
+}
+
 export function getLastDashboardTab(): DashboardTab {
   try {
     const tab = localStorage.getItem(LAST_DASHBOARD_TAB_KEY);
