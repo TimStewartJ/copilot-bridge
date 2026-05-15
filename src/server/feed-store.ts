@@ -138,6 +138,8 @@ const MUTATION_FIELDS = new Set([
   "pinned",
 ]);
 
+const IDENTITY_MUTATION_FIELDS = ["key", "dedupeKey"] as const;
+
 type MutableFeedCardField =
   | "title"
   | "body"
@@ -191,6 +193,16 @@ function assertKnownMutationFields(input: FeedCardMutationInput): void {
   const unknown = Object.keys(input as Record<string, unknown>).filter((field) => !MUTATION_FIELDS.has(field));
   if (unknown.length > 0) {
     throw new FeedCardValidationError(`Unknown feed card field(s): ${unknown.join(", ")}`);
+  }
+}
+
+function assertNoIdentityFieldUpdates(input: FeedCardMutationInput): void {
+  const record = input as Record<string, unknown>;
+  const attempted = IDENTITY_MUTATION_FIELDS.filter((field) => hasOwn(record, field));
+  if (attempted.length > 0) {
+    throw new FeedCardValidationError(
+      `Feed card key fields cannot be updated (${attempted.join(", ")}); use POST /api/feed for keyed upserts`,
+    );
   }
 }
 
@@ -503,8 +515,12 @@ function normalizeCreateInput(input: FeedCardMutationInput): NormalizedCreateFie
   };
 }
 
-function normalizeUpdateInput(input: FeedCardMutationInput): NormalizedUpdateFields {
+function normalizeUpdateInput(
+  input: FeedCardMutationInput,
+  options: { allowIdentityFields?: boolean } = {},
+): NormalizedUpdateFields {
   assertKnownMutationFields(input);
+  if (!options.allowIdentityFields) assertNoIdentityFieldUpdates(input);
   const normalized: NormalizedUpdateFields = {};
   const record = input as Record<string, unknown>;
   if (hasOwn(record, "title")) normalized.title = normalizeRequiredTitle(input.title);
@@ -676,7 +692,7 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     try {
       const existing = getCardByKey(dedupeKey);
       if (existing) {
-        const update = applyUpdate(existing, normalizeUpdateInput(input), mutationOptions);
+        const update = applyUpdate(existing, normalizeUpdateInput(input, { allowIdentityFields: true }), mutationOptions);
         db.exec("COMMIT");
         inTransaction = false;
         emitChange(update.card);

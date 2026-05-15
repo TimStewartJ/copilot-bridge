@@ -91,6 +91,32 @@ describe("feed-store", () => {
     expect(updated.links).toEqual([{ label: "Spec", url: "https://example.test/spec" }]);
   });
 
+  it("rejects key fields on direct updates without changing the card", () => {
+    const created = store.saveCard({ key: "stable:key", title: "Stable" }).card;
+    const before = store.getCard(created.id);
+
+    for (const { input, field, update } of [
+      {
+        input: { key: "renamed:key", title: "Renamed" },
+        field: "key",
+        update: () => store.updateCardById(created.id, { key: "renamed:key", title: "Renamed" }),
+      },
+      {
+        input: { dedupeKey: null, title: "Renamed" },
+        field: "dedupeKey",
+        update: () => store.updateCardById(created.id, { dedupeKey: null, title: "Renamed" }),
+      },
+      {
+        input: { key: "stable:key", title: "Renamed" },
+        field: "key",
+        update: () => store.updateCardByKey("stable:key", { key: "stable:key", title: "Renamed" }),
+      },
+    ]) {
+      expect(update, JSON.stringify(input)).toThrow(`Feed card key fields cannot be updated (${field})`);
+      expect(store.getCard(created.id)).toEqual(before);
+    }
+  });
+
   it("stores, preserves, replaces, and clears prompt actions", () => {
     const created = store.saveCard({
       key: "action:one",
