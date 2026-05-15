@@ -17,10 +17,16 @@ export interface FeedActionTaskPreview {
 
 interface FeedActionDialogProps {
   cardTitle: string;
+  eyebrow?: string;
   actionLabel?: string;
+  description?: string;
   taskId: string | null;
   taskPreview: FeedActionTaskPreview | null;
+  context?: string | null;
   prompt: string;
+  promptLabel?: string;
+  promptPlaceholder?: string;
+  allowEmptyPrompt?: boolean;
   error: string | null;
   submitting: boolean;
   submitMode: FeedActionSubmitMode | null;
@@ -32,10 +38,16 @@ interface FeedActionDialogProps {
 
 export default function FeedActionDialog({
   cardTitle,
+  eyebrow = "Feed action preview",
   actionLabel,
+  description = "Review or edit the prompt before starting a new session.",
   taskId,
   taskPreview,
+  context,
   prompt,
+  promptLabel = "Prompt to send",
+  promptPlaceholder,
+  allowEmptyPrompt = false,
   error,
   submitting,
   submitMode,
@@ -46,9 +58,14 @@ export default function FeedActionDialog({
 }: FeedActionDialogProps) {
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const promptEmpty = prompt.trim().length === 0;
+  const submitDisabled = submitting || (!allowEmptyPrompt && promptEmpty);
 
   useEffect(() => {
-    promptRef.current?.focus();
+    const promptNode = promptRef.current;
+    promptNode?.focus();
+    if (promptNode && prompt) {
+      promptNode.setSelectionRange?.(prompt.length, prompt.length);
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !submitting) onClose();
     };
@@ -74,13 +91,13 @@ export default function FeedActionDialog({
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-xs font-medium text-text-muted">
               <MessageSquare size={14} />
-              Feed action preview
+              {eyebrow}
             </div>
             <h2 id="feed-action-title" className="mt-1 truncate text-lg font-semibold text-text-primary">
               {actionLabel ?? DEFAULT_FEED_ACTION_LABEL}
             </h2>
             <p className="mt-1 text-xs text-text-muted">
-              Review or edit the prompt before starting a new session.
+              {description}
             </p>
           </div>
           <button
@@ -121,13 +138,24 @@ export default function FeedActionDialog({
               </div>
             )}
           </div>
+          {context && (
+            <details className="rounded-lg border border-border bg-bg-secondary/60">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-text-secondary">
+                Card context included
+              </summary>
+              <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap border-t border-border px-3 py-2 text-xs leading-relaxed text-text-muted">
+                {context}
+              </pre>
+            </details>
+          )}
           <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-text-secondary">Prompt to send</span>
+            <span className="text-xs font-medium text-text-secondary">{promptLabel}</span>
             <textarea
               ref={promptRef}
               value={prompt}
               onChange={(event) => onPromptChange(event.target.value)}
-              className="min-h-56 w-full resize-y rounded-lg border border-border bg-bg-surface px-3 py-2 text-sm leading-relaxed text-text-primary outline-none transition-colors focus:border-accent"
+              placeholder={promptPlaceholder}
+              className={`${context ? "min-h-32" : "min-h-56"} w-full resize-y rounded-lg border border-border bg-bg-surface px-3 py-2 text-sm leading-relaxed text-text-primary outline-none transition-colors focus:border-accent`}
               disabled={submitting}
             />
           </label>
@@ -149,7 +177,7 @@ export default function FeedActionDialog({
           <button
             type="button"
             onClick={onStartInBackground}
-            disabled={submitting || promptEmpty}
+            disabled={submitDisabled}
             className={`${UI.button.secondary} inline-flex items-center gap-1.5`}
           >
             <Send size={14} />
@@ -158,7 +186,7 @@ export default function FeedActionDialog({
           <button
             type="button"
             onClick={onStart}
-            disabled={submitting || promptEmpty}
+            disabled={submitDisabled}
             className={`${UI.button.primary} inline-flex items-center gap-1.5`}
           >
             <MessageSquare size={14} />

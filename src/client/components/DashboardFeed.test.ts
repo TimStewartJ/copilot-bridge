@@ -295,6 +295,94 @@ describe("DashboardFeed feed mutations", () => {
     expect(findAllByTag(dom?.container, "BUTTON").filter((button) => button.textContent === "Mark done")).toHaveLength(2);
   });
 
+  it("starts a card-context chat without marking the feed card done", async () => {
+    const onStartPromptSession = vi.fn(async () => "session-chat");
+    const onSelectSession = vi.fn();
+    const onRefetchFeed = vi.fn(async () => undefined);
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          title: "Preview ready",
+          body: "Open the staging preview.",
+          links: [{ label: "Preview", url: "https://example.test/preview" }],
+        }),
+      ],
+      onStartPromptSession,
+      onSelectSession,
+      onRefetchFeed,
+    });
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Chat with card"))?.onClick?.();
+      await waitTick();
+    });
+    expect(dom?.container.textContent).toContain("Feed card chat");
+    expect(dom?.container.textContent).toContain("Card context included");
+    expect(dom?.container.textContent).toContain("Message to send");
+    const messageBox = findAllByTag(dom?.container, "TEXTAREA")[0];
+    expect(getReactProps(messageBox)?.value).toBe("");
+
+    await act(async () => {
+      getReactProps(messageBox)?.onChange?.({ target: { value: "What should I do next?" } });
+      await waitTick();
+    });
+
+    await act(async () => {
+      await getReactProps(findButtonByText(dom?.container, "Start session"))?.onClick?.();
+    });
+    await waitUntilAct(() => onSelectSession.mock.calls.length === 1);
+
+    const prompt = onStartPromptSession.mock.calls[0][0];
+    expect(prompt).toContain("Use the feed card context below when responding.");
+    expect(prompt).toContain("- Title: Preview ready");
+    expect(prompt).toContain("Open the staging preview.");
+    expect(prompt).toContain("- Preview: https://example.test/preview");
+    expect(prompt).toContain("# My message\nWhat should I do next?");
+    expect(onStartPromptSession).toHaveBeenCalledWith(prompt, "task-1");
+    expect(apiMocks.patchFeedCard).toHaveBeenCalledWith("card-1", { sessionId: "session-chat" });
+    expect(apiMocks.patchFeedCard).not.toHaveBeenCalledWith("card-1", { status: "done", sessionId: "session-chat" });
+    expect(onRefetchFeed).toHaveBeenCalledTimes(1);
+    expect(onSelectSession).toHaveBeenCalledWith("session-chat", "task-1");
+    expect(dom?.container.textContent).not.toContain("Feed card chat");
+    expect(dom?.container.textContent).toContain("Open session");
+  });
+
+  it("does not replace an existing card session link when starting a card chat", async () => {
+    const onStartPromptSession = vi.fn(async () => "session-chat");
+    const onSelectSession = vi.fn();
+    const onRefetchFeed = vi.fn(async () => undefined);
+    await renderDashboardFeed({
+      feedCards: [
+        makeCard({
+          sessionId: "session-existing",
+        }),
+      ],
+      onStartPromptSession,
+      onSelectSession,
+      onRefetchFeed,
+    });
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Chat with card"))?.onClick?.();
+      await waitTick();
+    });
+    await act(async () => {
+      await getReactProps(findButtonByText(dom?.container, "Send in background"))?.onClick?.();
+    });
+
+    const prompt = onStartPromptSession.mock.calls[0][0];
+    expect(prompt).toContain("# My message\nLet's discuss this feed card.");
+    expect(onStartPromptSession).toHaveBeenCalledWith(prompt, "task-1", { navigateOnError: false });
+    expect(apiMocks.patchFeedCard).not.toHaveBeenCalled();
+    expect(onRefetchFeed).not.toHaveBeenCalled();
+    expect(dom?.container.textContent).toContain('Started chat for "Preview ready" in background.');
+
+    await act(async () => {
+      getReactProps(findButtonByText(dom?.container, "Open session"))?.onClick?.();
+    });
+    expect(onSelectSession).toHaveBeenCalledWith("session-existing", "task-1");
+  });
+
   it("shows the linked task name and group dot in the prompt preview", async () => {
     await renderDashboardFeed({
       feedCards: [

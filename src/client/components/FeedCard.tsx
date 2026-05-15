@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { FeedCard as FeedCardData, FeedCardStatus } from "../api";
-import { DEFAULT_FEED_ACTION_LABEL } from "../feed-action-helpers";
+import { DEFAULT_FEED_ACTION_LABEL, DEFAULT_FEED_CHAT_LABEL } from "../feed-action-helpers";
 import { UI } from "./shared/design-system";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
 import CodeBlock from "./CodeBlock";
@@ -32,6 +32,7 @@ interface FeedCardProps {
   onSelectTask: (taskId: string) => void;
   onSelectSession: (sessionId: string, taskId?: string) => void;
   onAction: (card: FeedCardData) => void;
+  onChat?: (card: FeedCardData) => void;
   onStatusChange: (card: FeedCardData, status: FeedCardStatus) => void | Promise<void>;
   onDelete: (card: FeedCardData) => void | Promise<void>;
 }
@@ -237,6 +238,7 @@ export default function FeedCard({
   onSelectTask,
   onSelectSession,
   onAction,
+  onChat,
   onStatusChange,
   onDelete,
 }: FeedCardProps) {
@@ -246,7 +248,8 @@ export default function FeedCard({
     ...card.links,
   ];
   const hasPromptAction = card.status === "active" && Boolean(card.action);
-  const hasSecondaryActions = hasPromptAction || Boolean(card.taskId) || Boolean(card.sessionId) || relatedLinks.length > 0;
+  const hasChatAction = Boolean(onChat);
+  const hasSecondaryActions = hasPromptAction || hasChatAction || Boolean(card.taskId) || Boolean(card.sessionId) || relatedLinks.length > 0;
   const highPriorityClass = card.status === "active" && card.priority === "high" ? "border-warning/50" : "";
   const metadataSource = sanitizeMetadataSource(card.metadata);
   const kindLabel = labelForKind(card.kind);
@@ -259,6 +262,12 @@ export default function FeedCard({
     if (pending || !card.action) return;
     setMenuPosition(null);
     onAction(card);
+  };
+
+  const handleChatClick = () => {
+    if (pending || !onChat) return;
+    setMenuPosition(null);
+    onChat(card);
   };
 
   const handleStatusClick = (status: FeedCardStatus) => {
@@ -366,53 +375,61 @@ export default function FeedCard({
     menuPosition && (
       <ContextMenu position={menuPosition} onClose={() => setMenuPosition(null)}>
         <div id={`feed-card-${card.id}-more-actions`}>
-        {card.status === "active" && hasPromptAction && (
+          {hasChatAction && (
+            <CtxItem
+              icon={<MessageSquare size={16} />}
+              label={DEFAULT_FEED_CHAT_LABEL}
+              onClick={handleChatClick}
+              disabled={pending}
+            />
+          )}
+          {card.status === "active" && hasPromptAction && (
+            <CtxItem
+              icon={<CheckCircle2 size={16} />}
+              label="Mark done"
+              onClick={() => handleStatusClick("done")}
+              disabled={pending}
+              className="text-success"
+            />
+          )}
+          {card.taskId && (
+            <CtxItem
+              label="Open task"
+              onClick={() => {
+                setMenuPosition(null);
+                onSelectTask(card.taskId!);
+              }}
+            />
+          )}
+          {card.sessionId && (
+            <CtxItem
+              icon={<MessageSquare size={16} />}
+              label="Open session"
+              onClick={() => {
+                setMenuPosition(null);
+                onSelectSession(card.sessionId!, card.taskId ?? undefined);
+              }}
+            />
+          )}
+          {relatedLinks.map((link, index) => (
+            <CtxItem
+              key={`${link.url}-${index}`}
+              icon={index === 0 && card.url ? <ExternalLink size={16} /> : <LinkIcon size={16} />}
+              label={link.label}
+              onClick={() => {
+                setMenuPosition(null);
+                window.open(link.url, "_blank", "noopener,noreferrer");
+              }}
+            />
+          ))}
+          {(card.status === "active" && hasPromptAction) || hasSecondaryActions ? <CtxDivider /> : null}
           <CtxItem
-            icon={<CheckCircle2 size={16} />}
-            label="Mark done"
-            onClick={() => handleStatusClick("done")}
+            icon={<Trash2 size={16} />}
+            label="Delete card"
+            onClick={handleDeleteClick}
             disabled={pending}
-            className="text-success"
+            className="text-error"
           />
-        )}
-        {card.taskId && (
-          <CtxItem
-            label="Open task"
-            onClick={() => {
-              setMenuPosition(null);
-              onSelectTask(card.taskId!);
-            }}
-          />
-        )}
-        {card.sessionId && (
-          <CtxItem
-            icon={<MessageSquare size={16} />}
-            label="Open session"
-            onClick={() => {
-              setMenuPosition(null);
-              onSelectSession(card.sessionId!, card.taskId ?? undefined);
-            }}
-          />
-        )}
-        {relatedLinks.map((link, index) => (
-          <CtxItem
-            key={`${link.url}-${index}`}
-            icon={index === 0 && card.url ? <ExternalLink size={16} /> : <LinkIcon size={16} />}
-            label={link.label}
-            onClick={() => {
-              setMenuPosition(null);
-              window.open(link.url, "_blank", "noopener,noreferrer");
-            }}
-          />
-        ))}
-        {(card.status === "active" && hasPromptAction) || hasSecondaryActions ? <CtxDivider /> : null}
-        <CtxItem
-          icon={<Trash2 size={16} />}
-          label="Delete card"
-          onClick={handleDeleteClick}
-          disabled={pending}
-          className="text-error"
-        />
         </div>
       </ContextMenu>
     )
@@ -511,7 +528,7 @@ export default function FeedCard({
             {renderStatusActions("mobile")}
           </div>
 
-          {(hasPromptAction || card.taskId || card.sessionId || relatedLinks.length > 0) && (
+          {(hasPromptAction || hasChatAction || card.taskId || card.sessionId || relatedLinks.length > 0) && (
             <div className="hidden flex-wrap items-center gap-1.5 sm:flex">
               {hasPromptAction && (
                 <button
@@ -522,6 +539,17 @@ export default function FeedCard({
                 >
                   <MessageSquare size={14} />
                   {card.action?.label ?? DEFAULT_FEED_ACTION_LABEL}
+                </button>
+              )}
+              {hasChatAction && (
+                <button
+                  type="button"
+                  onClick={handleChatClick}
+                  disabled={pending}
+                  className={`${UI.button.secondary} inline-flex min-h-11 items-center gap-1.5 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-8 sm:px-2.5 sm:text-xs`}
+                >
+                  <MessageSquare size={14} />
+                  {DEFAULT_FEED_CHAT_LABEL}
                 </button>
               )}
               {card.taskId && (
