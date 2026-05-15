@@ -176,28 +176,4 @@ Start-Process -FilePath $nodePath `
   -RedirectStandardOutput $bridgeStdoutLog `
   -RedirectStandardError $bridgeStderrLog
 
-$keepAlive = Join-Path $appRoot "scripts\keep-alive.ps1"
-if (Test-Path $keepAlive) {
-  $powerShellPath = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-    (Get-Command pwsh).Source
-  } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
-    (Get-Command powershell).Source
-  } else {
-    $null
-  }
-
-  if ($powerShellPath) {
-    try {
-      Start-Process -FilePath $powerShellPath `
-        -ArgumentList "-NoProfile","-WindowStyle","Hidden","-File","`"$keepAlive`"" `
-        -WorkingDirectory $appRoot `
-        -WindowStyle Hidden
-    } catch {
-      Write-Warning "Bridge started, but keep-alive could not be launched: $($_.Exception.Message)"
-    }
-  } else {
-    Write-Warning "Bridge started, but no PowerShell executable was found for keep-alive."
-  }
-}
-
 Write-Output "Copilot Bridge release started. Logs: $logsDir"

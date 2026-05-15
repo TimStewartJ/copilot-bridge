@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 
 $installRoot = (Resolve-Path $PSScriptRoot).Path
 $installRootPattern = [regex]::Escape($installRoot) + "[\\/]"
-$releaseProcessPattern = "dist[\\/]+launcher\.js|dist[\\/]+server[\\/]+index\.js|keep-alive\.ps1"
+$releaseProcessPattern = "dist[\\/]+launcher\.js|dist[\\/]+server[\\/]+index\.js"
 $updaterProcessPattern = $installRootPattern + 'update\.ps1(?:"|''|\s|$)'
 
 $allProcesses = @(Get-CimInstance Win32_Process)

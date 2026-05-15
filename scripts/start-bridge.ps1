@@ -111,9 +111,3 @@ Start-Process -FilePath $nodePath `
   -WindowStyle Hidden `
   -RedirectStandardOutput $bridgeStdoutLog `
   -RedirectStandardError $bridgeStderrLog
-
-# Start keep-alive to prevent idle timeout (hidden)
-Start-Process -FilePath "pwsh.exe" `
-  -ArgumentList "-NoProfile","-WindowStyle","Hidden","-File","$workDir\scripts\keep-alive.ps1" `
-  -WorkingDirectory $workDir `
-  -WindowStyle Hidden
