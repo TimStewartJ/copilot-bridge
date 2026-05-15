@@ -17,6 +17,7 @@ import {
   UpdatesSection,
   BridgeCommitsSection,
   CopilotUsageSection,
+  BrowserDiagnosticsSection,
   SettingsCategoryNav,
 } from "./settings";
 import { McpServersSection } from "./settings/McpServersSection";
@@ -304,6 +305,7 @@ export default function SettingsView() {
             </CategoryPanel>
 
             <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
+              <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} />
               <BridgeCommitsSection />
               <CopilotUsageSection />
               <VoiceInputSection />

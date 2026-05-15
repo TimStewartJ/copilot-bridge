@@ -58,6 +58,14 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ value }));
     return;
   }
+  if (req.url === "/api/headers") {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      host: req.headers.host,
+      forwardedHost: req.headers["x-forwarded-host"],
+    }));
+    return;
+  }
   if (req.url === "/api/events") {
     res.writeHead(200, {
       "content-type": "text/event-stream",
@@ -137,6 +145,13 @@ describe("staging preview backend child process", () => {
       const streamResponse = await request(app).get(`/staging/${prefix}/api/events`);
       expect(streamResponse.status).toBe(200);
       expect(streamResponse.text).toContain("data: first");
+
+      const headerResponse = await request(app)
+        .get(`/staging/${prefix}/api/headers`)
+        .set("Host", "preview.example.test");
+      expect(headerResponse.status).toBe(200);
+      expect(headerResponse.body.host).not.toBe("preview.example.test");
+      expect(headerResponse.body.forwardedHost).toBe("preview.example.test");
     } finally {
       await cleanupBackend(firstBackend);
     }

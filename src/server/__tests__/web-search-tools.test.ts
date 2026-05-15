@@ -3,6 +3,13 @@ import { testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 
+function createBrowserToolContext() {
+  return {
+    copilotHome: COPILOT_HOME,
+    settingsStore: { getSettings: () => ({}) },
+  } as any;
+}
+
 const execMock = vi.fn();
 const execFileMock = vi.fn();
 const cpMock = vi.fn();
@@ -80,7 +87,7 @@ describe("web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
@@ -110,7 +117,7 @@ describe("web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
@@ -148,7 +155,7 @@ describe("web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toMatchObject({
@@ -186,7 +193,7 @@ describe("web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
@@ -226,7 +233,7 @@ describe("web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
@@ -262,7 +269,7 @@ describe("web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toMatchObject({

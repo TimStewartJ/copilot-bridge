@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
-import { ab, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
+import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { toolFailure } from "./tool-results.js";
 
@@ -133,6 +133,7 @@ export function createComputerUseTools(ctx: AppContext) {
   const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
     copilotHome: ctx.copilotHome,
     telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
   });
 
   const tools = [
@@ -446,9 +447,10 @@ export function createComputerUseTools(ctx: AppContext) {
           }
 
           try {
-            const openResult = await withBridgeBrowserSession(record.browserTarget, async () => {
+            const headedTarget = { ...record.browserTarget, headed: true };
+            const openResult = await withBridgeBrowserSession(headedTarget, async () => {
               return ab(["open", args.url], 30_000, {
-                browserTarget: record.browserTarget,
+                browserTarget: headedTarget,
                 telemetryStore: ctx.telemetryStore,
                 toolName: "computer_open_browser",
                 browserOpId,

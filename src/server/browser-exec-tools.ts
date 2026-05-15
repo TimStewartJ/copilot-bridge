@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserLane } from "./agent-browser.js";
-import { getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
 import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
 
@@ -156,7 +156,8 @@ export function createBrowserExecTools(ctx: AppContext) {
         const normalizedInput = normalized.value;
 
         const browserOpId = randomUUID();
-        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome);
+        const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
+        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome, launchConfig);
         const toolStart = Date.now();
         const requestedLane = normalizedInput.lane;
         const resolvedLane = resolveBrowserExecLane(normalizedInput.lane, normalizedInput.commands);
@@ -231,7 +232,7 @@ export function createBrowserExecTools(ctx: AppContext) {
                 resolvedLane,
                 stepCount: normalizedInput.commands.length,
                 stepNames,
-              }, runFlow);
+              }, runFlow, launchConfig);
             } catch (err) {
               if (requestedLane !== "auto") throw err;
               fallbackToPrimary = true;
@@ -253,7 +254,7 @@ export function createBrowserExecTools(ctx: AppContext) {
             resolvedLane,
             stepCount: normalizedInput.commands.length,
             stepNames,
-          }, runFlow);
+          }, runFlow, launchConfig);
         } catch (err: any) {
           const detail = `Browser exec failed: ${String(err).slice(0, 200)}`;
           return toolFailure("Browser exec failed.", {
