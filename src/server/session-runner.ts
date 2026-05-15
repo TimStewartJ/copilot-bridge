@@ -42,6 +42,63 @@ import {
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
+const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
+  "assistant.turn_end",
+  "session.idle",
+  "session.error",
+  "abort",
+  "session.shutdown",
+]);
+const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
+  "session.idle",
+  "session.error",
+  "abort",
+  "session.shutdown",
+]);
+const PERSISTED_RUN_RELEVANT_EVENT_TYPES = new Set([
+  "user.message",
+  "assistant.turn_start",
+  "assistant.message",
+  "assistant.message_delta",
+  "assistant.streaming_delta",
+  "assistant.intent",
+  "assistant.turn_end",
+  "tool.execution_start",
+  "tool.execution_progress",
+  "tool.execution_partial_result",
+  "tool.execution_complete",
+  "subagent.started",
+  "subagent.completed",
+  "subagent.failed",
+  "session.idle",
+  "session.error",
+  "abort",
+  "session.shutdown",
+]);
+const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
+  "user.message",
+  "assistant.turn_start",
+  "assistant.message",
+  "tool.execution_start",
+  "tool.execution_complete",
+  "subagent.started",
+  "subagent.completed",
+  "subagent.failed",
+]);
+
+type SessionEventOrigin = "live" | "live_recovered" | "persisted_recovery";
+
+interface SessionEventHandlingContext {
+  origin: SessionEventOrigin;
+  recoveryReason?: string;
+}
+
+interface PersistedRunEventInfo {
+  latestPersistedEventType?: string;
+  latestPersistedEventAgeMs?: number;
+  latestPersistedTerminalEventType?: string;
+  latestPersistedTerminalEventAgeMs?: number;
+}
 
 export interface McpServerStatus {
   name: string;
@@ -419,12 +476,33 @@ export class SessionRunner {
     let lastAssistantContent: string | undefined;
     let lastEventTime = Date.now();
     let sendStart = lastEventTime;
+    let lastDiskMtime: number | undefined;
+    let lastLiveEventType: string | undefined;
+    let lastLiveEventAt: number | undefined;
+    let lastLiveEventOrigin: SessionEventOrigin | undefined;
+    let liveTurnEndCount = 0;
+    let lastLiveTurnEndAt: number | undefined;
+    let eventsAfterLastLiveTurnEnd = 0;
+    let activeEventsAfterLastLiveTurnEnd = 0;
+    let staleCacheRetryCount = 0;
+    let recoveryAttemptIndex = 0;
     let acceptingSessionEvents = false;
+    const resetRunTelemetryState = () => {
+      lastDiskMtime = undefined;
+      lastLiveEventType = undefined;
+      lastLiveEventAt = undefined;
+      lastLiveEventOrigin = undefined;
+      liveTurnEndCount = 0;
+      lastLiveTurnEndAt = undefined;
+      eventsAfterLastLiveTurnEnd = 0;
+      activeEventsAfterLastLiveTurnEnd = 0;
+    };
     const beginSend = () => {
       sendStart = Date.now();
       lastEventTime = sendStart;
       handledCurrentTurnEventKeys.clear();
       lastAssistantContent = undefined;
+      resetRunTelemetryState();
       acceptingSessionEvents = true;
     };
 
@@ -449,6 +527,77 @@ export class SessionRunner {
       this.recordSessionAttention(sessionId, getEventTimestampIso(event));
     };
 
+    const getAgeMs = (now: number, at: number | undefined): number | undefined =>
+      at === undefined ? undefined : Math.max(0, now - at);
+    const buildRunTelemetryMetadata = (now = Date.now()): Record<string, unknown> => ({
+      runStartedAt: new Date(sendStart).toISOString(),
+      elapsedMs: Math.max(0, now - sendStart),
+      lastLiveEventType,
+      lastLiveEventAgeMs: getAgeMs(now, lastLiveEventAt),
+      lastLiveEventOrigin,
+      lastEventTimeAgeMs: getAgeMs(now, lastEventTime),
+      lastDiskMtimeAgeMs: getAgeMs(now, lastDiskMtime),
+      liveTurnEndCount,
+      lastLiveTurnEndAgeMs: getAgeMs(now, lastLiveTurnEndAt),
+      eventsAfterLastLiveTurnEnd,
+      activeEventsAfterLastLiveTurnEnd,
+      pendingUserInputCount: this.deps.userInputController.getPendingCount(sessionId),
+      staleCacheRetryCount: staleCacheRetryCount || undefined,
+    });
+    const recordRunSpan = (
+      name: string,
+      duration: number,
+      metadata: Record<string, unknown>,
+      now = Date.now(),
+    ) => {
+      this.recordSpan(name, duration, sessionId, {
+        ...buildRunTelemetryMetadata(now),
+        ...metadata,
+      });
+    };
+    const getTerminalCompletionSource = (eventType: string, origin: SessionEventOrigin): string => {
+      const normalizedEventType = eventType.replace(/\./g, "_");
+      if (origin === "persisted_recovery") return `persisted_${normalizedEventType}_recovery`;
+      if (origin === "live_recovered") return `live_recovered_${normalizedEventType}`;
+      return `live_${normalizedEventType}`;
+    };
+    const recordRunCompletion = (
+      event: any,
+      context: SessionEventHandlingContext,
+      status: "done" | "error" | "aborted" | "shutdown",
+      metadata: Record<string, unknown> = {},
+    ) => {
+      const now = Date.now();
+      const eventType = typeof event?.type === "string" ? event.type : "unknown";
+      recordRunSpan("session.run.complete", now - sendStart, {
+        completionSource: getTerminalCompletionSource(eventType, context.origin),
+        terminalEventType: eventType,
+        terminalEventOrigin: context.origin,
+        recoveryReason: context.recoveryReason,
+        completionStatus: status,
+        ...metadata,
+      }, now);
+    };
+    const noteLiveEvent = (event: any, eventAt: number, origin: SessionEventOrigin) => {
+      const eventType = typeof event?.type === "string" ? event.type : undefined;
+      if (!eventType) return;
+      if (lastLiveTurnEndAt !== undefined && eventType !== "assistant.turn_end" && !LIVE_RUN_TERMINAL_EVENT_TYPES.has(eventType)) {
+        eventsAfterLastLiveTurnEnd += 1;
+      }
+      if (lastLiveTurnEndAt !== undefined && LIVE_TURN_END_FOLLOWUP_EVENT_TYPES.has(eventType)) {
+        activeEventsAfterLastLiveTurnEnd += 1;
+      }
+      lastLiveEventType = eventType;
+      lastLiveEventAt = eventAt;
+      lastLiveEventOrigin = origin;
+      if (eventType === "assistant.turn_end") {
+        liveTurnEndCount += 1;
+        lastLiveTurnEndAt = eventAt;
+        eventsAfterLastLiveTurnEnd = 0;
+        activeEventsAfterLastLiveTurnEnd = 0;
+      }
+    };
+
     const getEventReplayKey = (event: any): string | undefined => {
       const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
       const timestampPart = typeof rawTimestamp === "string" ? rawTimestamp : "";
@@ -470,23 +619,33 @@ export class SessionRunner {
       lastAssistantContent = persistedTerminal.assistantContent ?? lastAssistantContent;
       console.warn(`[sdk] [${sid}] ✅ Stall recovery found persisted ${persistedTerminal.event.type} ${reason} — resolving locally`);
       if (persistedTerminal.event.type === "assistant.turn_end") {
+        const content = lastAssistantContent ?? "(no response)";
+        recordRunCompletion(
+          persistedTerminal.event,
+          { origin: "persisted_recovery", recoveryReason: reason },
+          "done",
+          {
+            finalContentLength: content.length,
+            assistantContentKnown: lastAssistantContent !== undefined,
+          },
+        );
         recordCompletionAttention("done", persistedTerminal.event);
-        runController.completeDone(lastAssistantContent ?? "(no response)");
+        runController.completeDone(content);
         return true;
       }
-      handleEvent(persistedTerminal.event);
+      handleEvent(persistedTerminal.event, { origin: "persisted_recovery", recoveryReason: reason });
       return true;
     };
 
-    const handleEvent = (event: any) => {
+    const handleEvent = (event: any, context: SessionEventHandlingContext) => {
       if (!acceptingSessionEvents || runController.isCompleted()) return;
       const eventAt = Date.now();
       const replayKey = getEventReplayKey(event);
       if (replayKey) handledCurrentTurnEventKeys.add(replayKey);
-      const isTerminalEvent = event.type === "session.idle"
-        || event.type === "session.error"
-        || event.type === "abort"
-        || event.type === "session.shutdown";
+      if (context.origin === "live" || context.origin === "live_recovered") {
+        noteLiveEvent(event, eventAt, context.origin);
+      }
+      const isTerminalEvent = LIVE_RUN_TERMINAL_EVENT_TYPES.has(event.type);
       if (!isTerminalEvent) {
         lastEventTime = eventAt;
         this.touchSessionRun(sessionId, eventAt);
@@ -623,6 +782,10 @@ export class SessionRunner {
           break;
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
+          recordRunCompletion(event, context, "error", {
+            errorMessagePresent: typeof data?.message === "string",
+            errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
+          });
           recordCompletionAttention("error", event);
           runController.completeError(data?.message ?? "unknown");
           break;
@@ -630,6 +793,10 @@ export class SessionRunner {
           const reason = data?.reason ?? "user initiated";
           console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);
           const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
+          recordRunCompletion(event, context, "aborted", {
+            partialContentLength: partialContent.length,
+            abortReasonPresent: typeof data?.reason === "string",
+          });
           runController.completeAborted(partialContent);
           break;
         }
@@ -638,10 +805,19 @@ export class SessionRunner {
           if (shutdownType === "error") {
             const message = data?.message ?? data?.reason ?? "session shutdown";
             console.error(`[sdk] [${sid}] ❌ Shutdown(error): ${message}`);
+            recordRunCompletion(event, context, "error", {
+              shutdownType,
+              errorMessagePresent: typeof data?.message === "string" || typeof data?.reason === "string",
+              errorMessageLength: typeof message === "string" ? message.length : undefined,
+            });
             runController.completeError(message);
           } else {
             console.log(`[sdk] [${sid}] 🛑 Shutdown${shutdownType ? ` (${shutdownType})` : ""}`);
             const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
+            recordRunCompletion(event, context, "shutdown", {
+              shutdownType,
+              partialContentLength: partialContent.length,
+            });
             runController.completeShutdown(partialContent);
           }
           break;
@@ -655,6 +831,10 @@ export class SessionRunner {
           const content = lastAssistantContent ?? "(no response)";
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
+          recordRunCompletion(event, context, "done", {
+            finalContentLength: content.length,
+            assistantContentKnown: lastAssistantContent !== undefined,
+          });
           recordCompletionAttention("done", event);
           runController.completeDone(content);
           break;
@@ -698,7 +878,7 @@ export class SessionRunner {
 
     const subscribeToSession = (activeSession: typeof session) => {
       acceptingSessionEvents = false;
-      return activeSession.on(handleEvent);
+      return activeSession.on((event: any) => handleEvent(event, { origin: "live" }));
     };
 
     let unsub: (() => void) | undefined;
@@ -734,6 +914,50 @@ export class SessionRunner {
 
     let recoveryInProgress = false;
     let lastRecoveryAttempt = 0;
+
+    const readLatestPersistedRunEventInfo = (now = Date.now()): PersistedRunEventInfo => {
+      let raw: string;
+      try {
+        raw = readFileSync(eventsJsonlPath, "utf-8");
+      } catch {
+        return {};
+      }
+
+      let latestEventType: string | undefined;
+      let latestEventAt: number | undefined;
+      let latestTerminalEventType: string | undefined;
+      let latestTerminalEventAt: number | undefined;
+
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const eventType = event?.type;
+        if (typeof eventType !== "string" || !PERSISTED_RUN_RELEVANT_EVENT_TYPES.has(eventType)) continue;
+        const eventTime = getEventTimestampMs(event);
+        if (eventTime === undefined || eventTime < sendStart) continue;
+
+        latestEventType = eventType;
+        latestEventAt = eventTime;
+        if (PERSISTED_RUN_TERMINAL_EVENT_TYPES.has(eventType)) {
+          latestTerminalEventType = eventType;
+          latestTerminalEventAt = eventTime;
+        }
+      }
+
+      return {
+        latestPersistedEventType: latestEventType,
+        latestPersistedEventAgeMs: getAgeMs(now, latestEventAt),
+        latestPersistedTerminalEventType: latestTerminalEventType,
+        latestPersistedTerminalEventAgeMs: getAgeMs(now, latestTerminalEventAt),
+      };
+    };
 
     const readPersistedTerminalEvent = (): { event: any; assistantContent?: string } | null => {
       let raw: string;
@@ -821,9 +1045,32 @@ export class SessionRunner {
     const attemptStalledRecovery = async () => {
       if (recoveryInProgress) return;
       recoveryInProgress = true;
-      lastRecoveryAttempt = Date.now();
+      const recoveryStartedAt = Date.now();
+      const attemptIndex = ++recoveryAttemptIndex;
+      lastRecoveryAttempt = recoveryStartedAt;
+      const recordRecoveryOutcome = (
+        outcome: string,
+        metadata: Record<string, unknown> = {},
+        now = Date.now(),
+      ) => {
+        recordRunSpan("session.run.recovery", now - recoveryStartedAt, {
+          outcome,
+          attemptIndex,
+          ...readLatestPersistedRunEventInfo(now),
+          ...metadata,
+        }, now);
+      };
       try {
-        if (resolvePersistedTerminalEvent(readPersistedTerminalEvent(), "before resume")) return;
+        const persistedTerminalBeforeResume = readPersistedTerminalEvent();
+        if (persistedTerminalBeforeResume) {
+          if (resolvePersistedTerminalEvent(persistedTerminalBeforeResume, "before resume")) {
+            recordRecoveryOutcome("resolved_persisted_terminal", {
+              when: "before_resume",
+              terminalEventType: persistedTerminalBeforeResume.event?.type,
+            });
+            return;
+          }
+        }
 
         const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);
         console.warn(`[sdk] [${sid}] 🔄 Stall recovery: re-subscribing (${elapsed}s total)...`);
@@ -833,6 +1080,10 @@ export class SessionRunner {
 
         if (runController.isCompleted() || this.deps.runStateController.getSessionRunState(sessionId) !== "stalled") {
           try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
+          recordRecoveryOutcome("skipped_not_stalled_or_completed", {
+            completed: runController.isCompleted(),
+            runState: this.deps.runStateController.getSessionRunState(sessionId),
+          });
           return;
         }
 
@@ -840,6 +1091,10 @@ export class SessionRunner {
         if (persistedTerminalAfterResume) {
           try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
           resolvePersistedTerminalEvent(persistedTerminalAfterResume, "after resume");
+          recordRecoveryOutcome("resolved_persisted_terminal", {
+            when: "after_resume",
+            terminalEventType: persistedTerminalAfterResume.event?.type,
+          });
           return;
         }
 
@@ -859,7 +1114,7 @@ export class SessionRunner {
             return;
           }
           if (shouldIgnoreRecoveredEvent(event)) return;
-          handleEvent(event);
+          handleEvent(event, { origin: "live_recovered" });
         });
 
         session = recoverySession;
@@ -875,13 +1130,26 @@ export class SessionRunner {
         acceptingRecoveredEvents = true;
         for (const event of bufferedRecoveredEvents) {
           if (shouldIgnoreRecoveredEvent(event)) continue;
-          handleEvent(event);
+          handleEvent(event, { origin: "live_recovered" });
           if (runController.isCompleted()) break;
         }
 
         console.log(`[sdk] [${sid}] ✅ Stall recovery complete — listener re-attached`);
+        recordRecoveryOutcome("reattached", {
+          bufferedEventCount: bufferedRecoveredEvents.length,
+        });
       } catch (err) {
-        if (!resolvePersistedTerminalEvent(readPersistedTerminalEvent(), "after failed resume")) {
+        const persistedTerminalAfterFailedResume = readPersistedTerminalEvent();
+        if (persistedTerminalAfterFailedResume && resolvePersistedTerminalEvent(persistedTerminalAfterFailedResume, "after failed resume")) {
+          const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
+          recordRecoveryOutcome("resolved_persisted_terminal", {
+            when: "after_failed_resume",
+            terminalEventType: persistedTerminalAfterFailedResume.event?.type,
+            errorName,
+          });
+        } else {
+          const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
+          recordRecoveryOutcome("failed", { errorName });
           console.error(`[sdk] [${sid}] ❌ Stall recovery failed:`, err);
         }
       } finally {
@@ -897,6 +1165,7 @@ export class SessionRunner {
 
       try {
         const fileStat = statSync(eventsJsonlPath);
+        lastDiskMtime = fileStat.mtimeMs;
         if (fileStat.mtimeMs > lastEventTime) {
           this.deps.runStateController.touchSessionRunIfNewer(sessionId, fileStat.mtimeMs);
         }
@@ -921,6 +1190,11 @@ export class SessionRunner {
 
       if (currentState !== "stalled") {
         console.error(`[sdk] [${sid}] ⚠️ Watchdog: no events for ${WATCHDOG_TIMEOUT / 1000}s — marking stalled (${elapsed}s total)`);
+        recordRunSpan("session.run.stalled", 0, {
+          watchdogTimeoutMs: WATCHDOG_TIMEOUT,
+          previousRunState: currentState,
+          ...readLatestPersistedRunEventInfo(now),
+        }, now);
         this.setSessionRunState(sessionId, "stalled");
         void attemptStalledRecovery();
       } else if (now - lastRecoveryAttempt >= RECOVERY_INTERVAL) {
@@ -948,8 +1222,10 @@ export class SessionRunner {
           unsub = undefined;
           abandonSession(session);
           session = await resumeSession();
+          staleCacheRetryCount += 1;
           lastEventTime = Date.now();
           sendStart = lastEventTime;
+          resetRunTelemetryState();
           if (runController.isCompleted()) {
             abandonSession(session);
             return;

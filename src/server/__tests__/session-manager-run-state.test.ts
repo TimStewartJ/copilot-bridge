@@ -17,12 +17,15 @@ import {
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
+import { createTelemetryStore } from "../telemetry-store.js";
+import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
 describe("SessionManager run state", () => {
-  function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths } = {}) {
+  function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths; telemetry?: boolean } = {}) {
     const db = setupTestDb();
+    const telemetryStore = opts.telemetry ? createTelemetryStore(db) : undefined;
     const globalBus = createTestBus();
     const eventBusRegistry = createEventBusRegistry();
     const runtimePaths = opts.runtimePaths ?? makeTestRuntimePaths(
@@ -45,12 +48,13 @@ describe("SessionManager run state", () => {
         getSettings: () => ({ mcpServers: {} }),
       } as any,
       config: { sessionMcpServers: {} },
+      telemetryStore,
       clientEnv: runtimePaths.env,
       copilotHome,
       runtimePaths,
     }) as any;
 
-    return { manager, globalBus, eventBusRegistry, db };
+    return { manager, globalBus, eventBusRegistry, db, telemetryStore };
   }
 
   function makeSession(opts: { replayOnSubscribe?: any | (() => any) } = {}) {
@@ -92,6 +96,13 @@ describe("SessionManager run state", () => {
 
   async function flushMicrotasks() {
     for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  function latestSpanMetadata(telemetryStore: TelemetryStore | undefined, name: string, sessionId: string): Record<string, unknown> {
+    expect(telemetryStore).toBeDefined();
+    const [span] = telemetryStore!.querySpans({ name, sessionId, limit: 10 });
+    expect(span).toBeDefined();
+    return span.metadata ?? {};
   }
 
   async function waitForRestartPhase(filePath: string, phase: "idle" | "queued" | "waiting-for-sessions" | "restarting") {
@@ -1085,6 +1096,123 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("records completion telemetry for live session.idle", async () => {
+    const sessionId = "session-live-idle-telemetry";
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { content: "done" },
+    });
+    getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 3_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
+      completionSource: "live_session_idle",
+      completionStatus: "done",
+      terminalEventType: "session.idle",
+      terminalEventOrigin: "live",
+      finalContentLength: 4,
+      assistantContentKnown: true,
+      liveTurnEndCount: 1,
+      eventsAfterLastLiveTurnEnd: 0,
+      activeEventsAfterLastLiveTurnEnd: 0,
+      lastLiveEventType: "session.idle",
+    });
+  });
+
+  it("records diagnostic telemetry when a live turn-end stalls before persisted recovery", async () => {
+    const tmpDir = makeTestDir("stall-turn-end-telemetry");
+    const sessionId = "session-turn-end-telemetry";
+    const sessionStateDir = join(tmpDir, "session-state", sessionId);
+    mkdirSync(sessionStateDir, { recursive: true });
+
+    const { manager, telemetryStore } = createManager({ copilotHome: tmpDir, telemetry: true });
+    const initial = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(initial.session);
+    manager.client = { resumeSession };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    initial.getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    initial.getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { content: "done from turn_end" },
+    });
+    initial.getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    await flushMicrotasks();
+
+    writeFileSync(join(sessionStateDir, "events.jsonl"), [
+      JSON.stringify({ type: "user.message", timestamp: new Date(baseTime + 500).toISOString(), data: { content: "hello" } }),
+      JSON.stringify({ type: "assistant.message", timestamp: new Date(baseTime + 1_000).toISOString(), data: { content: "done from turn_end" } }),
+      JSON.stringify({ type: "assistant.turn_end", timestamp: new Date(baseTime + 2_000).toISOString(), data: { turnId: "1" } }),
+    ].join("\n") + "\n");
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(latestSpanMetadata(telemetryStore, "session.run.stalled", sessionId)).toMatchObject({
+      previousRunState: "busy",
+      watchdogTimeoutMs: 300_000,
+      lastLiveEventType: "assistant.turn_end",
+      liveTurnEndCount: 1,
+      eventsAfterLastLiveTurnEnd: 0,
+      activeEventsAfterLastLiveTurnEnd: 0,
+      latestPersistedEventType: "assistant.turn_end",
+      latestPersistedTerminalEventType: "assistant.turn_end",
+    });
+    expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
+      completionSource: "persisted_assistant_turn_end_recovery",
+      completionStatus: "done",
+      terminalEventType: "assistant.turn_end",
+      terminalEventOrigin: "persisted_recovery",
+      recoveryReason: "before resume",
+      finalContentLength: "done from turn_end".length,
+      assistantContentKnown: true,
+      lastLiveEventType: "assistant.turn_end",
+      liveTurnEndCount: 1,
+    });
+    expect(latestSpanMetadata(telemetryStore, "session.run.recovery", sessionId)).toMatchObject({
+      outcome: "resolved_persisted_terminal",
+      when: "before_resume",
+      terminalEventType: "assistant.turn_end",
+      attemptIndex: 1,
+      latestPersistedEventType: "assistant.turn_end",
+      latestPersistedTerminalEventType: "assistant.turn_end",
+    });
   });
 
   it("resolves a stalled turn from persisted terminal events without waiting for a new live event", async () => {
