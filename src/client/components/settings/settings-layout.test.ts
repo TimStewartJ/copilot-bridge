@@ -23,9 +23,9 @@ describe("SETTINGS_CATEGORIES", () => {
     }
   });
 
-  it("covers all 13 sections across categories", () => {
+  it("covers all 14 sections across categories", () => {
     const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
-    expect(allSections).toHaveLength(13);
+    expect(allSections).toHaveLength(14);
   });
 
   it("sections are non-overlapping across categories", () => {
@@ -46,6 +46,7 @@ describe("SETTINGS_CATEGORIES", () => {
       "tags",
       "mcp-servers",
       "updates",
+      "browser-diagnostics",
       "voice-input",
       "bridge-status",
       "local-copilot-usage",

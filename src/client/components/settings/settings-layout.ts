@@ -11,6 +11,7 @@ export type SectionId =
   | "tags"
   | "mcp-servers"
   | "voice-input"
+  | "browser-diagnostics"
   | "updates"
   | "bridge-status"
   | "local-copilot-usage";
@@ -35,7 +36,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "diagnostics",
     label: "Diagnostics",
-    sections: ["voice-input", "bridge-status", "local-copilot-usage"],
+    sections: ["browser-diagnostics", "voice-input", "bridge-status", "local-copilot-usage"],
   },
 ];
 

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { normalizePath, pathBasename, testCopilotHome } from "./test-paths.js";
+import { normalizePath, pathBasename, testCopilotHome, testExecutablePath, testPath } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 const BROWSER_PROFILE = join(COPILOT_HOME, "browser-profile");
@@ -94,6 +94,31 @@ describe("agent-browser wrapper", () => {
     const [, , options] = execFileMock.mock.calls[0];
     expect(options.env.AGENT_BROWSER_SESSION).toMatch(/^copilot-bridge-/);
     expect(normalizePath(options.env.AGENT_BROWSER_PROFILE)).toContain(normalizePath(BROWSER_PROFILE));
+  });
+
+  it("applies configured browser paths and headed launches to browser command env", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+    const mod = await import("../agent-browser.js");
+    const executablePath = testExecutablePath("chrome");
+    const profileDir = testPath("browser-master-profile");
+    const target = {
+      ...mod.getBridgeBrowserTarget(COPILOT_HOME, {
+        executablePath,
+        masterProfileDirectory: profileDir,
+      }),
+      headed: true,
+    };
+
+    await mod.ab(["open", "about:blank"], undefined, { browserTarget: target });
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    const [, , options] = execFileMock.mock.calls[0];
+    expect(normalizePath(options.env.AGENT_BROWSER_EXECUTABLE_PATH)).toBe(normalizePath(executablePath));
+    expect(normalizePath(options.env.AGENT_BROWSER_PROFILE)).toBe(normalizePath(profileDir));
+    expect(options.env.AGENT_BROWSER_HEADED).toBe("true");
   });
 
   it("clears stale dead lock owners and retries once", async () => {

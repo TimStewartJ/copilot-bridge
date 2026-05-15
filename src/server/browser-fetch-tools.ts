@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { ab, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 
 const CLONE_SAFE_BROWSER_FETCH_HOSTS = new Set([
@@ -73,7 +73,8 @@ export function createBrowserFetchTools(ctx: AppContext) {
         const url: string = args.url;
         const selector: string | undefined = args.selector;
         const browserOpId = randomUUID();
-        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome);
+        const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
+        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome, launchConfig);
         const urlHost = safeHost(url);
         const toolStart = Date.now();
         let success = false;
@@ -171,7 +172,7 @@ export function createBrowserFetchTools(ctx: AppContext) {
                 browserOpId,
                 toolName: "browser_fetch",
                 urlHost,
-              }, runFlow);
+              }, runFlow, launchConfig);
             } catch (err) {
               fallbackToPrimary = true;
               safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
@@ -188,7 +189,7 @@ export function createBrowserFetchTools(ctx: AppContext) {
             browserOpId,
             toolName: "browser_fetch",
             urlHost,
-          }, runFlow);
+          }, runFlow, launchConfig);
         } catch (err: any) {
           return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 200)}`, {
             url,

@@ -103,4 +103,24 @@ describe("settings-store", () => {
     const reloadedAgain = store.getSettings();
     expect(reloadedAgain.model).toBeUndefined();
   });
+
+  it("updateSettings persists and clears browser diagnostics paths", () => {
+    const updated = store.updateSettings({
+      browser: {
+        executablePath: " C:\\Browsers\\chrome.exe ",
+        masterProfileDirectory: " C:\\Bridge\\browser-profile ",
+      },
+    });
+    expect(updated.browser).toEqual({
+      executablePath: "C:\\Browsers\\chrome.exe",
+      masterProfileDirectory: "C:\\Bridge\\browser-profile",
+    });
+
+    const reloaded = store.getSettings();
+    expect(reloaded.browser).toEqual(updated.browser);
+
+    const cleared = store.updateSettings({ browser: {} });
+    expect(cleared.browser).toBeUndefined();
+    expect(store.getSettings().browser).toBeUndefined();
+  });
 });

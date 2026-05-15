@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TelemetryStore } from "./telemetry-store.js";
-import type { BrowserTarget } from "./agent-browser.js";
+import type { BrowserLaunchConfig, BrowserTarget } from "./agent-browser.js";
 import { createPersistentCloneBrowserTarget, destroyPersistentCloneBrowserTarget, getBridgeBrowserTarget, safeRecordBrowserSpan } from "./agent-browser.js";
 import { err, ok, type ErrorResult, type OkResult } from "./tool-results.js";
 
@@ -22,6 +22,7 @@ interface BrowserSessionStoreOptions {
   copilotHome?: string;
   telemetryStore?: TelemetryStore;
   idleTimeoutMs?: number;
+  getBrowserLaunchConfig?: () => BrowserLaunchConfig;
 }
 
 type BrowserSessionUseResult<T> = (OkResult<T> & { record: BrowserSessionRecord }) | ErrorResult;
@@ -30,6 +31,7 @@ export class BrowserSessionStore {
   private readonly copilotHome?: string;
   private readonly telemetryStore?: TelemetryStore;
   private readonly idleTimeoutMs: number;
+  private readonly getBrowserLaunchConfig?: () => BrowserLaunchConfig;
   private readonly sessions = new Map<string, BrowserSessionRecord>();
   private readonly sweepHandle: NodeJS.Timeout;
 
@@ -37,6 +39,7 @@ export class BrowserSessionStore {
     this.copilotHome = options.copilotHome;
     this.telemetryStore = options.telemetryStore;
     this.idleTimeoutMs = options.idleTimeoutMs ?? (30 * 60_000);
+    this.getBrowserLaunchConfig = options.getBrowserLaunchConfig;
     this.sweepHandle = setInterval(() => {
       void this.sweepIdleSessions();
     }, Math.min(this.idleTimeoutMs, 60_000));
@@ -52,15 +55,16 @@ export class BrowserSessionStore {
       ownerSessionId,
       purpose,
     };
+    const launchConfig = this.getBrowserLaunchConfig?.() ?? {};
 
     let browserTarget: BrowserTarget;
     let cloneId: string | undefined;
     if (mode === "isolated") {
-      const clone = await createPersistentCloneBrowserTarget(this.copilotHome, this.telemetryStore, metadata);
+      const clone = await createPersistentCloneBrowserTarget(this.copilotHome, this.telemetryStore, metadata, launchConfig);
       browserTarget = clone.browserTarget;
       cloneId = clone.cloneId;
     } else {
-      browserTarget = getBridgeBrowserTarget(this.copilotHome);
+      browserTarget = getBridgeBrowserTarget(this.copilotHome, launchConfig);
     }
 
     const record: BrowserSessionRecord = {

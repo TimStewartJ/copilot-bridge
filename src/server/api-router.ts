@@ -68,6 +68,7 @@ import {
   UpdateInstallError,
   type UpdateChannel,
 } from "./update-service.js";
+import { getBrowserDiagnostics, launchHeadedDiagnosticsBrowser } from "./browser-diagnostics.js";
 import {
   DocsSnapshotNotFoundError,
   DocsSnapshotValidationError,
@@ -3524,22 +3525,41 @@ export function createApiRouter(ctx: AppContext): express.Router {
     throw new UpdateInstallError(`Unsupported update channel "${String(raw)}". Expected "stable" or "preview".`, 400);
   }
 
-  function rejectCrossSiteUpdateMutation(req: express.Request, res: express.Response): boolean {
+  function rejectCrossSiteUiMutation(
+    req: express.Request,
+    res: express.Response,
+    actionLabel: string,
+  ): boolean {
     const secFetchSite = req.get("sec-fetch-site")?.toLowerCase();
-    if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "same-site" && secFetchSite !== "none") {
-      res.status(403).json({ error: "Update installation must be started from the Bridge UI." });
+    const fetchSiteMatchesUi = secFetchSite === "same-origin" || secFetchSite === "same-site" || secFetchSite === "none";
+    if (secFetchSite && !fetchSiteMatchesUi) {
+      res.status(403).json({ error: `${actionLabel} must be started from the Bridge UI.` });
       return true;
     }
     const origin = req.get("origin");
+    const allowedHosts = new Set<string>();
     const host = req.get("host");
-    if (origin && host) {
+    if (host) allowedHosts.add(host);
+    if (process.env.BRIDGE_STAGING_PREVIEW === "true") {
+      const forwardedHosts = req.get("x-forwarded-host")
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean) ?? [];
+      for (const forwardedHost of forwardedHosts) {
+        allowedHosts.add(forwardedHost);
+      }
+    }
+    if (origin && allowedHosts.size > 0) {
       try {
-        if (new URL(origin).host !== host) {
-          res.status(403).json({ error: "Update installation must be started from the Bridge UI." });
+        if (!allowedHosts.has(new URL(origin).host)) {
+          if (process.env.BRIDGE_STAGING_PREVIEW === "true" && fetchSiteMatchesUi) {
+            return false;
+          }
+          res.status(403).json({ error: `${actionLabel} must be started from the Bridge UI.` });
           return true;
         }
       } catch {
-        res.status(403).json({ error: "Update installation origin is invalid." });
+        res.status(403).json({ error: `${actionLabel} origin is invalid.` });
         return true;
       }
     }
@@ -3573,7 +3593,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.post("/updates/install", async (req, res) => {
-    if (rejectCrossSiteUpdateMutation(req, res)) return;
+    if (rejectCrossSiteUiMutation(req, res, "Update installation")) return;
     try {
       const runtimePaths = ctx.runtimePaths;
       if (!runtimePaths) {
@@ -3588,6 +3608,23 @@ export function createApiRouter(ctx: AppContext): express.Router {
     } catch (err) {
       const statusCode = err instanceof UpdateInstallError ? err.statusCode : 500;
       res.status(statusCode).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/browser/diagnostics", async (_req, res) => {
+    try {
+      res.json(await getBrowserDiagnostics(ctx));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/diagnostics/launch-headed", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Headed browser launch")) return;
+    try {
+      res.json(await launchHeadedDiagnosticsBrowser(ctx, req.body?.url));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

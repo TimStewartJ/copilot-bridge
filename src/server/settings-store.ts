@@ -9,6 +9,11 @@ import { createMcpServerStore } from "./mcp-server-store.js";
 export type ThemePreference = "light" | "dark" | "system";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
+export interface BrowserSettings {
+  executablePath?: string;
+  masterProfileDirectory?: string;
+}
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -18,6 +23,7 @@ export interface AppSettings {
   customInstructions?: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  browser?: BrowserSettings;
 }
 
 // ── Defaults (no hardcoded org — users configure their own) ───────
@@ -25,6 +31,30 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   mcpServers: {},
 };
+
+function normalizeOptionalBrowserPath(value: unknown, field: keyof BrowserSettings): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`browser.${field} must be a string`);
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeBrowserSettings(value: unknown): BrowserSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("browser must be an object");
+  }
+  const raw = value as Record<string, unknown>;
+  const executablePath = normalizeOptionalBrowserPath(raw.executablePath, "executablePath");
+  const masterProfileDirectory = normalizeOptionalBrowserPath(raw.masterProfileDirectory, "masterProfileDirectory");
+  if (!executablePath && !masterProfileDirectory) return undefined;
+  return {
+    ...(executablePath ? { executablePath } : {}),
+    ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
+  };
+}
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -110,6 +140,7 @@ export function createSettingsStore(db: DatabaseSync) {
     if (updates.customInstructions !== undefined) current.customInstructions = updates.customInstructions;
     if ("model" in updates) current.model = updates.model || undefined;
     if ("reasoningEffort" in updates) current.reasoningEffort = updates.reasoningEffort || undefined;
+    if ("browser" in updates) current.browser = normalizeBrowserSettings(updates.browser);
 
     persistSettings(current);
 

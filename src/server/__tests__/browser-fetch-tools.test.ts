@@ -3,6 +3,13 @@ import { testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 
+function createBrowserToolContext() {
+  return {
+    copilotHome: COPILOT_HOME,
+    settingsStore: { getSettings: () => ({}) },
+  } as any;
+}
+
 const execMock = vi.fn();
 const execFileMock = vi.fn();
 const cpMock = vi.fn();
@@ -73,7 +80,7 @@ describe("browser_fetch tool", () => {
     });
 
     const mod = await import("../browser-fetch-tools.js");
-    const tools = mod.createBrowserFetchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserFetchTools(createBrowserToolContext());
     const result = await tools[0].handler({
       url: "https://bridge.internal/example",
       selector: "#content",
@@ -100,7 +107,7 @@ describe("browser_fetch tool", () => {
     });
 
     const mod = await import("../browser-fetch-tools.js");
-    const tools = mod.createBrowserFetchTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserFetchTools(createBrowserToolContext());
     const result = await tools[0].handler({
       url: "https://example.com/failure",
       selector: "#content",

@@ -3,6 +3,13 @@ import { testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 
+function createBrowserToolContext() {
+  return {
+    copilotHome: COPILOT_HOME,
+    settingsStore: { getSettings: () => ({}) },
+  } as any;
+}
+
 const execMock = vi.fn();
 const execFileMock = vi.fn();
 const cpMock = vi.fn();
@@ -92,7 +99,7 @@ describe("browser_exec tool", () => {
     });
 
     const mod = await import("../browser-exec-tools.js");
-    const tools = mod.createBrowserExecTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
       commands: [
         { command: "open", args: ["https://example.com"] },
@@ -122,7 +129,7 @@ describe("browser_exec tool", () => {
     });
 
     const mod = await import("../browser-exec-tools.js");
-    const tools = mod.createBrowserExecTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
       commands: [{ command: "fill", args: ["@e1", "hello"] }],
       capture: { title: true },
@@ -143,7 +150,7 @@ describe("browser_exec tool", () => {
     });
 
     const mod = await import("../browser-exec-tools.js");
-    const tools = mod.createBrowserExecTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
       commands: [{ command: "snapshot", args: ["-i"] }],
     }, invocation) as any;
@@ -169,7 +176,7 @@ describe("browser_exec tool", () => {
       });
 
     const mod = await import("../browser-exec-tools.js");
-    const tools = mod.createBrowserExecTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
       lane: "clone",
       commands: [
@@ -204,7 +211,7 @@ describe("browser_exec tool", () => {
     });
 
     const mod = await import("../browser-exec-tools.js");
-    const tools = mod.createBrowserExecTools({ copilotHome: COPILOT_HOME } as any);
+    const tools = mod.createBrowserExecTools(createBrowserToolContext());
     const result = await tools[0].handler({
       commands: [{ command: "open", args: ["https://example.com"] }],
     }, invocation);

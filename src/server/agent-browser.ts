@@ -54,6 +54,8 @@ interface BrowserProcessInfo {
 export interface BrowserTarget {
   sessionName: string;
   profileDir: string;
+  executablePath?: string;
+  headed?: boolean;
 }
 
 export interface BrowserLane {
@@ -73,15 +75,60 @@ export interface BrowserCommandOptions {
   browserTarget?: BrowserTarget;
 }
 
+export interface BrowserLaunchConfig {
+  executablePath?: string;
+  masterProfileDirectory?: string;
+}
+
+export type BrowserExecutablePathSource = "settings" | "environment" | "auto-detect";
+
 export type BrowserCommand = readonly [string, ...string[]];
+
+function normalizeConfiguredPath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+export function getBrowserLaunchConfig(settings?: {
+  browser?: BrowserLaunchConfig | null;
+}): BrowserLaunchConfig {
+  const executablePath = normalizeConfiguredPath(settings?.browser?.executablePath);
+  const masterProfileDirectory = normalizeConfiguredPath(settings?.browser?.masterProfileDirectory);
+  return {
+    ...(executablePath ? { executablePath } : {}),
+    ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
+  };
+}
+
+export function getEffectiveBrowserExecutablePath(
+  launchConfig: BrowserLaunchConfig = {},
+  env: NodeJS.ProcessEnv = process.env,
+): { path?: string; source: BrowserExecutablePathSource } {
+  const settingsPath = normalizeConfiguredPath(launchConfig.executablePath);
+  if (settingsPath) return { path: settingsPath, source: "settings" };
+
+  const environmentPath = normalizeConfiguredPath(env.AGENT_BROWSER_EXECUTABLE_PATH);
+  if (environmentPath) return { path: environmentPath, source: "environment" };
+
+  return { source: "auto-detect" };
+}
 
 export function getBridgeBrowserTarget(
   copilotHome = process.env.COPILOT_HOME ?? join(homedir(), ".copilot"),
+  launchConfig: BrowserLaunchConfig = {},
 ): BrowserTarget {
-  const suffix = createHash("sha1").update(copilotHome).digest("hex").slice(0, 8);
+  const executablePath = normalizeConfiguredPath(launchConfig.executablePath);
+  const defaultProfileDir = join(copilotHome, "browser-profile");
+  const profileDir = normalizeConfiguredPath(launchConfig.masterProfileDirectory) ?? defaultProfileDir;
+  const suffixSeed = executablePath || profileDir !== defaultProfileDir
+    ? `${copilotHome}\u0000${profileDir}\u0000${executablePath ?? ""}`
+    : copilotHome;
+  const suffix = createHash("sha1").update(suffixSeed).digest("hex").slice(0, 8);
   return {
     sessionName: `copilot-bridge-${suffix}`,
-    profileDir: join(copilotHome, "browser-profile"),
+    profileDir,
+    ...(executablePath ? { executablePath } : {}),
   };
 }
 
@@ -90,6 +137,8 @@ function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
     ...process.env,
     AGENT_BROWSER_SESSION: target.sessionName,
     AGENT_BROWSER_PROFILE: target.profileDir,
+    ...(target.executablePath ? { AGENT_BROWSER_EXECUTABLE_PATH: target.executablePath } : {}),
+    ...(target.headed ? { AGENT_BROWSER_HEADED: "true" } : {}),
   };
 }
 
@@ -555,8 +604,9 @@ async function resolveCloneSourceProfile(primaryTarget: BrowserTarget): Promise<
 
 async function resolvePrimaryBrowserTarget(
   copilotHome: string | undefined,
+  launchConfig: BrowserLaunchConfig,
 ): Promise<{ browserTarget: BrowserTarget; sourceKind: string }> {
-  const primaryTarget = getBridgeBrowserTarget(copilotHome);
+  const primaryTarget = getBridgeBrowserTarget(copilotHome, launchConfig);
   if (await pathExists(primaryTarget.profileDir)) {
     return { browserTarget: primaryTarget, sourceKind: "context-primary" };
   }
@@ -567,9 +617,10 @@ export async function createPersistentCloneBrowserTarget(
   copilotHome: string | undefined,
   telemetryStore: TelemetryStore | undefined,
   metadata: Record<string, unknown>,
+  launchConfig: BrowserLaunchConfig = {},
 ): Promise<{ cloneId: string; browserTarget: BrowserTarget }> {
   const resolvedHome = copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
-  const primaryTarget = getBridgeBrowserTarget(resolvedHome);
+  const primaryTarget = getBridgeBrowserTarget(resolvedHome, launchConfig);
   const clone = await createBrowserClone(primaryTarget, resolvedHome, telemetryStore, metadata);
   persistentCloneProfiles.add(clone.browserTarget.profileDir);
   return clone;
@@ -589,6 +640,7 @@ async function createBrowserClone(
   const browserTarget = {
     sessionName: `${primaryTarget.sessionName}-clone-${cloneId}`,
     profileDir,
+    ...(primaryTarget.executablePath ? { executablePath: primaryTarget.executablePath } : {}),
   };
 
   const startedAt = Date.now();
@@ -1079,8 +1131,9 @@ export async function withPrimaryBrowserLane<T>(
   telemetryStore: TelemetryStore | undefined,
   metadata: Record<string, unknown>,
   fn: (lane: BrowserLane) => Promise<T>,
+  launchConfig: BrowserLaunchConfig = {},
 ): Promise<T> {
-  const { browserTarget, sourceKind } = await resolvePrimaryBrowserTarget(copilotHome);
+  const { browserTarget, sourceKind } = await resolvePrimaryBrowserTarget(copilotHome, launchConfig);
   return withQueuedLane(browserTarget.sessionName, "primary", telemetryStore, {
     ...metadata,
     browserSession: browserTarget.sessionName,
@@ -1093,9 +1146,10 @@ export async function withCloneBrowserLane<T>(
   telemetryStore: TelemetryStore | undefined,
   metadata: Record<string, unknown>,
   fn: (lane: BrowserLane) => Promise<T>,
+  launchConfig: BrowserLaunchConfig = {},
 ): Promise<T> {
   const resolvedHome = copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
-  const primaryTarget = getBridgeBrowserTarget(resolvedHome);
+  const primaryTarget = getBridgeBrowserTarget(resolvedHome, launchConfig);
   const clonePoolKey = `${primaryTarget.sessionName}:clone-pool`;
   return withClonePoolSlot(clonePoolKey, telemetryStore, {
     ...metadata,

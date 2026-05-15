@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { ab, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 
 async function takeSnapshot(
@@ -98,7 +98,8 @@ export function createWebSearchTools(ctx: AppContext) {
       handler: async (args: any) => {
         const query: string = args.query;
         const browserOpId = randomUUID();
-        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome);
+        const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
+        const primaryTarget = getBridgeBrowserTarget(ctx.copilotHome, launchConfig);
         const queryHash = queryFingerprint(query);
         const queryLength = query.length;
         const toolStart = Date.now();
@@ -353,7 +354,7 @@ export function createWebSearchTools(ctx: AppContext) {
               browserOpId,
               toolName: "web_search",
               queryHash,
-            }, runFlow);
+            }, runFlow, launchConfig);
           } catch (err) {
             fallbackToPrimary = true;
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
@@ -369,7 +370,7 @@ export function createWebSearchTools(ctx: AppContext) {
             browserOpId,
             toolName: "web_search",
             queryHash,
-          }, runFlow);
+          }, runFlow, launchConfig);
         } catch (err: any) {
           return webSearchFailure(`Search failed: ${String(err).slice(0, 200)}`, { query });
         } finally {

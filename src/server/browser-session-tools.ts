@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
-import { safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
+import { getBrowserLaunchConfig, safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
 import { joinFailureSections, toolFailure, toolFailureWithContext } from "./tool-results.js";
@@ -51,6 +51,7 @@ export function createBrowserSessionTools(ctx: AppContext) {
   const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
     copilotHome: ctx.copilotHome,
     telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
   });
 
   return [

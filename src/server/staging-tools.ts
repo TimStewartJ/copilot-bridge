@@ -526,7 +526,12 @@ function backendOutputTail(output: CapturedCommandOutput): string {
 }
 
 function proxyHeaders(headers: IncomingHttpHeaders, targetHost: string): IncomingHttpHeaders {
-  const nextHeaders: IncomingHttpHeaders = { ...headers, host: targetHost };
+  const originalHost = headers["x-forwarded-host"] ?? headers.host;
+  const nextHeaders: IncomingHttpHeaders = {
+    ...headers,
+    host: targetHost,
+    ...(originalHost ? { "x-forwarded-host": originalHost } : {}),
+  };
   const connectionTokens = String(headers.connection ?? "")
     .split(",")
     .map((token) => token.trim().toLowerCase())

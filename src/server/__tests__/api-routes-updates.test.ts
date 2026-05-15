@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { request } from "./api-routes-test-helpers.js";
 import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("Update routes", () => {
   it("GET /api/updates/check reports disabled outside release mode", async () => {
@@ -34,6 +38,40 @@ describe("Update routes", () => {
       .send({ channel: "stable" });
 
     expect(res.status).toBe(403);
+  });
+
+  it("POST /api/updates/install accepts same-origin staging proxy headers", async () => {
+    vi.stubEnv("BRIDGE_STAGING_PREVIEW", "true");
+    const local = createTestApp({
+      runtimePaths: makeTestRuntimePaths("api-updates-install-staging-proxy", { distributionMode: "development" }),
+    });
+
+    const res = await request(local.app)
+      .post("/api/updates/install")
+      .set("Host", "127.0.0.1:49152")
+      .set("X-Forwarded-Host", "preview.example.test")
+      .set("Origin", "https://preview.example.test")
+      .send({ channel: "stable" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("packaged release mode");
+  });
+
+  it("POST /api/updates/install accepts staging UI fetch metadata when the child host is local", async () => {
+    vi.stubEnv("BRIDGE_STAGING_PREVIEW", "true");
+    const local = createTestApp({
+      runtimePaths: makeTestRuntimePaths("api-updates-install-staging-fetch-site", { distributionMode: "development" }),
+    });
+
+    const res = await request(local.app)
+      .post("/api/updates/install")
+      .set("Host", "127.0.0.1:49152")
+      .set("Origin", "https://preview.example.test")
+      .set("Sec-Fetch-Site", "same-origin")
+      .send({ channel: "stable" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("packaged release mode");
   });
 
   it("POST /api/updates/install is disabled outside release mode", async () => {

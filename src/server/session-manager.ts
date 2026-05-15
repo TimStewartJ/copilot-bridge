@@ -67,7 +67,7 @@ import type { BrowserSessionStore } from "./browser-session-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
-import { getBridgeBrowserTarget, shutdownBridgeBrowser } from "./agent-browser.js";
+import { getBridgeBrowserTarget, getBrowserLaunchConfig, shutdownBridgeBrowser } from "./agent-browser.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { UserInputBrokerError, type UserInputBroker } from "./user-input-broker.js";
 import type { NativeUserInputRequest, NativeUserInputResponse, UserInputCancelReason, UserInputRequestId } from "./user-input-types.js";
@@ -256,6 +256,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     browserSessionStore: getOrCreateBrowserSessionStore(ctx, {
       copilotHome,
       telemetryStore: ctx.telemetryStore,
+      getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     }),
     telemetryStore: ctx.telemetryStore,
     config: opts.config,
@@ -1763,7 +1764,13 @@ export class SessionManager {
     }
 
     try {
-      await shutdownBridgeBrowser(getBridgeBrowserTarget(this.deps.copilotHome), this.deps.telemetryStore);
+      await shutdownBridgeBrowser(
+        getBridgeBrowserTarget(
+          this.deps.copilotHome,
+          getBrowserLaunchConfig(this.deps.settingsStore?.getSettings()),
+        ),
+        this.deps.telemetryStore,
+      );
     } catch (err) {
       console.error("[browser] Primary browser shutdown failed:", err);
     }

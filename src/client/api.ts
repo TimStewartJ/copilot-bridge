@@ -1438,6 +1438,11 @@ export interface ProvidersConfig {
 export type ThemePreference = "light" | "dark" | "system";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
+export interface BrowserSettings {
+  executablePath?: string;
+  masterProfileDirectory?: string;
+}
+
 export interface AppSettings {
   providers?: ProvidersConfig;
   mcpServers: Record<string, McpServerConfig>;
@@ -1447,6 +1452,7 @@ export interface AppSettings {
   customInstructions?: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  browser?: BrowserSettings;
 }
 
 export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
@@ -1475,6 +1481,54 @@ export async function patchSettings(updates: Partial<AppSettings>): Promise<AppS
     throw new Error(err.error || res.statusText);
   }
   return res.json();
+}
+
+export type BrowserDiagnosticsTone = "success" | "warning" | "error";
+
+export interface BrowserDiagnosticsIssue {
+  code: string;
+  label: string;
+  count: number;
+  latestAt?: string;
+}
+
+export interface BrowserDiagnosticsResponse {
+  checkedAt: string;
+  windowHours: number;
+  summary: {
+    tone: BrowserDiagnosticsTone;
+    label: string;
+    detail: string;
+  };
+  agentBrowserInstalled: boolean;
+  config: {
+    sessionName: string;
+    executablePath?: string;
+    executablePathSource: "settings" | "environment" | "auto-detect";
+    executablePathConfigured: boolean;
+    executablePathExists?: boolean;
+    masterProfileDirectory: string;
+    masterProfileDirectoryConfigured: boolean;
+    masterProfileDirectoryExists: boolean;
+  };
+  issues: BrowserDiagnosticsIssue[];
+}
+
+export interface BrowserHeadedLaunchResponse {
+  ok: true;
+  url: string;
+  sessionName: string;
+  masterProfileDirectory: string;
+  executablePath?: string;
+  message: string;
+}
+
+export async function fetchBrowserDiagnostics(): Promise<BrowserDiagnosticsResponse> {
+  return apiFetch<BrowserDiagnosticsResponse>("/api/browser/diagnostics");
+}
+
+export async function launchHeadedDiagnosticsBrowser(): Promise<BrowserHeadedLaunchResponse> {
+  return apiFetch<BrowserHeadedLaunchResponse>("/api/browser/diagnostics/launch-headed", {});
 }
 
 export interface DeviceHibernateResponse {
