@@ -8,7 +8,12 @@ import {
   type Task,
   type TaskGroup,
 } from "../api";
-import { resolveFeedActionTaskId } from "../feed-action-helpers";
+import {
+  buildFeedCardChatContext,
+  buildFeedCardChatPrompt,
+  DEFAULT_FEED_CHAT_LABEL,
+  resolveFeedActionTaskId,
+} from "../feed-action-helpers";
 import EmptyState from "./shared/EmptyState";
 import FeedActionDialog, { type FeedActionSubmitMode, type FeedActionTaskPreview } from "./FeedActionDialog";
 import FeedCard from "./FeedCard";
@@ -16,15 +21,28 @@ import { Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { UI } from "./shared/design-system";
 
 interface FeedActionDraft {
+  source: "action" | "chat";
   card: FeedCardData;
   prompt: string;
+  context?: string;
   taskId: string | null;
+  label?: string;
+  eyebrow: string;
+  description: string;
+  promptLabel?: string;
+  promptPlaceholder?: string;
+  allowEmptyPrompt?: boolean;
 }
 
 interface StartedFeedAction {
   sessionId: string;
   taskId: string | null;
   prompt: string;
+}
+
+interface StartedFeedChat {
+  sessionId: string;
+  taskId: string | null;
 }
 
 interface PendingStatusMutation {
@@ -127,6 +145,7 @@ export default function DashboardFeed({
   const [feedMutationError, setFeedMutationError] = useState<string | null>(null);
   const [feedFeedback, setFeedFeedback] = useState<FeedFeedback | null>(null);
   const [startedFeedActions, setStartedFeedActions] = useState<Record<string, StartedFeedAction>>({});
+  const [startedFeedChats, setStartedFeedChats] = useState<Record<string, StartedFeedChat>>({});
   const [pendingStatuses, setPendingStatuses] = useState<Record<string, PendingStatusMutation>>({});
   const [pendingDeletes, setPendingDeletes] = useState<Record<string, FeedCardData>>({});
   const mutationRequestIdRef = useRef(0);
@@ -429,9 +448,30 @@ export default function DashboardFeed({
   const openFeedAction = (card: FeedCardData) => {
     if (!card.action) return;
     setActionDraft({
+      source: "action",
       card,
       prompt: card.action.prompt,
       taskId: resolveFeedActionTaskId(card),
+      label: card.action.label,
+      eyebrow: "Feed action preview",
+      description: "Review or edit the prompt before starting a new session.",
+    });
+    setActionError(null);
+  };
+
+  const openFeedChat = (card: FeedCardData) => {
+    setActionDraft({
+      source: "chat",
+      card,
+      prompt: "",
+      context: buildFeedCardChatContext(card),
+      taskId: card.taskId,
+      label: DEFAULT_FEED_CHAT_LABEL,
+      eyebrow: "Feed card chat",
+      description: "The card context is included. Add what you want to ask or leave it blank to start from the card.",
+      promptLabel: "Message to send",
+      promptPlaceholder: "What do you want to ask or do with this card?",
+      allowEmptyPrompt: true,
     });
     setActionError(null);
   };
@@ -446,53 +486,93 @@ export default function DashboardFeed({
     if (!actionDraft || actionSubmitting) return;
     const draft = actionDraft;
     const prompt = actionDraft.prompt.trim();
-    if (!prompt) {
+    if (draft.source === "action" && !prompt) {
       setActionError("Prompt is required.");
       return;
     }
     const latestCard = feedCards.find((card) => card.id === actionDraft.card.id);
-    const latestActionTaskId = latestCard ? resolveFeedActionTaskId(latestCard) : null;
-    if (
-      !latestCard
-      || latestCard.status !== "active"
-      || !latestCard.action
-      || latestCard.action.prompt !== actionDraft.card.action?.prompt
-      || latestActionTaskId !== actionDraft.taskId
-    ) {
-      if (!latestCard || latestCard.status !== "active" || !latestCard.action) {
-        setActionError("This action is no longer available. Close the preview and reopen the card if needed.");
-        return;
-      }
-      setActionDraft({
-        card: latestCard,
-        prompt: latestCard.action.prompt,
-        taskId: latestActionTaskId,
-      });
-      setActionError("This card changed while the preview was open. Review the latest prompt before starting.");
+    if (!latestCard) {
+      setActionError("This card is no longer available. Close the preview and reopen the feed if needed.");
       return;
     }
+    if (actionDraft.source === "action") {
+      const latestActionTaskId = resolveFeedActionTaskId(latestCard);
+      if (
+        latestCard.status !== "active"
+        || !latestCard.action
+        || latestCard.action.prompt !== actionDraft.card.action?.prompt
+        || latestActionTaskId !== actionDraft.taskId
+      ) {
+        if (latestCard.status !== "active" || !latestCard.action) {
+          setActionError("This action is no longer available. Close the preview and reopen the card if needed.");
+          return;
+        }
+        setActionDraft({
+          source: "action",
+          card: latestCard,
+          prompt: latestCard.action.prompt,
+          taskId: latestActionTaskId,
+          label: latestCard.action.label,
+          eyebrow: "Feed action preview",
+          description: "Review or edit the prompt before starting a new session.",
+        });
+        setActionError("This card changed while the preview was open. Review the latest prompt before starting.");
+        return;
+      }
+    }
+    if (
+      draft.source === "chat"
+      && (
+        latestCard.status !== draft.card.status
+        || latestCard.taskId !== draft.taskId
+        || latestCard.sessionId !== draft.card.sessionId
+        || latestCard.updatedAt !== draft.card.updatedAt
+      )
+    ) {
+      setActionDraft({
+        source: "chat",
+        card: latestCard,
+        prompt: draft.prompt,
+        context: buildFeedCardChatContext(latestCard),
+        taskId: latestCard.taskId,
+        label: DEFAULT_FEED_CHAT_LABEL,
+        eyebrow: "Feed card chat",
+        description: "The card context is included. Add what you want to ask or leave it blank to start from the card.",
+        promptLabel: "Message to send",
+        promptPlaceholder: "What do you want to ask or do with this card?",
+        allowEmptyPrompt: true,
+      });
+      setActionError("This card changed while the preview was open. Review the latest card context before starting.");
+      return;
+    }
+    const shouldLinkChatToCard = draft.source === "chat" && !latestCard.sessionId;
+    const promptToSend = draft.source === "chat"
+      ? buildFeedCardChatPrompt(draft.context ?? buildFeedCardChatContext(draft.card), prompt)
+      : prompt;
     setActionSubmitMode(mode);
     setActionError(null);
     setFeedMutationError(null);
     let sessionId: string;
     try {
       sessionId = mode === "background"
-        ? await onStartPromptSession(prompt, draft.taskId ?? undefined, { navigateOnError: false })
-        : await onStartPromptSession(prompt, draft.taskId ?? undefined);
+        ? await onStartPromptSession(promptToSend, draft.taskId ?? undefined, { navigateOnError: false })
+        : await onStartPromptSession(promptToSend, draft.taskId ?? undefined);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       setActionSubmitMode(null);
       return;
     }
 
-    setStartedFeedActions((current) => ({
-      ...current,
-      [draft.card.id]: {
-        sessionId,
-        taskId: draft.taskId,
-        prompt,
-      },
-    }));
+    if (draft.source === "action") {
+      setStartedFeedActions((current) => ({
+        ...current,
+        [draft.card.id]: {
+          sessionId,
+          taskId: draft.taskId,
+          prompt: promptToSend,
+        },
+      }));
+    }
     setActionDraft(null);
     setActionSubmitMode(null);
     if (mode === "foreground") {
@@ -501,29 +581,54 @@ export default function DashboardFeed({
       setFeedFeedback((current) => (
         current?.kind === "delete"
           ? current
-          : { kind: "notice", message: `Started "${draft.card.title}" in background.` }
+          : {
+              kind: "notice",
+              message: draft.source === "action"
+                ? `Started "${draft.card.title}" in background.`
+                : `Started chat for "${draft.card.title}" in background.`,
+            }
       ));
     }
 
     let patchError: string | null = null;
-    try {
-      await patchFeedCard(draft.card.id, { status: "done", sessionId });
-    } catch (error) {
-      patchError = formatFeedMutationError(error);
+    if (draft.source === "action") {
+      try {
+        await patchFeedCard(draft.card.id, { status: "done", sessionId });
+      } catch (error) {
+        patchError = formatFeedMutationError(error);
+      }
+    } else if (shouldLinkChatToCard) {
+      try {
+        await patchFeedCard(draft.card.id, { sessionId });
+        setStartedFeedChats((current) => ({
+          ...current,
+          [draft.card.id]: {
+            sessionId,
+            taskId: draft.taskId,
+          },
+        }));
+      } catch (error) {
+        patchError = formatFeedMutationError(error);
+      }
     }
 
     let refreshError: string | null = null;
-    try {
-      await onRefetchFeed();
-    } catch (error) {
-      refreshError = formatFeedMutationError(error);
+    if (draft.source === "action" || shouldLinkChatToCard) {
+      try {
+        await onRefetchFeed();
+      } catch (error) {
+        refreshError = formatFeedMutationError(error);
+      }
     }
 
     if (patchError) {
+      const actionMessage = draft.source === "action"
+        ? "failed to mark feed card done"
+        : "failed to link feed card to the session";
       setFeedMutationError(
         refreshError
-          ? `Session started, but failed to mark feed card done: ${patchError} Also failed to refresh feed: ${refreshError}`
-          : `Session started, but failed to mark feed card done: ${patchError}`,
+          ? `Session started, but ${actionMessage}: ${patchError} Also failed to refresh feed: ${refreshError}`
+          : `Session started, but ${actionMessage}: ${patchError}`,
       );
     } else if (refreshError) {
       setFeedMutationError(`Session started, but refreshing the feed failed: ${refreshError}`);
@@ -532,14 +637,13 @@ export default function DashboardFeed({
 
   const renderFeedCard = (card: FeedCardData) => {
     const startedAction = getStartedFeedAction(card);
-    const displayCard = startedAction
-      ? {
-          ...card,
-          action: null,
-          taskId: card.taskId ?? startedAction.taskId,
-          sessionId: card.sessionId ?? startedAction.sessionId,
-        }
-      : card;
+    const startedChat = startedFeedChats[card.id];
+    const displayCard = {
+      ...card,
+      action: startedAction ? null : card.action,
+      taskId: card.taskId ?? startedAction?.taskId ?? startedChat?.taskId ?? null,
+      sessionId: startedAction?.sessionId ?? card.sessionId ?? startedChat?.sessionId ?? null,
+    };
 
     return (
       <FeedCard
@@ -549,6 +653,7 @@ export default function DashboardFeed({
         onSelectTask={onSelectTask}
         onSelectSession={onSelectSession}
         onAction={openFeedAction}
+        onChat={openFeedChat}
         onStatusChange={handleFeedStatusChange}
         onDelete={handleFeedDelete}
       />
@@ -656,10 +761,16 @@ export default function DashboardFeed({
       {actionDraft && (
         <FeedActionDialog
           cardTitle={actionDraft.card.title}
-          actionLabel={actionDraft.card.action?.label}
+          eyebrow={actionDraft.eyebrow}
+          actionLabel={actionDraft.label}
+          description={actionDraft.description}
           taskId={actionDraft.taskId}
           taskPreview={actionTaskPreview}
+          context={actionDraft.context}
           prompt={actionDraft.prompt}
+          promptLabel={actionDraft.promptLabel}
+          promptPlaceholder={actionDraft.promptPlaceholder}
+          allowEmptyPrompt={actionDraft.allowEmptyPrompt}
           error={actionError}
           submitting={actionSubmitting}
           submitMode={actionSubmitMode}

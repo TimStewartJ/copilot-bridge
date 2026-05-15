@@ -167,6 +167,20 @@ describe("FeedCard", () => {
     expect(html).toContain("button");
   });
 
+  it("renders a generic card chat action when provided", () => {
+    const html = renderToStaticMarkup(createElement(FeedCard, {
+      card: makeCard({ action: null }),
+      onSelectTask: vi.fn(),
+      onSelectSession: vi.fn(),
+      onAction: vi.fn(),
+      onChat: vi.fn(),
+      onStatusChange: vi.fn(),
+      onDelete: vi.fn(),
+    }));
+
+    expect(html).toContain("Chat with card");
+  });
+
   it("marks pending cards busy and disables card actions", () => {
     const html = renderToStaticMarkup(createElement(FeedCard, {
       card: makeCard(),
