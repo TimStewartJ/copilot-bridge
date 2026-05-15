@@ -21,6 +21,12 @@ vi.mock("../api", async () => {
 
 import DashboardFeed from "./DashboardFeed";
 
+type OnStartPromptSession = ComponentProps<typeof DashboardFeed>["onStartPromptSession"];
+
+function mockStartPromptSession(sessionId: string) {
+  return vi.fn<OnStartPromptSession>(async () => sessionId);
+}
+
 function makeCard(overrides: Partial<FeedCardData> = {}): FeedCardData {
   return {
     id: "card-1",
@@ -296,7 +302,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   it("starts a card-context chat without marking the feed card done", async () => {
-    const onStartPromptSession = vi.fn(async () => "session-chat");
+    const onStartPromptSession = mockStartPromptSession("session-chat");
     const onSelectSession = vi.fn();
     const onRefetchFeed = vi.fn(async () => undefined);
     await renderDashboardFeed({
@@ -348,7 +354,7 @@ describe("DashboardFeed feed mutations", () => {
   });
 
   it("does not replace an existing card session link when starting a card chat", async () => {
-    const onStartPromptSession = vi.fn(async () => "session-chat");
+    const onStartPromptSession = mockStartPromptSession("session-chat");
     const onSelectSession = vi.fn();
     const onRefetchFeed = vi.fn(async () => undefined);
     await renderDashboardFeed({
