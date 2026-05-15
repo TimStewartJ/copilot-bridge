@@ -159,6 +159,29 @@ describe("Feed routes", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("PATCH /api/feed/:id rejects key field updates without changing the card", async () => {
+    const create = await request(app)
+      .post("/api/feed")
+      .send({ key: "stable:key", title: "Stable" });
+    const id = create.body.card.id;
+    const before = ctx.feedStore.getCard(id);
+
+    for (const { payload, field } of [
+      { payload: { key: "renamed:key", title: "Renamed" }, field: "key" },
+      { payload: { dedupeKey: null, title: "Renamed" }, field: "dedupeKey" },
+    ]) {
+      const res = await request(app)
+        .patch(`/api/feed/${id}`)
+        .send(payload);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        error: expect.stringContaining(`Feed card key fields cannot be updated (${field})`),
+      });
+      expect(ctx.feedStore.getCard(id)).toEqual(before);
+    }
+  });
+
   it("serves feed-owned visual artifacts for cards", async () => {
     const saveTool = getTool("feed_save");
     const created = await saveTool.handler({
