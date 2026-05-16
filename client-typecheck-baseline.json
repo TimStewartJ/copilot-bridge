@@ -51,14 +51,14 @@
   {
     "code": 2339,
     "file": "src/client/api.ts",
-    "line": 398,
+    "line": 399,
     "character": 31,
     "message": "Property 'env' does not exist on type 'ImportMeta'."
   },
   {
     "code": 2345,
     "file": "src/client/App.tsx",
-    "line": 512,
+    "line": 516,
     "character": 55,
     "message": "Argument of type '\"archived\" | \"active\" | \"done\"' is not assignable to parameter of type '\"archived\" | \"active\"'.\n  Type '\"done\"' is not assignable to type '\"archived\" | \"active\"'."
   },

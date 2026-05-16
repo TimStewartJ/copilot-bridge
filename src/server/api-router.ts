@@ -1019,6 +1019,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const status = getSessionStatus(ctx, id);
       const linkedTask = taskLookup.resolveTask(id);
       const linkedTasks = taskLookup.getLinkedTasks(id);
+      const linkedTaskIds = linkedTasks.map((task) => task.id);
       const sessionMeta = currentMeta[id];
       const archived = sessionMeta?.archived ?? s.archived ?? false;
       const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt ?? s.lastVisibleActivityAt;
@@ -1045,6 +1046,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return [{
         ...s,
         summary,
+        linkedTaskIds,
         lastVisibleActivityAt,
         lastAttentionAt,
         lastActivityAt,
@@ -3063,7 +3065,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const readState = ctx.readStateStore.getReadState();
       const tasks = ctx.taskStore.listTasks();
       const taskLookup = createSessionListTaskLookup(ctx, tasks);
-      const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
 
       const enrichedSessions = materializeSessionList(
         await getEnrichedSessionList(false),
@@ -3217,7 +3218,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
       const orphanSessions = enrichedSessions
         .filter((s: any) => {
-          if (taskSessionIds.has(s.sessionId)) return false;
+          const linkedTaskIds = Array.isArray(s.linkedTaskIds)
+            ? s.linkedTaskIds
+            : taskLookup.getLinkedTasks(s.sessionId).map((task) => task.id);
+          if (linkedTaskIds.length > 0) return false;
           const unread = isUnread(s.sessionId, s.lastActivityAt);
           const recent = s.lastActivityAt && new Date(s.lastActivityAt).getTime() > oneDayAgo;
           return s.busy || unread || recent;
@@ -3422,6 +3426,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       const sessions = await ctx.sessionManager.listSessionsFromDisk();
       const sessionMap = new Map(sessions.map((s: any) => [s.sessionId, s]));
+      const taskLookup = createSessionListTaskLookup(ctx);
       const meta = ctx.sessionMetaStore.listMeta();
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
 
@@ -3430,6 +3435,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
           const s = sessionMap.get(run.sessionId);
           const archived = meta[run.sessionId]?.archived === true;
           const summary = s?.summary ?? run.sessionId;
+          const linkedTaskIds = taskLookup.getLinkedTasks(run.sessionId).map((task) => task.id);
           const status = s
             ? getSessionStatus(ctx, run.sessionId)
             : { runState: "idle" as const, busy: false, pendingUserInputCount: 0, needsUserInput: false };
@@ -3443,6 +3449,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
             recordedAtKnown: run.recordedAt !== UNKNOWN_SCHEDULE_RUN_AT,
             sessionId: run.sessionId,
             summary,
+            linkedTaskIds,
             ...status,
             hasPlan,
             archived,

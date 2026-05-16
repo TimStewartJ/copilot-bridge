@@ -84,6 +84,7 @@ export interface Session {
   hasPlan?: boolean;
   archived?: boolean;
   archivedAt?: string;
+  linkedTaskIds?: string[];
   triggeredBy?: "user" | "schedule";
   scheduleId?: string;
   scheduleName?: string;

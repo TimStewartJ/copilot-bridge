@@ -19,7 +19,7 @@ export type StatusEvent =
   | { type: "server:restart-pending"; waitingSessions?: number }
   | { type: "server:restart-cleared" }
   | { type: "status:connected" }
-  | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string }
+  | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
   | { type: "schedule:changed"; scheduleId?: string }
   | { type: "task:changed"; taskId?: string }
   | { type: "feed:changed"; cardId?: string; dedupeKey?: string; taskId?: string; sessionId?: string }

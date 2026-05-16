@@ -411,6 +411,7 @@ describe("Schedule routes", () => {
 
     ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-1");
     ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-2");
+    ctx.taskStore.linkSession(taskId, "sess-1");
 
     const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
     expect(res.status).toBe(200);
@@ -422,6 +423,12 @@ describe("Schedule routes", () => {
       recordedAt: expect.any(String),
       missing: true,
     });
+    expect(res.body.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: "sess-1",
+        linkedTaskIds: [taskId],
+      }),
+    ]));
     expect(res.body).toHaveProperty("offset", 0);
     expect(res.body).toHaveProperty("limit");
   });
