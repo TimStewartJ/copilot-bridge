@@ -38,6 +38,49 @@ describe("session name generator helpers", () => {
     ] as any)).toBeUndefined();
   });
 
+  it("selects the cheapest small model from token price billing", () => {
+    const model = selectSessionTitleModel([
+      { id: "auto" },
+      { id: "aaa-mini-expensive", billing: { tokenPrices: { inputPrice: 200_000_000_000, outputPrice: 800_000_000_000, cachePrice: 20_000_000_000, batchSize: 1_000_000 } } },
+      { id: "gpt-5.5", billing: { tokenPrices: { inputPrice: 500_000_000_000, outputPrice: 3_000_000_000_000, cachePrice: 50_000_000_000, batchSize: 1_000_000 } } },
+      { id: "claude-haiku-4.5", billing: { tokenPrices: { inputPrice: 100_000_000_000, outputPrice: 500_000_000_000, cachePrice: 10_000_000_000, batchSize: 1_000_000 } } },
+      { id: "gpt-5.4-mini", billing: { tokenPrices: { inputPrice: 75_000_000_000, outputPrice: 450_000_000_000, cachePrice: 7_500_000_000, batchSize: 1_000_000 } } },
+      { id: "gpt-5-mini", billing: { tokenPrices: { inputPrice: 25_000_000_000, outputPrice: 200_000_000_000, cachePrice: 2_500_000_000, batchSize: 1_000_000 } } },
+    ] as any);
+
+    expect(model).toBe("gpt-5-mini");
+  });
+
+  it("preserves free-model preference with token price billing", () => {
+    const model = selectSessionTitleModel([
+      { id: "free-large", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
+      { id: "free-haiku", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
+      { id: "gpt-5-mini", billing: { tokenPrices: { inputPrice: 25_000_000_000, outputPrice: 200_000_000_000, cachePrice: 2_500_000_000, batchSize: 1_000_000 } } },
+    ] as any);
+
+    expect(model).toBe("free-haiku");
+  });
+
+  it("uses multiplier when both billing shapes are present", () => {
+    const model = selectSessionTitleModel([
+      { id: "mixed-free-looking-mini", billing: { multiplier: 1, tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
+      { id: "cheap-mini", billing: { multiplier: 0.25 } },
+    ] as any);
+
+    expect(model).toBe("cheap-mini");
+  });
+
+  it("ignores auto, disabled, and unexpectedly expensive token-priced title models", () => {
+    const model = selectSessionTitleModel([
+      { id: "auto", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
+      { id: "disabled-mini", policy: { state: "disabled" }, billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
+      { id: "costly-mini", billing: { tokenPrices: { inputPrice: 300_000_000_000, outputPrice: 900_000_000_000, cachePrice: 30_000_000_000, batchSize: 1_000_000 } } },
+      { id: "expensive-opus", billing: { tokenPrices: { inputPrice: 500_000_000_000, outputPrice: 2_500_000_000_000, cachePrice: 50_000_000_000, batchSize: 1_000_000 } } },
+    ] as any);
+
+    expect(model).toBeUndefined();
+  });
+
   it("uses only recent non-empty user messages in the title prompt", () => {
     const prompt = buildSessionTitleUserPrompt([
       "",

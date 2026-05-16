@@ -106,8 +106,16 @@ export class SessionNameAutogenerator {
 
     let userMessages = (options.userMessages ?? []).map((message) => message.trim()).filter(Boolean).slice(-20);
     if (userMessages.length === 0 && options.session) {
-      const events = await options.session.getMessages();
-      userMessages = collectRecentUserMessages(events);
+      if (typeof options.session.getMessages === "function") {
+        const events = await options.session.getMessages();
+        userMessages = collectRecentUserMessages(events);
+      } else {
+        this.recordSpan("session.name.autogen", start, sessionId, {
+          result: "skipped_no_messages",
+          reason: "getMessages_unavailable",
+        });
+        return;
+      }
     }
     if (userMessages.length === 0) {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_messages" });
