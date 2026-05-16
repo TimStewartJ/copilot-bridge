@@ -246,6 +246,7 @@ describe("Session routes (mocked)", () => {
       expect.objectContaining({
         sessionId: "new-task-session",
         summary: "New session",
+        linkedTaskIds: [task.id],
       }),
     ]);
   });

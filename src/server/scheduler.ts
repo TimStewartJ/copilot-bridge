@@ -545,6 +545,7 @@ export async function triggerSchedule(
       type: "schedule:triggered",
       scheduleId,
       scheduleName: schedule.name,
+      taskId: schedule.taskId,
       sessionId,
     });
 

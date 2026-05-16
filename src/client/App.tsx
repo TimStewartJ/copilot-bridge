@@ -47,6 +47,7 @@ import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboar
 import { getMobileRouteMeta } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
+import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
@@ -460,6 +461,9 @@ export default function App() {
         // Schedule started work — refresh session list, task data, and schedule run history
         invalidateSessions();
         invalidateTasks();
+        if (event.taskId) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.task(event.taskId) });
+        }
         if (event.scheduleId) {
           queryClient.invalidateQueries({ queryKey: queryKeys.scheduleSessions(event.scheduleId) });
         }
@@ -657,8 +661,7 @@ export default function App() {
 
   // Sessions not linked to any task
   const globalSessions = useMemo(() => {
-    const taskSessionIds = new Set(tasks.flatMap((t) => t.sessionIds));
-    return sessions.filter((s) => !taskSessionIds.has(s.sessionId));
+    return getQuickChatSessions(sessions, tasks);
   }, [sessions, tasks]);
   const navTaskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
   const mobileTaskUnreadCount = useMemo(() => {

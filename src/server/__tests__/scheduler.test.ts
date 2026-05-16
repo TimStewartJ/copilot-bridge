@@ -337,6 +337,55 @@ describe("scheduler restart gating", () => {
     });
   });
 
+  it("emits the linked task id when a schedule triggers", async () => {
+    const { ctx } = createTestApp();
+    const events: Array<{ type: string; scheduleId?: string; sessionId?: string; taskId?: string }> = [];
+    const unsubscribe = ctx.globalBus.subscribe((event) => {
+      if (event.type === "schedule:triggered") {
+        events.push({
+          type: event.type,
+          scheduleId: event.scheduleId,
+          sessionId: event.sessionId,
+          taskId: event.taskId,
+        });
+      }
+    });
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    try {
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      const task = ctx.taskStore.createTask("Scheduled Task");
+      const schedule = ctx.scheduleStore.createSchedule({
+        taskId: task.id,
+        name: "Task event schedule",
+        prompt: "continue work",
+        type: "cron",
+        cron: "0 0 * * *",
+      });
+
+      expect(await scheduler.triggerSchedule(schedule.id)).toEqual({ sessionId: "sched-session" });
+      expect(events).toContainEqual({
+        type: "schedule:triggered",
+        scheduleId: schedule.id,
+        sessionId: "sched-session",
+        taskId: task.id,
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("archives older schedule sessions after a retained run", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
