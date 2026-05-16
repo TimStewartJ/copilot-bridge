@@ -94,4 +94,39 @@ describe("session name autogenerator", () => {
 
     expect(setSessionName).not.toHaveBeenCalled();
   });
+
+  it("records a no-message skip when a resumed session cannot provide history", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
+    tempDirs.push(copilotHome);
+    const recordSpan = vi.fn();
+    const setSessionName = vi.fn(async () => {});
+    const generator = createSessionNameAutogenerator({
+      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
+      createSession: vi.fn(async () => ({
+        sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+        disconnect: vi.fn(),
+      })),
+      deleteSession: vi.fn(async () => {}),
+      getCopilotHome: () => copilotHome,
+      getSessionName: vi.fn(async () => undefined),
+      getSessionNameMetadata: () => ({
+        name: "Long original prompt",
+        effectiveName: "Long original prompt",
+        userNamed: false,
+      }),
+      setSessionName,
+      recordSpan,
+    });
+    (generator as any).generateSessionName = vi.fn(async () => "Concise Session Title");
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", { session: {} });
+
+    expect(setSessionName).not.toHaveBeenCalled();
+    expect(recordSpan).toHaveBeenCalledWith(
+      "session.name.autogen",
+      expect.any(Number),
+      "session-1",
+      { result: "skipped_no_messages", reason: "getMessages_unavailable" },
+    );
+  });
 });
