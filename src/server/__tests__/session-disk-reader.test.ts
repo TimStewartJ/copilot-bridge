@@ -103,6 +103,38 @@ describe("listSessionsFromDisk telemetry", () => {
       expect.objectContaining({ sessionId: "b17e1000-0000-4000-8000-000000000001", summary: "Helper name" }),
     ]));
   });
+
+  it("awaits async workspace resolution without unbounded fan-out", async () => {
+    const copilotHome = makeTestDir("session-disk-list-concurrency");
+    const sessionIds = Array.from({ length: 80 }, (_, index) => `session-${String(index).padStart(2, "0")}`);
+    for (const sessionId of sessionIds) {
+      writeSessionFiles(copilotHome, sessionId, {
+        workspace: `created_at: 2026-04-30T10:00:00.000Z\nsummary: ${sessionId}\n`,
+      });
+    }
+
+    const { deps } = createDeps(copilotHome);
+    let activeResolvers = 0;
+    let maxActiveResolvers = 0;
+    deps.resolveEffectiveSessionCwdFromWorkspaceYaml = async (sessionId) => {
+      activeResolvers += 1;
+      maxActiveResolvers = Math.max(maxActiveResolvers, activeResolvers);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      activeResolvers -= 1;
+      return join("workspace", sessionId);
+    };
+
+    const sessions = await listSessionsFromDisk(deps);
+
+    expect(sessions).toHaveLength(sessionIds.length);
+    expect(maxActiveResolvers).toBeLessThanOrEqual(32);
+    expect(sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: "session-00",
+        context: { cwd: join("workspace", "session-00") },
+      }),
+    ]));
+  });
 });
 
 describe("readMessagesFromDisk latest-page path", () => {

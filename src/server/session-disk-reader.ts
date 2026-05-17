@@ -16,6 +16,8 @@ import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
+const SESSION_LIST_WORKSPACE_READ_CONCURRENCY = 32;
+const SESSION_LIST_EVENT_STAT_CONCURRENCY = 64;
 
 const MESSAGE_RELEVANT_EVENT_MARKERS = [
   "user.message",
@@ -45,7 +47,10 @@ export interface SessionDiskReaderDeps {
   copilotHome?: string;
   sessionMetaStore?: SessionMetaStore;
   eventBusRegistry: Pick<EventBusRegistry, "getBus">;
-  resolveEffectiveSessionCwdFromWorkspaceYaml(sessionId: string, content: string): string | undefined;
+  resolveEffectiveSessionCwdFromWorkspaceYaml(
+    sessionId: string,
+    content: string,
+  ): string | undefined | Promise<string | undefined>;
   recordSpan(name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>): void;
   persistLastVisibleActivityAt(sessionId: string, lastVisibleActivityAt?: string): void;
 }
@@ -94,6 +99,44 @@ function isFileNotFoundError(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
     && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let processedCount = 0;
+  let aborted = false;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      if (aborted) break;
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) break;
+
+      try {
+        results[index] = await mapper(items[index]!, index);
+      } catch (error) {
+        aborted = true;
+        throw error;
+      }
+      processedCount += 1;
+      if (processedCount % 128 === 0) {
+        await yieldToEventLoop();
+      }
+    }
+  }));
+
+  return results;
 }
 
 function getToolCallId(event: any): string | undefined {
@@ -443,7 +486,7 @@ export async function listSessionsFromDisk(
   const tWorkspace = Date.now();
   let skippedArchived = 0;
   let missingWorkspace = 0;
-  const workspaceReads = await Promise.all(dirs.map(async (dirName): Promise<WorkspaceSessionRead | null> => {
+  const workspaceReads = await mapWithConcurrency(dirs, SESSION_LIST_WORKSPACE_READ_CONCURRENCY, async (dirName): Promise<WorkspaceSessionRead | null> => {
     const sessionMeta = meta[dirName];
     if (!includeArchived && sessionMeta?.archived) {
       skippedArchived += 1;
@@ -454,7 +497,7 @@ export async function listSessionsFromDisk(
     try {
       const content = await readFile(yamlPath, "utf-8");
       const session: any = { sessionId: dirName };
-      const effectiveCwd = deps.resolveEffectiveSessionCwdFromWorkspaceYaml(dirName, content);
+      const effectiveCwd = await deps.resolveEffectiveSessionCwdFromWorkspaceYaml(dirName, content);
 
       for (const line of content.split(/\r?\n/)) {
         if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
@@ -467,7 +510,7 @@ export async function listSessionsFromDisk(
       missingWorkspace += 1;
       return null;
     }
-  }));
+  });
   const readableWorkspaceSessions = workspaceReads.filter((s): s is WorkspaceSessionRead => s !== null);
   deps.recordSpan("session.listFromDisk.workspace", Date.now() - tWorkspace, undefined, {
     dirCount: dirs.length,
@@ -475,10 +518,11 @@ export async function listSessionsFromDisk(
     skippedArchived,
     missingWorkspace,
     includeArchived,
+    concurrency: SESSION_LIST_WORKSPACE_READ_CONCURRENCY,
   });
 
   const tEventsStat = Date.now();
-  const sessions = await Promise.all(readableWorkspaceSessions.map(async ({ dirName, yamlPath, session }) => {
+  const sessions = await mapWithConcurrency(readableWorkspaceSessions, SESSION_LIST_EVENT_STAT_CONCURRENCY, async ({ dirName, yamlPath, session }) => {
     const sessionMeta = meta[dirName];
     const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
     try {
@@ -497,10 +541,11 @@ export async function listSessionsFromDisk(
     }
     session.intentText = deps.eventBusRegistry.getBus(dirName)?.getIntentText() ?? null;
     return session;
-  }));
+  });
   deps.recordSpan("session.listFromDisk.eventsStat", Date.now() - tEventsStat, undefined, {
     count: sessions.length,
     includeArchived,
+    concurrency: SESSION_LIST_EVENT_STAT_CONCURRENCY,
   });
 
   const tSort = Date.now();
