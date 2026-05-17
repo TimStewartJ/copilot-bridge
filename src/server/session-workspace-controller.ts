@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { stat as statAsync } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -29,6 +30,14 @@ export interface ResetSessionWorkspaceResult {
   message: string;
 }
 
+interface WorkspaceAvailability {
+  cwd: string;
+  available: boolean;
+  clearStalePin: boolean;
+}
+
+type WorkspaceAvailabilityLookup = (cwd?: string | null) => Promise<WorkspaceAvailability | undefined>;
+
 function isDemoMode(runtimePaths?: RuntimePaths): boolean {
   return runtimePaths?.demoMode ?? false;
 }
@@ -44,12 +53,13 @@ function getFsErrorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-function getWorkspaceAvailability(cwd?: string | null): {
-  cwd: string;
-  available: boolean;
-  clearStalePin: boolean;
-} | undefined {
+function normalizeWorkspaceCwd(cwd?: string | null): string | undefined {
   const normalized = cwd?.trim();
+  return normalized || undefined;
+}
+
+function getWorkspaceAvailability(cwd?: string | null): WorkspaceAvailability | undefined {
+  const normalized = normalizeWorkspaceCwd(cwd);
   if (!normalized) return undefined;
   try {
     return {
@@ -67,8 +77,50 @@ function getWorkspaceAvailability(cwd?: string | null): {
   }
 }
 
+async function getWorkspaceAvailabilityAsync(cwd?: string | null): Promise<WorkspaceAvailability | undefined> {
+  const normalized = normalizeWorkspaceCwd(cwd);
+  if (!normalized) return undefined;
+  try {
+    return {
+      cwd: normalized,
+      available: (await statAsync(normalized)).isDirectory(),
+      clearStalePin: true,
+    };
+  } catch (error) {
+    const code = getFsErrorCode(error);
+    return {
+      cwd: normalized,
+      available: false,
+      clearStalePin: code === "ENOENT" || code === "ENOTDIR",
+    };
+  }
+}
+
+function createWorkspaceAvailabilityLookup(): WorkspaceAvailabilityLookup {
+  const cache = new Map<string, Promise<WorkspaceAvailability | undefined>>();
+  return (cwd?: string | null) => {
+    const normalized = normalizeWorkspaceCwd(cwd);
+    if (!normalized) return Promise.resolve(undefined);
+
+    let promise = cache.get(normalized);
+    if (!promise) {
+      promise = getWorkspaceAvailabilityAsync(normalized);
+      cache.set(normalized, promise);
+    }
+    return promise;
+  };
+}
+
 function resolveAvailableWorkspaceCwd(cwd?: string | null): string | undefined {
   const availability = getWorkspaceAvailability(cwd);
+  return availability?.available ? availability.cwd : undefined;
+}
+
+async function resolveAvailableWorkspaceCwdAsync(
+  cwd: string | undefined,
+  getAvailability: WorkspaceAvailabilityLookup,
+): Promise<string | undefined> {
+  const availability = await getAvailability(cwd);
   return availability?.available ? availability.cwd : undefined;
 }
 
@@ -152,6 +204,50 @@ export class SessionWorkspaceController {
       ?? resolveAvailableWorkspaceCwd(parseWorkspaceCwd(workspaceYamlContent))
       ?? resolveAvailableWorkspaceCwd(linkedTask?.cwd)
       ?? resolveDemoWorkspaceDir(this.deps.runtimePaths);
+  }
+
+  createWorkspaceYamlCwdResolver(): (sessionId: string, workspaceYamlContent: string) => Promise<string | undefined> {
+    const getAvailability = createWorkspaceAvailabilityLookup();
+    const pinnedWorkspaces = this.deps.sessionWorkspaceStore?.listWorkspaces?.() ?? {};
+    const taskCwdBySessionId = new Map<string, string | undefined>();
+    const multiTaskSessionIds = new Set<string>();
+    const listedTasks = this.deps.taskStore.listTasks?.() ?? [];
+    for (const task of listedTasks) {
+      for (const sessionId of task.sessionIds) {
+        if (multiTaskSessionIds.has(sessionId)) continue;
+        if (taskCwdBySessionId.has(sessionId)) {
+          taskCwdBySessionId.delete(sessionId);
+          multiTaskSessionIds.add(sessionId);
+          continue;
+        }
+        taskCwdBySessionId.set(sessionId, task.cwd);
+      }
+    }
+    const demoWorkspaceDir = resolveDemoWorkspaceDir(this.deps.runtimePaths);
+
+    return async (sessionId, workspaceYamlContent) => {
+      const pinnedCwd = pinnedWorkspaces[sessionId]?.cwd;
+      const pinnedAvailability = await getAvailability(pinnedCwd);
+      if (pinnedAvailability?.available) return pinnedAvailability.cwd;
+
+      if (pinnedAvailability) {
+        if (pinnedAvailability.clearStalePin) {
+          this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+        }
+        console.warn(
+          `[workspace] Session ${sessionId.slice(0, 8)} pinned workspace is no longer available; falling back: ${pinnedAvailability.cwd}`,
+        );
+      }
+
+      const linkedTaskCwd = multiTaskSessionIds.has(sessionId)
+        ? undefined
+        : (taskCwdBySessionId.has(sessionId)
+            ? taskCwdBySessionId.get(sessionId)
+            : this.deps.taskStore.findTaskBySessionId?.(sessionId)?.cwd);
+      return await resolveAvailableWorkspaceCwdAsync(parseWorkspaceCwd(workspaceYamlContent), getAvailability)
+        ?? await resolveAvailableWorkspaceCwdAsync(linkedTaskCwd, getAvailability)
+        ?? demoWorkspaceDir;
+    };
   }
 
   persistSessionWorkspace(sessionId: string, cwd?: string): void {

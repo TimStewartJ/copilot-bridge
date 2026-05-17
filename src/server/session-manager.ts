@@ -752,12 +752,12 @@ export class SessionManager {
       includeArchived,
     });
     const generation = this.sessionDiskListCacheGeneration;
+    const resolveEffectiveSessionCwdFromWorkspaceYaml = this.workspaceController.createWorkspaceYamlCwdResolver();
     const build = listSessionsFromDiskWithDeps({
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
       eventBusRegistry: this.deps.eventBusRegistry,
-      resolveEffectiveSessionCwdFromWorkspaceYaml: (sessionId, content) =>
-        this.workspaceController.resolveEffectiveSessionCwdFromWorkspaceYaml(sessionId, content),
+      resolveEffectiveSessionCwdFromWorkspaceYaml,
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
       persistLastVisibleActivityAt: (sessionId, lastVisibleActivityAt) =>
         this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt),
