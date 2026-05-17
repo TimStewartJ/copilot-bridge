@@ -30,8 +30,9 @@ export function evaluateHealthPoll(options: {
   hasServerProcess: boolean;
   consecutiveFailures: number;
   failureThreshold: number;
+  failureDetail?: string;
 }): HealthRecoveryDecision {
-  const { healthy, hasServerProcess, consecutiveFailures, failureThreshold } = options;
+  const { healthy, hasServerProcess, consecutiveFailures, failureThreshold, failureDetail } = options;
 
   if (healthy) {
     return { nextFailures: 0 };
@@ -49,7 +50,9 @@ export function evaluateHealthPoll(options: {
   }
 
   const nextFailures = Math.min(consecutiveFailures + 1, failureThreshold);
-  const logMessage = `Health check failed (${nextFailures}/${failureThreshold})`;
+  const logMessage = `Health check failed (${nextFailures}/${failureThreshold})${
+    failureDetail ? `: ${failureDetail}` : ""
+  }`;
 
   if (nextFailures < failureThreshold) {
     return { nextFailures, logMessage };

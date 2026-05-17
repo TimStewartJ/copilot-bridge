@@ -4,7 +4,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, cpSync, statSync } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -68,6 +68,16 @@ const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
 const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
 const STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS = 5_000;
 const STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS = 1_000;
+const STAGING_BACKEND_REQUEST_START_WAIT_MS = 2_000;
+const STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS = 30_000;
+const STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
+const STAGING_BACKEND_LIVE_LIMIT = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_LIVE_LIMIT", 3);
+const STAGING_BACKEND_STARTUP_RESTORE_LIMIT = parseNonNegativeIntegerEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", 1);
+const STAGING_BACKEND_IDLE_TTL_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_IDLE_TTL_MS", 30 * 60_000);
+const STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS", 5 * 60_000);
+const STAGING_STALE_ARTIFACT_MAX_AGE_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_MAX_AGE_MS", 14 * 24 * 60 * 60_000);
+const STAGING_STALE_ARTIFACT_KEEP_RECENT = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_KEEP_RECENT", 25);
+const STAGING_STALE_ARTIFACT_RECENT_GRACE_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_RECENT_GRACE_MS", 2 * 60 * 60_000);
 const STAGING_ARTIFACT_CLEANUP_MAX_RETRIES = 20;
 const STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS = 50;
 const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
@@ -83,6 +93,7 @@ interface PreviewTarget {
   stagingDir: string;
   basePath: string;
   outDir: string;
+  updatedAtMs: number;
 }
 
 export interface ActiveStagingBackend {
@@ -94,6 +105,32 @@ export interface ActiveStagingBackend {
   cleanup: () => Promise<void>;
   stagingDir: string;
   runtimePaths: RuntimePaths;
+  lastAccessAt: number;
+  inflightRequests: number;
+}
+
+type StagingBackendStartResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+type StagingBackendStartFailure = {
+  error: string;
+  attempts: number;
+  nextRetryAt: number;
+};
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function parseNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
 function resolveConfiguredPath(value: string | undefined, fallback: string): string {
@@ -155,12 +192,14 @@ function escapeSqliteStringLiteral(value: string): string {
 
 function createPreviewTarget(stagingDir: string, profile: StagingPreviewProfile = "clone"): PreviewTarget {
   const prefix = buildPreviewPrefix(stagingDir, profile);
+  const outDir = join(STAGING_PREVIEW_PARENT, prefix);
   return {
     prefix,
     profile,
     stagingDir,
     basePath: `/staging/${prefix}/`,
-    outDir: join(STAGING_PREVIEW_PARENT, prefix),
+    outDir,
+    updatedAtMs: directoryMtimeMs(outDir),
   };
 }
 
@@ -185,7 +224,10 @@ async function cleanupPreviewResources(prefix: string, options: { removeDist?: b
     || !!ownedPreviewDataDir;
   if (!ownedByThisProcess) return;
 
-  await teardownStagingBackend(prefix);
+  restorablePreviewTargets.delete(prefix);
+  lazyStagingRouters.delete(prefix);
+  stagingBackendStartFailures.delete(prefix);
+  await teardownStagingBackend(prefix, { removeData: false });
   if (removeDist) {
     removeStagingDist(prefix);
   }
@@ -266,6 +308,20 @@ const activePreviewDataDirs = new Map<string, string>();
 /** Active staged API handlers: prefix → proxy handler (for delegating middleware in index.ts) */
 const activeStagingRouters = new Map<string, RequestHandler>();
 
+/** Preview dirs that can restore a staged backend on demand. */
+const restorablePreviewTargets = new Map<string, PreviewTarget>();
+
+/** Stable lazy API handlers for previews whose backend is stopped/not yet started. */
+const lazyStagingRouters = new Map<string, RequestHandler>();
+
+/** In-flight backend starts, deduped per prefix. */
+const pendingStagingBackendStarts = new Map<string, Promise<StagingBackendStartResult>>();
+
+/** Failed lazy starts, with cooldown to avoid request-triggered spawn loops. */
+const stagingBackendStartFailures = new Map<string, StagingBackendStartFailure>();
+
+let backendIdleReaper: ReturnType<typeof setInterval> | null = null;
+
 /** Registered Express app — set by registerExpressApp() from index.ts */
 let _expressApp: express.Application | null = null;
 
@@ -276,7 +332,7 @@ export function registerExpressApp(app: express.Application): void {
 
 /** Get the staged API handler for a prefix (used by delegating middleware in index.ts) */
 export function getStagingRouter(prefix: string): RequestHandler | undefined {
-  return activeStagingRouters.get(prefix);
+  return activeStagingRouters.get(prefix) ?? getLazyStagingRouter(prefix);
 }
 
 /** Returns the map of active staging previews for the Express middleware to use. */
@@ -297,6 +353,14 @@ function removeStagingDist(prefix: string): void {
 function removePreviewData(dataDir: string): void {
   if (existsSync(dataDir)) {
     removeDirectoryWithRetries(dataDir);
+  }
+}
+
+function directoryMtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
   }
 }
 
@@ -560,10 +624,271 @@ function createUnavailableStagingHandler(prefix: string, detail: string): Reques
   };
 }
 
-function createStagingProxyHandler(prefix: string, backendBaseUrl: string): RequestHandler {
+function getLazyStagingRouter(prefix: string): RequestHandler | undefined {
+  if (!restorablePreviewTargets.has(prefix)) return undefined;
+
+  let router = lazyStagingRouters.get(prefix);
+  if (!router) {
+    router = createLazyStagingHandler(prefix);
+    lazyStagingRouters.set(prefix, router);
+  }
+  return router;
+}
+
+function rememberRestorablePreviewTarget(target: PreviewTarget): void {
+  restorablePreviewTargets.set(target.prefix, target);
+}
+
+function createLazyStagingHandler(prefix: string): RequestHandler {
+  return (req, res, next) => {
+    void handleLazyStagingRequest(prefix, req, res, next);
+  };
+}
+
+async function handleLazyStagingRequest(
+  prefix: string,
+  req: Parameters<RequestHandler>[0],
+  res: Parameters<RequestHandler>[1],
+  next: Parameters<RequestHandler>[2],
+): Promise<void> {
+  const activeRouter = activeStagingRouters.get(prefix);
+  if (activeRouter) {
+    activeRouter(req, res, next);
+    return;
+  }
+
+  const target = restorablePreviewTargets.get(prefix);
+  if (!target) {
+    next();
+    return;
+  }
+
+  const startResult = await ensureStagingBackendStarted(prefix, target, {
+    reason: "first API request",
+    waitMs: STAGING_BACKEND_REQUEST_START_WAIT_MS,
+  });
+  if (startResult.state === "ready") {
+    const router = activeStagingRouters.get(prefix);
+    if (router) {
+      router(req, res, next);
+      return;
+    }
+    res.status(502).json({
+      error: "Staging backend is not available",
+      prefix,
+      detail: "Backend reported ready but no proxy handler was registered.",
+    });
+    return;
+  }
+
+  res.setHeader("Retry-After", String(startResult.retryAfterSeconds));
+  if (startResult.state === "starting") {
+    res.status(503).json({
+      error: "Staging backend is starting",
+      prefix,
+      retryAfterSeconds: startResult.retryAfterSeconds,
+    });
+    return;
+  }
+
+  res.status(502).json({
+    error: "Staging backend is not available",
+    prefix,
+    detail: startResult.error,
+    retryAfterSeconds: startResult.retryAfterSeconds,
+  });
+}
+
+type EnsureStagingBackendResult =
+  | { state: "ready" }
+  | { state: "starting"; retryAfterSeconds: number }
+  | { state: "failed"; error: string; retryAfterSeconds: number };
+
+async function ensureStagingBackendStarted(
+  prefix: string,
+  target: PreviewTarget,
+  options: { reason: string; waitMs: number },
+): Promise<EnsureStagingBackendResult> {
+  if (activeStagingBackends.has(prefix)) {
+    return { state: "ready" };
+  }
+
+  const failure = stagingBackendStartFailures.get(prefix);
+  const now = Date.now();
+  if (failure && failure.nextRetryAt > now) {
+    return {
+      state: "failed",
+      error: failure.error,
+      retryAfterSeconds: Math.max(1, Math.ceil((failure.nextRetryAt - now) / 1_000)),
+    };
+  }
+
+  const startPromise = startStagingBackendOnce(prefix, target, options.reason);
+  if (options.waitMs <= 0) {
+    return { state: "starting", retryAfterSeconds: 2 };
+  }
+
+  const result = await waitForStagingBackendStart(startPromise, options.waitMs);
+  if (result === "pending") {
+    return { state: "starting", retryAfterSeconds: 2 };
+  }
+  if (result.ok) {
+    return { state: "ready" };
+  }
+
+  const currentFailure = stagingBackendStartFailures.get(prefix);
+  return {
+    state: "failed",
+    error: result.error,
+    retryAfterSeconds: currentFailure
+      ? Math.max(1, Math.ceil((currentFailure.nextRetryAt - Date.now()) / 1_000))
+      : Math.ceil(STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS / 1_000),
+  };
+}
+
+function startStagingBackendOnce(
+  prefix: string,
+  target: PreviewTarget,
+  reason: string,
+): Promise<StagingBackendStartResult> {
+  const existing = pendingStagingBackendStarts.get(prefix);
+  if (existing) return existing;
+
+  const startPromise = startRestorableStagingBackend(prefix, target, reason)
+    .finally(() => {
+      pendingStagingBackendStarts.delete(prefix);
+    });
+  pendingStagingBackendStarts.set(prefix, startPromise);
+  return startPromise;
+}
+
+async function waitForStagingBackendStart(
+  promise: Promise<StagingBackendStartResult>,
+  waitMs: number,
+): Promise<StagingBackendStartResult | "pending"> {
+  return await new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve("pending"), waitMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      },
+    );
+  });
+}
+
+async function startRestorableStagingBackend(
+  prefix: string,
+  target: PreviewTarget,
+  reason: string,
+): Promise<StagingBackendStartResult> {
+  if (activeStagingBackends.has(prefix)) return { ok: true };
+
+  await enforceStagingBackendResourceLimits(`before starting ${prefix}`, {
+    targetSize: Math.max(0, STAGING_BACKEND_LIVE_LIMIT - 1),
+  });
+
+  log(`Starting staged backend for ${prefix} (${reason})...`);
+  const restoreResult = await restoreStagingBackendWithRetry(prefix, target.stagingDir, { profile: target.profile });
+  if (restoreResult.restored) {
+    stagingBackendStartFailures.delete(prefix);
+    const backend = activeStagingBackends.get(prefix);
+    if (backend) backend.lastAccessAt = Date.now();
+    await enforceStagingBackendResourceLimits(`after starting ${prefix}`);
+    return { ok: true };
+  }
+
+  const error = restoreResult.error ?? "Unknown staging backend startup failure";
+  recordStagingBackendStartFailure(prefix, error);
+  return { ok: false, error };
+}
+
+function recordStagingBackendStartFailure(
+  prefix: string,
+  error: string,
+  options: { initialDelayMs?: number } = {},
+): void {
+  const previous = stagingBackendStartFailures.get(prefix);
+  const attempts = (previous?.attempts ?? 0) + 1;
+  const delayMs = options.initialDelayMs ?? Math.min(
+    STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(attempts - 1, 4),
+    STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS,
+  );
+  const nextRetryAt = Date.now() + delayMs;
+  stagingBackendStartFailures.set(prefix, { error, attempts, nextRetryAt });
+  log(`Staging backend start failed for ${prefix}; retry allowed in ${Math.ceil(delayMs / 1_000)}s: ${error}`);
+}
+
+function installStagingBackendIdleReaper(): void {
+  if (backendIdleReaper) return;
+  backendIdleReaper = setInterval(() => {
+    if (activeStagingBackends.size === 0) return;
+    void enforceStagingBackendResourceLimits("idle reaper").catch((error) => {
+      log(`Warning: staging backend idle reaper failed: ${error}`);
+    });
+  }, STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS);
+  backendIdleReaper.unref?.();
+}
+
+async function enforceStagingBackendResourceLimits(
+  reason: string,
+  options: { targetSize?: number } = {},
+): Promise<void> {
+  const targetSize = options.targetSize ?? STAGING_BACKEND_LIVE_LIMIT;
+  const now = Date.now();
+
+  for (const [prefix, backend] of Array.from(activeStagingBackends.entries())) {
+    if (backend.inflightRequests > 0 || backend.stopping) continue;
+    if (now - backend.lastAccessAt >= STAGING_BACKEND_IDLE_TTL_MS) {
+      log(`Stopping idle staged backend ${prefix} (${reason}); data preserved`);
+      await teardownStagingBackend(prefix, { removeData: false });
+    }
+  }
+
+  while (activeStagingBackends.size > targetSize) {
+    const candidates = Array.from(activeStagingBackends.entries())
+      .filter(([, backend]) => backend.inflightRequests === 0 && !backend.stopping)
+      .sort(([, a], [, b]) => a.lastAccessAt - b.lastAccessAt);
+    const candidate = candidates[0];
+    if (!candidate) return;
+
+    const [prefix] = candidate;
+    log(`Stopping least-recent staged backend ${prefix} (${reason}); data preserved`);
+    await teardownStagingBackend(prefix, { removeData: false });
+  }
+}
+
+function createStagingProxyHandler(prefix: string, backend: ActiveStagingBackend): RequestHandler {
   return (req, res) => {
+    const registeredBackend = activeStagingBackends.get(prefix);
+    if ((registeredBackend && registeredBackend !== backend) || backend.stopping) {
+      res.setHeader("Retry-After", "2");
+      res.status(503).json({
+        error: "Staging backend is restarting",
+        prefix,
+        retryAfterSeconds: 2,
+      });
+      return;
+    }
+
+    backend.lastAccessAt = Date.now();
+    backend.inflightRequests++;
+    let completed = false;
+    const complete = () => {
+      if (completed) return;
+      completed = true;
+      backend.inflightRequests = Math.max(0, backend.inflightRequests - 1);
+      backend.lastAccessAt = Date.now();
+    };
+    res.once("finish", complete);
+    res.once("close", complete);
+
     const upstreamPath = `/api${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
-    const upstreamUrl = new URL(upstreamPath, backendBaseUrl);
+    const upstreamUrl = new URL(upstreamPath, backend.baseUrl);
     const upstreamReq = httpRequest(
       upstreamUrl,
       {
@@ -732,7 +1057,8 @@ function handleStagingBackendExit(
   const detail = `Child process exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`;
   log(`Staging backend crashed for ${prefix}: ${detail}`);
   activeStagingBackends.delete(prefix);
-  activeStagingRouters.set(prefix, createUnavailableStagingHandler(prefix, detail));
+  activeStagingRouters.delete(prefix);
+  recordStagingBackendStartFailure(prefix, detail, { initialDelayMs: 2_000 });
 }
 
 async function startStagingBackendProcess(
@@ -800,6 +1126,8 @@ async function startStagingBackendProcess(
         stopping: false,
         stagingDir,
         runtimePaths,
+        lastAccessAt: Date.now(),
+        inflightRequests: 0,
         cleanup: async () => {
           backend!.stopping = true;
           await stopStagingBackendChild(child);
@@ -823,9 +1151,16 @@ async function startStagingBackendProcess(
   });
 }
 
-/** Tear down a staging backend: shutdown SDK child process and remove data */
-async function teardownStagingBackend(prefix: string): Promise<void> {
+/** Tear down a staging backend. Idle eviction preserves data so lazy restore can resume it. */
+async function teardownStagingBackend(
+  prefix: string,
+  options: { removeData?: boolean } = {},
+): Promise<void> {
+  const removeData = options.removeData ?? true;
   const staging = activeStagingBackends.get(prefix);
+  if (staging) {
+    staging.stopping = true;
+  }
   activeStagingRouters.delete(prefix);
   if (!staging) return;
 
@@ -836,8 +1171,10 @@ async function teardownStagingBackend(prefix: string): Promise<void> {
     log(`Warning: staging cleanup error: ${err}`);
   }
   activeStagingBackends.delete(prefix);
-  removePreviewData(staging.runtimePaths.dataDir);
-  activePreviewDataDirs.delete(prefix);
+  if (removeData) {
+    removePreviewData(staging.runtimePaths.dataDir);
+    activePreviewDataDirs.delete(prefix);
+  }
   log(`Staging backend torn down: ${prefix}`);
 }
 
@@ -846,11 +1183,12 @@ async function initializeStagingBackend(
   stagingDir: string,
   profile: StagingPreviewProfile = "clone",
 ): Promise<void> {
-  await teardownStagingBackend(prefix);
+  await teardownStagingBackend(prefix, { removeData: false });
   const stalePreviewDataDir = activePreviewDataDirs.get(prefix)
     ?? join(stagingDir, profile === "demo" ? "demo-data" : "data");
   removePreviewData(stalePreviewDataDir);
   activePreviewDataDirs.delete(prefix);
+  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));
 
   let runtimePaths: RuntimePaths | null = null;
 
@@ -861,10 +1199,12 @@ async function initializeStagingBackend(
     log(`Starting staged backend child process from ${stagingDir}...`);
     const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
     activeStagingBackends.set(prefix, stagingBackend);
-    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend.baseUrl));
+    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend));
+    installStagingBackendIdleReaper();
 
     log(`Staged API registered for prefix ${prefix}`);
     log("Staging backend ready");
+    await enforceStagingBackendResourceLimits(`after starting ${prefix}`);
   } catch (err) {
     activeStagingRouters.delete(prefix);
     activeStagingBackends.delete(prefix);
@@ -881,7 +1221,8 @@ async function restoreStagingBackend(
   stagingDir: string,
   profile: StagingPreviewProfile = "clone",
 ): Promise<void> {
-  await teardownStagingBackend(prefix);
+  await teardownStagingBackend(prefix, { removeData: false });
+  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));
 
   let runtimePaths: RuntimePaths | null = null;
 
@@ -892,14 +1233,14 @@ async function restoreStagingBackend(
     log(`Restoring staged backend child process from ${stagingDir}...`);
     const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
     activeStagingBackends.set(prefix, stagingBackend);
-    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend.baseUrl));
+    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend));
+    installStagingBackendIdleReaper();
 
     log(`Staged API registered for prefix ${prefix}`);
     log("Staging backend ready");
   } catch (err) {
     activeStagingRouters.delete(prefix);
     activeStagingBackends.delete(prefix);
-    activePreviewDataDirs.delete(prefix);
     throw err;
   }
 }
@@ -1179,6 +1520,107 @@ async function removeWorktree(stagingDir: string, branch: string): Promise<void>
   await run("git worktree prune", PRODUCTION_ROOT);
 }
 
+async function worktreeHasUncommittedChanges(stagingDir: string): Promise<boolean> {
+  const status = await run("git --no-pager status --porcelain", stagingDir, { timeoutMs: 30_000 });
+  if (!status.ok) return true;
+  return status.output.trim().length > 0;
+}
+
+function previewTargetLastActivityMs(target: PreviewTarget): number {
+  return Math.max(
+    target.updatedAtMs,
+    directoryMtimeMs(target.outDir),
+    directoryMtimeMs(target.stagingDir),
+  );
+}
+
+async function pruneStaleStagingArtifacts(options: {
+  stagingParent: string;
+  activeWorktrees: Set<string>;
+  restorablePreviews: Map<string, PreviewTarget>;
+  previewMap: Map<string, string>;
+  removeWorktree: (stagingDir: string, branch: string) => void | Promise<void>;
+  log: (msg: string) => void;
+}): Promise<number> {
+  if (STAGING_STALE_ARTIFACT_MAX_AGE_MS <= 0) return 0;
+
+  const byStagingName = new Map<string, PreviewTarget[]>();
+  for (const target of options.restorablePreviews.values()) {
+    const parsed = parsePreviewPrefix(target.prefix);
+    if (!parsed) continue;
+    byStagingName.set(parsed.stagingName, [...(byStagingName.get(parsed.stagingName) ?? []), target]);
+  }
+
+  const entries = Array.from(options.activeWorktrees).map((prefix) => {
+    const stagingDir = join(options.stagingParent, prefix);
+    const targets = byStagingName.get(prefix) ?? [];
+    const previewActivityMs = targets.reduce(
+      (latest, target) => Math.max(latest, previewTargetLastActivityMs(target)),
+      0,
+    );
+    return {
+      prefix,
+      stagingDir,
+      branch: `staging/${prefix}`,
+      targets,
+      activityMs: Math.max(directoryMtimeMs(stagingDir), previewActivityMs),
+    };
+  }).sort((a, b) => b.activityMs - a.activityMs);
+
+  const protectedPrefixes = new Set(
+    entries.slice(0, STAGING_STALE_ARTIFACT_KEEP_RECENT).map((entry) => entry.prefix),
+  );
+  const now = Date.now();
+  let removed = 0;
+
+  for (const entry of entries) {
+    if (protectedPrefixes.has(entry.prefix)) continue;
+    if (now - entry.activityMs < STAGING_STALE_ARTIFACT_MAX_AGE_MS) continue;
+    if (now - directoryMtimeMs(entry.stagingDir) < STAGING_STALE_ARTIFACT_RECENT_GRACE_MS) continue;
+    if (activeStagingBackends.has(entry.prefix) || pendingStagingBackendStarts.has(entry.prefix)) continue;
+    if (await worktreeHasUncommittedChanges(entry.stagingDir)) {
+      options.log(`Skipping stale staging worktree with local changes: ${entry.prefix}`);
+      continue;
+    }
+
+    await cleanupPreviewArtifactsForStagingDir(entry.stagingDir);
+    await options.removeWorktree(entry.stagingDir, entry.branch);
+    options.activeWorktrees.delete(entry.prefix);
+    for (const target of entry.targets) {
+      options.previewMap.delete(target.prefix);
+      options.restorablePreviews.delete(target.prefix);
+      restorablePreviewTargets.delete(target.prefix);
+      lazyStagingRouters.delete(target.prefix);
+    }
+    removed++;
+  }
+
+  return removed;
+}
+
+function scheduleStartupBackendWarmup(targets: PreviewTarget[], writeLog: (msg: string) => void): void {
+  if (STAGING_BACKEND_STARTUP_RESTORE_LIMIT <= 0) return;
+  const warmTargets = [...targets]
+    .sort((a, b) => previewTargetLastActivityMs(b) - previewTargetLastActivityMs(a))
+    .slice(0, STAGING_BACKEND_STARTUP_RESTORE_LIMIT);
+  if (warmTargets.length === 0) return;
+
+  const timer = setTimeout(() => {
+    void (async () => {
+      for (const target of warmTargets) {
+        if (!activePreviews.has(target.prefix)) continue;
+        const result = await startStagingBackendOnce(target.prefix, target, "startup warmup");
+        if (result.ok) {
+          writeLog(`Warm restored staged backend for preview: ${target.prefix}`);
+        }
+      }
+    })().catch((error) => {
+      writeLog(`Warning: startup staged backend warmup failed: ${error}`);
+    });
+  }, 0);
+  timer.unref?.();
+}
+
 type PruneOrphanedWorktreesOptions = {
   stagingParent?: string;
   stagingDistParent?: string;
@@ -1197,9 +1639,9 @@ type PruneOrphanedWorktreesOptions = {
 };
 
 /**
- * Prune orphaned staging worktrees on server startup and restore surviving previews.
+ * Prune orphaned staging worktrees on server startup and register surviving previews.
  * Called from server initialization — removes worktrees whose branches
- * no longer exist, and fully restores (frontend + backend) previews that survived a restart.
+ * no longer exist. Backends are restored lazily, with a small newest-preview warmup.
  */
 async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions = {}): Promise<void> {
   const writeLog = options.log ?? log;
@@ -1215,7 +1657,6 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   const expressApp = options.expressApp ?? _expressApp;
   const getBranchPrefixes = options.listBranchPrefixes ?? listStagingBranchPrefixes;
   const removeOrphanedWorktree = options.removeWorktree ?? removeWorktree;
-  const restoreBackend = options.restoreBackend ?? restoreStagingBackendWithRetry;
   const pruneGitWorktrees = options.pruneGitWorktrees ?? (async () => {
     await run("git worktree prune", PRODUCTION_ROOT);
   });
@@ -1270,11 +1711,13 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
         if (parsed) {
           const distDir = join(stagingPreviewParent, entry.name);
           if (!restorablePreviews.has(entry.name)) {
-            previewMap.set(entry.name, distDir);
-            restorablePreviews.set(entry.name, {
+            const target = {
               ...createPreviewTarget(join(stagingParent, parsed.stagingName), parsed.profile),
               outDir: distDir,
-            });
+              updatedAtMs: directoryMtimeMs(distDir),
+            };
+            previewMap.set(entry.name, distDir);
+            restorablePreviews.set(entry.name, target);
             restoredPreviewDirs++;
           }
         } else if (!skipOrphanPrune) {
@@ -1290,7 +1733,7 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   if (orphanedWorktreeDirs > 0 || restoredPreviewDirs > 0 || orphanedPreviewDirs > 0) {
     writeLog(
       `Staging prune summary: ${activeWorktrees.size} active worktree(s), ` +
-        `${restoredPreviewDirs} preview dir(s) restored, ` +
+        `${restoredPreviewDirs} preview dir(s) registered, ` +
         `${orphanedWorktreeDirs} orphan worktree dir(s) removed, ` +
         `${orphanedPreviewDirs} orphan preview dir(s) removed`,
     );
@@ -1300,22 +1743,27 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
     writeLog("Skipping orphan staging prune because the staging branch snapshot is unavailable");
   }
 
-  // Restore staged backends for surviving previews
+  if (!skipOrphanPrune) {
+    const staleRemoved = await pruneStaleStagingArtifacts({
+      stagingParent,
+      activeWorktrees,
+      restorablePreviews,
+      previewMap,
+      removeWorktree: removeOrphanedWorktree,
+      log: writeLog,
+    });
+    if (staleRemoved > 0) {
+      writeLog(`Removed ${staleRemoved} stale staging worktree(s)`);
+    }
+  }
+
+  // Register staged backends for lazy restore, then warm only the newest few.
   if (expressApp) {
     for (const target of restorablePreviews.values()) {
       if (!previewMap.has(target.prefix)) continue;
-      writeLog(`Restoring staged backend for preview: ${target.prefix}`);
-      const restoreResult = await restoreBackend(target.prefix, target.stagingDir, { profile: target.profile });
-      if (restoreResult.restored) {
-        writeLog(`Restored staged backend for preview: ${target.prefix}`);
-      } else {
-        writeLog(
-          `Failed to restore staged backend for ${target.prefix} after ${restoreResult.attempts} attempts: ` +
-            `${restoreResult.error}. Cleaning up preview.`,
-        );
-        await cleanupPreviewTarget(target.stagingDir, target.profile);
-      }
+      rememberRestorablePreviewTarget(target);
     }
+    scheduleStartupBackendWarmup(Array.from(restorablePreviews.values()), writeLog);
   }
 }
 
@@ -1516,6 +1964,7 @@ export const STAGING_TOOLS = [
 
       // Register the preview for Express to serve
       activePreviews.set(prefix, outDir);
+      rememberRestorablePreviewTarget(target);
 
       // ── Staged backend ──────────────────────────────────────────
       let backendReady = false;

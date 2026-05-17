@@ -13,27 +13,28 @@ describe("evaluateHealthPoll", () => {
         healthy: false,
         hasServerProcess: true,
         consecutiveFailures: 0,
-        failureThreshold: 2,
+        failureThreshold: 3,
+        failureDetail: "timed out after 5000ms",
       }),
     ).toEqual({
       nextFailures: 1,
-      logMessage: "Health check failed (1/2)",
+      logMessage: "Health check failed (1/3): timed out after 5000ms",
     });
   });
 
-  it("triggers recovery after two consecutive failed health polls", () => {
+  it("triggers recovery after three consecutive failed health polls", () => {
     expect(
       evaluateHealthPoll({
         healthy: false,
         hasServerProcess: true,
-        consecutiveFailures: 1,
-        failureThreshold: 2,
+        consecutiveFailures: 2,
+        failureThreshold: 3,
       }),
     ).toEqual({
-      nextFailures: 2,
-      logMessage: "Health check failed (2/2)",
+      nextFailures: 3,
+      logMessage: "Health check failed (3/3)",
       recover: {
-        reason: "2 consecutive health check failures",
+        reason: "3 consecutive health check failures",
         killExisting: true,
       },
     });

@@ -92,7 +92,7 @@ const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 120_000;
 const HEALTH_POLL_INTERVAL = 30_000;
 const HEALTH_POLL_TIMEOUT = 5_000;
-const HEALTH_FAILURE_THRESHOLD = 2;
+const HEALTH_FAILURE_THRESHOLD = 3;
 
 // Notification config
 const TUNNEL_NAME = resolveBridgeTunnelName(process.env);
@@ -151,6 +151,11 @@ let lastCommandFailure:
 let lastRollbackTarget: string | null = null;
 let pendingReleaseFailure: ReleaseFailureState | null = null;
 let releaseCandidateSha: string | null = null;
+
+type HealthProbeResult = {
+  healthy: boolean;
+  failureDetail?: string;
+};
 
 function log(msg: string) {
   const line = `[launcher] ${msg}`;
@@ -548,26 +553,41 @@ async function processRestartSignal(): Promise<void> {
   }
 }
 
-async function healthCheck(expectedChild: ChildProcess | null = serverProcess): Promise<boolean> {
-  const checkHealthOnce = async (timeoutMs: number): Promise<boolean> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(bridgeLocalUrl("/api/health"), { signal: controller.signal });
-      return res.ok;
-    } catch {
-      return false;
-    } finally {
-      clearTimeout(timeout);
+async function probeServerHealth(timeoutMs: number): Promise<HealthProbeResult> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const res = await fetch(bridgeLocalUrl("/api/health"), { signal: controller.signal });
+    const durationMs = Date.now() - startedAt;
+    if (res.ok) return { healthy: true };
+    return { healthy: false, failureDetail: `HTTP ${res.status} after ${durationMs}ms` };
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    if (timedOut) {
+      return {
+        healthy: false,
+        failureDetail: `timed out after ${durationMs}ms (limit ${timeoutMs}ms)`,
+      };
     }
-  };
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    return { healthy: false, failureDetail: `${message} after ${durationMs}ms` };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
+async function healthCheck(expectedChild: ChildProcess | null = serverProcess): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < HEALTH_TIMEOUT) {
     if (expectedChild && !isChildProcessActive(expectedChild, serverProcess)) {
       return false;
     }
-    if (await checkHealthOnce(HEALTH_POLL_TIMEOUT)) {
+    if ((await probeServerHealth(HEALTH_POLL_TIMEOUT)).healthy) {
       return expectedChild ? isChildProcessActive(expectedChild, serverProcess) : true;
     }
     if (expectedChild && !isChildProcessActive(expectedChild, serverProcess)) {
@@ -675,18 +695,12 @@ async function pollServerHealth(): Promise<void> {
   const polledServer = serverProcess;
   healthPollInFlight = true;
   try {
-    let healthy = false;
+    let healthResult: HealthProbeResult = {
+      healthy: false,
+      failureDetail: "server process missing",
+    };
     if (polledServer) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), HEALTH_POLL_TIMEOUT);
-      try {
-        const res = await fetch(bridgeLocalUrl("/api/health"), { signal: controller.signal });
-        healthy = res.ok;
-      } catch {
-        healthy = false;
-      } finally {
-        clearTimeout(timeout);
-      }
+      healthResult = await probeServerHealth(HEALTH_POLL_TIMEOUT);
     }
 
     if (
@@ -701,14 +715,15 @@ async function pollServerHealth(): Promise<void> {
     }
 
     const decision = evaluateHealthPoll({
-      healthy,
+      healthy: healthResult.healthy,
       hasServerProcess: polledServer !== null,
       consecutiveFailures: steadyHealthFailures,
       failureThreshold: HEALTH_FAILURE_THRESHOLD,
+      failureDetail: healthResult.failureDetail,
     });
     steadyHealthFailures = decision.nextFailures;
 
-    if (healthy) {
+    if (healthResult.healthy) {
       clearRollbackCheckpointAfterHealthyState();
     }
 

@@ -136,7 +136,7 @@ describe("staging preview backend child process", () => {
     startedBackends.push(firstBackend);
     try {
       const app = express();
-      app.use(`/staging/${prefix}/api`, __testing.createStagingProxyHandler(prefix, firstBackend.baseUrl));
+      app.use(`/staging/${prefix}/api`, __testing.createStagingProxyHandler(prefix, firstBackend));
 
       const firstResponse = await request(app).get(`/staging/${prefix}/api/future`);
       expect(firstResponse.status).toBe(200);
@@ -167,7 +167,7 @@ describe("staging preview backend child process", () => {
     startedBackends.push(secondBackend);
     try {
       const app = express();
-      app.use(`/staging/${prefix}/api`, __testing.createStagingProxyHandler(prefix, secondBackend.baseUrl));
+      app.use(`/staging/${prefix}/api`, __testing.createStagingProxyHandler(prefix, secondBackend));
 
       const secondResponse = await request(app).get(`/staging/${prefix}/api/future`);
       expect(secondResponse.status).toBe(200);

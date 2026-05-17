@@ -110,9 +110,6 @@ async function main(): Promise<void> {
   const pruned = defaultContext.telemetryStore?.pruneOldSpans(7) ?? 0;
   if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
 
-  // Clean up orphaned staging worktrees and restore surviving previews (incl. backends)
-  await pruneOrphanedWorktrees();
-
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);
 
@@ -138,8 +135,18 @@ async function main(): Promise<void> {
     }
   }, LAG_INTERVAL);
 
-  app.listen(port, () => {
-    console.log(`[web] 🟢 Server running at http://localhost:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    const server = app.listen(port, () => {
+      server.off("error", reject);
+      console.log(`[web] 🟢 Server running at http://localhost:${port}`);
+      resolve();
+    });
+    server.once("error", reject);
+  });
+
+  // Stage artifact pruning and backend warmup can be slow; do it after listen so health checks pass.
+  void pruneOrphanedWorktrees().catch((error) => {
+    console.error("[web] Staging preview restore/prune failed:", error);
   });
 
   // Webhook 1: server is up
