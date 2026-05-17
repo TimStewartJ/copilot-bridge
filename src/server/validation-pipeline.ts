@@ -51,6 +51,7 @@ export type ValidationGateRunResult<Result extends ValidationCommandResult> =
 
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
+export const DEPLOY_GATE_VERSION = 1;
 
 const FAST_CHECK_STEP: ValidationStep = {
   command: "npm run check:fast",
@@ -64,6 +65,13 @@ const PR_CHECK_STEP: ValidationStep = {
 
 const DEPLOY_CHECK_STEP: ValidationStep = {
   command: "npm run check:deploy",
+  timeoutMs: VALIDATION_TIMEOUT_MS,
+};
+
+export const DEPLOY_CHECK_COMMAND = DEPLOY_CHECK_STEP.command;
+
+const PRODUCTION_BUILD_STEP: ValidationStep = {
+  command: "npm run build",
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
@@ -82,6 +90,12 @@ export const DEPLOY_GATE: ValidationGate = {
   id: "deploy",
   label: "Deploy validation",
   steps: [DEPLOY_CHECK_STEP],
+};
+
+export const STAMPED_DEPLOY_GATE: ValidationGate = {
+  id: "stamped-deploy",
+  label: "Stamped deploy build",
+  steps: [PRODUCTION_BUILD_STEP],
 };
 
 export const ROLLBACK_GATE: ValidationGate = {

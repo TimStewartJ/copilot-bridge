@@ -1,4 +1,4 @@
-import { DEPLOY_GATE, ROLLBACK_GATE, runValidationGate, type ValidationCommandOptions } from "./server/validation-pipeline.js";
+import { DEPLOY_GATE, ROLLBACK_GATE, STAMPED_DEPLOY_GATE, runValidationGate, type ValidationCommandOptions } from "./server/validation-pipeline.js";
 import type { RestartValidationMode } from "./server/restart-signal.js";
 
 export type LauncherCommandResult = { ok: boolean; output: string };
@@ -10,6 +10,7 @@ interface LauncherBuildOptions {
   log: (msg: string) => void;
   validationMode?: RestartValidationMode;
   hasSourceChanges?: () => boolean;
+  resolveDeployValidationStamp?: () => { valid: true; commitSha: string } | { valid: false; reason: string };
 }
 
 interface LauncherStartupOptions {
@@ -36,6 +37,7 @@ export function runLauncherBuild({
   log,
   validationMode = "deploy",
   hasSourceChanges = () => true,
+  resolveDeployValidationStamp,
 }: LauncherBuildOptions): boolean {
   log("Building...");
   const operationalSourceChanged = validationMode === "operational" ? hasSourceChanges() : true;
@@ -50,6 +52,24 @@ export function runLauncherBuild({
       return true;
     }
     log("Operational restart found source changes — running deploy validation");
+  }
+
+  const stampGate = validationMode === "deploy" ? resolveDeployValidationStamp?.() : undefined;
+  if (stampGate?.valid) {
+    log(`Deploy validation already passed for ${stampGate.commitSha} — running production build only`);
+    const stampedValidation = runValidationGate(STAMPED_DEPLOY_GATE, {
+      cwd: ".",
+      run,
+    });
+    if (!stampedValidation.ok) {
+      logFailure(`${stampedValidation.gate.label} failed`, stampedValidation.result.output, log);
+      return false;
+    }
+    log("Build succeeded");
+    return true;
+  }
+  if (stampGate && !stampGate.valid) {
+    log(`Deploy validation stamp not used: ${stampGate.reason}`);
   }
 
   const validation = runValidationGate(DEPLOY_GATE, {

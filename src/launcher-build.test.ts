@@ -33,6 +33,52 @@ describe("runLauncherBuild", () => {
     ]);
   });
 
+  it("uses a stamped deploy build when the current commit was already validated", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn(() => ({ ok: true, output: "" }));
+    const log = vi.fn();
+
+    expect(runLauncherBuild({
+      ensureDeps,
+      run,
+      log,
+      resolveDeployValidationStamp: () => ({
+        valid: true,
+        commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    })).toBe(true);
+
+    expect(run.mock.calls).toEqual([
+      ["npm run build", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+    ]);
+    expect(log).toHaveBeenCalledWith(
+      "Deploy validation already passed for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa — running production build only",
+    );
+  });
+
+  it("falls back to full deploy validation when the stamp is not trusted", () => {
+    const ensureDeps = vi.fn(() => true);
+    const run = vi.fn(() => ({ ok: true, output: "" }));
+    const log = vi.fn();
+
+    expect(runLauncherBuild({
+      ensureDeps,
+      run,
+      log,
+      resolveDeployValidationStamp: () => ({
+        valid: false,
+        reason: "stamp dependency hash does not match current dependencies",
+      }),
+    })).toBe(true);
+
+    expect(run.mock.calls).toEqual([
+      ["npm run check:deploy", { timeoutMs: 600_000, isolateRuntimeEnv: true }],
+    ]);
+    expect(log).toHaveBeenCalledWith(
+      "Deploy validation stamp not used: stamp dependency hash does not match current dependencies",
+    );
+  });
+
   it("logs deploy validation failures without running rollback", () => {
     const ensureDeps = vi.fn(() => true);
     const run = vi.fn(() => ({ ok: false, output: "plain vitest failed" }));

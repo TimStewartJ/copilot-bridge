@@ -24,7 +24,14 @@ import {
   waitForProcessTreeExit,
 } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
-import { DEPLOY_GATE, PREVIEW_GATE, runValidationGateAsync } from "./validation-pipeline.js";
+import {
+  DEPLOY_CHECK_COMMAND,
+  DEPLOY_GATE,
+  DEPLOY_GATE_VERSION,
+  PREVIEW_GATE,
+  runValidationGateAsync,
+} from "./validation-pipeline.js";
+import { writeDeployValidationStamp } from "./deploy-validation-stamp.js";
 import { config } from "./config.js";
 import { isBridgeReleaseMode } from "./distribution-mode.js";
 import { writeRestartSignalFile, type RestartValidationMode } from "./restart-signal.js";
@@ -44,9 +51,10 @@ import type { RequestHandler } from "express";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_ROOT = join(__dirname, "..", "..");
 const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
-const SIGNAL_FILE= join(PRODUCTION_ROOT, "data", "restart.signal");
-const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_ROOT, "data", "pre-deploy-sha");
-const PRODUCTION_DATA_DIR = join(PRODUCTION_ROOT, "data");
+const PRODUCTION_RUNTIME_PATHS = resolveRuntimePaths(process.env);
+const PRODUCTION_DATA_DIR = PRODUCTION_RUNTIME_PATHS.dataDir;
+const SIGNAL_FILE= join(PRODUCTION_DATA_DIR, "restart.signal");
+const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_DATA_DIR, "pre-deploy-sha");
 const LEGACY_STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
 const STAGING_PREVIEW_DIR_ENV = "BRIDGE_STAGING_PREVIEW_DIR";
 const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
@@ -1733,6 +1741,19 @@ export const STAGING_TOOLS = [
           { stagingDir, branch, prodBranch, gateId: validationResult.gate.id },
         );
       }
+      const validatedHeadResult = await run("git rev-parse HEAD", stagingDir);
+      if (!validatedHeadResult.ok) {
+        await unstashProduction();
+        return commandFailure(
+          "Failed to identify the validated staging commit.",
+          "Deploy validation passed, but the staging commit SHA could not be read. The staging worktree is still intact for retry.",
+          "git rev-parse HEAD",
+          stagingDir,
+          validatedHeadResult.output,
+          { stagingDir, branch, prodBranch },
+        );
+      }
+      const validatedCommitSha = validatedHeadResult.output.trim();
 
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
       const headResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
@@ -1831,6 +1852,31 @@ export const STAGING_TOOLS = [
         );
       }
       log("Pushed to origin");
+
+      const deployedHeadResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
+      const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
+      if (deployedCommitSha && deployedCommitSha === validatedCommitSha) {
+        try {
+          writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
+            commitSha: deployedCommitSha,
+            dependencyHash: dependencySyncHash(stagingDir),
+            gateId: validationResult.gate.id,
+            gateVersion: DEPLOY_GATE_VERSION,
+            command: DEPLOY_CHECK_COMMAND,
+            source: "staging_deploy",
+            validatedAt: new Date().toISOString(),
+          });
+          log(`Deploy validation stamp written for ${deployedCommitSha}`);
+        } catch (error) {
+          log(`Deploy validation stamp could not be written; launcher will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else {
+        log(
+          deployedCommitSha
+            ? `Deploy validation stamp skipped because production HEAD changed after validation (${validatedCommitSha} → ${deployedCommitSha})`
+            : "Deploy validation stamp skipped because production HEAD could not be read after push",
+        );
+      }
 
       await unstashProduction();
 

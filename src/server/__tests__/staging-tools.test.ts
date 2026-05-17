@@ -9,6 +9,7 @@ type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
 type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
 type MkdirSyncArgs = Parameters<typeof import("node:fs").mkdirSync>;
+type RenameSyncArgs = Parameters<typeof import("node:fs").renameSync>;
 type ToolInvocation = {
   sessionId: string;
   toolCallId: string;
@@ -85,6 +86,7 @@ const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
 const dependencySyncHashMock = vi.fn<(path: string) => string>(() => "same-hash");
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
+const renameSyncCallMock = vi.hoisted(() => vi.fn<(...args: RenameSyncArgs) => void>());
 const readFileSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ReadFileSyncPath) => string | undefined>());
 const unlinkSyncCallMock = vi.hoisted(() => vi.fn<(path: UnlinkSyncPath) => void>());
 const preparePatchedPackagesForInstallMock = vi.fn(() => ({
@@ -110,6 +112,10 @@ function isDataFilePath(path: string, filename: string): boolean {
 function isValidationLogPath(path: string): boolean {
   const parts = path.split(/[/\\]/);
   return parts.includes("data") && parts.includes("validation-logs");
+}
+
+function isDeployValidationStampPath(path: string): boolean {
+  return path.split(/[/\\]/).some((part) => part.startsWith("deploy-validation-stamp.json"));
 }
 
 function mockDataFilePresence(
@@ -154,6 +160,7 @@ vi.mock("node:fs", async (importOriginal) => {
         || isDataFilePath(normalized, "restart.signal")
         || isDataFilePath(normalized, "deps-hash")
         || isValidationLogPath(normalized)
+        || isDeployValidationStampPath(normalized)
       ) {
         return;
       }
@@ -173,6 +180,12 @@ vi.mock("node:fs", async (importOriginal) => {
       unlinkSyncCallMock(path);
       if (isDataFilePath(String(path), "pre-deploy-sha")) return;
       return actual.unlinkSync(path, ...(args as []));
+    },
+    renameSync: (...args: RenameSyncArgs) => {
+      renameSyncCallMock(...args);
+      const [, target] = args;
+      if (isDeployValidationStampPath(String(target))) return;
+      return actual.renameSync(...args);
     },
   };
 });
@@ -349,6 +362,7 @@ afterEach(() => {
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
   unlinkSyncCallMock.mockReset();
+  renameSyncCallMock.mockReset();
   vi.resetModules();
 });
 
@@ -726,12 +740,73 @@ describe("staging tools", () => {
     });
     expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
     expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
-    expect(dependencySyncHashMock).toHaveBeenCalledTimes(2);
+    expect(dependencySyncHashMock).toHaveBeenCalledTimes(3);
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("npm install --no-audit --no-fund --include=dev");
     expect(commands.some((cmd) => cmd.startsWith("git diff "))).toBe(true);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
+    expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(true);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "deps-hash"))).toBe(false);
+  });
+
+  it("skips the deploy validation stamp if the pushed production HEAD differs from the validated staging commit", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+    let productionHeadCalls = 0;
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (DEPLOY_VALIDATION_COMMANDS.includes(cmd as (typeof DEPLOY_VALIDATION_COMMANDS)[number])) return "";
+      if (cmd === "git rev-parse HEAD" && cwd === stagingDir) return "1111111111111111111111111111111111111111\n";
+      if (cmd === "git rev-parse HEAD") {
+        productionHeadCalls++;
+        return productionHeadCalls === 1
+          ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+          : "2222222222222222222222222222222222222222\n";
+      }
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
+      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git push origin main") return "";
+      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
+      if (cmd === 'git branch -D "staging/preview-deploy"') return "";
+      if (cmd === "git worktree prune") return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy dependency change" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as {
+      success: boolean;
+      commitSha: string;
+    };
+
+    expect(result).toMatchObject({
+      success: true,
+      commitSha: "2222222",
+    });
+    expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
+    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
   });
 
   it("blocks restart when deploy validation fails on the rebased staging tree", async () => {

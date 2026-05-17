@@ -31,8 +31,18 @@ const FULL_COMMAND_OUTPUT_WRITE_ERROR_PREFIX = "Unable to write full command out
 
 export function isCommandTimeoutError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const candidate = error as { code?: unknown; signal?: unknown };
-  return candidate.code === "ETIMEDOUT" || candidate.signal === "SIGTERM";
+  const candidate = error as { code?: unknown };
+  return candidate.code === "ETIMEDOUT";
+}
+
+export function isCommandTimeoutResult(options: {
+  error?: unknown;
+  signal?: unknown;
+  elapsedMs: number;
+  timeoutMs: number;
+}): boolean {
+  if (isCommandTimeoutError(options.error)) return true;
+  return options.signal === "SIGTERM" && options.elapsedMs >= options.timeoutMs;
 }
 
 export function formatCommandDuration(elapsedMs: number): string {
@@ -80,6 +90,37 @@ export function buildCommandFailureOutput({
     logPath ? `Full command output: ${logPath}` : undefined,
     logWriteError ? `Unable to write full command output: ${logWriteError}` : undefined,
   );
+}
+
+function formatLabeledSection(label: string, value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed ? `${label}:\n${trimmed}` : undefined;
+}
+
+export function formatCommandFailureStreams({
+  stdout,
+  stderr,
+  errorMessage,
+  fallback,
+}: {
+  stdout?: string;
+  stderr?: string;
+  errorMessage?: string;
+  fallback: string;
+}): string {
+  const stdoutText = stdout?.trim() ?? "";
+  const stderrText = stderr?.trim() ?? "";
+  const errorText = errorMessage?.trim() ?? "";
+  if (!stdoutText && !stderrText && !errorText) return fallback;
+  if (stdoutText && !stderrText && !errorText) return joinSections(stdoutText, fallback);
+  if (stderrText && !stdoutText && !errorText) return joinSections(stderrText, fallback);
+
+  return joinSections(
+    formatLabeledSection("failure", fallback),
+    formatLabeledSection("stderr", stderrText),
+    formatLabeledSection("stdout", stdoutText),
+    formatLabeledSection("error", errorText),
+  ) || fallback;
 }
 
 function extractPrefixedLineValue(output: string, prefix: string): string | undefined {

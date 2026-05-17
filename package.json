@@ -43,7 +43,7 @@
     "check:launcher": "npm run typecheck:server && npm run test:launcher",
     "check:staging": "npm run typecheck:server && npm run test:staging",
     "check:pr": "npm run check:fast && npm run test:lanes && npm run build",
-    "check:deploy": "npm run check:pr && npm run test:coverage && npm run preview:smoke",
+    "check:deploy": "tsx src/server/deploy-check.ts",
     "test:preview": "npm run check:fast && npm run test:lanes",
     "test:deploy": "npm run check:pr",
     "test:coverage": "vitest run --coverage",

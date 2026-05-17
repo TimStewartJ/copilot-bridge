@@ -17,12 +17,9 @@ import {
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
-import {
-  buildCommandFailureOutput,
-  isCommandTimeoutError,
-  writeValidationCommandLog,
-} from "./server/validation-command-log.js";
+import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
+import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
 import { readRestartSignalFile, type RestartValidationMode } from "./server/restart-signal.js";
 import {
   buildRestartStateWithReleaseFailure,
@@ -60,6 +57,7 @@ import {
 } from "./launcher-health.js";
 import { runLauncherBuild, runLauncherRollbackWithCheckpointHandling, verifyLauncherStartup } from "./launcher-build.js";
 import type { LauncherCommandOptions } from "./launcher-build.js";
+import { DEPLOY_CHECK_COMMAND, DEPLOY_GATE, DEPLOY_GATE_VERSION } from "./server/validation-pipeline.js";
 import {
   decideLauncherStartup,
   decideRecoveryExecution,
@@ -170,6 +168,15 @@ function gitHash(): string {
   } catch { return "unknown"; }
 }
 
+function gitFullHash(): string | null {
+  try {
+    const value = execSync("git rev-parse HEAD", { cwd: ROOT, encoding: "utf-8", timeout: 5_000 }).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeGitHash(value: string): string | null {
   return value && value !== "unknown" ? value : null;
 }
@@ -190,47 +197,25 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
     ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-launcher-validation-" })
     : undefined;
   const env = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
-  const startedAt = Date.now();
   try {
-    const output = execSync(cmd, { cwd: ROOT, encoding: "utf-8", timeout: timeoutMs, env });
-    lastCommandFailure = null;
-    return { ok: true, output };
-  } catch (err: any) {
-    const elapsedMs = Date.now() - startedAt;
-    const timedOut = isCommandTimeoutError(err);
-    const rawOutput = err.stderr || err.stdout || String(err);
-    const annotatedOutput = buildCommandFailureOutput({
-      output: rawOutput,
-      elapsedMs,
-      timedOut,
-      timeoutMs,
-    });
-    const logResult = writeValidationCommandLog({
+    const result = runSyncCommand({
       rootDir: ROOT,
       source: "launcher",
       command: cmd,
       cwd: ROOT,
-      output: annotatedOutput,
-      elapsedMs,
-      timedOut,
+      env,
       timeoutMs,
     });
-    lastCommandFailure = {
-      command: cmd,
-      validationLogPath: logResult.path,
-      validationLogWriteError: logResult.error,
-    };
-    return {
-      ok: false,
-      output: buildCommandFailureOutput({
-        output: rawOutput,
-        elapsedMs,
-        timedOut,
-        timeoutMs,
-        logPath: logResult.path,
-        logWriteError: logResult.error,
-      }),
-    };
+    if (result.ok) {
+      lastCommandFailure = null;
+    } else {
+      lastCommandFailure = {
+        command: cmd,
+        validationLogPath: result.validationLogPath,
+        validationLogWriteError: result.validationLogWriteError,
+      };
+    }
+    return { ok: result.ok, output: result.output };
   } finally {
     validationEnv?.cleanup();
   }
@@ -328,6 +313,23 @@ function build(validationMode: RestartValidationMode): boolean {
     log,
     validationMode,
     hasSourceChanges: hasOperationalRestartSourceChanges,
+    resolveDeployValidationStamp: () => {
+      if (hasOperationalRestartSourceChanges()) {
+        return { valid: false, reason: "production source has uncommitted changes" };
+      }
+      const commitSha = gitFullHash();
+      if (!commitSha) return { valid: false, reason: "could not resolve current HEAD" };
+      const stamp = validateDeployValidationStamp(readDeployValidationStamp(DATA_DIR), {
+        commitSha,
+        dependencyHash: depsHash(),
+        gateId: DEPLOY_GATE.id,
+        gateVersion: DEPLOY_GATE_VERSION,
+        command: DEPLOY_CHECK_COMMAND,
+      });
+      return stamp.valid
+        ? { valid: true, commitSha }
+        : { valid: false, reason: stamp.reason };
+    },
   });
 }
 
