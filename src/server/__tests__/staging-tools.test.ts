@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -682,6 +682,69 @@ describe("staging tools", () => {
     expect(previewMap.get(legacyPrefix)).toBe(join(legacyPreviewParent, legacyPrefix));
     expect(restoreBackend).not.toHaveBeenCalled();
     expect(pruneGitWorktrees).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers surviving preview APIs for lazy restore without eagerly restoring all backends", async () => {
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const prefix = "preview-lazy";
+    const previewMap = new Map<string, string>();
+    const restoreBackend = vi.fn();
+    const pruneGitWorktrees = vi.fn();
+
+    mkdirSync(join(stagingParent, prefix), { recursive: true });
+    mkdirSync(join(previewParent, prefix), { recursive: true });
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+      activePreviewMap: previewMap,
+      expressApp: {} as any,
+      listBranchPrefixes: () => new Set([prefix]),
+      restoreBackend,
+      pruneGitWorktrees,
+    });
+
+    expect(previewMap.get(prefix)).toBe(join(previewParent, prefix));
+    expect(restoreBackend).not.toHaveBeenCalled();
+    expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+  });
+
+  it("prunes stale clean staging worktrees while preserving the newest active work", async () => {
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    vi.stubEnv("BRIDGE_STAGING_STALE_ARTIFACT_MAX_AGE_MS", "1");
+    vi.stubEnv("BRIDGE_STAGING_STALE_ARTIFACT_KEEP_RECENT", "1");
+    vi.stubEnv("BRIDGE_STAGING_STALE_ARTIFACT_RECENT_GRACE_MS", "1");
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const oldPrefix = "preview-old";
+    const newPrefix = "preview-new";
+    const oldDir = join(stagingParent, oldPrefix);
+    const newDir = join(stagingParent, newPrefix);
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    const newDate = new Date("2026-01-01T00:00:00.000Z");
+    const removeWorktree = vi.fn();
+    const pruneGitWorktrees = vi.fn();
+
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    utimesSync(oldDir, oldDate, oldDate);
+    utimesSync(newDir, newDate, newDate);
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [],
+      activePreviewMap: new Map<string, string>(),
+      expressApp: null,
+      listBranchPrefixes: () => new Set([oldPrefix, newPrefix]),
+      removeWorktree,
+      pruneGitWorktrees,
+    });
+
+    expect(removeWorktree).toHaveBeenCalledWith(oldDir, `staging/${oldPrefix}`);
+    expect(removeWorktree).not.toHaveBeenCalledWith(newDir, `staging/${newPrefix}`);
   });
 
   it("queues a restart for dependency-changing deploys without syncing production dependencies in-process", async () => {
