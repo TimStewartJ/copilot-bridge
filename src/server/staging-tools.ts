@@ -3,25 +3,18 @@
 // and deploy only after validation passes.
 
 import { defineTool } from "@github/copilot-sdk";
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync, cpSync, statSync } from "node:fs";
-import { join, dirname, basename, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
+import { join, dirname, basename } from "node:path";
+import type express from "express";
 import { randomBytes } from "node:crypto";
-import { createRequire } from "node:module";
-import { request as httpRequest } from "node:http";
-import type { IncomingHttpHeaders } from "node:http";
-import { DatabaseSync } from "node:sqlite";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
-import { clearRestartPending, isRestartPending, triggerRestartPending } from "./session-manager.js";
+import { isRestartPending } from "./session-manager.js";
 import {
   createDirectoryLink,
-  getProcessTreeSnapshot,
   killProcessTree,
   removeDirectoryLink,
-  shouldSpawnDetachedProcessGroup,
-  waitForProcessTreeExit,
 } from "./platform.js";
 import { buildPublicUrl } from "./tunnel.js";
 import {
@@ -33,8 +26,67 @@ import {
 } from "./validation-pipeline.js";
 import { writeDeployValidationStamp } from "./deploy-validation-stamp.js";
 import { config } from "./config.js";
-import { isBridgeReleaseMode } from "./distribution-mode.js";
-import { writeRestartSignalFile, type RestartValidationMode } from "./restart-signal.js";
+import {
+  buildStagingBackendSpawnConfig,
+  cleanupStagingBackendResources,
+  createStagingProxyHandler,
+  forgetStagingPreviewBackend,
+  hasActiveStagingBackend,
+  getStagingRouter,
+  hasPendingStagingBackendStart,
+  hasRegisteredExpressApp,
+  hasStagingBackendState,
+  initializeStagingBackend,
+  registerExpressApp,
+  rememberRestorablePreviewTarget,
+  restoreStagingBackendWithRetry,
+  scheduleStartupBackendWarmup,
+  seedStagingData,
+  startStagingBackendProcess,
+  writeRestartSignalOrRollback,
+  type RestoreStagingBackendWithRetryOptions,
+  type SeedStagingDataOptions,
+} from "./staging-backend-manager.js";
+import {
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  FAILURE_DETAIL_OUTPUT_LIMIT,
+  FAILURE_SESSION_LOG_OUTPUT_LIMIT,
+  PRE_DEPLOY_SHA_FILE,
+  PRODUCTION_DATA_DIR,
+  PRODUCTION_ROOT,
+  SIGNAL_FILE,
+  STAGING_INSTALL_COMMAND,
+  STAGING_INSTALL_TIMEOUT_MS,
+  STAGING_PARENT,
+  STAGING_PREVIEW_PARENT,
+  STAGING_STALE_ARTIFACT_KEEP_RECENT,
+  STAGING_STALE_ARTIFACT_MAX_AGE_MS,
+  STAGING_STALE_ARTIFACT_RECENT_GRACE_MS,
+  createPreviewTarget,
+  directoryMtimeMs,
+  listPreviewTargetsForStagingDir,
+  listStagingPreviewParents,
+  parsePreviewPrefix,
+  previewTargetLastActivityMs,
+  removeDirectoryWithRetries,
+  removePreviewData,
+  resolvePreviewProfile,
+  shouldManageStagingArtifacts,
+  uniqueResolvedPaths,
+  type PreviewTarget,
+  type StagingPreviewProfile,
+} from "./staging-preview-shared.js";
+import {
+  appendCapturedCommandOutput,
+  joinFailureSections,
+  renderCapturedCommandOutput,
+  truncateFailureText,
+  type CapturedCommandOutput,
+} from "./staging-command-utils.js";
+import { log } from "./staging-log.js";
+export { buildPreviewPrefix } from "./staging-preview-shared.js";
+export { parsePreviewPrefix, shouldManageStagingArtifacts } from "./staging-preview-shared.js";
+export { getStagingRouter, registerExpressApp } from "./staging-backend-manager.js";
 import { toolFailure } from "./tool-results.js";
 import {
   buildCommandFailureOutput,
@@ -43,172 +95,7 @@ import {
   writeValidationCommandLog,
 } from "./validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
-import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
-import { createSettingsStore } from "./settings-store.js";
-import type express from "express";
-import type { RequestHandler } from "express";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PRODUCTION_ROOT = join(__dirname, "..", "..");
-const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
-const PRODUCTION_RUNTIME_PATHS = resolveRuntimePaths(process.env);
-const PRODUCTION_DATA_DIR = PRODUCTION_RUNTIME_PATHS.dataDir;
-const SIGNAL_FILE= join(PRODUCTION_DATA_DIR, "restart.signal");
-const PRE_DEPLOY_SHA_FILE = join(PRODUCTION_DATA_DIR, "pre-deploy-sha");
-const LEGACY_STAGING_DIST_PARENT = join(PRODUCTION_ROOT, "dist", "staging");
-const STAGING_PREVIEW_DIR_ENV = "BRIDGE_STAGING_PREVIEW_DIR";
-const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
-const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
-const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
-const DEMO_PREVIEW_SUFFIX = "-demo";
-const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
-const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
-const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
-const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
-const STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS = 5_000;
-const STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS = 1_000;
-const STAGING_BACKEND_REQUEST_START_WAIT_MS = 2_000;
-const STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS = 30_000;
-const STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
-const STAGING_BACKEND_LIVE_LIMIT = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_LIVE_LIMIT", 3);
-const STAGING_BACKEND_STARTUP_RESTORE_LIMIT = parseNonNegativeIntegerEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", 1);
-const STAGING_BACKEND_IDLE_TTL_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_IDLE_TTL_MS", 30 * 60_000);
-const STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS", 5 * 60_000);
-const STAGING_STALE_ARTIFACT_MAX_AGE_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_MAX_AGE_MS", 14 * 24 * 60 * 60_000);
-const STAGING_STALE_ARTIFACT_KEEP_RECENT = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_KEEP_RECENT", 25);
-const STAGING_STALE_ARTIFACT_RECENT_GRACE_MS = parsePositiveIntegerEnv("BRIDGE_STAGING_STALE_ARTIFACT_RECENT_GRACE_MS", 2 * 60 * 60_000);
-const STAGING_ARTIFACT_CLEANUP_MAX_RETRIES = 20;
-const STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS = 50;
-const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
-  process.env[STAGING_PREVIEW_DIR_ENV],
-  join(PRODUCTION_DATA_DIR, "staging-previews"),
-);
-
-export type StagingPreviewProfile = "clone" | "demo";
-
-interface PreviewTarget {
-  prefix: string;
-  profile: StagingPreviewProfile;
-  stagingDir: string;
-  basePath: string;
-  outDir: string;
-  updatedAtMs: number;
-}
-
-export interface ActiveStagingBackend {
-  child: ChildProcess;
-  baseUrl: string;
-  port: number;
-  output: CapturedCommandOutput;
-  stopping: boolean;
-  cleanup: () => Promise<void>;
-  stagingDir: string;
-  runtimePaths: RuntimePaths;
-  lastAccessAt: number;
-  inflightRequests: number;
-}
-
-type StagingBackendStartResult =
-  | { ok: true }
-  | { ok: false; error: string };
-
-type StagingBackendStartFailure = {
-  error: string;
-  attempts: number;
-  nextRetryAt: number;
-};
-
-function parsePositiveIntegerEnv(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  if (!raw) return fallback;
-  const value = Number(raw);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
-}
-
-function parseNonNegativeIntegerEnv(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  if (!raw) return fallback;
-  const value = Number(raw);
-  return Number.isInteger(value) && value >= 0 ? value : fallback;
-}
-
-function resolveConfiguredPath(value: string | undefined, fallback: string): string {
-  const trimmed = value?.trim();
-  return trimmed ? resolve(PRODUCTION_ROOT, trimmed) : fallback;
-}
-
-function uniqueResolvedPaths(paths: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const candidate of paths) {
-    const normalized = resolve(candidate);
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
-}
-
-function listStagingPreviewParents(): string[] {
-  return uniqueResolvedPaths([STAGING_PREVIEW_PARENT, LEGACY_STAGING_DIST_PARENT]);
-}
-
-function resolvePreviewProfile(value?: string): StagingPreviewProfile {
-  return value === "demo" ? "demo" : "clone";
-}
-
-export function buildPreviewPrefix(stagingDir: string, profile: StagingPreviewProfile = "clone"): string {
-  const prefix = basename(stagingDir);
-  return profile === "demo" ? `${prefix}${DEMO_PREVIEW_SUFFIX}` : prefix;
-}
-
-export function parsePreviewPrefix(
-  prefix: string,
-  activeWorktrees?: ReadonlySet<string>,
-): { stagingName: string; profile: StagingPreviewProfile } | null {
-  if (activeWorktrees?.has(prefix)) {
-    return { stagingName: prefix, profile: "clone" };
-  }
-
-  if (prefix.endsWith(DEMO_PREVIEW_SUFFIX)) {
-    const stagingName = prefix.slice(0, -DEMO_PREVIEW_SUFFIX.length);
-    if (!stagingName) return null;
-    if (!activeWorktrees || activeWorktrees.has(stagingName)) {
-      return { stagingName, profile: "demo" };
-    }
-  }
-
-  if (activeWorktrees && !activeWorktrees.has(prefix)) {
-    return null;
-  }
-
-  return { stagingName: prefix, profile: "clone" };
-}
-
-function escapeSqliteStringLiteral(value: string): string {
-  return value.replaceAll("'", "''");
-}
-
-function createPreviewTarget(stagingDir: string, profile: StagingPreviewProfile = "clone"): PreviewTarget {
-  const prefix = buildPreviewPrefix(stagingDir, profile);
-  const outDir = join(STAGING_PREVIEW_PARENT, prefix);
-  return {
-    prefix,
-    profile,
-    stagingDir,
-    basePath: `/staging/${prefix}/`,
-    outDir,
-    updatedAtMs: directoryMtimeMs(outDir),
-  };
-}
-
-function listPreviewTargetsForStagingDir(stagingDir: string): PreviewTarget[] {
-  return [
-    createPreviewTarget(stagingDir, "clone"),
-    createPreviewTarget(stagingDir, "demo"),
-  ];
-}
 
 async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
   for (const target of listPreviewTargetsForStagingDir(stagingDir)) {
@@ -218,23 +105,13 @@ async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise
 
 async function cleanupPreviewResources(prefix: string, options: { removeDist?: boolean } = {}): Promise<void> {
   const removeDist = options.removeDist ?? true;
-  const ownedPreviewDataDir = activePreviewDataDirs.get(prefix);
-  const ownedByThisProcess = activePreviews.has(prefix)
-    || activeStagingBackends.has(prefix)
-    || !!ownedPreviewDataDir;
+  const ownedByThisProcess = activePreviews.has(prefix) || hasStagingBackendState(prefix);
   if (!ownedByThisProcess) return;
 
-  restorablePreviewTargets.delete(prefix);
-  lazyStagingRouters.delete(prefix);
-  stagingBackendStartFailures.delete(prefix);
-  await teardownStagingBackend(prefix, { removeData: false });
+  await cleanupStagingBackendResources(prefix);
   if (removeDist) {
     removeStagingDist(prefix);
   }
-  if (ownedPreviewDataDir && existsSync(ownedPreviewDataDir)) {
-    removePreviewData(ownedPreviewDataDir);
-  }
-  activePreviewDataDirs.delete(prefix);
 }
 
 export async function cleanupPreviewTarget(
@@ -243,10 +120,6 @@ export async function cleanupPreviewTarget(
 ): Promise<void> {
   const target = createPreviewTarget(stagingDir, profile);
   await cleanupPreviewResources(target.prefix);
-}
-
-export function shouldManageStagingArtifacts(): boolean {
-  return process.env.BRIDGE_DEMO_MODE !== "true" && !isBridgeReleaseMode(process.env, PRODUCTION_ROOT);
 }
 
 /**
@@ -296,49 +169,14 @@ async function ensureStagingDeps(stagingDir: string): Promise<{ ok: boolean; com
   return { ok: false, command: STAGING_INSTALL_COMMAND, output: installResult.output };
 }
 
-/** Active staging previews: prefix → dist path */
+/** Active staging previews: prefix -> dist path */
 const activePreviews = new Map<string, string>();
-
-/** Active staging backend contexts: prefix → cleanup function */
-const activeStagingBackends = new Map<string, ActiveStagingBackend>();
-
-/** Preview data directories created by this process: prefix → data dir */
-const activePreviewDataDirs = new Map<string, string>();
-
-/** Active staged API handlers: prefix → proxy handler (for delegating middleware in index.ts) */
-const activeStagingRouters = new Map<string, RequestHandler>();
-
-/** Preview dirs that can restore a staged backend on demand. */
-const restorablePreviewTargets = new Map<string, PreviewTarget>();
-
-/** Stable lazy API handlers for previews whose backend is stopped/not yet started. */
-const lazyStagingRouters = new Map<string, RequestHandler>();
-
-/** In-flight backend starts, deduped per prefix. */
-const pendingStagingBackendStarts = new Map<string, Promise<StagingBackendStartResult>>();
-
-/** Failed lazy starts, with cooldown to avoid request-triggered spawn loops. */
-const stagingBackendStartFailures = new Map<string, StagingBackendStartFailure>();
-
-let backendIdleReaper: ReturnType<typeof setInterval> | null = null;
-
-/** Registered Express app — set by registerExpressApp() from index.ts */
-let _expressApp: express.Application | null = null;
-
-/** Register the Express app so staging tools can mount/unmount routers */
-export function registerExpressApp(app: express.Application): void {
-  _expressApp = app;
-}
-
-/** Get the staged API handler for a prefix (used by delegating middleware in index.ts) */
-export function getStagingRouter(prefix: string): RequestHandler | undefined {
-  return activeStagingRouters.get(prefix) ?? getLazyStagingRouter(prefix);
-}
 
 /** Returns the map of active staging previews for the Express middleware to use. */
 export function getActivePreviews(): ReadonlyMap<string, string> {
   return activePreviews;
 }
+
 
 function removeStagingDist(prefix: string): void {
   for (const previewParent of listStagingPreviewParents()) {
@@ -348,966 +186,6 @@ function removeStagingDist(prefix: string): void {
     }
   }
   activePreviews.delete(prefix);
-}
-
-function removePreviewData(dataDir: string): void {
-  if (existsSync(dataDir)) {
-    removeDirectoryWithRetries(dataDir);
-  }
-}
-
-function directoryMtimeMs(path: string): number {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-function removeDirectoryWithRetries(dir: string): void {
-  rmSync(dir, {
-    recursive: true,
-    force: true,
-    maxRetries: STAGING_ARTIFACT_CLEANUP_MAX_RETRIES,
-    retryDelay: STAGING_ARTIFACT_CLEANUP_RETRY_DELAY_MS,
-  });
-}
-
-interface SeedStagingDataOptions {
-  productionDataDir?: string;
-}
-
-interface RestoreStagingBackendWithRetryOptions {
-  attempts?: number;
-  profile?: StagingPreviewProfile;
-  initializeBackend?: (prefix: string, stagingDir: string, profile?: StagingPreviewProfile) => Promise<void>;
-  log?: (msg: string) => void;
-}
-
-function clearSeededSqliteFiles(dataDir: string): void {
-  for (const filename of ["bridge.db", "bridge.db-wal", "bridge.db-shm"]) {
-    rmSync(join(dataDir, filename), { force: true });
-  }
-}
-
-function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
-  clearSeededSqliteFiles(dataDir);
-  const prodDb = new DatabaseSync(dbSrc, { readOnly: true });
-  try {
-    const destPath = escapeSqliteStringLiteral(join(dataDir, "bridge.db").replaceAll("\\", "/"));
-    prodDb.exec(`VACUUM INTO '${destPath}'`);
-  } finally {
-    prodDb.close();
-  }
-}
-
-function cleanupFailedRestartSignal(signalFile: string): void {
-  clearRestartPending();
-  try { unlinkSync(signalFile); } catch {}
-}
-
-function writeRestartSignalOrRollback(
-  signalFile: string,
-  validationMode: RestartValidationMode = "deploy",
-  source = "staging_deploy",
-): number {
-  const otherBusy = triggerRestartPending();
-  try {
-    writeRestartSignalFile(signalFile, { validationMode, source });
-  } catch (error) {
-    cleanupFailedRestartSignal(signalFile);
-    throw error;
-  }
-  return otherBusy;
-}
-
-function forceStagingModelSettings(dbPath: string): void {
-  let stagingDb: DatabaseSync | null = null;
-  try {
-    stagingDb = new DatabaseSync(dbPath);
-    stagingDb.exec("PRAGMA journal_mode = WAL");
-    createSettingsStore(stagingDb).updateSettings({
-      model: STAGING_PREVIEW_MODEL,
-      reasoningEffort: undefined,
-    });
-  } finally {
-    if (stagingDb) {
-      stagingDb.close();
-    }
-  }
-}
-
-function disableSchedulesInStagingDb(dbPath: string): void {
-  let stagingDb: DatabaseSync | null = null;
-  try {
-    stagingDb = new DatabaseSync(dbPath);
-    stagingDb.exec("PRAGMA journal_mode = WAL");
-    stagingDb.exec("UPDATE schedules SET enabled = 0");
-  } catch (err) {
-    log(`Warning: could not disable schedules in staging DB: ${err}`);
-  } finally {
-    if (stagingDb) {
-      try {
-        stagingDb.close();
-      } catch (closeErr) {
-        log(`Warning: could not close staging DB after schedule disable: ${closeErr}`);
-      }
-    }
-  }
-}
-
-function clearPushSubscriptionsInStagingDb(dbPath: string): void {
-  let stagingDb: DatabaseSync | null = null;
-  try {
-    stagingDb = new DatabaseSync(dbPath);
-    const table = stagingDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'push_subscriptions'").get();
-    if (table) {
-      stagingDb.exec("DELETE FROM push_subscriptions");
-    }
-  } catch (err) {
-    log(`Warning: could not clear push subscriptions in staging DB: ${err}`);
-  } finally {
-    if (stagingDb) {
-      try {
-        stagingDb.close();
-      } catch (closeErr) {
-        log(`Warning: could not close staging DB after push subscription cleanup: ${closeErr}`);
-      }
-    }
-  }
-}
-
-/** Seed a staging data directory from production data, with schedules disabled.
- *  Uses the worktree's own data/ directory (already gitignored). */
-function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): RuntimePaths {
-  const dataDir = join(stagingDir, "data");
-  mkdirSync(dataDir, { recursive: true });
-
-  const productionDataDir = options.productionDataDir ?? PRODUCTION_DATA_DIR;
-  const dbSrc = join(productionDataDir, "bridge.db");
-
-  if (!existsSync(dbSrc)) {
-    clearSeededSqliteFiles(dataDir);
-    throw new Error(`Production SQLite database not found at ${dbSrc}`);
-  }
-
-  try {
-    snapshotProductionDatabase(dbSrc, dataDir);
-  } catch (err) {
-    clearSeededSqliteFiles(dataDir);
-    throw new Error(
-      `Unable to create safe staging SQLite snapshot with VACUUM INTO: ${err instanceof Error ? err.message : String(err)}. ` +
-      `Staging preview aborted to avoid copying a live SQLite database non-atomically.`,
-    );
-  }
-  disableSchedulesInStagingDb(join(dataDir, "bridge.db"));
-  clearPushSubscriptionsInStagingDb(join(dataDir, "bridge.db"));
-  forceStagingModelSettings(join(dataDir, "bridge.db"));
-
-  // Copy docs directory (source of truth is filesystem, not SQLite)
-  const docsSrc = join(productionDataDir, "docs");
-  if (existsSync(docsSrc)) {
-    cpSync(docsSrc, join(dataDir, "docs"), { recursive: true });
-  }
-
-  log(`Seeded staging data at ${dataDir}`);
-  return resolveRuntimePaths(process.env, {
-    demoMode: false,
-    dataDir,
-    docsDir: join(dataDir, "docs"),
-    copilotHome: join(dataDir, ".copilot"),
-  });
-}
-
-async function seedDemoPreviewData(stagingDir: string): Promise<RuntimePaths> {
-  const moduleUrl = `${pathToFileURL(join(stagingDir, "src", "server", "demo-workspace.ts")).href}?v=${Date.now()}`;
-  const demoWorkspaceMod = await import(moduleUrl) as {
-    resetDemoWorkspace?: (repoRoot: string) => { dataDir: string; docsDir: string; copilotHome: string; workspaceDir: string };
-  };
-
-  if (typeof demoWorkspaceMod.resetDemoWorkspace !== "function") {
-    throw new Error("Demo preview requires src/server/demo-workspace.ts to export resetDemoWorkspace()");
-  }
-
-  const demoWorkspace = demoWorkspaceMod.resetDemoWorkspace(stagingDir);
-  log(`Seeded demo preview data at ${demoWorkspace.dataDir}`);
-  return resolveRuntimePaths(process.env, {
-    demoMode: true,
-    dataDir: demoWorkspace.dataDir,
-    docsDir: demoWorkspace.docsDir,
-    copilotHome: demoWorkspace.copilotHome,
-    workspaceDir: demoWorkspace.workspaceDir,
-  });
-}
-
-function getExistingPreviewRuntime(stagingDir: string, profile: StagingPreviewProfile): RuntimePaths | null {
-  const dataDir = join(stagingDir, profile === "demo" ? "demo-data" : "data");
-  const runtimePaths = resolveRuntimePaths(process.env, {
-    demoMode: profile === "demo",
-    dataDir,
-    docsDir: join(dataDir, "docs"),
-    copilotHome: join(dataDir, ".copilot"),
-  });
-  const requiredPaths = [
-    join(runtimePaths.dataDir, "bridge.db"),
-    runtimePaths.docsDir,
-    ...(runtimePaths.demoMode && runtimePaths.workspaceDir ? [runtimePaths.workspaceDir] : []),
-  ];
-
-  return requiredPaths.every((path) => existsSync(path)) ? runtimePaths : null;
-}
-
-interface PreparePreviewRuntimeOptions {
-  preserveExisting?: boolean;
-}
-
-async function preparePreviewRuntime(
-  stagingDir: string,
-  profile: StagingPreviewProfile,
-  options: PreparePreviewRuntimeOptions = {},
-): Promise<RuntimePaths> {
-  if (options.preserveExisting) {
-    const existing = getExistingPreviewRuntime(stagingDir, profile);
-    if (existing) return existing;
-  }
-
-  return profile === "demo"
-    ? seedDemoPreviewData(stagingDir)
-    : Promise.resolve(seedStagingData(stagingDir));
-}
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
-
-export interface StagingBackendStartOptions {
-  entrypoint?: string;
-  startupTimeoutMs?: number;
-  tsxLoader?: string;
-}
-
-function backendOutputTail(output: CapturedCommandOutput): string {
-  return truncateFailureText(renderCapturedCommandOutput("staging backend", output), FAILURE_SESSION_LOG_OUTPUT_LIMIT)
-    ?? "(no child output captured)";
-}
-
-function proxyHeaders(headers: IncomingHttpHeaders, targetHost: string): IncomingHttpHeaders {
-  const originalHost = headers["x-forwarded-host"] ?? headers.host;
-  const nextHeaders: IncomingHttpHeaders = {
-    ...headers,
-    host: targetHost,
-    ...(originalHost ? { "x-forwarded-host": originalHost } : {}),
-  };
-  const connectionTokens = String(headers.connection ?? "")
-    .split(",")
-    .map((token) => token.trim().toLowerCase())
-    .filter(Boolean);
-  for (const header of [...HOP_BY_HOP_HEADERS, ...connectionTokens]) {
-    delete nextHeaders[header];
-  }
-  return nextHeaders;
-}
-
-function createUnavailableStagingHandler(prefix: string, detail: string): RequestHandler {
-  return (_req, res) => {
-    res.status(502).json({
-      error: "Staging backend is not available",
-      prefix,
-      detail,
-    });
-  };
-}
-
-function getLazyStagingRouter(prefix: string): RequestHandler | undefined {
-  if (!restorablePreviewTargets.has(prefix)) return undefined;
-
-  let router = lazyStagingRouters.get(prefix);
-  if (!router) {
-    router = createLazyStagingHandler(prefix);
-    lazyStagingRouters.set(prefix, router);
-  }
-  return router;
-}
-
-function rememberRestorablePreviewTarget(target: PreviewTarget): void {
-  restorablePreviewTargets.set(target.prefix, target);
-}
-
-function createLazyStagingHandler(prefix: string): RequestHandler {
-  return (req, res, next) => {
-    void handleLazyStagingRequest(prefix, req, res, next);
-  };
-}
-
-async function handleLazyStagingRequest(
-  prefix: string,
-  req: Parameters<RequestHandler>[0],
-  res: Parameters<RequestHandler>[1],
-  next: Parameters<RequestHandler>[2],
-): Promise<void> {
-  const activeRouter = activeStagingRouters.get(prefix);
-  if (activeRouter) {
-    activeRouter(req, res, next);
-    return;
-  }
-
-  const target = restorablePreviewTargets.get(prefix);
-  if (!target) {
-    next();
-    return;
-  }
-
-  const startResult = await ensureStagingBackendStarted(prefix, target, {
-    reason: "first API request",
-    waitMs: STAGING_BACKEND_REQUEST_START_WAIT_MS,
-  });
-  if (startResult.state === "ready") {
-    const router = activeStagingRouters.get(prefix);
-    if (router) {
-      router(req, res, next);
-      return;
-    }
-    res.status(502).json({
-      error: "Staging backend is not available",
-      prefix,
-      detail: "Backend reported ready but no proxy handler was registered.",
-    });
-    return;
-  }
-
-  res.setHeader("Retry-After", String(startResult.retryAfterSeconds));
-  if (startResult.state === "starting") {
-    res.status(503).json({
-      error: "Staging backend is starting",
-      prefix,
-      retryAfterSeconds: startResult.retryAfterSeconds,
-    });
-    return;
-  }
-
-  res.status(502).json({
-    error: "Staging backend is not available",
-    prefix,
-    detail: startResult.error,
-    retryAfterSeconds: startResult.retryAfterSeconds,
-  });
-}
-
-type EnsureStagingBackendResult =
-  | { state: "ready" }
-  | { state: "starting"; retryAfterSeconds: number }
-  | { state: "failed"; error: string; retryAfterSeconds: number };
-
-async function ensureStagingBackendStarted(
-  prefix: string,
-  target: PreviewTarget,
-  options: { reason: string; waitMs: number },
-): Promise<EnsureStagingBackendResult> {
-  if (activeStagingBackends.has(prefix)) {
-    return { state: "ready" };
-  }
-
-  const failure = stagingBackendStartFailures.get(prefix);
-  const now = Date.now();
-  if (failure && failure.nextRetryAt > now) {
-    return {
-      state: "failed",
-      error: failure.error,
-      retryAfterSeconds: Math.max(1, Math.ceil((failure.nextRetryAt - now) / 1_000)),
-    };
-  }
-
-  const startPromise = startStagingBackendOnce(prefix, target, options.reason);
-  if (options.waitMs <= 0) {
-    return { state: "starting", retryAfterSeconds: 2 };
-  }
-
-  const result = await waitForStagingBackendStart(startPromise, options.waitMs);
-  if (result === "pending") {
-    return { state: "starting", retryAfterSeconds: 2 };
-  }
-  if (result.ok) {
-    return { state: "ready" };
-  }
-
-  const currentFailure = stagingBackendStartFailures.get(prefix);
-  return {
-    state: "failed",
-    error: result.error,
-    retryAfterSeconds: currentFailure
-      ? Math.max(1, Math.ceil((currentFailure.nextRetryAt - Date.now()) / 1_000))
-      : Math.ceil(STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS / 1_000),
-  };
-}
-
-function startStagingBackendOnce(
-  prefix: string,
-  target: PreviewTarget,
-  reason: string,
-): Promise<StagingBackendStartResult> {
-  const existing = pendingStagingBackendStarts.get(prefix);
-  if (existing) return existing;
-
-  const startPromise = startRestorableStagingBackend(prefix, target, reason)
-    .finally(() => {
-      pendingStagingBackendStarts.delete(prefix);
-    });
-  pendingStagingBackendStarts.set(prefix, startPromise);
-  return startPromise;
-}
-
-async function waitForStagingBackendStart(
-  promise: Promise<StagingBackendStartResult>,
-  waitMs: number,
-): Promise<StagingBackendStartResult | "pending"> {
-  return await new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve("pending"), waitMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timeout);
-        resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
-      },
-    );
-  });
-}
-
-async function startRestorableStagingBackend(
-  prefix: string,
-  target: PreviewTarget,
-  reason: string,
-): Promise<StagingBackendStartResult> {
-  if (activeStagingBackends.has(prefix)) return { ok: true };
-
-  await enforceStagingBackendResourceLimits(`before starting ${prefix}`, {
-    targetSize: Math.max(0, STAGING_BACKEND_LIVE_LIMIT - 1),
-  });
-
-  log(`Starting staged backend for ${prefix} (${reason})...`);
-  const restoreResult = await restoreStagingBackendWithRetry(prefix, target.stagingDir, { profile: target.profile });
-  if (restoreResult.restored) {
-    stagingBackendStartFailures.delete(prefix);
-    const backend = activeStagingBackends.get(prefix);
-    if (backend) backend.lastAccessAt = Date.now();
-    await enforceStagingBackendResourceLimits(`after starting ${prefix}`);
-    return { ok: true };
-  }
-
-  const error = restoreResult.error ?? "Unknown staging backend startup failure";
-  recordStagingBackendStartFailure(prefix, error);
-  return { ok: false, error };
-}
-
-function recordStagingBackendStartFailure(
-  prefix: string,
-  error: string,
-  options: { initialDelayMs?: number } = {},
-): void {
-  const previous = stagingBackendStartFailures.get(prefix);
-  const attempts = (previous?.attempts ?? 0) + 1;
-  const delayMs = options.initialDelayMs ?? Math.min(
-    STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(attempts - 1, 4),
-    STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS,
-  );
-  const nextRetryAt = Date.now() + delayMs;
-  stagingBackendStartFailures.set(prefix, { error, attempts, nextRetryAt });
-  log(`Staging backend start failed for ${prefix}; retry allowed in ${Math.ceil(delayMs / 1_000)}s: ${error}`);
-}
-
-function installStagingBackendIdleReaper(): void {
-  if (backendIdleReaper) return;
-  backendIdleReaper = setInterval(() => {
-    if (activeStagingBackends.size === 0) return;
-    void enforceStagingBackendResourceLimits("idle reaper").catch((error) => {
-      log(`Warning: staging backend idle reaper failed: ${error}`);
-    });
-  }, STAGING_BACKEND_IDLE_REAPER_INTERVAL_MS);
-  backendIdleReaper.unref?.();
-}
-
-async function enforceStagingBackendResourceLimits(
-  reason: string,
-  options: { targetSize?: number } = {},
-): Promise<void> {
-  const targetSize = options.targetSize ?? STAGING_BACKEND_LIVE_LIMIT;
-  const now = Date.now();
-
-  for (const [prefix, backend] of Array.from(activeStagingBackends.entries())) {
-    if (backend.inflightRequests > 0 || backend.stopping) continue;
-    if (now - backend.lastAccessAt >= STAGING_BACKEND_IDLE_TTL_MS) {
-      log(`Stopping idle staged backend ${prefix} (${reason}); data preserved`);
-      await teardownStagingBackend(prefix, { removeData: false });
-    }
-  }
-
-  while (activeStagingBackends.size > targetSize) {
-    const candidates = Array.from(activeStagingBackends.entries())
-      .filter(([, backend]) => backend.inflightRequests === 0 && !backend.stopping)
-      .sort(([, a], [, b]) => a.lastAccessAt - b.lastAccessAt);
-    const candidate = candidates[0];
-    if (!candidate) return;
-
-    const [prefix] = candidate;
-    log(`Stopping least-recent staged backend ${prefix} (${reason}); data preserved`);
-    await teardownStagingBackend(prefix, { removeData: false });
-  }
-}
-
-function createStagingProxyHandler(prefix: string, backend: ActiveStagingBackend): RequestHandler {
-  return (req, res) => {
-    const registeredBackend = activeStagingBackends.get(prefix);
-    if ((registeredBackend && registeredBackend !== backend) || backend.stopping) {
-      res.setHeader("Retry-After", "2");
-      res.status(503).json({
-        error: "Staging backend is restarting",
-        prefix,
-        retryAfterSeconds: 2,
-      });
-      return;
-    }
-
-    backend.lastAccessAt = Date.now();
-    backend.inflightRequests++;
-    let completed = false;
-    const complete = () => {
-      if (completed) return;
-      completed = true;
-      backend.inflightRequests = Math.max(0, backend.inflightRequests - 1);
-      backend.lastAccessAt = Date.now();
-    };
-    res.once("finish", complete);
-    res.once("close", complete);
-
-    const upstreamPath = `/api${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
-    const upstreamUrl = new URL(upstreamPath, backend.baseUrl);
-    const upstreamReq = httpRequest(
-      upstreamUrl,
-      {
-        method: req.method,
-        headers: proxyHeaders(req.headers, upstreamUrl.host),
-        agent: false,
-      },
-      (upstreamRes) => {
-        res.statusCode = upstreamRes.statusCode ?? 502;
-        res.statusMessage = upstreamRes.statusMessage ?? res.statusMessage;
-        for (const [name, value] of Object.entries(upstreamRes.headers)) {
-          if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase()) && value !== undefined) {
-            res.setHeader(name, value);
-          }
-        }
-        res.flushHeaders();
-        upstreamRes.pipe(res);
-      },
-    );
-
-    upstreamReq.on("error", (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      log(`Staging backend proxy error for ${prefix}: ${message}`);
-      if (!res.headersSent) {
-        res.status(502).json({ error: "Staging backend proxy error", detail: message });
-      } else {
-        res.destroy(error instanceof Error ? error : new Error(message));
-      }
-    });
-    res.on("close", () => {
-      if (!res.writableEnded) {
-        upstreamReq.destroy();
-      }
-    });
-    req.pipe(upstreamReq);
-  };
-}
-
-function captureStagingBackendOutput(
-  prefix: string,
-  stream: "stdout" | "stderr",
-  output: CapturedCommandOutput,
-  chunk: unknown,
-): void {
-  appendCapturedCommandOutput(output, chunk);
-  const text = String(chunk);
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim()) {
-      log(`${prefix} ${stream}: ${line}`);
-    }
-  }
-}
-
-function buildStagingBackendSpawnConfig(
-  stagingDir: string,
-  runtimePaths: RuntimePaths,
-  apiBasePath: string,
-  options: StagingBackendStartOptions = {},
-): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
-  const requireFromStaging = createRequire(join(stagingDir, "package.json"));
-  const tsxLoader = options.tsxLoader ?? pathToFileURL(requireFromStaging.resolve("tsx/esm")).href;
-  const entrypoint = options.entrypoint ?? join(stagingDir, "src", "server", "staging-preview-server.ts");
-  const env = prependNodePath({
-    ...process.env,
-    ...runtimePaths.env,
-    BRIDGE_STAGING_PREVIEW: "true",
-    BRIDGE_STAGING_API_BASE_PATH: apiBasePath,
-    BRIDGE_STAGING_BACKEND_PORT: "0",
-    BRIDGE_STAGING_MODEL: STAGING_PREVIEW_MODEL,
-  }, dirname(process.execPath));
-  delete env.PORT;
-
-  return {
-    command: process.execPath,
-    args: ["--import", tsxLoader, entrypoint],
-    env,
-  };
-}
-
-const closedStagingBackendChildren = new WeakSet<ChildProcess>();
-
-function trackChildClose(child: ChildProcess): void {
-  child.once("close", () => {
-    closedStagingBackendChildren.add(child);
-  });
-}
-
-function streamIsClosed(stream: NodeJS.ReadableStream | NodeJS.WritableStream | null | undefined): boolean {
-  if (!stream) return true;
-  const state = stream as { closed?: boolean; destroyed?: boolean };
-  return state.destroyed === true || state.closed === true;
-}
-
-function childHasClosed(child: ChildProcess): boolean {
-  if (closedStagingBackendChildren.has(child)) return true;
-  if (child.exitCode === null && child.signalCode === null) return false;
-  return !child.connected
-    && streamIsClosed(child.stdout)
-    && streamIsClosed(child.stderr)
-    && streamIsClosed(child.stdin);
-}
-
-function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (childHasClosed(child)) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      child.off("close", onClose);
-      resolve(childHasClosed(child));
-    }, timeoutMs);
-    const onClose = () => {
-      clearTimeout(timeout);
-      resolve(true);
-    };
-    child.once("close", onClose);
-  });
-}
-
-async function stopStagingBackendChild(child: ChildProcess): Promise<void> {
-  const pid = child.pid;
-  if (!pid) {
-    await waitForChildClose(child, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-    return;
-  }
-
-  let snapshot: ReturnType<typeof getProcessTreeSnapshot> | null = null;
-  try {
-    snapshot = getProcessTreeSnapshot(pid);
-  } catch {
-    snapshot = null;
-  }
-
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
-  }
-  if (await waitForChildClose(child, STAGING_BACKEND_SHUTDOWN_TIMEOUT_MS)) {
-    await waitForProcessTreeExit(snapshot, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-    return;
-  }
-
-  killProcessTree(pid);
-  await waitForProcessTreeExit(snapshot, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-  await waitForChildClose(child, STAGING_BACKEND_PROCESS_TREE_EXIT_TIMEOUT_MS);
-}
-
-let backendProcessExitCleanupInstalled = false;
-
-function installBackendProcessExitCleanup(): void {
-  if (backendProcessExitCleanupInstalled) return;
-  backendProcessExitCleanupInstalled = true;
-  process.once("exit", () => {
-    for (const backend of activeStagingBackends.values()) {
-      if (backend.child.pid) {
-        killProcessTree(backend.child.pid);
-      }
-    }
-  });
-}
-
-function handleStagingBackendExit(
-  prefix: string,
-  backend: ActiveStagingBackend,
-  code: number | null,
-  signal: NodeJS.Signals | null,
-): void {
-  if (backend.stopping) return;
-  const detail = `Child process exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`;
-  log(`Staging backend crashed for ${prefix}: ${detail}`);
-  activeStagingBackends.delete(prefix);
-  activeStagingRouters.delete(prefix);
-  recordStagingBackendStartFailure(prefix, detail, { initialDelayMs: 2_000 });
-}
-
-async function startStagingBackendProcess(
-  prefix: string,
-  stagingDir: string,
-  runtimePaths: RuntimePaths,
-  apiBasePath: string,
-  options: StagingBackendStartOptions = {},
-): Promise<ActiveStagingBackend> {
-  installBackendProcessExitCleanup();
-  const spawnConfig = buildStagingBackendSpawnConfig(stagingDir, runtimePaths, apiBasePath, options);
-  const output: CapturedCommandOutput = { output: "", truncatedChars: 0 };
-  const child = spawn(spawnConfig.command, spawnConfig.args, {
-    cwd: stagingDir,
-    env: spawnConfig.env,
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
-    windowsHide: true,
-    detached: shouldSpawnDetachedProcessGroup(),
-  });
-  trackChildClose(child);
-
-  child.stdout?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stdout", output, chunk));
-  child.stderr?.on("data", (chunk) => captureStagingBackendOutput(prefix, "stderr", output, chunk));
-
-  const startupTimeoutMs = options.startupTimeoutMs ?? STAGING_BACKEND_STARTUP_TIMEOUT_MS;
-  return await new Promise((resolve, reject) => {
-    let settled = false;
-    let backend: ActiveStagingBackend | null = null;
-    const timeout = setTimeout(() => {
-      fail(new Error(`Staging backend did not become ready within ${Math.ceil(startupTimeoutMs / 1_000)} seconds.`));
-    }, startupTimeoutMs);
-
-    const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      stopStagingBackendChild(child).catch((cleanupError) => {
-        log(`Warning: failed to stop staging backend after startup failure: ${cleanupError}`);
-      });
-      reject(new Error(`${error.message}\n\nChild output:\n${backendOutputTail(output)}`));
-    };
-
-    child.on("message", (message: unknown) => {
-      if (settled) return;
-      if (!message || typeof message !== "object") return;
-      const typed = message as { type?: unknown; port?: unknown; error?: unknown };
-      if (typed.type === "error") {
-        fail(new Error(String(typed.error ?? "Staging backend startup failed")));
-        return;
-      }
-      if (typed.type !== "ready") return;
-      const port = Number(typed.port);
-      if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
-        fail(new Error(`Staging backend reported invalid port: ${String(typed.port)}`));
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      const baseUrl = `http://127.0.0.1:${port}`;
-      backend = {
-        child,
-        baseUrl,
-        port,
-        output,
-        stopping: false,
-        stagingDir,
-        runtimePaths,
-        lastAccessAt: Date.now(),
-        inflightRequests: 0,
-        cleanup: async () => {
-          backend!.stopping = true;
-          await stopStagingBackendChild(child);
-        },
-      };
-      resolve(backend);
-    });
-
-    child.once("error", (error) => {
-      fail(error);
-    });
-    child.once("exit", (code, signal) => {
-      if (!settled) {
-        fail(new Error(`Staging backend exited before it was ready with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`));
-        return;
-      }
-      if (backend) {
-        handleStagingBackendExit(prefix, backend, code, signal);
-      }
-    });
-  });
-}
-
-/** Tear down a staging backend. Idle eviction preserves data so lazy restore can resume it. */
-async function teardownStagingBackend(
-  prefix: string,
-  options: { removeData?: boolean } = {},
-): Promise<void> {
-  const removeData = options.removeData ?? true;
-  const staging = activeStagingBackends.get(prefix);
-  if (staging) {
-    staging.stopping = true;
-  }
-  activeStagingRouters.delete(prefix);
-  if (!staging) return;
-
-  log(`Tearing down staging backend: ${prefix}`);
-  try {
-    await staging.cleanup();
-  } catch (err) {
-    log(`Warning: staging cleanup error: ${err}`);
-  }
-  activeStagingBackends.delete(prefix);
-  if (removeData) {
-    removePreviewData(staging.runtimePaths.dataDir);
-    activePreviewDataDirs.delete(prefix);
-  }
-  log(`Staging backend torn down: ${prefix}`);
-}
-
-async function initializeStagingBackend(
-  prefix: string,
-  stagingDir: string,
-  profile: StagingPreviewProfile = "clone",
-): Promise<void> {
-  await teardownStagingBackend(prefix, { removeData: false });
-  const stalePreviewDataDir = activePreviewDataDirs.get(prefix)
-    ?? join(stagingDir, profile === "demo" ? "demo-data" : "data");
-  removePreviewData(stalePreviewDataDir);
-  activePreviewDataDirs.delete(prefix);
-  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));
-
-  let runtimePaths: RuntimePaths | null = null;
-
-  try {
-    runtimePaths = await preparePreviewRuntime(stagingDir, profile);
-    activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
-
-    log(`Starting staged backend child process from ${stagingDir}...`);
-    const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
-    activeStagingBackends.set(prefix, stagingBackend);
-    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend));
-    installStagingBackendIdleReaper();
-
-    log(`Staged API registered for prefix ${prefix}`);
-    log("Staging backend ready");
-    await enforceStagingBackendResourceLimits(`after starting ${prefix}`);
-  } catch (err) {
-    activeStagingRouters.delete(prefix);
-    activeStagingBackends.delete(prefix);
-    if (runtimePaths) {
-      removePreviewData(runtimePaths.dataDir);
-    }
-    activePreviewDataDirs.delete(prefix);
-    throw err;
-  }
-}
-
-async function restoreStagingBackend(
-  prefix: string,
-  stagingDir: string,
-  profile: StagingPreviewProfile = "clone",
-): Promise<void> {
-  await teardownStagingBackend(prefix, { removeData: false });
-  rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));
-
-  let runtimePaths: RuntimePaths | null = null;
-
-  try {
-    runtimePaths = await preparePreviewRuntime(stagingDir, profile, { preserveExisting: true });
-    activePreviewDataDirs.set(prefix, runtimePaths.dataDir);
-
-    log(`Restoring staged backend child process from ${stagingDir}...`);
-    const stagingBackend = await startStagingBackendProcess(prefix, stagingDir, runtimePaths, `/staging/${prefix}/api`);
-    activeStagingBackends.set(prefix, stagingBackend);
-    activeStagingRouters.set(prefix, createStagingProxyHandler(prefix, stagingBackend));
-    installStagingBackendIdleReaper();
-
-    log(`Staged API registered for prefix ${prefix}`);
-    log("Staging backend ready");
-  } catch (err) {
-    activeStagingRouters.delete(prefix);
-    activeStagingBackends.delete(prefix);
-    throw err;
-  }
-}
-
-async function restoreStagingBackendWithRetry(
-  prefix: string,
-  stagingDir: string,
-  options: RestoreStagingBackendWithRetryOptions = {},
-): Promise<{ restored: boolean; attempts: number; error?: string }> {
-  const maxAttempts = options.attempts ?? 2;
-  const profile = options.profile ?? "clone";
-  const initializeBackend = options.initializeBackend ?? restoreStagingBackend;
-  const writeLog = options.log ?? log;
-
-  let lastError: string | undefined;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await initializeBackend(prefix, stagingDir, profile);
-      return { restored: true, attempts: attempt };
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-      if (attempt < maxAttempts) {
-        writeLog(
-          `Failed to restore staged backend for ${prefix} on attempt ${attempt}/${maxAttempts}: ${lastError}`,
-        );
-      }
-    }
-  }
-
-  return { restored: false, attempts: maxAttempts, error: lastError };
-}
-
-function log(msg: string) {
-  console.log(`[staging] ${msg}`);
-}
-
-export type CapturedCommandOutput = {
-  output: string;
-  truncatedChars: number;
-};
-
-function appendCapturedCommandOutput(capture: CapturedCommandOutput, chunk: unknown): void {
-  const text = String(chunk);
-  if (!text) return;
-
-  if (text.length >= COMMAND_OUTPUT_CAPTURE_LIMIT) {
-    capture.truncatedChars += capture.output.length + text.length - COMMAND_OUTPUT_CAPTURE_LIMIT;
-    capture.output = text.slice(-COMMAND_OUTPUT_CAPTURE_LIMIT);
-    return;
-  }
-
-  const combinedLength = capture.output.length + text.length;
-  if (combinedLength <= COMMAND_OUTPUT_CAPTURE_LIMIT) {
-    capture.output += text;
-    return;
-  }
-
-  const droppedChars = combinedLength - COMMAND_OUTPUT_CAPTURE_LIMIT;
-  capture.truncatedChars += droppedChars;
-  capture.output = (capture.output + text).slice(droppedChars);
-}
-
-function renderCapturedCommandOutput(label: string, capture: CapturedCommandOutput): string {
-  if (capture.truncatedChars === 0) return capture.output;
-  const notice =
-    `[${label} truncated: kept last ${capture.output.length} characters, dropped ${capture.truncatedChars} characters.]`;
-  return joinFailureSections(capture.output, notice) ?? notice;
 }
 
 async function run(
@@ -1411,24 +289,6 @@ async function run(
   });
 }
 
-function normalizeFailureText(text: string | undefined): string | undefined {
-  const trimmed = text?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function truncateFailureText(text: string | undefined, maxChars: number): string | undefined {
-  const normalized = normalizeFailureText(text);
-  if (!normalized) return undefined;
-  return normalized.length <= maxChars ? normalized : `…${normalized.slice(-maxChars)}`;
-}
-
-function joinFailureSections(...sections: Array<string | undefined>): string | undefined {
-  const present = sections
-    .map((section) => normalizeFailureText(section))
-    .filter((section): section is string => Boolean(section));
-  return present.length > 0 ? present.join("\n\n") : undefined;
-}
-
 function stagingFailure(
   summary: string,
   detail: string,
@@ -1526,14 +386,6 @@ async function worktreeHasUncommittedChanges(stagingDir: string): Promise<boolea
   return status.output.trim().length > 0;
 }
 
-function previewTargetLastActivityMs(target: PreviewTarget): number {
-  return Math.max(
-    target.updatedAtMs,
-    directoryMtimeMs(target.outDir),
-    directoryMtimeMs(target.stagingDir),
-  );
-}
-
 async function pruneStaleStagingArtifacts(options: {
   stagingParent: string;
   activeWorktrees: Set<string>;
@@ -1577,7 +429,7 @@ async function pruneStaleStagingArtifacts(options: {
     if (protectedPrefixes.has(entry.prefix)) continue;
     if (now - entry.activityMs < STAGING_STALE_ARTIFACT_MAX_AGE_MS) continue;
     if (now - directoryMtimeMs(entry.stagingDir) < STAGING_STALE_ARTIFACT_RECENT_GRACE_MS) continue;
-    if (activeStagingBackends.has(entry.prefix) || pendingStagingBackendStarts.has(entry.prefix)) continue;
+    if (hasActiveStagingBackend(entry.prefix) || hasPendingStagingBackendStart(entry.prefix)) continue;
     if (await worktreeHasUncommittedChanges(entry.stagingDir)) {
       options.log(`Skipping stale staging worktree with local changes: ${entry.prefix}`);
       continue;
@@ -1589,36 +441,12 @@ async function pruneStaleStagingArtifacts(options: {
     for (const target of entry.targets) {
       options.previewMap.delete(target.prefix);
       options.restorablePreviews.delete(target.prefix);
-      restorablePreviewTargets.delete(target.prefix);
-      lazyStagingRouters.delete(target.prefix);
+      forgetStagingPreviewBackend(target.prefix);
     }
     removed++;
   }
 
   return removed;
-}
-
-function scheduleStartupBackendWarmup(targets: PreviewTarget[], writeLog: (msg: string) => void): void {
-  if (STAGING_BACKEND_STARTUP_RESTORE_LIMIT <= 0) return;
-  const warmTargets = [...targets]
-    .sort((a, b) => previewTargetLastActivityMs(b) - previewTargetLastActivityMs(a))
-    .slice(0, STAGING_BACKEND_STARTUP_RESTORE_LIMIT);
-  if (warmTargets.length === 0) return;
-
-  const timer = setTimeout(() => {
-    void (async () => {
-      for (const target of warmTargets) {
-        if (!activePreviews.has(target.prefix)) continue;
-        const result = await startStagingBackendOnce(target.prefix, target, "startup warmup");
-        if (result.ok) {
-          writeLog(`Warm restored staged backend for preview: ${target.prefix}`);
-        }
-      }
-    })().catch((error) => {
-      writeLog(`Warning: startup staged backend warmup failed: ${error}`);
-    });
-  }, 0);
-  timer.unref?.();
 }
 
 type PruneOrphanedWorktreesOptions = {
@@ -1629,11 +457,6 @@ type PruneOrphanedWorktreesOptions = {
   expressApp?: express.Application | null;
   listBranchPrefixes?: () => Set<string> | null | Promise<Set<string> | null>;
   removeWorktree?: (stagingDir: string, branch: string) => void | Promise<void>;
-  restoreBackend?: (
-    prefix: string,
-    stagingDir: string,
-    options?: RestoreStagingBackendWithRetryOptions,
-  ) => Promise<{ restored: boolean; attempts: number; error?: string }>;
   log?: (msg: string) => void;
   pruneGitWorktrees?: () => void | Promise<void>;
 };
@@ -1654,7 +477,9 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   const stagingPreviewParents = options.stagingPreviewParents
     ?? (options.stagingDistParent ? [options.stagingDistParent] : listStagingPreviewParents());
   const previewMap = options.activePreviewMap ?? activePreviews;
-  const expressApp = options.expressApp ?? _expressApp;
+  const shouldRegisterBackends = options.expressApp === undefined
+    ? hasRegisteredExpressApp()
+    : options.expressApp !== null;
   const getBranchPrefixes = options.listBranchPrefixes ?? listStagingBranchPrefixes;
   const removeOrphanedWorktree = options.removeWorktree ?? removeWorktree;
   const pruneGitWorktrees = options.pruneGitWorktrees ?? (async () => {
@@ -1758,12 +583,12 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
   }
 
   // Register staged backends for lazy restore, then warm only the newest few.
-  if (expressApp) {
+  if (shouldRegisterBackends) {
     for (const target of restorablePreviews.values()) {
       if (!previewMap.has(target.prefix)) continue;
       rememberRestorablePreviewTarget(target);
     }
-    scheduleStartupBackendWarmup(Array.from(restorablePreviews.values()), writeLog);
+    scheduleStartupBackendWarmup(Array.from(restorablePreviews.values()), (prefix) => activePreviews.has(prefix), writeLog);
   }
 }
 
@@ -1970,7 +795,7 @@ export const STAGING_TOOLS = [
       let backendReady = false;
       let backendError: string | undefined;
 
-      if (_expressApp) {
+      if (hasRegisteredExpressApp()) {
         try {
           await initializeStagingBackend(prefix, stagingDir, profile);
           backendReady = true;

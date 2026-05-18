@@ -620,7 +620,6 @@ describe("staging tools", () => {
     const distDir = join(stagingDistParent, prefix);
     const previewMap = new Map<string, string>();
     const removeWorktree = vi.fn();
-    const restoreBackend = vi.fn();
     const pruneGitWorktrees = vi.fn();
     const log = vi.fn();
 
@@ -636,14 +635,12 @@ describe("staging tools", () => {
       expressApp: null,
       listBranchPrefixes: () => null,
       removeWorktree,
-      restoreBackend,
       pruneGitWorktrees,
       log,
     });
 
     expect(removeWorktree).not.toHaveBeenCalled();
     expect(pruneGitWorktrees).not.toHaveBeenCalled();
-    expect(restoreBackend).not.toHaveBeenCalled();
     expect(existsSync(stagingDir)).toBe(true);
     expect(existsSync(distDir)).toBe(true);
     expect(previewMap.get(prefix)).toBe(distDir);
@@ -660,7 +657,6 @@ describe("staging tools", () => {
     const primaryPrefix = "preview-primary";
     const legacyPrefix = "preview-legacy";
     const previewMap = new Map<string, string>();
-    const restoreBackend = vi.fn();
     const pruneGitWorktrees = vi.fn();
 
     mkdirSync(join(stagingParent, primaryPrefix), { recursive: true });
@@ -674,13 +670,11 @@ describe("staging tools", () => {
       activePreviewMap: previewMap,
       expressApp: null,
       listBranchPrefixes: () => new Set([primaryPrefix, legacyPrefix]),
-      restoreBackend,
       pruneGitWorktrees,
     });
 
     expect(previewMap.get(primaryPrefix)).toBe(join(previewParent, primaryPrefix));
     expect(previewMap.get(legacyPrefix)).toBe(join(legacyPreviewParent, legacyPrefix));
-    expect(restoreBackend).not.toHaveBeenCalled();
     expect(pruneGitWorktrees).toHaveBeenCalledTimes(1);
   });
 
@@ -691,7 +685,6 @@ describe("staging tools", () => {
     const previewParent = createTempDir("bridge-stage-preview-root-");
     const prefix = "preview-lazy";
     const previewMap = new Map<string, string>();
-    const restoreBackend = vi.fn();
     const pruneGitWorktrees = vi.fn();
 
     mkdirSync(join(stagingParent, prefix), { recursive: true });
@@ -703,12 +696,10 @@ describe("staging tools", () => {
       activePreviewMap: previewMap,
       expressApp: {} as any,
       listBranchPrefixes: () => new Set([prefix]),
-      restoreBackend,
       pruneGitWorktrees,
     });
 
     expect(previewMap.get(prefix)).toBe(join(previewParent, prefix));
-    expect(restoreBackend).not.toHaveBeenCalled();
     expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
   });
 
