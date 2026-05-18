@@ -129,4 +129,43 @@ describe("session name autogenerator", () => {
       { result: "skipped_no_messages", reason: "getMessages_unavailable" },
     );
   });
+
+  it("records a no-title skip instead of creating a helper for unconfigured policy models", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
+    tempDirs.push(copilotHome);
+    const createSession = vi.fn(async () => ({
+      sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+      disconnect: vi.fn(),
+    }));
+    const recordSpan = vi.fn();
+    const setSessionName = vi.fn(async () => {});
+    const generator = createSessionNameAutogenerator({
+      listModels: async () => [
+        { id: "gpt-5-mini", policy: { state: "unconfigured" }, billing: { multiplier: 0 } },
+        { id: "claude-haiku-4.5", policy: { state: "disabled" }, billing: { multiplier: 0 } },
+      ] as any,
+      createSession,
+      deleteSession: vi.fn(async () => {}),
+      getCopilotHome: () => copilotHome,
+      getSessionName: vi.fn(async () => undefined),
+      getSessionNameMetadata: () => ({
+        name: "Long original prompt",
+        effectiveName: "Long original prompt",
+        userNamed: false,
+      }),
+      setSessionName,
+      recordSpan,
+    });
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", { userMessages: ["Please fix this complicated issue"] });
+
+    expect(createSession).not.toHaveBeenCalled();
+    expect(setSessionName).not.toHaveBeenCalled();
+    expect(recordSpan).toHaveBeenCalledWith(
+      "session.name.autogen",
+      expect.any(Number),
+      "session-1",
+      { result: "skipped_no_title" },
+    );
+  });
 });

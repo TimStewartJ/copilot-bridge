@@ -70,15 +70,26 @@ describe("session name generator helpers", () => {
     expect(model).toBe("cheap-mini");
   });
 
-  it("ignores auto, disabled, and unexpectedly expensive token-priced title models", () => {
+  it("ignores auto, non-enabled policy, and unexpectedly expensive token-priced title models", () => {
     const model = selectSessionTitleModel([
       { id: "auto", billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
       { id: "disabled-mini", policy: { state: "disabled" }, billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
+      { id: "unconfigured-mini", policy: { state: "unconfigured" }, billing: { tokenPrices: { inputPrice: 0, outputPrice: 0, cachePrice: 0, batchSize: 1_000_000 } } },
       { id: "costly-mini", billing: { tokenPrices: { inputPrice: 300_000_000_000, outputPrice: 900_000_000_000, cachePrice: 30_000_000_000, batchSize: 1_000_000 } } },
       { id: "expensive-opus", billing: { tokenPrices: { inputPrice: 500_000_000_000, outputPrice: 2_500_000_000_000, cachePrice: 50_000_000_000, batchSize: 1_000_000 } } },
     ] as any);
 
     expect(model).toBeUndefined();
+  });
+
+  it("selects policy models only when their policy state is enabled", () => {
+    const model = selectSessionTitleModel([
+      { id: "free-mini-unconfigured", policy: { state: "unconfigured" }, billing: { multiplier: 0 } },
+      { id: "free-haiku-disabled", policy: { state: "disabled" }, billing: { multiplier: 0 } },
+      { id: "enabled-mini", policy: { state: "enabled" }, billing: { multiplier: 0.25 } },
+    ] as any);
+
+    expect(model).toBe("enabled-mini");
   });
 
   it("uses only recent non-empty user messages in the title prompt", () => {
