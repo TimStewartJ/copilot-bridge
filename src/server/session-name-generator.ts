@@ -79,14 +79,15 @@ function isFreeModel(model: ModelInfo): boolean {
     && TOKEN_PRICE_FIELDS.every((field) => (prices[field] ?? 0) === 0);
 }
 
-function isDisabledModel(model: ModelInfo): boolean {
+function hasSelectablePolicy(model: ModelInfo): boolean {
   const modelRecord = asRecord(model);
   const policy = asRecord(modelRecord?.policy);
-  return typeof policy?.state === "string" && policy.state.toLowerCase() === "disabled";
+  if (!policy) return true;
+  return typeof policy.state === "string" && policy.state.toLowerCase() === "enabled";
 }
 
 function isSelectableTitleModel(model: ModelInfo): boolean {
-  return !!model.id && !DISALLOWED_TITLE_MODEL_IDS.has(model.id.toLowerCase()) && !isDisabledModel(model);
+  return !!model.id && !DISALLOWED_TITLE_MODEL_IDS.has(model.id.toLowerCase()) && hasSelectablePolicy(model);
 }
 
 function isPreferredSmallModel(model: ModelInfo): boolean {
