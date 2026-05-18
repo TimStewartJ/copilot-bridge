@@ -4,12 +4,20 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatEntry, PendingUserInputRequestView } from "../api";
 import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+  waitForDelayAct,
+  waitTick,
+  waitUntilAct,
+  type Act,
+} from "../test-react-harness";
+import {
   getCachedChatSnapshot,
   resetCachedChatSnapshotState,
   setCachedChatSnapshot,
   type ChatHistorySnapshot,
 } from "../chat-cache";
-import { installDomShim } from "../test-dom-shim";
 
 const useSessionStreamMock = vi.hoisted(() => vi.fn());
 const submitUserInputResponseMock = vi.hoisted(() => vi.fn());
@@ -89,8 +97,6 @@ vi.mock("./ContextMenu", () => ({
   }) => createElement("button", { disabled, onClick, title }, label),
 }));
 
-type Act = (callback: () => void | Promise<void>) => Promise<void>;
-
 type FetchMessagesFastResult = {
   messages: ChatEntry[];
   busy: boolean;
@@ -112,10 +118,13 @@ type RenderChatViewOptions = {
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 };
 
-const WAIT_FOR_CONDITION_TIMEOUT_MS = 10_000;
-
 function createMessage(id: string, content = id): ChatEntry {
   return { id, role: "assistant", content };
+}
+
+function getMessageContent(entry: ChatEntry | undefined): string | undefined {
+  if (!entry || entry.type === "tool" || entry.type === "visual") return undefined;
+  return entry.content;
 }
 
 function findButtonByAriaLabel(root: any, label: string): any {
@@ -160,21 +169,6 @@ function createDeferred<T>() {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
-}
-
-function findAllByTag(root: any, tag: string): any[] {
-  const results: any[] = [];
-  if ((root.tagName ?? "").toUpperCase() === tag.toUpperCase()) results.push(root);
-  for (const child of root.childNodes ?? []) {
-    results.push(...findAllByTag(child, tag));
-  }
-  return results;
-}
-
-function getReactProps(el: any): Record<string, any> | null {
-  if (!el) return null;
-  const key = Object.keys(el).find((candidate) => candidate.startsWith("__reactProps$"));
-  return key ? el[key] : null;
 }
 
 function findButtonByText(root: any, text: string): any {
@@ -248,25 +242,6 @@ function findMessageBubble(root: any, streaming: boolean): any {
   return bubble;
 }
 
-function waitTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-async function waitUntilAct(
-  act: Act,
-  predicate: () => boolean,
-  timeoutMs = WAIT_FOR_CONDITION_TIMEOUT_MS,
-): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await act(async () => {
-      await waitTick();
-    });
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
 async function renderChatView(
   pendingUserInputsOrOptions: PendingUserInputRequestView[] | RenderChatViewOptions = [],
 ) {
@@ -274,9 +249,8 @@ async function renderChatView(
     ? { pendingUserInputs: pendingUserInputsOrOptions, waitForQuestion: true }
     : pendingUserInputsOrOptions;
   const pendingUserInputs = options.pendingUserInputs ?? [];
-  const dom = installDomShim();
-  const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const harness = await createReactDomHarness();
+  const { dom, act } = harness;
   const sendMessageMock = vi.fn();
   const startFleetMock = vi.fn();
   const abortSessionMock = vi.fn();
@@ -324,12 +298,7 @@ async function renderChatView(
   });
   useSessionStreamMock.mockReturnValue(buildStreamState(options));
 
-  const [{ createRoot }, { act }, { default: ChatView }] = await Promise.all([
-    import("react-dom/client"),
-    import("react"),
-    import("./ChatView"),
-  ]);
-  const root = createRoot(dom.container as unknown as Element);
+  const { default: ChatView } = await import("./ChatView");
 
   const render = async (overrideOptions: Partial<RenderChatViewOptions> = {}) => {
     const nextOptions = {
@@ -341,42 +310,31 @@ async function renderChatView(
       },
     };
     useSessionStreamMock.mockReturnValue(buildStreamState(nextOptions));
-    await act(async () => {
-      root.render(
+    await harness.render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
         createElement(
-          QueryClientProvider,
-          { client: queryClient },
-          createElement(
-            MemoryRouter,
-            null,
-            createElement(ChatView, {
-              composerKey: "composer-1",
-              sessionId: "session-1",
-              onMessageSent: vi.fn(),
-              onSubmitVoiceCapture: vi.fn(),
-              busySignal: nextOptions.busySignal,
-              activeSessionActivityAt: nextOptions.activeSessionActivityAt,
-              onForkSession: nextOptions.onForkSession,
-              onRenderedReadThrough: nextOptions.onRenderedReadThrough,
-            }),
-          ),
+          MemoryRouter,
+          null,
+          createElement(ChatView, {
+            composerKey: "composer-1",
+            sessionId: "session-1",
+            onMessageSent: vi.fn(),
+            onSubmitVoiceCapture: vi.fn(),
+            busySignal: nextOptions.busySignal,
+            activeSessionActivityAt: nextOptions.activeSessionActivityAt,
+            onForkSession: nextOptions.onForkSession,
+            onRenderedReadThrough: nextOptions.onRenderedReadThrough,
+          }),
         ),
-      );
-    });
+      ),
+    );
   };
 
   const cleanup = async () => {
-    await act(async () => {
-      root.unmount();
-    });
     queryClient.clear();
-    await waitTick();
-    if (previousActEnvironment === undefined) {
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    } else {
-      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
-    dom.cleanup();
+    await harness.cleanup();
   };
 
   await render();
@@ -393,6 +351,7 @@ async function renderChatView(
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.clearAllMocks();
   resetCachedChatSnapshotState();
 });
@@ -493,6 +452,7 @@ describe("ChatView cached resume loading state", () => {
   }, 30_000);
 
   it("shows the newer-content skeleton for a stale cached resume while the fast refresh is pending", async () => {
+    vi.useFakeTimers();
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup } = await renderChatView({
       activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
@@ -505,6 +465,7 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
+      await waitForDelayAct(act, 250);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Loading newer chat content") ?? false);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
@@ -524,6 +485,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("suppresses the newer-content skeleton when cached resume freshness matches", async () => {
+    vi.useFakeTimers();
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup } = await renderChatView({
       activeSessionActivityAt: "2026-04-29T12:00:00.000Z",
@@ -536,9 +498,7 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      });
+      await waitForDelayAct(act, 250);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
       expect(dom.container.textContent).not.toContain("Loading newer chat content");
@@ -557,6 +517,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("suppresses the newer-content skeleton when freshness metadata is missing or unknown", async () => {
+    vi.useFakeTimers();
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup } = await renderChatView({
       activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
@@ -569,9 +530,7 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      });
+      await waitForDelayAct(act, 250);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
       expect(dom.container.textContent).not.toContain("Loading newer chat content");
@@ -637,7 +596,7 @@ describe("ChatView cached resume loading state", () => {
 
       const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
       expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:05:00.000Z");
-      expect(cachedSnapshot?.entries[0]?.content).toBe("fresh-entry");
+      expect(getMessageContent(cachedSnapshot?.entries[0])).toBe("fresh-entry");
     } finally {
       await cleanup();
     }
@@ -775,13 +734,14 @@ describe("ChatView cached resume loading state", () => {
 
       const cachedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
       expect(cachedSnapshot?.lastVisibleActivityAt).toBe("2026-04-29T12:05:00.000Z");
-      expect(cachedSnapshot?.entries[0]?.content).toBe("fresh-entry-50");
+      expect(getMessageContent(cachedSnapshot?.entries[0])).toBe("fresh-entry-50");
     } finally {
       await cleanup();
     }
   });
 
   it("does not show the newer-content skeleton for a non-resume background refresh", async () => {
+    vi.useFakeTimers();
     fetchMessagesFastMock.mockResolvedValueOnce({
       messages: [createMessage("entry-1")],
       busy: false,
@@ -810,9 +770,7 @@ describe("ChatView cached resume loading state", () => {
         busySignal: 1,
       });
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      });
+      await waitForDelayAct(act, 250);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
       expect(dom.container.textContent).not.toContain("Loading newer chat content");
@@ -846,6 +804,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("cleans up the newer-content skeleton after the fast refresh resolves", async () => {
+    vi.useFakeTimers();
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup } = await renderChatView({
       activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
@@ -857,6 +816,7 @@ describe("ChatView cached resume loading state", () => {
     });
 
     try {
+      await waitForDelayAct(act, 250);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Loading newer chat content") ?? false);
 
       await act(async () => {
@@ -940,7 +900,7 @@ describe("ChatView cached resume loading state", () => {
       const refreshedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
       expect(refreshedSnapshot?.firstItemIndex).toBe(50);
       expect(refreshedSnapshot?.total).toBe(151);
-      expect(refreshedSnapshot?.entries.at(-1)?.content).toBe("entry-150");
+      expect(getMessageContent(refreshedSnapshot?.entries.at(-1))).toBe("entry-150");
     } finally {
       backgroundRefresh.resolve({
         messages: cachedEntries,
@@ -1015,7 +975,7 @@ describe("ChatView cached resume loading state", () => {
       const refreshedSnapshot = getCachedChatSnapshot(queryClient, "session-1");
       expect(refreshedSnapshot?.firstItemIndex).toBe(50);
       expect(refreshedSnapshot?.total).toBe(150);
-      expect(refreshedSnapshot?.entries.at(-1)?.content).toBe("updated-entry-149");
+      expect(getMessageContent(refreshedSnapshot?.entries.at(-1))).toBe("updated-entry-149");
     } finally {
       backgroundRefresh.resolve({
         messages: cachedEntries,
@@ -1252,7 +1212,7 @@ describe("ChatView message actions", () => {
     });
 
     try {
-      (globalThis.navigator as { clipboard?: { writeText: typeof writeText } }).clipboard = { writeText };
+      (globalThis.navigator as unknown as { clipboard?: { writeText: typeof writeText } }).clipboard = { writeText };
       await waitUntilAct(act, () => {
         try {
           findButtonByAriaLabel(dom.container, "Open message actions");
