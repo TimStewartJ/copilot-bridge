@@ -176,41 +176,6 @@
   },
   {
     "code": 2339,
-    "file": "src/client/components/ChatView.test.ts",
-    "line": 640,
-    "character": 42,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/components/ChatView.test.ts",
-    "line": 778,
-    "character": 42,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/components/ChatView.test.ts",
-    "line": 943,
-    "character": 49,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/components/ChatView.test.ts",
-    "line": 1018,
-    "character": 49,
-    "message": "Property 'content' does not exist on type 'ChatEntry'.\n  Property 'content' does not exist on type 'ChatToolEntry'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/components/ChatView.test.ts",
-    "line": 1255,
-    "character": 8,
-    "message": "Conversion of type 'Navigator' to type '{ clipboard?: { writeText: Mock<Procedure>; } | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  The types of 'clipboard.writeText' are incompatible between these types.\n    Type '(data: string) => Promise<void>' is not comparable to type 'Mock<Procedure>'.\n      Type '(data: string) => Promise<void>' is not comparable to type 'MockInstance<Procedure>'."
-  },
-  {
-    "code": 2339,
     "file": "src/client/components/ChatView.tsx",
     "line": 1413,
     "character": 20,
