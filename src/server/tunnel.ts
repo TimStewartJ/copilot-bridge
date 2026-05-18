@@ -6,10 +6,11 @@ import { createHash } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import type { Request } from "express";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, "..", "..");
+const ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const DEFAULT_TUNNEL_NAME = "copilot-bridge";
 const TUNNEL_NAME_HASH_LENGTH = 8;
 const EXPLICIT_TUNNEL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;

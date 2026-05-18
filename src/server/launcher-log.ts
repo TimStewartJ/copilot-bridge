@@ -1,9 +1,10 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, "..", "..");
+const ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const DEFAULT_LAUNCHER_LOG_PATH = join(ROOT, "data", "launcher.log");
 const DEFAULT_LAUNCHER_TAIL_LINES = 8;
 const MAX_LAUNCHER_TAIL_LINES = 50;

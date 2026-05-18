@@ -2,11 +2,12 @@ import { rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isBridgeReleaseMode } from "./distribution-mode.js";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export const PRODUCTION_ROOT = join(__dirname, "..", "..");
+export const PRODUCTION_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 export const STAGING_PARENT = join(PRODUCTION_ROOT, "..", "bridge-staging");
 export const PRODUCTION_RUNTIME_PATHS = resolveRuntimePaths(process.env);
 export const PRODUCTION_DATA_DIR = PRODUCTION_RUNTIME_PATHS.dataDir;

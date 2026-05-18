@@ -1,6 +1,7 @@
 import { approveAll, type SectionOverride, type defineTool } from "@github/copilot-sdk";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import type { NativeUserInputRequest, NativeUserInputResponse } from "./user-input-types.js";
 import type { Task } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
@@ -27,7 +28,7 @@ import {
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, "..", "..");
+const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 
 function isDemoMode(runtimePaths?: RuntimePaths): boolean {
   return runtimePaths?.demoMode ?? false;

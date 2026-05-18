@@ -1,10 +1,11 @@
 import { execFile, execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, "..", "..");
+const ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const LOCAL_GIT_TIMEOUT_MS = 5_000;
 const REMOTE_GIT_TIMEOUT_MS = 10_000;
 const REMOTE_CACHE_TTL_MS = 30_000;

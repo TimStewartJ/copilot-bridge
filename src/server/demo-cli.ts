@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import { ensureDemoWorkspace, resetDemoWorkspace, type DemoPaths } from "./demo-workspace.js";
 import { loadBridgeEnv } from "./env-loader.js";
 import { resolveBridgePort } from "./port-config.js";
@@ -10,7 +11,7 @@ type DemoCommand = "start" | "seed" | "reset";
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const __dirname = dirname(MODULE_PATH);
-const ROOT = join(__dirname, "..", "..");
+const ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const VITE_CLI = join(ROOT, "node_modules", "vite", "bin", "vite.js");
 const SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");

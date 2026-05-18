@@ -19,20 +19,44 @@ describe("restart signal parsing", () => {
     });
   });
 
-  it("keeps legacy timestamp signals on deploy validation", () => {
-    expect(parseRestartSignalContent("2026-05-14T20:00:00.000Z\n")).toEqual({
-      requestedAt: "2026-05-14T20:00:00.000Z",
+  it("round-trips deploy restart signals with release candidates", () => {
+    const candidateRoot = join(makeTestDir("restart-signal-candidate"), "release-slots", "slot-a");
+    const content = serializeRestartSignal({
       validationMode: "deploy",
+      source: "staging_deploy",
+      requestedAt: "2026-05-18T20:00:00.000Z",
+      releaseCandidate: {
+        id: "slot-a",
+        root: candidateRoot,
+        commitSha: "abc123",
+        source: "staging_deploy",
+        dependencyHash: "deps123",
+      },
+    });
+
+    expect(parseRestartSignalContent(content)).toEqual({
+      requestedAt: "2026-05-18T20:00:00.000Z",
+      validationMode: "deploy",
+      source: "staging_deploy",
+      releaseCandidate: {
+        id: "slot-a",
+        root: candidateRoot,
+        commitSha: "abc123",
+        source: "staging_deploy",
+        dependencyHash: "deps123",
+      },
     });
   });
 
-  it("defaults malformed typed signals to deploy validation", () => {
-    expect(parseRestartSignalContent('{"validationMode":"oper')).toMatchObject({
-      validationMode: "deploy",
-    });
-    expect(parseRestartSignalContent('{"validationMode":"unknown"}')).toMatchObject({
-      validationMode: "deploy",
-    });
+  it("rejects legacy plain timestamp signals", () => {
+    expect(() => parseRestartSignalContent("2026-05-14T20:00:00.000Z\n"))
+      .toThrow(/Unexpected non-whitespace character/);
+  });
+
+  it("rejects malformed or untyped signals instead of defaulting to deploy", () => {
+    expect(() => parseRestartSignalContent('{"validationMode":"oper')).toThrow();
+    expect(() => parseRestartSignalContent('{"validationMode":"unknown"}'))
+      .toThrow("Restart signal must be typed JSON with a valid validationMode");
   });
 
   it("claims a signal by renaming it to the in-progress file before parsing", () => {
@@ -56,6 +80,17 @@ describe("restart signal parsing", () => {
       validationMode: "operational",
       source: "self_restart",
     });
+  });
+
+  it("removes a claimed signal when typed JSON parsing fails", () => {
+    const dir = makeTestDir("restart-signal-invalid-claim");
+    const signalFile = join(dir, "restart.signal");
+    const inProgressFile = join(dir, "restart-in-progress.json");
+    writeFileSync(signalFile, "2026-05-14T20:00:00.000Z\n");
+
+    expect(() => consumeRestartSignalFile(signalFile, inProgressFile)).toThrow();
+    expect(existsSync(signalFile)).toBe(false);
+    expect(existsSync(inProgressFile)).toBe(false);
   });
 
   it("returns null when there is no signal to claim", () => {

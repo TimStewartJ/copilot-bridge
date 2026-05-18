@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import * as globalBus from "./global-bus.js";
 import {
   clearRestartState,
@@ -15,7 +16,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, "..", "..");
+const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const DEFAULT_RESTART_STATE_PATH = join(REPO_ROOT, "data", "restart-state.json");
 
 let _restartStatePath = DEFAULT_RESTART_STATE_PATH;

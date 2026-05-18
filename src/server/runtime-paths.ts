@@ -1,11 +1,12 @@
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 import { resolveBridgeDistribution, type BridgeDistributionMode } from "./distribution-mode.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, "..", "..");
+const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 
 export interface RuntimePaths {
   distributionMode?: BridgeDistributionMode;

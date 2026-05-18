@@ -83,6 +83,7 @@ import {
   truncateFailureText,
   type CapturedCommandOutput,
 } from "./staging-command-utils.js";
+import { prepareReleaseSlot } from "./release-slots.js";
 import { log } from "./staging-log.js";
 export { buildPreviewPrefix } from "./staging-preview-shared.js";
 export { parsePreviewPrefix, shouldManageStagingArtifacts } from "./staging-preview-shared.js";
@@ -1034,6 +1035,29 @@ export const STAGING_TOOLS = [
       }
       const validatedCommitSha = validatedHeadResult.output.trim();
       const validationElapsedMs = validationResult.results.reduce((total, entry) => total + entry.elapsedMs, 0);
+      const releaseSlotResult = await prepareReleaseSlot({
+        sourceDir: stagingDir,
+        dataDir: PRODUCTION_DATA_DIR,
+        commitSha: validatedCommitSha,
+        source: "staging_deploy",
+        validationMode: "deploy",
+        run: (command, cwd, options) => run(command, cwd, options),
+        log,
+        installCommand: STAGING_INSTALL_COMMAND,
+        installTimeoutMs: STAGING_INSTALL_TIMEOUT_MS,
+      });
+      if (!releaseSlotResult.ok) {
+        await unstashProduction();
+        return commandFailure(
+          "Release slot preparation failed.",
+          "The rebased staging worktree passed deploy validation, but preparing the inactive release slot failed. The staging worktree is still intact for retry-after-fix.",
+          releaseSlotResult.command,
+          releaseSlotResult.cwd,
+          releaseSlotResult.output,
+          { stagingDir, branch, prodBranch },
+        );
+      }
+      const releaseCandidate = releaseSlotResult.manifest;
 
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
       const headResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
@@ -1164,7 +1188,7 @@ export const STAGING_TOOLS = [
       const dataDir = join(PRODUCTION_ROOT, "data");
       if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
       try {
-        writeRestartSignalOrRollback(SIGNAL_FILE);
+        writeRestartSignalOrRollback(SIGNAL_FILE, "deploy", "staging_deploy", releaseCandidate);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log(`Restart signal failed after deploy: ${message}`);

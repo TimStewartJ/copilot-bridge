@@ -10,7 +10,7 @@ import type express from "express";
 import type { RequestHandler } from "express";
 import { createSettingsStore } from "./settings-store.js";
 import { clearRestartPending, triggerRestartPending } from "./session-manager.js";
-import { writeRestartSignalFile, type RestartValidationMode } from "./restart-signal.js";
+import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "./restart-signal.js";
 import {
   getProcessTreeSnapshot,
   killProcessTree,
@@ -213,10 +213,11 @@ export function writeRestartSignalOrRollback(
   signalFile: string,
   validationMode: RestartValidationMode = "deploy",
   source = "staging_deploy",
+  releaseCandidate?: RestartReleaseCandidate,
 ): number {
   const otherBusy = triggerRestartPending();
   try {
-    writeRestartSignalFile(signalFile, { validationMode, source });
+    writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
   } catch (error) {
     cleanupFailedRestartSignal(signalFile);
     throw error;
