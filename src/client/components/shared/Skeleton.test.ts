@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installDomShim } from "../../test-dom-shim";
+import { createReactDomHarness, waitForDelayAct } from "../../test-react-harness";
 import {
   LoadingSkeletonRegion,
   Skeleton,
@@ -43,46 +43,39 @@ describe("shared skeleton primitives", () => {
 
   it("delays rendering to avoid loading flicker", async () => {
     vi.useFakeTimers();
-    const dom = installDomShim();
+    const harness = await createReactDomHarness();
 
     try {
-      const [{ createRoot }, { flushSync }, { act }] = await Promise.all([
-        import("react-dom/client"),
-        import("react-dom"),
-        import("react"),
-      ]);
-      const root = createRoot(dom.container as unknown as Element);
+      await harness.render(
+        createElement(
+          LoadingSkeletonRegion,
+          {
+            isLoading: true,
+            label: "Loading settings",
+            delayMs: 100,
+            children: createElement(SkeletonText, null),
+          },
+        ),
+      );
+      expect(harness.dom.container.textContent).toBe("");
 
-      flushSync(() => {
-        root.render(
-          createElement(
-            LoadingSkeletonRegion,
-            { isLoading: true, label: "Loading settings", delayMs: 100 },
-            createElement(SkeletonText, null),
-          ),
-        );
-      });
-      expect(dom.container.textContent).toBe("");
+      await waitForDelayAct(harness.act, 100);
+      expect(harness.dom.container.textContent).toContain("Loading settings");
 
-      await act(async () => {
-        vi.advanceTimersByTime(100);
-      });
-      expect(dom.container.textContent).toContain("Loading settings");
-
-      flushSync(() => {
-        root.render(
-          createElement(
-            LoadingSkeletonRegion,
-            { isLoading: false, label: "Loading settings", delayMs: 100 },
-            createElement(SkeletonText, null),
-          ),
-        );
-      });
-      expect(dom.container.textContent).toBe("");
-
-      flushSync(() => root.unmount());
+      await harness.render(
+        createElement(
+          LoadingSkeletonRegion,
+          {
+            isLoading: false,
+            label: "Loading settings",
+            delayMs: 100,
+            children: createElement(SkeletonText, null),
+          },
+        ),
+      );
+      expect(harness.dom.container.textContent).toBe("");
     } finally {
-      dom.cleanup();
+      await harness.cleanup();
     }
   });
 });

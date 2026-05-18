@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { installDomShim } from "../test-dom-shim";
+import { createReactDomHarness, type Act } from "../test-react-harness";
 import { getSearchWithParam, getSearchWithoutParam, useOverlayParam } from "./useOverlayParam";
 
 type OverlayHarnessApi = {
@@ -31,16 +31,10 @@ async function withOverlayHarness(
   initialIndex: number,
   run: (
     getApi: () => OverlayHarnessApi,
-    act: (callback: () => void | Promise<void>) => Promise<void>,
+    act: Act,
   ) => Promise<void>,
 ) {
-  const dom = installDomShim();
-  const [{ createRoot }, { act }] = await Promise.all([
-    import("react-dom/client"),
-    import("react"),
-  ]);
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  const root = createRoot(dom.container as unknown as Element);
+  const harness = await createReactDomHarness();
   let api: OverlayHarnessApi | null = null;
   const getApi = () => {
     if (!api) throw new Error("Overlay harness did not render");
@@ -48,19 +42,15 @@ async function withOverlayHarness(
   };
 
   try {
-    await act(async () => {
-      root.render(createElement(
-        MemoryRouter,
-        { initialEntries, initialIndex },
-        createElement(OverlayHarness, { setApi: (nextApi) => { api = nextApi; } }),
-      ));
-    });
+    await harness.render(createElement(
+      MemoryRouter,
+      { initialEntries, initialIndex },
+      createElement(OverlayHarness, { setApi: (nextApi) => { api = nextApi; } }),
+    ));
 
-    await run(getApi, act);
+    await run(getApi, harness.act);
   } finally {
-    await act(async () => { root.unmount(); });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    dom.cleanup();
+    await harness.cleanup();
   }
 }
 

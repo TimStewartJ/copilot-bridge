@@ -1,15 +1,15 @@
-import { act, createElement } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { Task, Session } from "../api";
-import { installDomShim } from "../test-dom-shim";
+import { createReactDomHarness } from "../test-react-harness";
 
 const useTaskWorkspaceMock = vi.hoisted(() => vi.fn());
 const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
-const sessionListMock = vi.hoisted(() => vi.fn(() => null));
+const sessionListMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
-const taskPanelSummaryRowMock = vi.hoisted(() => vi.fn(() => null));
+const taskPanelSummaryRowMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const fetchTaskGitStatusMock = vi.hoisted(() => vi.fn());
 const patchTaskMock = vi.hoisted(() => vi.fn());
 const queryClientMock = vi.hoisted(() => ({
@@ -209,68 +209,49 @@ describe("TaskPanel", () => {
     useTaskWorkspaceMock.mockReturnValue(createWorkspace());
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
-    const dom = installDomShim();
+    const harness = await createReactDomHarness();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      const [{ flushSync }, { createRoot }, { default: TaskPanel }] = await Promise.all([
-        import("react-dom"),
-        import("react-dom/client"),
-        import("./TaskPanel"),
-      ]);
-
-      const root = createRoot(dom.container as any);
+      const { default: TaskPanel } = await import("./TaskPanel");
       const baseProps = {
         taskGroups: [],
         sessions: [],
         activeSessionId: null,
         onSelectSession: () => {},
         onNewSession: () => {},
-        onUpdateTask: () => {},
+        onUpdateTask: async () => null,
       };
 
-      expect(() => {
-        flushSync(() => {
-          root.render(
-            createElement(
-              MemoryRouter,
-              null,
-              createElement(TaskPanel, {
-                ...baseProps,
-                task: null,
-              }),
-            ),
-          );
-        });
-      }).not.toThrow();
+      await harness.render(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(TaskPanel, {
+            ...baseProps,
+            task: null,
+          }),
+        ),
+      );
 
-      expect(dom.container.textContent).toContain("Select a task");
+      expect(harness.dom.container.textContent).toContain("Select a task");
 
-      expect(() => {
-        flushSync(() => {
-          root.render(
-            createElement(
-              MemoryRouter,
-              null,
-              createElement(TaskPanel, {
-                ...baseProps,
-                task: createTask(),
-              }),
-            ),
-          );
-        });
-      }).not.toThrow();
+      await harness.render(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(TaskPanel, {
+            ...baseProps,
+            task: createTask(),
+          }),
+        ),
+      );
 
       expect(consoleError.mock.calls.flat().join(" ")).not.toContain("Rendered more hooks than during the previous render");
-      expect(dom.container.textContent).toContain("Workspace task");
-
-      await act(async () => {
-        root.unmount();
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(harness.dom.container.textContent).toContain("Workspace task");
     } finally {
       consoleError.mockRestore();
-      dom.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -286,36 +267,28 @@ describe("TaskPanel", () => {
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
-    const dom = installDomShim();
+    const harness = await createReactDomHarness();
     const onRequestArchived = vi.fn();
 
     try {
-      const [{ flushSync }, { createRoot }, { default: TaskPanel }] = await Promise.all([
-        import("react-dom"),
-        import("react-dom/client"),
-        import("./TaskPanel"),
-      ]);
-
-      const root = createRoot(dom.container as any);
-      flushSync(() => {
-        root.render(
-          createElement(
-            MemoryRouter,
-            null,
-            createElement(TaskPanel, {
-              task: createTask({ sessionIds: linkedSessions.map((session) => session.sessionId) }),
-              taskGroups: [],
-              sessions: linkedSessions,
-              activeSessionId: null,
-              onSelectSession: () => {},
-              onNewSession: () => {},
-              onUpdateTask: () => {},
-              onRequestArchived,
-              archivedLoaded: true,
-            }),
-          ),
-        );
-      });
+      const { default: TaskPanel } = await import("./TaskPanel");
+      await harness.render(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(TaskPanel, {
+            task: createTask({ sessionIds: linkedSessions.map((session) => session.sessionId) }),
+            taskGroups: [],
+            sessions: linkedSessions,
+            activeSessionId: null,
+            onSelectSession: () => {},
+            onNewSession: () => {},
+            onUpdateTask: async () => null,
+            onRequestArchived,
+            archivedLoaded: true,
+          }),
+        ),
+      );
 
       const lastCall = sessionListMock.mock.calls[sessionListMock.mock.calls.length - 1];
       if (!lastCall) throw new Error("SessionList was not rendered");
@@ -335,12 +308,8 @@ describe("TaskPanel", () => {
       expect(props.onRequestArchived).toBeUndefined();
       expect(props.archivedLoaded).toBe(true);
 
-      await act(async () => {
-        root.unmount();
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     } finally {
-      dom.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -352,37 +321,29 @@ describe("TaskPanel", () => {
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: loadedSessions }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
-    const dom = installDomShim();
+    const harness = await createReactDomHarness();
     const onRequestArchived = vi.fn();
 
     try {
-      const [{ flushSync }, { createRoot }, { default: TaskPanel }] = await Promise.all([
-        import("react-dom"),
-        import("react-dom/client"),
-        import("./TaskPanel"),
-      ]);
-
-      const root = createRoot(dom.container as any);
-      flushSync(() => {
-        root.render(
-          createElement(
-            MemoryRouter,
-            null,
-            createElement(TaskPanel, {
-              task: createTask({ sessionIds: ["session-1", "archived-session"] }),
-              taskGroups: [],
-              sessions: loadedSessions,
-              activeSessionId: null,
-              onSelectSession: () => {},
-              onNewSession: () => {},
-              onUpdateTask: () => {},
-              onRequestArchived,
-              archivedLoaded: true,
-              archivedLoading: true,
-            }),
-          ),
-        );
-      });
+      const { default: TaskPanel } = await import("./TaskPanel");
+      await harness.render(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(TaskPanel, {
+            task: createTask({ sessionIds: ["session-1", "archived-session"] }),
+            taskGroups: [],
+            sessions: loadedSessions,
+            activeSessionId: null,
+            onSelectSession: () => {},
+            onNewSession: () => {},
+            onUpdateTask: async () => null,
+            onRequestArchived,
+            archivedLoaded: true,
+            archivedLoading: true,
+          }),
+        ),
+      );
 
       const lastCall = sessionListMock.mock.calls[sessionListMock.mock.calls.length - 1];
       if (!lastCall) throw new Error("SessionList was not rendered");
@@ -397,12 +358,8 @@ describe("TaskPanel", () => {
       expect(props.archivedLoaded).toBe(false);
       expect(props.archivedLoading).toBe(true);
 
-      await act(async () => {
-        root.unmount();
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     } finally {
-      dom.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -445,39 +402,33 @@ describe("TaskPanel", () => {
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: [linkedSession] }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
 
-    const dom = installDomShim();
+    const harness = await createReactDomHarness();
 
     try {
-      const [{ flushSync }, { createRoot }, { default: TaskPanel }] = await Promise.all([
-        import("react-dom"),
-        import("react-dom/client"),
-        import("./TaskPanel"),
-      ]);
-
-      const root = createRoot(dom.container as any);
-      flushSync(() => {
-        root.render(
-          createElement(
-            MemoryRouter,
-            null,
-            createElement(TaskPanel, {
-              task: createTask({ cwd: "/workspace/copilot-bridge", sessionIds: [linkedSession.sessionId] }),
-              taskGroups: [],
-              sessions: [linkedSession],
-              activeSessionId: linkedSession.sessionId,
-              onSelectSession: () => {},
-              onNewSession: () => {},
-              onUpdateTask: () => {},
-            }),
-          ),
-        );
-      });
+      const { default: TaskPanel } = await import("./TaskPanel");
+      await harness.render(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(TaskPanel, {
+            task: createTask({ cwd: "/workspace/copilot-bridge", sessionIds: [linkedSession.sessionId] }),
+            taskGroups: [],
+            sessions: [linkedSession],
+            activeSessionId: linkedSession.sessionId,
+            onSelectSession: () => {},
+            onNewSession: () => {},
+            onUpdateTask: async () => null,
+          }),
+        ),
+      );
 
       const workspaceRowCall = taskPanelSummaryRowMock.mock.calls.find(([props]) =>
         (props as { label?: string }).label === "Workspace");
       if (!workspaceRowCall) throw new Error("Workspace row was not rendered");
 
-      (workspaceRowCall[0] as { onClick: () => void }).onClick();
+      await harness.act(async () => {
+        (workspaceRowCall[0] as { onClick: () => void }).onClick();
+      });
 
       expect(queryClientMock.fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
         queryKey: ["task", "task-1", "git-status"],
@@ -497,12 +448,8 @@ describe("TaskPanel", () => {
         refresh: true,
       });
 
-      await act(async () => {
-        root.unmount();
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     } finally {
-      dom.cleanup();
+      await harness.cleanup();
     }
   });
 

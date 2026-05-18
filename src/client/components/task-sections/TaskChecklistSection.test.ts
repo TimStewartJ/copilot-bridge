@@ -1,22 +1,14 @@
 import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ChecklistItem } from "../../api";
-import { installDomShim } from "../../test-dom-shim";
+import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+} from "../../test-react-harness";
+import type { TaskChecklistSectionProps } from "./TaskChecklistSection";
 
-function findAllByTag(root: any, tag: string): any[] {
-  const results: any[] = [];
-  if ((root.tagName ?? "").toUpperCase() === tag.toUpperCase()) results.push(root);
-  for (const child of root.childNodes ?? []) {
-    results.push(...findAllByTag(child, tag));
-  }
-  return results;
-}
-
-function getReactProps(el: any): Record<string, any> | null {
-  if (!el) return null;
-  const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
-  return key ? el[key] : null;
-}
+type ChecklistHarness = Awaited<ReturnType<typeof createReactDomHarness>>;
 
 function findButtonByText(root: any, text: string): any {
   const button = findAllByTag(root, "BUTTON").find((candidate) => (
@@ -34,10 +26,6 @@ function findInputByPlaceholder(root: any, placeholder: string): any {
   return input;
 }
 
-async function waitTick(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
 function createChecklistItem(overrides: Partial<ChecklistItem> = {}): ChecklistItem {
   return {
     id: "item-1",
@@ -50,24 +38,42 @@ function createChecklistItem(overrides: Partial<ChecklistItem> = {}): ChecklistI
   };
 }
 
-const baseProps = {
-  taskId: "task-1",
-  newChecklistItemText: "",
-  onNewChecklistItemTextChange: vi.fn(),
-  onCreateChecklistItem: vi.fn(async () => {}),
-  onChecklistItemUpdate: vi.fn(),
-  onChecklistItemDelete: vi.fn(),
-};
+function createBaseProps(overrides: Partial<TaskChecklistSectionProps> = {}): TaskChecklistSectionProps {
+  return {
+    taskId: "task-1",
+    checklistItems: [],
+    newChecklistItemText: "",
+    onNewChecklistItemTextChange: vi.fn(),
+    onCreateChecklistItem: vi.fn(async () => {}),
+    onChecklistItemUpdate: vi.fn(),
+    onChecklistItemDelete: vi.fn(),
+    ...overrides,
+  };
+}
+
+async function withChecklistSection(
+  props: TaskChecklistSectionProps,
+  run: (harness: ChecklistHarness) => Promise<void> | void,
+) {
+  const harness = await createReactDomHarness();
+  try {
+    const { default: TaskChecklistSection } = await import("./TaskChecklistSection");
+    await harness.render(createElement(TaskChecklistSection, props));
+    await run(harness);
+  } finally {
+    await harness.cleanup();
+  }
+}
+
+async function clickButton(harness: ChecklistHarness, text: string) {
+  const button = findButtonByText(harness.dom.container, text);
+  await harness.act(async () => {
+    getReactProps(button)?.onClick?.({ currentTarget: button });
+  });
+}
 
 describe("TaskChecklistSection panel expansion", () => {
   it("expands all open items in place without revealing done items", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: TaskChecklistSection } = await import("./TaskChecklistSection");
-    const root = createRoot(dom.container as any);
     const checklistItems = [
       createChecklistItem({ id: "open-1", text: "Open one", order: 0 }),
       createChecklistItem({ id: "open-2", text: "Open two", order: 1 }),
@@ -77,84 +83,48 @@ describe("TaskChecklistSection panel expansion", () => {
       createChecklistItem({ id: "done-2", text: "Done two", done: true, order: 5 }),
     ];
 
-    try {
-      flushSync(() => {
-        root.render(createElement(TaskChecklistSection, {
-          ...baseProps,
-          checklistItems,
-          variant: "panel",
-        }));
-      });
+    await withChecklistSection(createBaseProps({
+      checklistItems,
+      variant: "panel",
+    }), async (harness) => {
+      expect(harness.dom.container.textContent).toContain("Open one");
+      expect(harness.dom.container.textContent).toContain("Open two");
+      expect(harness.dom.container.textContent).toContain("Open three");
+      expect(harness.dom.container.textContent).not.toContain("Open four");
+      expect(harness.dom.container.textContent).not.toContain("Done one");
+      expect(harness.dom.container.textContent).toContain("View full checklist");
+      expect(harness.dom.container.textContent).toContain("1 more open");
+      expect(harness.dom.container.textContent).toContain("2 done");
 
-      expect(dom.container.textContent).toContain("Open one");
-      expect(dom.container.textContent).toContain("Open two");
-      expect(dom.container.textContent).toContain("Open three");
-      expect(dom.container.textContent).not.toContain("Open four");
-      expect(dom.container.textContent).not.toContain("Done one");
-      expect(dom.container.textContent).toContain("View full checklist");
-      expect(dom.container.textContent).toContain("1 more open");
-      expect(dom.container.textContent).toContain("2 done");
+      await clickButton(harness, "View full checklist");
 
-      flushSync(() => {
-        getReactProps(findButtonByText(dom.container, "View full checklist"))?.onClick?.();
-      });
-
-      expect(dom.container.textContent).toContain("Open four");
-      expect(dom.container.textContent).toContain("Show fewer open items");
-      expect(dom.container.textContent).not.toContain("Done one");
-      expect(dom.container.textContent).not.toContain("Done two");
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+      expect(harness.dom.container.textContent).toContain("Open four");
+      expect(harness.dom.container.textContent).toContain("Show fewer open items");
+      expect(harness.dom.container.textContent).not.toContain("Done one");
+      expect(harness.dom.container.textContent).not.toContain("Done two");
+    });
   });
 
   it("reveals completed items only through the separate done expansion", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: TaskChecklistSection } = await import("./TaskChecklistSection");
-    const root = createRoot(dom.container as any);
     const checklistItems = [
       createChecklistItem({ id: "open-1", text: "Open one", order: 0 }),
       createChecklistItem({ id: "done-1", text: "Done one", done: true, order: 1 }),
     ];
 
-    try {
-      flushSync(() => {
-        root.render(createElement(TaskChecklistSection, {
-          ...baseProps,
-          checklistItems,
-          variant: "panel",
-        }));
-      });
+    await withChecklistSection(createBaseProps({
+      checklistItems,
+      variant: "panel",
+    }), async (harness) => {
+      expect(harness.dom.container.textContent).toContain("1 done");
+      expect(harness.dom.container.textContent).not.toContain("Done one");
 
-      expect(dom.container.textContent).toContain("1 done");
-      expect(dom.container.textContent).not.toContain("Done one");
+      await clickButton(harness, "1 done");
 
-      flushSync(() => {
-        getReactProps(findButtonByText(dom.container, "1 done"))?.onClick?.();
-      });
-
-      expect(dom.container.textContent).toContain("Done one");
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+      expect(harness.dom.container.textContent).toContain("Done one");
+    });
   });
 
   it("expands the open checklist after adding an item", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: TaskChecklistSection } = await import("./TaskChecklistSection");
-    const root = createRoot(dom.container as any);
     const onCreateChecklistItem = vi.fn(async () => {});
     const checklistItems = [
       createChecklistItem({ id: "open-1", text: "Open one", order: 0 }),
@@ -163,30 +133,22 @@ describe("TaskChecklistSection panel expansion", () => {
       createChecklistItem({ id: "open-4", text: "Open four", order: 3 }),
     ];
 
-    try {
-      flushSync(() => {
-        root.render(createElement(TaskChecklistSection, {
-          ...baseProps,
-          checklistItems,
-          newChecklistItemText: "New item",
-          onCreateChecklistItem,
-          variant: "panel",
-        }));
+    await withChecklistSection(createBaseProps({
+      checklistItems,
+      newChecklistItemText: "New item",
+      onCreateChecklistItem,
+      variant: "panel",
+    }), async (harness) => {
+      expect(harness.dom.container.textContent).not.toContain("Open four");
+
+      const input = findInputByPlaceholder(harness.dom.container, "+ Add item…");
+      await harness.act(async () => {
+        await getReactProps(input)?.onKeyDown?.({ key: "Enter" });
       });
 
-      expect(dom.container.textContent).not.toContain("Open four");
-
-      const input = findInputByPlaceholder(dom.container, "+ Add item…");
-      await getReactProps(input)?.onKeyDown?.({ key: "Enter" });
-      await waitTick();
-
       expect(onCreateChecklistItem).toHaveBeenCalledWith("New item");
-      expect(dom.container.textContent).toContain("Open four");
-      expect(dom.container.textContent).toContain("Show fewer open items");
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+      expect(harness.dom.container.textContent).toContain("Open four");
+      expect(harness.dom.container.textContent).toContain("Show fewer open items");
+    });
   });
 });

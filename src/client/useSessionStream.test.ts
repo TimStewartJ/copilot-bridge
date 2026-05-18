@@ -1,6 +1,11 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installDomShim } from "./test-dom-shim";
+import {
+  createReactDomHarness,
+  waitTick,
+  waitUntilAct,
+  type Act,
+} from "./test-react-harness";
 import type { PendingUserInputRequestView } from "./api";
 import type { PendingTool } from "./useSessionStream";
 import {
@@ -24,32 +29,6 @@ function createPendingTool(toolCallId: string, partial: Partial<PendingTool> = {
 }
 
 type SessionStreamState = ReturnType<typeof useSessionStream>;
-
-type Act = (callback: () => void | Promise<void>) => Promise<void>;
-
-function waitTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await waitTick();
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
-async function waitUntilAct(act: Act, predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await act(async () => {
-      await waitTick();
-    });
-  }
-  throw new Error("Timed out waiting for condition");
-}
 
 function createControlledSseResponse() {
   const encoder = new TextEncoder();
@@ -77,14 +56,7 @@ async function withSessionStreamHarness(
     act: Act;
   }) => Promise<void>,
 ): Promise<void> {
-  const dom = installDomShim();
-  const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  const [{ createRoot }, { act }] = await Promise.all([
-    import("react-dom/client"),
-    import("react"),
-  ]);
-  const root = createRoot(dom.container as unknown as Element);
+  const harness = await createReactDomHarness();
   let currentState: SessionStreamState | null = null;
   const getState = () => {
     if (!currentState) throw new Error("Stream harness has not rendered");
@@ -97,22 +69,11 @@ async function withSessionStreamHarness(
   }
 
   try {
-    await act(async () => {
-      root.render(createElement(StreamHarness));
-    });
-    await waitUntil(() => currentState !== null);
-    await run({ getState, act });
+    await harness.render(createElement(StreamHarness));
+    await waitUntilAct(harness.act, () => currentState !== null);
+    await run({ getState, act: harness.act });
   } finally {
-    await act(async () => {
-      root.unmount();
-    });
-    await waitTick();
-    if (previousActEnvironment === undefined) {
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    } else {
-      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
-    dom.cleanup();
+    await harness.cleanup();
   }
 }
 

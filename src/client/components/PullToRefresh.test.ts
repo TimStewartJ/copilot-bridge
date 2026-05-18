@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installDomShim } from "../test-dom-shim";
+import { createReactDomHarness } from "../test-react-harness";
 import PullToRefresh from "./PullToRefresh";
 
 type TestElement = HTMLElement & {
@@ -17,13 +18,13 @@ function makeEventfulElement(element: HTMLElement): TestElement {
     clientHeight: { configurable: true, writable: true, value: 300 },
   });
 
-  testElement.addEventListener = (type, listener) => {
+  testElement.addEventListener = (type: string, listener: EventListenerOrEventListenerObject | null) => {
     if (!listener) return;
     const listenersForType = listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
     listenersForType.add(listener);
     listeners.set(type, listenersForType);
   };
-  testElement.removeEventListener = (type, listener) => {
+  testElement.removeEventListener = (type: string, listener: EventListenerOrEventListenerObject | null) => {
     if (!listener) return;
     listeners.get(type)?.delete(listener);
   };
@@ -68,46 +69,39 @@ describe("PullToRefresh scroll restoration", () => {
   });
 
   it("does not clobber a saved scroll position on initial mount", async () => {
-    const dom = installEventfulDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const root = createRoot(dom.container as unknown as Element);
+    const harness = await createReactDomHarness({ installDom: installEventfulDomShim });
+    const { dom } = harness;
     const key = "pull-to-refresh-preserves-restoration";
     const renderPullToRefresh = () => {
-      flushSync(() => {
-        root.render(createElement(PullToRefresh, {
-          onRefresh: async () => {},
-          scrollRestoration: { key },
-          children: createElement("div", null, "content"),
-        }));
-      });
+      return harness.render(createElement(PullToRefresh, {
+        onRefresh: async () => {},
+        scrollRestoration: { key },
+        children: createElement("div", null, "content"),
+      }));
     };
 
     try {
-      renderPullToRefresh();
-      vi.runOnlyPendingTimers();
+      await renderPullToRefresh();
+      await harness.act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
 
       const firstContainer = dom.container.firstChild as unknown as TestElement;
       firstContainer.scrollTop = 188;
       firstContainer.dispatchTestEvent("scroll");
-      vi.runOnlyPendingTimers();
-
-      flushSync(() => {
-        root.render(null);
+      await harness.act(async () => {
+        await vi.runOnlyPendingTimersAsync();
       });
 
-      renderPullToRefresh();
+      await harness.render(null);
+
+      await renderPullToRefresh();
 
       const restoredContainer = dom.container.firstChild as unknown as TestElement;
       expect(restoredContainer).not.toBe(firstContainer);
       expect(restoredContainer.scrollTop).toBe(188);
     } finally {
-      flushSync(() => {
-        root.unmount();
-      });
-      dom.cleanup();
+      await harness.cleanup();
     }
   });
 });

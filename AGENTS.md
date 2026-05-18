@@ -16,6 +16,14 @@ These instructions apply to the whole repository. Keep changes small, typed, cro
 - Run `npm run check:pr` before asking for review, previewing, or preparing deployment.
 - Documentation-only edits do not need the full test suite unless they change generated docs, scripts, examples, or validation guidance.
 
+## Client React tests
+
+- Use `src/client/test-react-harness.ts` for React DOM client tests so DOM shim setup, React `act`, root unmount, and async flushing stay consistent.
+- Do not import `react-dom`, `react-dom/client`, or create React roots directly from client test files unless you are changing the harness itself.
+- Keep React DOM imports after the DOM shim is installed. The shared harness already does this with dynamic imports.
+- Wrap user interactions, rerenders, and timer advancement in the harness `act`. Prefer fake timers plus `waitForDelayAct` for known delays instead of wall-clock sleeps.
+- Client tests should remain safe under Vitest file parallelism; avoid shared global mutation that is not restored by the harness cleanup.
+
 ## Cross-platform rules
 
 - Code and tests must work on both Linux and Windows.

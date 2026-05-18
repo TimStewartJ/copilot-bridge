@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../api";
-import { installDomShim } from "../test-dom-shim";
+import { createReactDomHarness } from "../test-react-harness";
 import {
   canKeepCurrentReasoningEffortForModel,
   formatReasoningEffortLabel,
@@ -9,40 +9,19 @@ import {
 } from "./SessionList";
 
 async function renderSessionList(sessions: Session[]) {
-  const dom = installDomShim();
-  const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  const [{ createRoot }, { act }, { default: SessionList }] = await Promise.all([
-    import("react-dom/client"),
-    import("react"),
-    import("./SessionList"),
-  ]);
-  const root = createRoot(dom.container as unknown as Element);
+  const harness = await createReactDomHarness();
+  const { default: SessionList } = await import("./SessionList");
 
-  await act(async () => {
-    root.render(createElement(SessionList, {
-      variant: "global",
-      sessions,
-      activeSessionId: null,
-      onSelectSession: vi.fn(),
-      onNewSession: vi.fn(),
-      showNewButton: false,
-    }));
-  });
+  await harness.render(createElement(SessionList, {
+    variant: "global",
+    sessions,
+    activeSessionId: null,
+    onSelectSession: vi.fn(),
+    onNewSession: vi.fn(),
+    showNewButton: false,
+  }));
 
-  const cleanup = async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    if (previousActEnvironment === undefined) {
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    } else {
-      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
-    dom.cleanup();
-  };
-
-  return { dom, cleanup };
+  return { dom: harness.dom, cleanup: harness.cleanup };
 }
 
 function createSession(overrides: Partial<Session> & { sessionId: string }): Session {
