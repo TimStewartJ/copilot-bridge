@@ -1,14 +1,21 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { formatCommandDuration } from "./validation-command-log.js";
 
-const STEPS = [
+export const DEPLOY_CHECK_STEPS = [
   ["npm", "run", "check:pr"],
-  ["npm", "run", "test:coverage"],
   ["npm", "run", "preview:smoke"],
 ] as const;
 
 const LOG_TAIL_BYTES = 24_000;
+type DeployCheckStep = typeof DEPLOY_CHECK_STEPS[number];
+type DeployCheckStepResult = {
+  step: DeployCheckStep;
+  elapsedMs: number;
+  logPath: string;
+};
 
 function npmCommand(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -33,7 +40,7 @@ function readLogTail(path: string): string {
   return start > 0 ? `[showing last ${LOG_TAIL_BYTES} bytes]\n${content}` : content;
 }
 
-function runStep(step: readonly string[], stepIndex: number): Promise<void> {
+function runStep(step: DeployCheckStep, stepIndex: number, totalSteps: number): Promise<DeployCheckStepResult> {
   return new Promise((resolve, reject) => {
     const dir = logDir();
     mkdirSync(dir, { recursive: true });
@@ -44,7 +51,7 @@ function runStep(step: readonly string[], stepIndex: number): Promise<void> {
     const command = step[0] === "npm" ? npmCommand() : step[0];
     const shell = process.platform === "win32";
     let settled = false;
-    console.log(`[check:deploy] ${stepIndex + 1}/${STEPS.length}: ${step.join(" ")} (log: ${logPath})`);
+    console.log(`[check:deploy] ${stepIndex + 1}/${totalSteps}: ${step.join(" ")} (log: ${logPath})`);
     const child = spawn(command, step.slice(1), {
       cwd: process.cwd(),
       env: process.env,
@@ -74,11 +81,12 @@ function runStep(step: readonly string[], stepIndex: number): Promise<void> {
       settle(() => reject(error));
     });
     child.on("close", (code, signal) => {
-      const elapsed = ((Date.now() - startedAt) / 1_000).toFixed(1);
+      const elapsedMs = Date.now() - startedAt;
+      const elapsed = formatCommandDuration(elapsedMs);
       settle(() => {
         if (code === 0) {
-          console.log(`[check:deploy] ${step.join(" ")} passed in ${elapsed}s`);
-          resolve();
+          console.log(`[check:deploy] ${step.join(" ")} passed in ${elapsed}`);
+          resolve({ step, elapsedMs, logPath });
           return;
         }
         const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
@@ -91,8 +99,36 @@ function runStep(step: readonly string[], stepIndex: number): Promise<void> {
   });
 }
 
-for (const [index, step] of STEPS.entries()) {
-  await runStep(step, index);
+function formatStepSummary(results: DeployCheckStepResult[]): string {
+  return results
+    .map(({ step, elapsedMs }, index) => `${index + 1}. ${step.join(" ")} ${formatCommandDuration(elapsedMs)}`)
+    .join("; ");
 }
 
-console.log("[check:deploy] all deploy checks passed");
+export async function runDeployChecks(
+  steps: readonly DeployCheckStep[] = DEPLOY_CHECK_STEPS,
+): Promise<DeployCheckStepResult[]> {
+  const startedAt = Date.now();
+  console.log(`[check:deploy] starting ${steps.length} deploy check step(s)`);
+  const results: DeployCheckStepResult[] = [];
+  for (const [index, step] of steps.entries()) {
+    results.push(await runStep(step, index, steps.length));
+  }
+
+  const totalElapsedMs = Date.now() - startedAt;
+  const stepSummary = formatStepSummary(results);
+  console.log(
+    `[check:deploy] all deploy checks passed in ${formatCommandDuration(totalElapsedMs)}`
+      + (stepSummary ? ` (${stepSummary})` : ""),
+  );
+  return results;
+}
+
+function isDirectRun(): boolean {
+  const entrypoint = process.argv[1];
+  return Boolean(entrypoint) && fileURLToPath(import.meta.url) === resolve(entrypoint);
+}
+
+if (isDirectRun()) {
+  await runDeployChecks();
+}

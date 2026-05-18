@@ -228,11 +228,11 @@ npm run check:server  # server type-check + server/shared lane
 npm run check:launcher # server type-check + launcher lane
 npm run check:staging # server type-check + staging/integration lane
 npm run check:pr      # fast gate + all lanes + full build
-npm run check:deploy  # PR gate + coverage + preview smoke
+npm run check:deploy  # PR gate + preview smoke
 npm run test:slow-report # full Vitest pass + top slowest files
 ```
 
-Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Client type-checking is now explicit and baseline-gated: `npm run typecheck:client` fails only when client diagnostics change from the committed debt baseline, while `npm run typecheck:client:update-baseline` is reserved for intentional debt movement. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior. The legacy `test:preview`, `test:deploy`, and `test:full` aliases remain available and now map onto the clearer validation tiers.
+Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Coverage is CI-owned: the GitHub Actions CI workflow runs `test:coverage` on PRs, pushes, manual dispatches, and its nightly schedule; local deploy validation still runs the full non-coverage test lanes through `check:pr`. Client type-checking is now explicit and baseline-gated: `npm run typecheck:client` fails only when client diagnostics change from the committed debt baseline, while `npm run typecheck:client:update-baseline` is reserved for intentional debt movement. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior. The legacy `test:preview`, `test:deploy`, and `test:full` aliases remain available and now map onto the clearer validation tiers.
 
 ### Cross-Platform Test Rules
 

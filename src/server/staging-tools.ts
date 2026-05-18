@@ -92,6 +92,7 @@ import {
   buildCommandFailureOutput,
   extractCommandFailureLogPath,
   extractCommandFailureLogWriteError,
+  formatCommandDuration,
   writeValidationCommandLog,
 } from "./validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
@@ -757,6 +758,7 @@ export const STAGING_TOOLS = [
         const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
           cwd: stagingDir,
           run: (command, options) => run(command, stagingDir, options),
+          log,
         });
         if (!validationResult.ok) {
           return commandFailure(
@@ -854,6 +856,7 @@ export const STAGING_TOOLS = [
     },
     handler: async (args: any) => {
       const { stagingDir, message } = args;
+      const deployStartedAt = Date.now();
 
       if (!existsSync(stagingDir)) {
         return stagingFailure(
@@ -1004,6 +1007,7 @@ export const STAGING_TOOLS = [
       const validationResult = await runValidationGateAsync(DEPLOY_GATE, {
         cwd: stagingDir,
         run: (command, options) => run(command, stagingDir, options),
+        log,
       });
       if (!validationResult.ok) {
         await unstashProduction();
@@ -1029,6 +1033,7 @@ export const STAGING_TOOLS = [
         );
       }
       const validatedCommitSha = validatedHeadResult.output.trim();
+      const validationElapsedMs = validationResult.results.reduce((total, entry) => total + entry.elapsedMs, 0);
 
       // Store pre-deploy SHA so the launcher can roll back to exactly this point
       const headResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
@@ -1192,10 +1197,14 @@ export const STAGING_TOOLS = [
         log(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
       }
 
+      const deployElapsedMs = Date.now() - deployStartedAt;
+      log(`Deploy completed in ${formatCommandDuration(deployElapsedMs)}`);
       return {
         success: true,
         commitSha,
-        message: `Deployed ${commitSha} to production. Restart signal sent — do NOT make any more tool calls.`,
+        elapsedMs: deployElapsedMs,
+        validationElapsedMs,
+        message: `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent — do NOT make any more tool calls.`,
       };
     },
   }),

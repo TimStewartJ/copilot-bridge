@@ -60,6 +60,7 @@ export function runLauncherBuild({
     const stampedValidation = runValidationGate(STAMPED_DEPLOY_GATE, {
       cwd: ".",
       run,
+      log,
     });
     if (!stampedValidation.ok) {
       logFailure(`${stampedValidation.gate.label} failed`, stampedValidation.result.output, log);
@@ -75,6 +76,7 @@ export function runLauncherBuild({
   const validation = runValidationGate(DEPLOY_GATE, {
     cwd: ".",
     run,
+    log,
   });
   if (!validation.ok) {
     logFailure(`${validation.gate.label} failed`, validation.result.output, log);
@@ -102,6 +104,7 @@ export function rebuildAfterRollback({ ensureDeps, run, log }: LauncherBuildOpti
   const validation = runValidationGate(ROLLBACK_GATE, {
     cwd: ".",
     run,
+    log,
   });
   if (!validation.ok) {
     logFailure(`${validation.gate.label} failed`, validation.result.output, log);

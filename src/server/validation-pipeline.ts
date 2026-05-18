@@ -1,3 +1,5 @@
+import { formatCommandDuration } from "./validation-command-log.js";
+
 export type ValidationStep = {
   command: string;
   timeoutMs: number;
@@ -33,7 +35,7 @@ type RunValidationGateAsyncOptions<Result extends ValidationCommandResult> = {
 export type ValidationGateSuccess<Result extends ValidationCommandResult> = {
   ok: true;
   gate: ValidationGate;
-  results: Array<{ step: ValidationStep; result: Result }>;
+  results: Array<{ step: ValidationStep; result: Result; elapsedMs: number }>;
 };
 
 export type ValidationGateFailure<Result extends ValidationCommandResult> = {
@@ -42,7 +44,7 @@ export type ValidationGateFailure<Result extends ValidationCommandResult> = {
   step: ValidationStep;
   stepIndex: number;
   result: Result;
-  results: Array<{ step: ValidationStep; result: Result }>;
+  results: Array<{ step: ValidationStep; result: Result; elapsedMs: number }>;
 };
 
 export type ValidationGateRunResult<Result extends ValidationCommandResult> =
@@ -51,6 +53,7 @@ export type ValidationGateRunResult<Result extends ValidationCommandResult> =
 
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
+// Bump when the deploy gate contract changes in a way that should invalidate existing stamps.
 export const DEPLOY_GATE_VERSION = 1;
 
 const FAST_CHECK_STEP: ValidationStep = {
@@ -106,22 +109,46 @@ export const ROLLBACK_GATE: ValidationGate = {
   ],
 };
 
+function formatStepSummary<Result extends ValidationCommandResult>(
+  results: Array<{ step: ValidationStep; result: Result; elapsedMs: number }>,
+): string {
+  return results
+    .map(({ step, elapsedMs }, index) => `${index + 1}. ${step.command} ${formatCommandDuration(elapsedMs)}`)
+    .join("; ");
+}
+
 export function runValidationGate<Result extends ValidationCommandResult>(
   gate: ValidationGate,
   options: RunValidationGateOptions<Result>,
 ): ValidationGateRunResult<Result> {
-  const results: Array<{ step: ValidationStep; result: Result }> = [];
+  const results: Array<{ step: ValidationStep; result: Result; elapsedMs: number }> = [];
+  const gateStartedAt = Date.now();
+
+  options.log?.(`Starting ${gate.label.toLowerCase()} in ${options.cwd} (${gate.steps.length} step(s))`);
 
   for (const [stepIndex, step] of gate.steps.entries()) {
     options.log?.(`Running ${gate.label.toLowerCase()} step ${stepIndex + 1}/${gate.steps.length}: ${step.command}`);
+    const stepStartedAt = Date.now();
     const result = options.run(step.command, { timeoutMs: step.timeoutMs, isolateRuntimeEnv: true });
-    results.push({ step, result });
+    const elapsedMs = Date.now() - stepStartedAt;
+    results.push({ step, result, elapsedMs });
     if (!result.ok) {
+      options.log?.(
+        `${gate.label} step ${stepIndex + 1}/${gate.steps.length} failed after ${formatCommandDuration(elapsedMs)}: ${step.command}`,
+      );
       return { ok: false, gate, step, stepIndex, result, results };
     }
+    options.log?.(
+      `${gate.label} step ${stepIndex + 1}/${gate.steps.length} passed in ${formatCommandDuration(elapsedMs)}: ${step.command}`,
+    );
   }
 
-  options.log?.(`Completed ${gate.label.toLowerCase()} in ${options.cwd}`);
+  const gateElapsedMs = Date.now() - gateStartedAt;
+  const stepSummary = formatStepSummary(results);
+  options.log?.(
+    `Completed ${gate.label.toLowerCase()} in ${formatCommandDuration(gateElapsedMs)}`
+      + (stepSummary ? ` (${stepSummary})` : ""),
+  );
   return { ok: true, gate, results };
 }
 
@@ -129,17 +156,33 @@ export async function runValidationGateAsync<Result extends ValidationCommandRes
   gate: ValidationGate,
   options: RunValidationGateAsyncOptions<Result>,
 ): Promise<ValidationGateRunResult<Result>> {
-  const results: Array<{ step: ValidationStep; result: Result }> = [];
+  const results: Array<{ step: ValidationStep; result: Result; elapsedMs: number }> = [];
+  const gateStartedAt = Date.now();
+
+  options.log?.(`Starting ${gate.label.toLowerCase()} in ${options.cwd} (${gate.steps.length} step(s))`);
 
   for (const [stepIndex, step] of gate.steps.entries()) {
     options.log?.(`Running ${gate.label.toLowerCase()} step ${stepIndex + 1}/${gate.steps.length}: ${step.command}`);
+    const stepStartedAt = Date.now();
     const result = await options.run(step.command, { timeoutMs: step.timeoutMs, isolateRuntimeEnv: true });
-    results.push({ step, result });
+    const elapsedMs = Date.now() - stepStartedAt;
+    results.push({ step, result, elapsedMs });
     if (!result.ok) {
+      options.log?.(
+        `${gate.label} step ${stepIndex + 1}/${gate.steps.length} failed after ${formatCommandDuration(elapsedMs)}: ${step.command}`,
+      );
       return { ok: false, gate, step, stepIndex, result, results };
     }
+    options.log?.(
+      `${gate.label} step ${stepIndex + 1}/${gate.steps.length} passed in ${formatCommandDuration(elapsedMs)}: ${step.command}`,
+    );
   }
 
-  options.log?.(`Completed ${gate.label.toLowerCase()} in ${options.cwd}`);
+  const gateElapsedMs = Date.now() - gateStartedAt;
+  const stepSummary = formatStepSummary(results);
+  options.log?.(
+    `Completed ${gate.label.toLowerCase()} in ${formatCommandDuration(gateElapsedMs)}`
+      + (stepSummary ? ` (${stepSummary})` : ""),
+  );
   return { ok: true, gate, results };
 }
