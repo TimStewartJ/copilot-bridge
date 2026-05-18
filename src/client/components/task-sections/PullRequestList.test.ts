@@ -1,30 +1,16 @@
 import { createElement } from "react";
-import { describe, it, expect, vi } from "vitest";
-import { installDomShim } from "../../test-dom-shim";
+import { describe, expect, it, vi } from "vitest";
 import type { EnrichedPR, PRRef } from "../../api";
+import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+} from "../../test-react-harness";
+import type { PullRequestListProps } from "./PullRequestList";
 
-// ── DOM helpers ────────────────────────────────────────────────────
+type PullRequestHarness = Awaited<ReturnType<typeof createReactDomHarness>>;
 
-function findAllByTag(root: any, tag: string): any[] {
-  const results: any[] = [];
-  if ((root.tagName ?? "").toUpperCase() === tag.toUpperCase()) results.push(root);
-  for (const child of root.childNodes ?? []) {
-    results.push(...findAllByTag(child, tag));
-  }
-  return results;
-}
-
-function getReactProps(el: any): Record<string, any> | null {
-  if (!el) return null;
-  const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
-  return key ? el[key] : null;
-}
-
-async function waitTick(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
-// ── Fixtures ───────────────────────────────────────────────────────
+// -- Fixtures ---------------------------------------------------------
 
 function makePR(prId: number, url: string): EnrichedPR {
   return { repoId: "repo-1", repoName: "org/repo", prId, provider: "github", title: `PR #${prId}`, status: "active", createdBy: null, reviewerCount: 0, url };
@@ -35,258 +21,143 @@ const prB = makePR(2, "https://github.com/org/repo/pull/2");
 const prReal = makePR(3, "https://github.com/org/repo/pull/3");
 const rawPROnly: PRRef[] = [{ repoId: "repo-1", prId: 99, provider: "github" }];
 
-// ── Tests ──────────────────────────────────────────────────────────
-
-describe("PullRequestList – summary variant", () => {
-  it("multiple PRs are collapsed by default", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
+async function withPullRequestList(
+  props: PullRequestListProps,
+  run: (harness: PullRequestHarness) => Promise<void> | void,
+) {
+  const harness = await createReactDomHarness();
+  try {
     const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }));
-      });
-      expect(findAllByTag(dom.container, "A")).toHaveLength(0);
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+    await harness.render(createElement(PullRequestList, props));
+    await run(harness);
+  } finally {
+    await harness.cleanup();
+  }
+}
+
+async function clickFirstSummaryButton(harness: PullRequestHarness) {
+  const [button] = findAllByTag(harness.dom.container, "BUTTON");
+  if (!button) throw new Error("Summary button was not rendered");
+  await harness.act(async () => {
+    getReactProps(button)?.onClick?.({ currentTarget: button });
+  });
+}
+
+// -- Tests ------------------------------------------------------------
+
+describe("PullRequestList - summary variant", () => {
+  it("multiple PRs are collapsed by default", async () => {
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, (harness) => {
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+    });
   });
 
   it("clicking summary expands and reveals compact linked rows", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }));
-      });
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
+      await clickFirstSummaryButton(harness);
 
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-
-      expect(findAllByTag(dom.container, "A")).toHaveLength(2);
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
+    });
   });
 
   it("clicking summary again collapses", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }));
-      });
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
+      await clickFirstSummaryButton(harness);
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
 
-      // expand
-      let [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-      expect(findAllByTag(dom.container, "A")).toHaveLength(2);
-
-      // collapse
-      [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-      expect(findAllByTag(dom.container, "A")).toHaveLength(0);
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+      await clickFirstSummaryButton(harness);
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+    });
   });
 
   it("changing resetKey collapses expanded content", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }, { act }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-      import("react"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
+    await withPullRequestList({
+      enrichedPRs: [prA, prB],
+      rawPRs: [],
+      variant: "summary",
+      resetKey: "task-1",
+    }, async (harness) => {
+      const { default: PullRequestList } = await import("./PullRequestList");
       const prs = [prA, prB];
 
-      await act(async () => {
-        root.render(createElement(PullRequestList, { enrichedPRs: prs, rawPRs: [], variant: "summary", resetKey: "task-1" }));
-      });
+      await clickFirstSummaryButton(harness);
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
 
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      await act(async () => { getReactProps(button)?.onClick?.(); });
+      await harness.render(createElement(PullRequestList, {
+        enrichedPRs: prs,
+        rawPRs: [],
+        variant: "summary",
+        resetKey: "task-2",
+      }));
 
-      expect(findAllByTag(dom.container, "A")).toHaveLength(2);
-
-      // change resetKey → useEffect fires → collapsed
-      await act(async () => {
-        root.render(createElement(PullRequestList, { enrichedPRs: prs, rawPRs: [], variant: "summary", resetKey: "task-2" }));
-      });
-
-      expect(findAllByTag(dom.container, "A")).toHaveLength(0);
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+    });
   });
 
   it("expanded rows contain external anchor links", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }));
-      });
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
+      await clickFirstSummaryButton(harness);
 
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-
-      const anchors = findAllByTag(dom.container, "A");
+      const anchors = findAllByTag(harness.dom.container, "A");
       expect(anchors).toHaveLength(2);
-      for (const a of anchors) {
-        expect(a.getAttribute("target")).toBe("_blank");
-        expect(a.getAttribute("rel")).toBe("noopener");
-        expect(a.getAttribute("href")).toMatch(/^https?:\/\//);
+      for (const anchor of anchors) {
+        expect(anchor.getAttribute("target")).toBe("_blank");
+        expect(anchor.getAttribute("rel")).toBe("noopener");
+        expect(anchor.getAttribute("href")).toMatch(/^https?:\/\//);
       }
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+    });
   });
 
   it("single PR with a real URL calls window.open", async () => {
-    const dom = installDomShim();
-    const mockOpen = vi.fn();
-    (globalThis as any).window.open = mockOpen;
+    await withPullRequestList({ enrichedPRs: [prReal], rawPRs: [], variant: "summary" }, async (harness) => {
+      const mockOpen = vi.fn();
+      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
+      try {
+        await clickFirstSummaryButton(harness);
 
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [prReal], rawPRs: [], variant: "summary" }));
-      });
-
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-
-      expect(mockOpen).toHaveBeenCalledOnce();
-      expect(mockOpen).toHaveBeenCalledWith(prReal.url, "_blank", "noopener");
-    } finally {
-      delete (globalThis as any).window.open;
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+        expect(mockOpen).toHaveBeenCalledOnce();
+        expect(mockOpen).toHaveBeenCalledWith(prReal.url, "_blank", "noopener");
+      } finally {
+        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
+      }
+    });
   });
 
   it("single PR with url '#' (raw fallback) does not navigate", async () => {
-    const dom = installDomShim();
-    const mockOpen = vi.fn();
-    (globalThis as any).window.open = mockOpen;
+    await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }, async (harness) => {
+      const mockOpen = vi.fn();
+      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
+      try {
+        await clickFirstSummaryButton(harness);
 
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }));
-      });
-
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-
-      expect(mockOpen).not.toHaveBeenCalled();
-    } finally {
-      delete (globalThis as any).window.open;
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+        expect(mockOpen).not.toHaveBeenCalled();
+      } finally {
+        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
+      }
+    });
   });
 
   it("single PR with missing URL expands inline on click", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }));
-      });
+    await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }, async (harness) => {
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
 
-      // collapsed by default – no child rows
-      expect(findAllByTag(dom.container, "A")).toHaveLength(0);
+      await clickFirstSummaryButton(harness);
 
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-
-      // after clicking, the disclosure panel should be visible (contains at least one child DIV row)
-      const divs = findAllByTag(dom.container, "DIV");
+      const divs = findAllByTag(harness.dom.container, "DIV");
       expect(divs.length).toBeGreaterThan(0);
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+    });
   });
 
   it("expanded rows with missing URL do not render href='#' anchors", async () => {
-    const dom = installDomShim();
-    const [{ createRoot }, { flushSync }] = await Promise.all([
-      import("react-dom/client"),
-      import("react-dom"),
-    ]);
-    const { default: PullRequestList } = await import("./PullRequestList");
-    const root = createRoot(dom.container as any);
-    try {
-      flushSync(() => {
-        root.render(createElement(PullRequestList, { enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }));
-      });
+    await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }, async (harness) => {
+      await clickFirstSummaryButton(harness);
 
-      const [button] = findAllByTag(dom.container, "BUTTON");
-      flushSync(() => { getReactProps(button)?.onClick?.(); });
-
-      const anchors = findAllByTag(dom.container, "A");
-      for (const a of anchors) {
-        const href = a.getAttribute("href") ?? "";
+      const anchors = findAllByTag(harness.dom.container, "A");
+      for (const anchor of anchors) {
+        const href = anchor.getAttribute("href") ?? "";
         expect(href).not.toBe("#");
         expect(href).toMatch(/^https?:\/\//);
       }
-    } finally {
-      flushSync(() => root.unmount());
-      await waitTick();
-      dom.cleanup();
-    }
+    });
   });
 });

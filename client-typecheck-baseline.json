@@ -231,34 +231,6 @@
     "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
   },
   {
-    "code": 7006,
-    "file": "src/client/components/PullToRefresh.test.ts",
-    "line": 20,
-    "character": 35,
-    "message": "Parameter 'type' implicitly has an 'any' type."
-  },
-  {
-    "code": 7006,
-    "file": "src/client/components/PullToRefresh.test.ts",
-    "line": 20,
-    "character": 41,
-    "message": "Parameter 'listener' implicitly has an 'any' type."
-  },
-  {
-    "code": 7006,
-    "file": "src/client/components/PullToRefresh.test.ts",
-    "line": 26,
-    "character": 38,
-    "message": "Parameter 'type' implicitly has an 'any' type."
-  },
-  {
-    "code": 7006,
-    "file": "src/client/components/PullToRefresh.test.ts",
-    "line": 26,
-    "character": 44,
-    "message": "Parameter 'listener' implicitly has an 'any' type."
-  },
-  {
     "code": 2322,
     "file": "src/client/components/SessionList.tsx",
     "line": 669,
@@ -294,20 +266,6 @@
     "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ isLoading: true; label: string; }' is not assignable to parameter of type 'Attributes & LoadingSkeletonRegionProps'.\n      Property 'children' is missing in type '{ isLoading: true; label: string; }' but required in type 'LoadingSkeletonRegionProps'."
   },
   {
-    "code": 2769,
-    "file": "src/client/components/shared/Skeleton.test.ts",
-    "line": 60,
-    "character": 13,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ isLoading: true; label: string; delayMs: number; }' is not assignable to parameter of type 'Attributes & LoadingSkeletonRegionProps'.\n      Property 'children' is missing in type '{ isLoading: true; label: string; delayMs: number; }' but required in type 'LoadingSkeletonRegionProps'."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/shared/Skeleton.test.ts",
-    "line": 76,
-    "character": 13,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ isLoading: false; label: string; delayMs: number; }' is not assignable to parameter of type 'Attributes & LoadingSkeletonRegionProps'.\n      Property 'children' is missing in type '{ isLoading: false; label: string; delayMs: number; }' but required in type 'LoadingSkeletonRegionProps'."
-  },
-  {
     "code": 2367,
     "file": "src/client/components/task-momentum-alerts.ts",
     "line": 75,
@@ -341,111 +299,6 @@
     "line": 255,
     "character": 26,
     "message": "Type 'Task | null | undefined' is not assignable to type 'Task | null'.\n  Type 'undefined' is not assignable to type 'Task | null'."
-  },
-  {
-    "code": 2554,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 50,
-    "character": 48,
-    "message": "Expected 0 arguments, but got 1."
-  },
-  {
-    "code": 2554,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 58,
-    "character": 56,
-    "message": "Expected 0 arguments, but got 1."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 238,
-    "character": 40,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ task: null; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to parameter of type 'Attributes & TaskPanelProps'.\n      Type '{ task: null; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to type 'TaskPanelProps'.\n        The types returned by 'onUpdateTask(...)' are incompatible between these types.\n          Type 'void' is not assignable to type 'Promise<Task | null>'."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 255,
-    "character": 40,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '{ task: Task; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to parameter of type 'Attributes & TaskPanelProps'.\n      Type '{ task: Task; taskGroups: never[]; sessions: never[]; activeSessionId: null; onSelectSession: () => void; onNewSession: () => void; onUpdateTask: () => void; }' is not assignable to type 'TaskPanelProps'.\n        The types returned by 'onUpdateTask(...)' are incompatible between these types.\n          Type 'void' is not assignable to type 'Promise<Task | null>'."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 312,
-    "character": 15,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type '() => void' is not assignable to type '(taskId: string, updates: TaskPatch) => Promise<Task | null>'.\n      Type 'void' is not assignable to type 'Promise<Task | null>'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 322,
-    "character": 21,
-    "message": "Conversion of type 'undefined' to type '{ sessions: Session[]; onRequestArchived?: (() => void) | undefined; archivedLoaded?: boolean | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
-  },
-  {
-    "code": 2493,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 322,
-    "character": 30,
-    "message": "Tuple type '[]' of length '0' has no element at index '0'."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 378,
-    "character": 15,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type '() => void' is not assignable to type '(taskId: string, updates: TaskPatch) => Promise<Task | null>'.\n      Type 'void' is not assignable to type 'Promise<Task | null>'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 389,
-    "character": 21,
-    "message": "Conversion of type 'undefined' to type '{ sessions: Session[]; onRequestArchived?: (() => void) | undefined; archivedLoaded?: boolean | undefined; archivedLoading?: boolean | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
-  },
-  {
-    "code": 2493,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 389,
-    "character": 30,
-    "message": "Tuple type '[]' of length '0' has no element at index '0'."
-  },
-  {
-    "code": 2769,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 470,
-    "character": 15,
-    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type '() => void' is not assignable to type '(taskId: string, updates: TaskPatch) => Promise<Task | null>'.\n      Type 'void' is not assignable to type 'Promise<Task | null>'."
-  },
-  {
-    "code": 2493,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 476,
-    "character": 74,
-    "message": "Tuple type '[]' of length '0' has no element at index '0'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 477,
-    "character": 10,
-    "message": "Conversion of type 'undefined' to type '{ label?: string | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 480,
-    "character": 8,
-    "message": "Conversion of type 'undefined' to type '{ onClick: () => void; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
-  },
-  {
-    "code": 2493,
-    "file": "src/client/components/TaskPanel.test.ts",
-    "line": 480,
-    "character": 25,
-    "message": "Tuple type '[]' of length '0' has no element at index '0'."
   },
   {
     "code": 2345,
@@ -624,45 +477,10 @@
   },
   {
     "code": 2322,
-    "file": "src/client/hooks/useBackgroundVoiceJobs.test.ts",
-    "line": 74,
-    "character": 7,
-    "message": "Type 'Mock<Procedure | Constructable>' is not assignable to type '(composerKey: string) => Draft | null'.\n  Type 'MockInstance<Procedure | Constructable> & (new (...args: any[]) => any) & {}' is not assignable to type '(composerKey: string) => Draft | null'.\n    Type 'MockInstance<Procedure | Constructable> & (new (...args: any[]) => any) & {}' provides no match for the signature '(composerKey: string): Draft | null'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/hooks/useBackgroundVoiceJobs.test.ts",
-    "line": 75,
-    "character": 7,
-    "message": "Type 'Mock<Procedure | Constructable>' is not assignable to type '(composerKey: string, text: string, attachments?: Attachment[] | undefined) => void'.\n  Type 'MockInstance<Procedure | Constructable> & (new (...args: any[]) => any) & {}' is not assignable to type '(composerKey: string, text: string, attachments?: Attachment[] | undefined) => void'.\n    Type 'MockInstance<Procedure | Constructable> & (new (...args: any[]) => any) & {}' provides no match for the signature '(composerKey: string, text: string, attachments?: Attachment[] | undefined): void'."
-  },
-  {
-    "code": 2322,
     "file": "src/client/hooks/useBackgroundVoiceJobs.ts",
     "line": 363,
     "character": 7,
     "message": "Type 'VoiceJobStatus' is not assignable to type 'VoiceBackgroundJobStatus'.\n  Type '\"done\"' is not assignable to type 'VoiceBackgroundJobStatus'."
-  },
-  {
-    "code": 2540,
-    "file": "src/client/hooks/useElementScrollRestoration.test.ts",
-    "line": 319,
-    "character": 14,
-    "message": "Cannot assign to 'scrollHeight' because it is a read-only property."
-  },
-  {
-    "code": 2540,
-    "file": "src/client/hooks/useElementScrollRestoration.test.ts",
-    "line": 348,
-    "character": 16,
-    "message": "Cannot assign to 'scrollHeight' because it is a read-only property."
-  },
-  {
-    "code": 2540,
-    "file": "src/client/hooks/useElementScrollRestoration.test.ts",
-    "line": 379,
-    "character": 14,
-    "message": "Cannot assign to 'scrollHeight' because it is a read-only property."
   },
   {
     "code": 2345,

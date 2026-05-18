@@ -1,9 +1,14 @@
 import { createElement, type ComponentProps } from "react";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FeedCard as FeedCardData, Task, TaskGroup } from "../api";
-import { installDomShim } from "../test-dom-shim";
+import {
+  createReactDomHarness,
+  findAllByTag,
+  getReactProps,
+  waitTick,
+  waitUntilAct as waitUntilWithAct,
+  type ReactDomHarness,
+} from "../test-react-harness";
 
 const apiMocks = vi.hoisted(() => ({
   patchFeedCard: vi.fn(),
@@ -84,15 +89,6 @@ function makeTaskGroup(overrides: Partial<TaskGroup> = {}): TaskGroup {
   };
 }
 
-function findAllByTag(root: any, tag: string): any[] {
-  const results: any[] = [];
-  if ((root.tagName ?? "").toUpperCase() === tag.toUpperCase()) results.push(root);
-  for (const child of root.childNodes ?? []) {
-    results.push(...findAllByTag(child, tag));
-  }
-  return results;
-}
-
 function findButtonByLabel(root: any, label: string): any {
   const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.getAttribute?.("aria-label") === label);
   if (!button) throw new Error(`Button not found: ${label}`);
@@ -124,59 +120,38 @@ function findById(root: any, id: string): any {
   return null;
 }
 
-function getReactProps(el: any): Record<string, any> | null {
-  if (!el) return null;
-  const key = Object.keys(el).find((candidate) => candidate.startsWith("__reactProps$"));
-  return key ? el[key] : null;
-}
-
-function waitTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
 function clickButton(button: any): unknown {
   return getReactProps(button)?.onClick?.({ currentTarget: button });
 }
 
-async function waitUntilAct(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await act(async () => {
-      await waitTick();
-    });
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
 describe("DashboardFeed feed mutations", () => {
-  let dom: ReturnType<typeof installDomShim> | null = null;
-  let root: Root | null = null;
-  let previousActEnvironment: boolean | undefined;
+  let harness: ReactDomHarness | null = null;
+  let dom: ReactDomHarness["dom"] | null = null;
 
-  beforeEach(() => {
+  function getHarness() {
+    if (!harness) throw new Error("DashboardFeed harness has not been initialized");
+    return harness;
+  }
+
+  async function act(callback: () => void | Promise<void>): Promise<void> {
+    await getHarness().act(callback);
+  }
+
+  async function waitUntilAct(predicate: () => boolean, timeoutMs?: number): Promise<void> {
+    await waitUntilWithAct(getHarness().act, predicate, timeoutMs);
+  }
+
+  beforeEach(async () => {
     vi.clearAllMocks();
     apiMocks.patchFeedCard.mockResolvedValue(makeCard({ status: "done" }));
     apiMocks.deleteFeedCard.mockResolvedValue(undefined);
-    previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    dom = installDomShim();
-    root = createRoot(dom.container as unknown as Element);
+    harness = await createReactDomHarness();
+    dom = harness.dom;
   });
 
   afterEach(async () => {
-    if (root) {
-      await act(async () => {
-        root?.unmount();
-      });
-    }
-    dom?.cleanup();
-    if (previousActEnvironment === undefined) {
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    } else {
-      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
-    root = null;
+    await harness?.cleanup();
+    harness = null;
     dom = null;
   });
 
@@ -194,9 +169,7 @@ describe("DashboardFeed feed mutations", () => {
       ...props,
     };
 
-    await act(async () => {
-      root?.render(createElement(DashboardFeed, resolvedProps));
-    });
+    await getHarness().render(createElement(DashboardFeed, resolvedProps));
 
     return resolvedProps;
   }

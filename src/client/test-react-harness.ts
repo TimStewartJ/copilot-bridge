@@ -3,11 +3,16 @@ import { vi } from "vitest";
 import { installDomShim } from "./test-dom-shim";
 
 export type Act = (callback: () => void | Promise<void>) => Promise<void>;
+type DomShim = ReturnType<typeof installDomShim>;
+
+type CreateReactDomHarnessOptions = {
+  installDom?: () => DomShim;
+};
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 
-export async function createReactDomHarness() {
-  const dom = installDomShim();
+export async function createReactDomHarness(options: CreateReactDomHarnessOptions = {}) {
+  const dom = (options.installDom ?? installDomShim)();
   // Keep these imports after the DOM shim is installed. React DOM probes the
   // test environment during import/render, so top-level imports can reintroduce
   // the global-ordering bugs this harness is meant to avoid.
@@ -41,6 +46,8 @@ export async function createReactDomHarness() {
     },
   };
 }
+
+export type ReactDomHarness = Awaited<ReturnType<typeof createReactDomHarness>>;
 
 export function findAllByTag(root: any, tag: string): any[] {
   const results: any[] = [];

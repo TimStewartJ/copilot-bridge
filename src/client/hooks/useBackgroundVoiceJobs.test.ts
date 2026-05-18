@@ -1,8 +1,10 @@
 import { createElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installDomShim } from "../test-dom-shim";
+import {
+  createReactDomHarness,
+  waitUntilAct,
+  type ReactDomHarness,
+} from "../test-react-harness";
 import { useBackgroundVoiceJobs, type UseBackgroundVoiceJobsResult } from "./useBackgroundVoiceJobs";
 
 const createVoiceJobMock = vi.hoisted(() => vi.fn());
@@ -24,21 +26,8 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 type HookOptions = Parameters<typeof useBackgroundVoiceJobs>[0];
-
-function waitTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await act(async () => {
-      await waitTick();
-    });
-  }
-  throw new Error("Timed out waiting for condition");
-}
+type GetDraft = HookOptions["getDraft"];
+type SetDraft = HookOptions["setDraft"];
 
 function voiceJobSnapshot(status: "accepted" | "done" = "accepted") {
   return {
@@ -53,22 +42,23 @@ function voiceJobSnapshot(status: "accepted" | "done" = "accepted") {
 }
 
 describe("useBackgroundVoiceJobs retry uploads", () => {
-  let dom: ReturnType<typeof installDomShim> | null = null;
-  let root: Root | null = null;
+  let harness: ReactDomHarness | null = null;
   let result: UseBackgroundVoiceJobsResult | null = null;
-  let getDraftMock: ReturnType<typeof vi.fn>;
-  let setDraftMock: ReturnType<typeof vi.fn>;
+  let getDraftMock: ReturnType<typeof vi.fn<GetDraft>>;
+  let setDraftMock: ReturnType<typeof vi.fn<SetDraft>>;
   let options: HookOptions;
-  let previousActEnvironment: boolean | undefined;
+
+  function getHarness() {
+    if (!harness) throw new Error("Hook harness has not been initialized");
+    return harness;
+  }
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    dom = installDomShim();
+    harness = await createReactDomHarness();
     result = null;
-    getDraftMock = vi.fn(() => null);
-    setDraftMock = vi.fn();
+    getDraftMock = vi.fn<GetDraft>(() => null);
+    setDraftMock = vi.fn<SetDraft>();
     options = {
       activeComposerKey: null,
       getDraft: getDraftMock,
@@ -89,26 +79,12 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       return null;
     }
 
-    root = createRoot(dom.container as unknown as Element);
-    await act(async () => {
-      root?.render(createElement(Harness));
-    });
+    await harness.render(createElement(Harness));
   });
 
   afterEach(async () => {
-    if (root) {
-      await act(async () => {
-        root?.unmount();
-      });
-    }
-    dom?.cleanup();
-    if (previousActEnvironment === undefined) {
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-    } else {
-      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
-    root = null;
-    dom = null;
+    await harness?.cleanup();
+    harness = null;
     result = null;
   });
 
@@ -116,7 +92,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     const audio = new Blob(["voice"], { type: "audio/wav" });
     createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
 
-    await act(async () => {
+    await getHarness().act(async () => {
       await result?.startBackgroundVoiceJob({
         composerKey: "session-1",
         audio,
@@ -124,7 +100,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       });
     });
 
-    await waitUntil(() => result?.getJobForComposer("session-1")?.status === "error");
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
     expect(result?.getJobForComposer("session-1")).toMatchObject({
       status: "error",
       submitMode: "autosend",
@@ -135,12 +111,12 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
 
     createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
     getDraftMock.mockReturnValue({ text: "Typed while offline" });
-    await act(async () => {
+    await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
       result?.retryVoiceJobUpload("session-1");
     });
 
-    await waitUntil(() => result?.getJobForComposer("session-1")?.status === "accepted");
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "accepted");
     expect(createVoiceJobMock).toHaveBeenCalledTimes(2);
     expect(createVoiceJobMock.mock.calls[1][1]).toBe(audio);
     expect(transcribeAudioMock).not.toHaveBeenCalled();
@@ -150,7 +126,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     const audio = new Blob(["voice"], { type: "audio/wav" });
     transcribeAudioMock.mockRejectedValueOnce(new Error("Failed to fetch"));
 
-    await act(async () => {
+    await getHarness().act(async () => {
       await result?.startBackgroundVoiceJob({
         composerKey: "session-1",
         audio,
@@ -158,7 +134,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       });
     });
 
-    await waitUntil(() => result?.getJobForComposer("session-1")?.status === "error");
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
     expect(result?.getJobForComposer("session-1")).toMatchObject({
       status: "error",
       submitMode: "insert",
@@ -167,11 +143,11 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     });
 
     transcribeAudioMock.mockResolvedValueOnce({ text: "Retried transcript", provider: "whisper.cpp" });
-    await act(async () => {
+    await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
     });
 
-    await waitUntil(() => result?.getJobForComposer("session-1") === null);
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1") === null);
     expect(transcribeAudioMock).toHaveBeenCalledTimes(2);
     expect(transcribeAudioMock.mock.calls[1][0]).toBe(audio);
     expect(setDraftMock).toHaveBeenCalledWith("session-1", "Retried transcript", undefined);
@@ -181,7 +157,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     const audio = new Blob(["voice"], { type: "audio/wav" });
     createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
 
-    await act(async () => {
+    await getHarness().act(async () => {
       await result?.startBackgroundVoiceJob({
         composerKey: "session-1",
         audio,
@@ -189,8 +165,8 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       });
     });
 
-    await waitUntil(() => result?.getJobForComposer("session-1")?.status === "error");
-    await act(async () => {
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+    await getHarness().act(async () => {
       result?.clearVoiceJobError("session-1");
       result?.retryVoiceJobUpload("session-1");
     });

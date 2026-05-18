@@ -1,6 +1,6 @@
 import { createElement, Fragment, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installDomShim } from "../test-dom-shim";
+import { createReactDomHarness } from "../test-react-harness";
 import useElementScrollRestoration from "./useElementScrollRestoration";
 
 type TestScrollElement = HTMLElement & {
@@ -67,6 +67,14 @@ function createScrollElement(
   currentScrollTop = clampScrollTop(initialScrollTop);
 
   return element as unknown as TestScrollElement;
+}
+
+function setScrollHeight(element: TestScrollElement, scrollHeight: number) {
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    writable: true,
+    value: scrollHeight,
+  });
 }
 
 function HookHost({
@@ -144,26 +152,31 @@ function installTestMutationObserver() {
 }
 
 async function createHookRenderer() {
-  const dom = installDomShim();
-  const [{ createRoot }, { flushSync }] = await Promise.all([
-    import("react-dom/client"),
-    import("react-dom"),
-  ]);
-  const root = createRoot(dom.container as unknown as Element);
+  const harness = await createReactDomHarness();
 
   return {
+    act: harness.act,
     render(hosts: HookHostProps[]) {
-      flushSync(() => {
-        root.render(createElement(HookHosts, { hosts }));
-      });
+      return harness.render(createElement(HookHosts, { hosts }));
     },
     cleanup() {
-      flushSync(() => {
-        root.unmount();
-      });
-      dom.cleanup();
+      return harness.cleanup();
     },
   };
+}
+
+type HookRenderer = Awaited<ReturnType<typeof createHookRenderer>>;
+
+async function runPendingTimers(renderer: HookRenderer) {
+  await renderer.act(async () => {
+    await vi.runOnlyPendingTimersAsync();
+  });
+}
+
+async function advanceTimers(renderer: HookRenderer, ms: number) {
+  await renderer.act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
 }
 
 describe("useElementScrollRestoration", () => {
@@ -183,21 +196,21 @@ describe("useElementScrollRestoration", () => {
     const key = "hook-scroll-event-save";
 
     try {
-      renderer.render([{ id: "source", element: source, restorationKey: key }]);
-      vi.runOnlyPendingTimers();
+      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
+      await runPendingTimers(renderer);
 
       source.scrollTop = 123;
       source.dispatchTestEvent("scroll");
-      vi.runOnlyPendingTimers();
+      await runPendingTimers(renderer);
 
-      renderer.render([
+      await renderer.render([
         { id: "source", element: source, restorationKey: key },
         { id: "target", element: target, restorationKey: key },
       ]);
 
       expect(target.scrollTop).toBe(123);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
     }
   });
 
@@ -208,17 +221,17 @@ describe("useElementScrollRestoration", () => {
     const key = "hook-unmount-remount";
 
     try {
-      renderer.render([{ id: "source", element: source, restorationKey: key }]);
-      vi.runOnlyPendingTimers();
+      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
+      await runPendingTimers(renderer);
 
       source.scrollTop = 86;
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "target", element: target, restorationKey: key }]);
+      await renderer.render([{ id: "target", element: target, restorationKey: key }]);
 
       expect(target.scrollTop).toBe(86);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
     }
   });
 
@@ -230,23 +243,23 @@ describe("useElementScrollRestoration", () => {
     const secondKey = "hook-key-change-second";
 
     try {
-      renderer.render([{ id: "seed", element: seeded, restorationKey: secondKey }]);
-      vi.runOnlyPendingTimers();
+      await renderer.render([{ id: "seed", element: seeded, restorationKey: secondKey }]);
+      await runPendingTimers(renderer);
       seeded.scrollTop = 212;
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "main", element, restorationKey: firstKey }]);
-      vi.runOnlyPendingTimers();
+      await renderer.render([{ id: "main", element, restorationKey: firstKey }]);
+      await runPendingTimers(renderer);
 
       element.scrollTop = 74;
-      renderer.render([{ id: "main", element, restorationKey: secondKey }]);
+      await renderer.render([{ id: "main", element, restorationKey: secondKey }]);
       expect(element.scrollTop).toBe(212);
 
       element.scrollTop = 31;
-      renderer.render([{ id: "main", element, restorationKey: firstKey }]);
+      await renderer.render([{ id: "main", element, restorationKey: firstKey }]);
       expect(element.scrollTop).toBe(74);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
     }
   });
 
@@ -258,19 +271,19 @@ describe("useElementScrollRestoration", () => {
     const key = "hook-fresh-navigation";
 
     try {
-      renderer.render([{ id: "source", element: source, restorationKey: key }]);
-      vi.runOnlyPendingTimers();
+      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
+      await runPendingTimers(renderer);
       source.scrollTop = 168;
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "fresh", element: fresh, restorationKey: key, restore: false }]);
+      await renderer.render([{ id: "fresh", element: fresh, restorationKey: key, restore: false }]);
       expect(fresh.scrollTop).toBe(0);
 
-      renderer.render([]);
-      renderer.render([{ id: "restored", element: restored, restorationKey: key }]);
+      await renderer.render([]);
+      await renderer.render([{ id: "restored", element: restored, restorationKey: key }]);
       expect(restored.scrollTop).toBe(0);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
     }
   });
 
@@ -282,20 +295,20 @@ describe("useElementScrollRestoration", () => {
     const key = "hook-failed-restore-preserves";
 
     try {
-      renderer.render([{ id: "source", element: source, restorationKey: key }]);
+      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
       source.scrollTop = 620;
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "blocked", element: blocked, restorationKey: key }]);
+      await renderer.render([{ id: "blocked", element: blocked, restorationKey: key }]);
       expect(blocked.scrollTop).toBe(0);
-      vi.advanceTimersByTime(1_001);
+      await advanceTimers(renderer, 1_001);
       blocked.dispatchTestEvent("scroll");
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "restored", element: restored, restorationKey: key }]);
+      await renderer.render([{ id: "restored", element: restored, restorationKey: key }]);
       expect(restored.scrollTop).toBe(620);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
     }
   });
 
@@ -307,22 +320,22 @@ describe("useElementScrollRestoration", () => {
     const key = "hook-programmatic-scroll-during-restore";
 
     try {
-      renderer.render([{ id: "source", element: source, restorationKey: key }]);
+      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
       source.scrollTop = 540;
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "target", element: target, restorationKey: key }]);
-      vi.advanceTimersByTime(0);
+      await renderer.render([{ id: "target", element: target, restorationKey: key }]);
+      await advanceTimers(renderer, 0);
       expect(target.scrollTop).toBe(0);
 
       target.dispatchTestEvent("scroll");
-      target.scrollHeight = 1_000;
+      setScrollHeight(target, 1_000);
       mutationObserver.mutationObservers[0]!.trigger();
-      vi.advanceTimersByTime(0);
+      await advanceTimers(renderer, 0);
 
       expect(target.scrollTop).toBe(540);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
       mutationObserver.restore();
     }
   });
@@ -337,25 +350,25 @@ describe("useElementScrollRestoration", () => {
       const key = `hook-user-cancel-${eventType}`;
 
       try {
-        renderer.render([{ id: "source", element: source, restorationKey: key }]);
+        await renderer.render([{ id: "source", element: source, restorationKey: key }]);
         source.scrollTop = 620;
-        renderer.render([]);
+        await renderer.render([]);
 
-        renderer.render([{ id: "target", element: target, restorationKey: key }]);
+        await renderer.render([{ id: "target", element: target, restorationKey: key }]);
         expect(target.scrollTop).toBe(0);
 
         target.dispatchTestEvent(eventType);
-        target.scrollHeight = 1_000;
+        setScrollHeight(target, 1_000);
         target.scrollTop = 97;
         target.dispatchTestEvent("scroll");
-        vi.advanceTimersByTime(0);
+        await advanceTimers(renderer, 0);
 
-        renderer.render([]);
-        renderer.render([{ id: "restored", element: restored, restorationKey: key }]);
+        await renderer.render([]);
+        await renderer.render([{ id: "restored", element: restored, restorationKey: key }]);
 
         expect(restored.scrollTop).toBe(97);
       } finally {
-        renderer.cleanup();
+        await renderer.cleanup();
       }
     },
   );
@@ -368,21 +381,21 @@ describe("useElementScrollRestoration", () => {
     const key = "hook-late-content-restore";
 
     try {
-      renderer.render([{ id: "source", element: source, restorationKey: key }]);
+      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
       source.scrollTop = 540;
-      renderer.render([]);
+      await renderer.render([]);
 
-      renderer.render([{ id: "target", element: target, restorationKey: key }]);
-      vi.advanceTimersByTime(0);
+      await renderer.render([{ id: "target", element: target, restorationKey: key }]);
+      await advanceTimers(renderer, 0);
       expect(target.scrollTop).toBe(0);
 
-      target.scrollHeight = 1_000;
+      setScrollHeight(target, 1_000);
       mutationObserver.mutationObservers[0]!.trigger();
-      vi.advanceTimersByTime(0);
+      await advanceTimers(renderer, 0);
 
       expect(target.scrollTop).toBe(540);
     } finally {
-      renderer.cleanup();
+      await renderer.cleanup();
       mutationObserver.restore();
     }
   });
