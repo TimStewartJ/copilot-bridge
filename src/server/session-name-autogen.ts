@@ -47,6 +47,23 @@ function collectRecentUserMessages(events: any[]): string[] {
   return messages.slice(-20);
 }
 
+function normalizeUserMessages(messages: string[] | undefined): string[] {
+  return (messages ?? [])
+    .map((message) => message.trim())
+    .filter(Boolean)
+    .slice(-20);
+}
+
+function mergeRecentUserMessages(historyMessages: string[], providedMessages: string[]): string[] {
+  const messages = [...historyMessages];
+  for (const message of providedMessages) {
+    if (messages[messages.length - 1] !== message) {
+      messages.push(message);
+    }
+  }
+  return messages.slice(-20);
+}
+
 function hasExplicitSessionName(metadata: WorkspaceSessionNameMetadata | undefined): boolean {
   return !!metadata?.effectiveName && metadata.userNamed !== false;
 }
@@ -94,7 +111,8 @@ export class SessionNameAutogenerator {
       this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });
       return;
     }
-    if (!existingMetadata?.effectiveName) {
+    const providedUserMessages = normalizeUserMessages(options.userMessages);
+    if (!existingMetadata?.effectiveName && providedUserMessages.length === 0) {
       const existingName = options.session && typeof options.session.rpc?.name?.get === "function"
         ? (await options.session.rpc.name.get())?.name
         : await this.deps.getSessionName(sessionId);
@@ -104,12 +122,22 @@ export class SessionNameAutogenerator {
       }
     }
 
-    let userMessages = (options.userMessages ?? []).map((message) => message.trim()).filter(Boolean).slice(-20);
-    if (userMessages.length === 0 && options.session) {
+    let userMessages = providedUserMessages;
+    let historyMessageCount: number | undefined;
+    let historyReadFailed = false;
+    if (options.session) {
       if (typeof options.session.getMessages === "function") {
-        const events = await options.session.getMessages();
-        userMessages = collectRecentUserMessages(events);
-      } else {
+        try {
+          const events = await options.session.getMessages();
+          const historyMessages = collectRecentUserMessages(events);
+          historyMessageCount = historyMessages.length;
+          userMessages = mergeRecentUserMessages(historyMessages, providedUserMessages);
+        } catch (error) {
+          if (providedUserMessages.length === 0) throw error;
+          historyReadFailed = true;
+          this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Session auto-name history unavailable; using live prompt only: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else if (userMessages.length === 0) {
         this.recordSpan("session.name.autogen", start, sessionId, {
           result: "skipped_no_messages",
           reason: "getMessages_unavailable",
@@ -136,6 +164,9 @@ export class SessionNameAutogenerator {
     this.recordSpan("session.name.autogen", start, sessionId, {
       result: "generated",
       messageCount: userMessages.length,
+      providedMessageCount: providedUserMessages.length || undefined,
+      historyMessageCount,
+      historyReadFailed: historyReadFailed || undefined,
     });
   }
 
