@@ -18,6 +18,7 @@ describe("session name autogenerator", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
     const setSessionName = vi.fn(async () => {});
+    const generateSessionName = vi.fn(async () => "Concise Session Title");
     const createSession = vi.fn(async () => ({
       sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
       disconnect: vi.fn(),
@@ -31,8 +32,8 @@ describe("session name autogenerator", () => {
       getSessionNameMetadata: () => metadata,
       setSessionName,
     });
-    (generator as any).generateSessionName = vi.fn(async () => "Concise Session Title");
-    return { generator, createSession, setSessionName };
+    (generator as any).generateSessionName = generateSessionName;
+    return { generator, createSession, setSessionName, generateSessionName };
   }
 
   it("replaces prompt-derived workspace names that are not user named", async () => {
@@ -57,6 +58,64 @@ describe("session name autogenerator", () => {
     await (generator as any).generateAndSetMissingSessionName("session-1", { userMessages: ["Please fix this complicated issue"] });
 
     expect(createSession).not.toHaveBeenCalled();
+    expect(setSessionName).not.toHaveBeenCalled();
+  });
+
+  it("does not treat live first-turn provisional SDK names as explicit titles", async () => {
+    const { generator, setSessionName, generateSessionName } = createHarness(undefined);
+    const rpcNameGet = vi.fn(async () => ({ name: "Please investigate a tricky production bug" }));
+    const session = {
+      rpc: { name: { get: rpcNameGet } },
+      getMessages: vi.fn(async () => [
+        { type: "user.message", data: { content: "Please investigate a tricky production bug" } },
+      ]),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["Please investigate a tricky production bug"],
+    });
+
+    expect(rpcNameGet).not.toHaveBeenCalled();
+    expect(generateSessionName).toHaveBeenCalledWith(["Please investigate a tricky production bug"]);
+    expect(setSessionName).toHaveBeenCalledWith("session-1", "Concise Session Title", { session });
+  });
+
+  it("uses session history when a delayed live trigger includes only a follow-up", async () => {
+    const { generator, generateSessionName } = createHarness(undefined);
+    const session = {
+      getMessages: vi.fn(async () => [
+        { type: "user.message", data: { content: "Investigate why deployment restarts wedge the bridge" } },
+        { type: "assistant.message", data: { content: "I found the restart issue." } },
+        { type: "user.message", data: { content: "Can you show the exact diff?" } },
+      ]),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", {
+      session,
+      userMessages: ["Can you show the exact diff?"],
+    });
+
+    expect(generateSessionName).toHaveBeenCalledWith([
+      "Investigate why deployment restarts wedge the bridge",
+      "Can you show the exact diff?",
+    ]);
+  });
+
+  it("still skips existing SDK names for warm or no-message checks", async () => {
+    const { generator, setSessionName, generateSessionName } = createHarness(undefined);
+    const session = {
+      rpc: { name: { get: vi.fn(async () => ({ name: "Manual live title" })) } },
+      getMessages: vi.fn(async () => [
+        { type: "user.message", data: { content: "Please fix this complicated issue" } },
+      ]),
+    };
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", { session });
+
+    expect(session.rpc.name.get).toHaveBeenCalled();
+    expect(session.getMessages).not.toHaveBeenCalled();
+    expect(generateSessionName).not.toHaveBeenCalled();
     expect(setSessionName).not.toHaveBeenCalled();
   });
 
