@@ -5,15 +5,27 @@ import { join } from "node:path";
 import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "../dependency-sync.js";
 import { isBridgeReleaseMode } from "../distribution-mode.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "../pre-deploy-checkpoint.js";
+import { prepareReleaseSlot } from "../release-slots.js";
 import { clearRestartPending, isRestartPending, triggerRestartPending } from "../restart-controller.js";
-import { writeRestartSignalFile, type RestartValidationMode } from "../restart-signal.js";
+import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "../restart-signal.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
 
-function run(cmd: string): { ok: boolean; output: string } {
+const SELF_UPDATE_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
+const SELF_UPDATE_INSTALL_TIMEOUT_MS = 5 * 60_000;
+const SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS = 10 * 60_000;
+
+function run(
+  cmd: string,
+  options: { cwd?: string; timeoutMs?: number } = {},
+): { ok: boolean; output: string } {
   try {
-    const output = execSync(cmd, { cwd: BRIDGE_TOOLS_REPO_ROOT, encoding: "utf-8", timeout: 120_000 });
+    const output = execSync(cmd, {
+      cwd: options.cwd ?? BRIDGE_TOOLS_REPO_ROOT,
+      encoding: "utf-8",
+      timeout: options.timeoutMs ?? 120_000,
+    });
     return { ok: true, output };
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
@@ -45,10 +57,11 @@ function writeRestartSignalOrRollback(
   signalFile: string,
   validationMode: RestartValidationMode,
   source: string,
+  releaseCandidate?: RestartReleaseCandidate,
 ): number {
   const otherBusy = triggerRestartPending();
   try {
-    writeRestartSignalFile(signalFile, { validationMode, source });
+    writeRestartSignalFile(signalFile, { validationMode, source, releaseCandidate });
   } catch (error) {
     cleanupFailedRestartSignal(signalFile);
     throw error;
@@ -134,9 +147,11 @@ export function createSelfAdminTools(ctx: AppContext) {
         return toolFailure(message, { sessionLog: pullResult.output.slice(-500) });
       }
 
+      const newFullHead = run("git rev-parse HEAD");
+      const newFullSha = newFullHead.ok ? newFullHead.output.trim() : "";
       const newHead = run("git rev-parse --short HEAD");
       const newSha = newHead.ok ? newHead.output.trim() : "unknown";
-      const changed = preUpdateSha !== (run("git rev-parse HEAD").ok ? run("git rev-parse HEAD").output.trim() : "");
+      const changed = preUpdateSha !== newFullSha;
 
       if (!changed) {
         // Clean up checkpoint — nothing changed
@@ -144,7 +159,46 @@ export function createSelfAdminTools(ctx: AppContext) {
         return { success: true, message: "Already up to date — no restart needed." };
       }
 
-      // Signal restart — launcher will sync dependencies, build, health-check, and roll back if needed
+      const releaseSlotResult = await prepareReleaseSlot({
+        sourceDir: BRIDGE_TOOLS_REPO_ROOT,
+        dataDir,
+        commitSha: newFullSha || newSha,
+        source: "self_update",
+        validationMode: "deploy",
+        run: async (command, cwd, options) => run(command, { cwd, timeoutMs: options?.timeoutMs }),
+        log: (message) => console.log(`[self-update] ${message}`),
+        installCommand: SELF_UPDATE_INSTALL_COMMAND,
+        installTimeoutMs: SELF_UPDATE_INSTALL_TIMEOUT_MS,
+        buildCommand: "npm run check:deploy",
+        buildTimeoutMs: SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS,
+      });
+      if (!releaseSlotResult.ok) {
+        const resetResult = preUpdateSha ? run(`git reset --hard ${preUpdateSha}`) : { ok: true, output: "" };
+        if (resetResult.ok) {
+          removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);
+        }
+        return toolFailure("Updated code but release slot preparation failed.", {
+          detail:
+            `The repository was updated to ${newSha}, but the inactive release slot failed to prepare. ` +
+            (resetResult.ok
+              ? `The checkout was reset back to ${preUpdateSha.slice(0, 8)} and no restart was queued.`
+              : `Resetting the checkout back to ${preUpdateSha.slice(0, 8)} also failed; manual recovery is required.`) +
+            `\n\nCommand: ${releaseSlotResult.command}\nWorking directory: ${releaseSlotResult.cwd}\n\n${releaseSlotResult.output.slice(-500)}`,
+          sessionLog:
+            `Self-update release slot preparation failed after ${preUpdateSha.slice(0, 8)} -> ${newSha}.\n` +
+            `Command: ${releaseSlotResult.command}\nWorking directory: ${releaseSlotResult.cwd}\n\n${releaseSlotResult.output.slice(-4_000)}`,
+          toolTelemetry: {
+            command: releaseSlotResult.command,
+            cwd: releaseSlotResult.cwd,
+            previousSha: preUpdateSha.slice(0, 8),
+            newSha,
+            resetOk: resetResult.ok,
+          },
+        });
+      }
+      const releaseCandidate = releaseSlotResult.manifest;
+
+      // Signal restart — the launcher will swap to the prepared release slot and health-check it.
       const dependencyInputsChanged = !!preUpdateSha
         && (() => {
           const diffResult = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
@@ -152,7 +206,7 @@ export function createSelfAdminTools(ctx: AppContext) {
         })();
       let otherBusy = 0;
       try {
-        otherBusy = writeRestartSignalOrRollback(signalFile, "deploy", "self_update");
+        otherBusy = writeRestartSignalOrRollback(signalFile, "deploy", "self_update", releaseCandidate);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return toolFailure("Updated code but restart signal could not be written.", {
@@ -172,8 +226,8 @@ export function createSelfAdminTools(ctx: AppContext) {
         previousSha: preUpdateSha.slice(0, 8),
         newSha,
         message:
-          `Updated ${preUpdateSha.slice(0, 8)} → ${newSha}. Restart queued; the launcher will sync dependencies, rebuild, and roll back automatically if needed.` +
-          (dependencyInputsChanged ? " Dependency inputs changed — production dependency sync will happen during restart only." : "") +
+          `Updated ${preUpdateSha.slice(0, 8)} → ${newSha}. Restart queued; the launcher will swap to the prepared release slot and roll back automatically if needed.` +
+          (dependencyInputsChanged ? " Dependency inputs changed — the inactive release slot has its own dependency install." : "") +
           `${waitNote} ` +
           `Do NOT make any more tool calls — this session will block the restart until idle.`,
       };

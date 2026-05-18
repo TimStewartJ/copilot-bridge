@@ -84,6 +84,24 @@ const triggerRestartPendingMock = vi.fn();
 const clearRestartPendingMock = vi.fn();
 const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
 const dependencySyncHashMock = vi.fn<(path: string) => string>(() => "same-hash");
+const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
+  dataDir: string;
+  commitSha: string;
+  source: string;
+  validationMode: "deploy" | "operational";
+}) => ({
+  ok: true as const,
+  manifest: {
+    version: 1,
+    id: "release-slot-1",
+    root: `${options.dataDir}/release-slots/release-slot-1`,
+    commitSha: options.commitSha,
+    source: options.source,
+    dependencyHash: "same-hash",
+    createdAt: "2026-05-18T20:00:00.000Z",
+    validationMode: options.validationMode,
+  },
+})));
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
 const renameSyncCallMock = vi.hoisted(() => vi.fn<(...args: RenameSyncArgs) => void>());
@@ -200,6 +218,10 @@ vi.mock("../dependency-sync.js", () => ({
   dependencySyncHash: dependencySyncHashMock,
   DEPENDENCY_SYNC_GIT_PATHSPEC: "package.json",
   preparePatchedPackagesForInstall: preparePatchedPackagesForInstallMock,
+}));
+
+vi.mock("../release-slots.js", () => ({
+  prepareReleaseSlot: prepareReleaseSlotMock,
 }));
 
 vi.mock("../platform.js", () => ({
@@ -340,6 +362,7 @@ afterEach(() => {
   isRestartPendingMock.mockReturnValue(false);
   dependencySyncHashMock.mockReset();
   dependencySyncHashMock.mockReturnValue("same-hash");
+  prepareReleaseSlotMock.mockClear();
   existsSyncOverrideMock.mockReset();
   mockDataFilePresence();
   preparePatchedPackagesForInstallMock.mockReset();

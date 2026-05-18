@@ -1,8 +1,11 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBridgeControlRoot } from "./control-root.js";
 
-const SESSION_FORMATTING_REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const SESSION_FORMATTING_REPO_ROOT = resolveBridgeControlRoot(
+  join(dirname(fileURLToPath(import.meta.url)), "..", ".."),
+);
 
 export function resolvePublishableAttachmentSourcePath(pathValue: string, repoRoot = SESSION_FORMATTING_REPO_ROOT): string {
   if (pathValue === "~") return homedir();
@@ -125,4 +128,3 @@ export function formatRelatedDocManifestEntry(doc: {
   }
   return line;
 }
-

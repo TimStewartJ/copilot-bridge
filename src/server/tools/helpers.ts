@@ -1,6 +1,7 @@
 import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ok, err, type Result } from "../tool-results.js";
+import { resolveBridgeControlRoot } from "../control-root.js";
 import type { AppContext } from "../app-context.js";
 import type { Task } from "../task-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
@@ -8,7 +9,9 @@ import type { TagStore } from "../tag-store.js";
 import type { TaskGroupStore } from "../task-group-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 
-export const BRIDGE_TOOLS_REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+export const BRIDGE_TOOLS_REPO_ROOT = resolveBridgeControlRoot(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
+);
 
 export function isDemoMode(runtimePaths?: RuntimePaths): boolean {
   return runtimePaths?.demoMode ?? false;

@@ -2,9 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
+import { resolveBridgeControlRoot } from "./control-root.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_ENV_PATH = join(__dirname, "..", "..", ".env");
+const DEFAULT_ENV_PATH = join(resolveBridgeControlRoot(join(__dirname, "..", "..")), ".env");
 
 export function readBridgeEnvFile(envPath = DEFAULT_ENV_PATH): Record<string, string> {
   if (!existsSync(envPath)) return {};

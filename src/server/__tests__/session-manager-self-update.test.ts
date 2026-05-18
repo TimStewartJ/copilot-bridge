@@ -18,6 +18,24 @@ type ToolInvocation = {
 };
 
 const execSyncMock = vi.hoisted(() => vi.fn<(cmd: string) => string>(() => ""));
+const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
+  dataDir: string;
+  commitSha: string;
+  source: string;
+  validationMode: "deploy" | "operational";
+}) => ({
+  ok: true as const,
+  manifest: {
+    version: 1,
+    id: "release-slot-1",
+    root: `${options.dataDir}/release-slots/release-slot-1`,
+    commitSha: options.commitSha,
+    source: options.source,
+    dependencyHash: "same-hash",
+    createdAt: "2026-05-18T20:00:00.000Z",
+    validationMode: options.validationMode,
+  },
+})));
 const existsSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ExistsSyncPath) => boolean | undefined>());
 const writeFileSyncCallMock = vi.hoisted(() => vi.fn<(...args: WriteFileSyncArgs) => void>());
 const readFileSyncOverrideMock = vi.hoisted(() => vi.fn<(path: ReadFileSyncPath) => string | undefined>());
@@ -57,6 +75,10 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
+vi.mock("../release-slots.js", () => ({
+  prepareReleaseSlot: prepareReleaseSlotMock,
+}));
+
 function createToolContext() {
   const db = openMemoryDatabase();
   return {
@@ -85,6 +107,7 @@ async function loadSessionManagerModule() {
 
 afterEach(async () => {
   execSyncMock.mockReset();
+  prepareReleaseSlotMock.mockClear();
   existsSyncOverrideMock.mockReset();
   writeFileSyncCallMock.mockReset();
   readFileSyncOverrideMock.mockReset();
@@ -147,8 +170,8 @@ describe("self_update", () => {
       previousSha: "11111111",
       newSha: "22222222",
     });
-    expect(result.message).toContain("Restart queued; the launcher will sync dependencies");
-    expect(result.message).toContain("Dependency inputs changed — production dependency sync will happen during restart only.");
+    expect(result.message).toContain("Restart queued; the launcher will swap to the prepared release slot");
+    expect(result.message).toContain("Dependency inputs changed — the inactive release slot has its own dependency install.");
     expect(commands).not.toContain("npm install --no-audit --no-fund --include=dev");
     expect(writtenPaths.some((file) => isDataFilePath(file, "pre-deploy-sha"))).toBe(true);
     expect(writtenPaths.some((file) => isDataFilePath(file, "restart.signal"))).toBe(true);

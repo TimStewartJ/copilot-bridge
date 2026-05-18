@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dependencySyncHash, preparePatchedPackagesForInstall, sweepStalePatchPackageBackups } from "./server/dependency-sync.js";
 import { buildBridgeChildEnv, loadBridgeEnvManagedKeys } from "./server/env-loader.js";
 import { appendLauncherLogLine, getLauncherLogPath } from "./server/launcher-log.js";
+import { BRIDGE_CONTROL_ROOT_ENV } from "./server/control-root.js";
 import {
   killProcessTree as platformKillTree,
   shouldSpawnDetachedProcessGroup,
@@ -21,6 +22,13 @@ import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
 import { consumeRestartSignalFile, type RestartSignal, type RestartValidationMode } from "./server/restart-signal.js";
+import {
+  pruneReleaseSlots,
+  readActiveRelease,
+  resolveReleaseCandidate,
+  writeActiveRelease,
+  type ReleaseSlotManifest,
+} from "./server/release-slots.js";
 import {
   buildRestartStateWithReleaseFailure,
   clearRestartState,
@@ -82,9 +90,8 @@ const IN_PROGRESS_SIGNAL_FILE = join(DATA_DIR, "restart-in-progress.json");
 const RESTART_STATE_FILE = join(DATA_DIR, "restart-state.json");
 const PRE_DEPLOY_SHA_FILE = join(DATA_DIR, "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(DATA_DIR, "rollback-required");
-const SOURCE_SERVER_ENTRY = join(ROOT, "src", "server", "index.ts");
-const COMPILED_SERVER_ENTRY = join(ROOT, "dist", "server", "index.js");
-const SERVER_ENTRY = DISTRIBUTION.mode === "release" ? COMPILED_SERVER_ENTRY : SOURCE_SERVER_ENTRY;
+const SOURCE_SERVER_ENTRY = "src/server/index.ts";
+const COMPILED_SERVER_ENTRY = "dist/server/index.js";
 if (!process.env.BRIDGE_LAUNCHER_LOG_PATH) {
   process.env.BRIDGE_LAUNCHER_LOG_PATH = join(DATA_DIR, "launcher.log");
 }
@@ -128,6 +135,7 @@ const TUNNEL_BACKOFF_BASE = 5_000; // 5s initial backoff
 const TUNNEL_BACKOFF_CAP = 60_000; // 60s max backoff
 
 let serverProcess: ChildProcess | null = null;
+let serverLaunchTarget: ServerLaunchTarget | null = null;
 let tunnelProcess: ChildProcess | null = null;
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
@@ -153,6 +161,13 @@ let lastCommandFailure:
 let lastRollbackTarget: string | null = null;
 let pendingReleaseFailure: ReleaseFailureState | null = null;
 let releaseCandidateSha: string | null = null;
+
+type ServerLaunchTarget = {
+  root: string;
+  entry: string;
+  mode: "source" | "compiled";
+  release?: ReleaseSlotManifest;
+};
 
 type HealthProbeResult = {
   healthy: boolean;
@@ -568,7 +583,7 @@ async function processRestartSignal(): Promise<void> {
     }
     if (!signal) return;
     consumedSignal = true;
-    restartOutcome = await restart(signal.validationMode);
+    restartOutcome = await restart(signal);
   } finally {
     if (consumedSignal) {
       clearInProgressSignal();
@@ -797,26 +812,68 @@ function shouldUseDevtunnel(): boolean {
   return false;
 }
 
-function startServer(): ChildProcess {
-  const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, { BRIDGE_DATA_DIR: DATA_DIR });
+function sourceLaunchTarget(): ServerLaunchTarget {
+  const mode = DISTRIBUTION.mode === "release" ? "compiled" : "source";
+  return {
+    root: ROOT,
+    entry: join(ROOT, mode === "source" ? SOURCE_SERVER_ENTRY : COMPILED_SERVER_ENTRY),
+    mode,
+  };
+}
+
+function releaseLaunchTarget(release: ReleaseSlotManifest): ServerLaunchTarget {
+  return {
+    root: release.root,
+    entry: join(release.root, COMPILED_SERVER_ENTRY),
+    mode: "compiled",
+    release,
+  };
+}
+
+function resolveStartupLaunchTarget(): ServerLaunchTarget {
+  const activeRelease = readActiveRelease(DATA_DIR);
+  if (activeRelease) {
+    return releaseLaunchTarget(activeRelease);
+  }
+  return sourceLaunchTarget();
+}
+
+function describeLaunchTarget(target: ServerLaunchTarget): string {
+  return target.release
+    ? `release slot ${target.release.id} (${target.release.commitSha.slice(0, 8)})`
+    : DISTRIBUTION.mode === "release" ? "packaged release" : "source checkout";
+}
+
+function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()): ChildProcess {
+  const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
+    BRIDGE_DATA_DIR: DATA_DIR,
+    BRIDGE_DISTRIBUTION_MODE: DISTRIBUTION.mode,
+    [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
+    ...(target.release ? {
+      BRIDGE_ACTIVE_RELEASE_ROOT: target.root,
+      BRIDGE_RELEASE_SLOT_ID: target.release.id,
+    } : {}),
+  });
   const port = resolveBridgePort(env);
   currentServerPort = port;
-  log(`Starting server on port ${port}...`);
+  log(`Starting server on port ${port} from ${describeLaunchTarget(target)}...`);
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
-  const serverArgs = SERVER_ENTRY.endsWith(".ts") ? [TSX_CLI, SERVER_ENTRY] : [SERVER_ENTRY];
+  const serverArgs = target.mode === "source" ? [TSX_CLI, target.entry] : [target.entry];
   const child = spawn(NODE_PATH, serverArgs, {
-    cwd: ROOT,
+    cwd: target.root,
     stdio: ["ignore", "inherit", "inherit"],
     env,
     detached: shouldSpawnDetachedProcessGroup(),
   });
+  serverLaunchTarget = target;
   steadyHealthFailures = 0;
 
   child.on("exit", (code, signal) => {
     log(`Server exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
     if (serverProcess === child) {
       serverProcess = null;
+      serverLaunchTarget = null;
     }
 
     const recovery = evaluateUnexpectedExit({
@@ -845,6 +902,7 @@ function killServer() {
     log("Stopping server...");
     killProcessTree(serverProcess);
     serverProcess = null;
+    serverLaunchTarget = null;
   }
 }
 
@@ -866,6 +924,7 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
     log(`❌ Server process tree did not exit within ${timeoutMs}ms after force kill`);
   } else if (serverProcess === existingServer) {
     serverProcess = null;
+    serverLaunchTarget = null;
   }
   return exited;
 }
@@ -918,13 +977,20 @@ async function gracefulStopServer(): Promise<boolean> {
   return true;
 }
 
-async function restart(validationMode: RestartValidationMode): Promise<RestartOutcome> {
+async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   log("═══ Restart requested ═══");
+  const validationMode = signal.validationMode;
+  const candidateRelease = resolveReleaseCandidate(DATA_DIR, signal.releaseCandidate);
+  if (signal.releaseCandidate && !candidateRelease) {
+    log("Restart signal referenced an invalid release candidate — leaving the current server running");
+    return "failed";
+  }
   const hadRunningServerAtStart = serverProcess !== null;
+  const previousLaunchTarget = serverLaunchTarget ?? resolveStartupLaunchTarget();
   pendingReleaseFailure = null;
   lastCommandFailure = null;
   lastRollbackTarget = null;
-  releaseCandidateSha = normalizeGitHash(gitHash());
+  releaseCandidateSha = candidateRelease?.commitSha ?? normalizeGitHash(gitHash());
 
   // Preserve requestId / requestedAt from the queued state written by the server.
   const pickupInfo = await readRestartPickupInfo();
@@ -940,7 +1006,9 @@ async function restart(validationMode: RestartValidationMode): Promise<RestartOu
   // Transition: waiting-for-sessions → restarting (build / shutdown / swap begins now)
   await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
 
-  if (!build(validationMode)) {
+  if (candidateRelease) {
+    log(`Using prepared release candidate ${candidateRelease.id} (${candidateRelease.commitSha.slice(0, 8)}) — skipping production-root build`);
+  } else if (!build(validationMode)) {
     log("Build failed — rolling back");
     await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
     const rollbackSucceeded = rollback();
@@ -995,6 +1063,7 @@ async function restart(validationMode: RestartValidationMode): Promise<RestartOu
     await safeWriteRestartState(buildRestartingWaitingState(pickupInfo, count, new Date().toISOString()));
   });
 
+  const replacementTarget = candidateRelease ? releaseLaunchTarget(candidateRelease) : resolveStartupLaunchTarget();
   const stopped = await gracefulStopServer();
   if (!stopped) {
     log("❌ Existing server did not exit after force kill — aborting restart");
@@ -1003,11 +1072,21 @@ async function restart(validationMode: RestartValidationMode): Promise<RestartOu
     });
     return "failed";
   }
-  const replacementServer = startServer();
+  const replacementServer = startServer(replacementTarget);
   serverProcess = replacementServer;
 
   const healthy = await healthCheck(replacementServer);
   if (healthy) {
+    if (candidateRelease) {
+      await writeActiveRelease(DATA_DIR, candidateRelease);
+      const pruned = pruneReleaseSlots(DATA_DIR, {
+        extraKeepIds: [previousLaunchTarget.release?.id],
+        log,
+      });
+      if (pruned > 0) {
+        log(`Pruned ${pruned} old release slot(s)`);
+      }
+    }
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
 
@@ -1027,13 +1106,37 @@ async function restart(validationMode: RestartValidationMode): Promise<RestartOu
     return "restarted";
   } else {
     log("❌ Health check failed — rolling back");
-    await notifyWebhook(`⚠️ Health check failed — rolling back to last checkpoint (${tag()})`, currentTunnelUrl ?? undefined);
+    await notifyWebhook(
+      candidateRelease && previousLaunchTarget.release
+        ? `⚠️ Health check failed — restoring previous release slot (${tag()})`
+        : `⚠️ Health check failed — rolling back to last checkpoint (${tag()})`,
+      currentTunnelUrl ?? undefined,
+    );
     const stoppedAfterFailure = await forceKillServerAndWait("Stopping failed restart before rollback...");
     if (!stoppedAfterFailure) {
       await recordFailureAndMaybeStop("shutdown", {
         retryReason: "failed restart shutdown failure before rollback",
       });
       return "failed";
+    }
+    if (candidateRelease && previousLaunchTarget.release) {
+      log(`Restoring previous launch target after failed candidate ${candidateRelease.id}`);
+      const fallbackServer = startServer(previousLaunchTarget);
+      serverProcess = fallbackServer;
+      const fallbackHealthy = await healthCheck(fallbackServer);
+      if (!fallbackHealthy) {
+        log("❌ Previous server failed health check after candidate failure");
+        await forceKillServerAndWait("Stopping failed previous server...");
+        await recordFailureAndMaybeStop("restart-health-check", {
+          manualInterventionMessage: "Prepared release candidate failed health checks, and the previous server could not be restored — manual intervention required.",
+          retryReason: "previous server health check failure after candidate failure",
+        });
+        return "failed";
+      }
+      consecutiveFailures = 0;
+      await ensureTunnelAfterRollback();
+      log("✅ Previous server restored after failed release candidate");
+      return "recovered-via-rollback";
     }
     const rollbackSucceeded = rollback();
     if (!rollbackSucceeded) {
