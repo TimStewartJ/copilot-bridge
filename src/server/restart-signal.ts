@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 export type RestartValidationMode = "deploy" | "operational";
 
@@ -67,6 +67,22 @@ export function readRestartSignalFile(signalFile: string): RestartSignal {
   } catch {
     return createRestartSignal({ validationMode: "deploy" });
   }
+}
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+export function consumeRestartSignalFile(signalFile: string, inProgressSignalFile: string): RestartSignal | null {
+  try {
+    renameSync(signalFile, inProgressSignalFile);
+  } catch (error) {
+    if (isErrnoException(error) && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  return readRestartSignalFile(inProgressSignalFile);
 }
 
 export function writeRestartSignalFile(signalFile: string, options: {
