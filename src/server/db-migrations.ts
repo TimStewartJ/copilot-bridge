@@ -19,84 +19,112 @@ type DatabaseMigrationCategory =
   | "compat-backfill"
   | "data-repair";
 type DatabaseMigrationRunMode = "every-open" | "once";
+type DatabaseMigrationTransactionMode = "auto" | "self";
 
-interface DatabaseMigration {
+interface DatabaseMigrationBase {
   id: string;
   category: DatabaseMigrationCategory;
-  runMode: DatabaseMigrationRunMode;
   description: string;
   apply(db: DatabaseSync): void;
 }
+
+interface EveryOpenDatabaseMigration extends DatabaseMigrationBase {
+  runMode: "every-open";
+  // "auto" migrations are wrapped by the runner and must not issue transaction
+  // control statements. "self" migrations own their transaction so the runner
+  // will not wrap them, which avoids nested BEGIN errors when they use
+  // runMigrationInTransaction directly or need PRAGMA work outside the transaction.
+  transaction: DatabaseMigrationTransactionMode;
+}
+
+interface OneTimeDatabaseMigration extends DatabaseMigrationBase {
+  runMode: "once";
+  transaction?: never;
+}
+
+type DatabaseMigration = EveryOpenDatabaseMigration | OneTimeDatabaseMigration;
 
 export interface DatabaseMigrationInfo {
   id: string;
   category: DatabaseMigrationCategory;
   runMode: DatabaseMigrationRunMode;
+  transaction: DatabaseMigrationTransactionMode;
   description: string;
 }
 
 function rebuildTasksWithoutLegacyTaskColumn(db: DatabaseSync, hasCompletedAt: boolean, hasMuted: boolean): void {
-  const foreignKeysRow = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number } | undefined;
-  const restoreForeignKeys = foreignKeysRow?.foreign_keys !== 0;
-  let inTransaction = false;
+  db.exec(`
+    CREATE TABLE tasks_new (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'task',
+      muted INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      groupId TEXT,
+      cwd TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      doneWhen TEXT,
+      nextAction TEXT,
+      waitingOn TEXT,
+      nextTouchAt TEXT,
+      priority INTEGER NOT NULL DEFAULT 0,
+      "order" INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      completedAt TEXT,
+      updatedAt TEXT NOT NULL
+    );
+  `);
+  db.exec(`
+    INSERT INTO tasks_new (
+      id, title, kind, muted, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+      priority, "order", createdAt, completedAt, updatedAt
+    )
+    SELECT
+      id,
+      title,
+      CASE
+        WHEN pinned != 0 THEN 'ongoing'
+        WHEN kind IN ('task', 'ongoing') THEN kind
+        ELSE 'task'
+      END,
+      ${hasMuted ? "COALESCE(muted, 0)" : "0"},
+      status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
+      priority, "order", createdAt, ${hasCompletedAt ? "completedAt" : "NULL"}, updatedAt
+    FROM tasks;
+  `);
+  db.exec("DROP TABLE tasks");
+  db.exec("ALTER TABLE tasks_new RENAME TO tasks");
+}
 
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN");
-    inTransaction = true;
-    db.exec(`
-      CREATE TABLE tasks_new (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'task',
-        muted INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'active',
-        groupId TEXT,
-        cwd TEXT,
-        notes TEXT NOT NULL DEFAULT '',
-        doneWhen TEXT,
-        nextAction TEXT,
-        waitingOn TEXT,
-        nextTouchAt TEXT,
-        priority INTEGER NOT NULL DEFAULT 0,
-        "order" INTEGER NOT NULL DEFAULT 0,
-        createdAt TEXT NOT NULL,
-        completedAt TEXT,
-        updatedAt TEXT NOT NULL
-      );
-
-      INSERT INTO tasks_new (
-        id, title, kind, muted, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-        priority, "order", createdAt, completedAt, updatedAt
-      )
-      SELECT
-        id,
-        title,
-        CASE
-          WHEN pinned != 0 THEN 'ongoing'
-          WHEN kind IN ('task', 'ongoing') THEN kind
-          ELSE 'task'
-        END,
-        ${hasMuted ? "COALESCE(muted, 0)" : "0"},
-        status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-        priority, "order", createdAt, ${hasCompletedAt ? "completedAt" : "NULL"}, updatedAt
-      FROM tasks;
-
-      DROP TABLE tasks;
-      ALTER TABLE tasks_new RENAME TO tasks;
-    `);
-    db.exec("COMMIT");
-    inTransaction = false;
-  } catch (error) {
-    if (inTransaction) db.exec("ROLLBACK");
-    throw error;
-  } finally {
-    if (restoreForeignKeys) db.exec("PRAGMA foreign_keys = ON");
-  }
-
+function assertNoForeignKeyViolations(db: DatabaseSync, migrationName: string): void {
   const violations = db.prepare("PRAGMA foreign_key_check").all() as any[];
   if (violations.length > 0) {
-    throw new Error(`Task legacy-column migration left ${violations.length} foreign key violation(s)`);
+    throw new Error(`${migrationName} left ${violations.length} foreign key violation(s)`);
+  }
+}
+
+function runMigrationInTransaction(db: DatabaseSync, apply: () => void): void {
+  let shouldRollback = false;
+  try {
+    db.exec("BEGIN");
+    shouldRollback = true;
+    apply();
+    db.exec("COMMIT");
+    shouldRollback = false;
+  } catch (error) {
+    if (shouldRollback) db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function withForeignKeysDisabled(db: DatabaseSync, apply: () => void): void {
+  const foreignKeysRow = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: number } | undefined;
+  const restoreForeignKeys = foreignKeysRow?.foreign_keys !== 0;
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    apply();
+  } finally {
+    if (restoreForeignKeys) db.exec("PRAGMA foreign_keys = ON");
   }
 }
 
@@ -225,8 +253,7 @@ function ensureTagMcpServerInRegistry(
 }
 
 function migrateMcpRegistry(db: DatabaseSync): void {
-  db.exec("BEGIN");
-  try {
+  runMigrationInTransaction(db, () => {
     const appSettingsRow = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string } | undefined;
     const appSettings = appSettingsRow ? parseJsonObject(appSettingsRow.value) : undefined;
     const legacyMcpServers = appSettings?.mcpServers;
@@ -255,12 +282,7 @@ function migrateMcpRegistry(db: DatabaseSync): void {
       `).run(row.tagId, serverId);
     }
     db.prepare("DELETE FROM tag_mcp_servers").run();
-
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 function hasSchemaMigration(db: DatabaseSync, id: string): boolean {
@@ -541,8 +563,7 @@ function backfillScheduleRuns(db: DatabaseSync): void {
 }
 
 function migrateLegacyTodosAndNormalizeChecklist(db: DatabaseSync): void {
-  db.exec("BEGIN");
-  try {
+  runMigrationInTransaction(db, () => {
     if (sqliteTableExists(db, "todos")) {
       const legacyTodoCols = getTableInfo(db, "todos");
       const deadlineExpr = legacyTodoCols.some((c: any) => c.name === "deadline") ? "deadline" : "NULL";
@@ -593,11 +614,7 @@ function migrateLegacyTodosAndNormalizeChecklist(db: DatabaseSync): void {
     }
 
     db.exec("CREATE INDEX IF NOT EXISTS idx_checklist_items_taskId ON checklist_items(taskId)");
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 function addTaskGroupNotes(db: DatabaseSync): void {
@@ -608,58 +625,64 @@ function addTaskGroupNotes(db: DatabaseSync): void {
 }
 
 function normalizeTaskSchemaAndStatuses(db: DatabaseSync): void {
-  let taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
-  if (!taskCols.some((c: any) => c.name === "kind")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
-  }
-  if (!taskCols.some((c: any) => c.name === "muted")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN muted INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!taskCols.some((c: any) => c.name === "doneWhen")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN doneWhen TEXT");
-  }
-  if (!taskCols.some((c: any) => c.name === "nextAction")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN nextAction TEXT");
-  }
-  if (!taskCols.some((c: any) => c.name === "waitingOn")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN waitingOn TEXT");
-  }
-  if (!taskCols.some((c: any) => c.name === "nextTouchAt")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT");
-  }
-  if (!taskCols.some((c: any) => c.name === "completedAt")) {
-    db.exec("ALTER TABLE tasks ADD COLUMN completedAt TEXT");
-  }
-  db.exec("UPDATE tasks SET status = 'active' WHERE status = 'paused'");
-  db.exec(`
-    UPDATE tasks
-    SET nextAction = NULL, waitingOn = NULL, nextTouchAt = NULL
-    WHERE status != 'active'
-      AND (nextAction IS NOT NULL OR waitingOn IS NOT NULL OR nextTouchAt IS NOT NULL)
-  `);
-  taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
-  const hasCompletedAt = taskCols.some((c: any) => c.name === "completedAt");
-  const hasMuted = taskCols.some((c: any) => c.name === "muted");
-  if (taskCols.some((c: any) => c.name === "pinned")) rebuildTasksWithoutLegacyTaskColumn(db, hasCompletedAt, hasMuted);
-  db.exec(`
-    UPDATE tasks
-    SET
-      status = 'archived',
-      completedAt = COALESCE(NULLIF(completedAt, ''), updatedAt, createdAt)
-    WHERE kind != 'ongoing'
-      AND status = 'done';
-  `);
-  db.exec(`
-    UPDATE tasks
-    SET
-      status = CASE WHEN status = 'done' THEN 'active' ELSE status END,
-      doneWhen = NULL,
-      completedAt = NULL
-    WHERE kind = 'ongoing'
-      AND (status = 'done' OR doneWhen IS NOT NULL OR completedAt IS NOT NULL);
-  `);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt)");
+  withForeignKeysDisabled(db, () => {
+    runMigrationInTransaction(db, () => {
+      let taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+      if (!taskCols.some((c: any) => c.name === "kind")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+      }
+      if (!taskCols.some((c: any) => c.name === "muted")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN muted INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!taskCols.some((c: any) => c.name === "doneWhen")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN doneWhen TEXT");
+      }
+      if (!taskCols.some((c: any) => c.name === "nextAction")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN nextAction TEXT");
+      }
+      if (!taskCols.some((c: any) => c.name === "waitingOn")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN waitingOn TEXT");
+      }
+      if (!taskCols.some((c: any) => c.name === "nextTouchAt")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN nextTouchAt TEXT");
+      }
+      if (!taskCols.some((c: any) => c.name === "completedAt")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN completedAt TEXT");
+      }
+      db.exec("UPDATE tasks SET status = 'active' WHERE status = 'paused'");
+      db.exec(`
+        UPDATE tasks
+        SET nextAction = NULL, waitingOn = NULL, nextTouchAt = NULL
+        WHERE status != 'active'
+          AND (nextAction IS NOT NULL OR waitingOn IS NOT NULL OR nextTouchAt IS NOT NULL)
+      `);
+      taskCols = db.prepare("PRAGMA table_info(tasks)").all() as any[];
+      const hasCompletedAt = taskCols.some((c: any) => c.name === "completedAt");
+      const hasMuted = taskCols.some((c: any) => c.name === "muted");
+      const rebuiltLegacyTaskTable = taskCols.some((c: any) => c.name === "pinned");
+      if (rebuiltLegacyTaskTable) rebuildTasksWithoutLegacyTaskColumn(db, hasCompletedAt, hasMuted);
+      db.exec(`
+        UPDATE tasks
+        SET
+          status = 'archived',
+          completedAt = COALESCE(NULLIF(completedAt, ''), updatedAt, createdAt)
+        WHERE kind != 'ongoing'
+          AND status = 'done';
+      `);
+      db.exec(`
+        UPDATE tasks
+        SET
+          status = CASE WHEN status = 'done' THEN 'active' ELSE status END,
+          doneWhen = NULL,
+          completedAt = NULL
+        WHERE kind = 'ongoing'
+          AND (status = 'done' OR doneWhen IS NOT NULL OR completedAt IS NOT NULL);
+      `);
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt)");
+      if (rebuiltLegacyTaskTable) assertNoForeignKeyViolations(db, "Task legacy-column migration");
+    });
+  });
 }
 
 function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
@@ -673,11 +696,13 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
         provider TEXT NOT NULL DEFAULT 'ado',
         PRIMARY KEY (taskId, itemId, provider)
       );
+    `);
+    db.exec(`
       INSERT INTO task_work_items_new (taskId, itemId, provider)
         SELECT taskId, CAST(itemId AS TEXT), provider FROM task_work_items;
-      DROP TABLE task_work_items;
-      ALTER TABLE task_work_items_new RENAME TO task_work_items;
     `);
+    db.exec("DROP TABLE task_work_items");
+    db.exec("ALTER TABLE task_work_items_new RENAME TO task_work_items");
   }
 }
 
@@ -686,6 +711,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "mcp-registry-from-legacy-settings-and-tag-configs",
     category: "legacy-data",
     runMode: "every-open",
+    transaction: "self",
     description: "Promote legacy settings.mcpServers and tag_mcp_servers rows into the canonical MCP server registry.",
     apply: migrateMcpRegistry,
   },
@@ -693,6 +719,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "task-sessions-linked-at-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add linkedAt to task_sessions for existing databases.",
     apply: addTaskSessionLinkedAt,
   },
@@ -700,6 +727,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "session-meta-last-visible-activity-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add lastVisibleActivityAt to legacy session_meta rows.",
     apply: addSessionMetaLastVisibleActivity,
   },
@@ -707,6 +735,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "bridge-session-state-last-attention-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add lastAttentionAt to bridge_session_state rows.",
     apply: addBridgeSessionStateLastAttention,
   },
@@ -721,6 +750,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "schedule-auto-archive-keep-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add schedule autoArchiveKeep to legacy schedules tables.",
     apply: ensureScheduleAutoArchiveKeepColumn,
   },
@@ -728,6 +758,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "feed-cards-visual-json-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add visualJson to feed_cards for dashboard visual artifacts.",
     apply: ensureFeedCardsVisualJsonColumn,
   },
@@ -735,6 +766,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "feed-cards-action-json-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add actionJson to feed_cards for prompt-based session launch actions.",
     apply: ensureFeedCardsActionJsonColumn,
   },
@@ -756,6 +788,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "checklist-items-from-legacy-todos",
     category: "legacy-data",
     runMode: "every-open",
+    transaction: "self",
     description: "Move legacy todos rows into checklist_items and normalize checklist schema for global items and deadlines.",
     apply: migrateLegacyTodosAndNormalizeChecklist,
   },
@@ -763,6 +796,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "task-groups-notes-column",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Add notes to task_groups for existing databases.",
     apply: addTaskGroupNotes,
   },
@@ -770,6 +804,7 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "tasks-kind-momentum-and-status-repair",
     category: "data-repair",
     runMode: "every-open",
+    transaction: "self",
     description: "Upgrade task schema, remove legacy pinned/paused/done shapes, and repair invalid ongoing task rows.",
     apply: normalizeTaskSchemaAndStatuses,
   },
@@ -777,13 +812,20 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     id: "task-work-items-text-item-id",
     category: "schema-upgrade",
     runMode: "every-open",
+    transaction: "auto",
     description: "Rebuild task_work_items when itemId was stored as INTEGER so string identifiers are preserved.",
     apply: migrateTaskWorkItemIdsToText,
   },
 ];
 
 export function listDatabaseMigrations(): readonly DatabaseMigrationInfo[] {
-  return DATABASE_MIGRATIONS.map(({ id, category, runMode, description }) => ({ id, category, runMode, description }));
+  return DATABASE_MIGRATIONS.map((migration) => ({
+    id: migration.id,
+    category: migration.category,
+    runMode: migration.runMode,
+    transaction: migration.runMode === "every-open" ? migration.transaction : "auto",
+    description: migration.description,
+  }));
 }
 
 export function runDatabaseMigrations(db: DatabaseSync): void {
@@ -791,17 +833,14 @@ export function runDatabaseMigrations(db: DatabaseSync): void {
     try {
       if (migration.runMode === "once") {
         if (hasSchemaMigration(db, migration.id)) continue;
-        db.exec("BEGIN");
-        try {
+        runMigrationInTransaction(db, () => {
           migration.apply(db);
           markSchemaMigration(db, migration.id);
-          db.exec("COMMIT");
-        } catch (error) {
-          db.exec("ROLLBACK");
-          throw error;
-        }
-      } else {
+        });
+      } else if (migration.transaction === "self") {
         migration.apply(db);
+      } else {
+        runMigrationInTransaction(db, () => migration.apply(db));
       }
     } catch (error) {
       throw new Error(`Database migration "${migration.id}" failed: ${error instanceof Error ? error.message : String(error)}`, {

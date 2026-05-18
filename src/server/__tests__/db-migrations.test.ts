@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../db.js";
-import { listDatabaseMigrations } from "../db-migrations.js";
+import { listDatabaseMigrations, runDatabaseMigrations } from "../db-migrations.js";
 import { makeTestDir } from "./helpers.js";
 
 function createTempDataDir(): string {
@@ -46,6 +46,84 @@ function createLegacySessionTables(db: ReturnType<typeof openDatabase>): void {
   `);
 }
 
+function normalizeSql(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim();
+}
+
+function createExecFailureDb(db: DatabaseSync, shouldFail: (sql: string) => boolean): DatabaseSync {
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "exec") {
+        return (sql: string) => {
+          const normalized = normalizeSql(sql);
+          if (shouldFail(normalized)) throw new Error(`Injected migration failure before: ${normalized}`);
+          return target.exec(sql);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as DatabaseSync;
+}
+
+function sqliteTableExists(db: DatabaseSync, tableName: string): boolean {
+  return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+}
+
+function columnNames(db: DatabaseSync, tableName: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map((column) => column.name);
+}
+
+function columnType(db: DatabaseSync, tableName: string, columnName: string): string | undefined {
+  return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string; type: string }>)
+    .find((column) => column.name === columnName)?.type;
+}
+
+function replaceTasksWithLegacyPinnedTable(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("DROP TABLE tasks");
+    db.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        groupId TEXT,
+        cwd TEXT,
+        notes TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 0,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        "order" INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+    `);
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, groupId, cwd, notes, priority, pinned, "order", createdAt, updatedAt)
+      VALUES ('legacy-paused-pinned', 'Legacy paused pinned', 'paused', NULL, NULL, '', 0, 1, 0, ?, ?)
+    `).run("2026-05-01T00:00:00.000Z", "2026-05-01T00:00:00.000Z");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function replaceTaskWorkItemsWithIntegerIds(db: DatabaseSync): void {
+  db.prepare(`
+    INSERT INTO tasks (id, title, kind, muted, status, notes, priority, "order", createdAt, updatedAt)
+    VALUES ('work-item-task', 'Work item task', 'task', 0, 'active', '', 0, 0, ?, ?)
+  `).run("2026-05-02T00:00:00.000Z", "2026-05-02T00:00:00.000Z");
+  db.exec("DROP TABLE task_work_items");
+  db.exec(`
+    CREATE TABLE task_work_items (
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      itemId INTEGER NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'ado',
+      PRIMARY KEY (taskId, itemId, provider)
+    );
+  `);
+  db.prepare("INSERT INTO task_work_items (taskId, itemId, provider) VALUES ('work-item-task', 12345, 'ado')").run();
+}
+
 describe("database migration registry", () => {
   it("keeps the compatibility migration order explicit", () => {
     expect(listDatabaseMigrations().map((migration) => migration.id)).toEqual([
@@ -64,6 +142,28 @@ describe("database migration registry", () => {
       "tasks-kind-momentum-and-status-repair",
       "task-work-items-text-item-id",
     ]);
+  });
+
+  it("declares the every-open transaction contract explicitly", () => {
+    const transactionsById = Object.fromEntries(
+      listDatabaseMigrations()
+        .filter((migration) => migration.runMode === "every-open")
+        .map((migration) => [migration.id, migration.transaction]),
+    );
+
+    expect(transactionsById).toEqual({
+      "mcp-registry-from-legacy-settings-and-tag-configs": "self",
+      "task-sessions-linked-at-column": "auto",
+      "session-meta-last-visible-activity-column": "auto",
+      "bridge-session-state-last-attention-column": "auto",
+      "schedule-auto-archive-keep-column": "auto",
+      "feed-cards-visual-json-column": "auto",
+      "feed-cards-action-json-column": "auto",
+      "checklist-items-from-legacy-todos": "self",
+      "task-groups-notes-column": "auto",
+      "tasks-kind-momentum-and-status-repair": "self",
+      "task-work-items-text-item-id": "auto",
+    });
   });
 
   it("uses schema_migrations to gate one-time backfills without hiding the full registry", () => {
@@ -207,5 +307,76 @@ describe("database migration registry", () => {
     expect(columns.map((column) => column.name)).toContain("visualJson");
     expect(columns.map((column) => column.name)).toContain("actionJson");
     expect(row).toEqual({ title: "Legacy feed card", visualJson: null, actionJson: null });
+  });
+
+  it("rolls back the self-transactional task schema repair after an injected table rebuild failure", () => {
+    const dataDir = createTempDataDir();
+    const db = openDatabase(dataDir);
+    replaceTasksWithLegacyPinnedTable(db);
+
+    const flakyDb = createExecFailureDb(db, (sql) => sql === "DROP TABLE tasks");
+    expect(() => runDatabaseMigrations(flakyDb)).toThrow(/tasks-kind-momentum-and-status-repair/);
+
+    expect(sqliteTableExists(db, "tasks_new")).toBe(false);
+    expect(columnNames(db, "tasks")).toEqual([
+      "id",
+      "title",
+      "status",
+      "groupId",
+      "cwd",
+      "notes",
+      "priority",
+      "pinned",
+      "order",
+      "createdAt",
+      "updatedAt",
+    ]);
+    expect(db.prepare("SELECT status, pinned FROM tasks WHERE id = 'legacy-paused-pinned'").get()).toEqual({
+      status: "paused",
+      pinned: 1,
+    });
+    expect((db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys).toBe(1);
+
+    runDatabaseMigrations(db);
+    expect(sqliteTableExists(db, "tasks_new")).toBe(false);
+    expect(columnNames(db, "tasks")).not.toContain("pinned");
+    expect(db.prepare("SELECT kind, muted, status FROM tasks WHERE id = 'legacy-paused-pinned'").get()).toEqual({
+      kind: "ongoing",
+      muted: 0,
+      status: "active",
+    });
+
+    runDatabaseMigrations(db);
+    db.close();
+  });
+
+  it("rolls back a centrally wrapped every-open work item rebuild and reruns cleanly", () => {
+    const dataDir = createTempDataDir();
+    const db = openDatabase(dataDir);
+    replaceTaskWorkItemsWithIntegerIds(db);
+
+    const flakyDb = createExecFailureDb(db, (sql) => sql === "DROP TABLE task_work_items");
+    expect(() => runDatabaseMigrations(flakyDb)).toThrow(/task-work-items-text-item-id/);
+
+    expect(sqliteTableExists(db, "task_work_items_new")).toBe(false);
+    expect(columnType(db, "task_work_items", "itemId")).toBe("INTEGER");
+    expect((db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys).toBe(1);
+    expect(db.prepare("SELECT taskId, itemId, provider FROM task_work_items").get()).toEqual({
+      taskId: "work-item-task",
+      itemId: 12345,
+      provider: "ado",
+    });
+
+    runDatabaseMigrations(db);
+    expect(sqliteTableExists(db, "task_work_items_new")).toBe(false);
+    expect(columnType(db, "task_work_items", "itemId")).toBe("TEXT");
+    expect(db.prepare("SELECT taskId, itemId, provider FROM task_work_items").get()).toEqual({
+      taskId: "work-item-task",
+      itemId: "12345",
+      provider: "ado",
+    });
+
+    runDatabaseMigrations(db);
+    db.close();
   });
 });
