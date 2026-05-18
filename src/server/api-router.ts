@@ -2849,6 +2849,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     return limit;
   }
 
+  function parseFeedCursor(value: unknown): string | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (typeof value !== "string") throw new FeedCardValidationError("cursor must be a string");
+    return value;
+  }
+
   function parseFeedBoolean(field: string, value: unknown): boolean | undefined {
     if (value === undefined || value === null || value === "") return undefined;
     if (value === "true") return true;
@@ -2872,15 +2878,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/feed", (req, res) => {
     try {
       const t0 = Date.now();
-      const cards = ctx.feedStore.listCards({
+      const page = ctx.feedStore.listCardPage({
         status: parseFeedStatus(req.query.status),
         kind: parseFeedQueryString("kind", req.query.kind),
         taskId: parseFeedQueryString("taskId", req.query.taskId),
         sessionId: parseFeedQueryString("sessionId", req.query.sessionId),
         limit: parseFeedLimit(req.query.limit),
         includeDismissed: parseFeedBoolean("includeDismissed", req.query.includeDismissed),
+        cursor: parseFeedCursor(req.query.cursor),
       });
-      res.json({ cards });
+      res.json(page);
       ctx.telemetryStore?.recordSpan({ name: "feed.list", duration: Date.now() - t0, source: "server" });
     } catch (error) {
       sendFeedError(res, error);

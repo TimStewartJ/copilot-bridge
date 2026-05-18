@@ -309,6 +309,10 @@ function initSchema(db: DatabaseSync): void {
       ON feed_cards(dedupeKey) WHERE dedupeKey IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_feed_cards_status_updated
       ON feed_cards(status, pinned DESC, updatedAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_status_created
+      ON feed_cards(status, pinned DESC, createdAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_feed_cards_status_changed
+      ON feed_cards(status, statusChangedAt DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_feed_cards_taskId ON feed_cards(taskId);
     CREATE INDEX IF NOT EXISTS idx_feed_cards_sessionId ON feed_cards(sessionId);
     CREATE INDEX IF NOT EXISTS idx_feed_cards_kind ON feed_cards(kind);

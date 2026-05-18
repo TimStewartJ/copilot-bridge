@@ -167,9 +167,10 @@ describe("session manager feed tools", () => {
     await saveTool.handler({ title: "Active" }, createInvocation("feed_save"));
     await saveTool.handler({ title: "Done", status: "done" }, createInvocation("feed_save"));
 
-    await expect(listTool.handler({}, createInvocation("feed_list"))).resolves.toEqual({
+    await expect(listTool.handler({}, createInvocation("feed_list"))).resolves.toEqual(expect.objectContaining({
       cards: [expect.objectContaining({ title: "Active", status: "active" })],
-    });
+      nextCursor: null,
+    }));
     const all = await listTool.handler({ includeDismissed: true }, createInvocation("feed_list")) as any;
     expect(all.cards).toHaveLength(2);
     expect(all.cards).toEqual(expect.arrayContaining([

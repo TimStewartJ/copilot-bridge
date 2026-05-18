@@ -58,6 +58,15 @@ export interface FeedCardListFilters {
   limit?: number;
 }
 
+export interface FeedCardPageFilters extends FeedCardListFilters {
+  cursor?: string;
+}
+
+export interface FeedCardListPage {
+  cards: FeedCard[];
+  nextCursor: string | null;
+}
+
 export interface FeedCardMutationInput {
   key?: unknown;
   dedupeKey?: unknown;
@@ -103,6 +112,7 @@ const DEFAULT_STATUS: FeedCardStatus = "active";
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_LINKS = 20;
+const FEED_CURSOR_VERSION = 1;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const FIELD_LIMITS = {
@@ -173,6 +183,33 @@ type NormalizedCreateFields = {
 };
 
 type NormalizedUpdateFields = Partial<Record<MutableFeedCardField, string | number | null>>;
+
+type FeedListOrder = "active" | "resolved" | "mixed";
+
+interface NormalizedFeedListFilters {
+  statusFilter: FeedCardStatus | undefined;
+  includeDismissed: boolean;
+  kind: string | undefined;
+  taskId: string | undefined;
+  sessionId: string | undefined;
+  limit: number;
+  order: FeedListOrder;
+}
+
+interface FeedCursorPayload {
+  v: typeof FEED_CURSOR_VERSION;
+  order: FeedListOrder;
+  status: FeedCardStatus | null;
+  includeDismissed: boolean;
+  kind: string | null;
+  taskId: string | null;
+  sessionId: string | null;
+  pinned: 0 | 1;
+  statusChangedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  id: string;
+}
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -552,6 +589,185 @@ function normalizeFilterString(field: keyof typeof FIELD_LIMITS, value: unknown)
   return normalized ?? undefined;
 }
 
+function feedListOrder(status: FeedCardStatus | undefined): FeedListOrder {
+  if (status === "done" || status === "dismissed") return "resolved";
+  if (status === "active") return "active";
+  return "mixed";
+}
+
+function feedListOrderBy(status: FeedCardStatus | undefined): string {
+  if (status === "done" || status === "dismissed") {
+    return "statusChangedAt DESC, updatedAt DESC, id DESC";
+  }
+  if (status === "active") {
+    return "pinned DESC, updatedAt DESC, id DESC";
+  }
+  return "CASE WHEN status = 'active' THEN 0 ELSE 1 END, pinned DESC, updatedAt DESC, id DESC";
+}
+
+function feedPageOrderBy(order: FeedListOrder): string {
+  switch (order) {
+    case "active":
+      return "pinned DESC, createdAt DESC, id DESC";
+    case "resolved":
+      return "statusChangedAt DESC, id DESC";
+    case "mixed":
+      return "CASE WHEN status = 'active' THEN 0 ELSE 1 END, pinned DESC, updatedAt DESC, id DESC";
+  }
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeListFilters(filters: FeedCardListFilters): NormalizedFeedListFilters {
+  let statusFilter: FeedCardStatus | undefined;
+  if (filters.status !== undefined) {
+    statusFilter = normalizeStatus(filters.status);
+  } else if (!filters.includeDismissed) {
+    statusFilter = DEFAULT_STATUS;
+  }
+  return {
+    statusFilter,
+    includeDismissed: filters.includeDismissed === true,
+    kind: normalizeFilterString("kind", filters.kind),
+    taskId: normalizeFilterString("taskId", filters.taskId),
+    sessionId: normalizeFilterString("sessionId", filters.sessionId),
+    limit: normalizeLimit(filters.limit),
+    order: feedListOrder(statusFilter),
+  };
+}
+
+function appendFeedListFilters(
+  where: string[],
+  values: Array<string | number>,
+  filters: NormalizedFeedListFilters,
+): void {
+  if (filters.statusFilter !== undefined) {
+    where.push("status = ?");
+    values.push(filters.statusFilter);
+  }
+  if (filters.kind) {
+    where.push("kind = ?");
+    values.push(filters.kind);
+  }
+  if (filters.taskId) {
+    where.push("taskId = ?");
+    values.push(filters.taskId);
+  }
+  if (filters.sessionId) {
+    where.push("sessionId = ?");
+    values.push(filters.sessionId);
+  }
+}
+
+function cursorStringField(payload: Record<string, unknown>, field: keyof FeedCursorPayload): string {
+  const value = payload[field];
+  if (typeof value !== "string" || !value) {
+    throw new FeedCardValidationError("cursor is invalid");
+  }
+  return value;
+}
+
+function cursorNullableStringField(payload: Record<string, unknown>, field: keyof FeedCursorPayload): string | null {
+  const value = payload[field];
+  if (value === null) return null;
+  if (typeof value !== "string" || !value) {
+    throw new FeedCardValidationError("cursor is invalid");
+  }
+  return value;
+}
+
+function cursorStatusField(value: unknown): FeedCardStatus | null {
+  if (value === null) return null;
+  if (value === "active" || value === "done" || value === "dismissed") return value;
+  throw new FeedCardValidationError("cursor is invalid");
+}
+
+function cursorOrderField(value: unknown): FeedListOrder {
+  if (value === "active" || value === "resolved" || value === "mixed") return value;
+  throw new FeedCardValidationError("cursor is invalid");
+}
+
+function decodeFeedCursor(cursor: string): FeedCursorPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+  } catch {
+    throw new FeedCardValidationError("cursor is invalid");
+  }
+  if (!isRecordValue(parsed) || parsed.v !== FEED_CURSOR_VERSION) {
+    throw new FeedCardValidationError("cursor is invalid");
+  }
+  const pinned = parsed.pinned;
+  if (pinned !== 0 && pinned !== 1) throw new FeedCardValidationError("cursor is invalid");
+  if (typeof parsed.includeDismissed !== "boolean") throw new FeedCardValidationError("cursor is invalid");
+  return {
+    v: FEED_CURSOR_VERSION,
+    order: cursorOrderField(parsed.order),
+    status: cursorStatusField(parsed.status),
+    includeDismissed: parsed.includeDismissed,
+    kind: cursorNullableStringField(parsed, "kind"),
+    taskId: cursorNullableStringField(parsed, "taskId"),
+    sessionId: cursorNullableStringField(parsed, "sessionId"),
+    pinned,
+    statusChangedAt: cursorStringField(parsed, "statusChangedAt"),
+    createdAt: cursorStringField(parsed, "createdAt"),
+    updatedAt: cursorStringField(parsed, "updatedAt"),
+    id: cursorStringField(parsed, "id"),
+  };
+}
+
+function assertFeedCursorScope(cursor: FeedCursorPayload, filters: NormalizedFeedListFilters): void {
+  if (
+    cursor.order !== filters.order
+    || cursor.status !== (filters.statusFilter ?? null)
+    || cursor.includeDismissed !== filters.includeDismissed
+    || cursor.kind !== (filters.kind ?? null)
+    || cursor.taskId !== (filters.taskId ?? null)
+    || cursor.sessionId !== (filters.sessionId ?? null)
+  ) {
+    throw new FeedCardValidationError("cursor does not match feed filters");
+  }
+}
+
+function encodeFeedCursor(card: FeedCard, filters: NormalizedFeedListFilters): string {
+  const payload: FeedCursorPayload = {
+    v: FEED_CURSOR_VERSION,
+    order: filters.order,
+    status: filters.statusFilter ?? null,
+    includeDismissed: filters.includeDismissed,
+    kind: filters.kind ?? null,
+    taskId: filters.taskId ?? null,
+    sessionId: filters.sessionId ?? null,
+    pinned: card.pinned ? 1 : 0,
+    statusChangedAt: card.statusChangedAt,
+    createdAt: card.createdAt,
+    updatedAt: card.updatedAt,
+    id: card.id,
+  };
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function appendCursorPredicate(
+  where: string[],
+  values: Array<string | number>,
+  cursor: FeedCursorPayload,
+): void {
+  switch (cursor.order) {
+    case "active":
+      where.push("(pinned < ? OR (pinned = ? AND createdAt < ?) OR (pinned = ? AND createdAt = ? AND id < ?))");
+      values.push(cursor.pinned, cursor.pinned, cursor.createdAt, cursor.pinned, cursor.createdAt, cursor.id);
+      return;
+    case "resolved":
+      where.push("(statusChangedAt < ? OR (statusChangedAt = ? AND id < ?))");
+      values.push(cursor.statusChangedAt, cursor.statusChangedAt, cursor.id);
+      return;
+    case "mixed":
+      throw new FeedCardValidationError("cursor pagination requires a status when includeDismissed is true");
+  }
+}
+
 export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedStoreOptions = {}) {
   function hydrate(row: any): FeedCard {
     return {
@@ -755,43 +971,53 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
   }
 
   function listCards(filters: FeedCardListFilters = {}): FeedCard[] {
+    const normalized = normalizeListFilters(filters);
     const where: string[] = [];
     const values: Array<string | number> = [];
-    if (filters.status !== undefined) {
-      where.push("status = ?");
-      values.push(normalizeStatus(filters.status));
-    } else if (!filters.includeDismissed) {
-      where.push("status = ?");
-      values.push(DEFAULT_STATUS);
-    }
-    const kind = normalizeFilterString("kind", filters.kind);
-    if (kind) {
-      where.push("kind = ?");
-      values.push(kind);
-    }
-    const taskId = normalizeFilterString("taskId", filters.taskId);
-    if (taskId) {
-      where.push("taskId = ?");
-      values.push(taskId);
-    }
-    const sessionId = normalizeFilterString("sessionId", filters.sessionId);
-    if (sessionId) {
-      where.push("sessionId = ?");
-      values.push(sessionId);
-    }
-    const limit = normalizeLimit(filters.limit);
-    values.push(limit);
+    appendFeedListFilters(where, values, normalized);
+    values.push(normalized.limit);
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const orderBy = feedListOrderBy(normalized.statusFilter);
     return (db.prepare(`
       SELECT * FROM feed_cards
       ${whereClause}
-      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, pinned DESC, updatedAt DESC, id DESC
+      ORDER BY ${orderBy}
       LIMIT ?
     `).all(...values) as any[]).map(hydrate);
   }
 
+  function listCardPage(filters: FeedCardPageFilters = {}): FeedCardListPage {
+    const normalized = normalizeListFilters(filters);
+    const where: string[] = [];
+    const values: Array<string | number> = [];
+    appendFeedListFilters(where, values, normalized);
+    if (filters.cursor !== undefined && filters.cursor !== null && filters.cursor !== "") {
+      if (typeof filters.cursor !== "string") throw new FeedCardValidationError("cursor must be a string");
+      const cursor = decodeFeedCursor(filters.cursor);
+      assertFeedCursorScope(cursor, normalized);
+      appendCursorPredicate(where, values, cursor);
+    }
+    const pageLimit = normalized.limit + 1;
+    values.push(pageLimit);
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = db.prepare(`
+      SELECT * FROM feed_cards
+      ${whereClause}
+      ORDER BY ${feedPageOrderBy(normalized.order)}
+      LIMIT ?
+    `).all(...values) as any[];
+    const cards = rows.slice(0, normalized.limit).map(hydrate);
+    return {
+      cards,
+      nextCursor: normalized.order !== "mixed" && rows.length > normalized.limit && cards.length > 0
+        ? encodeFeedCursor(cards[cards.length - 1]!, normalized)
+        : null,
+    };
+  }
+
   return {
     listCards,
+    listCardPage,
     getCard,
     getCardByKey,
     saveCard,
