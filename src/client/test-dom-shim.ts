@@ -297,6 +297,7 @@ export function installDomShim() {
   document.body = container;
   document.documentElement = html;
   document.defaultView = windowObject;
+  const actEnvironmentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
 
   const installGlobal = (key: RestorableGlobalKeys, value: unknown) => {
     Object.defineProperty(globalThis, key, {
@@ -316,6 +317,11 @@ export function installDomShim() {
   installGlobal("Node", windowObject.Node);
   installGlobal("Text", windowObject.Text);
   installGlobal("Comment", windowObject.Comment);
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
+    configurable: true,
+    writable: true,
+    value: true,
+  });
 
   return {
     container,
@@ -326,6 +332,11 @@ export function installDomShim() {
         } else {
           Object.defineProperty(globalThis, key, descriptor);
         }
+      }
+      if (!actEnvironmentDescriptor) {
+        delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+      } else {
+        Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", actEnvironmentDescriptor);
       }
     },
   };
