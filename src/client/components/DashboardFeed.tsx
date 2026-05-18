@@ -115,6 +115,10 @@ interface DashboardFeedProps {
   taskGroups?: TaskGroup[];
   feedLoading: boolean;
   showResolvedFeed: boolean;
+  activeHasMore?: boolean;
+  resolvedHasMore?: boolean;
+  activeLoadingMore?: boolean;
+  resolvedLoadingMore?: boolean;
   onToggleResolvedFeed: () => void;
   onSelectTask: (id: string) => void;
   onSelectSession: (sessionId: string, taskId?: string) => void;
@@ -124,6 +128,8 @@ interface DashboardFeedProps {
     options?: { navigateOnError?: boolean },
   ) => Promise<string>;
   onRefetchFeed: () => Promise<unknown>;
+  onLoadMoreActive?: () => void | Promise<unknown>;
+  onLoadMoreResolved?: () => void | Promise<unknown>;
 }
 
 export default function DashboardFeed({
@@ -133,11 +139,17 @@ export default function DashboardFeed({
   taskGroups = [],
   feedLoading,
   showResolvedFeed,
+  activeHasMore = false,
+  resolvedHasMore = false,
+  activeLoadingMore = false,
+  resolvedLoadingMore = false,
   onToggleResolvedFeed,
   onSelectTask,
   onSelectSession,
   onStartPromptSession,
   onRefetchFeed,
+  onLoadMoreActive,
+  onLoadMoreResolved,
 }: DashboardFeedProps) {
   const [actionDraft, setActionDraft] = useState<FeedActionDraft | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -662,6 +674,7 @@ export default function DashboardFeed({
 
   const canUndoFeedback = feedFeedback?.kind === "status" || feedFeedback?.kind === "delete";
   const undoingFeedback = feedFeedback?.kind === "status" && feedFeedback.undoing;
+  const loadMoreButtonClass = "w-full rounded-lg border border-border/70 bg-bg-secondary px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60";
 
   return (
     <>
@@ -713,6 +726,16 @@ export default function DashboardFeed({
         ) : displayFeedCards.length > 0 ? (
           <div className="space-y-2">
             {activeFeedCards.map(renderFeedCard)}
+            {activeHasMore && (
+              <button
+                type="button"
+                onClick={() => { void onLoadMoreActive?.(); }}
+                disabled={activeLoadingMore}
+                className={loadMoreButtonClass}
+              >
+                {activeLoadingMore ? "Loading active…" : "Load more active"}
+              </button>
+            )}
             {showResolvedDivider && (
               <div className="flex items-center gap-2 px-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-faint">
                 <span className="h-px flex-1 bg-border/60" />
@@ -721,6 +744,16 @@ export default function DashboardFeed({
               </div>
             )}
             {resolvedFeedCards.map(renderFeedCard)}
+            {showResolvedFeed && resolvedHasMore && (
+              <button
+                type="button"
+                onClick={() => { void onLoadMoreResolved?.(); }}
+                disabled={resolvedLoadingMore}
+                className={loadMoreButtonClass}
+              >
+                {resolvedLoadingMore ? "Loading resolved…" : "Load more resolved"}
+              </button>
+            )}
           </div>
         ) : (
           <EmptyState

@@ -577,4 +577,28 @@ describe("DashboardFeed feed mutations", () => {
     expect(text).toContain("Done card");
     expect(text).not.toContain("Resolved");
   });
+
+  it("exposes load-more controls for paginated feed sections", async () => {
+    const onLoadMoreActive = vi.fn();
+    const onLoadMoreResolved = vi.fn();
+    await renderDashboardFeed({
+      showResolvedFeed: true,
+      activeHasMore: true,
+      resolvedHasMore: true,
+      feedCards: [
+        makeCard({ id: "active-card", title: "Active card", status: "active" }),
+        makeCard({ id: "done-card", title: "Done card", status: "done" }),
+      ],
+      onLoadMoreActive,
+      onLoadMoreResolved,
+    });
+
+    await act(async () => {
+      clickButton(findButtonByText(dom?.container, "Load more active"));
+      clickButton(findButtonByText(dom?.container, "Load more resolved"));
+    });
+
+    expect(onLoadMoreActive).toHaveBeenCalledTimes(1);
+    expect(onLoadMoreResolved).toHaveBeenCalledTimes(1);
+  });
 });

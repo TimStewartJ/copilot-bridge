@@ -91,6 +91,65 @@ describe("feed-store", () => {
     expect(updated.links).toEqual([{ label: "Spec", url: "https://example.test/spec" }]);
   });
 
+  it("keeps default lists active-only and orders resolved filters by status change time", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
+      const oldDone = store.saveCard({ key: "old-done", title: "Old done" }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:00:01.000Z"));
+      const active = store.saveCard({ key: "active", title: "Active" }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:00:02.000Z"));
+      const newDone = store.saveCard({ key: "new-done", title: "New done" }).card;
+
+      vi.setSystemTime(new Date("2026-05-13T10:00:03.000Z"));
+      store.updateCardById(oldDone.id, { status: "done" });
+      vi.setSystemTime(new Date("2026-05-13T10:00:04.000Z"));
+      store.updateCardById(active.id, { title: "Still active" });
+      vi.setSystemTime(new Date("2026-05-13T10:00:05.000Z"));
+      store.updateCardById(newDone.id, { status: "done" });
+
+      expect(store.listCards({ limit: 10 }).map((card) => card.id)).toEqual([active.id]);
+      expect(store.listCards({ status: "done", limit: 10 }).map((card) => card.id)).toEqual([
+        newDone.id,
+        oldDone.id,
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("paginates active cards with an opaque cursor across pinned and unpinned cards", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
+      const oldPinned = store.saveCard({ title: "Old pinned", pinned: true }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
+      const unpinned = store.saveCard({ title: "Unpinned" }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
+      const newPinned = store.saveCard({ title: "New pinned", pinned: true }).card;
+
+      const firstPage = store.listCardPage({ limit: 2 });
+      expect(firstPage.cards.map((card) => card.id)).toEqual([newPinned.id, oldPinned.id]);
+      expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+      const secondPage = store.listCardPage({ limit: 2, cursor: firstPage.nextCursor! });
+      expect(secondPage.cards.map((card) => card.id)).toEqual([unpinned.id]);
+      expect(secondPage.nextCursor).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects cursors reused with different feed filters", () => {
+    store.saveCard({ title: "First" });
+    store.saveCard({ title: "Second" });
+
+    const firstPage = store.listCardPage({ limit: 1 });
+
+    expect(() => store.listCardPage({ status: "done", limit: 1, cursor: firstPage.nextCursor! }))
+      .toThrow("cursor does not match feed filters");
+  });
+
   it("rejects key fields on direct updates without changing the card", () => {
     const created = store.saveCard({ key: "stable:key", title: "Stable" }).card;
     const before = store.getCard(created.id);

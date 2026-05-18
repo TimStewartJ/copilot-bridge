@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { getDashboardTabPath, getExplicitDashboardTabFromPathname, getRememberedDashboardTabFromPathname, setLastDashboardTab } from "../lib/dashboard-routes";
 import { useDashboardQuery } from "../hooks/queries/useDashboard";
-import { useFeedQuery } from "../hooks/queries/useFeed";
+import { useFeedPagesQuery } from "../hooks/queries/useFeed";
 import { useDashboardChecklist } from "../hooks/useDashboardChecklist";
 import DashboardChecklist from "./DashboardChecklist";
 import DashboardFeed from "./DashboardFeed";
@@ -10,7 +10,55 @@ import DashboardTabs from "./DashboardTabs";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
 import { dashboardChecklistCountClass } from "./dashboard-checklist-helpers";
-import type { Task, TaskGroup } from "../api";
+import type { FeedCard, Task, TaskGroup } from "../api";
+
+const ACTIVE_FEED_PAGE_SIZE = 50;
+const RESOLVED_FEED_PAGE_SIZE = 50;
+
+function parseFeedTimestamp(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareTimestampDesc(a: string, b: string): number {
+  return parseFeedTimestamp(b) - parseFeedTimestamp(a);
+}
+
+function compareActiveFeedCards(a: FeedCard, b: FeedCard): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  return compareTimestampDesc(a.createdAt, b.createdAt) || b.id.localeCompare(a.id);
+}
+
+function compareResolvedFeedCards(a: FeedCard, b: FeedCard): number {
+  return compareTimestampDesc(a.statusChangedAt, b.statusChangedAt)
+    || compareTimestampDesc(a.updatedAt, b.updatedAt)
+    || b.id.localeCompare(a.id);
+}
+
+function feedCardFreshness(card: FeedCard): number {
+  return card.status === "active"
+    ? parseFeedTimestamp(card.updatedAt)
+    : Math.max(parseFeedTimestamp(card.statusChangedAt), parseFeedTimestamp(card.updatedAt));
+}
+
+export function mergeDashboardFeedCards(activeCards: FeedCard[], resolvedCards: FeedCard[]): FeedCard[] {
+  const latestById = new Map<string, FeedCard>();
+  for (const card of [...activeCards, ...resolvedCards]) {
+    const existing = latestById.get(card.id);
+    if (!existing || feedCardFreshness(card) >= feedCardFreshness(existing)) {
+      latestById.set(card.id, card);
+    }
+  }
+  const merged = Array.from(latestById.values());
+  return [
+    ...merged.filter((card) => card.status === "active").sort(compareActiveFeedCards),
+    ...merged.filter((card) => card.status !== "active").sort(compareResolvedFeedCards),
+  ];
+}
+
+function flattenFeedPages(data: { pages: Array<{ cards: FeedCard[] }> } | undefined): FeedCard[] {
+  return data?.pages.flatMap((page) => page.cards) ?? [];
+}
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
@@ -72,15 +120,48 @@ export default function Dashboard({
   const [showResolvedFeed, setShowResolvedFeed] = useState(false);
   const activeTab = getRememberedDashboardTabFromPathname(location.pathname);
   const explicitActiveTab = getExplicitDashboardTabFromPathname(location.pathname);
-  const feedFilters = useMemo(() => ({
-    limit: 100,
-    ...(showResolvedFeed ? { includeDismissed: true } : {}),
-  }), [showResolvedFeed]);
-  const {
-    data: feedCards = [],
-    isLoading: feedLoading,
-    refetch: refetchFeed,
-  } = useFeedQuery(feedFilters);
+  const activeFeedFilters = useMemo(() => ({ limit: ACTIVE_FEED_PAGE_SIZE }), []);
+  const doneFeedFilters = useMemo(() => ({ status: "done" as const, limit: RESOLVED_FEED_PAGE_SIZE }), []);
+  const dismissedFeedFilters = useMemo(() => ({ status: "dismissed" as const, limit: RESOLVED_FEED_PAGE_SIZE }), []);
+  const activeFeedQuery = useFeedPagesQuery(activeFeedFilters);
+  const doneFeedQuery = useFeedPagesQuery(doneFeedFilters, { enabled: showResolvedFeed });
+  const dismissedFeedQuery = useFeedPagesQuery(dismissedFeedFilters, { enabled: showResolvedFeed });
+  const activeFeedCards = useMemo(() => flattenFeedPages(activeFeedQuery.data), [activeFeedQuery.data]);
+  const doneFeedCards = useMemo(() => flattenFeedPages(doneFeedQuery.data), [doneFeedQuery.data]);
+  const dismissedFeedCards = useMemo(() => flattenFeedPages(dismissedFeedQuery.data), [dismissedFeedQuery.data]);
+  const resolvedFeedCards = useMemo(
+    () => showResolvedFeed ? [...doneFeedCards, ...dismissedFeedCards] : [],
+    [dismissedFeedCards, doneFeedCards, showResolvedFeed],
+  );
+  const feedCards = useMemo(
+    () => mergeDashboardFeedCards(activeFeedCards, resolvedFeedCards),
+    [activeFeedCards, resolvedFeedCards],
+  );
+  const feedLoading = activeFeedQuery.isLoading || (showResolvedFeed && (doneFeedQuery.isLoading || dismissedFeedQuery.isLoading));
+
+  const refetchFeed = async () => {
+    const refetches: Array<Promise<unknown>> = [activeFeedQuery.refetch()];
+    if (showResolvedFeed) {
+      refetches.push(doneFeedQuery.refetch(), dismissedFeedQuery.refetch());
+    }
+    return Promise.all(refetches);
+  };
+
+  const loadMoreActiveFeed = async () => {
+    if (!activeFeedQuery.hasNextPage || activeFeedQuery.isFetchingNextPage) return;
+    await activeFeedQuery.fetchNextPage();
+  };
+
+  const loadMoreResolvedFeed = async () => {
+    const refetches: Array<Promise<unknown>> = [];
+    if (doneFeedQuery.hasNextPage && !doneFeedQuery.isFetchingNextPage) {
+      refetches.push(doneFeedQuery.fetchNextPage());
+    }
+    if (dismissedFeedQuery.hasNextPage && !dismissedFeedQuery.isFetchingNextPage) {
+      refetches.push(dismissedFeedQuery.fetchNextPage());
+    }
+    await Promise.all(refetches);
+  };
 
   const handleRefresh = async () => {
     await Promise.all([refetchDashboard(), refetchFeed()]);
@@ -126,11 +207,17 @@ export default function Dashboard({
             taskGroups={taskGroups}
             feedLoading={feedLoading}
             showResolvedFeed={showResolvedFeed}
+            activeHasMore={Boolean(activeFeedQuery.hasNextPage)}
+            resolvedHasMore={showResolvedFeed && Boolean(doneFeedQuery.hasNextPage || dismissedFeedQuery.hasNextPage)}
+            activeLoadingMore={activeFeedQuery.isFetchingNextPage}
+            resolvedLoadingMore={doneFeedQuery.isFetchingNextPage || dismissedFeedQuery.isFetchingNextPage}
             onToggleResolvedFeed={() => setShowResolvedFeed((value) => !value)}
             onSelectTask={(taskId) => onSelectTask(taskId)}
             onSelectSession={onSelectSession}
             onStartPromptSession={onStartPromptSession}
             onRefetchFeed={refetchFeed}
+            onLoadMoreActive={loadMoreActiveFeed}
+            onLoadMoreResolved={loadMoreResolvedFeed}
           />
           <DashboardChecklist
             active={activeTab === "checklist"}

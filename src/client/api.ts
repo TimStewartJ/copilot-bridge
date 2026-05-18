@@ -1169,6 +1169,7 @@ export interface FeedQueryFilters {
   taskId?: string;
   sessionId?: string;
   limit?: number;
+  cursor?: string;
   includeDismissed?: boolean;
 }
 
@@ -1184,6 +1185,11 @@ export interface FeedSaveResult {
   created: boolean;
 }
 
+export interface FeedPage {
+  cards: FeedCard[];
+  nextCursor: string | null;
+}
+
 function buildFeedQuery(filters: FeedQueryFilters = {}): string {
   const params = new URLSearchParams();
   if (filters.status) params.set("status", filters.status);
@@ -1191,13 +1197,18 @@ function buildFeedQuery(filters: FeedQueryFilters = {}): string {
   if (filters.taskId) params.set("taskId", filters.taskId);
   if (filters.sessionId) params.set("sessionId", filters.sessionId);
   if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+  if (filters.cursor) params.set("cursor", filters.cursor);
   if (filters.includeDismissed !== undefined) params.set("includeDismissed", String(filters.includeDismissed));
   const query = params.toString();
   return query ? `?${query}` : "";
 }
 
+export async function fetchFeedPage(filters: FeedQueryFilters = {}): Promise<FeedPage> {
+  return apiFetch<FeedPage>(`/api/feed${buildFeedQuery(filters)}`);
+}
+
 export async function fetchFeed(filters: FeedQueryFilters = {}): Promise<FeedCard[]> {
-  const data = await apiFetch<{ cards: FeedCard[] }>(`/api/feed${buildFeedQuery(filters)}`);
+  const data = await fetchFeedPage(filters);
   return data.cards;
 }
 

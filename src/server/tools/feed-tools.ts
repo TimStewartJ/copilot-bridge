@@ -230,22 +230,22 @@ export function createFeedTools(ctx: AppContext) {
           taskId: { type: "string", description: "Filter by related task ID." },
           sessionId: { type: "string", description: "Filter by related session ID." },
           limit: { type: "number", description: "Maximum cards to return, capped by the server." },
+          cursor: { type: "string", description: "Opaque nextCursor from a previous feed_list call for the same filters." },
           includeDismissed: { type: "boolean", description: "When true and status is omitted, include all statuses." },
         },
         required: [],
       },
       handler: async (args: any) => {
         try {
-          return {
-            cards: ctx.feedStore.listCards({
-              status: parseFeedStatus(args.status),
-              kind: args.kind,
-              taskId: args.taskId,
-              sessionId: args.sessionId,
-              limit: args.limit,
-              includeDismissed: args.includeDismissed === true,
-            }),
-          };
+          return ctx.feedStore.listCardPage({
+            status: parseFeedStatus(args.status),
+            kind: args.kind,
+            taskId: args.taskId,
+            sessionId: args.sessionId,
+            limit: args.limit,
+            cursor: args.cursor,
+            includeDismissed: args.includeDismissed === true,
+          });
         } catch (error) {
           return normalizeFeedToolError(error);
         }

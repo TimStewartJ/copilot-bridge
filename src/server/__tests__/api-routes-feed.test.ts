@@ -129,6 +129,41 @@ describe("Feed routes", () => {
     expect(all.body.cards).toHaveLength(3);
   });
 
+  it("GET /api/feed paginates cards with an opaque cursor", async () => {
+    const first = ctx.feedStore.saveCard({ title: "First" }).card;
+    const second = ctx.feedStore.saveCard({ title: "Second" }).card;
+    const third = ctx.feedStore.saveCard({ title: "Third" }).card;
+
+    const firstPage = await request(app).get("/api/feed?limit=2");
+
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.cards).toHaveLength(2);
+    expect(firstPage.body.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await request(app)
+      .get(`/api/feed?limit=2&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
+    const returnedIds = [
+      ...firstPage.body.cards.map((card: any) => card.id),
+      ...secondPage.body.cards.map((card: any) => card.id),
+    ];
+
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.nextCursor).toBeNull();
+    expect(new Set(returnedIds)).toEqual(new Set([first.id, second.id, third.id]));
+  });
+
+  it("GET /api/feed rejects cursors reused with different filters", async () => {
+    ctx.feedStore.saveCard({ title: "First" });
+    ctx.feedStore.saveCard({ title: "Second" });
+
+    const firstPage = await request(app).get("/api/feed?limit=1");
+    const mismatch = await request(app)
+      .get(`/api/feed?status=done&limit=1&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
+
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.error).toContain("cursor does not match feed filters");
+  });
+
   it("PATCH and DELETE update cards by id", async () => {
     const create = await request(app)
       .post("/api/feed")
