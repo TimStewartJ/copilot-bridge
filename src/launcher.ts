@@ -20,7 +20,7 @@ import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
-import { readRestartSignalFile, type RestartValidationMode } from "./server/restart-signal.js";
+import { consumeRestartSignalFile, type RestartSignal, type RestartValidationMode } from "./server/restart-signal.js";
 import {
   buildRestartStateWithReleaseFailure,
   clearRestartState,
@@ -78,6 +78,7 @@ const DATA_DIR = RUNTIME_PATHS.dataDir;
 const NODE_PATH = process.execPath; // use the same node binary that's running the launcher
 const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SIGNAL_FILE = join(DATA_DIR, "restart.signal");
+const IN_PROGRESS_SIGNAL_FILE = join(DATA_DIR, "restart-in-progress.json");
 const RESTART_STATE_FILE = join(DATA_DIR, "restart-state.json");
 const PRE_DEPLOY_SHA_FILE = join(DATA_DIR, "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(DATA_DIR, "rollback-required");
@@ -203,8 +204,23 @@ function normalizeGitHash(value: string): string | null {
 
 const tag = () => `${gitHash()}, PID ${process.pid}`;
 
+function clearFile(filePath: string) {
+  try { if (existsSync(filePath)) unlinkSync(filePath); } catch {}
+}
+
 function clearSignal() {
-  try { if (existsSync(SIGNAL_FILE)) unlinkSync(SIGNAL_FILE); } catch {}
+  clearFile(SIGNAL_FILE);
+}
+
+function clearInProgressSignal() {
+  clearFile(IN_PROGRESS_SIGNAL_FILE);
+}
+
+function clearStaleInProgressSignal() {
+  if (!existsSync(SIGNAL_FILE) && existsSync(IN_PROGRESS_SIGNAL_FILE)) {
+    log("Discarding stale in-progress restart signal from a previous launcher run");
+    clearInProgressSignal();
+  }
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
@@ -541,32 +557,45 @@ async function processRestartSignal(): Promise<void> {
   if (restarting || shuttingDown) return;
   restarting = true;
   let restartOutcome: RestartOutcome = "failed";
+  let consumedSignal = false;
   try {
-    const signal = readRestartSignalFile(SIGNAL_FILE);
-    restartOutcome = await restart(signal.validationMode);
-  } finally {
-    clearSignal();
-    if (restartOutcome === "failed" && pendingReleaseFailure) {
-      await safePersistPendingReleaseFailure();
-    } else {
-      await safeClearRestartState();
-    }
-    restarting = false;
-    if (didRestartRecover(restartOutcome)) {
-      clearFailedRollbackState();
-      clearRollbackCheckpointAfterHealthyState();
-    }
-    if (!shouldCheckFollowUpRecovery({ autoRecoverySuppressed: suppressAutoRecovery })) {
+    let signal: RestartSignal | null;
+    try {
+      signal = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
+    } catch (err) {
+      log(`Failed to claim restart signal (will retry): ${err}`);
       return;
     }
-    const followUpRecovery = evaluatePostRecoveryState({
-      hasServerProcess: serverProcess !== null,
-      restarting,
-      recoveringServer,
-      shuttingDown,
-    });
-    if (followUpRecovery) {
-      recoverServer(followUpRecovery.reason, followUpRecovery.options);
+    if (!signal) return;
+    consumedSignal = true;
+    restartOutcome = await restart(signal.validationMode);
+  } finally {
+    if (consumedSignal) {
+      clearInProgressSignal();
+      if (restartOutcome === "failed" && pendingReleaseFailure) {
+        await safePersistPendingReleaseFailure();
+      } else {
+        await safeClearRestartState();
+      }
+    }
+    restarting = false;
+    if (consumedSignal) {
+      if (didRestartRecover(restartOutcome)) {
+        clearFailedRollbackState();
+        clearRollbackCheckpointAfterHealthyState();
+      }
+      if (!shouldCheckFollowUpRecovery({ autoRecoverySuppressed: suppressAutoRecovery })) {
+        return;
+      }
+      const followUpRecovery = evaluatePostRecoveryState({
+        hasServerProcess: serverProcess !== null,
+        restarting,
+        recoveringServer,
+        shuttingDown,
+      });
+      if (followUpRecovery) {
+        recoverServer(followUpRecovery.reason, followUpRecovery.options);
+      }
     }
   }
 }
@@ -1176,6 +1205,8 @@ async function main() {
   console.log("║      Copilot Bridge Launcher           ║");
   console.log("╚════════════════════════════════════════╝");
   console.log();
+
+  clearStaleInProgressSignal();
 
   const startupDecision = decideLauncherStartup({
     restartSignalPresent: existsSync(SIGNAL_FILE),
