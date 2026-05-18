@@ -42,6 +42,7 @@ import {
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
+const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
 const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
   "assistant.turn_end",
   "session.idle",
@@ -452,6 +453,43 @@ export class SessionRunner {
       return;
     }
 
+    const runStepOrCompletion = async <T>(
+      stepName: string,
+      step: () => Promise<T>,
+    ): Promise<{ completed: true } | { completed: false; value: T }> => {
+      if (runController.isCompleted()) return { completed: true };
+      let stepPromise: Promise<T>;
+      try {
+        stepPromise = step();
+      } catch (error) {
+        throw error;
+      }
+      const stepResult = stepPromise.then(
+        (value) => ({ type: "step" as const, value }),
+        (error) => ({ type: "error" as const, error }),
+      );
+      const result = await Promise.race([
+        stepResult,
+        runController.completion.then(() => ({ type: "completed" as const })),
+      ]);
+      if (result.type === "completed") {
+        const graceResult = await Promise.race([
+          stepResult,
+          Promise.resolve().then(() => ({ type: "timeout" as const })),
+        ]);
+        if (graceResult.type === "step") return { completed: false, value: graceResult.value };
+        if (graceResult.type === "error") throw graceResult.error;
+        void stepPromise.catch((error) => {
+          console.warn(`[sdk] [${sid}] ${stepName} rejected after run completion:`, error);
+        });
+        console.warn(`[sdk] [${sid}] ${stepName} still pending after run completion — abandoning cached session`);
+        abandonSession(session);
+        return { completed: true };
+      }
+      if (result.type === "error") throw result.error;
+      return { completed: false, value: result.value };
+    };
+
     const toolNameMap = new Map<string, string>();
     const toolStartTimes = new Map<string, number>();
     const subAgentMap = new Map<string, string>();
@@ -554,6 +592,25 @@ export class SessionRunner {
         ...buildRunTelemetryMetadata(now),
         ...metadata,
       });
+    };
+    const forceReleaseStalledRun = (now: number, reason: string): boolean => {
+      if (runController.isCompleted()) return true;
+      const record = this.deps.runStateController.getRunRecords().get(sessionId);
+      const stalledAt = record?.stalledAt;
+      if (!stalledAt) return false;
+      const stalledForMs = now - stalledAt;
+      if (stalledForMs < STALLED_RUN_FORCE_RELEASE_MS) return false;
+
+      const message = `Session stalled for ${Math.ceil(stalledForMs / 1000)}s without recoverable SDK events; releasing run state locally.`;
+      console.error(`[sdk] [${sid}] ⚠️ ${message}`);
+      recordRunSpan("session.run.force_released", 0, {
+        reason,
+        stalledForMs,
+        forceReleaseThresholdMs: STALLED_RUN_FORCE_RELEASE_MS,
+      }, now);
+      runController.completeError(message);
+      abandonSession(session);
+      return true;
     };
     const getTerminalCompletionSource = (eventType: string, origin: SessionEventOrigin): string => {
       const normalizedEventType = eventType.replace(/\./g, "_");
@@ -1197,6 +1254,8 @@ export class SessionRunner {
         }, now);
         this.setSessionRunState(sessionId, "stalled");
         void attemptStalledRecovery();
+      } else if (forceReleaseStalledRun(now, "stalled_watchdog_timeout")) {
+        return;
       } else if (now - lastRecoveryAttempt >= RECOVERY_INTERVAL) {
         console.warn(`[sdk] [${sid}] ⚠️ Session still stalled — retrying recovery (${elapsed}s total)`);
         void attemptStalledRecovery();
@@ -1208,12 +1267,12 @@ export class SessionRunner {
 
       try {
         if (runController.isCompleted()) return;
-        await prepareSessionForSend(session);
+        if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
         if (runController.isCompleted()) return;
         unsub = subscribeToSession(session);
         beginSend();
         if (runController.isCompleted()) return;
-        await opts.execute(session);
+        if ((await runStepOrCompletion("send prompt", () => opts.execute(session))).completed) return;
         runController.markPromptAccepted();
       } catch (operationErr) {
         if (usedCache && isStaleCachedSessionError(operationErr)) {
@@ -1230,12 +1289,12 @@ export class SessionRunner {
             abandonSession(session);
             return;
           }
-          await prepareSessionForSend(session);
+          if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session))).completed) return;
           if (runController.isCompleted()) return;
           unsub = subscribeToSession(session);
           beginSend();
           if (runController.isCompleted()) return;
-          await opts.execute(session);
+          if ((await runStepOrCompletion("retry send prompt", () => opts.execute(session))).completed) return;
           runController.markPromptAccepted();
         } else {
           throw operationErr;

@@ -173,6 +173,10 @@ describe("browser_exec tool", () => {
       .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
         cb(null, { stdout: "closed", stderr: "" });
         return {} as any;
+      })
+      .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+        cb(null, { stdout: "", stderr: "" });
+        return {} as any;
       });
 
     const mod = await import("../browser-exec-tools.js");

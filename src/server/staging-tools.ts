@@ -95,6 +95,7 @@ import {
   writeValidationCommandLog,
 } from "./validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
+import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 
 async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
@@ -201,7 +202,7 @@ async function run(
   const validationEnv = options.isolateRuntimeEnv
     ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-staging-validation-" })
     : undefined;
-  const env = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
+  const env = withNonInteractiveCommandEnv(validationEnv?.env ?? prependNodePath(process.env, nodeDir));
   const startedAt = Date.now();
 
   return await new Promise((resolve) => {

@@ -20,7 +20,22 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 function gitArgsKey(args: readonly string[]): string {
-  return args.join("\u0000");
+  const normalizedArgs = args[0] === "--no-pager" ? args.slice(1) : args;
+  return normalizedArgs.join("\u0000");
+}
+
+function expectNonInteractiveGitCalls(): void {
+  for (const [, args, options] of execFileMock.mock.calls) {
+    expect(args[0]).toBe("--no-pager");
+    expect(options).toMatchObject({
+      env: {
+        GIT_PAGER: "cat",
+        PAGER: "cat",
+        TERM: "dumb",
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
+  }
 }
 
 async function loadGitWorktreeStatusModule() {
@@ -178,6 +193,7 @@ describe("readGitWorktreeStatus", () => {
     const { readGitWorktreeStatus } = await loadGitWorktreeStatusModule();
     const result = await readGitWorktreeStatus("/workspace/copilot-bridge");
 
+    expectNonInteractiveGitCalls();
     expect(result).toEqual({
       status: "ok",
       cwd: "/workspace/copilot-bridge",

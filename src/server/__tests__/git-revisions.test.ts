@@ -25,8 +25,38 @@ function comparisonOutput(ahead: number, behind: number): string {
   return `${ahead}\t${behind}`;
 }
 
+function normalizeGitArgs(args: readonly string[]): readonly string[] {
+  return args[0] === "--no-pager" ? args.slice(1) : args;
+}
+
 function gitArgsKey(args: readonly string[]): string {
-  return args.join("\u0000");
+  const normalizedArgs = normalizeGitArgs(args);
+  return normalizedArgs.join("\u0000");
+}
+
+function expectNonInteractiveGitCalls(): void {
+  for (const [, args, options] of execFileMock.mock.calls) {
+    expect(args[0]).toBe("--no-pager");
+    expect(options).toMatchObject({
+      env: {
+        GIT_PAGER: "cat",
+        PAGER: "cat",
+        TERM: "dumb",
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
+  }
+  for (const [, args, options] of execFileSyncMock.mock.calls) {
+    expect(args[0]).toBe("--no-pager");
+    expect(options).toMatchObject({
+      env: {
+        GIT_PAGER: "cat",
+        PAGER: "cat",
+        TERM: "dumb",
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
+  }
 }
 
 async function loadGitRevisionModule() {
@@ -70,6 +100,7 @@ describe("createBridgeGitRevisionReader", () => {
       throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
     });
     mockExecFileImplementation((args) => {
+      const normalizedArgs = normalizeGitArgs(args);
       const key = gitArgsKey(args);
       if (key === gitArgsKey(HEAD_LOG_ARGS)) {
         return commitOutput(localSha, "bbbbbbb", "Latest local commit");
@@ -79,9 +110,9 @@ describe("createBridgeGitRevisionReader", () => {
       if (key === gitArgsKey(REMOTE_LOG_ARGS)) {
         return commitOutput(remoteSha, "ccccccc", "Latest remote commit");
       }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-        if (args[3] === `${localSha}...${remoteSha}`) return comparisonOutput(0, 1);
-        if (args[3] === `${runningSha}...${localSha}`) return comparisonOutput(0, 1);
+      if (normalizedArgs[0] === "rev-list" && normalizedArgs[1] === "--left-right" && normalizedArgs[2] === "--count") {
+        if (normalizedArgs[3] === `${localSha}...${remoteSha}`) return comparisonOutput(0, 1);
+        if (normalizedArgs[3] === `${runningSha}...${localSha}`) return comparisonOutput(0, 1);
       }
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);
     });
@@ -90,6 +121,7 @@ describe("createBridgeGitRevisionReader", () => {
     const readRevisions = revisions.createBridgeGitRevisionReader();
     const result = await readRevisions({ forceRefresh: true });
 
+    expectNonInteractiveGitCalls();
     expect(result).toEqual({
       local: {
         status: "ok",
@@ -137,6 +169,7 @@ describe("createBridgeGitRevisionReader", () => {
       throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
     });
     mockExecFileImplementation((args) => {
+      const normalizedArgs = normalizeGitArgs(args);
       const key = gitArgsKey(args);
       if (key === gitArgsKey(HEAD_LOG_ARGS)) {
         return commitOutput(localSha, "eeeeeee", "Local commit");
@@ -144,7 +177,7 @@ describe("createBridgeGitRevisionReader", () => {
       if (key === gitArgsKey(UPSTREAM_ARGS)) {
         return new Error("fatal: no upstream configured");
       }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count" && args[3] === `${runningSha}...${localSha}`) {
+      if (normalizedArgs[0] === "rev-list" && normalizedArgs[1] === "--left-right" && normalizedArgs[2] === "--count" && normalizedArgs[3] === `${runningSha}...${localSha}`) {
         return comparisonOutput(0, 1);
       }
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);
@@ -189,6 +222,7 @@ describe("createBridgeGitRevisionReader", () => {
       throw new Error(`Unexpected sync git args: ${args.join(" ")}`);
     });
     mockExecFileImplementation((args) => {
+      const normalizedArgs = normalizeGitArgs(args);
       const key = gitArgsKey(args);
       if (key === gitArgsKey(HEAD_LOG_ARGS)) {
         return commitOutput("9999999999999999999999999999999999999999", "9999999", "Local commit");
@@ -201,7 +235,7 @@ describe("createBridgeGitRevisionReader", () => {
       if (key === gitArgsKey(REMOTE_LOG_ARGS)) {
         return commitOutput("abababababababababababababababababababab", "abababa", "Remote commit");
       }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+      if (normalizedArgs[0] === "rev-list" && normalizedArgs[1] === "--left-right" && normalizedArgs[2] === "--count") {
         return comparisonOutput(0, 1);
       }
       throw new Error(`Unexpected async git args: ${args.join(" ")}`);

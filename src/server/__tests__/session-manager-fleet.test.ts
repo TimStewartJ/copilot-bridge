@@ -54,10 +54,10 @@ describe("SessionManager Fleet", () => {
 
     manager.startFleet("session-1", "Ship it");
 
-    for (let i = 0; i < 5; i++) await Promise.resolve();
-
     const bus = eventBusRegistry.getBus("session-1");
-    expect(fleetStart).toHaveBeenCalledWith({ prompt: "Ship it" });
+    await vi.waitFor(() => {
+      expect(fleetStart).toHaveBeenCalledWith({ prompt: "Ship it" });
+    });
     expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
 
     handler?.({

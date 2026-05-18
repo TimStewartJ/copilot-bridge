@@ -301,6 +301,12 @@ function expectIsolatedValidationEnv(env: NodeJS.ProcessEnv | undefined) {
   expect(env?.BRIDGE_DATA_DIR).toBeTruthy();
   expect(env?.BRIDGE_DOCS_DIR).toBeTruthy();
   expect(env?.COPILOT_HOME).toBeTruthy();
+  expect(env).toMatchObject({
+    GIT_PAGER: "cat",
+    PAGER: "cat",
+    TERM: "dumb",
+    GIT_TERMINAL_PROMPT: "0",
+  });
   expect(basename(env!.BRIDGE_DATA_DIR!)).toBe("data");
   expect(basename(env!.BRIDGE_DOCS_DIR!)).toBe("docs");
   expect(basename(env!.COPILOT_HOME!)).toBe(".copilot");

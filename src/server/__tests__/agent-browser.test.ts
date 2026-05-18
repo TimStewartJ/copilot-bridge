@@ -296,6 +296,97 @@ describe("agent-browser wrapper", () => {
     });
   });
 
+  it("kills exact profile-bound clone processes when clone close fails", async () => {
+    let cloneProfile = "";
+    const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
+    const terminated = new Set<number>();
+    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (file === "agent-browser") {
+        cb({ stderr: "close failed" });
+        return {} as any;
+      }
+      if (file === "ps") {
+        const normalizedProfile = normalizePath(cloneProfile);
+        cb(null, {
+          stdout: [
+            `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
+            `4343 chrome chrome --user-data-dir=${normalizedProfile}-other`,
+          ].join("\n"),
+          stderr: "",
+        });
+        return {} as any;
+      }
+      throw new Error(`Unexpected execFile command: ${file}`);
+    });
+    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === 0) {
+        if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+        return true as never;
+      }
+      signals.push({ pid, signal });
+      if (signal === "SIGTERM") terminated.add(pid);
+      return true as never;
+    }) as any);
+
+    const mod = await import("../agent-browser.js");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
+      cloneProfile = lane.browserTarget.profileDir;
+      return "ok";
+    });
+
+    expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(unlinkSyncMock).toHaveBeenCalledWith(join(cloneProfile, "DevToolsActivePort"));
+    expect(rmMock).toHaveBeenCalledWith(cloneProfile, {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("sweeps exact profile-bound clone processes even when clone close succeeds", async () => {
+    let cloneProfile = "";
+    const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
+    const terminated = new Set<number>();
+    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (file === "agent-browser") {
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      }
+      if (file === "ps") {
+        const normalizedProfile = normalizePath(cloneProfile);
+        cb(null, {
+          stdout: [
+            `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
+            `4343 chrome chrome --user-data-dir=${normalizedProfile}-other`,
+          ].join("\n"),
+          stderr: "",
+        });
+        return {} as any;
+      }
+      throw new Error(`Unexpected execFile command: ${file}`);
+    });
+    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === 0) {
+        if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+        return true as never;
+      }
+      signals.push({ pid, signal });
+      if (signal === "SIGTERM") terminated.add(pid);
+      return true as never;
+    }) as any);
+
+    const mod = await import("../agent-browser.js");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
+      cloneProfile = lane.browserTarget.profileDir;
+      return "ok";
+    });
+
+    expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(rmMock).toHaveBeenCalledWith(cloneProfile, {
+      recursive: true,
+      force: true,
+    });
+  });
+
   it("retries clone copy while skipping locked cookie stores", async () => {
     const lockedCookies = join(BROWSER_PROFILE, "Default", "Network", "Cookies");
     cpMock
@@ -321,7 +412,8 @@ describe("agent-browser wrapper", () => {
   it("kills exact profile-bound Windows browser processes without a lock and retries", async () => {
     setPlatform("win32");
     const normalizedProfile = normalizePath(BROWSER_PROFILE);
-    const killed: number[] = [];
+    const killed: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
+    const terminated = new Set<number>();
     execFileMock
       .mockImplementationOnce((_file: string, _args: string[], _options: any, cb: (err: any) => void) => {
         cb({ stderr: "Chrome exited early (exit code: 21) without writing DevToolsActivePort" });
@@ -359,8 +451,12 @@ describe("agent-browser wrapper", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
     killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-      if (signal === 0) return true as never;
-      killed.push(pid);
+      if (signal === 0) {
+        if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+        return true as never;
+      }
+      killed.push({ pid, signal });
+      if (signal === "SIGTERM") terminated.add(pid);
       return true as never;
     }) as any);
 
@@ -369,9 +465,54 @@ describe("agent-browser wrapper", () => {
     const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
 
     expect(result.ok).toBe(true);
-    expect(killed).toEqual([4242]);
+    expect(killed).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
     expect(unlinkSyncMock).toHaveBeenCalledWith(join(BROWSER_PROFILE, "DevToolsActivePort"));
     expect(execFileMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("sweeps exact profile-bound primary processes after shutdown close succeeds", async () => {
+    const normalizedProfile = normalizePath(BROWSER_PROFILE);
+    const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
+    const terminated = new Set<number>();
+    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (file === "agent-browser") {
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      }
+      if (file === "ps") {
+        cb(null, {
+          stdout: [
+            `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
+            `4343 chrome chrome --user-data-dir=${normalizedProfile}-other`,
+          ].join("\n"),
+          stderr: "",
+        });
+        return {} as any;
+      }
+      throw new Error(`Unexpected execFile command: ${file}`);
+    });
+    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === 0) {
+        if (terminated.has(pid)) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+        return true as never;
+      }
+      signals.push({ pid, signal });
+      if (signal === "SIGTERM") terminated.add(pid);
+      return true as never;
+    }) as any);
+
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+    await mod.shutdownBridgeBrowser(target, telemetryStore as any);
+
+    expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(telemetryStore.recordSpan).toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.lifecycle.shutdown",
+      metadata: expect.objectContaining({
+        terminatedPids: [4242],
+      }),
+    }));
   });
 
   it("keeps the primary lane pinned to the caller copilotHome", async () => {

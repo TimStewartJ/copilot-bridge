@@ -65,6 +65,7 @@ import {
   shouldClearRollbackCheckpointAfterHealthyState,
 } from "./launcher-recovery.js";
 import { isChildProcessActive } from "./launcher-process.js";
+import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -167,15 +168,29 @@ function bridgeLocalUrl(pathname: string, port = currentServerPort): string {
   return `http://localhost:${port}${pathname}`;
 }
 
+function commandEnv(): NodeJS.ProcessEnv {
+  return withNonInteractiveCommandEnv(process.env);
+}
+
 function gitHash(): string {
   try {
-    return execSync("git rev-parse --short HEAD", { cwd: ROOT, encoding: "utf-8", timeout: 5_000 }).trim();
+    return execSync("git --no-pager rev-parse --short HEAD", {
+      cwd: ROOT,
+      encoding: "utf-8",
+      env: commandEnv(),
+      timeout: 5_000,
+    }).trim();
   } catch { return "unknown"; }
 }
 
 function gitFullHash(): string | null {
   try {
-    const value = execSync("git rev-parse HEAD", { cwd: ROOT, encoding: "utf-8", timeout: 5_000 }).trim();
+    const value = execSync("git --no-pager rev-parse HEAD", {
+      cwd: ROOT,
+      encoding: "utf-8",
+      env: commandEnv(),
+      timeout: 5_000,
+    }).trim();
     return value || null;
   } catch {
     return null;
@@ -201,7 +216,7 @@ function run(cmd: string, options: LauncherCommandOptions = {}): { ok: boolean; 
   const validationEnv = options.isolateRuntimeEnv
     ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-launcher-validation-" })
     : undefined;
-  const env = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
+  const env = withNonInteractiveCommandEnv(validationEnv?.env ?? prependNodePath(process.env, nodeDir));
   try {
     const result = runSyncCommand({
       rootDir: ROOT,
@@ -286,15 +301,18 @@ function hasOperationalRestartSourceChanges(): boolean {
   }
 
   const pathspec = OPERATIONAL_RESTART_SOURCE_PATHS.join(" ");
+  const env = commandEnv();
   try {
-    execSync(`git diff --quiet HEAD -- ${pathspec}`, {
+    execSync(`git --no-pager diff --quiet HEAD -- ${pathspec}`, {
       cwd: ROOT,
       encoding: "utf-8",
+      env,
       timeout: 10_000,
     });
-    const untracked = execSync(`git ls-files --others --exclude-standard -- ${pathspec}`, {
+    const untracked = execSync(`git --no-pager ls-files --others --exclude-standard -- ${pathspec}`, {
       cwd: ROOT,
       encoding: "utf-8",
+      env,
       timeout: 10_000,
     }).trim();
     return untracked.length > 0;

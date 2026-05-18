@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { posix, win32 } from "node:path";
+import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 const LOCAL_GIT_TIMEOUT_MS = 5_000;
 const GIT_WORKTREE_STATUS_CACHE_TTL_MS = 60_000;
@@ -144,10 +145,11 @@ function runGit(cwd: string, args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): 
   return new Promise((resolve) => {
     execFile(
       "git",
-      args,
+      ["--no-pager", ...args],
       {
         cwd,
         encoding: "utf-8",
+        env: withNonInteractiveCommandEnv(),
         timeout: timeoutMs,
       },
       (error, stdout, stderr) => {
