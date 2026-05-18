@@ -6,6 +6,9 @@ on:
     branches:
       - master
       - main
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -48,3 +51,11 @@ jobs:
       - name: Run tests with coverage
         shell: pwsh
         run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage
+          if-no-files-found: ignore
