@@ -18,6 +18,12 @@ describe("runtime paths", () => {
     expect(paths.env.BRIDGE_DOCS_SNAPSHOTS_DIR).toBe(paths.docsSnapshotsDir);
     expect(paths.env.COPILOT_HOME).toBe(paths.copilotHome);
     expect(paths.env.BRIDGE_DEMO_MODE).toBe("true");
+    expect(paths.env).toMatchObject({
+      GIT_PAGER: "cat",
+      PAGER: "cat",
+      TERM: "dumb",
+      GIT_TERMINAL_PROMPT: "0",
+    });
   });
 
   it("keeps existing explicit overrides intact", () => {

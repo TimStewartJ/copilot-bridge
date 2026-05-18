@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeDistribution, type BridgeDistributionMode } from "./distribution-mode.js";
+import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -76,7 +77,7 @@ export function resolveRuntimePaths(
     docsSnapshotsDir,
     copilotHome,
     workspaceDir,
-    env: {
+    env: withNonInteractiveCommandEnv({
       ...env,
       BRIDGE_DISTRIBUTION_MODE: distributionMode,
       BRIDGE_DEMO_MODE: demoMode ? "true" : "false",
@@ -84,6 +85,6 @@ export function resolveRuntimePaths(
       BRIDGE_DOCS_DIR: docsDir,
       BRIDGE_DOCS_SNAPSHOTS_DIR: docsSnapshotsDir,
       ...(copilotHome ? { COPILOT_HOME: copilotHome } : {}),
-    },
+    }),
   };
 }

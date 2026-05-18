@@ -698,6 +698,12 @@ async function destroyBrowserClone(
     closeErrored = true;
     closeFailure = failureCode(closeResult.output);
   }
+  const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
+    ...metadata,
+    browserSession: browserTarget.sessionName,
+    ...(closeFailure ? { closeFailureCode: closeFailure } : {}),
+    cleanupPhase: "clone_destroy",
+  });
 
   try {
     await rm(browserTarget.profileDir, { recursive: true, force: true });
@@ -713,6 +719,10 @@ async function destroyBrowserClone(
       closeErrored,
       removeErrored,
       closeFailureCode: closeFailure,
+      terminatedPids: forceCloseResult.terminatedPids,
+      killedPids: forceCloseResult.killedPids,
+      remainingPids: forceCloseResult.remainingPids,
+      clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
     });
     return;
   }
@@ -721,12 +731,20 @@ async function destroyBrowserClone(
     ...metadata,
     browserSession: browserTarget.sessionName,
     closeErrored,
+    terminatedPids: forceCloseResult.terminatedPids,
+    killedPids: forceCloseResult.killedPids,
+    remainingPids: forceCloseResult.remainingPids,
+    clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
   });
   logBrowser("clone.cleanup", {
     ...metadata,
     browserSession: browserTarget.sessionName,
     durationMs: duration,
     closeErrored,
+    terminatedPids: forceCloseResult.terminatedPids,
+    killedPids: forceCloseResult.killedPids,
+    remainingPids: forceCloseResult.remainingPids,
+    clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
   });
 }
 
@@ -852,7 +870,7 @@ function clearStaleLocks(profileDir: string): boolean {
 async function killProfileBoundBrowserProcesses(
   profileDir: string,
   metadata: Record<string, unknown>,
-): Promise<number[]> {
+): Promise<{ terminatedPids: number[]; killedPids: number[]; remainingPids: number[] }> {
   let processes: BrowserProcessInfo[];
   try {
     processes = await findBrowserProcessesForProfile(profileDir);
@@ -861,24 +879,81 @@ async function killProfileBoundBrowserProcesses(
       ...metadata,
       error: err instanceof Error ? err.message : String(err),
     });
-    return [];
+    return { terminatedPids: [], killedPids: [], remainingPids: [] };
   }
 
-  const killedPids: number[] = [];
+  const terminatedPids: number[] = [];
   for (const processInfo of processes) {
     try {
-      process.kill(processInfo.pid);
-      killedPids.push(processInfo.pid);
+      process.kill(processInfo.pid, "SIGTERM");
+      terminatedPids.push(processInfo.pid);
     } catch (err) {
       logBrowser("recovery.kill_profile_process_failed", {
         ...metadata,
         pid: processInfo.pid,
         processName: processInfo.name,
+        signal: "SIGTERM",
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
-  return killedPids;
+  if (terminatedPids.length > 0) await delay(500);
+
+  const killedPids: number[] = [];
+  const remainingPids: number[] = [];
+  for (const processInfo of processes) {
+    try {
+      process.kill(processInfo.pid, 0);
+    } catch {
+      continue;
+    }
+    try {
+      process.kill(processInfo.pid, "SIGKILL");
+      killedPids.push(processInfo.pid);
+    } catch (err) {
+      remainingPids.push(processInfo.pid);
+      logBrowser("recovery.kill_profile_process_failed", {
+        ...metadata,
+        pid: processInfo.pid,
+        processName: processInfo.name,
+        signal: "SIGKILL",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { terminatedPids, killedPids, remainingPids };
+}
+
+async function forceCloseProfileBoundBrowserProcesses(
+  profileDir: string,
+  telemetryStore: TelemetryStore | undefined,
+  metadata: Record<string, unknown>,
+): Promise<{
+  terminatedPids: number[];
+  killedPids: number[];
+  remainingPids: number[];
+  clearedRuntimeFiles: number;
+}> {
+  const startedAt = Date.now();
+  const result = await killProfileBoundBrowserProcesses(profileDir, metadata);
+  const clearedRuntimeFiles = result.terminatedPids.length > 0 || result.killedPids.length > 0
+    ? clearProfileRuntimeFiles(profileDir)
+    : 0;
+  const duration = Date.now() - startedAt;
+  if (result.terminatedPids.length > 0 || result.killedPids.length > 0 || result.remainingPids.length > 0) {
+    logBrowser("cleanup.kill_profile_processes", {
+      ...metadata,
+      ...result,
+      clearedRuntimeFiles,
+      durationMs: duration,
+    });
+    safeRecordBrowserSpan(telemetryStore, "browser.cleanup.kill_profile_processes", duration, {
+      ...metadata,
+      ...result,
+      clearedRuntimeFiles,
+    });
+  }
+  return { ...result, clearedRuntimeFiles };
 }
 
 /**
@@ -965,20 +1040,19 @@ export async function ab(
     logBrowser("recovery.no_lock_file", recoveryMetadata);
 
     const killStartedAt = Date.now();
-    const killedPids = await killProfileBoundBrowserProcesses(browserTarget.profileDir, recoveryMetadata);
-    if (killedPids.length > 0) {
-      await delay(500);
+    const killResult = await killProfileBoundBrowserProcesses(browserTarget.profileDir, recoveryMetadata);
+    if (killResult.terminatedPids.length > 0 || killResult.killedPids.length > 0) {
       const clearedRuntimeFiles = clearProfileRuntimeFiles(browserTarget.profileDir);
       const killDuration = Date.now() - killStartedAt;
       logBrowser("recovery.kill_profile_processes", {
         ...recoveryMetadata,
-        killedPids,
+        ...killResult,
         clearedRuntimeFiles,
         durationMs: killDuration,
       });
       recordBrowserSpan(options.telemetryStore, "browser.recovery.kill_profile_processes", killDuration, {
         ...recoveryMetadata,
-        killedPids,
+        ...killResult,
         clearedRuntimeFiles,
       });
 
@@ -1174,15 +1248,28 @@ export async function shutdownBridgeBrowser(
   await withBridgeBrowserSession(browserTarget, async () => {
     const startedAt = Date.now();
     const result = await runFile("agent-browser", ["close"], 10_000, { env: browserEnv(browserTarget) });
+    const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
+      browserSession: browserTarget.sessionName,
+      ...(!result.ok ? { closeFailureCode: failureCode(result.output) } : {}),
+      cleanupPhase: "primary_shutdown",
+    });
     const duration = Date.now() - startedAt;
     recordBrowserSpan(telemetryStore, "browser.lifecycle.shutdown", duration, {
       session: browserTarget.sessionName,
       success: result.ok,
+      terminatedPids: forceCloseResult.terminatedPids,
+      killedPids: forceCloseResult.killedPids,
+      remainingPids: forceCloseResult.remainingPids,
+      clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
     });
     logBrowser("lifecycle.shutdown", {
       session: browserTarget.sessionName,
       durationMs: duration,
       success: result.ok,
+      terminatedPids: forceCloseResult.terminatedPids,
+      killedPids: forceCloseResult.killedPids,
+      remainingPids: forceCloseResult.remainingPids,
+      clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
     });
   });
 }

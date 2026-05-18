@@ -1385,6 +1385,30 @@ describe("SessionManager run state", () => {
     expect(bus.getSnapshot().terminalType).toBe("aborted");
   });
 
+  it("clears run state when an abort event arrives while send is still pending", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
+    getHandler()?.({
+      type: "abort",
+      data: { reason: "user_initiated" },
+      timestamp: "2026-04-20T00:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(bus.getSnapshot().terminalType).toBe("aborted");
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
+  });
+
   it("does not send the prompt after a local abort during initial resume", async () => {
     const { manager, eventBusRegistry } = createManager();
     let resolveResume!: (session: any) => void;
@@ -1948,6 +1972,33 @@ describe("SessionManager run state", () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("force releases a stalled turn after the bounded stalled window", async () => {
+    const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
+    const { session } = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.client = { resumeSession };
+
+    const bus = eventBusRegistry.getOrCreateBus("session-1");
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("stalled");
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+    expect(bus.getSnapshot().terminalType).toBe("error");
+    expect(bus.getSnapshot().errorMessage).toContain("Session stalled for");
+    expect(session.disconnect).toHaveBeenCalled();
+    expect(latestSpanMetadata(telemetryStore, "session.run.force_released", "session-1")).toMatchObject({
+      reason: "stalled_watchdog_timeout",
+      forceReleaseThresholdMs: 600_000,
+    });
   });
 
   it("waits for sync shell initial_wait before marking a session stalled", async () => {

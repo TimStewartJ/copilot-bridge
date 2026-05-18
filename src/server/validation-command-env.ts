@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 export interface ValidationCommandEnv {
   env: NodeJS.ProcessEnv;
@@ -49,9 +50,9 @@ export function createValidationCommandEnv(
   mkdirSync(docsSnapshotsDir, { recursive: true });
   mkdirSync(copilotHome, { recursive: true });
 
-  const env = options.nodeDir
+  const env = withNonInteractiveCommandEnv(options.nodeDir
     ? prependNodePath(baseEnv, options.nodeDir)
-    : { ...baseEnv };
+    : { ...baseEnv });
   env.BRIDGE_DEMO_MODE = "false";
   env.BRIDGE_DATA_DIR = dataDir;
   env.BRIDGE_DOCS_DIR = docsDir;

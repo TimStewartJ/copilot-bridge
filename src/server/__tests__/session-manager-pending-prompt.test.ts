@@ -58,10 +58,10 @@ describe("SessionManager pendingPrompt lifecycle", () => {
 
     manager.startWork("session-1", "hello there");
 
-    for (let i = 0; i < 5; i++) await Promise.resolve();
-
     const bus = eventBusRegistry.getBus("session-1");
-    expect(session.send).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(session.send).toHaveBeenCalledTimes(1);
+    });
     expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
 
     releaseSend?.();

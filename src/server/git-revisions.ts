@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
@@ -87,9 +88,10 @@ function runGitSync(args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): GitComman
   try {
     return {
       ok: true,
-      output: execFileSync("git", args, {
+      output: execFileSync("git", ["--no-pager", ...args], {
         cwd: ROOT,
         encoding: "utf-8",
+        env: withNonInteractiveCommandEnv(),
         timeout: timeoutMs,
       }).trim(),
     };
@@ -102,10 +104,11 @@ function runGit(args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): Promise<GitCo
   return new Promise((resolve) => {
     execFile(
       "git",
-      args,
+      ["--no-pager", ...args],
       {
         cwd: ROOT,
         encoding: "utf-8",
+        env: withNonInteractiveCommandEnv(),
         timeout: timeoutMs,
       },
       (error, stdout, stderr) => {
