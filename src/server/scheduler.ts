@@ -19,6 +19,9 @@ import {
 } from "./session-manager.js";
 import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
+import { computeNextRunAt } from "./cron-next-run.js";
+
+export { computeNextRunAt, matchesCron, matchesField } from "./cron-next-run.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
@@ -51,19 +54,8 @@ const MISSED_RUN_WATCHDOG_INTERVAL_MS = 60 * 1000;
 const CRON_TRIGGER_SLOT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const CRON_CURSOR_REWIND_WINDOW_MS = 60 * 60 * 1000;
 const CRON_CURSOR_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
-const NEXT_RUN_LOOKAHEAD_MINUTES = 35 * 24 * 60;
-const WEEKDAY_BY_SHORT_NAME: Record<string, number> = {
-  Sun: 0,
-  Mon: 1,
-  Tue: 2,
-  Wed: 3,
-  Thu: 4,
-  Fri: 5,
-  Sat: 6,
-};
 let missedRunWatchdogTimer: ReturnType<typeof setInterval> | undefined;
 let lastCronCursorReconcileAt = 0;
-const timezoneDatePartFormatters = new Map<string, Intl.DateTimeFormat>();
 
 const missedRunCatchUp = createMissedRunCatchUpController({
   scheduleStore: () => scheduleStore,
@@ -703,39 +695,6 @@ function startMissedRunWatchdog(): void {
   }, MISSED_RUN_WATCHDOG_INTERVAL_MS);
 }
 
-/**
- * Get date components in a specific timezone (or local if not provided).
- */
-function getDatePartsInTz(date: Date, timezone?: string): { minute: number; hour: number; day: number; month: number; weekday: number } {
-  if (!timezone) {
-    return { minute: date.getMinutes(), hour: date.getHours(), day: date.getDate(), month: date.getMonth() + 1, weekday: date.getDay() };
-  }
-  const fmt = getTimezoneDatePartFormatter(timezone);
-  const parts = fmt.formatToParts(date);
-  const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? "0", 10);
-  const weekdayName = parts.find((p) => p.type === "weekday")?.value.slice(0, 3);
-  const weekday = weekdayName ? WEEKDAY_BY_SHORT_NAME[weekdayName] ?? 0 : 0;
-  return { minute: get("minute"), hour: get("hour") % 24, day: get("day"), month: get("month"), weekday };
-}
-
-function getTimezoneDatePartFormatter(timezone: string): Intl.DateTimeFormat {
-  let formatter = timezoneDatePartFormatters.get(timezone);
-  if (!formatter) {
-    formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      hour12: false,
-      weekday: "short",
-      year: "numeric",
-      month: "numeric",
-      day: "numeric",
-      hour: "numeric",
-      minute: "numeric",
-    });
-    timezoneDatePartFormatters.set(timezone, formatter);
-  }
-  return formatter;
-}
-
 function normalizeIso(value?: string | null): string | undefined {
   if (!value) return undefined;
   const time = Date.parse(value);
@@ -805,74 +764,4 @@ function getAutomaticRunKey(source: Exclude<ScheduleTriggerSource, "manual">, sc
     throw new Error(`[scheduler] Invalid scheduled slot for ${source}: ${candidate}`);
   }
   return parsed.toISOString();
-}
-
-/**
- * Compute the next run time for a cron expression, respecting timezone.
- * Uses a simple approach: check each minute for the next 35 days.
- * This covers monthly schedules while keeping invalid expressions bounded.
- */
-export function computeNextRunAt(cronExpr: string, timezone?: string, after?: Date): string | undefined {
-  try {
-    const now = after ?? new Date();
-    const check = new Date(now.getTime() + 60_000); // start checking from next minute
-    check.setSeconds(0, 0);
-
-    const maxChecks = NEXT_RUN_LOOKAHEAD_MINUTES;
-    for (let i = 0; i < maxChecks; i++) {
-      const testDate = new Date(check.getTime() + i * 60_000);
-      if (matchesCron(cronExpr, testDate, timezone)) {
-        return testDate.toISOString();
-      }
-    }
-  } catch { /* ignore parse errors */ }
-  return undefined;
-}
-
-/**
- * Simple cron matcher for 5-field cron expressions.
- * Respects timezone when extracting date components.
- */
-export function matchesCron(cronExpr: string, date: Date, timezone?: string): boolean {
-  const fields = cronExpr.trim().split(/\s+/);
-  if (fields.length < 5) return false;
-
-  const { minute, hour, day, month, weekday } = getDatePartsInTz(date, timezone);
-  const checks = [
-    { value: minute, field: fields[0] },
-    { value: hour, field: fields[1] },
-    { value: day, field: fields[2] },
-    { value: month, field: fields[3] },
-    { value: weekday, field: fields[4] },
-  ];
-
-  return checks.every(({ value, field }) => matchesField(value, field));
-}
-
-export function matchesField(value: number, field: string): boolean {
-  if (field === "*") return true;
-
-  // Handle step values: */N or N-M/S
-  if (field.includes("/")) {
-    const [range, stepStr] = field.split("/");
-    const step = parseInt(stepStr, 10);
-    if (range === "*") return value % step === 0;
-    // Range with step
-    const [start, end] = range.split("-").map(Number);
-    return value >= start && value <= end && (value - start) % step === 0;
-  }
-
-  // Handle ranges: N-M
-  if (field.includes("-")) {
-    const [start, end] = field.split("-").map(Number);
-    return value >= start && value <= end;
-  }
-
-  // Handle lists: N,M,O
-  if (field.includes(",")) {
-    return field.split(",").map(Number).includes(value);
-  }
-
-  // Simple number
-  return value === parseInt(field, 10);
 }
