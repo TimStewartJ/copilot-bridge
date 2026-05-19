@@ -1283,7 +1283,7 @@ export default function ChatView({
       queuedSendRef.current = { sessionId, composerKey, prompt, attachments };
       return;
     }
-    if (isStreaming || creating) return;
+    if (creating || (isStreaming && !sessionId)) return;
 
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
@@ -1342,7 +1342,7 @@ export default function ChatView({
   useEffect(() => {
     const queuedSend = queuedSendRef.current;
     if (!queuedSend) return;
-    if (loading || isStreaming || creating) return;
+    if (loading || creating || (isStreaming && !queuedSend.sessionId)) return;
     if (queuedSend.sessionId !== sessionId || queuedSend.composerKey !== composerKey) {
       queuedSendRef.current = null;
       return;

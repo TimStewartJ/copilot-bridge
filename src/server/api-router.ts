@@ -290,6 +290,12 @@ function getSessionStatus(
   };
 }
 
+function getChatDeliveryErrorStatus(error: unknown): number {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/stalled|not accepting steering|still reconnecting|not busy|ended before steering/i.test(message)) return 409;
+  return 500;
+}
+
 function getSessionDeferSummary(ctx: AppContext, sessionId: string): DeferSummary {
   const summaries: DeferSummary[] = [];
   const oneShotSummary = ctx.deferredPromptStore?.getSummaryForSession(sessionId);
@@ -1884,10 +1890,6 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
 
-    if (ctx.sessionManager.isSessionBusy(sessionId)) {
-      return res.status(429).json({ error: "Session is busy, please wait" });
-    }
-
     // Auto-unarchive if user sends a message to an archived session
     const meta = ctx.sessionMetaStore.getMeta(sessionId);
     if (meta?.archived) {
@@ -1899,6 +1901,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
     console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"${attachCount ? ` (+${attachCount} attachment${attachCount > 1 ? "s" : ""})` : ""}`);
 
     try {
+      if (ctx.sessionManager.isSessionBusy(sessionId)) {
+        await ctx.sessionManager.steerSession(sessionId, prompt, attachments);
+        res.status(202).json({ status: "accepted", mode: "steered" });
+        return;
+      }
+
       ctx.sessionManager.startWork(sessionId, prompt, attachments);
       res.status(202).json({ status: "accepted" });
     } catch (err) {
@@ -1906,7 +1914,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
         res.set("Retry-After", "5");
         return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

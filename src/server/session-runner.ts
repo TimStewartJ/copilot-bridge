@@ -293,6 +293,63 @@ export class SessionRunner {
     throw new Error(delivery.message);
   }
 
+  async steerSession(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
+      throw new Error(RESTART_PENDING_MESSAGE);
+    }
+
+    const runState = this.deps.runStateController.getSessionRunState(sessionId);
+    if (runState === "idle") {
+      if (this.deps.isSessionBusy(sessionId)) {
+        throw new Error("Session is busy but not accepting steering right now; try again shortly");
+      }
+      throw new Error("Session is not busy; send a normal message instead");
+    }
+    if (runState === "stalled") {
+      throw new Error("Session is stalled and cannot be steered; stop it or wait for recovery");
+    }
+
+    const runController = this.deps.activeRunControllers.get(sessionId);
+    if (!runController || runController.isCompleted()) {
+      throw new Error("Session is not accepting steering right now");
+    }
+
+    const session = this.deps.sessionObjects.get(sessionId);
+    if (!session) {
+      throw new Error("Session is still reconnecting; try again shortly");
+    }
+
+    const sid = sessionId.slice(0, 8);
+    const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
+    const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
+    const attachCount = sdkAttachments?.length ?? 0;
+    const t0 = Date.now();
+    console.log(`[sdk] [${sid}] Steering prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
+
+    bus.setPendingPrompt(prompt);
+    this.touchSessionRun(sessionId);
+    try {
+      await session.send({
+        prompt,
+        ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
+        mode: "immediate",
+      });
+      if (runController.isCompleted()) {
+        bus.clearPendingPrompt(prompt);
+        throw new Error("Session ended before steering could attach; send a normal message instead");
+      }
+      this.touchSessionRun(sessionId);
+      this.recordSpan("session.steer", Date.now() - t0, sessionId, {
+        chars: prompt.length,
+        attachments: attachCount,
+      });
+    } catch (error) {
+      bus.clearPendingPrompt(prompt);
+      throw error;
+    }
+  }
+
   startFleet(sessionId: string, prompt?: string): void {
     if (!this.client) throw new Error("SessionManager not initialized");
     if (!this.deps.hasPlan(sessionId)) {
@@ -713,7 +770,13 @@ export class SessionRunner {
       }
       switch (event.type) {
         case "user.message":
-          bus.clearPendingPrompt();
+          bus.clearPendingPrompt(
+            typeof data?.content === "string"
+              ? data.content
+              : typeof data?.prompt === "string"
+                ? data.prompt
+                : undefined,
+          );
           runController.markPromptAccepted();
           if (typeof data?.content === "string" && !("source" in (data ?? {}))) {
             this.deps.maybeAutoNameSession(sessionId, { session, userMessages: [data.content] });

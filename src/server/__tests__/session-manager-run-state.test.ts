@@ -180,6 +180,105 @@ describe("SessionManager run state", () => {
     }
   });
 
+  it("sends steering prompts immediately through the active cached session", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    session.send.mockResolvedValueOnce(undefined);
+    await manager.steerSession("session-1", "please adjust");
+
+    expect(session.send).toHaveBeenLastCalledWith({
+      prompt: "please adjust",
+      mode: "immediate",
+    });
+    const bus = eventBusRegistry.getBus("session-1");
+    expect(bus?.getSnapshot().pendingPrompt).toBe("please adjust");
+
+    getHandler()?.({
+      type: "user.message",
+      data: { content: "hello" },
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    expect(bus?.getSnapshot().pendingPrompt).toBe("please adjust");
+
+    getHandler()?.({
+      type: "user.message",
+      data: { content: "please adjust" },
+      timestamp: "2026-04-24T12:00:01.000Z",
+    });
+    expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
+  });
+
+  it("rejects steering while a session is busy without an active run", async () => {
+    const { manager } = createManager();
+    manager.client = {
+      resumeSession: vi.fn(),
+    };
+    (manager as any).modelSwitchingSessions.add("session-1");
+
+    await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("not accepting steering");
+  });
+
+  it("rejects steering if the active run completes before the immediate send returns", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+
+    session.send.mockImplementationOnce(async () => {
+      getHandler()?.({
+        type: "session.idle",
+        data: {},
+        timestamp: "2026-04-24T12:00:00.000Z",
+      });
+      await flushMicrotasks();
+    });
+
+    await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("ended before steering");
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().pendingPrompt).toBeUndefined();
+  });
+
+  it("rejects steering while the busy session is still reconnecting", async () => {
+    const { manager } = createManager();
+    let resolveResume!: (session: ReturnType<typeof makeSession>["session"]) => void;
+    manager.client = {
+      resumeSession: vi.fn(() => new Promise((resolve) => {
+        resolveResume = resolve;
+      })),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("still reconnecting");
+
+    const { session, getReleaseSend, getHandler } = makeSession();
+    resolveResume(session);
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:02.000Z",
+    });
+    await flushMicrotasks();
+  });
+
   it("blocks startWork when the launcher-owned restart cutover is in progress", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));

@@ -1241,6 +1241,10 @@ export class SessionManager {
     await this.sessionRunner.startWorkAndWaitForDelivery(sessionId, prompt, attachments, options);
   }
 
+  async steerSession(sessionId: string, prompt: string, attachments?: StartWorkAttachment[]): Promise<void> {
+    await this.sessionRunner.steerSession(sessionId, prompt, attachments);
+  }
+
   startFleet(sessionId: string, prompt?: string): void {
     this.sessionRunner.startFleet(sessionId, prompt);
   }

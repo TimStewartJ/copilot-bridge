@@ -214,6 +214,7 @@ export function createMockSessionManager() {
     forkSession: async () => ({ sessionId: "fork-session" }),
     setSessionName: async () => {},
     startWork: () => {},
+    steerSession: async () => {},
     startFleet: () => {},
     markSessionAttention: () => {},
     abortSession: async () => true,

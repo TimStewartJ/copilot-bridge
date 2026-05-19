@@ -194,8 +194,9 @@ export class SessionEventBus {
     this.pendingPrompt = prompt;
   }
 
-  /** Stop advertising reconnect recovery once the prompt is durably persisted */
-  clearPendingPrompt(): void {
+  /** Stop advertising reconnect recovery once the prompt is durably persisted. */
+  clearPendingPrompt(expectedPrompt?: string): void {
+    if (expectedPrompt !== undefined && this.pendingPrompt !== expectedPrompt) return;
     this.pendingPrompt = undefined;
   }
 
@@ -235,8 +236,8 @@ export class SessionEventBus {
   emit(event: StreamEvent): void {
     if (event.type === "thinking") {
       const turnId = getStreamTurnId(event) ?? `turn-${randomUUID()}`;
+      this.resetLiveTurnState();
       this.currentTurnId = turnId;
-      this.terminalTurnId = undefined;
       event = { ...event, turnId };
     } else if (this.currentTurnId && isTurnScopedStreamEvent(event) && !getStreamTurnId(event)) {
       event = { ...event, turnId: this.currentTurnId };
@@ -463,6 +464,12 @@ export class SessionEventBus {
 
   /** Reset snapshot state for a new turn (defense-in-depth) */
   reset(): void {
+    this.resetLiveTurnState();
+    this.pendingPrompt = undefined;
+    this.pendingUserInputs.clear();
+  }
+
+  private resetLiveTurnState(): void {
     this._complete = false;
     this.accumulatedContent = "";
     this.activeTools = [];
@@ -474,8 +481,6 @@ export class SessionEventBus {
     this.errorMessage = undefined;
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;
-    this.pendingPrompt = undefined;
-    this.pendingUserInputs.clear();
     this.cancelCleanup();
   }
 
