@@ -1207,11 +1207,6 @@ export async function fetchFeedPage(filters: FeedQueryFilters = {}): Promise<Fee
   return apiFetch<FeedPage>(`/api/feed${buildFeedQuery(filters)}`);
 }
 
-export async function fetchFeed(filters: FeedQueryFilters = {}): Promise<FeedCard[]> {
-  const data = await fetchFeedPage(filters);
-  return data.cards;
-}
-
 export async function saveFeedCard(input: FeedCardMutation): Promise<FeedSaveResult> {
   return apiFetch<FeedSaveResult>("/api/feed", input);
 }

@@ -449,13 +449,6 @@
   },
   {
     "code": 2345,
-    "file": "src/client/hooks/queries/useFeed.ts",
-    "line": 7,
-    "character": 30,
-    "message": "Argument of type 'FeedQueryFilters' is not assignable to parameter of type 'Record<string, unknown>'.\n  Index signature for type 'string' is missing in type 'FeedQueryFilters'."
-  },
-  {
-    "code": 2345,
     "file": "src/client/hooks/queries/useSessions.ts",
     "line": 65,
     "character": 31,

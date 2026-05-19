@@ -52,6 +52,18 @@ describe("session manager feed tools", () => {
     expect(bodyDescription).toContain("Raw HTML is escaped");
   });
 
+  it("describes feed_list page shape and cursor usage", () => {
+    const { ctx } = createTestApp();
+    const listTool = getTool(ctx, "feed_list");
+    const cursorDescription = getParameterDescription(ctx, "feed_list", "cursor");
+
+    expect(listTool.description).toContain("Returns { cards, nextCursor }");
+    expect(listTool.description).toContain("identical filters");
+    expect(listTool.description).toContain("request each status separately");
+    expect(cursorDescription).toContain("previous feed_list response");
+    expect(cursorDescription).toContain("identical filter arguments");
+  });
+
   it("feed_save creates and updates keyed cards", async () => {
     const { ctx } = createTestApp();
     const saveTool = getTool(ctx, "feed_save");
@@ -177,6 +189,33 @@ describe("session manager feed tools", () => {
       expect.objectContaining({ title: "Done", status: "done" }),
       expect.objectContaining({ title: "Active", status: "active" }),
     ]));
+  });
+
+  it("feed_list paginates with nextCursor", async () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const listTool = getTool(ctx, "feed_list");
+    const first = await saveTool.handler({ title: "First", kind: "todo" }, createInvocation("feed_save")) as any;
+    const second = await saveTool.handler({ title: "Second", kind: "todo" }, createInvocation("feed_save")) as any;
+    await saveTool.handler({ title: "Other", kind: "note" }, createInvocation("feed_save"));
+
+    const firstPage = await listTool.handler({ kind: "todo", limit: 1 }, createInvocation("feed_list")) as any;
+    expect(firstPage.cards).toHaveLength(1);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await listTool.handler({
+      kind: "todo",
+      limit: 1,
+      cursor: firstPage.nextCursor,
+    }, createInvocation("feed_list")) as any;
+    const returnedIds = [
+      ...firstPage.cards.map((card: any) => card.id),
+      ...secondPage.cards.map((card: any) => card.id),
+    ];
+
+    expect(secondPage.cards).toHaveLength(1);
+    expect(secondPage.nextCursor).toBeNull();
+    expect(new Set(returnedIds)).toEqual(new Set([first.card.id, second.card.id]));
   });
 
   it("feed_save publishes, preserves, replaces, and clears feed visuals", async () => {
