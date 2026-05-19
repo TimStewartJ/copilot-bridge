@@ -600,54 +600,5 @@
     "line": 99,
     "character": 9,
     "message": "Type '\"paused\"' is not assignable to type '\"archived\" | \"active\" | \"done\"'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 288,
-    "character": 18,
-    "message": "Conversion of type '() => void' to type '{ new (): HTMLElement; prototype: HTMLElement; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '() => void' provides no match for the signature 'new (): HTMLElement'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 289,
-    "character": 14,
-    "message": "Conversion of type '() => void' to type '{ new (): Element; prototype: Element; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '() => void' provides no match for the signature 'new (): Element'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 290,
-    "character": 24,
-    "message": "Conversion of type '() => void' to type '{ new (): HTMLIFrameElement; prototype: HTMLIFrameElement; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '() => void' provides no match for the signature 'new (): HTMLIFrameElement'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 291,
-    "character": 17,
-    "message": "Conversion of type '() => void' to type '{ new (): SVGElement; prototype: SVGElement; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '() => void' provides no match for the signature 'new (): SVGElement'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 292,
-    "character": 11,
-    "message": "Conversion of type '() => void' to type '{ new (): Node; prototype: Node; readonly ELEMENT_NODE: 1; readonly ATTRIBUTE_NODE: 2; readonly TEXT_NODE: 3; readonly CDATA_SECTION_NODE: 4; readonly ENTITY_REFERENCE_NODE: 5; ... 12 more ...; readonly DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 32; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 293,
-    "character": 11,
-    "message": "Conversion of type '() => void' to type '{ new (data?: string | undefined): Text; prototype: Text; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '() => void' provides no match for the signature 'new (data?: string | undefined): Text'."
-  },
-  {
-    "code": 2352,
-    "file": "src/client/test-dom-shim.ts",
-    "line": 294,
-    "character": 14,
-    "message": "Conversion of type '() => void' to type '{ new (data?: string | undefined): Comment; prototype: Comment; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '() => void' provides no match for the signature 'new (data?: string | undefined): Comment'."
   }
 ]
