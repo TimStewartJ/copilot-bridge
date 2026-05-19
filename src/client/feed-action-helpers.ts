@@ -53,6 +53,12 @@ export function buildFeedCardChatContext(card: FeedCardData): string {
     }
   }
 
+  if (card.action) {
+    lines.push("", "## Action CTA");
+    addDetail(lines, "Label", card.action.label ?? DEFAULT_FEED_ACTION_LABEL);
+    addDetail(lines, "Prompt", card.action.prompt);
+  }
+
   if (card.visual) {
     lines.push("", "## Visual");
     lines.push(`- Type: ${card.visual.kind}`);
