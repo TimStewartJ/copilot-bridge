@@ -8,20 +8,21 @@ describe("deploy check contract", () => {
 
     expect(commands).toEqual([
       "npm run check:pr",
-      "npm run preview:smoke",
     ]);
     expect(commands).not.toContain("npm run test:coverage");
+    expect(commands).not.toContain("npm run preview:smoke");
   });
 
-  it("keeps deploy fast-path smoke equivalent to the deploy-check contract", async () => {
+  it("keeps production deploy checks separate from staging-only smoke", async () => {
     const { DEPLOY_CHECK_STEPS } = await import("../deploy-check.js");
-    const { DEPLOY_SMOKE_GATE, PREVIEW_GATE } = await import("../validation-pipeline.js");
+    const { DEPLOY_GATE, STAGING_DEPLOY_GATE } = await import("../validation-pipeline.js");
     const deployCommands = DEPLOY_CHECK_STEPS.map((step) => step.join(" "));
 
-    expect(PREVIEW_GATE.steps.map((step) => step.command)).toContain("npm run check:pr");
-    expect(deployCommands).toEqual([
+    expect(DEPLOY_GATE.steps.map((step) => step.command)).toEqual(["npm run check:deploy"]);
+    expect(deployCommands).toEqual(["npm run check:pr"]);
+    expect(STAGING_DEPLOY_GATE.steps.map((step) => step.command)).toEqual([
       "npm run check:pr",
-      ...DEPLOY_SMOKE_GATE.steps.map((step) => step.command),
+      "npm run preview:smoke",
     ]);
   });
 

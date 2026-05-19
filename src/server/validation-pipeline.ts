@@ -55,7 +55,7 @@ export type ValidationGateRunResult<Result extends ValidationCommandResult> =
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
 // Bump when the deploy gate contract changes in a way that should invalidate existing stamps.
-export const DEPLOY_GATE_VERSION = 1;
+export const DEPLOY_GATE_VERSION = 2;
 // Bump when preview validation no longer proves the PR gate used by deploy fast-path reuse.
 export const PREVIEW_GATE_VERSION = 1;
 
@@ -103,6 +103,12 @@ export const DEPLOY_GATE: ValidationGate = {
   id: "deploy",
   label: "Deploy validation",
   steps: [DEPLOY_CHECK_STEP],
+};
+
+export const STAGING_DEPLOY_GATE: ValidationGate = {
+  id: "staging-deploy",
+  label: "Staging deploy validation",
+  steps: [PR_CHECK_STEP, PREVIEW_SMOKE_STEP],
 };
 
 export const DEPLOY_SMOKE_GATE: ValidationGate = {

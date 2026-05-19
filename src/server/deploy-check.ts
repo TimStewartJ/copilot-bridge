@@ -7,8 +7,9 @@ import { resolveBridgeControlRoot } from "./control-root.js";
 import { formatCommandDuration } from "./validation-command-log.js";
 
 export const DEPLOY_CHECK_STEPS = [
+  // Production-safe deploy validation only. Staging-only preview smoke asserts a
+  // bridge-staging worktree and is enforced by STAGING_DEPLOY_GATE instead.
   ["npm", "run", "check:pr"],
-  ["npm", "run", "preview:smoke"],
 ] as const;
 
 const LOG_TAIL_BYTES = 24_000;

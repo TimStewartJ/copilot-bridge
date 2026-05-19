@@ -21,7 +21,7 @@ describe("runLauncherBuild", () => {
     expect(log).toHaveBeenNthCalledWith(2, "Dependency sync failed — aborting build");
   });
 
-  it("uses the fast deploy validation contract instead of coverage", () => {
+  it("uses the production-safe deploy validation contract instead of coverage", () => {
     const ensureDeps = vi.fn(() => true);
     const run = vi.fn(() => ({ ok: true, output: "" }));
     const log = vi.fn();

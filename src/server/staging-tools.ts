@@ -25,6 +25,7 @@ import {
   PREVIEW_GATE,
   PREVIEW_GATE_COMMAND,
   PREVIEW_GATE_VERSION,
+  STAGING_DEPLOY_GATE,
   runValidationGateAsync,
 } from "./validation-pipeline.js";
 import { writeDeployValidationStamp } from "./deploy-validation-stamp.js";
@@ -1092,7 +1093,7 @@ export const STAGING_TOOLS = [
           log(`Preview validation stamp not used: staging HEAD could not be read (${candidateHeadResult.ok ? "empty git rev-parse output" : candidateHeadResult.output.slice(-200)})`);
         }
       }
-      const deployGate = stagingValidation.valid ? DEPLOY_SMOKE_GATE : DEPLOY_GATE;
+      const deployGate = stagingValidation.valid ? DEPLOY_SMOKE_GATE : STAGING_DEPLOY_GATE;
       if (stagingValidation.valid) {
         log(`Preview validation stamp matched for ${prefix} at ${validatedCommitSha} — running smoke-only deploy validation`);
       } else {
@@ -1266,8 +1267,8 @@ export const STAGING_TOOLS = [
       const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
       if (deployedCommitSha && deployedCommitSha === validatedCommitSha) {
         try {
-          // On the fast path the preview stamp proves the PR gate for this commit,
-          // and the deploy step re-runs smoke, so the full deploy contract is met.
+          // Staging validation covers at least the production deploy gate for this
+          // commit; staging-only smoke remains enforced before promotion.
           writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
             commitSha: deployedCommitSha,
             dependencyHash,
