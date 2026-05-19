@@ -196,20 +196,6 @@
     "message": "Property 'turnId' does not exist on type 'ToolCall'."
   },
   {
-    "code": 18046,
-    "file": "src/client/components/CodeBlock.tsx",
-    "line": 12,
-    "character": 24,
-    "message": "'el.props' is of type 'unknown'."
-  },
-  {
-    "code": 2571,
-    "file": "src/client/components/CodeBlock.tsx",
-    "line": 24,
-    "character": 23,
-    "message": "Object is of type 'unknown'."
-  },
-  {
     "code": 2345,
     "file": "src/client/components/DocsView.tsx",
     "line": 1626,
