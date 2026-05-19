@@ -297,6 +297,7 @@ describe("agent-browser wrapper", () => {
   });
 
   it("kills exact profile-bound clone processes when clone close fails", async () => {
+    setPlatform("linux");
     let cloneProfile = "";
     const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
     const terminated = new Set<number>();
@@ -343,6 +344,7 @@ describe("agent-browser wrapper", () => {
   });
 
   it("sweeps exact profile-bound clone processes even when clone close succeeds", async () => {
+    setPlatform("linux");
     let cloneProfile = "";
     const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
     const terminated = new Set<number>();
@@ -471,6 +473,7 @@ describe("agent-browser wrapper", () => {
   });
 
   it("sweeps exact profile-bound primary processes after shutdown close succeeds", async () => {
+    setPlatform("linux");
     const normalizedProfile = normalizePath(BROWSER_PROFILE);
     const signals: Array<{ pid: number; signal?: number | NodeJS.Signals }> = [];
     const terminated = new Set<number>();
