@@ -53,6 +53,12 @@ describe("matchesField", () => {
     expect(matchesField(3, "2-10/2")).toBe(false);
     expect(matchesField(12, "2-10/2")).toBe(false);
   });
+  it("matches lists that contain ranges and rejects invalid steps", () => {
+    expect(matchesField(2, "1-3,5")).toBe(true);
+    expect(matchesField(5, "1-3,5")).toBe(true);
+    expect(matchesField(4, "1-3,5")).toBe(false);
+    expect(matchesField(0, "*/0")).toBe(false);
+  });
 });
 
 describe("matchesCron", () => {
@@ -79,6 +85,11 @@ describe("matchesCron", () => {
     expect(matchesCron("0 15 * * *", date, "America/Los_Angeles")).toBe(false);
     expect(matchesCron("0 15 * * *", date, "UTC")).toBe(true);
   });
+  it("supports month and weekday names", () => {
+    const date = new Date("2026-04-17T08:00:00Z");
+    expect(matchesCron("0 8 * apr fri", date, "UTC")).toBe(true);
+    expect(matchesCron("0 8 * apr mon", date, "UTC")).toBe(false);
+  });
 });
 
 describe("computeNextRunAt", () => {
@@ -101,6 +112,10 @@ describe("computeNextRunAt", () => {
   it("returns undefined for invalid cron", () => {
     expect(computeNextRunAt("invalid", "UTC")).toBeUndefined();
   });
+  it("returns undefined for invalid timezone", () => {
+    expect(computeNextRunAt("0 8 * * *", "Not/A_Zone")).toBeUndefined();
+    expect(matchesCron("0 8 * * *", new Date("2026-04-14T08:00:00Z"), "Not/A_Zone")).toBe(false);
+  });
   it("skips to next matching day of week", () => {
     // 2026-04-16 is a Thursday, "0 8 * * 5" = only Fridays
     // next Friday is 2026-04-17 (only ~23 hours gap)
@@ -113,6 +128,50 @@ describe("computeNextRunAt", () => {
     const after = new Date("2026-04-17T09:00:00Z");
     const next = computeNextRunAt("0 8 * * 1", "UTC", after);
     expect(next).toBe("2026-04-20T08:00:00.000Z");
+  });
+  it("returns the following run when after is exactly on a matching minute", () => {
+    const after = new Date("2026-04-14T08:00:00Z");
+    const next = computeNextRunAt("0 8 * * *", "UTC", after);
+    expect(next).toBe("2026-04-15T08:00:00.000Z");
+  });
+  it("supports zero-second six-field cron expressions", () => {
+    const after = new Date("2026-04-14T07:30:00Z");
+    const next = computeNextRunAt("0 0 8 * * *", "UTC", after);
+    expect(next).toBe("2026-04-14T08:00:00.000Z");
+  });
+  it("looks beyond the old 35-day window for sparse schedules", () => {
+    const after = new Date("2026-03-01T00:00:00Z");
+    const next = computeNextRunAt("0 0 29 2 *", "UTC", after);
+    expect(next).toBe("2028-02-29T00:00:00.000Z");
+  });
+  it("keeps day-of-month and weekday constraints conjunctive", () => {
+    const after = new Date("2026-02-14T00:00:00Z");
+    const next = computeNextRunAt("0 9 13 * 5", "UTC", after);
+    expect(next).toBe("2026-03-13T09:00:00.000Z");
+  });
+  it("skips timezone wall-clock times that do not exist during spring-forward", () => {
+    const after = new Date("2022-03-12T00:00:00Z");
+    const next = computeNextRunAt("0 2 13 3 *", "America/Los_Angeles", after);
+    expect(next).toBe("2023-03-13T09:00:00.000Z");
+  });
+  it("chooses the first timezone wall-clock occurrence during fall-back", () => {
+    const after = new Date("2022-11-06T00:00:00Z");
+    const next = computeNextRunAt("30 1 6 11 *", "America/Los_Angeles", after);
+    expect(next).toBe("2022-11-06T08:30:00.000Z");
+  });
+  it("does not replay the second duplicated fall-back wall-clock occurrence", () => {
+    const after = new Date("2022-11-06T08:45:00Z");
+    const next = computeNextRunAt("30 1 6 11 *", "America/Los_Angeles", after);
+    expect(next).toBe("2023-11-06T09:30:00.000Z");
+  });
+  it("does not replay duplicated fall-back wall-clock slots for stepped schedules", () => {
+    const after = new Date("2022-11-06T08:15:00Z");
+    const next = computeNextRunAt("*/15 1 6 11 *", "America/Los_Angeles", after);
+    expect(next).toBe("2022-11-06T08:30:00.000Z");
+
+    const afterLastFirstOccurrence = new Date("2022-11-06T08:45:00Z");
+    const following = computeNextRunAt("*/15 1 6 11 *", "America/Los_Angeles", afterLastFirstOccurrence);
+    expect(following).toBe("2023-11-06T09:00:00.000Z");
   });
 });
 
