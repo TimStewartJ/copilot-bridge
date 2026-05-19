@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   didRestartRecover,
+  resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
+  shouldPersistReleaseFailureState,
 } from "./launcher-restart.js";
 
 describe("rollbackRecoveryRequiresServerStart", () => {
@@ -53,5 +55,67 @@ describe("didRestartRecover", () => {
 
   it("recognizes failed recovery as unsuccessful", () => {
     expect(didRestartRecover("failed")).toBe(false);
+  });
+
+  it("recognizes invalid release candidates as unsuccessful", () => {
+    expect(didRestartRecover("invalid-release-candidate")).toBe(false);
+  });
+});
+
+describe("shouldPersistReleaseFailureState", () => {
+  it("persists release failure state for failed outcomes with pending failure metadata", () => {
+    expect(
+      shouldPersistReleaseFailureState({
+        outcome: "failed",
+        hasPendingReleaseFailure: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("clears stale pending release failure state for invalid candidate signals", () => {
+    const outcome = resolveReleaseCandidateRestartOutcome({
+      releaseCandidateRequested: true,
+      releaseCandidateResolved: false,
+    });
+
+    expect(outcome).toBe("invalid-release-candidate");
+    if (outcome === null) {
+      throw new Error("Expected invalid release candidate outcome");
+    }
+    expect(
+      shouldPersistReleaseFailureState({
+        outcome,
+        hasPendingReleaseFailure: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("clears failed restart state when no release failure metadata is pending", () => {
+    expect(
+      shouldPersistReleaseFailureState({
+        outcome: "failed",
+        hasPendingReleaseFailure: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveReleaseCandidateRestartOutcome", () => {
+  it("returns no terminal outcome when no release candidate was requested", () => {
+    expect(
+      resolveReleaseCandidateRestartOutcome({
+        releaseCandidateRequested: false,
+        releaseCandidateResolved: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns no terminal outcome when the requested release candidate resolves", () => {
+    expect(
+      resolveReleaseCandidateRestartOutcome({
+        releaseCandidateRequested: true,
+        releaseCandidateResolved: true,
+      }),
+    ).toBeNull();
   });
 });

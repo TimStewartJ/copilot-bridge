@@ -58,8 +58,10 @@ import {
 } from "./launcher-restart-state-ops.js";
 import {
   didRestartRecover,
+  resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
+  shouldPersistReleaseFailureState,
   type RestartOutcome,
 } from "./launcher-restart.js";
 import {
@@ -521,6 +523,12 @@ function setPendingReleaseFailure(
   return pendingReleaseFailure;
 }
 
+function clearReleaseFailureTracking(): void {
+  pendingReleaseFailure = null;
+  lastCommandFailure = null;
+  lastRollbackTarget = null;
+}
+
 function formatReleaseFailureMessage(
   failure: ReleaseFailureState,
   options: { includeTag?: boolean } = {},
@@ -604,7 +612,10 @@ async function processRestartSignal(): Promise<void> {
   } finally {
     if (consumedSignal) {
       clearInProgressSignal();
-      if (restartOutcome === "failed" && pendingReleaseFailure) {
+      if (shouldPersistReleaseFailureState({
+        outcome: restartOutcome,
+        hasPendingReleaseFailure: pendingReleaseFailure !== null,
+      })) {
         await safePersistPendingReleaseFailure();
       } else {
         await safeClearRestartState();
@@ -1008,20 +1019,25 @@ async function gracefulStopServer(): Promise<boolean> {
 async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   log("═══ Restart requested ═══");
   const validationMode = signal.validationMode;
+  clearReleaseFailureTracking();
+  releaseCandidateSha = null;
   const candidateRelease = resolveReleaseCandidate(DATA_DIR, signal.releaseCandidate);
-  if (signal.releaseCandidate && !candidateRelease) {
-    markReleaseUpdateActivationRejected(
-      signal.releaseCandidate.id,
-      "Prepared release candidate metadata was invalid or missing; the current server was left running.",
-    );
+  const candidateOutcome = resolveReleaseCandidateRestartOutcome({
+    releaseCandidateRequested: signal.releaseCandidate !== undefined,
+    releaseCandidateResolved: candidateRelease !== null,
+  });
+  if (candidateOutcome) {
+    if (signal.releaseCandidate) {
+      markReleaseUpdateActivationRejected(
+        signal.releaseCandidate.id,
+        "Prepared release candidate metadata was invalid or missing; the current server was left running.",
+      );
+    }
     log("Restart signal referenced an invalid release candidate — leaving the current server running");
-    return "failed";
+    return candidateOutcome;
   }
   const hadRunningServerAtStart = serverProcess !== null;
   const previousLaunchTarget = serverLaunchTarget ?? resolveStartupLaunchTarget();
-  pendingReleaseFailure = null;
-  lastCommandFailure = null;
-  lastRollbackTarget = null;
   releaseCandidateSha = candidateRelease?.commitSha ?? normalizeGitHash(gitHash());
 
   // Preserve requestId / requestedAt from the queued state written by the server.
