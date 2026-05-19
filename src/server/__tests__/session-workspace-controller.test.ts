@@ -33,7 +33,6 @@ function createController(opts: {
 }): SessionWorkspaceController {
   const dataDir = makeTestDir("session-workspace-controller");
   const runtimePaths = resolveRuntimePaths(process.env, {
-    demoMode: opts.workspaceDir !== undefined,
     dataDir,
     docsDir: join(dataDir, "docs"),
     copilotHome: join(dataDir, ".copilot"),
@@ -49,17 +48,15 @@ function createController(opts: {
 }
 
 describe("SessionWorkspaceController createWorkspaceYamlCwdResolver", () => {
-  it("keeps the demo workspace fallback even before the directory exists", async () => {
-    const workspaceDir = join(makeTestDir("session-workspace-demo"), "workspace");
+  it("returns undefined when no workspace candidates are available", async () => {
     const controller = createController({
-      workspaceDir,
       taskStore: { listTasks: () => [], findTaskBySessionId: () => undefined },
     });
 
     const resolveCwd = controller.createWorkspaceYamlCwdResolver();
 
     await expect(resolveCwd("session-a", "created_at: 2026-01-01T00:00:00.000Z\n"))
-      .resolves.toBe(workspaceDir);
+      .resolves.toBeUndefined();
   });
 
   it("uses the task lookup fallback when the task snapshot has no session entry", async () => {

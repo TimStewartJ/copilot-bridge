@@ -16,7 +16,6 @@ import {
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
-  DEMO_MODE_INSTRUCTIONS,
   FEED_GUIDANCE,
   RESEARCH_GUIDANCE,
   STAGING_INSTRUCTIONS,
@@ -29,10 +28,6 @@ import { formatTaskMomentumContext } from "./session-task-momentum.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
-
-function isDemoMode(runtimePaths?: RuntimePaths): boolean {
-  return runtimePaths?.demoMode ?? false;
-}
 
 export interface ScheduleContext {
   name: string;
@@ -153,8 +148,6 @@ function resolveSessionMcpServers(
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
   const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes, forResume } = params.options ?? {};
-  const runtimePaths = deps.runtimePaths;
-  const demoMode = isDemoMode(runtimePaths);
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
 
   const cfg: any = {
@@ -253,14 +246,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     );
   }
 
-  if (demoMode) {
-    contextParts.push(DEMO_MODE_INSTRUCTIONS);
-  }
-
   // Staging rules — only when working on the bridge repo itself
   const isSelfRepo = !workingDirectory || resolve(workingDirectory) === resolve(REPO_ROOT);
   const sections: Partial<Record<string, SectionOverride>> = {};
-  if (isSelfRepo && !demoMode) {
+  if (isSelfRepo) {
     sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
   }
 

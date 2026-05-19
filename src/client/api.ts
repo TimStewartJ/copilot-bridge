@@ -31,7 +31,7 @@ export interface SessionWorkspaceSummary {
   overridesTaskWorkspace: boolean;
 }
 
-export type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "default" | "none";
+export type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "none";
 export type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
 export type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace";
 

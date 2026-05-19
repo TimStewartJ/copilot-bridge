@@ -136,12 +136,10 @@ describe("SessionManager run state", () => {
       };
 
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -291,12 +289,10 @@ describe("SessionManager run state", () => {
       };
 
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -326,12 +322,10 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({ copilotHome });
       const restartStatePath = join(dataDir, "restart-state.json");
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -392,12 +386,10 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({ copilotHome });
       const restartStatePath = join(dataDir, "restart-state.json");
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -442,12 +434,10 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({ copilotHome });
       const restartStatePath = join(dataDir, "restart-state.json");
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -514,12 +504,10 @@ describe("SessionManager run state", () => {
       };
 
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -603,12 +591,10 @@ describe("SessionManager run state", () => {
     const liveDocsDir = join(liveDataDir, "docs");
     try {
       configureRestartStateStore({
-        demoMode: false,
         dataDir: liveDataDir,
         docsDir: liveDocsDir,
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: liveDataDir,
           BRIDGE_DOCS_DIR: liveDocsDir,
         },
@@ -666,12 +652,10 @@ describe("SessionManager run state", () => {
       };
 
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -714,12 +698,10 @@ describe("SessionManager run state", () => {
       };
 
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -754,12 +736,10 @@ describe("SessionManager run state", () => {
       };
 
       configureRestartStateStore({
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         env: {
           ...process.env,
-          BRIDGE_DEMO_MODE: "false",
           BRIDGE_DATA_DIR: dataDir,
           BRIDGE_DOCS_DIR: join(dataDir, "docs"),
         },
@@ -2180,7 +2160,6 @@ describe("SessionManager run state", () => {
       try {
         const { manager } = createManager({ copilotHome });
         configureRestartStateStore({
-          demoMode: false,
           dataDir,
           docsDir: join(dataDir, "docs"),
           env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
@@ -2240,7 +2219,6 @@ describe("SessionManager run state", () => {
       try {
         const { manager, globalBus } = createManager({ copilotHome });
         configureRestartStateStore({
-          demoMode: false,
           dataDir,
           docsDir: join(dataDir, "docs"),
           env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
@@ -2311,7 +2289,6 @@ describe("SessionManager run state", () => {
       try {
         const { manager } = createManager({ copilotHome });
         configureRestartStateStore({
-          demoMode: false,
           dataDir,
           docsDir: join(dataDir, "docs"),
           env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
@@ -2364,7 +2341,6 @@ describe("SessionManager run state", () => {
       try {
         const { manager } = createManager({ copilotHome });
         configureRestartStateStore({
-          demoMode: false,
           dataDir,
           docsDir: join(dataDir, "docs"),
           env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
@@ -2415,13 +2391,11 @@ describe("SessionManager run state", () => {
       const secondDataDir = mkdtempSync(join(tmpdir(), "bridge-restart-second-"));
       try {
         const firstRuntimePaths = {
-          demoMode: false,
           dataDir: firstDataDir,
           docsDir: join(firstDataDir, "docs"),
           env: { ...process.env, BRIDGE_DATA_DIR: firstDataDir, BRIDGE_DOCS_DIR: join(firstDataDir, "docs") },
         };
         const secondRuntimePaths = {
-          demoMode: false,
           dataDir: secondDataDir,
           docsDir: join(secondDataDir, "docs"),
           env: { ...process.env, BRIDGE_DATA_DIR: secondDataDir, BRIDGE_DOCS_DIR: join(secondDataDir, "docs") },

@@ -489,7 +489,7 @@ type PruneOrphanedWorktreesOptions = {
 async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions = {}): Promise<void> {
   const writeLog = options.log ?? log;
   if (!shouldManageStagingArtifacts()) {
-    writeLog("Demo mode — skipping staging worktree pruning and preview restore");
+    writeLog("Release mode — skipping staging worktree pruning and preview restore");
     return;
   }
 
@@ -727,11 +727,6 @@ export const STAGING_TOOLS = [
       type: "object",
       properties: {
         stagingDir: { type: "string", description: "Path to the staging worktree (returned by staging_init)" },
-        profile: {
-          type: "string",
-          enum: ["clone", "demo"],
-          description: "Preview data profile. 'clone' copies production-like data; 'demo' seeds the curated demo workspace. Defaults to 'clone'.",
-        },
         validate: {
           type: "boolean",
           description: "Run preview validation before building. Defaults to true; preview smoke can pass false after validation has already happened.",
@@ -891,8 +886,8 @@ export const STAGING_TOOLS = [
         backendReady,
         backendError,
         message: (fullUrl
-          ? `${profile === "demo" ? "Demo" : "Staging"} preview is live at ${fullUrl} (also available locally at ${localUrl}) — share this link with the user and wait for confirmation before deploying.`
-          : `${profile === "demo" ? "Demo" : "Staging"} preview is live locally at ${localUrl} — share this link with the user and wait for confirmation before deploying.`) + backendNote,
+          ? `Staging preview is live at ${fullUrl} (also available locally at ${localUrl}) — share this link with the user and wait for confirmation before deploying.`
+          : `Staging preview is live locally at ${localUrl} — share this link with the user and wait for confirmation before deploying.`) + backendNote,
       };
     },
   }),

@@ -154,25 +154,16 @@ describe("SessionManager workspace resolution", () => {
     expect(sessionWorkspaceStore.getWorkspace("session-1")).toBeUndefined();
   });
 
-  it("falls back from legacy yaml to task cwd to demo workspace", () => {
+  it("falls back from legacy yaml to task cwd and omits an unconfigured workspace", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
     const legacyWorkspace = createWorkspace(copilotHome, "legacy-workspace");
     const taskWorkspace = createWorkspace(copilotHome, "task-workspace");
-    const demoWorkspace = createWorkspace(copilotHome, "demo-workspace");
-    const runtimePaths = {
-      demoMode: true,
-      workspaceDir: demoWorkspace,
-      dataDir: join(copilotHome, "demo-data"),
-      docsDir: join(copilotHome, "demo-docs"),
-      copilotHome,
-      env: {},
-    };
     const sessionDir = join(copilotHome, "session-state", "session-legacy");
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(join(sessionDir, "workspace.yaml"), `cwd: ${legacyWorkspace}\n`);
 
-    const { manager, taskStore } = createManager({ copilotHome, runtimePaths });
+    const { manager, taskStore } = createManager({ copilotHome });
     const task = taskStore.createTask("Fallback task");
     taskStore.updateTask(task.id, { cwd: taskWorkspace });
 
@@ -180,7 +171,7 @@ describe("SessionManager workspace resolution", () => {
       .toBe(legacyWorkspace);
     expect(manager.buildSessionConfig({ task: taskStore.getTask(task.id) }).workingDirectory)
       .toBe(taskWorkspace);
-    expect(manager.buildSessionConfig().workingDirectory).toBe(demoWorkspace);
+    expect(manager.buildSessionConfig().workingDirectory).toBeUndefined();
   });
 
   it("omits workingDirectory when all configured workspace candidates are missing", () => {

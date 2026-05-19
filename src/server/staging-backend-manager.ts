@@ -316,38 +316,15 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
 
   log(`Seeded staging data at ${dataDir}`);
   return resolveRuntimePaths(process.env, {
-    demoMode: false,
     dataDir,
     docsDir: join(dataDir, "docs"),
     copilotHome: join(dataDir, ".copilot"),
   });
 }
 
-async function seedDemoPreviewData(stagingDir: string): Promise<RuntimePaths> {
-  const moduleUrl = `${pathToFileURL(join(stagingDir, "src", "server", "demo-workspace.ts")).href}?v=${Date.now()}`;
-  const demoWorkspaceMod = await import(moduleUrl) as {
-    resetDemoWorkspace?: (repoRoot: string) => { dataDir: string; docsDir: string; copilotHome: string; workspaceDir: string };
-  };
-
-  if (typeof demoWorkspaceMod.resetDemoWorkspace !== "function") {
-    throw new Error("Demo preview requires src/server/demo-workspace.ts to export resetDemoWorkspace()");
-  }
-
-  const demoWorkspace = demoWorkspaceMod.resetDemoWorkspace(stagingDir);
-  log(`Seeded demo preview data at ${demoWorkspace.dataDir}`);
-  return resolveRuntimePaths(process.env, {
-    demoMode: true,
-    dataDir: demoWorkspace.dataDir,
-    docsDir: demoWorkspace.docsDir,
-    copilotHome: demoWorkspace.copilotHome,
-    workspaceDir: demoWorkspace.workspaceDir,
-  });
-}
-
-function getExistingPreviewRuntime(stagingDir: string, profile: StagingPreviewProfile): RuntimePaths | null {
-  const dataDir = join(stagingDir, profile === "demo" ? "demo-data" : "data");
+function getExistingPreviewRuntime(stagingDir: string, _profile: StagingPreviewProfile): RuntimePaths | null {
+  const dataDir = join(stagingDir, "data");
   const runtimePaths = resolveRuntimePaths(process.env, {
-    demoMode: profile === "demo",
     dataDir,
     docsDir: join(dataDir, "docs"),
     copilotHome: join(dataDir, ".copilot"),
@@ -355,7 +332,6 @@ function getExistingPreviewRuntime(stagingDir: string, profile: StagingPreviewPr
   const requiredPaths = [
     join(runtimePaths.dataDir, "bridge.db"),
     runtimePaths.docsDir,
-    ...(runtimePaths.demoMode && runtimePaths.workspaceDir ? [runtimePaths.workspaceDir] : []),
   ];
 
   return requiredPaths.every((path) => existsSync(path)) ? runtimePaths : null;
@@ -375,9 +351,7 @@ async function preparePreviewRuntime(
     if (existing) return existing;
   }
 
-  return profile === "demo"
-    ? seedDemoPreviewData(stagingDir)
-    : Promise.resolve(seedStagingData(stagingDir));
+  return Promise.resolve(seedStagingData(stagingDir));
 }
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -985,7 +959,7 @@ export async function initializeStagingBackend(
 ): Promise<void> {
   await teardownStagingBackend(prefix, { removeData: false });
   const stalePreviewDataDir = activePreviewDataDirs.get(prefix)
-    ?? join(stagingDir, profile === "demo" ? "demo-data" : "data");
+    ?? join(stagingDir, "data");
   removePreviewData(stalePreviewDataDir);
   activePreviewDataDirs.delete(prefix);
   rememberRestorablePreviewTarget(createPreviewTarget(stagingDir, profile));

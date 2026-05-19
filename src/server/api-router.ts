@@ -181,7 +181,7 @@ function isLocalStagingModule(ctx: AppContext): boolean {
   const dataDir = ctx.runtimePaths?.dataDir;
   if (!dataDir) return false;
   const dataFolder = basename(dataDir);
-  if (dataFolder !== "data" && dataFolder !== "demo-data") return false;
+  if (dataFolder !== "data") return false;
   try {
     return isPathAtOrUnder(dirname(dataDir), fileURLToPath(import.meta.url));
   } catch {
@@ -213,7 +213,7 @@ const SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR = "Linked task workspace is n
 const SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR = "No sibling worktrees are available for this session.";
 const SESSION_WORKTREE_SELECTION_INVALID_ERROR = "Selected workspace is not a discovered sibling worktree.";
 
-type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "default" | "none";
+type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "none";
 type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
 type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace";
 
@@ -359,10 +359,6 @@ function parseWorkspaceCwd(content: string): string | undefined {
   return undefined;
 }
 
-function getDefaultSessionCwd(ctx: AppContext): string | undefined {
-  return ctx.runtimePaths?.demoMode ? ctx.runtimePaths.workspaceDir : undefined;
-}
-
 function getLegacySessionWorkspaceCwd(ctx: AppContext, sessionId: string): string | undefined {
   const yamlPath = join(getCopilotHome(ctx), "session-state", sessionId, "workspace.yaml");
   try {
@@ -388,17 +384,14 @@ function buildSessionWorkspaceSummary(
   const overrideCwd = overrideAvailability?.available ? overrideAvailability.cwd : undefined;
   const legacyCwd = resolveAvailableWorkspaceCwd(getLegacySessionWorkspaceCwd(ctx, sessionId));
   const taskCwd = resolveAvailableWorkspaceCwd(task?.cwd);
-  const defaultCwd = getDefaultSessionCwd(ctx);
-  const effectiveCwd = overrideCwd ?? legacyCwd ?? taskCwd ?? defaultCwd;
+  const effectiveCwd = overrideCwd ?? legacyCwd ?? taskCwd;
   const source: SessionWorkspaceSource = overrideCwd
     ? "session_workspace"
     : legacyCwd
       ? "workspace_yaml"
       : taskCwd
         ? "task"
-        : defaultCwd
-          ? "default"
-          : "none";
+        : "none";
 
   return {
     effectiveCwd,

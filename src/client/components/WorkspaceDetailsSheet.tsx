@@ -308,9 +308,7 @@ export default function WorkspaceDetailsSheet({
                           ? "Using task default"
                           : sessionWorkspace?.source === "workspace_yaml"
                             ? "Using legacy workspace.yaml value"
-                            : sessionWorkspace?.source === "default"
-                              ? "Using app default workspace"
-                              : "Not configured"}
+                            : "Not configured"}
                     </div>
                   </>
                 )

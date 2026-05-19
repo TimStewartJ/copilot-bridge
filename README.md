@@ -6,9 +6,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 
 ## Screenshots
 
-![Copilot Bridge dashboard with the seeded Acme launch workspace](assets/readme/dashboard-overview.png)
-
-The seeded demo opens into a fictional Acme launch workspace so the first-run experience already shows the task rail, dashboard, docs, and follow-up workflow working together.
+![Copilot Bridge dashboard overview](assets/readme/dashboard-overview.png)
 
 <table>
   <tr>
@@ -169,27 +167,6 @@ To remove the startup task later:
 .\uninstall-startup-task.ps1
 ```
 
-### Demo Workspace
-
-If you want a guided sample workspace instead of a blank local workspace, use the seeded demo:
-
-```bash
-npm run demo:start   # seed demo-data/, build the client, and start the demo workspace
-npm run demo:reset   # recreate the demo workspace from scratch
-```
-
-The demo uses an isolated `demo-data/` directory, its own `.copilot` state, and a sandbox task workspace, so it does not touch your normal `data/` workspace or everyday bridge sessions.
-
-It is intentionally scoped to the guided workspace experience. If you want the full launcher-driven restart/update flow, use `npm run dev` instead.
-
-When it starts:
-
-1. Open the ongoing **Start Here - Acme Launch Workspace** task.
-2. Read the task note and related docs.
-3. Start a task chat and try one of the suggested prompts.
-4. Trigger the sample schedule.
-5. Add an item to the **Launch Notes** docs collection.
-
 ### Run (Development)
 
 ```bash
@@ -208,9 +185,9 @@ BRIDGE_PORT=4444
 
 If you are opening the bridge for the first time, keep it simple:
 
-1. Run `npm run demo:start` if you want the guided sample workspace, or `npm run dev` if you want a blank workspace.
+1. Run `npm run dev` to start the local workspace.
 2. Go to **Settings** and pick your model, reasoning effort, theme, and favicon.
-3. Skip Azure DevOps/GitHub/Linear setup for now if you just want a clean local demo.
+3. Skip Azure DevOps/GitHub/Linear setup for now if you want a clean local workspace.
 4. Create a task, add a checklist item and a note, then start a task session.
 5. Open **Docs** and create a page or collection entry to exercise the knowledge base.
 6. Ask the agent to do something bridge-native, like create a schedule, rename the session, or search the web.

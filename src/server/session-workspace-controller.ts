@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { stat as statAsync } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
@@ -37,15 +37,6 @@ interface WorkspaceAvailability {
 }
 
 type WorkspaceAvailabilityLookup = (cwd?: string | null) => Promise<WorkspaceAvailability | undefined>;
-
-function isDemoMode(runtimePaths?: RuntimePaths): boolean {
-  return runtimePaths?.demoMode ?? false;
-}
-
-function resolveDemoWorkspaceDir(runtimePaths?: RuntimePaths): string | undefined {
-  if (!isDemoMode(runtimePaths)) return undefined;
-  return runtimePaths?.workspaceDir ?? (runtimePaths ? join(resolve(runtimePaths.dataDir), "workspace") : undefined);
-}
 
 function getFsErrorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
@@ -192,7 +183,7 @@ export class SessionWorkspaceController {
     const taskCwd = resolveAvailableWorkspaceCwd(task?.cwd);
     if (taskCwd) return taskCwd;
 
-    return resolveDemoWorkspaceDir(this.deps.runtimePaths);
+    return undefined;
   }
 
   resolveEffectiveSessionCwdFromWorkspaceYaml(
@@ -202,8 +193,7 @@ export class SessionWorkspaceController {
     const linkedTask = this.findLinkedTask(sessionId);
     return this.resolvePersistedSessionCwd(sessionId)
       ?? resolveAvailableWorkspaceCwd(parseWorkspaceCwd(workspaceYamlContent))
-      ?? resolveAvailableWorkspaceCwd(linkedTask?.cwd)
-      ?? resolveDemoWorkspaceDir(this.deps.runtimePaths);
+      ?? resolveAvailableWorkspaceCwd(linkedTask?.cwd);
   }
 
   createWorkspaceYamlCwdResolver(): (sessionId: string, workspaceYamlContent: string) => Promise<string | undefined> {
@@ -223,8 +213,6 @@ export class SessionWorkspaceController {
         taskCwdBySessionId.set(sessionId, task.cwd);
       }
     }
-    const demoWorkspaceDir = resolveDemoWorkspaceDir(this.deps.runtimePaths);
-
     return async (sessionId, workspaceYamlContent) => {
       const pinnedCwd = pinnedWorkspaces[sessionId]?.cwd;
       const pinnedAvailability = await getAvailability(pinnedCwd);
@@ -245,8 +233,7 @@ export class SessionWorkspaceController {
             ? taskCwdBySessionId.get(sessionId)
             : this.deps.taskStore.findTaskBySessionId?.(sessionId)?.cwd);
       return await resolveAvailableWorkspaceCwdAsync(parseWorkspaceCwd(workspaceYamlContent), getAvailability)
-        ?? await resolveAvailableWorkspaceCwdAsync(linkedTaskCwd, getAvailability)
-        ?? demoWorkspaceDir;
+        ?? await resolveAvailableWorkspaceCwdAsync(linkedTaskCwd, getAvailability);
     };
   }
 

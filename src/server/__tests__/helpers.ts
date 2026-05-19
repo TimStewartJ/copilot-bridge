@@ -40,7 +40,7 @@ import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
 import type { TranscriptionService } from "../transcription-service.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "../visual-artifacts.js";
 
-const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DEMO_MODE", "BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
+const TEST_RUNTIME_ENV_KEYS = ["BRIDGE_DATA_DIR", "BRIDGE_DOCS_DIR", "BRIDGE_DOCS_SNAPSHOTS_DIR", "COPILOT_HOME"] as const;
 const TEST_CLEANUP_MAX_RETRIES = 20;
 const TEST_CLEANUP_RETRY_DELAY_MS = 50;
 const testCleanupPaths = new Set<string>();
@@ -128,12 +128,11 @@ export function makeTestRuntimePaths(
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): RuntimePaths {
   const rootDir = makeTestDir(prefix);
-  const demoMode = overrides.demoMode ?? false;
   const dataDir = overrides.dataDir ?? join(rootDir, "data");
   const docsDir = overrides.docsDir ?? join(rootDir, "docs");
   const docsSnapshotsDir = overrides.docsSnapshotsDir ?? join(rootDir, "docs-snapshots");
   const copilotHome = overrides.copilotHome ?? join(rootDir, ".copilot");
-  const workspaceDir = overrides.workspaceDir ?? (demoMode ? join(rootDir, "workspace") : undefined);
+  const workspaceDir = overrides.workspaceDir;
 
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(docsDir, { recursive: true });
@@ -145,7 +144,6 @@ export function makeTestRuntimePaths(
 
   return resolveRuntimePaths(createHermeticEnv(baseEnv), {
     ...overrides,
-    demoMode,
     dataDir,
     docsDir,
     docsSnapshotsDir,
@@ -301,7 +299,6 @@ export function createTestApp(overrides?: Partial<AppContext>) {
   const copilotHome = overrides?.copilotHome ?? baseRuntimePaths.copilotHome ?? join(makeTestDir("copilot-home"), ".copilot");
   mkdirSync(copilotHome, { recursive: true });
   const runtimePaths = resolveRuntimePaths(createHermeticEnv(baseRuntimePaths.env), {
-    demoMode: baseRuntimePaths.demoMode,
     dataDir: baseRuntimePaths.dataDir,
     docsDir: baseRuntimePaths.docsDir,
     docsSnapshotsDir: baseRuntimePaths.docsSnapshotsDir,

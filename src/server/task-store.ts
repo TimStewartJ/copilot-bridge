@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
-import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
+import type { RuntimePaths } from "./runtime-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -82,12 +82,6 @@ const STATUS_ORDER: Record<Task["status"], number> = {
 function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): number {
   if (a.kind === b.kind) return 0;
   return a.kind === "ongoing" ? -1 : 1;
-}
-
-function getDefaultTaskCwd(): string | undefined {
-  const runtimePaths = resolveRuntimePaths(process.env);
-  if (!runtimePaths.demoMode) return undefined;
-  return runtimePaths.workspaceDir;
 }
 
 function normalizeOptionalText(value: unknown): string | undefined {
@@ -196,16 +190,10 @@ function normalizeOptionalTimestamp(value: unknown, opts: { strict?: boolean } =
 export function createTaskStore(
   db: DatabaseSync,
   bus: GlobalBus,
-  opts: { runtimePaths?: RuntimePaths } = {},
+  _opts: { runtimePaths?: RuntimePaths } = {},
 ) {
-  const runtimePaths = opts.runtimePaths;
-
   function defaultTaskCwd(): string | undefined {
-    if (runtimePaths) {
-      if (!runtimePaths.demoMode) return undefined;
-      return runtimePaths.workspaceDir;
-    }
-    return getDefaultTaskCwd();
+    return undefined;
   }
 
   function hydrate(row: any): Task {

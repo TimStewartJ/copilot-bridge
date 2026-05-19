@@ -75,14 +75,14 @@ describe("task-store", () => {
       expect(store.getTask(first.id)).toMatchObject({ order: 1 });
     });
 
-    it("defaults task cwd to the demo workspace in demo mode", () => {
+    it("does not default task cwd from runtime workspace paths", () => {
       const runtimePaths = resolveRuntimePaths({}, {
-        demoMode: true,
-        dataDir: join("demo-root"),
+        dataDir: join("runtime-root"),
+        workspaceDir: join("runtime-root", "workspace"),
       });
-      const demoStore = createTaskStore(db, createTestBus(), { runtimePaths });
-      const task = demoStore.createTask("Demo Task");
-      expect(task.cwd).toBe(runtimePaths.workspaceDir);
+      const runtimeStore = createTaskStore(db, createTestBus(), { runtimePaths });
+      const task = runtimeStore.createTask("Runtime Task");
+      expect(task.cwd).toBeUndefined();
     });
 
     it("getTask returns created task", () => {

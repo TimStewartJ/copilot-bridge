@@ -19,7 +19,6 @@ export const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 export const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
-export const DEMO_PREVIEW_SUFFIX = "-demo";
 export const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
 export const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 export const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
@@ -43,7 +42,7 @@ export const STAGING_PREVIEW_PARENT = resolveConfiguredPath(
   join(PRODUCTION_DATA_DIR, "staging-previews"),
 );
 
-export type StagingPreviewProfile = "clone" | "demo";
+export type StagingPreviewProfile = "clone";
 
 export interface PreviewTarget {
   prefix: string;
@@ -89,13 +88,12 @@ export function listStagingPreviewParents(): string[] {
   return uniqueResolvedPaths([STAGING_PREVIEW_PARENT, LEGACY_STAGING_DIST_PARENT]);
 }
 
-export function resolvePreviewProfile(value?: string): StagingPreviewProfile {
-  return value === "demo" ? "demo" : "clone";
+export function resolvePreviewProfile(_value?: string): StagingPreviewProfile {
+  return "clone";
 }
 
-export function buildPreviewPrefix(stagingDir: string, profile: StagingPreviewProfile = "clone"): string {
-  const prefix = basename(stagingDir);
-  return profile === "demo" ? `${prefix}${DEMO_PREVIEW_SUFFIX}` : prefix;
+export function buildPreviewPrefix(stagingDir: string, _profile: StagingPreviewProfile = "clone"): string {
+  return basename(stagingDir);
 }
 
 export function parsePreviewPrefix(
@@ -104,14 +102,6 @@ export function parsePreviewPrefix(
 ): { stagingName: string; profile: StagingPreviewProfile } | null {
   if (activeWorktrees?.has(prefix)) {
     return { stagingName: prefix, profile: "clone" };
-  }
-
-  if (prefix.endsWith(DEMO_PREVIEW_SUFFIX)) {
-    const stagingName = prefix.slice(0, -DEMO_PREVIEW_SUFFIX.length);
-    if (!stagingName) return null;
-    if (!activeWorktrees || activeWorktrees.has(stagingName)) {
-      return { stagingName, profile: "demo" };
-    }
   }
 
   if (activeWorktrees && !activeWorktrees.has(prefix)) {
@@ -139,14 +129,11 @@ export function createPreviewTarget(stagingDir: string, profile: StagingPreviewP
 }
 
 export function listPreviewTargetsForStagingDir(stagingDir: string): PreviewTarget[] {
-  return [
-    createPreviewTarget(stagingDir, "clone"),
-    createPreviewTarget(stagingDir, "demo"),
-  ];
+  return [createPreviewTarget(stagingDir)];
 }
 
 export function shouldManageStagingArtifacts(): boolean {
-  return process.env.BRIDGE_DEMO_MODE !== "true" && !isBridgeReleaseMode(process.env, PRODUCTION_ROOT);
+  return !isBridgeReleaseMode(process.env, PRODUCTION_ROOT);
 }
 
 export function directoryMtimeMs(path: string): number {
