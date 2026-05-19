@@ -24,6 +24,11 @@ function compareTimestampDesc(a: string, b: string): number {
   return parseFeedTimestamp(b) - parseFeedTimestamp(a);
 }
 
+function compareIdDesc(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? 1 : -1;
+}
+
 function compareActiveFeedCards(a: FeedCard, b: FeedCard): number {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
   return compareTimestampDesc(a.createdAt, b.createdAt) || b.id.localeCompare(a.id);
@@ -32,7 +37,7 @@ function compareActiveFeedCards(a: FeedCard, b: FeedCard): number {
 function compareResolvedFeedCards(a: FeedCard, b: FeedCard): number {
   return compareTimestampDesc(a.statusChangedAt, b.statusChangedAt)
     || compareTimestampDesc(a.updatedAt, b.updatedAt)
-    || b.id.localeCompare(a.id);
+    || compareIdDesc(a.id, b.id);
 }
 
 function feedCardFreshness(card: FeedCard): number {
