@@ -20,6 +20,7 @@ const RELEASE_SLOT_VERSION = 1;
 const RELEASE_SLOT_MANIFEST = "release-slot.json";
 const ACTIVE_RELEASE_FILE = "active-release.json";
 const RELEASE_SLOT_KEEP_RECENT = 5;
+const TEMP_DIR_SUFFIX = ".tmp";
 
 const ROOT_COPY_EXCLUDES = new Set([
   ".env",
@@ -97,6 +98,35 @@ function formatSlotTimestamp(date: Date): string {
 export function buildReleaseSlotId(commitSha: string, now = new Date()): string {
   const shortSha = sanitizeSlotPart(commitSha.slice(0, 12));
   return `${formatSlotTimestamp(now)}-${shortSha}-${randomUUID().slice(0, 8)}`;
+}
+
+function parseReleaseSlotTempDirectoryName(name: string): { id: string; pid?: number } | null {
+  if (!name.startsWith(".") || !name.endsWith(TEMP_DIR_SUFFIX)) return null;
+  const idWithMaybePid = name.slice(1, -TEMP_DIR_SUFFIX.length);
+  if (!idWithMaybePid) return null;
+
+  const pidMatch = /^(.*)\.(\d+)$/.exec(idWithMaybePid);
+  if (!pidMatch) return { id: idWithMaybePid };
+
+  const id = pidMatch[1];
+  const pid = Number(pidMatch[2]);
+  if (!id || !Number.isSafeInteger(pid) || pid <= 0) return { id: idWithMaybePid };
+  return { id, pid };
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return getErrorCode(error) === "EPERM";
+  }
 }
 
 function isPathInside(parentDir: string, childPath: string): boolean {
@@ -304,13 +334,28 @@ export function pruneReleaseSlots(
     if (id) keep.add(id);
   }
 
-  const candidates = (() => {
+  const entries = (() => {
     try {
       return readdirSync(releaseParent, { withFileTypes: true }) as Dirent[];
     } catch {
       return [];
     }
-  })()
+  })();
+
+  const staleTempDirectories = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const temp = parseReleaseSlotTempDirectoryName(entry.name);
+      if (!temp) return null;
+      if (temp.pid !== undefined && isProcessAlive(temp.pid)) return null;
+      return {
+        id: entry.name,
+        root: join(releaseParent, entry.name),
+      };
+    })
+    .filter((entry): entry is { id: string; root: string } => entry !== null);
+
+  const candidates = entries
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => {
       const root = join(releaseParent, entry.name);
@@ -339,6 +384,15 @@ export function pruneReleaseSlots(
   }
 
   let removed = 0;
+  for (const entry of staleTempDirectories) {
+    try {
+      rmSync(entry.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      removed++;
+    } catch (error) {
+      options.log?.(`Warning: failed to prune stale release slot temp dir ${entry.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   for (const entry of candidates) {
     if (keep.has(entry.id)) continue;
     try {
