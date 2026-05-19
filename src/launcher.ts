@@ -920,12 +920,23 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
 }
 
 async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
+  const quiesceUrl = bridgeLocalUrl("/api/restart/quiesce");
   const busyUrl = bridgeLocalUrl("/api/busy?ignoreRestartPreservable=1");
   return waitForIdleSessionsImpl({
     fetchBusy: async () => {
-      const res = await fetch(busyUrl);
+      let res = await fetch(quiesceUrl, { method: "POST" });
+      if (res.status === 404 || res.status === 405 || res.status >= 500) {
+        res = await fetch(busyUrl);
+      }
       if (!res.ok) throw new Error(`Busy check failed: ${res.status}`);
-      return await res.json() as any;
+      const data = await res.json() as any;
+      const suspendedSessionIds: string[] = Array.isArray(data.suspendedSessionIds)
+        ? data.suspendedSessionIds.filter((id: unknown): id is string => typeof id === "string")
+        : [];
+      if (suspendedSessionIds.length > 0) {
+        log(`Suspended ${suspendedSessionIds.length} session(s) for restart: ${suspendedSessionIds.map((id) => id.slice(0, 8)).join(", ")}`);
+      }
+      return data;
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log,

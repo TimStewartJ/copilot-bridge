@@ -172,8 +172,15 @@ interface RestartPreservationCandidate {
   pendingPrompt?: string;
 }
 
+type RestartPreservationMode = "quiesce" | "shutdown";
+
 interface GracefulShutdownOptions {
   preserveActiveRuns?: boolean;
+}
+
+export interface RestartQuiesceResult {
+  suspendedSessionIds: string[];
+  blockingSessions: SessionActivity[];
 }
 
 export class ModelRefreshBlockedError extends Error {
@@ -296,6 +303,7 @@ export class SessionManager {
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private pendingSessionEvictions = new Set<string>();
+  private restartSuspendAttempts = new Map<string, Promise<boolean>>();
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly runStateController: SessionRunStateController;
@@ -397,6 +405,7 @@ export class SessionManager {
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
+      maybeSuspendForPendingRestart: (sessionId) => this.maybeSuspendForPendingRestart(sessionId),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
@@ -1745,16 +1754,78 @@ export class SessionManager {
 
   getRestartBlockingSessionActivity(): SessionActivity[] {
     return this.getSessionActivity().filter((activity) =>
-      !this.getRestartPreservationCandidate(activity.id)
+      !this.getRestartPreservationCandidate(activity.id, "shutdown")
     );
   }
 
-  private getRestartPreservationCandidate(sessionId: string): RestartPreservationCandidate | undefined {
+  private getRestartQuiesceBlockingSessionActivity(): SessionActivity[] {
+    return this.getSessionActivity().filter((activity) =>
+      !this.getRestartPreservationCandidate(activity.id, "quiesce")
+    );
+  }
+
+  async quiesceRestartPreservableSessions(): Promise<RestartQuiesceResult> {
+    refreshRestartStateSync();
+    if (!isRestartPending()) {
+      return {
+        suspendedSessionIds: [],
+        blockingSessions: this.getSessionActivity(),
+      };
+    }
+
+    const activeSessionIds = this.getActiveSessions();
+    const settled = await Promise.allSettled(
+      activeSessionIds.map(async (sessionId) => ({
+        sessionId,
+        suspended: await this.trySuspendForPendingRestart(sessionId),
+      })),
+    );
+    const suspendedSessionIds = settled.flatMap((result) =>
+      result.status === "fulfilled" && result.value.suspended ? [result.value.sessionId] : []
+    );
+    return {
+      suspendedSessionIds,
+      blockingSessions: this.getRestartQuiesceBlockingSessionActivity(),
+    };
+  }
+
+  async trySuspendForPendingRestart(sessionId: string): Promise<boolean> {
+    refreshRestartStateSync();
+    if (!isRestartPending()) return false;
+
+    const existing = this.restartSuspendAttempts.get(sessionId);
+    if (existing) return existing;
+
+    let attempt!: Promise<boolean>;
+    attempt = this.preserveActiveSessionForRestart(sessionId, "quiesce")
+      .catch((error) => {
+        console.error(`[sdk] [${sessionId.slice(0, 8)}] Restart quiesce suspend failed unexpectedly:`, error);
+        return false;
+      })
+      .finally(() => {
+        if (this.restartSuspendAttempts.get(sessionId) === attempt) {
+          this.restartSuspendAttempts.delete(sessionId);
+        }
+      });
+    this.restartSuspendAttempts.set(sessionId, attempt);
+    return attempt;
+  }
+
+  private maybeSuspendForPendingRestart(sessionId: string): void {
+    if (!isRestartPending()) return;
+    void this.trySuspendForPendingRestart(sessionId);
+  }
+
+  private getRestartPreservationCandidate(
+    sessionId: string,
+    mode: RestartPreservationMode,
+  ): RestartPreservationCandidate | undefined {
     const runRecord = this.runStateController.getRunRecords().get(sessionId);
     if (!runRecord || runRecord.runKind !== "message" || runRecord.preserveAcrossRestart !== true) {
       return undefined;
     }
     if (runRecord.promptAccepted !== true) return undefined;
+    if (mode === "quiesce" && runRecord.restartSuspendReady !== true) return undefined;
 
     const runController = this.activeRunControllers.get(sessionId);
     if (!runController || runController.isCompleted()) return undefined;
@@ -1777,26 +1848,32 @@ export class SessionManager {
     };
   }
 
-  private async preserveActiveSessionForRestart(sessionId: string): Promise<boolean> {
+  private async preserveActiveSessionForRestart(
+    sessionId: string,
+    mode: RestartPreservationMode,
+  ): Promise<boolean> {
     const store = this.deps.restartSuspendedSessionStore;
     if (!store) return false;
 
-    const candidate = this.getRestartPreservationCandidate(sessionId);
+    let candidate = this.getRestartPreservationCandidate(sessionId, mode);
     if (!candidate) return false;
+
+    const latestCandidate = this.getRestartPreservationCandidate(sessionId, mode);
+    if (!latestCandidate) return false;
+    candidate = latestCandidate;
 
     const sid = sessionId.slice(0, 8);
     const suspendedAt = new Date().toISOString();
     const lastEventAt = new Date(candidate.runRecord.lastEventAt).toISOString();
-    store.upsertSuspending({
-      sessionId,
-      runKind: "message",
-      pendingPrompt: candidate.pendingPrompt,
-      promptAccepted: true,
-      suspendedAt,
-      lastEventAt,
-    });
-
     try {
+      store.upsertSuspending({
+        sessionId,
+        runKind: "message",
+        pendingPrompt: candidate.pendingPrompt,
+        promptAccepted: true,
+        suspendedAt,
+        lastEventAt,
+      });
       console.log(`[sdk] [${sid}] Suspending active session for restart...`);
       await candidate.session.rpc.suspend();
       store.markSuspended(sessionId, suspendedAt);
@@ -1858,7 +1935,7 @@ export class SessionManager {
         console.log(`[sdk] Graceful shutdown: preserving eligible active session(s) before restart...`);
         const results = await Promise.allSettled(
           active.map(async (sessionId) => {
-            if (await this.preserveActiveSessionForRestart(sessionId)) {
+            if (await this.preserveActiveSessionForRestart(sessionId, "shutdown")) {
               preserved.add(sessionId);
             }
           }),

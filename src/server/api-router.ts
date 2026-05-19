@@ -1335,6 +1335,28 @@ export function createApiRouter(ctx: AppContext): express.Router {
     });
   });
 
+  router.post("/restart/quiesce", async (_req, res) => {
+    if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
+    try {
+      const result = await timeRequestOperation(
+        res,
+        "restart.quiesce",
+        () => ctx.sessionManager.quiesceRestartPreservableSessions(),
+      );
+      const sessions = result.blockingSessions;
+      res.json({
+        busy: sessions.length > 0,
+        count: sessions.length,
+        sessionIds: sessions.map((s) => s.id),
+        sessions,
+        suspendedSessionIds: result.suspendedSessionIds,
+      });
+    } catch (error) {
+      console.error("[restart] Quiesce failed:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   router.get("/health", (_req, res) => {
     res.json({ ok: true });
   });

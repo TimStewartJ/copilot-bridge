@@ -18,6 +18,7 @@ export interface SessionRunRecord {
   pendingPrompt?: string;
   promptAccepted?: boolean;
   preserveAcrossRestart?: boolean;
+  restartSuspendReady?: boolean;
 }
 
 export interface SessionRunController {
@@ -246,6 +247,7 @@ export class SessionRunStateController {
       pendingPrompt: current?.pendingPrompt,
       promptAccepted: current?.promptAccepted,
       preserveAcrossRestart: current?.preserveAcrossRestart,
+      restartSuspendReady: current?.restartSuspendReady,
     };
     this.sessionRuns.set(sessionId, next);
 
@@ -259,7 +261,9 @@ export class SessionRunStateController {
 
   setSessionRunMetadata(
     sessionId: string,
-    metadata: Partial<Pick<SessionRunRecord, "runKind" | "pendingPrompt" | "promptAccepted" | "preserveAcrossRestart">>,
+    metadata: Partial<Pick<SessionRunRecord,
+      "runKind" | "pendingPrompt" | "promptAccepted" | "preserveAcrossRestart" | "restartSuspendReady"
+    >>,
   ): void {
     const current = this.sessionRuns.get(sessionId);
     if (!current) return;
