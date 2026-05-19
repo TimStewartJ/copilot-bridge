@@ -449,6 +449,24 @@ describe("staging tools", () => {
     expect(mod.parsePreviewPrefix("missing", activeWorktrees)).toBeNull();
   });
 
+  it("preserves deploy validation logs while clearing preview runtime data", async () => {
+    const mod = await import("../staging-preview-shared.js");
+    const dataDir = createTempDir("bridge-preview-data-");
+    const logDir = join(dataDir, "validation-logs");
+    const docsDir = join(dataDir, "docs");
+    mkdirSync(logDir, { recursive: true });
+    mkdirSync(docsDir, { recursive: true });
+    writeFileSync(join(logDir, "deploy.log"), "keep");
+    writeFileSync(join(dataDir, "bridge.db"), "runtime-db");
+    writeFileSync(join(docsDir, "index.md"), "# Runtime docs");
+
+    mod.removePreviewData(dataDir);
+
+    expect(readFileSync(join(logDir, "deploy.log"), "utf-8")).toBe("keep");
+    expect(existsSync(join(dataDir, "bridge.db"))).toBe(false);
+    expect(existsSync(docsDir)).toBe(false);
+  });
+
   it("launches staging backends through a single opaque staged entrypoint", async () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = createTempDir("bridge-stage-child-entrypoint-");

@@ -5,6 +5,7 @@ dist/
 .env
 .env.local
 data/
+.preview-smoke-fixture/
 .DS_Store
 .vscode/
 .idea/
