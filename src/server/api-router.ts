@@ -24,7 +24,12 @@ import type { Schedule } from "./schedule-store.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 import { findUnknownFields, formatUnknownFieldsError, normalizeScheduleAutoArchiveKeep } from "./schedule-validation.js";
 import { enrichWorkItems, enrichPullRequests, clearProviderCache, setSettingsGetter } from "./providers/index.js";
-import { createApiJsonErrorHandler, createRequestTelemetryMiddleware } from "./api-request-telemetry.js";
+import {
+  createApiJsonErrorHandler,
+  createRequestTelemetryMiddleware,
+  timeRequestOperation,
+  timeSyncRequestOperation,
+} from "./api-request-telemetry.js";
 import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
 import type { VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
@@ -1281,15 +1286,30 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/sessions", async (req, res) => {
     try {
       const includeArchived = req.query.includeArchived === "true";
-      const enriched = await getEnrichedSessionList(includeArchived);
-      res.json({ sessions: materializeSessionList(enriched, includeArchived) });
+      const enriched = await timeRequestOperation(
+        res,
+        "sessions.enrichedList",
+        () => getEnrichedSessionList(includeArchived),
+        { includeArchived },
+      );
+      const sessions = timeSyncRequestOperation(
+        res,
+        "sessions.materialize",
+        () => materializeSessionList(enriched, includeArchived),
+        { includeArchived, count: enriched.length },
+      );
+      res.json({ sessions });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
   });
 
   router.get("/busy", (_req, res) => {
-    const sessions = ctx.sessionManager.getSessionActivity();
+    const sessions = timeSyncRequestOperation(
+      res,
+      "busy.sessionActivity",
+      () => ctx.sessionManager.getSessionActivity(),
+    );
     res.json({
       busy: sessions.length > 0,
       count: sessions.length,
@@ -1398,8 +1418,23 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.get("/copilot-usage", async (req, res) => {
     try {
       const refresh = req.query.refresh === "1";
-      const summary = await copilotUsageReader.readSummary({ refresh });
-      res.json(serializeCopilotUsageSummary(summary));
+      const summary = await timeRequestOperation(
+        res,
+        "copilot-usage.readSummary",
+        () => copilotUsageReader.readSummary({ refresh }),
+        { refresh },
+      );
+      const serialized = timeSyncRequestOperation(
+        res,
+        "copilot-usage.serialize",
+        () => serializeCopilotUsageSummary(summary),
+        {
+          refresh,
+          sessionCount: summary.sessions.length,
+          modelCount: summary.models.length,
+        },
+      );
+      res.json(serialized);
     } catch (err) {
       console.error("[copilot-usage] Error:", err);
       res.status(500).json({
@@ -1509,9 +1544,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore, lastVisibleActivityAt } = await ctx.sessionManager.getSessionMessages(
-        req.params.id,
-        { limit, before },
+      const { messages, total, hasMore, lastVisibleActivityAt } = await timeRequestOperation(
+        res,
+        "sessions.messages.sdkRead",
+        () => ctx.sessionManager.getSessionMessages(
+          req.params.id,
+          { limit, before },
+        ),
+        { sessionId: req.params.id, limit, before },
       );
       res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, lastVisibleActivityAt });
     } catch (err) {
@@ -1630,12 +1670,28 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore, lastVisibleActivityAt } = await ctx.sessionManager.readMessagesFromDisk(
-        req.params.id,
-        { limit, before },
+      const { messages, total, hasMore, lastVisibleActivityAt } = await timeRequestOperation(
+        res,
+        "sessions.messagesFast.diskRead",
+        () => ctx.sessionManager.readMessagesFromDisk(
+          req.params.id,
+          { limit, before },
+        ),
+        { sessionId: req.params.id, limit, before },
       );
-      const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-      res.json({ messages, ...getSessionStatus(ctx, req.params.id), total, hasMore, lastVisibleActivityAt, warm });
+      const status = timeSyncRequestOperation(
+        res,
+        "sessions.messagesFast.status",
+        () => getSessionStatus(ctx, req.params.id),
+        { sessionId: req.params.id },
+      );
+      const warm = timeSyncRequestOperation(
+        res,
+        "sessions.messagesFast.warmState",
+        () => ctx.sessionManager.isSessionWarm(req.params.id),
+        { sessionId: req.params.id },
+      );
+      res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, warm });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -2045,7 +2101,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // GET /sessions/:id/mcp-status — get MCP server connection status for a session
   router.get("/sessions/:id/mcp-status", async (req, res) => {
     try {
-      const servers = await ctx.sessionManager.getMcpStatus(req.params.id);
+      const servers = await timeRequestOperation(
+        res,
+        "sessions.mcpStatus",
+        () => ctx.sessionManager.getMcpStatus(req.params.id),
+        { sessionId: req.params.id },
+      );
       res.json({ servers });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -2590,7 +2651,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     try {
       const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
-      res.json(await readCachedGitWorktreeStatus(taskCwd, { forceRefresh }));
+      res.json(await timeRequestOperation(
+        res,
+        "tasks.gitStatus",
+        () => readCachedGitWorktreeStatus(taskCwd, { forceRefresh }),
+        { taskId: task.id, forceRefresh },
+      ));
     } catch (error) {
       res.json({
         status: "unavailable",
@@ -2968,7 +3034,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // ── Read State routes ─────────────────────────────────────────────
 
   router.get("/read-state", (_req, res) => {
-    res.json(ctx.readStateStore.getReadState());
+    res.json(timeSyncRequestOperation(
+      res,
+      "read-state.get",
+      () => ctx.readStateStore.getReadState(),
+    ));
   });
 
   function parseReadThroughActivityAt(raw: unknown): string | undefined {
@@ -3008,15 +3078,48 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(400).json({ error: err instanceof Error ? err.message : "Invalid readThroughActivityAt" });
     }
 
-    const readThroughActivityAt = resolveReadThroughActivityAt(req.params.sessionId, requestedReadThrough);
-    const ts = ctx.readStateStore.markRead(req.params.sessionId, readThroughActivityAt);
-    ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
+    const readThroughActivityAt = timeSyncRequestOperation(
+      res,
+      "read-state.resolveActivity",
+      () => resolveReadThroughActivityAt(req.params.sessionId, requestedReadThrough),
+      { sessionId: req.params.sessionId },
+    );
+    const ts = timeSyncRequestOperation(
+      res,
+      "read-state.markRead",
+      () => ctx.readStateStore.markRead(req.params.sessionId, readThroughActivityAt),
+      { sessionId: req.params.sessionId },
+    );
+    timeSyncRequestOperation(
+      res,
+      "read-state.emitChanged",
+      () => {
+        const current = ctx.readStateStore.getReadState();
+        ctx.globalBus.emit({ type: "readstate:changed", readState: current });
+        return current;
+      },
+      { sessionId: req.params.sessionId },
+    );
     res.json({ ok: true, lastReadAt: ts, readThroughActivityAt });
   });
 
   router.delete("/read-state/:sessionId", (req, res) => {
-    ctx.readStateStore.markUnread(req.params.sessionId);
-    ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
+    timeSyncRequestOperation(
+      res,
+      "read-state.markUnread",
+      () => ctx.readStateStore.markUnread(req.params.sessionId),
+      { sessionId: req.params.sessionId },
+    );
+    timeSyncRequestOperation(
+      res,
+      "read-state.emitChanged",
+      () => {
+        const current = ctx.readStateStore.getReadState();
+        ctx.globalBus.emit({ type: "readstate:changed", readState: current });
+        return current;
+      },
+      { sessionId: req.params.sessionId },
+    );
     res.json({ ok: true });
   });
 

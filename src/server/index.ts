@@ -14,6 +14,10 @@ import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
 import {
+  getEventLoopLagRequestTelemetryMetadata,
+  startRequestTelemetryInflightReporter,
+} from "./api-request-telemetry.js";
+import {
   createAppContext,
   initializeSchedulerAndDeferredRunners,
   shutdownAppContextServices,
@@ -109,6 +113,7 @@ async function main(): Promise<void> {
   // Prune old telemetry data
   const pruned = defaultContext.telemetryStore?.pruneOldSpans(7) ?? 0;
   if (pruned > 0) console.log(`[telemetry] Pruned ${pruned} old spans`);
+  startRequestTelemetryInflightReporter(defaultContext.telemetryStore);
 
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);
@@ -129,7 +134,10 @@ async function main(): Promise<void> {
       defaultContext.telemetryStore?.recordSpan({
         name: "eventloop.lag",
         duration: lag,
-        metadata: { activeSessions: sessionManager.getActiveSessions().length },
+        metadata: {
+          activeSessions: sessionManager.getActiveSessions().length,
+          ...getEventLoopLagRequestTelemetryMetadata(lag),
+        },
         source: "server",
       });
     }

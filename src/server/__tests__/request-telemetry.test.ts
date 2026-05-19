@@ -3,7 +3,16 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestApp, setupTestDb } from "./helpers.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createRequestTelemetryMiddleware } from "../api-request-telemetry.js";
+import {
+  clearRequestTelemetryForTests,
+  createRequestTelemetryMiddleware,
+  getActiveRequestTelemetrySnapshots,
+  getEventLoopLagRequestTelemetryMetadata,
+  getRecentCompletedRequestOperations,
+  recordInflightRequestTelemetry,
+  timeRequestOperation,
+  timeSyncRequestOperation,
+} from "../api-request-telemetry.js";
 import type { DatabaseSync } from "../db.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 
@@ -11,6 +20,7 @@ let db: DatabaseSync;
 let store: TelemetryStore;
 
 beforeEach(() => {
+  clearRequestTelemetryForTests();
   db = setupTestDb();
   store = createTelemetryStore(db);
 });
@@ -121,6 +131,202 @@ describe("request telemetry middleware", () => {
       path: "/api/task-groups",
       statusCode: 200,
     });
+    expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
+  });
+
+  it("records request operations and exposes the current operation while in flight", async () => {
+    let currentTime = 1_000;
+    const middleware = createRequestTelemetryMiddleware(store, {
+      now: () => currentTime,
+      requestIdFactory: () => "operation-id",
+    });
+    const req = createMockRequest("/api/sessions?includeArchived=true");
+    const res = createMockResponse();
+    let release!: () => void;
+
+    middleware(req, res, vi.fn());
+    const operation = timeRequestOperation(
+      res,
+      "sessions.enrichedList",
+      () => new Promise<string>((resolve) => {
+        release = () => resolve("ok");
+      }),
+      { includeArchived: true },
+    );
+
+    currentTime = 1_300;
+    expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toMatchObject([{
+      requestId: "operation-id",
+      method: "GET",
+      path: "/api/sessions",
+      ageMs: 300,
+      currentOperation: {
+        name: "sessions.enrichedList",
+        ageMs: 300,
+        metadata: { includeArchived: true },
+      },
+    }]);
+
+    currentTime = 1_750;
+    release();
+    await expect(operation).resolves.toBe("ok");
+    res.emit("finish");
+
+    const spans = store.querySpans({ name: "http.request.operation" });
+    expect(spans).toHaveLength(1);
+    expect(spans[0].duration).toBe(750);
+    expect(spans[0].metadata).toMatchObject({
+      requestId: "operation-id",
+      path: "/api/sessions",
+      operation: "sessions.enrichedList",
+      includeArchived: true,
+      durationMs: 750,
+      startedAt: new Date(1_000).toISOString(),
+      endedAt: new Date(1_750).toISOString(),
+      startedAtMs: 1_000,
+      endedAtMs: 1_750,
+      statusCode: 200,
+    });
+    expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
+  });
+
+  it("reports completed sync operations that overlapped an event-loop lag window", () => {
+    let currentTime = 1_000;
+    const middleware = createRequestTelemetryMiddleware(store, {
+      now: () => currentTime,
+      requestIdFactory: () => "lagged-id",
+    });
+    const req = createMockRequest("/api/chat");
+    const res = createMockResponse();
+
+    middleware(req, res, vi.fn());
+    timeSyncRequestOperation(
+      res,
+      "chat.startWork",
+      () => {
+        currentTime = 7_600;
+        return "accepted";
+      },
+      { sessionId: "session-1" },
+    );
+    res.emit("finish");
+
+    expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
+
+    currentTime = 7_800;
+    const metadata = getEventLoopLagRequestTelemetryMetadata(6_751, { now: () => currentTime });
+
+    expect(metadata).toMatchObject({
+      activeRequestCount: 0,
+      activeRequests: [],
+      lagWindowStart: new Date(1_049).toISOString(),
+      lagWindowEnd: new Date(7_800).toISOString(),
+    });
+    expect(metadata.recentCompletedOperations).toMatchObject([{
+      requestId: "lagged-id",
+      method: "GET",
+      path: "/api/chat",
+      operation: "chat.startWork",
+      durationMs: 6_600,
+      startedAt: new Date(1_000).toISOString(),
+      endedAt: new Date(7_600).toISOString(),
+      statusCode: 200,
+      headersSent: false,
+      threw: false,
+      sessionId: "session-1",
+    }]);
+    expect(metadata).toHaveProperty("rssBytes");
+    expect(metadata).toHaveProperty("activeResourceCount");
+  });
+
+  it("keeps the recent completed operation buffer bounded", () => {
+    let currentTime = 10_000;
+    const middleware = createRequestTelemetryMiddleware(store, {
+      now: () => currentTime,
+      requestIdFactory: () => `ring-id-${currentTime}`,
+    });
+
+    for (let index = 0; index < 205; index += 1) {
+      const req = createMockRequest(`/api/tasks/${index}`);
+      const res = createMockResponse();
+      middleware(req, res, vi.fn());
+      timeSyncRequestOperation(res, `ring.operation.${index}`, () => {
+        currentTime += 1;
+      });
+      res.emit("finish");
+    }
+
+    const operations = getRecentCompletedRequestOperations({ limit: 500 });
+    expect(operations).toHaveLength(200);
+    expect(operations.map((operation) => operation.operation)).not.toContain("ring.operation.0");
+    expect(operations.map((operation) => operation.operation)).toContain("ring.operation.204");
+  });
+
+  it("records repeated in-flight spans for slow unfinished requests", async () => {
+    let currentTime = 0;
+    const middleware = createRequestTelemetryMiddleware(store, {
+      now: () => currentTime,
+      requestIdFactory: () => "inflight-id",
+    });
+    const req = createMockRequest("/api/copilot-usage");
+    const res = createMockResponse();
+    let release!: () => void;
+
+    middleware(req, res, vi.fn());
+    const operation = timeRequestOperation(
+      res,
+      "copilot-usage.readSummary",
+      () => new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    currentTime = 4_999;
+    expect(recordInflightRequestTelemetry(store, {
+      now: () => currentTime,
+      thresholdMs: 5_000,
+      repeatMs: 5_000,
+    })).toBe(0);
+
+    currentTime = 5_000;
+    expect(recordInflightRequestTelemetry(store, {
+      now: () => currentTime,
+      thresholdMs: 5_000,
+      repeatMs: 5_000,
+    })).toBe(1);
+    currentTime = 7_000;
+    expect(recordInflightRequestTelemetry(store, {
+      now: () => currentTime,
+      thresholdMs: 5_000,
+      repeatMs: 5_000,
+    })).toBe(0);
+    currentTime = 10_000;
+    expect(recordInflightRequestTelemetry(store, {
+      now: () => currentTime,
+      thresholdMs: 5_000,
+      repeatMs: 5_000,
+    })).toBe(1);
+
+    const spans = store.querySpans({ name: "http.request.inflight" })
+      .sort((left, right) => left.duration - right.duration);
+    expect(spans).toHaveLength(2);
+    expect(spans[0].metadata).toMatchObject({
+      requestId: "inflight-id",
+      path: "/api/copilot-usage",
+      requestAgeMs: 5_000,
+      currentOperation: { name: "copilot-usage.readSummary", ageMs: 5_000 },
+      inflightReportCount: 1,
+      activeRequestCount: 1,
+    });
+    expect(spans[1].metadata).toMatchObject({
+      requestAgeMs: 10_000,
+      inflightReportCount: 2,
+    });
+
+    release();
+    await operation;
+    res.emit("finish");
+    expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
   });
 
   it("skips telemetry and streaming endpoints to avoid noisy recursion", () => {
