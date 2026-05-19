@@ -167,7 +167,7 @@ describe("Voice job routes", () => {
   it("POST /api/voice-jobs accepts and starts a server-owned autosend for an existing session", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
-    sessionManager.readMessagesFromDisk = vi.fn().mockResolvedValue({
+    sessionManager.readMessagesFromDisk = vi.fn().mockImplementation(async () => ({
       messages: [{
         type: "message",
         role: "user",
@@ -176,7 +176,7 @@ describe("Voice job routes", () => {
       }],
       total: 1,
       hasMore: false,
-    });
+    }));
     const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "whisper.cpp" });
     ({ app, ctx } = createTestApp({
       sessionManager,
