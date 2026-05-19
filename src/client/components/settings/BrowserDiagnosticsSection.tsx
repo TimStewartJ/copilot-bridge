@@ -4,6 +4,7 @@ import {
   fetchBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
   type AppSettings,
+  type BrowserSettings,
   type BrowserDiagnosticsResponse,
   type BrowserDiagnosticsTone,
 } from "../../api";
@@ -25,6 +26,14 @@ function formatTimestamp(value: string | undefined): string {
   if (!value) return "unknown";
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
+}
+
+function compactBrowserDraft(browser: BrowserSettings): BrowserSettings {
+  return {
+    ...(browser.executablePath ? { executablePath: browser.executablePath } : {}),
+    ...(browser.masterProfileDirectory ? { masterProfileDirectory: browser.masterProfileDirectory } : {}),
+    ...(browser.headed ? { headed: true } : {}),
+  };
 }
 
 export function BrowserDiagnosticsSection({
@@ -69,16 +78,19 @@ export function BrowserDiagnosticsSection({
     value: string,
   ) => {
     const next = structuredClone(draft);
-    const executablePath = field === "executablePath"
-      ? value
-      : draft.browser?.executablePath ?? "";
-    const masterProfileDirectory = field === "masterProfileDirectory"
-      ? value
-      : draft.browser?.masterProfileDirectory ?? "";
-    next.browser = {
-      ...(executablePath ? { executablePath } : {}),
-      ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
-    };
+    next.browser = compactBrowserDraft({
+      ...draft.browser,
+      [field]: value,
+    });
+    setDraft(next);
+  };
+
+  const updateBrowserHeaded = (headed: boolean) => {
+    const next = structuredClone(draft);
+    next.browser = compactBrowserDraft({
+      ...draft.browser,
+      headed,
+    });
     setDraft(next);
   };
 
@@ -101,6 +113,7 @@ export function BrowserDiagnosticsSection({
   const summary = diagnostics?.summary;
   const executablePathValue = draft.browser?.executablePath ?? "";
   const masterProfileDirectoryValue = draft.browser?.masterProfileDirectory ?? "";
+  const headedValue = draft.browser?.headed === true;
   const binaryState = !config
     ? "checking"
     : !config.executablePathConfigured
@@ -117,7 +130,7 @@ export function BrowserDiagnosticsSection({
   return (
     <SettingsSection
       title="Browser Diagnostics"
-      description="Configure the Bridge-owned browser target, launch it headed for manual verification, and review recent browser friction such as web_search challenge pages."
+      description="Configure the Bridge-owned browser target, choose whether browser tools run headed, and review recent browser friction such as web_search challenge pages."
       action={(
         <button
           type="button"
@@ -167,6 +180,23 @@ export function BrowserDiagnosticsSection({
           </Field>
         </div>
 
+        <label className="flex items-start gap-3 rounded-md border border-border bg-bg-primary px-3 py-2">
+          <input
+            type="checkbox"
+            checked={headedValue}
+            onChange={(event) => updateBrowserHeaded(event.target.checked)}
+            className="mt-0.5 h-3.5 w-3.5 accent-accent"
+          />
+          <span className="min-w-0">
+            <span className="block text-xs font-medium text-text-secondary">
+              Run browser operations headed
+            </span>
+            <span className="mt-0.5 block text-[11px] text-text-faint">
+              Applies to web_search, browser_fetch, browser_exec, and browser session tools after saving.
+            </span>
+          </span>
+        </label>
+
         <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2">
           <div>
             <span className="text-text-faint">agent-browser:</span>{" "}
@@ -186,6 +216,12 @@ export function BrowserDiagnosticsSection({
             <span className="text-text-faint">session:</span>{" "}
             <code className="text-text-secondary">{config?.sessionName ?? "checking"}</code>
           </div>
+          <div>
+            <span className="text-text-faint">mode:</span>{" "}
+            <code className="text-text-secondary">
+              {!config ? "checking" : config.headed ? "headed" : "not headed"}
+            </code>
+          </div>
         </div>
 
         {config && (
@@ -202,6 +238,10 @@ export function BrowserDiagnosticsSection({
               <span className="text-text-faint">effective profile:</span>{" "}
               <code className="break-all text-text-secondary">{config.masterProfileDirectory}</code>
             </div>
+            <div>
+              <span className="text-text-faint">effective mode:</span>{" "}
+              <code className="text-text-secondary">{config.headed ? "headed" : "not headed"}</code>
+            </div>
           </div>
         )}
 
@@ -216,7 +256,7 @@ export function BrowserDiagnosticsSection({
             Launch headed browser
           </button>
           <span className="text-[11px] text-text-faint">
-            Save path edits first. The launch action uses the saved browser diagnostics settings.
+            Save browser edits first. The launch action uses the saved browser diagnostics settings.
           </span>
         </div>
 

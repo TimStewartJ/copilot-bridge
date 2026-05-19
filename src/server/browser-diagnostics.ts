@@ -45,6 +45,7 @@ export interface BrowserDiagnosticsResponse {
     masterProfileDirectory: string;
     masterProfileDirectoryConfigured: boolean;
     masterProfileDirectoryExists: boolean;
+    headed: boolean;
   };
   issues: BrowserDiagnosticsIssue[];
 }
@@ -183,6 +184,7 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
       masterProfileDirectory: target.profileDir,
       masterProfileDirectoryConfigured,
       masterProfileDirectoryExists,
+      headed: target.headed === true,
     },
     issues,
   };

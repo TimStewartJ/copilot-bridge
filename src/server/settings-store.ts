@@ -12,6 +12,7 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export interface BrowserSettings {
   executablePath?: string;
   masterProfileDirectory?: string;
+  headed?: boolean;
 }
 
 export interface AppSettings {
@@ -41,6 +42,14 @@ function normalizeOptionalBrowserPath(value: unknown, field: keyof BrowserSettin
   return trimmed || undefined;
 }
 
+function normalizeOptionalBrowserHeaded(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error("browser.headed must be a boolean");
+  }
+  return value ? true : undefined;
+}
+
 function normalizeBrowserSettings(value: unknown): BrowserSettings | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -49,10 +58,12 @@ function normalizeBrowserSettings(value: unknown): BrowserSettings | undefined {
   const raw = value as Record<string, unknown>;
   const executablePath = normalizeOptionalBrowserPath(raw.executablePath, "executablePath");
   const masterProfileDirectory = normalizeOptionalBrowserPath(raw.masterProfileDirectory, "masterProfileDirectory");
-  if (!executablePath && !masterProfileDirectory) return undefined;
+  const headed = normalizeOptionalBrowserHeaded(raw.headed);
+  if (!executablePath && !masterProfileDirectory && !headed) return undefined;
   return {
     ...(executablePath ? { executablePath } : {}),
     ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
+    ...(headed ? { headed } : {}),
   };
 }
 

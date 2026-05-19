@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BrowserTarget } from "../agent-browser.js";
 import { normalizePath, pathBasename, testCopilotHome, testExecutablePath, testPath } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
@@ -78,6 +79,7 @@ describe("agent-browser wrapper", () => {
 
   afterEach(() => {
     restorePlatform();
+    vi.unstubAllEnvs();
   });
 
   it("passes explicit bridge session env to browser commands", async () => {
@@ -104,13 +106,11 @@ describe("agent-browser wrapper", () => {
     const mod = await import("../agent-browser.js");
     const executablePath = testExecutablePath("chrome");
     const profileDir = testPath("browser-master-profile");
-    const target = {
-      ...mod.getBridgeBrowserTarget(COPILOT_HOME, {
-        executablePath,
-        masterProfileDirectory: profileDir,
-      }),
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME, {
+      executablePath,
+      masterProfileDirectory: profileDir,
       headed: true,
-    };
+    });
 
     await mod.ab(["open", "about:blank"], undefined, { browserTarget: target });
 
@@ -119,6 +119,39 @@ describe("agent-browser wrapper", () => {
     expect(normalizePath(options.env.AGENT_BROWSER_EXECUTABLE_PATH)).toBe(normalizePath(executablePath));
     expect(normalizePath(options.env.AGENT_BROWSER_PROFILE)).toBe(normalizePath(profileDir));
     expect(options.env.AGENT_BROWSER_HEADED).toBe("true");
+  });
+
+  it("does not leak inherited headed browser env when the target is not headed", async () => {
+    vi.stubEnv("AGENT_BROWSER_HEADED", "true");
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const mod = await import("../agent-browser.js");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+
+    await mod.ab(["open", "about:blank"], undefined, { browserTarget: target });
+
+    const [, , options] = execFileMock.mock.calls[0];
+    expect(options.env.AGENT_BROWSER_HEADED).toBeUndefined();
+  });
+
+  it("inherits headed mode for clone browser targets", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+    const mod = await import("../agent-browser.js");
+    let cloneTarget: BrowserTarget | undefined;
+
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, {}, async (lane) => {
+      cloneTarget = lane.browserTarget;
+    }, { headed: true });
+
+    expect(cloneTarget?.headed).toBe(true);
+    const closeCall = execFileMock.mock.calls.find(([, args]) => args[0] === "close");
+    expect(closeCall?.[2].env.AGENT_BROWSER_HEADED).toBe("true");
   });
 
   it("clears stale dead lock owners and retries once", async () => {
