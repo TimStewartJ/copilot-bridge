@@ -1125,7 +1125,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
         log,
       });
       if (pruned > 0) {
-        log(`Pruned ${pruned} old release slot(s)`);
+        log(`Pruned ${pruned} stale release slot artifact(s)`);
       }
     }
     log("✅ Server restarted successfully");
@@ -1390,6 +1390,11 @@ async function main() {
     }
     if (!verifyLauncherStartup({ ensureDeps, log })) {
       throw new Error("Dependency sync failed during startup");
+    }
+
+    const pruned = pruneReleaseSlots(DATA_DIR, { log });
+    if (pruned > 0) {
+      log(`Pruned ${pruned} stale release slot artifact(s) during startup`);
     }
 
     // Start server

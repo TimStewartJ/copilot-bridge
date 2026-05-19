@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  getReleaseSlotsDir,
   prepareReleaseSlot,
+  pruneReleaseSlots,
   readActiveRelease,
   resolveReleaseCandidate,
   writeActiveRelease,
@@ -78,6 +80,26 @@ describe("release slots", () => {
     expect(JSON.parse(readFileSync(join(dataDir, "active-release.json"), "utf-8"))).toMatchObject({
       id: result.manifest.id,
     });
+  });
+
+  it("prunes stale dotted temp directories without removing finalized or live slots", () => {
+    const dataDir = makeTestDir("release-slot-prune-temp");
+    const releaseParent = getReleaseSlotsDir(dataDir);
+    const finalizedSlot = join(releaseParent, "2026-05-18T20-00-00-000Z-abcdef123456-final");
+    const staleTemp = join(releaseParent, ".orphan.tmp");
+    const liveTemp = join(releaseParent, `.active.${process.pid}.tmp`);
+
+    mkdirSync(join(finalizedSlot, "dist", "server"), { recursive: true });
+    writeFileSync(join(finalizedSlot, "dist", "server", "index.js"), "console.log('built');\n");
+    mkdirSync(join(staleTemp, "node_modules", "large-package"), { recursive: true });
+    writeFileSync(join(staleTemp, "node_modules", "large-package", "index.js"), "stale");
+    mkdirSync(join(liveTemp, "src"), { recursive: true });
+    writeFileSync(join(liveTemp, "src", "index.ts"), "console.log('active');\n");
+
+    expect(pruneReleaseSlots(dataDir, { keepRecent: 1 })).toBe(1);
+    expect(existsSync(staleTemp)).toBe(false);
+    expect(existsSync(finalizedSlot)).toBe(true);
+    expect(existsSync(liveTemp)).toBe(true);
   });
 
   it("rejects candidate metadata outside the release slot directory", () => {
