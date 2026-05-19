@@ -1870,9 +1870,9 @@ export type ScheduleUpdateInput = Partial<Pick<Schedule,
   autoArchiveKeep?: number | null;
 };
 
-export async function fetchSchedules(taskId?: string): Promise<Schedule[]> {
-  const qs = taskId ? `?taskId=${taskId}` : "";
-  return apiFetch<Schedule[]>(`/api/schedules${qs}`);
+export async function fetchSchedules(taskId: string): Promise<Schedule[]> {
+  const qs = new URLSearchParams({ taskId }).toString();
+  return apiFetch<Schedule[]>(`/api/schedules?${qs}`);
 }
 
 export async function createSchedule(input: ScheduleCreateInput): Promise<Schedule> {
