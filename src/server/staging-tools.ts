@@ -116,12 +116,15 @@ async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise
   }
 }
 
-async function cleanupPreviewResources(prefix: string, options: { removeDist?: boolean } = {}): Promise<void> {
+async function cleanupPreviewResources(
+  prefix: string,
+  options: { removeDist?: boolean; removeData?: boolean } = {},
+): Promise<void> {
   const removeDist = options.removeDist ?? true;
   const ownedByThisProcess = activePreviews.has(prefix) || hasStagingBackendState(prefix);
   if (!ownedByThisProcess) return;
 
-  await cleanupStagingBackendResources(prefix);
+  await cleanupStagingBackendResources(prefix, { removeData: options.removeData });
   if (removeDist) {
     removeStagingDist(prefix);
   }
@@ -130,9 +133,10 @@ async function cleanupPreviewResources(prefix: string, options: { removeDist?: b
 export async function cleanupPreviewTarget(
   stagingDir: string,
   profile: StagingPreviewProfile = "clone",
+  options: { removeData?: boolean } = {},
 ): Promise<void> {
   const target = createPreviewTarget(stagingDir, profile);
-  await cleanupPreviewResources(target.prefix);
+  await cleanupPreviewResources(target.prefix, options);
 }
 
 /**
