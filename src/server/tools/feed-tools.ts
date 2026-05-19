@@ -221,7 +221,7 @@ export function createFeedTools(ctx: AppContext) {
       },
     }),
     defineTool("feed_list", {
-      description: "List durable dashboard feed cards. Defaults to active cards only. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
+      description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
       parameters: {
         type: "object",
         properties: {
@@ -229,8 +229,8 @@ export function createFeedTools(ctx: AppContext) {
           kind: { type: "string", description: "Filter by kind." },
           taskId: { type: "string", description: "Filter by related task ID." },
           sessionId: { type: "string", description: "Filter by related session ID." },
-          limit: { type: "number", description: "Maximum cards to return, capped by the server." },
-          cursor: { type: "string", description: "Opaque nextCursor from a previous feed_list call for the same filters." },
+          limit: { type: "number", description: "Maximum cards per page to return, capped by the server." },
+          cursor: { type: "string", description: "Opaque nextCursor from a previous feed_list response. Must be paired with the identical filter arguments; pass only when the previous nextCursor was non-null." },
           includeDismissed: { type: "boolean", description: "When true and status is omitted, include all statuses." },
         },
         required: [],

@@ -49,16 +49,13 @@ export interface FeedCard {
   updatedAt: string;
 }
 
-export interface FeedCardListFilters {
+export interface FeedCardPageFilters {
   status?: FeedCardStatus;
   kind?: string;
   taskId?: string;
   sessionId?: string;
   includeDismissed?: boolean;
   limit?: number;
-}
-
-export interface FeedCardPageFilters extends FeedCardListFilters {
   cursor?: string;
 }
 
@@ -595,16 +592,6 @@ function feedListOrder(status: FeedCardStatus | undefined): FeedListOrder {
   return "mixed";
 }
 
-function feedListOrderBy(status: FeedCardStatus | undefined): string {
-  if (status === "done" || status === "dismissed") {
-    return "statusChangedAt DESC, updatedAt DESC, id DESC";
-  }
-  if (status === "active") {
-    return "pinned DESC, updatedAt DESC, id DESC";
-  }
-  return "CASE WHEN status = 'active' THEN 0 ELSE 1 END, pinned DESC, updatedAt DESC, id DESC";
-}
-
 function feedPageOrderBy(order: FeedListOrder): string {
   switch (order) {
     case "active":
@@ -620,7 +607,7 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeListFilters(filters: FeedCardListFilters): NormalizedFeedListFilters {
+function normalizeListFilters(filters: FeedCardPageFilters): NormalizedFeedListFilters {
   let statusFilter: FeedCardStatus | undefined;
   if (filters.status !== undefined) {
     statusFilter = normalizeStatus(filters.status);
@@ -970,22 +957,6 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     return true;
   }
 
-  function listCards(filters: FeedCardListFilters = {}): FeedCard[] {
-    const normalized = normalizeListFilters(filters);
-    const where: string[] = [];
-    const values: Array<string | number> = [];
-    appendFeedListFilters(where, values, normalized);
-    values.push(normalized.limit);
-    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-    const orderBy = feedListOrderBy(normalized.statusFilter);
-    return (db.prepare(`
-      SELECT * FROM feed_cards
-      ${whereClause}
-      ORDER BY ${orderBy}
-      LIMIT ?
-    `).all(...values) as any[]).map(hydrate);
-  }
-
   function listCardPage(filters: FeedCardPageFilters = {}): FeedCardListPage {
     const normalized = normalizeListFilters(filters);
     const where: string[] = [];
@@ -1016,7 +987,6 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
   }
 
   return {
-    listCards,
     listCardPage,
     getCard,
     getCardByKey,

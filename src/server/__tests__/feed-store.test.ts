@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createFeedStore, FeedCardValidationError, type FeedStore } from "../feed-store.js";
+import { createFeedStore, FeedCardValidationError, type FeedCardPageFilters, type FeedStore } from "../feed-store.js";
 import { createTaskStore } from "../task-store.js";
 import type { DatabaseSync } from "../db.js";
 import { createTestBus, setupTestDb } from "./helpers.js";
@@ -26,6 +26,14 @@ beforeEach(() => {
   store = createFeedStore(db, bus);
 });
 
+function listPageCards(filters: FeedCardPageFilters = {}) {
+  return store.listCardPage(filters).cards;
+}
+
+function listPageIds(filters: FeedCardPageFilters = {}) {
+  return listPageCards(filters).map((card) => card.id);
+}
+
 describe("feed-store", () => {
   it("inserts separate keyless cards", () => {
     const first = store.saveCard({ title: "First" });
@@ -34,7 +42,7 @@ describe("feed-store", () => {
     expect(first.created).toBe(true);
     expect(second.created).toBe(true);
     expect(first.card.id).not.toBe(second.card.id);
-    expect(store.listCards()).toHaveLength(2);
+    expect(listPageCards()).toHaveLength(2);
   });
 
   it("upserts keyed cards and preserves status unless explicitly changed", () => {
@@ -91,7 +99,7 @@ describe("feed-store", () => {
     expect(updated.links).toEqual([{ label: "Spec", url: "https://example.test/spec" }]);
   });
 
-  it("keeps default lists active-only and orders resolved filters by status change time", () => {
+  it("keeps default pages active-only and orders resolved filters by status change time", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
@@ -108,8 +116,8 @@ describe("feed-store", () => {
       vi.setSystemTime(new Date("2026-05-13T10:00:05.000Z"));
       store.updateCardById(newDone.id, { status: "done" });
 
-      expect(store.listCards({ limit: 10 }).map((card) => card.id)).toEqual([active.id]);
-      expect(store.listCards({ status: "done", limit: 10 }).map((card) => card.id)).toEqual([
+      expect(listPageIds({ limit: 10 })).toEqual([active.id]);
+      expect(listPageIds({ status: "done", limit: 10 })).toEqual([
         newDone.id,
         oldDone.id,
       ]);
@@ -236,31 +244,46 @@ describe("feed-store", () => {
     expect(standalone.action).toEqual({ prompt: "Start standalone.", taskId: null });
   });
 
-  it("sorts pinned cards first and then by updated time", () => {
+  it("sorts active pages by pinned state and then by creation time", () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
-    const oldPinned = store.saveCard({ title: "Old pinned", pinned: true }).card;
-    vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
-    const unpinned = store.saveCard({ title: "Unpinned" }).card;
-    vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
-    const newPinned = store.saveCard({ title: "New pinned", pinned: true }).card;
+    try {
+      vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
+      const oldPinned = store.saveCard({ title: "Old pinned", pinned: true }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
+      const unpinned = store.saveCard({ title: "Unpinned" }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
+      const newPinned = store.saveCard({ title: "New pinned", pinned: true }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:03:00.000Z"));
+      store.updateCardById(oldPinned.id, { title: "Old pinned updated" });
 
-    expect(store.listCards().map((card) => card.id)).toEqual([
-      newPinned.id,
-      oldPinned.id,
-      unpinned.id,
-    ]);
-    vi.useRealTimers();
+      expect(listPageIds()).toEqual([
+        newPinned.id,
+        oldPinned.id,
+        unpinned.id,
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps active cards above resolved cards when listing all statuses", () => {
     const resolvedPinned = store.saveCard({ title: "Resolved pinned", status: "done", pinned: true }).card;
     const active = store.saveCard({ title: "Active", pinned: false }).card;
 
-    expect(store.listCards({ includeDismissed: true }).map((card) => card.id)).toEqual([
+    expect(listPageIds({ includeDismissed: true })).toEqual([
       active.id,
       resolvedPinned.id,
     ]);
+  });
+
+  it("does not issue cursors for mixed-status pages", () => {
+    store.saveCard({ title: "Active" });
+    store.saveCard({ title: "Done", status: "done" });
+
+    const page = store.listCardPage({ includeDismissed: true, limit: 1 });
+
+    expect(page.cards).toHaveLength(1);
+    expect(page.nextCursor).toBeNull();
   });
 
   it("filters cards", () => {
@@ -272,12 +295,12 @@ describe("feed-store", () => {
     store.saveCard({ title: "Session card", sessionId: "session-1", kind: "note" });
     store.saveCard({ title: "Done card", status: "done", kind: "todo" });
 
-    expect(store.listCards({ taskId: task.id }).map((card) => card.id)).toEqual([taskCard.id]);
-    expect(store.listCards({ sessionId: "session-1" })).toHaveLength(1);
-    expect(store.listCards({ kind: "todo" }).map((card) => card.id)).toEqual([taskCard.id]);
-    expect(store.listCards({ status: "done" })).toHaveLength(1);
-    expect(store.listCards()).toHaveLength(2);
-    expect(store.listCards({ includeDismissed: true })).toHaveLength(3);
+    expect(listPageIds({ taskId: task.id })).toEqual([taskCard.id]);
+    expect(listPageCards({ sessionId: "session-1" })).toHaveLength(1);
+    expect(listPageIds({ kind: "todo" })).toEqual([taskCard.id]);
+    expect(listPageCards({ status: "done" })).toHaveLength(1);
+    expect(listPageCards()).toHaveLength(2);
+    expect(listPageCards({ includeDismissed: true })).toHaveLength(3);
   });
 
   it("deletes cards by id and key", () => {
