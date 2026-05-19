@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 import { installDomShim } from "./test-dom-shim";
 
 export type Act = (callback: () => void | Promise<void>) => Promise<void>;
@@ -10,41 +10,94 @@ type CreateReactDomHarnessOptions = {
 };
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
+type HarnessCleanup = () => Promise<void>;
+const activeHarnessCleanups = new Set<HarnessCleanup>();
+
+async function cleanupActiveHarnesses(): Promise<void> {
+  const errors: unknown[] = [];
+  for (const cleanup of [...activeHarnessCleanups].reverse()) {
+    try {
+      await cleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Failed to clean up React DOM harnesses");
+  }
+}
+
+afterEach(async () => {
+  try {
+    await cleanupActiveHarnesses();
+  } finally {
+    if (vi.isFakeTimers()) {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  }
+});
+
+async function withRealTimersForHarnessCleanup(callback: () => Promise<void>): Promise<void> {
+  const hadFakeTimers = vi.isFakeTimers();
+  if (!hadFakeTimers) {
+    await callback();
+    return;
+  }
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  try {
+    await callback();
+  } finally {
+    vi.useFakeTimers();
+  }
+}
 
 export async function createReactDomHarness(options: CreateReactDomHarnessOptions = {}) {
   const dom = (options.installDom ?? installDomShim)();
-  // Keep these imports after the DOM shim is installed. React DOM probes the
-  // test environment during import/render, so top-level imports can reintroduce
-  // the global-ordering bugs this harness is meant to avoid.
-  const [{ createRoot }, { act }] = await Promise.all([
-    import("react-dom/client"),
-    import("react"),
-  ]);
-  const testAct = act as Act;
-  const root = createRoot(dom.container as unknown as Element);
-  let cleanedUp = false;
-
-  return {
-    dom,
-    act: testAct,
-    async render(element: ReactNode) {
-      await testAct(async () => {
-        root.render(element);
-      });
-    },
-    async cleanup() {
+  try {
+    // Keep these imports after the DOM shim is installed. React DOM probes the
+    // test environment during import/render, so top-level imports can reintroduce
+    // the global-ordering bugs this harness is meant to avoid.
+    const [{ createRoot }, { act }] = await Promise.all([
+      import("react-dom/client"),
+      import("react"),
+    ]);
+    const testAct = act as Act;
+    const root = createRoot(dom.container as unknown as Element);
+    let cleanedUp = false;
+    const cleanup = async () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      activeHarnessCleanups.delete(cleanup);
       try {
-        await testAct(async () => {
-          root.unmount();
+        await withRealTimersForHarnessCleanup(async () => {
+          await testAct(async () => {
+            root.unmount();
+          });
+          await flushAct(testAct);
         });
-        await flushAct(testAct);
       } finally {
         dom.cleanup();
       }
-    },
-  };
+    };
+    activeHarnessCleanups.add(cleanup);
+
+    return {
+      dom,
+      act: testAct,
+      async render(element: ReactNode) {
+        await testAct(async () => {
+          root.render(element);
+        });
+      },
+      cleanup,
+    };
+  } catch (error) {
+    dom.cleanup();
+    throw error;
+  }
 }
 
 export type ReactDomHarness = Awaited<ReturnType<typeof createReactDomHarness>>;

@@ -68,7 +68,7 @@ type FakeWindow = {
   Comment: typeof Comment;
 };
 
-type RestorableGlobalKeys =
+type ShimGlobalKey =
   | "document"
   | "window"
   | "navigator"
@@ -79,6 +79,23 @@ type RestorableGlobalKeys =
   | "Node"
   | "Text"
   | "Comment";
+
+type DescriptorSnapshot = Map<PropertyKey, PropertyDescriptor>;
+
+type DomShimState = {
+  document: FakeDocument;
+  windowObject: FakeWindow;
+  navigator: FakeWindow["navigator"];
+  createElement: (tag: string) => FakeElement;
+  documentSnapshot: DescriptorSnapshot;
+  windowSnapshot: DescriptorSnapshot;
+  navigatorSnapshot: DescriptorSnapshot;
+  activeContainers: Set<FakeElement>;
+};
+
+type DomShimGlobal = typeof globalThis & {
+  __copilotBridgeDomShimState?: DomShimState;
+};
 
 function createBaseNode(nodeType: number, ownerDocument: FakeDocument): FakeNode {
   return {
@@ -145,26 +162,39 @@ function defineTextNodeTextAccessors(node: FakeTextNode) {
   });
 }
 
-export function installDomShim() {
-  const originals = new Map<RestorableGlobalKeys, PropertyDescriptor | undefined>();
-  const remember = (key: RestorableGlobalKeys) => {
-    originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  };
-  for (const key of [
-    "document",
-    "window",
-    "navigator",
-    "HTMLElement",
-    "Element",
-    "HTMLIFrameElement",
-    "SVGElement",
-    "Node",
-    "Text",
-    "Comment",
-  ] satisfies RestorableGlobalKeys[]) {
-    remember(key);
+function resetNode(node: FakeNode) {
+  for (const child of node.childNodes) {
+    child.parentNode = null;
   }
+  node.childNodes = [];
+}
 
+function snapshotObject(object: object): DescriptorSnapshot {
+  const snapshot: DescriptorSnapshot = new Map();
+  for (const key of Reflect.ownKeys(object)) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (descriptor) snapshot.set(key, descriptor);
+  }
+  return snapshot;
+}
+
+function restoreObject(object: object, snapshot: DescriptorSnapshot) {
+  const target = object as Record<PropertyKey, unknown>;
+  for (const key of Reflect.ownKeys(object)) {
+    if (!snapshot.has(key)) {
+      delete target[key];
+    }
+  }
+  for (const [key, descriptor] of snapshot) {
+    Object.defineProperty(object, key, descriptor);
+  }
+}
+
+function createFakeConstructor<T>(): T {
+  return function FakeConstructor() {} as unknown as T;
+}
+
+function createDomShimState(): DomShimState {
   const document: FakeDocument = {
     nodeType: 9,
     activeElement: null,
@@ -261,6 +291,7 @@ export function installDomShim() {
       get: () => element.childNodes.map((child) => child.textContent ?? child.nodeValue ?? "").join(""),
       set: (value: string | undefined) => {
         const next = String(value ?? "");
+        resetNode(element);
         element.childNodes = next ? [document.createTextNode(next)] : [];
         for (const child of element.childNodes) {
           child.parentNode = element;
@@ -276,67 +307,106 @@ export function installDomShim() {
 
   const container = createElement("div");
   const html = createElement("html");
+  const navigator = { userAgent: "node" };
 
   const windowObject: FakeWindow = {
     document,
-    navigator: { userAgent: "node" },
+    navigator,
     addEventListener() {},
     removeEventListener() {},
     getComputedStyle: () => ({}),
     requestAnimationFrame: (cb) => setTimeout(() => cb(Date.now()), 0),
     cancelAnimationFrame: (id) => clearTimeout(id),
-    HTMLElement: function HTMLElement() {} as typeof HTMLElement,
-    Element: function Element() {} as typeof Element,
-    HTMLIFrameElement: function HTMLIFrameElement() {} as typeof HTMLIFrameElement,
-    SVGElement: function SVGElement() {} as typeof SVGElement,
-    Node: function Node() {} as typeof Node,
-    Text: function Text() {} as typeof Text,
-    Comment: function Comment() {} as typeof Comment,
+    HTMLElement: createFakeConstructor<typeof HTMLElement>(),
+    Element: createFakeConstructor<typeof Element>(),
+    HTMLIFrameElement: createFakeConstructor<typeof HTMLIFrameElement>(),
+    SVGElement: createFakeConstructor<typeof SVGElement>(),
+    Node: createFakeConstructor<typeof Node>(),
+    Text: createFakeConstructor<typeof Text>(),
+    Comment: createFakeConstructor<typeof Comment>(),
   };
 
   document.body = container;
   document.documentElement = html;
   document.defaultView = windowObject;
-  const actEnvironmentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
 
-  const installGlobal = (key: RestorableGlobalKeys, value: unknown) => {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
+  return {
+    document,
+    windowObject,
+    navigator,
+    createElement,
+    documentSnapshot: snapshotObject(document),
+    windowSnapshot: snapshotObject(windowObject),
+    navigatorSnapshot: snapshotObject(navigator),
+    activeContainers: new Set(),
   };
+}
 
-  installGlobal("document", document);
-  installGlobal("window", windowObject);
-  installGlobal("navigator", windowObject.navigator);
-  installGlobal("HTMLElement", windowObject.HTMLElement);
-  installGlobal("Element", windowObject.Element);
-  installGlobal("HTMLIFrameElement", windowObject.HTMLIFrameElement);
-  installGlobal("SVGElement", windowObject.SVGElement);
-  installGlobal("Node", windowObject.Node);
-  installGlobal("Text", windowObject.Text);
-  installGlobal("Comment", windowObject.Comment);
+function getDomShimState(): DomShimState {
+  const shimGlobal = globalThis as DomShimGlobal;
+  shimGlobal.__copilotBridgeDomShimState ??= createDomShimState();
+  return shimGlobal.__copilotBridgeDomShimState;
+}
+
+function installGlobal(key: ShimGlobalKey, value: unknown) {
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    writable: true,
+    value,
+  });
+}
+
+function installSingletonGlobals(state: DomShimState) {
+  installGlobal("document", state.document);
+  installGlobal("window", state.windowObject);
+  installGlobal("navigator", state.navigator);
+  installGlobal("HTMLElement", state.windowObject.HTMLElement);
+  installGlobal("Element", state.windowObject.Element);
+  installGlobal("HTMLIFrameElement", state.windowObject.HTMLIFrameElement);
+  installGlobal("SVGElement", state.windowObject.SVGElement);
+  installGlobal("Node", state.windowObject.Node);
+  installGlobal("Text", state.windowObject.Text);
+  installGlobal("Comment", state.windowObject.Comment);
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,
     value: true,
   });
+}
+
+function resetSingletonDom(state: DomShimState): FakeElement {
+  restoreObject(state.document, state.documentSnapshot);
+  restoreObject(state.windowObject, state.windowSnapshot);
+  restoreObject(state.navigator, state.navigatorSnapshot);
+
+  const container = state.createElement("div");
+  const html = state.createElement("html");
+  state.document.activeElement = null;
+  state.document.body = container;
+  state.document.documentElement = html;
+  state.document.defaultView = state.windowObject;
+  installSingletonGlobals(state);
+  return container;
+}
+
+export function installDomShim() {
+  const state = getDomShimState();
+  if (state.activeContainers.size > 0) {
+    throw new Error("installDomShim does not support overlapping active DOM shims");
+  }
+  const container = resetSingletonDom(state);
+  state.activeContainers.add(container);
+  let cleanedUp = false;
 
   return {
     container,
     cleanup() {
-      for (const [key, descriptor] of originals) {
-        if (!descriptor) {
-          delete (globalThis as any)[key];
-        } else {
-          Object.defineProperty(globalThis, key, descriptor);
-        }
-      }
-      if (!actEnvironmentDescriptor) {
-        delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-      } else {
-        Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", actEnvironmentDescriptor);
+      if (cleanedUp) return;
+      cleanedUp = true;
+      state.activeContainers.delete(container);
+      resetNode(container);
+      if (state.document.body === container) {
+        resetSingletonDom(state);
       }
     },
   };
