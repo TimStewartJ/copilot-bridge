@@ -13,6 +13,21 @@ function normalizeFollowUpMode(value: unknown): "set" | "keep" | "clear" | undef
   return value === "set" || value === "keep" || value === "clear" ? value : undefined;
 }
 
+const TASK_INFO_SESSION_ID_PREVIEW_LIMIT = 10;
+
+function compactTaskInfoSessionIds(sessionIds: readonly string[]): {
+  sessionIds: string[];
+  sessionCount: number;
+  omittedSessionCount: number;
+} {
+  const preview = sessionIds.slice(0, TASK_INFO_SESSION_ID_PREVIEW_LIMIT);
+  return {
+    sessionIds: preview,
+    sessionCount: sessionIds.length,
+    omittedSessionCount: Math.max(0, sessionIds.length - preview.length),
+  };
+}
+
 export function createTaskTools(ctx: AppContext) {
   return [
   defineTool("task_link_work_item", {
@@ -193,7 +208,7 @@ export function createTaskTools(ctx: AppContext) {
     },
   }),
   defineTool("task_get_info", {
-    description: "Get task details including title, kind, status, linked work items, PRs, and notes",
+    description: "Get task details including title, kind, status, linked session counts/previews, work items, PRs, and notes",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
@@ -201,6 +216,7 @@ export function createTaskTools(ctx: AppContext) {
       const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
       return {
         ...task.value,
+        ...compactTaskInfoSessionIds(task.value.sessionIds),
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),
       };
     },

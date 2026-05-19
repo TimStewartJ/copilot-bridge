@@ -248,6 +248,40 @@ describe("session manager task tools", () => {
     }));
   });
 
+  it("task_get_info includes complete session metadata for short linked session lists", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Short session info");
+    const sessionIds = ["session-1", "session-2"];
+    for (const sessionId of sessionIds) ctx.taskStore.linkSession(task.id, sessionId);
+
+    const tool = getTool(ctx, "task_get_info");
+    const result = await tool.handler({ taskId: task.id }, createInvocation("task_get_info"));
+
+    expect(result).toEqual(expect.objectContaining({
+      id: task.id,
+      sessionIds,
+      sessionCount: sessionIds.length,
+      omittedSessionCount: 0,
+    }));
+  });
+
+  it("task_get_info compacts long linked session lists", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Long session info");
+    const sessionIds = Array.from({ length: 12 }, (_, index) => `session-${String(index + 1).padStart(2, "0")}`);
+    for (const sessionId of sessionIds) ctx.taskStore.linkSession(task.id, sessionId);
+
+    const tool = getTool(ctx, "task_get_info");
+    const result = await tool.handler({ taskId: task.id }, createInvocation("task_get_info"));
+
+    expect(result).toEqual(expect.objectContaining({
+      id: task.id,
+      sessionIds: sessionIds.slice(0, 10),
+      sessionCount: sessionIds.length,
+      omittedSessionCount: 2,
+    }));
+  });
+
   it("task_update_momentum rejects invalid follow-up inputs", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum invalid");
