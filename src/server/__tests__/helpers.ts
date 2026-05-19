@@ -207,6 +207,7 @@ export function createMockSessionManager() {
     listSessionsFromDisk: () => [],
     getSessionActivity: () => [],
     getRestartBlockingSessionActivity: () => [],
+    quiesceRestartPreservableSessions: async () => ({ suspendedSessionIds: [], blockingSessions: [] }),
     isSessionBusy: () => false,
     getSessionRunState: () => "idle",
     getPendingUserInputCount: () => 0,

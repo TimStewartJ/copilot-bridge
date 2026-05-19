@@ -1,10 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
-import { SessionManager } from "../session-manager.js";
+import { clearRestartPending, refreshRestartState, SessionManager, triggerRestartPending } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createRestartSuspendedSessionStore } from "../restart-suspended-session-store.js";
-import { setupTestDb, createTestBus, testPath } from "./helpers.js";
+import { makeTestRuntimePaths, setupTestDb, createTestBus, testPath } from "./helpers.js";
 
 const { shutdownBridgeBrowserMock } = vi.hoisted(() => ({
   shutdownBridgeBrowserMock: vi.fn(),
@@ -19,9 +19,16 @@ vi.mock("../agent-browser.js", async () => {
 });
 
 describe("SessionManager graceful shutdown", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    clearRestartPending();
+    await refreshRestartState();
     shutdownBridgeBrowserMock.mockReset();
     shutdownBridgeBrowserMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    clearRestartPending();
+    await refreshRestartState();
   });
 
   function createManager(overrides: Record<string, unknown> = {}) {
@@ -210,6 +217,181 @@ describe("SessionManager graceful shutdown", () => {
 
     expect(session.rpc.suspend).not.toHaveBeenCalled();
     expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(store.get("session-1")).toBeUndefined();
+  });
+
+  it("quiesces restart-preservable runs immediately after tools finish", async () => {
+    const db = setupTestDb();
+    const store = createRestartSuspendedSessionStore(db);
+    const eventBusRegistry = createEventBusRegistry();
+    const { session, emit } = makeSession();
+    const manager = new SessionManager({
+      tools: [],
+      globalBus: createTestBus(),
+      eventBusRegistry,
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: {
+        findTaskBySessionId: vi.fn().mockReturnValue(null),
+      } as any,
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings: () => ({ mcpServers: {} }),
+      } as any,
+      config: { sessionMcpServers: {} },
+      restartSuspendedSessionStore: store,
+      runtimePaths: makeTestRuntimePaths("restart-quiesce"),
+    }) as any;
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    emit({
+      type: "user.message",
+      data: { content: "hello" },
+      timestamp: "2026-05-19T17:00:00.000Z",
+    });
+    emit({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-05-19T17:00:01.000Z",
+    });
+    emit({
+      type: "tool.execution_start",
+      data: { toolCallId: "tool-1", toolName: "bash" },
+      timestamp: "2026-05-19T17:00:02.000Z",
+    });
+    await flushMicrotasks();
+
+    triggerRestartPending();
+    await refreshRestartState();
+    expect(await manager.quiesceRestartPreservableSessions()).toMatchObject({
+      suspendedSessionIds: [],
+      blockingSessions: [expect.objectContaining({ id: "session-1" })],
+    });
+
+    emit({
+      type: "tool.execution_complete",
+      data: { toolCallId: "tool-1", success: true },
+      timestamp: "2026-05-19T17:00:03.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(session.rpc.suspend).toHaveBeenCalledTimes(1);
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(store.get("session-1")).toMatchObject({
+      sessionId: "session-1",
+      status: "suspended",
+    });
+    expect(manager.getActiveSessions()).toEqual([]);
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().complete).toBe(false);
+  });
+
+  it("shares concurrent restart quiesce suspend attempts", async () => {
+    const db = setupTestDb();
+    const store = createRestartSuspendedSessionStore(db);
+    const { session, emit } = makeSession();
+    let resolveSuspend!: () => void;
+    session.rpc.suspend = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSuspend = resolve;
+    }));
+    const manager = new SessionManager({
+      tools: [],
+      globalBus: createTestBus(),
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: {
+        findTaskBySessionId: vi.fn().mockReturnValue(null),
+      } as any,
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings: () => ({ mcpServers: {} }),
+      } as any,
+      config: { sessionMcpServers: {} },
+      restartSuspendedSessionStore: store,
+      runtimePaths: makeTestRuntimePaths("restart-quiesce-concurrent"),
+    }) as any;
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    emit({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-05-19T17:00:01.000Z",
+    });
+    emit({
+      type: "tool.execution_start",
+      data: { toolCallId: "tool-1", toolName: "bash" },
+      timestamp: "2026-05-19T17:00:02.000Z",
+    });
+    emit({
+      type: "tool.execution_complete",
+      data: { toolCallId: "tool-1", success: true },
+      timestamp: "2026-05-19T17:00:03.000Z",
+    });
+    await flushMicrotasks();
+
+    triggerRestartPending();
+    await refreshRestartState();
+    const first = manager.trySuspendForPendingRestart("session-1");
+    const second = manager.trySuspendForPendingRestart("session-1");
+    await flushMicrotasks();
+    expect(session.rpc.suspend).toHaveBeenCalledTimes(1);
+
+    resolveSuspend();
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(manager.getActiveSessions()).toEqual([]);
+  });
+
+  it("does not quiesce immediately after a prompt is accepted before tool work starts", async () => {
+    const db = setupTestDb();
+    const store = createRestartSuspendedSessionStore(db);
+    const { session, emit } = makeSession();
+    const manager = new SessionManager({
+      tools: [],
+      globalBus: createTestBus(),
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: {
+        findTaskBySessionId: vi.fn().mockReturnValue(null),
+      } as any,
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings: () => ({ mcpServers: {} }),
+      } as any,
+      config: { sessionMcpServers: {} },
+      restartSuspendedSessionStore: store,
+      runtimePaths: makeTestRuntimePaths("restart-quiesce-not-ready"),
+    }) as any;
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    emit({
+      type: "user.message",
+      data: { content: "hello" },
+      timestamp: "2026-05-19T17:00:00.000Z",
+    });
+    await flushMicrotasks();
+
+    triggerRestartPending();
+    await refreshRestartState();
+    const result = await manager.quiesceRestartPreservableSessions();
+
+    expect(result).toMatchObject({
+      suspendedSessionIds: [],
+      blockingSessions: [expect.objectContaining({ id: "session-1" })],
+    });
+    expect(session.rpc.suspend).not.toHaveBeenCalled();
     expect(store.get("session-1")).toBeUndefined();
   });
 

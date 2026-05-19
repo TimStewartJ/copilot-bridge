@@ -197,6 +197,7 @@ export interface SessionRunnerDeps {
     reason: UserInputCancelReason,
     message?: string,
   ): void;
+  maybeSuspendForPendingRestart(sessionId: string): void;
   recordSessionAttention(sessionId: string, at?: string): void;
   invalidateSessionListCache(reason?: string): void;
   maybeAutoNameSession(
@@ -281,6 +282,7 @@ export class SessionRunner {
         pendingPrompt: prompt,
         promptAccepted: false,
         preserveAcrossRestart: true,
+        restartSuspendReady: false,
       },
     );
   }
@@ -382,6 +384,7 @@ export class SessionRunner {
         pendingPrompt: fleetPrompt,
         promptAccepted: false,
         preserveAcrossRestart: false,
+        restartSuspendReady: false,
       },
     );
   }
@@ -403,6 +406,7 @@ export class SessionRunner {
         pendingPrompt: record.pendingPrompt,
         promptAccepted: record.promptAccepted,
         preserveAcrossRestart: false,
+        restartSuspendReady: false,
       },
     );
   }
@@ -416,6 +420,7 @@ export class SessionRunner {
       pendingPrompt?: string;
       promptAccepted?: boolean;
       preserveAcrossRestart?: boolean;
+      restartSuspendReady?: boolean;
     },
   ): SessionRunController {
     const now = Date.now();
@@ -704,6 +709,12 @@ export class SessionRunner {
       if (!shouldRecordCompletionAttention(reason)) return;
       this.recordSessionAttention(sessionId, getEventTimestampIso(event));
     };
+    const setRestartSuspendReady = (ready: boolean) => {
+      this.deps.runStateController.setSessionRunMetadata(sessionId, { restartSuspendReady: ready });
+    };
+    const maybeSuspendForPendingRestart = () => {
+      this.deps.maybeSuspendForPendingRestart(sessionId);
+    };
 
     const getAgeMs = (now: number, at: number | undefined): number | undefined =>
       at === undefined ? undefined : Math.max(0, now - at);
@@ -853,6 +864,7 @@ export class SessionRunner {
       }
       switch (event.type) {
         case "user.message":
+          setRestartSuspendReady(false);
           bus.clearPendingPrompt(
             typeof data?.content === "string"
               ? data.content
@@ -866,6 +878,7 @@ export class SessionRunner {
           }
           break;
         case "assistant.turn_start":
+          setRestartSuspendReady(false);
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           bus.emit({ type: "thinking" });
           break;
@@ -881,6 +894,7 @@ export class SessionRunner {
           this.deps.globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
+          setRestartSuspendReady(false);
           if (data?.parentToolCallId && data?.content) {
             subAgentResponseMap.set(data.parentToolCallId, data.content);
             break;
@@ -894,6 +908,7 @@ export class SessionRunner {
           }
           break;
         case "tool.execution_start": {
+          setRestartSuspendReady(false);
           const toolName = data?.toolName ?? data?.name ?? "unknown";
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);
@@ -966,6 +981,12 @@ export class SessionRunner {
             isSubAgent: isAgent || undefined,
             timestamp: event.timestamp,
           });
+          if (bus.getSnapshot().activeTools.length === 0) {
+            setRestartSuspendReady(true);
+            maybeSuspendForPendingRestart();
+          } else {
+            setRestartSuspendReady(false);
+          }
           break;
         }
         case "subagent.started": {
