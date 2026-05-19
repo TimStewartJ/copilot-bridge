@@ -173,7 +173,7 @@ async function main(): Promise<void> {
       docsNodeCount: docsTreeRes.body.tree.length,
     }, null, 2));
   } finally {
-    await cleanupPreviewTarget(stagingDir);
+    await cleanupPreviewTarget(stagingDir, "clone", { removeData: false });
   }
 }
 
