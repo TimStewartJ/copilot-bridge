@@ -18,6 +18,7 @@ type ValidationCommandResult = {
 export type ValidationCommandOptions = {
   timeoutMs?: number;
   isolateRuntimeEnv?: boolean;
+  env?: NodeJS.ProcessEnv;
 };
 
 type RunValidationGateOptions<Result extends ValidationCommandResult> = {
@@ -55,6 +56,8 @@ const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
 // Bump when the deploy gate contract changes in a way that should invalidate existing stamps.
 export const DEPLOY_GATE_VERSION = 1;
+// Bump when preview validation no longer proves the PR gate used by deploy fast-path reuse.
+export const PREVIEW_GATE_VERSION = 1;
 
 const FAST_CHECK_STEP: ValidationStep = {
   command: "npm run check:fast",
@@ -73,6 +76,11 @@ const DEPLOY_CHECK_STEP: ValidationStep = {
 
 export const DEPLOY_CHECK_COMMAND = DEPLOY_CHECK_STEP.command;
 
+const PREVIEW_SMOKE_STEP: ValidationStep = {
+  command: "npm run preview:smoke",
+  timeoutMs: VALIDATION_TIMEOUT_MS,
+};
+
 const PRODUCTION_BUILD_STEP: ValidationStep = {
   command: "npm run build",
   timeoutMs: VALIDATION_TIMEOUT_MS,
@@ -89,10 +97,18 @@ export const PREVIEW_GATE: ValidationGate = {
   steps: [FAST_CHECK_STEP, PR_CHECK_STEP],
 };
 
+export const PREVIEW_GATE_COMMAND = PREVIEW_GATE.steps.map((step) => step.command).join(" && ");
+
 export const DEPLOY_GATE: ValidationGate = {
   id: "deploy",
   label: "Deploy validation",
   steps: [DEPLOY_CHECK_STEP],
+};
+
+export const DEPLOY_SMOKE_GATE: ValidationGate = {
+  id: "deploy-smoke",
+  label: "Smoke-only deploy validation",
+  steps: [PREVIEW_SMOKE_STEP],
 };
 
 export const STAMPED_DEPLOY_GATE: ValidationGate = {

@@ -136,6 +136,10 @@ function isDeployValidationStampPath(path: string): boolean {
   return path.split(/[/\\]/).some((part) => part.startsWith("deploy-validation-stamp.json"));
 }
 
+function isStagingValidationStampPath(path: string): boolean {
+  return path.split(/[/\\]/).includes("staging-validation-stamps");
+}
+
 function mockDataFilePresence(
   { restartSignal = false, preDeploySha = false }: { restartSignal?: boolean; preDeploySha?: boolean } = {},
 ) {
@@ -179,6 +183,7 @@ vi.mock("node:fs", async (importOriginal) => {
         || isDataFilePath(normalized, "deps-hash")
         || isValidationLogPath(normalized)
         || isDeployValidationStampPath(normalized)
+        || isStagingValidationStampPath(normalized)
       ) {
         return;
       }
@@ -186,7 +191,9 @@ vi.mock("node:fs", async (importOriginal) => {
     },
     mkdirSync: (...args: MkdirSyncArgs) => {
       const [path] = args;
-      if (isValidationLogPath(String(path))) return undefined as ReturnType<typeof actual.mkdirSync>;
+      if (isValidationLogPath(String(path)) || isStagingValidationStampPath(String(path))) {
+        return undefined as ReturnType<typeof actual.mkdirSync>;
+      }
       return actual.mkdirSync(...args);
     },
     readFileSync: (path: Parameters<typeof actual.readFileSync>[0], ...args: unknown[]) => {
@@ -202,7 +209,7 @@ vi.mock("node:fs", async (importOriginal) => {
     renameSync: (...args: RenameSyncArgs) => {
       renameSyncCallMock(...args);
       const [, target] = args;
-      if (isDeployValidationStampPath(String(target))) return;
+      if (isDeployValidationStampPath(String(target)) || isStagingValidationStampPath(String(target))) return;
       return actual.renameSync(...args);
     },
   };
@@ -313,10 +320,25 @@ const PREVIEW_VALIDATION_COMMANDS = [
   "npm run check:fast",
   "npm run check:pr",
 ] as const;
+const PREVIEW_GATE_COMMAND = PREVIEW_VALIDATION_COMMANDS.join(" && ");
 
 const DEPLOY_VALIDATION_COMMANDS = [
   "npm run check:deploy",
 ] as const;
+const DEPLOY_SMOKE_COMMAND = "npm run preview:smoke";
+
+function stagingStampJson(prefix: string, commitSha: string, dependencyHash = "same-hash"): string {
+  return JSON.stringify({
+    stagingPrefix: prefix,
+    stagingCommitSha: commitSha,
+    dependencyHash,
+    gateId: "preview",
+    gateVersion: 1,
+    command: PREVIEW_GATE_COMMAND,
+    source: "staging_preview",
+    validatedAt: "2026-05-18T20:00:00.000Z",
+  });
+}
 
 function expectIsolatedValidationEnv(env: NodeJS.ProcessEnv | undefined) {
   expect(env?.BRIDGE_DEMO_MODE).toBe("false");
@@ -830,6 +852,81 @@ describe("staging tools", () => {
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(true);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "deps-hash"))).toBe(false);
+  });
+
+  it("uses a matching preview validation stamp to run smoke-only deploy validation", async () => {
+    const mod = await loadStagingToolsModule();
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    if (!deployTool) throw new Error("staging_deploy tool not found");
+
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const stagingDir = join(stagingParent, "preview-deploy");
+    const validatedSha = "1111111111111111111111111111111111111111";
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, ".gitignore"), "node_modules\n");
+    mockDataFilePresence();
+    let productionHeadCalls = 0;
+    existsSyncOverrideMock.mockImplementation((path) => {
+      const normalized = String(path);
+      if (isStagingValidationStampPath(normalized)) return true;
+      if (isDataFilePath(normalized, "restart.signal")) return false;
+      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
+      return undefined;
+    });
+    readFileSyncOverrideMock.mockImplementation((path) =>
+      isStagingValidationStampPath(String(path))
+        ? stagingStampJson("preview-deploy", validatedSha)
+        : undefined,
+    );
+
+    execSyncMock.mockImplementation((cmd: string, options?: { cwd?: string }) => {
+      const cwd = options?.cwd;
+      if (cmd === "git add -A") return "";
+      if (cmd === "git --no-pager status --porcelain") return "";
+      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
+      if (cmd === "git log main..staging/preview-deploy --oneline") return "abc123 deploy commit\n";
+      if (cmd === "git stash --include-untracked") return "No local changes to save\n";
+      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
+      if (cmd === "git rebase main" && cwd === stagingDir) return "";
+      if (cmd === "git rev-parse HEAD" && cwd === stagingDir) return `${validatedSha}\n`;
+      if (cmd === DEPLOY_SMOKE_COMMAND) return "smoke ok\n";
+      if (cmd === "npm run check:deploy") throw new Error("full deploy gate should be skipped");
+      if (cmd === "git rev-parse HEAD") {
+        productionHeadCalls++;
+        return productionHeadCalls === 1
+          ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+          : `${validatedSha}\n`;
+      }
+      if (cmd === 'git merge "staging/preview-deploy" --no-edit') return "";
+      if (cmd === 'git diff "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" HEAD --name-only -- package.json') return "";
+      if (cmd === "git rev-parse --short HEAD") return "2222222\n";
+      if (cmd === "git push origin main") return "";
+      if (cmd === `git worktree remove "${stagingDir}" --force`) return "";
+      if (cmd === 'git branch -D "staging/preview-deploy"') return "";
+      if (cmd === "git worktree prune") return "";
+      throw new Error(`Unexpected command: ${cmd} (cwd: ${cwd ?? "unknown"})`);
+    });
+
+    const result = await deployTool.handler(
+      { stagingDir, message: "Deploy with preview stamp" },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_deploy",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as { success: boolean; commitSha: string };
+
+    expect(result).toMatchObject({
+      success: true,
+      commitSha: "2222222",
+    });
+    const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
+    expect(commands).toContain(DEPLOY_SMOKE_COMMAND);
+    expect(commands).not.toContain("npm run check:deploy");
+    expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(true);
+    const deployStampWrite = writeFileSyncCallMock.mock.calls.find(([file]) => isDeployValidationStampPath(String(file)));
+    expect(String(deployStampWrite?.[1])).toContain('"command": "npm run check:deploy"');
   });
 
   it("skips the deploy validation stamp if the pushed production HEAD differs from the validated staging commit", async () => {
@@ -1411,6 +1508,37 @@ describe("staging tools", () => {
     }
   });
 
+  it("writes a staging validation stamp after successful staging_preview validation", async () => {
+    const commitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "git rev-parse HEAD") return `${commitSha}\n`;
+      return "";
+    });
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-preview-stamp-");
+    const prefix = basename(stagingDir);
+
+    await tools.staging_preview.handler(
+      { stagingDir },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    );
+
+    const stampWrite = writeFileSyncCallMock.mock.calls.find(([file]) =>
+      isStagingValidationStampPath(String(file)),
+    );
+    expect(String(stampWrite?.[1])).toContain(`"stagingPrefix": "${prefix}"`);
+    expect(String(stampWrite?.[1])).toContain(`"stagingCommitSha": "${commitSha}"`);
+    expect(String(stampWrite?.[1])).toContain(`"command": "${PREVIEW_GATE_COMMAND}"`);
+    expect(renameSyncCallMock.mock.calls.some(([, target]) =>
+      isStagingValidationStampPath(String(target)),
+    )).toBe(true);
+  });
+
   it("skips staging_preview validation when validate is false", async () => {
     const tools = await loadStagingTools();
     const stagingDir = createTempDir("bridge-stage-preview-smoke-");
@@ -1428,6 +1556,9 @@ describe("staging tools", () => {
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.every((cmd) => !PREVIEW_VALIDATION_COMMANDS.includes(cmd as (typeof PREVIEW_VALIDATION_COMMANDS)[number]))).toBe(true);
     expect(commands.some((cmd) => cmd.startsWith("npx vite build --base"))).toBe(true);
+    expect(renameSyncCallMock.mock.calls.some(([, target]) =>
+      isStagingValidationStampPath(String(target)),
+    )).toBe(false);
   });
 
   it("builds previews under the configured runtime preview root", async () => {

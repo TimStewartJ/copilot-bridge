@@ -21,10 +21,19 @@ import {
   DEPLOY_CHECK_COMMAND,
   DEPLOY_GATE,
   DEPLOY_GATE_VERSION,
+  DEPLOY_SMOKE_GATE,
   PREVIEW_GATE,
+  PREVIEW_GATE_COMMAND,
+  PREVIEW_GATE_VERSION,
   runValidationGateAsync,
 } from "./validation-pipeline.js";
 import { writeDeployValidationStamp } from "./deploy-validation-stamp.js";
+import {
+  deleteStagingValidationStamp,
+  readStagingValidationStamp,
+  validateStagingValidationStamp,
+  writeStagingValidationStamp,
+} from "./staging-validation-stamp.js";
 import { config } from "./config.js";
 import {
   buildStagingBackendSpawnConfig,
@@ -194,7 +203,7 @@ function removeStagingDist(prefix: string): void {
 async function run(
   cmd: string,
   cwd: string,
-  options: { timeoutMs?: number; isolateRuntimeEnv?: boolean } = {},
+  options: { timeoutMs?: number; isolateRuntimeEnv?: boolean; env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ ok: boolean; output: string }> {
   // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
   // resolve the correct Node binary (v22+ required for node:sqlite) instead of
@@ -204,7 +213,8 @@ async function run(
   const validationEnv = options.isolateRuntimeEnv
     ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-staging-validation-" })
     : undefined;
-  const env = withNonInteractiveCommandEnv(validationEnv?.env ?? prependNodePath(process.env, nodeDir));
+  const baseEnv = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
+  const env = withNonInteractiveCommandEnv({ ...baseEnv, ...options.env });
   const startedAt = Date.now();
 
   return await new Promise((resolve) => {
@@ -330,6 +340,12 @@ function commandFailure(
       ...toolTelemetry,
     },
   });
+}
+
+function deployValidationEnv(): NodeJS.ProcessEnv {
+  return {
+    BRIDGE_VALIDATION_LOG_DIR: join(PRODUCTION_DATA_DIR, "validation-logs"),
+  };
 }
 
 async function listStagingBranchPrefixes(): Promise<Set<string> | null> {
@@ -682,6 +698,12 @@ export const STAGING_TOOLS = [
         }
       }
 
+      try {
+        deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+      } catch (error) {
+        log(`Warning: could not clear stale staging validation stamp for ${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
       log(`Staging worktree ready: ${stagingDir}`);
       return {
         success: true,
@@ -756,6 +778,9 @@ export const STAGING_TOOLS = [
       }
 
       if (shouldValidate) {
+        const preValidationHead = await run("git rev-parse HEAD", stagingDir);
+        const preValidationCommitSha = preValidationHead.ok ? preValidationHead.output.trim() : "";
+        const preValidationDependencyHash = dependencySyncHash(stagingDir);
         const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
           cwd: stagingDir,
           run: (command, options) => run(command, stagingDir, options),
@@ -770,6 +795,40 @@ export const STAGING_TOOLS = [
             validationResult.result.output,
             { stagingDir, gateId: validationResult.gate.id },
           );
+        }
+        const postValidationHead = await run("git rev-parse HEAD", stagingDir);
+        const postValidationCommitSha = postValidationHead.ok ? postValidationHead.output.trim() : "";
+        const postValidationDependencyHash = dependencySyncHash(stagingDir);
+        if (
+          preValidationCommitSha
+          && postValidationCommitSha
+          && preValidationCommitSha === postValidationCommitSha
+          && preValidationDependencyHash === postValidationDependencyHash
+        ) {
+          try {
+            writeStagingValidationStamp(PRODUCTION_DATA_DIR, {
+              stagingPrefix: prefix,
+              stagingCommitSha: postValidationCommitSha,
+              dependencyHash: postValidationDependencyHash,
+              gateId: PREVIEW_GATE.id,
+              gateVersion: PREVIEW_GATE_VERSION,
+              command: PREVIEW_GATE_COMMAND,
+              source: "staging_preview",
+              validatedAt: new Date().toISOString(),
+            });
+            log(`Staging preview validation stamp written for ${prefix} at ${postValidationCommitSha}`);
+          } catch (error) {
+            log(`Staging preview validation stamp could not be written; deploy will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        } else {
+          const reason = !preValidationCommitSha
+            ? `staging HEAD could not be read before validation: ${preValidationHead.ok ? "empty git rev-parse output" : preValidationHead.output.slice(-200)}`
+            : !postValidationCommitSha
+              ? `staging HEAD could not be read after validation: ${postValidationHead.ok ? "empty git rev-parse output" : postValidationHead.output.slice(-200)}`
+              : preValidationCommitSha !== postValidationCommitSha
+                ? `staging HEAD changed during validation (${preValidationCommitSha} -> ${postValidationCommitSha})`
+                : "dependency inputs changed during validation";
+          log(`Staging preview validation stamp skipped because ${reason}`);
         }
       } else {
         log("Skipping staging preview validation");
@@ -1005,9 +1064,43 @@ export const STAGING_TOOLS = [
         );
       }
 
-      const validationResult = await runValidationGateAsync(DEPLOY_GATE, {
+      let validatedCommitSha = "";
+      let dependencyHash: string | null = null;
+      const stagingStamp = readStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+      let stagingValidation: ReturnType<typeof validateStagingValidationStamp> = {
+        valid: false,
+        reason: "missing staging validation stamp",
+      };
+      if (stagingStamp) {
+        const candidateHeadResult = await run("git rev-parse HEAD", stagingDir);
+        const candidateCommitSha = candidateHeadResult.ok ? candidateHeadResult.output.trim() : "";
+        if (candidateCommitSha) {
+          dependencyHash = dependencySyncHash(stagingDir);
+          stagingValidation = validateStagingValidationStamp(stagingStamp, {
+            stagingPrefix: prefix,
+            stagingCommitSha: candidateCommitSha,
+            dependencyHash,
+            gateId: PREVIEW_GATE.id,
+            gateVersion: PREVIEW_GATE_VERSION,
+            command: PREVIEW_GATE_COMMAND,
+          });
+          if (stagingValidation.valid) {
+            validatedCommitSha = candidateCommitSha;
+          }
+        } else {
+          log(`Preview validation stamp not used: staging HEAD could not be read (${candidateHeadResult.ok ? "empty git rev-parse output" : candidateHeadResult.output.slice(-200)})`);
+        }
+      }
+      const deployGate = stagingValidation.valid ? DEPLOY_SMOKE_GATE : DEPLOY_GATE;
+      if (stagingValidation.valid) {
+        log(`Preview validation stamp matched for ${prefix} at ${validatedCommitSha} — running smoke-only deploy validation`);
+      } else {
+        log(`Preview validation stamp not used: ${stagingValidation.reason}`);
+      }
+
+      const validationResult = await runValidationGateAsync(deployGate, {
         cwd: stagingDir,
-        run: (command, options) => run(command, stagingDir, options),
+        run: (command, options) => run(command, stagingDir, { ...options, env: deployValidationEnv() }),
         log,
       });
       if (!validationResult.ok) {
@@ -1021,19 +1114,30 @@ export const STAGING_TOOLS = [
           { stagingDir, branch, prodBranch, gateId: validationResult.gate.id },
         );
       }
-      const validatedHeadResult = await run("git rev-parse HEAD", stagingDir);
-      if (!validatedHeadResult.ok) {
-        await unstashProduction();
-        return commandFailure(
-          "Failed to identify the validated staging commit.",
-          "Deploy validation passed, but the staging commit SHA could not be read. The staging worktree is still intact for retry.",
-          "git rev-parse HEAD",
-          stagingDir,
-          validatedHeadResult.output,
-          { stagingDir, branch, prodBranch },
-        );
+      if (!validatedCommitSha) {
+        const validatedHeadResult = await run("git rev-parse HEAD", stagingDir);
+        if (!validatedHeadResult.ok) {
+          await unstashProduction();
+          return commandFailure(
+            "Failed to identify the validated staging commit.",
+            "Deploy validation passed, but the staging commit SHA could not be read. The staging worktree is still intact for retry.",
+            "git rev-parse HEAD",
+            stagingDir,
+            validatedHeadResult.output,
+            { stagingDir, branch, prodBranch },
+          );
+        }
+        validatedCommitSha = validatedHeadResult.output.trim();
+        if (!validatedCommitSha) {
+          await unstashProduction();
+          return stagingFailure(
+            "Failed to identify the validated staging commit.",
+            "Deploy validation passed, but git rev-parse returned an empty commit SHA. The staging worktree is still intact for retry.",
+            { toolTelemetry: { stagingDir, branch, prodBranch } },
+          );
+        }
       }
-      const validatedCommitSha = validatedHeadResult.output.trim();
+      dependencyHash ??= dependencySyncHash(stagingDir);
       const validationElapsedMs = validationResult.results.reduce((total, entry) => total + entry.elapsedMs, 0);
       const releaseSlotResult = await prepareReleaseSlot({
         sourceDir: stagingDir,
@@ -1161,10 +1265,12 @@ export const STAGING_TOOLS = [
       const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
       if (deployedCommitSha && deployedCommitSha === validatedCommitSha) {
         try {
+          // On the fast path the preview stamp proves the PR gate for this commit,
+          // and the deploy step re-runs smoke, so the full deploy contract is met.
           writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
             commitSha: deployedCommitSha,
-            dependencyHash: dependencySyncHash(stagingDir),
-            gateId: validationResult.gate.id,
+            dependencyHash,
+            gateId: DEPLOY_GATE.id,
             gateVersion: DEPLOY_GATE_VERSION,
             command: DEPLOY_CHECK_COMMAND,
             source: "staging_deploy",
@@ -1196,6 +1302,7 @@ export const STAGING_TOOLS = [
         try {
           await cleanupPreviewArtifactsForStagingDir(stagingDir);
           await removeWorktree(stagingDir, branch);
+          deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
           log("Staging worktree cleaned up after restart signal failure");
         } catch (cleanupErr) {
           cleanupNote = `\n\nPost-deploy cleanup also failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`;
@@ -1216,6 +1323,7 @@ export const STAGING_TOOLS = [
       try {
         await cleanupPreviewArtifactsForStagingDir(stagingDir);
         await removeWorktree(stagingDir, branch);
+        deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
         log("Staging worktree cleaned up");
       } catch (err) {
         log(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
@@ -1256,6 +1364,7 @@ export const STAGING_TOOLS = [
 
       await cleanupPreviewArtifactsForStagingDir(stagingDir);
       await removeWorktree(stagingDir, branch);
+      deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
 
       log("Staging worktree cleaned up");
       return { success: true, message: `Staging worktree removed: ${stagingDir}` };
