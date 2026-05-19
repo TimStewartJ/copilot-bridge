@@ -65,4 +65,42 @@ describe("mergeDashboardFeedCards", () => {
       "dismissed:Older dismissed",
     ]);
   });
+
+  it("orders resolved cards with equal status changes by updated time and id", () => {
+    const statusChangedAt = "2026-05-13T10:00:00.000Z";
+    const oldestUpdated = makeCard({
+      id: "00000000-0000-4000-8000-000000000001",
+      status: "done",
+      statusChangedAt,
+      updatedAt: "2026-05-13T10:01:00.000Z",
+    });
+    const sameUpdatedHighId = makeCard({
+      id: "00000000-0000-4000-8000-000000000004",
+      status: "done",
+      statusChangedAt,
+      updatedAt: "2026-05-13T10:02:00.000Z",
+    });
+    const sameUpdatedLowId = makeCard({
+      id: "00000000-0000-4000-8000-000000000003",
+      status: "done",
+      statusChangedAt,
+      updatedAt: "2026-05-13T10:02:00.000Z",
+    });
+    const newestUpdated = makeCard({
+      id: "00000000-0000-4000-8000-000000000002",
+      status: "done",
+      statusChangedAt,
+      updatedAt: "2026-05-13T10:03:00.000Z",
+    });
+
+    expect(mergeDashboardFeedCards(
+      [],
+      [oldestUpdated, sameUpdatedLowId, newestUpdated, sameUpdatedHighId],
+    ).map((card) => card.id)).toEqual([
+      newestUpdated.id,
+      sameUpdatedHighId.id,
+      sameUpdatedLowId.id,
+      oldestUpdated.id,
+    ]);
+  });
 });

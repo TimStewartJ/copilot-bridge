@@ -148,6 +148,52 @@ describe("feed-store", () => {
     }
   });
 
+  it("paginates resolved cards by updated time across equal status changes", () => {
+    vi.useFakeTimers();
+    try {
+      const statusChangedAt = "2026-05-13T10:00:00.000Z";
+      vi.setSystemTime(new Date(statusChangedAt));
+      const oldestUpdated = store.saveCard(
+        { title: "Oldest updated", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000001" },
+      ).card;
+      const sameUpdatedHighId = store.saveCard(
+        { title: "Same updated high id", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000004" },
+      ).card;
+      const sameUpdatedLowId = store.saveCard(
+        { title: "Same updated low id", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000003" },
+      ).card;
+      const newestUpdated = store.saveCard(
+        { title: "Newest updated", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000002" },
+      ).card;
+
+      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
+      store.updateCardById(oldestUpdated.id, { body: "Updated first" });
+      vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
+      store.updateCardById(sameUpdatedHighId.id, { body: "Updated second" });
+      store.updateCardById(sameUpdatedLowId.id, { body: "Updated third" });
+      vi.setSystemTime(new Date("2026-05-13T10:03:00.000Z"));
+      store.updateCardById(newestUpdated.id, { body: "Updated fourth" });
+
+      const seededCards = [oldestUpdated, sameUpdatedHighId, sameUpdatedLowId, newestUpdated]
+        .map((card) => store.getCard(card.id)!);
+      expect(new Set(seededCards.map((card) => card.statusChangedAt))).toEqual(new Set([statusChangedAt]));
+
+      const firstPage = store.listCardPage({ status: "done", limit: 2 });
+      expect(firstPage.cards.map((card) => card.id)).toEqual([newestUpdated.id, sameUpdatedHighId.id]);
+      expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+      const secondPage = store.listCardPage({ status: "done", limit: 2, cursor: firstPage.nextCursor! });
+      expect(secondPage.cards.map((card) => card.id)).toEqual([sameUpdatedLowId.id, oldestUpdated.id]);
+      expect(secondPage.nextCursor).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects cursors reused with different feed filters", () => {
     store.saveCard({ title: "First" });
     store.saveCard({ title: "Second" });

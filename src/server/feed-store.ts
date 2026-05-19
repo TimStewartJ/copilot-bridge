@@ -597,7 +597,7 @@ function feedPageOrderBy(order: FeedListOrder): string {
     case "active":
       return "pinned DESC, createdAt DESC, id DESC";
     case "resolved":
-      return "statusChangedAt DESC, id DESC";
+      return "statusChangedAt DESC, updatedAt DESC, id DESC";
     case "mixed":
       return "CASE WHEN status = 'active' THEN 0 ELSE 1 END, pinned DESC, updatedAt DESC, id DESC";
   }
@@ -747,8 +747,17 @@ function appendCursorPredicate(
       values.push(cursor.pinned, cursor.pinned, cursor.createdAt, cursor.pinned, cursor.createdAt, cursor.id);
       return;
     case "resolved":
-      where.push("(statusChangedAt < ? OR (statusChangedAt = ? AND id < ?))");
-      values.push(cursor.statusChangedAt, cursor.statusChangedAt, cursor.id);
+      where.push(
+        "(statusChangedAt < ? OR (statusChangedAt = ? AND updatedAt < ?) OR (statusChangedAt = ? AND updatedAt = ? AND id < ?))",
+      );
+      values.push(
+        cursor.statusChangedAt,
+        cursor.statusChangedAt,
+        cursor.updatedAt,
+        cursor.statusChangedAt,
+        cursor.updatedAt,
+        cursor.id,
+      );
       return;
     case "mixed":
       throw new FeedCardValidationError("cursor pagination requires a status when includeDismissed is true");

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBridgeTools } from "../session-manager.js";
 import type { ApiRouteTestState } from "./api-routes-test-helpers.js";
 import { installApiRouteTestHooks, request } from "./api-routes-test-helpers.js";
@@ -150,6 +150,60 @@ describe("Feed routes", () => {
     expect(secondPage.status).toBe(200);
     expect(secondPage.body.nextCursor).toBeNull();
     expect(new Set(returnedIds)).toEqual(new Set([first.id, second.id, third.id]));
+  });
+
+  it("GET /api/feed paginates resolved cards by updated time across equal status changes", async () => {
+    const statusChangedAt = "2026-05-13T10:00:00.000Z";
+    let oldestUpdated!: { id: string };
+    let sameUpdatedHighId!: { id: string };
+    let sameUpdatedLowId!: { id: string };
+    let newestUpdated!: { id: string };
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(statusChangedAt));
+      oldestUpdated = ctx.feedStore.saveCard(
+        { title: "Oldest updated", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000001" },
+      ).card;
+      sameUpdatedHighId = ctx.feedStore.saveCard(
+        { title: "Same updated high id", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000004" },
+      ).card;
+      sameUpdatedLowId = ctx.feedStore.saveCard(
+        { title: "Same updated low id", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000003" },
+      ).card;
+      newestUpdated = ctx.feedStore.saveCard(
+        { title: "Newest updated", status: "done" },
+        { createId: "00000000-0000-4000-8000-000000000002" },
+      ).card;
+
+      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
+      ctx.feedStore.updateCardById(oldestUpdated.id, { body: "Updated first" });
+      vi.setSystemTime(new Date("2026-05-13T10:02:00.000Z"));
+      ctx.feedStore.updateCardById(sameUpdatedHighId.id, { body: "Updated second" });
+      ctx.feedStore.updateCardById(sameUpdatedLowId.id, { body: "Updated third" });
+      vi.setSystemTime(new Date("2026-05-13T10:03:00.000Z"));
+      ctx.feedStore.updateCardById(newestUpdated.id, { body: "Updated fourth" });
+
+      const seededCards = [oldestUpdated, sameUpdatedHighId, sameUpdatedLowId, newestUpdated]
+        .map((card) => ctx.feedStore.getCard(card.id)!);
+      expect(new Set(seededCards.map((card) => card.statusChangedAt))).toEqual(new Set([statusChangedAt]));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const firstPage = await request(app).get("/api/feed?status=done&limit=2");
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.cards.map((card: any) => card.id)).toEqual([newestUpdated.id, sameUpdatedHighId.id]);
+    expect(firstPage.body.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await request(app)
+      .get(`/api/feed?status=done&limit=2&cursor=${encodeURIComponent(firstPage.body.nextCursor)}`);
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.cards.map((card: any) => card.id)).toEqual([sameUpdatedLowId.id, oldestUpdated.id]);
+    expect(secondPage.body.nextCursor).toBeNull();
   });
 
   it("GET /api/feed rejects cursors reused with different filters", async () => {
