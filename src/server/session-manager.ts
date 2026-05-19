@@ -657,7 +657,7 @@ export class SessionManager {
         idPrefix: DISPOSABLE_TITLE_SESSION_ID_PREFIX,
         cutoffTimestampMs: this.processStartedAtMs - SessionManager.DISPOSABLE_TITLE_SWEEP_GRACE_MS,
       });
-      this.recordSpan("session.name.cleanupSweep", start, undefined, {
+      this.recordSpan("session.name.cleanupSweep", Date.now() - start, undefined, {
         result: "ok",
         count: sweptIds.length,
       });
@@ -665,7 +665,7 @@ export class SessionManager {
         console.warn(`[sdk] Cleaned up ${sweptIds.length} leaked disposable title session row(s)`);
       }
     } catch (error) {
-      this.recordSpan("session.name.cleanupSweep", start, undefined, {
+      this.recordSpan("session.name.cleanupSweep", Date.now() - start, undefined, {
         result: "error",
         error: error instanceof Error ? error.message : String(error),
       });

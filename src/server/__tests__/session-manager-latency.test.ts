@@ -70,4 +70,17 @@ describe("SessionManager disk session list cache", () => {
       .map((span) => span.metadata?.result);
     expect(cacheResults).toEqual(expect.arrayContaining(["miss", "coalesced", "hit"]));
   });
+
+  it("records disposable title cleanup sweep spans with elapsed durations", () => {
+    const copilotHome = makeTestDir("session-manager-cleanup-sweep");
+    const { manager, telemetryStore } = createManager(copilotHome);
+
+    manager.sweepLeakedDisposableTitleSessions();
+
+    const spans = telemetryStore.querySpans({ name: "session.name.cleanupSweep" });
+    expect(spans).toHaveLength(1);
+    expect(spans[0].duration).toBeGreaterThanOrEqual(0);
+    expect(spans[0].duration).toBeLessThan(60_000);
+    expect(spans[0].metadata).toMatchObject({ result: "ok", count: 0 });
+  });
 });
