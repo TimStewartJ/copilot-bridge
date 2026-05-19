@@ -444,7 +444,7 @@ describe("SessionManager graceful shutdown", () => {
     expect(client.resumeSession).toHaveBeenCalledWith(
       "session-1",
       expect.objectContaining({
-        continuePendingWork: false,
+        continuePendingWork: true,
         onEvent: expect.any(Function),
       }),
     );
@@ -464,5 +464,60 @@ describe("SessionManager graceful shutdown", () => {
     expect(store.get("session-1")).toBeUndefined();
     expect(manager.getActiveSessions()).toEqual([]);
     expect(recoveredSession.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases restart recovery when resume produces no events", async () => {
+    vi.useFakeTimers();
+    try {
+      const db = setupTestDb();
+      const store = createRestartSuspendedSessionStore(db);
+      store.upsertSuspending({
+        sessionId: "session-1",
+        runKind: "message",
+        pendingPrompt: "hello",
+        promptAccepted: true,
+        suspendedAt: "2026-05-19T17:00:00.000Z",
+        lastEventAt: "2026-05-19T17:00:01.000Z",
+      });
+      store.markSuspended("session-1", "2026-05-19T17:00:02.000Z");
+
+      const recoveredSession = {
+        on: vi.fn(() => vi.fn()),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+      };
+      const client = {
+        start: vi.fn().mockResolvedValue(undefined),
+        resumeSession: vi.fn(async () => recoveredSession),
+      };
+      const manager = new SessionManager({
+        tools: [],
+        globalBus: createTestBus(),
+        eventBusRegistry: createEventBusRegistry(),
+        sessionTitles: createSessionTitlesStore(db),
+        taskStore: {
+          findTaskBySessionId: vi.fn().mockReturnValue(null),
+        } as any,
+        settingsStore: {
+          getMcpServers: () => ({}),
+          getSettings: () => ({ mcpServers: {} }),
+        } as any,
+        config: { sessionMcpServers: {} },
+        restartSuspendedSessionStore: store,
+        createCopilotClient: () => client as any,
+      });
+
+      await manager.initialize();
+      await flushMicrotasks();
+      expect(manager.getActiveSessions()).toEqual(["session-1"]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await flushMicrotasks();
+
+      expect(store.get("session-1")).toBeUndefined();
+      expect(manager.getActiveSessions()).toEqual([]);
+      expect(recoveredSession.disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

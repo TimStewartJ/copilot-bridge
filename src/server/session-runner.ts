@@ -45,6 +45,7 @@ const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run indepe
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
 const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
+const RESTART_RESUME_NO_EVENT_TIMEOUT_MS = 30_000;
 const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
   "assistant.turn_end",
   "session.idle",
@@ -510,8 +511,9 @@ export class SessionRunner {
       idleSpanName: "session.restartResumeToIdle",
       startLog: `[sdk] [${sid}] Resuming suspended session after restart...`,
       resumeOnly: true,
-      continuePendingWork: false,
+      continuePendingWork: true,
       useResumeEventHandler: true,
+      restartResumeNoEventTimeoutMs: RESTART_RESUME_NO_EVENT_TIMEOUT_MS,
     });
   }
 
@@ -527,6 +529,7 @@ export class SessionRunner {
       resumeOnly?: boolean;
       continuePendingWork?: boolean;
       useResumeEventHandler?: boolean;
+      restartResumeNoEventTimeoutMs?: number;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       historyTruncation?: QuietIntervalDeferTailTruncationRequest;
@@ -1391,6 +1394,7 @@ export class SessionRunner {
     const WATCHDOG_INTERVAL = 60_000;
     const WATCHDOG_TIMEOUT = 300_000;
     const RECOVERY_INTERVAL = 300_000;
+    let restartResumeNoEventTimer: ReturnType<typeof setTimeout> | undefined;
     const watchdog = setInterval(() => {
       const now = Date.now();
 
@@ -1450,6 +1454,17 @@ export class SessionRunner {
             if (runController.isCompleted()) break;
           }
           runController.markPromptAccepted();
+          if (opts.restartResumeNoEventTimeoutMs !== undefined && !runController.isCompleted()) {
+            restartResumeNoEventTimer = setTimeout(() => {
+              if (runController.isCompleted() || lastLiveEventAt !== undefined) return;
+              const now = Date.now();
+              console.warn(`[sdk] [${sid}] Restart recovery produced no events after ${opts.restartResumeNoEventTimeoutMs}ms — releasing run state`);
+              recordRunSpan("session.restartResume.no_events", now - sendStart, {
+                noEventTimeoutMs: opts.restartResumeNoEventTimeoutMs,
+              }, now);
+              runController.completePreservedForRestart();
+            }, opts.restartResumeNoEventTimeoutMs);
+          }
         } else {
           if (!opts.execute) throw new Error("Session run is missing an execute step");
           if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
@@ -1493,6 +1508,7 @@ export class SessionRunner {
     } finally {
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
+      if (restartResumeNoEventTimer) clearTimeout(restartResumeNoEventTimer);
       syncShellWaits.clear();
       unsub?.();
       if (opts.useResumeEventHandler) {
