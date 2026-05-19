@@ -1,16 +1,12 @@
-// Shared public URL / tunnel / webhook / git utilities used by both the server
+// Shared public URL / tunnel / webhook utilities used by both the server
 // and staging tools. These are pure utilities with no restart or checkpoint logic.
 
 import { execFileSync, execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { hostname, userInfo } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { resolveBridgeControlRoot } from "./control-root.js";
+import { basename, dirname, resolve } from "node:path";
 import type { Request } from "express";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const DEFAULT_TUNNEL_NAME = "copilot-bridge";
 const TUNNEL_NAME_HASH_LENGTH = 8;
 const EXPLICIT_TUNNEL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;
@@ -201,12 +197,6 @@ export function rememberRequestOrigin(req: Pick<Request, "headers" | "protocol" 
   const origin = deriveRequestOrigin(req);
   if (origin && isPublicOrigin(origin)) cachedObservedPublicOrigin = origin;
   return origin;
-}
-
-export function gitHash(): string {
-  try {
-    return execSync("git rev-parse --short HEAD", { cwd: ROOT, encoding: "utf-8", timeout: 5_000 }).trim();
-  } catch { return "unknown"; }
 }
 
 export async function notifyWebhook(message: string, url?: string): Promise<void> {

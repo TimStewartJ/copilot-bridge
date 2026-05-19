@@ -13,6 +13,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const HEAD_LOG_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "HEAD"];
+const SHORT_HASH_ARGS = ["rev-parse", "--short", "HEAD"];
 const UPSTREAM_ARGS = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"];
 const REMOTE_LOG_ARGS = ["log", "-1", "--format=%H%n%h%n%s", "origin/main"];
 const FETCH_REMOTE_ARGS = ["fetch", "--quiet", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
@@ -250,5 +251,51 @@ describe("createBridgeGitRevisionReader", () => {
     expect(fetchCalls).toBe(2);
     expect(first.remote).toEqual(second.remote);
     expect(refreshed.remote).toEqual(first.remote);
+  });
+});
+
+describe("gitHash", () => {
+  it("reads the current short hash through the hardened sync git helper", async () => {
+    execFileSyncMock.mockReturnValue("abc1234\n");
+
+    const revisions = await loadGitRevisionModule();
+
+    expect(revisions.gitHash()).toBe("abc1234");
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      "git",
+      ["--no-pager", ...SHORT_HASH_ARGS],
+      expect.objectContaining({
+        cwd: expect.any(String),
+        encoding: "utf-8",
+        env: expect.objectContaining({
+          GIT_PAGER: "cat",
+          PAGER: "cat",
+          TERM: "dumb",
+          GIT_TERMINAL_PROMPT: "0",
+        }),
+        timeout: 5_000,
+      }),
+    );
+    expectNonInteractiveGitCalls();
+  });
+
+  it("returns unknown when the current short hash cannot be read", async () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error("not a git worktree");
+    });
+
+    const revisions = await loadGitRevisionModule();
+
+    expect(revisions.gitHash()).toBe("unknown");
+    expectNonInteractiveGitCalls();
+  });
+
+  it("returns unknown when git reports an empty current short hash", async () => {
+    execFileSyncMock.mockReturnValue("\n");
+
+    const revisions = await loadGitRevisionModule();
+
+    expect(revisions.gitHash()).toBe("unknown");
+    expectNonInteractiveGitCalls();
   });
 });

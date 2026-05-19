@@ -101,6 +101,11 @@ function runGitSync(args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): GitComman
   }
 }
 
+export function gitHash(): string {
+  const result = runGitSync(["rev-parse", "--short", "HEAD"]);
+  return result.ok && result.output ? result.output : "unknown";
+}
+
 function runGit(args: string[], timeoutMs = LOCAL_GIT_TIMEOUT_MS): Promise<GitCommandResult> {
   return new Promise((resolve) => {
     execFile(
