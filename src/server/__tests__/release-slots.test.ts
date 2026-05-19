@@ -90,4 +90,33 @@ describe("release slots", () => {
       dependencyHash: "hash",
     })).toBeNull();
   });
+
+  it("accepts packaged update slot manifests from the release updater contract", () => {
+    const dataDir = makeTestDir("release-slot-update");
+    const id = "2026-05-18t20-00-00-0000000z-abcdef123456-deadbeef";
+    const root = join(dataDir, "release-slots", id);
+    const manifest = {
+      version: 1,
+      id,
+      root,
+      commitSha: "abcdef1234567890",
+      source: "release_update",
+      dependencyHash: `package-sha256:${"a".repeat(64)}`,
+      createdAt: "2026-05-18T20:00:00.000Z",
+      validationMode: "deploy",
+    };
+    mkdirSync(join(root, "dist", "server"), { recursive: true });
+    writeFileSync(join(root, "dist", "server", "index.js"), "console.log('release');\n");
+    writeFileSync(join(root, "release-slot.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(join(dataDir, "active-release.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    expect(resolveReleaseCandidate(dataDir, {
+      id,
+      root,
+      commitSha: "abcdef1234567890",
+      source: "release_update",
+      dependencyHash: `package-sha256:${"a".repeat(64)}`,
+    })).toMatchObject({ id, root, source: "release_update" });
+    expect(readActiveRelease(dataDir)).toMatchObject({ id, root, source: "release_update" });
+  });
 });

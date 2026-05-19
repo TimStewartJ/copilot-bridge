@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   checkForUpdate,
   compareVersions,
+  markUpdateInstallActivationFailed,
+  markUpdateInstallActivationSucceeded,
   readUpdateInstallStatus,
+  resolveReleaseRootForUpdate,
   startUpdateInstall,
   type UpdateInstallStatus,
 } from "../update-service.js";
@@ -28,6 +31,19 @@ function writeReleaseAppRoot(version: string, channel = "stable", platform = "wi
     version,
     channel,
     platform,
+    sourceCommit: "current-sha",
+  }));
+  return appRoot;
+}
+
+function writeReleaseSlotAppRoot(runtimePaths: ReturnType<typeof makeTestRuntimePaths>, version: string) {
+  const appRoot = join(runtimePaths.dataDir, "release-slots", "active-slot");
+  mkdirSync(appRoot, { recursive: true });
+  writeFileSync(join(appRoot, "package.json"), JSON.stringify({ version }));
+  writeFileSync(join(appRoot, ".bridge-release.json"), JSON.stringify({
+    version,
+    channel: "stable",
+    platform: "win-x64",
     sourceCommit: "current-sha",
   }));
   return appRoot;
@@ -269,6 +285,109 @@ describe("update service", () => {
     expect(launcherScript).toContain("*>>");
     expect(options.detached).toBeUndefined();
     expect(readUpdateInstallStatus({ runtimePaths }).status?.phase).toBe("started");
+  });
+
+  it("uses BRIDGE_RELEASE_ROOT when the active app runs from a release slot", async () => {
+    const keys = createKeyPair();
+    const manifest = manifestText("0.2.0");
+    const runtimePaths = makeTestRuntimePaths("update-install-slot", { distributionMode: "release" });
+    const appRoot = writeReleaseSlotAppRoot(runtimePaths, "0.1.0");
+    const releaseRoot = makeTestDir("update-install-slot-root");
+    writeFileSync(join(releaseRoot, "update.ps1"), "# test updater\n");
+    const spawnCalls: Array<[string, string[], any]> = [];
+    const spawnImpl = vi.fn((command: string, args: string[], options: any) => {
+      spawnCalls.push([command, args, options]);
+      return {
+        once: vi.fn(),
+        unref: vi.fn(),
+      } as any;
+    });
+
+    await startUpdateInstall({
+      appRoot,
+      runtimePaths,
+      env: {
+        ...runtimePaths.env,
+        BRIDGE_RELEASE_ROOT: releaseRoot,
+        BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM: keys.publicPem,
+        BRIDGE_UPDATE_MANIFEST_STABLE_URL: "https://updates.example.test/stable-win-x64.manifest.json",
+      },
+      fetchImpl: fetchManifest(manifest, keys.signManifest(manifest)),
+      spawnImpl,
+      powerShellCommand: "pwsh-test",
+      now: () => new Date("2026-05-08T20:10:00.000Z"),
+    });
+
+    const call = spawnCalls[0];
+    if (!call) throw new Error("Expected updater spawn call.");
+    expect(call[2].cwd).toBe(releaseRoot);
+    expect(call[2].env.BRIDGE_RELEASE_ROOT).toBe(releaseRoot);
+    const launcherPath = call[1][call[1].indexOf("-File") + 1];
+    if (!launcherPath) throw new Error("Expected launcher script path.");
+    expect(readFileSync(launcherPath, "utf8")).toContain(join(releaseRoot, "update.ps1"));
+  });
+
+  it("falls back to the app parent when BRIDGE_RELEASE_ROOT is not set", () => {
+    const appRoot = writeReleaseAppRoot("0.1.0");
+    expect(resolveReleaseRootForUpdate({}, appRoot)).toBe(join(appRoot, ".."));
+  });
+
+  it("lets the launcher complete a staged update status after activation", () => {
+    const runtimePaths = makeTestRuntimePaths("update-activation-status", { distributionMode: "release" });
+    writeInstallStatus(runtimePaths, {
+      id: "activation",
+      phase: "staged",
+      channel: "stable",
+      fromVersion: "0.1.0",
+      toVersion: "0.2.0",
+      packageUrl: "https://github.com/timstewartj/copilot-bridge/releases/download/v0.2.0/test.zip",
+      packageSha256: "a".repeat(64),
+      startedAt: "2026-05-08T20:00:00.000Z",
+      updatedAt: "2026-05-08T20:01:00.000Z",
+      pendingRestart: true,
+      releaseCandidateId: "slot-123",
+    });
+
+    expect(markUpdateInstallActivationSucceeded({
+      runtimePaths,
+      candidateId: "slot-123",
+      now: new Date("2026-05-08T20:02:00.000Z"),
+    })).toBe(true);
+    expect(readUpdateInstallStatus({ runtimePaths }).status).toMatchObject({
+      phase: "succeeded",
+      pendingRestart: false,
+      completedAt: "2026-05-08T20:02:00.000Z",
+    });
+  });
+
+  it("marks a staged update as failed when launcher activation fails", () => {
+    const runtimePaths = makeTestRuntimePaths("update-activation-failed", { distributionMode: "release" });
+    writeInstallStatus(runtimePaths, {
+      id: "activation",
+      phase: "staged",
+      channel: "stable",
+      fromVersion: "0.1.0",
+      toVersion: "0.2.0",
+      packageUrl: "https://github.com/timstewartj/copilot-bridge/releases/download/v0.2.0/test.zip",
+      packageSha256: "a".repeat(64),
+      startedAt: "2026-05-08T20:00:00.000Z",
+      updatedAt: "2026-05-08T20:01:00.000Z",
+      pendingRestart: true,
+      releaseCandidateId: "slot-123",
+    });
+
+    expect(markUpdateInstallActivationFailed({
+      runtimePaths,
+      candidateId: "slot-123",
+      message: "health failed",
+      now: new Date("2026-05-08T20:02:00.000Z"),
+    })).toBe(true);
+    expect(readUpdateInstallStatus({ runtimePaths }).status).toMatchObject({
+      phase: "failed",
+      pendingRestart: false,
+      error: "health failed",
+      rollbackAttempted: true,
+    });
   });
 
   it("returns a sanitized and bounded update log tail", () => {

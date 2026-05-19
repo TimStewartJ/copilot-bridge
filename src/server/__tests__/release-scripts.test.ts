@@ -32,17 +32,20 @@ describe("release scripts", () => {
     expect(stderrRedirect).toBeGreaterThan(stderrRotation);
   }
 
-  it("preserves mutable directories and health-checks rollback after failed updates", () => {
+  it("stages release updates as inactive slots and queues launcher activation", () => {
     const script = readFileSync(join(process.cwd(), "scripts", "update-release.ps1"), "utf-8");
 
-    expect(script).toContain("mutableDirectoriesPreservedOnRollback");
-    expect(script).toContain("Preserving mutable data/config directories after failed update");
-    expect(script).toContain("Wait-BridgeHealth -TimeoutSeconds 60");
+    expect(script).toContain('$releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"');
+    expect(script).toContain('Write-JsonFile (Join-Path $tempSlotRoot "release-slot.json") $releaseSlotManifest');
+    expect(script).toContain('$restartSignalPath = Join-Path $effectiveDataDir "restart.signal"');
+    expect(script).toContain('Write-UpdateStatus "staged"');
+    expect(script).toContain("Copy-ReleaseWrappersWithBackup");
     expect(script).toContain("function Remove-PathWithRetry");
     expect(script).toContain("Timed out waiting to remove $Path");
-    expect(script).toContain("Copy-DirectoryTree $appBackup $appDir");
-    expect(script).toContain('Write-UpdateStatus "rollback_failed" $rollbackMessage $true');
-    expect(script).not.toMatch(/foreach\s*\(\$entry\s+in\s+\$backupEntries\)\s*\{\s*Restore-BackupEntry\s+\$entry\s*\}/s);
+    expect(script.indexOf('Write-UpdateStatus "staged"')).toBeLessThan(script.indexOf("Move-Item -Path $restartSignalTempPath"));
+    expect(script).not.toContain('Write-UpdateStatus "stopping"');
+    expect(script).not.toContain("Wait-BridgeHealth -TimeoutSeconds 60");
+    expect(script).not.toContain("Copy-DirectoryTree $appBackup $appDir");
   });
 
   it("uses fast Windows archive and copy tools with PowerShell fallbacks", () => {
@@ -60,6 +63,9 @@ describe("release scripts", () => {
     const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
 
     expect(script).toContain('Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"');
+    expect(script).toContain('Set-Item -Path "Env:BRIDGE_RELEASE_ROOT" -Value $installRoot');
+    expect(script).toContain("Get-ActiveReleaseAppRoot $effectiveDataDir");
+    expect(script).toContain('Join-Path $activeRoot "release-slot.json"');
     expect(script).not.toContain('Set-DefaultEnv "BRIDGE_DISTRIBUTION_MODE" "release"');
   });
 
@@ -85,6 +91,9 @@ describe("release scripts", () => {
     expect(script).toContain("$updaterProcessPattern");
     expect(script).toContain("function Test-ReleaseUpdaterProcess");
     expect(script).toContain("function Add-ProcessTree($Process, [bool]$RequireReleaseInstallProcess = $true)");
+    expect(script).toContain('$releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"');
+    expect(script).toContain("$anyReleaseSlotPattern");
+    expect(script).toContain("$releaseRootPatterns");
     expect(script).toContain("Add-ProcessTree $child $false");
     expect(script).toContain("if (Test-ReleaseUpdaterProcess $Process)");
     expect(script).toContain("-not (Test-ReleaseUpdaterProcess $_)");
