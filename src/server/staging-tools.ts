@@ -904,7 +904,8 @@ export const STAGING_TOOLS = [
       "Supports retries: if a previous deploy failed due to rebase conflicts, resolve them in the staging worktree " +
       "(git rebase <prodBranch>, fix conflicts, git add + git rebase --continue) then call staging_deploy again — " +
       "it will skip the commit step and proceed to merge. " +
-      "IMPORTANT: Do not make further tool calls after a successful deploy — the server will restart. " +
+      "IMPORTANT: After a successful deploy, do not make further tool calls because the server will restart. " +
+      "Status/progress-only tool calls may be batched with staging_deploy in the same tool-calling message; do not create no-op companion tool calls solely to satisfy tool-batching guidance. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
