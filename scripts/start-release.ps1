@@ -52,6 +52,61 @@ function Set-DefaultEnv($Name, $Value) {
   }
 }
 
+function Normalize-FullPath($Path) {
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $trimmed = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  if ([string]::IsNullOrWhiteSpace($trimmed)) {
+    return $fullPath
+  }
+  return $trimmed
+}
+
+function Test-SameOrChildPath($Path, $ParentPath) {
+  $normalizedPath = Normalize-FullPath $Path
+  $normalizedParent = Normalize-FullPath $ParentPath
+  if ([string]::Equals($normalizedPath, $normalizedParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $true
+  }
+  return $normalizedPath.StartsWith("$normalizedParent$([System.IO.Path]::DirectorySeparatorChar)", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-ActiveReleaseAppRoot($DataDir) {
+  $activeReleasePath = Join-Path $DataDir "active-release.json"
+  if (-not (Test-Path $activeReleasePath)) {
+    return $null
+  }
+  try {
+    $activeRelease = Get-Content $activeReleasePath -Raw | ConvertFrom-Json
+    $activeRoot = [string]$activeRelease.root
+    $activeId = [string]$activeRelease.id
+    if ([string]::IsNullOrWhiteSpace($activeRoot) -or [string]::IsNullOrWhiteSpace($activeId)) {
+      Write-Warning "Ignoring active release pointer without id/root at $activeReleasePath."
+      return $null
+    }
+    $releaseSlotsDir = Join-Path $DataDir "release-slots"
+    if (-not (Test-SameOrChildPath $activeRoot $releaseSlotsDir)) {
+      Write-Warning "Ignoring active release outside release slot directory: $activeRoot"
+      return $null
+    }
+    if ((Split-Path -Leaf (Normalize-FullPath $activeRoot)) -ne $activeId) {
+      Write-Warning "Ignoring active release whose root does not match id '$activeId': $activeRoot"
+      return $null
+    }
+    if (-not (Test-Path (Join-Path $activeRoot "dist\launcher.js"))) {
+      Write-Warning "Ignoring active release without packaged launcher: $activeRoot"
+      return $null
+    }
+    if (-not (Test-Path (Join-Path $activeRoot "release-slot.json"))) {
+      Write-Warning "Ignoring active release without release-slot.json: $activeRoot"
+      return $null
+    }
+    return $activeRoot
+  } catch {
+    Write-Warning "Could not read active release pointer at ${activeReleasePath}: $($_.Exception.Message)"
+    return $null
+  }
+}
+
 function Remove-OldBridgeLogArchives($Path, $MaxArchives) {
   $logDirectory = [System.IO.Path]::GetDirectoryName($Path)
   if ([string]::IsNullOrWhiteSpace($logDirectory)) { return }
@@ -131,6 +186,7 @@ Import-BridgeEnvFile $envFile
 Set-Item -Path "Env:BRIDGE_ENV_FILE" -Value $envFile
 
 Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"
+Set-Item -Path "Env:BRIDGE_RELEASE_ROOT" -Value $installRoot
 Set-DefaultEnv "BRIDGE_DATA_DIR" $defaultDataDir
 $effectiveDataDir = (Get-Item -Path "Env:BRIDGE_DATA_DIR").Value
 Set-DefaultEnv "BRIDGE_DOCS_DIR" (Join-Path $effectiveDataDir "docs")
@@ -144,6 +200,10 @@ New-Item -ItemType Directory -Path $effectiveDataDir, $env:BRIDGE_DOCS_DIR, $env
 $appRoot = Join-Path $installRoot "app"
 if (Test-Path (Join-Path $installRoot "app\current\dist\launcher.js")) {
   $appRoot = Join-Path $installRoot "app\current"
+}
+$activeReleaseRoot = Get-ActiveReleaseAppRoot $effectiveDataDir
+if ($activeReleaseRoot) {
+  $appRoot = $activeReleaseRoot
 }
 if (-not (Test-Path (Join-Path $appRoot "dist\launcher.js"))) {
   throw "Packaged launcher not found at $appRoot\dist\launcher.js. Rebuild or reinstall the release bundle."

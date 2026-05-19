@@ -60,6 +60,7 @@ export type UpdateInstallPhase =
   | "downloading"
   | "verifying"
   | "staging"
+  | "staged"
   | "stopping"
   | "installing"
   | "starting"
@@ -83,6 +84,10 @@ export interface UpdateInstallStatus {
   error?: string;
   rollbackAttempted?: boolean;
   logPath?: string;
+  backupDir?: string;
+  pendingRestart?: boolean;
+  releaseCandidateId?: string;
+  releaseCandidateRoot?: string;
 }
 
 export interface UpdateInstallStatusResponse {
@@ -128,6 +133,7 @@ const ACTIVE_INSTALL_STALE_MS = 30 * 60 * 1000;
 const UPDATE_LOG_TAIL_BYTES = 64 * 1024;
 const UPDATE_LOG_TAIL_LINES = 40;
 const UPDATE_LOG_TAIL_LINE_LENGTH = 500;
+const TERMINAL_INSTALL_PHASES = new Set<UpdateInstallPhase>(["succeeded", "failed", "rollback_failed"]);
 
 function getInstalledAppRoot(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -245,6 +251,64 @@ export function readUpdateInstallStatus(options: { runtimePaths: RuntimePaths })
 
 function writeUpdateInstallStatus(runtimePaths: RuntimePaths, status: UpdateInstallStatus): void {
   writeJsonFile(getUpdateStatusPath(runtimePaths), status);
+}
+
+function updateStagedReleaseInstallStatus(
+  runtimePaths: RuntimePaths,
+  candidateId: string,
+  update: (status: UpdateInstallStatus, timestamp: string) => UpdateInstallStatus,
+  now = new Date(),
+): boolean {
+  const status = readStatusJsonFile(getUpdateStatusPath(runtimePaths));
+  if (!status || status.phase !== "staged" || status.releaseCandidateId !== candidateId) {
+    return false;
+  }
+  writeUpdateInstallStatus(runtimePaths, update(status, now.toISOString()));
+  return true;
+}
+
+export function markUpdateInstallActivationSucceeded(options: {
+  runtimePaths: RuntimePaths;
+  candidateId: string;
+  now?: Date;
+}): boolean {
+  return updateStagedReleaseInstallStatus(
+    options.runtimePaths,
+    options.candidateId,
+    (status, timestamp) => ({
+      ...status,
+      phase: "succeeded",
+      updatedAt: timestamp,
+      completedAt: timestamp,
+      pendingRestart: false,
+      message: `Bridge restarted with ${status.toVersion}.`,
+    }),
+    options.now,
+  );
+}
+
+export function markUpdateInstallActivationFailed(options: {
+  runtimePaths: RuntimePaths;
+  candidateId: string;
+  message: string;
+  rollbackAttempted?: boolean;
+  now?: Date;
+}): boolean {
+  return updateStagedReleaseInstallStatus(
+    options.runtimePaths,
+    options.candidateId,
+    (status, timestamp) => ({
+      ...status,
+      phase: "failed",
+      updatedAt: timestamp,
+      completedAt: timestamp,
+      pendingRestart: false,
+      rollbackAttempted: options.rollbackAttempted ?? true,
+      message: options.message,
+      error: options.message,
+    }),
+    options.now,
+  );
 }
 
 export function resolveCurrentUpdateInfo(options: CheckForUpdateOptions = {}): CurrentUpdateInfo {
@@ -552,7 +616,7 @@ export async function checkForUpdate(options: CheckForUpdateOptions = {}): Promi
 
 function isActiveInstall(status: UpdateInstallStatus | null, now: Date): boolean {
   if (!status) return false;
-  if (status.phase === "succeeded" || status.phase === "failed") return false;
+  if (TERMINAL_INSTALL_PHASES.has(status.phase)) return false;
   const updatedAt = new Date(status.updatedAt).getTime();
   if (!Number.isFinite(updatedAt)) return true;
   return now.getTime() - updatedAt < ACTIVE_INSTALL_STALE_MS;
@@ -568,6 +632,11 @@ function releaseStateRootArg(env: NodeJS.ProcessEnv, runtimePaths: RuntimePaths)
   const explicit = stringValue(env.BRIDGE_STATE_ROOT);
   if (explicit) return explicit;
   return basename(runtimePaths.dataDir).toLowerCase() === "data" ? dirname(runtimePaths.dataDir) : undefined;
+}
+
+export function resolveReleaseRootForUpdate(env: NodeJS.ProcessEnv, appRoot: string): string {
+  const configured = stringValue(env.BRIDGE_RELEASE_ROOT);
+  return configured ? resolve(configured) : dirname(appRoot);
 }
 
 function quotePowerShellLiteral(value: string): string {
@@ -674,7 +743,7 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
     throw new UpdateInstallError(check.error ?? `No newer ${channel} update is available.`);
   }
 
-  const releaseRoot = dirname(appRoot);
+  const releaseRoot = resolveReleaseRootForUpdate(env, appRoot);
   const updateScript = join(releaseRoot, "update.ps1");
   if (!existsSync(updateScript)) {
     throw new UpdateInstallError(`Packaged update script was not found at ${updateScript}.`);
@@ -751,6 +820,7 @@ export async function startUpdateInstall(options: StartUpdateInstallOptions): Pr
         env: {
           ...process.env,
           ...runtimePaths.env,
+          BRIDGE_RELEASE_ROOT: releaseRoot,
           BRIDGE_UPDATE_INSTALL_STATUS_PATH: getUpdateStatusPath(runtimePaths),
           BRIDGE_UPDATE_INSTALL_LOG_PATH: logPath,
         },

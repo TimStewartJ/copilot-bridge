@@ -116,6 +116,45 @@ function Copy-ReleaseWrappers($SourceRoot, $DestinationRoot) {
   }
 }
 
+function Copy-ReleaseWrappersWithBackup($SourceRoot, $DestinationRoot, $BackupRoot) {
+  New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
+  Copy-ReleaseWrappers $DestinationRoot $BackupRoot
+  try {
+    Copy-ReleaseWrappers $SourceRoot $DestinationRoot
+  } catch {
+    try {
+      Copy-ReleaseWrappers $BackupRoot $DestinationRoot
+    } catch {
+      Write-Warning "Failed to restore previous release wrapper scripts: $($_.Exception.Message)"
+    }
+    throw
+  }
+}
+
+function Get-SafeSlotPart([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "release" }
+  $safe = $Value.Trim().ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
+  $safe = $safe.Trim("-")
+  if ([string]::IsNullOrWhiteSpace($safe)) { return "release" }
+  if ($safe.Length -gt 48) { return $safe.Substring(0, 48) }
+  return $safe
+}
+
+function New-ReleaseSlotId([string]$CommitSha) {
+  $slotTimestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH-mm-ss-fffffffZ")
+  $shortCommit = Get-SafeSlotPart $CommitSha
+  if ($shortCommit.Length -gt 12) { $shortCommit = $shortCommit.Substring(0, 12) }
+  return "$slotTimestamp-$shortCommit-$([guid]::NewGuid().ToString("N").Substring(0, 8))"
+}
+
+function Write-JsonFile($Path, $Value, [int]$Depth = 6) {
+  $parent = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($parent)) {
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  }
+  $Value | ConvertTo-Json -Depth $Depth | Set-Content -Path $Path -Encoding UTF8
+}
+
 function Remove-PathWithRetry($Path, [int]$TimeoutSeconds = 30) {
   if (-not (Test-Path $Path)) {
     return
@@ -348,6 +387,9 @@ if ([string]::IsNullOrWhiteSpace($LogPath)) {
 }
 New-Item -ItemType Directory -Path (Split-Path -Parent $StatusPath), (Split-Path -Parent $LogPath) -Force | Out-Null
 $statusStartedAt = (Get-Date).ToUniversalTime().ToString("o")
+$releaseCandidateId = $null
+$releaseCandidateRoot = $null
+$resolvedPackageSha256 = $ExpectedSha256
 
 function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAttempted = $false) {
   $now = (Get-Date).ToUniversalTime().ToString("o")
@@ -359,7 +401,7 @@ function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAtt
     toVersion = $TargetVersion
     sourceCommit = $SourceCommit
     packageUrl = $DownloadUrl
-    packageSha256 = $ExpectedSha256
+    packageSha256 = $resolvedPackageSha256
     startedAt = $statusStartedAt
     updatedAt = $now
     logPath = $LogPath
@@ -378,6 +420,17 @@ function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAtt
     $status.rollbackAttempted = $true
     $status.mutableDirectoriesPreservedOnRollback = @($backupEntries | ForEach-Object { $_.Path })
   }
+  if (-not [string]::IsNullOrWhiteSpace($script:releaseCandidateId)) {
+    $status.releaseCandidateId = $script:releaseCandidateId
+  }
+  if (-not [string]::IsNullOrWhiteSpace($script:releaseCandidateRoot)) {
+    $status.releaseCandidateRoot = $script:releaseCandidateRoot
+  }
+  if ($Phase -eq "staged") {
+    $status.pendingRestart = $true
+  } elseif ($Phase -eq "succeeded" -or $Phase -eq "failed" -or $Phase -eq "rollback_failed") {
+    $status.pendingRestart = $false
+  }
   $status | ConvertTo-Json -Depth 4 | Set-Content -Path $StatusPath -Encoding UTF8
 }
 
@@ -391,12 +444,11 @@ try {
   }
   $resolvedPackage = (Resolve-Path $resolvedPackage).Path
 
-  if ($ExpectedSha256) {
-    Write-UpdateStatus "verifying" "Verifying package SHA256."
-    $hash = (Get-FileHash -Path $resolvedPackage -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
-      throw "Package SHA256 mismatch. Expected $ExpectedSha256 but got $hash."
-    }
+  Write-UpdateStatus "verifying" "Verifying package SHA256."
+  $hash = (Get-FileHash -Path $resolvedPackage -Algorithm SHA256).Hash.ToLowerInvariant()
+  $resolvedPackageSha256 = $hash
+  if ($ExpectedSha256 -and $hash -ne $ExpectedSha256.ToLowerInvariant()) {
+    throw "Package SHA256 mismatch. Expected $ExpectedSha256 but got $hash."
   }
 
   $expandedDir = Join-Path $tempDir "expanded"
@@ -410,112 +462,104 @@ try {
   if (-not (Test-Path (Join-Path $newApp "dist\launcher.js"))) {
     throw "Update package does not contain app\dist\launcher.js."
   }
+  if (-not (Test-Path (Join-Path $newApp "dist\server\index.js"))) {
+    throw "Update package does not contain app\dist\server\index.js."
+  }
   if (-not (Test-Path (Join-Path $newApp "node_modules"))) {
     throw "Update package does not include app\node_modules. Rebuild the package with -IncludeNodeModules before using update.ps1."
   }
-
-  $stopScript = Join-Path $installRoot "stop.ps1"
-  if (Test-Path $stopScript) {
-    Write-UpdateStatus "stopping" "Stopping current Bridge instance."
-    & $stopScript
-    $bridgeStopped = $true
-    Start-Sleep -Seconds 2
+  if (-not (Test-Path (Join-Path $newApp "package.json"))) {
+    throw "Update package does not contain app\package.json."
+  }
+  $releaseManifestPath = Join-Path $newApp ".bridge-release.json"
+  if (-not (Test-Path $releaseManifestPath)) {
+    throw "Update package does not contain app\.bridge-release.json."
+  }
+  $releaseMetadata = Get-Content $releaseManifestPath -Raw | ConvertFrom-Json
+  if ([string]::IsNullOrWhiteSpace($TargetVersion)) {
+    $TargetVersion = $releaseMetadata.version
+  } elseif (-not [string]::IsNullOrWhiteSpace($releaseMetadata.version) -and $TargetVersion -ne $releaseMetadata.version) {
+    throw "Update package version '$($releaseMetadata.version)' does not match signed manifest version '$TargetVersion'."
+  }
+  if ([string]::IsNullOrWhiteSpace($SourceCommit)) {
+    $SourceCommit = $releaseMetadata.sourceCommit
+  } elseif (-not [string]::IsNullOrWhiteSpace($releaseMetadata.sourceCommit) -and $SourceCommit -ne $releaseMetadata.sourceCommit) {
+    throw "Update package source commit '$($releaseMetadata.sourceCommit)' does not match signed manifest commit '$SourceCommit'."
+  }
+  if ([string]::IsNullOrWhiteSpace($SourceCommit)) {
+    $SourceCommit = "release-$TargetVersion"
   }
 
-  $appExistedBefore = Test-Path $appDir
-  if ($appExistedBefore) {
-    Write-UpdateStatus "installing" "Backing up current app with robocopy when available."
-    Copy-DirectoryTree $appDir (Join-Path $backupDir "app")
+  $releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"
+  New-Item -ItemType Directory -Path $releaseSlotsDir -Force | Out-Null
+  $slotId = New-ReleaseSlotId $SourceCommit
+  $slotRoot = Join-Path $releaseSlotsDir $slotId
+  $tempSlotRoot = Join-Path $releaseSlotsDir ".$slotId.$PID.tmp"
+  $restartQueued = $false
+  if (Test-Path $slotRoot) {
+    throw "Release slot already exists at $slotRoot."
   }
-  $appBackedUp = $true
-  Copy-ReleaseWrappers $installRoot $backupDir
-  Backup-ConfiguredDirectories
+  if (Test-Path $tempSlotRoot) {
+    Remove-PathWithRetry $tempSlotRoot
+  }
 
-  Write-UpdateStatus "installing" "Copying new app files into place with robocopy when available."
-  if (Test-Path $appDir) {
-    Remove-PathWithRetry $appDir
+  Write-UpdateStatus "staging" "Copying update package into inactive release slot $slotId."
+  Copy-DirectoryTree $newApp $tempSlotRoot
+  $dependencyHash = "package-sha256:$hash"
+  $releaseSlotManifest = [ordered]@{
+    version = 1
+    id = $slotId
+    root = $slotRoot
+    commitSha = $SourceCommit
+    source = "release_update"
+    dependencyHash = $dependencyHash
+    createdAt = (Get-Date).ToUniversalTime().ToString("o")
+    validationMode = "deploy"
   }
-  Copy-DirectoryTree $newApp $appDir
-  Write-UpdateStatus "installing" "Refreshing release wrapper scripts."
+  Write-JsonFile (Join-Path $tempSlotRoot "release-slot.json") $releaseSlotManifest
+  Move-Item -Path $tempSlotRoot -Destination $slotRoot -ErrorAction Stop
+  $script:releaseCandidateId = $slotId
+  $script:releaseCandidateRoot = $slotRoot
+
+  Write-UpdateStatus "staging" "Refreshing release wrapper scripts."
   $newReleaseRoot = Split-Path -Parent $newApp
-  Copy-ReleaseWrappers $newReleaseRoot $installRoot
+  Copy-ReleaseWrappersWithBackup $newReleaseRoot $installRoot (Join-Path $backupDir "wrappers")
 
-  $startScript = Join-Path $installRoot "start.ps1"
-  if (Test-Path $startScript) {
-    Write-UpdateStatus "starting" "Starting updated Bridge and waiting for health."
-    & $startScript
-    Wait-BridgeHealth
-    if ($stateRootFromInput) {
-      Set-Content -Path $stateRootFile -Value $stateRoot -Encoding UTF8
-    }
-  } else {
-    throw "Installed start.ps1 not found after update."
+  if ($stateRootFromInput) {
+    Set-Content -Path $stateRootFile -Value $stateRoot -Encoding UTF8
   }
 
-  Write-UpdateStatus "succeeded" "Update completed successfully."
-  Write-Output "Copilot Bridge updated. Backup: $backupDir"
+  Write-UpdateStatus "staged" "Update candidate $TargetVersion is staged. The launcher will activate it after active sessions are idle."
+  $restartSignal = [ordered]@{
+    requestedAt = (Get-Date).ToUniversalTime().ToString("o")
+    validationMode = "deploy"
+    source = "release_update"
+    releaseCandidate = [ordered]@{
+      id = $slotId
+      root = $slotRoot
+      commitSha = $SourceCommit
+      source = "release_update"
+      dependencyHash = $dependencyHash
+    }
+  }
+  $restartSignalPath = Join-Path $effectiveDataDir "restart.signal"
+  $restartSignalTempPath = Join-Path $effectiveDataDir ".restart.signal.$PID.tmp"
+  Write-JsonFile $restartSignalTempPath $restartSignal
+  Move-Item -Path $restartSignalTempPath -Destination $restartSignalPath -Force
+  $restartQueued = $true
+
+  Write-Output "Copilot Bridge update staged in release slot $slotId. Launcher activation queued."
 } catch {
   $updateError = $_.Exception.Message
-  $rollbackFailures = @()
-  function Add-RollbackFailure([string]$Step, $ErrorRecord) {
-    $message = "$Step failed: $($ErrorRecord.Exception.Message)"
-    $script:rollbackFailures += $message
-    Write-Warning $message
-  }
-
-  if ($bridgeStopped) {
-    $stopScript = Join-Path $installRoot "stop.ps1"
-    if (Test-Path $stopScript) {
-      try {
-        & $stopScript
-        Start-Sleep -Seconds 2
-      } catch {
-        Add-RollbackFailure "Stopping failed update candidate during rollback" $_
-      }
+  if (-not $restartQueued) {
+    if ($tempSlotRoot -and (Test-Path $tempSlotRoot)) {
+      Remove-Item -Path $tempSlotRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($slotRoot -and (Test-Path $slotRoot)) {
+      Remove-Item -Path $slotRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
-
-  $appBackup = Join-Path $backupDir "app"
-  if ($appBackedUp) {
-    try {
-      if ($appExistedBefore -and -not (Test-Path $appBackup)) {
-        throw "App backup was not found at $appBackup."
-      }
-      if (Test-Path $appDir) {
-        Remove-PathWithRetry $appDir
-      }
-      if ($appExistedBefore) {
-        Copy-DirectoryTree $appBackup $appDir
-      }
-    } catch {
-      Add-RollbackFailure "Restoring previous app" $_
-    }
-  }
-  Write-Warning "Preserving mutable data/config directories after failed update. Backup remains available at $backupDir."
-  try {
-    Copy-ReleaseWrappers $backupDir $installRoot
-  } catch {
-    Add-RollbackFailure "Restoring release wrapper scripts" $_
-  }
-  if ($rollbackFailures.Count -gt 0) {
-    $rollbackMessage = "$updateError Rollback failed: $($rollbackFailures -join '; ')"
-    Write-UpdateStatus "rollback_failed" $rollbackMessage $true
-    throw "Update failed: $rollbackMessage"
-  }
-  if ($bridgeStopped) {
-    $startScript = Join-Path $installRoot "start.ps1"
-    if (Test-Path $startScript) {
-      try {
-        & $startScript
-        Wait-BridgeHealth -TimeoutSeconds 60
-      } catch {
-        $rollbackError = $_.Exception.Message
-        Write-UpdateStatus "rollback_failed" "$updateError Rollback failed: $rollbackError" $true
-        throw "Update failed: $updateError Rollback failed: $rollbackError"
-      }
-    }
-  }
-  Write-UpdateStatus "failed" $updateError $true
+  Write-UpdateStatus "failed" $updateError
   throw
 } finally {
   if (Test-Path $tempDir) {

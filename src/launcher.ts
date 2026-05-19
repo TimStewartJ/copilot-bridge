@@ -42,6 +42,10 @@ import { canUseDevtunnelCli, getDevtunnelCliStatus, resolveBridgeTunnelName } fr
 import { resolveBridgeDistribution } from "./server/distribution-mode.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
+  markUpdateInstallActivationFailed,
+  markUpdateInstallActivationSucceeded,
+} from "./server/update-service.js";
+import {
   clearPersistentRollbackFailureState,
   hasPersistentRollbackFailureState,
   markPersistentRollbackFailureState,
@@ -219,6 +223,29 @@ function clearSignal() {
 
 function clearInProgressSignal() {
   clearFile(IN_PROGRESS_SIGNAL_FILE);
+}
+
+function markReleaseUpdateActivationSucceeded(candidateId: string): void {
+  if (markUpdateInstallActivationSucceeded({ runtimePaths: RUNTIME_PATHS, candidateId })) {
+    log(`Marked release update candidate ${candidateId} as activated`);
+  }
+}
+
+function markReleaseUpdateActivationFailed(candidateId: string, message: string): void {
+  if (markUpdateInstallActivationFailed({ runtimePaths: RUNTIME_PATHS, candidateId, message })) {
+    log(`Marked release update candidate ${candidateId} as failed: ${message}`);
+  }
+}
+
+function markReleaseUpdateActivationRejected(candidateId: string, message: string): void {
+  if (markUpdateInstallActivationFailed({
+    runtimePaths: RUNTIME_PATHS,
+    candidateId,
+    message,
+    rollbackAttempted: false,
+  })) {
+    log(`Marked release update candidate ${candidateId} as rejected: ${message}`);
+  }
 }
 
 function clearStaleInProgressSignal() {
@@ -983,6 +1010,10 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   const validationMode = signal.validationMode;
   const candidateRelease = resolveReleaseCandidate(DATA_DIR, signal.releaseCandidate);
   if (signal.releaseCandidate && !candidateRelease) {
+    markReleaseUpdateActivationRejected(
+      signal.releaseCandidate.id,
+      "Prepared release candidate metadata was invalid or missing; the current server was left running.",
+    );
     log("Restart signal referenced an invalid release candidate — leaving the current server running");
     return "failed";
   }
@@ -1068,6 +1099,12 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   const stopped = await gracefulStopServer();
   if (!stopped) {
     log("❌ Existing server did not exit after force kill — aborting restart");
+    if (candidateRelease) {
+      markReleaseUpdateActivationRejected(
+        candidateRelease.id,
+        "The launcher could not stop the current server to activate the staged update.",
+      );
+    }
     await recordFailureAndMaybeStop("shutdown", {
       retryReason: "server shutdown failure during restart",
     });
@@ -1080,6 +1117,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   if (healthy) {
     if (candidateRelease) {
       await writeActiveRelease(DATA_DIR, candidateRelease);
+      markReleaseUpdateActivationSucceeded(candidateRelease.id);
       const pruned = pruneReleaseSlots(DATA_DIR, {
         extraKeepIds: [previousLaunchTarget.release?.id],
         log,
@@ -1107,9 +1145,15 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     return "restarted";
   } else {
     log("❌ Health check failed — rolling back");
+    if (candidateRelease) {
+      markReleaseUpdateActivationFailed(
+        candidateRelease.id,
+        "The staged update failed health checks during activation; the previous launch target is being restored.",
+      );
+    }
     await notifyWebhook(
-      candidateRelease && previousLaunchTarget.release
-        ? `⚠️ Health check failed — restoring previous release slot (${tag()})`
+      candidateRelease
+        ? `⚠️ Health check failed — restoring previous launch target (${tag()})`
         : `⚠️ Health check failed — rolling back to last checkpoint (${tag()})`,
       currentTunnelUrl ?? undefined,
     );
@@ -1120,7 +1164,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       });
       return "failed";
     }
-    if (candidateRelease && previousLaunchTarget.release) {
+    if (candidateRelease && (previousLaunchTarget.release || DISTRIBUTION.mode === "release")) {
       log(`Restoring previous launch target after failed candidate ${candidateRelease.id}`);
       const fallbackServer = startServer(previousLaunchTarget);
       serverProcess = fallbackServer;

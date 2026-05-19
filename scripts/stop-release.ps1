@@ -3,7 +3,47 @@ param()
 $ErrorActionPreference = "Stop"
 
 $installRoot = (Resolve-Path $PSScriptRoot).Path
+
+function Import-BridgeEnvFile($Path) {
+  if (-not (Test-Path $Path)) { return }
+  Get-Content $Path | ForEach-Object {
+    if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+      $name = $Matches[1].Trim()
+      $value = $Matches[2].Trim()
+      if ($name -and -not [string]::IsNullOrWhiteSpace($value)) {
+        Set-Item -Path "Env:$name" -Value $value
+      }
+    }
+  }
+}
+
+function Get-ConfiguredStateRoot($InstallRoot) {
+  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_STATE_ROOT)) {
+    return $env:BRIDGE_STATE_ROOT
+  }
+  $stateRootFile = Join-Path $InstallRoot ".bridge-state-root"
+  if (Test-Path $stateRootFile) {
+    $storedStateRoot = (Get-Content $stateRootFile -Raw).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($storedStateRoot)) {
+      return $storedStateRoot
+    }
+  }
+  return Join-Path $env:LOCALAPPDATA "CopilotBridge"
+}
+
+$stateRoot = Get-ConfiguredStateRoot $installRoot
+$configEnvFile = Join-Path $stateRoot "config\.env"
+Import-BridgeEnvFile $configEnvFile
+$effectiveDataDir = if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_DATA_DIR)) {
+  $env:BRIDGE_DATA_DIR
+} else {
+  Join-Path $stateRoot "data"
+}
+$releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"
 $installRootPattern = [regex]::Escape($installRoot) + "[\\/]"
+$releaseSlotsPattern = [regex]::Escape($releaseSlotsDir) + "[\\/]"
+$anyReleaseSlotPattern = "release-slots[\\/][^\\/]+[\\/]"
+$releaseRootPatterns = @($installRootPattern, $releaseSlotsPattern, $anyReleaseSlotPattern)
 $releaseProcessPattern = "dist[\\/]+launcher\.js|dist[\\/]+server[\\/]+index\.js"
 $updaterProcessPattern = $installRootPattern + 'update\.ps1(?:"|''|\s|$)'
 
@@ -19,7 +59,13 @@ foreach ($process in $allProcesses) {
 $processesToStop = @{}
 
 function Test-ReleaseInstallProcess($Process) {
-  return $Process.CommandLine -and $Process.CommandLine -match $installRootPattern
+  if (-not $Process.CommandLine) { return $false }
+  foreach ($pattern in $releaseRootPatterns) {
+    if ($Process.CommandLine -match $pattern) {
+      return $true
+    }
+  }
+  return $false
 }
 
 function Test-ReleaseUpdaterProcess($Process) {

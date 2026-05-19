@@ -37,6 +37,10 @@ const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; descriptio
     label: "Extracting package",
     description: "Windows extraction is the quietest step and can take a while for many small files.",
   },
+  staged: {
+    label: "Restart queued",
+    description: "The update candidate is staged and waiting for the launcher to activate it safely.",
+  },
   stopping: {
     label: "Stopping Bridge",
     description: "The updater is stopping the current Bridge process before replacing app files.",
