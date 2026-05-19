@@ -1,7 +1,28 @@
-export type RestartOutcome = "restarted" | "recovered-via-rollback" | "failed";
+export type RestartOutcome =
+  | "restarted"
+  | "recovered-via-rollback"
+  | "failed"
+  | "invalid-release-candidate";
 
 export function didRestartRecover(outcome: RestartOutcome): boolean {
-  return outcome !== "failed";
+  return outcome === "restarted" || outcome === "recovered-via-rollback";
+}
+
+export function shouldPersistReleaseFailureState(options: {
+  outcome: RestartOutcome;
+  hasPendingReleaseFailure: boolean;
+}): boolean {
+  return options.outcome === "failed" && options.hasPendingReleaseFailure;
+}
+
+export function resolveReleaseCandidateRestartOutcome(options: {
+  releaseCandidateRequested: boolean;
+  releaseCandidateResolved: boolean;
+}): RestartOutcome | null {
+  if (options.releaseCandidateRequested && !options.releaseCandidateResolved) {
+    return "invalid-release-candidate";
+  }
+  return null;
 }
 
 export function rollbackRecoveryRequiresServerStart(options: {
