@@ -8,6 +8,7 @@ import { join, basename, dirname, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { AppContext } from "./app-context.js";
+import { validateSupportedCronExpression } from "./cron-next-run.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import {
   clearRestartPending,
@@ -705,6 +706,12 @@ const SCHEDULE_UPDATE_FIELDS = [
   "expiresAt",
   "autoArchiveKeep",
 ] as const;
+
+function validateScheduleCronInput(cronExpr: unknown): string | undefined {
+  if (typeof cronExpr !== "string") return "cron expression must be a string";
+  const validation = validateSupportedCronExpression(cronExpr);
+  return validation.ok ? undefined : validation.error;
+}
 
 async function enforceRetentionForSchedule(ctx: AppContext, schedule: Schedule): Promise<void> {
   try {
@@ -3423,6 +3430,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
       if (type === "cron" && !cronExpr) {
         return res.status(400).json({ error: "cron expression is required for cron schedules" });
       }
+      if (type === "cron") {
+        const cronError = validateScheduleCronInput(cronExpr);
+        if (cronError) return res.status(400).json({ error: cronError });
+      }
       if (type === "once" && !runAt) {
         return res.status(400).json({ error: "runAt is required for one-shot schedules" });
       }
@@ -3476,6 +3487,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
       const existing = ctx.scheduleStore.getSchedule(req.params.id);
       if (!existing) return res.status(404).json({ error: "Schedule not found" });
+
+      const cronProvided = Object.prototype.hasOwnProperty.call(req.body, "cron");
+      if (cronProvided && existing.type === "cron") {
+        const cronError = validateScheduleCronInput(req.body.cron);
+        if (cronError) return res.status(400).json({ error: cronError });
+      }
 
       const updates = { ...req.body };
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");

@@ -19,9 +19,9 @@ import {
 } from "./session-manager.js";
 import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
-import { computeNextRunAt } from "./cron-next-run.js";
+import { computeNextRunAt, validateSupportedCronExpression } from "./cron-next-run.js";
 
-export { computeNextRunAt, matchesCron, matchesField } from "./cron-next-run.js";
+export { computeNextRunAt, matchesCron, matchesField, validateSupportedCronExpression } from "./cron-next-run.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
@@ -155,6 +155,12 @@ export function registerSchedule(scheduleId: string): void {
   const schedule = scheduleStore.getSchedule(scheduleId);
   if (!schedule || !schedule.enabled || schedule.type !== "cron" || !schedule.cron) return;
   if (_globalPause) return;
+
+  const supportedCron = validateSupportedCronExpression(schedule.cron);
+  if (!supportedCron.ok) {
+    console.error(`[scheduler] Unsupported cron expression for schedule "${schedule.name}" (${scheduleId}): ${supportedCron.error}`);
+    return;
+  }
 
   if (!cron.validate(schedule.cron)) {
     console.error(`[scheduler] Invalid cron expression for schedule ${scheduleId}: ${schedule.cron}`);

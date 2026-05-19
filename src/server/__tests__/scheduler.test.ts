@@ -13,7 +13,13 @@ import {
 } from "../session-manager.js";
 import { clearRestartState, writeRestartState } from "../restart-state.js";
 import * as scheduler from "../scheduler.js";
-import { computeNextRunAt, getCronTriggerScheduledFor, matchesCron, matchesField } from "../scheduler.js";
+import {
+  computeNextRunAt,
+  getCronTriggerScheduledFor,
+  matchesCron,
+  matchesField,
+  validateSupportedCronExpression,
+} from "../scheduler.js";
 import { createTestApp } from "./helpers.js";
 
 afterEach(() => {
@@ -58,6 +64,22 @@ describe("matchesField", () => {
     expect(matchesField(5, "1-3,5")).toBe(true);
     expect(matchesField(4, "1-3,5")).toBe(false);
     expect(matchesField(0, "*/0")).toBe(false);
+  });
+});
+
+describe("validateSupportedCronExpression", () => {
+  it("accepts the supported five-field and zero-second six-field cron grammars", () => {
+    expect(validateSupportedCronExpression("*/5 * * * *")).toEqual({ ok: true });
+    expect(validateSupportedCronExpression("0 */5 * * * *")).toEqual({ ok: true });
+  });
+
+  it("rejects unsupported field counts and non-zero seconds fields", () => {
+    expect(validateSupportedCronExpression("0 8 * *").ok).toBe(false);
+    expect(validateSupportedCronExpression("0 0 8 * * * *").ok).toBe(false);
+    expect(validateSupportedCronExpression("30 */5 * * * *")).toEqual({
+      ok: false,
+      error: expect.stringContaining("seconds field is 0"),
+    });
   });
 });
 
@@ -138,6 +160,11 @@ describe("computeNextRunAt", () => {
     const after = new Date("2026-04-14T07:30:00Z");
     const next = computeNextRunAt("0 0 8 * * *", "UTC", after);
     expect(next).toBe("2026-04-14T08:00:00.000Z");
+  });
+  it("does not support non-zero-second six-field cron expressions", () => {
+    const after = new Date("2026-04-14T07:30:00Z");
+    expect(computeNextRunAt("30 */5 * * * *", "UTC", after)).toBeUndefined();
+    expect(matchesCron("30 */5 * * * *", new Date("2026-04-14T07:30:30Z"), "UTC")).toBe(false);
   });
   it("looks beyond the old 35-day window for sparse schedules", () => {
     const after = new Date("2026-03-01T00:00:00Z");
@@ -1153,6 +1180,77 @@ describe("scheduler startup recovery", () => {
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     expect(sessionManager.startWork).toHaveBeenCalledWith("one-shot-session", "run later");
+  });
+
+  it("persists nextRunAt and uses the cursor for supported zero-second six-field crons", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T17:31:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Zero-second six-field",
+      prompt: "run every five minutes",
+      type: "cron",
+      cron: "0 */5 * * * *",
+      timezone: "UTC",
+    });
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBe("2026-04-16T17:35:00.000Z");
+    expect(getCronTriggerScheduledFor(schedule.id, new Date("2026-04-16T17:35:10.000Z"))).toBe(
+      "2026-04-16T17:35:00.000Z",
+    );
+  });
+
+  it("does not register persisted non-zero-second six-field crons", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T17:31:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Unsupported seconds",
+      prompt: "run with seconds",
+      type: "cron",
+      cron: "30 */5 * * * *",
+      timezone: "UTC",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      scheduler.initialize(sessionManager, {
+        scheduleStore: ctx.scheduleStore,
+        taskStore: ctx.taskStore,
+        sessionMetaStore: ctx.sessionMetaStore,
+        globalBus: ctx.globalBus,
+      });
+
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("Unsupported cron expression"));
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("seconds field is 0"));
+      expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBeUndefined();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("persists one-shot nextRunAt when arming a schedule created after initialization", async () => {
