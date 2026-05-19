@@ -323,7 +323,8 @@ const PREVIEW_VALIDATION_COMMANDS = [
 const PREVIEW_GATE_COMMAND = PREVIEW_VALIDATION_COMMANDS.join(" && ");
 
 const DEPLOY_VALIDATION_COMMANDS = [
-  "npm run check:deploy",
+  "npm run check:pr",
+  "npm run preview:smoke",
 ] as const;
 const DEPLOY_SMOKE_COMMAND = "npm run preview:smoke";
 
@@ -1009,7 +1010,7 @@ describe("staging tools", () => {
       if (cmd === "git stash --include-untracked") return "No local changes to save\n";
       if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
       if (cmd === "git rebase main" && cwd === stagingDir) return "";
-      if (cmd === "npm run check:deploy") {
+      if (cmd === "npm run check:pr") {
         const error = new Error("deploy gate failed") as Error & { stderr: string };
         error.stderr = "deploy gate exploded\n";
         throw error;
@@ -1030,9 +1031,9 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({
       resultType: "failure",
-      sessionLog: expect.stringContaining("Command: npm run check:deploy"),
+      sessionLog: expect.stringContaining("Command: npm run check:pr"),
       toolTelemetry: {
-        command: "npm run check:deploy",
+        command: "npm run check:pr",
         cwd: stagingDir,
         stagingDir,
         prodBranch: "main",
