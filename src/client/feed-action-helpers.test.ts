@@ -60,6 +60,25 @@ describe("feed action helpers", () => {
     expect(context).not.toContain("ignored");
   });
 
+  it("includes bounded action CTA details when present", () => {
+    const longLabel = "l".repeat(1_105);
+    const longPrompt = "p".repeat(1_107);
+    const context = buildFeedCardChatContext(makeCard({
+      action: {
+        label: longLabel,
+        prompt: longPrompt,
+      },
+    }));
+
+    expect(context).toContain("## Action CTA");
+    expect(context).toContain(`- Label: ${longLabel.slice(0, 1_000)}`);
+    expect(context).toContain("[Truncated 105 additional characters]");
+    expect(context).toContain(`- Prompt: ${longPrompt.slice(0, 1_000)}`);
+    expect(context).toContain("[Truncated 107 additional characters]");
+    expect(context).not.toContain(longLabel.slice(0, 1_001));
+    expect(context).not.toContain(longPrompt.slice(0, 1_001));
+  });
+
   it("truncates oversized card bodies", () => {
     const context = buildFeedCardChatContext(makeCard({ body: "x".repeat(8_100) }));
 
