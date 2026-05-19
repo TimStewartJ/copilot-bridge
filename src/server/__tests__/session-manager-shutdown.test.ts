@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { clearRestartPending, refreshRestartState, SessionManager, triggerRestartPending } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -391,8 +392,70 @@ describe("SessionManager graceful shutdown", () => {
       suspendedSessionIds: [],
       blockingSessions: [expect.objectContaining({ id: "session-1" })],
     });
+    expect(manager.getRestartBlockingSessionActivity()).toEqual([]);
     expect(session.rpc.suspend).not.toHaveBeenCalled();
     expect(store.get("session-1")).toBeUndefined();
+  });
+
+  it("preserves active restart recovery during a subsequent restart shutdown", async () => {
+    const db = setupTestDb();
+    const store = createRestartSuspendedSessionStore(db);
+    store.upsertSuspending({
+      sessionId: "session-1",
+      runKind: "message",
+      pendingPrompt: "hello",
+      promptAccepted: true,
+      suspendedAt: "2026-05-19T17:00:00.000Z",
+      lastEventAt: "2026-05-19T17:00:01.000Z",
+    });
+    store.markSuspended("session-1", "2026-05-19T17:00:02.000Z");
+
+    const recoveredSession = {
+      rpc: {
+        suspend: vi.fn().mockResolvedValue(undefined),
+      },
+      on: vi.fn(() => vi.fn()),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+    };
+    const client = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      resumeSession: vi.fn(async () => recoveredSession),
+    };
+    const manager = new SessionManager({
+      tools: [],
+      globalBus: createTestBus(),
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: {
+        findTaskBySessionId: vi.fn().mockReturnValue(null),
+      } as any,
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings: () => ({ mcpServers: {} }),
+      } as any,
+      config: { sessionMcpServers: {} },
+      restartSuspendedSessionStore: store,
+      createCopilotClient: () => client as any,
+    });
+
+    await manager.initialize();
+    await flushMicrotasks();
+    expect(manager.getActiveSessions()).toEqual(["session-1"]);
+
+    triggerRestartPending();
+    await refreshRestartState();
+    expect(manager.getRestartBlockingSessionActivity()).toEqual([]);
+
+    await manager.gracefulShutdown({ preserveActiveRuns: true });
+
+    expect(recoveredSession.rpc.suspend).toHaveBeenCalledTimes(1);
+    expect(store.get("session-1")).toMatchObject({
+      sessionId: "session-1",
+      status: "suspended",
+      resumeAttempts: 1,
+    });
+    expect(manager.getActiveSessions()).toEqual([]);
   });
 
   it("starts recovery for restart-suspended records on initialize", async () => {
@@ -487,7 +550,14 @@ describe("SessionManager graceful shutdown", () => {
       };
       const client = {
         start: vi.fn().mockResolvedValue(undefined),
-        resumeSession: vi.fn(async () => recoveredSession),
+        resumeSession: vi.fn(async (_sessionId: string, config: any) => {
+          queueMicrotask(() => config.onEvent?.({
+            type: "session.resume",
+            data: {},
+            timestamp: "2026-05-19T17:00:03.000Z",
+          }));
+          return recoveredSession;
+        }),
       };
       const manager = new SessionManager({
         tools: [],
@@ -519,5 +589,80 @@ describe("SessionManager graceful shutdown", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("releases restart recovery when a persisted shutdown follows suspension", async () => {
+    const db = setupTestDb();
+    const store = createRestartSuspendedSessionStore(db);
+    store.upsertSuspending({
+      sessionId: "session-1",
+      runKind: "message",
+      pendingPrompt: "hello",
+      promptAccepted: true,
+      suspendedAt: "2026-05-19T17:00:02.000Z",
+      lastEventAt: "2026-05-19T17:00:01.000Z",
+    });
+    store.markSuspended("session-1", "2026-05-19T17:00:02.000Z");
+
+    const runtimePaths = makeTestRuntimePaths("restart-resume-persisted-shutdown");
+    const sessionStateDir = join(runtimePaths.copilotHome!, "session-state", "session-1");
+    mkdirSync(sessionStateDir, { recursive: true });
+    writeFileSync(
+      join(sessionStateDir, "events.jsonl"),
+      [
+        {
+          type: "user.message",
+          data: { content: "hello" },
+          timestamp: "2026-05-19T17:00:00.000Z",
+        },
+        {
+          type: "session.shutdown",
+          data: {},
+          timestamp: "2026-05-19T17:00:03.000Z",
+        },
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+      "utf8",
+    );
+
+    const recoveredSession = {
+      on: vi.fn(() => vi.fn()),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+    };
+    const client = {
+      start: vi.fn().mockResolvedValue(undefined),
+      resumeSession: vi.fn(async (_sessionId: string, config: any) => {
+        config.onEvent?.({
+          type: "session.resume",
+          data: {},
+          timestamp: "2026-05-19T17:00:04.000Z",
+        });
+        return recoveredSession;
+      }),
+    };
+    const manager = new SessionManager({
+      tools: [],
+      globalBus: createTestBus(),
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: {
+        findTaskBySessionId: vi.fn().mockReturnValue(null),
+      } as any,
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings: () => ({ mcpServers: {} }),
+      } as any,
+      config: { sessionMcpServers: {} },
+      runtimePaths,
+      copilotHome: runtimePaths.copilotHome,
+      restartSuspendedSessionStore: store,
+      createCopilotClient: () => client as any,
+    });
+
+    await manager.initialize();
+    await flushMicrotasks();
+
+    expect(store.get("session-1")).toBeUndefined();
+    expect(manager.getActiveSessions()).toEqual([]);
+    expect(recoveredSession.disconnect).toHaveBeenCalledTimes(1);
   });
 });

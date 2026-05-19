@@ -79,6 +79,7 @@ const PERSISTED_RUN_RELEVANT_EVENT_TYPES = new Set([
   "abort",
   "session.shutdown",
 ]);
+const RESTART_RESUME_PROGRESS_EVENT_TYPES = PERSISTED_RUN_RELEVANT_EVENT_TYPES;
 const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
   "user.message",
   "assistant.turn_start",
@@ -406,7 +407,7 @@ export class SessionRunner {
         runKind: "restart-resume",
         pendingPrompt: record.pendingPrompt,
         promptAccepted: record.promptAccepted,
-        preserveAcrossRestart: false,
+        preserveAcrossRestart: true,
         restartSuspendReady: false,
       },
     );
@@ -506,6 +507,7 @@ export class SessionRunner {
     runController: SessionRunController,
   ): Promise<void> {
     const sid = record.sessionId.slice(0, 8);
+    const suspendedAtMs = Date.parse(record.suspendedAt);
     await this.runSessionOperation(record.sessionId, bus, runController, {
       resumeContext: "restart-resume",
       idleSpanName: "session.restartResumeToIdle",
@@ -514,6 +516,7 @@ export class SessionRunner {
       continuePendingWork: true,
       useResumeEventHandler: true,
       restartResumeNoEventTimeoutMs: RESTART_RESUME_NO_EVENT_TIMEOUT_MS,
+      restartResumePersistedTerminalAfterMs: Number.isFinite(suspendedAtMs) ? suspendedAtMs : undefined,
     });
   }
 
@@ -530,6 +533,7 @@ export class SessionRunner {
       continuePendingWork?: boolean;
       useResumeEventHandler?: boolean;
       restartResumeNoEventTimeoutMs?: number;
+      restartResumePersistedTerminalAfterMs?: number;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       historyTruncation?: QuietIntervalDeferTailTruncationRequest;
@@ -666,6 +670,7 @@ export class SessionRunner {
     let lastLiveEventType: string | undefined;
     let lastLiveEventAt: number | undefined;
     let lastLiveEventOrigin: SessionEventOrigin | undefined;
+    let restartResumeProgressEventAt: number | undefined;
     let liveTurnEndCount = 0;
     let lastLiveTurnEndAt: number | undefined;
     let eventsAfterLastLiveTurnEnd = 0;
@@ -855,6 +860,13 @@ export class SessionRunner {
       if (replayKey) handledCurrentTurnEventKeys.add(replayKey);
       if (context.origin === "live" || context.origin === "live_recovered") {
         noteLiveEvent(event, eventAt, context.origin);
+      }
+      if (
+        opts.restartResumeNoEventTimeoutMs !== undefined
+        && typeof event.type === "string"
+        && RESTART_RESUME_PROGRESS_EVENT_TYPES.has(event.type)
+      ) {
+        restartResumeProgressEventAt = eventAt;
       }
       const isTerminalEvent = LIVE_RUN_TERMINAL_EVENT_TYPES.has(event.type);
       if (!isTerminalEvent) {
@@ -1175,7 +1187,8 @@ export class SessionRunner {
         const eventType = event?.type;
         if (typeof eventType !== "string" || !PERSISTED_RUN_RELEVANT_EVENT_TYPES.has(eventType)) continue;
         const eventTime = getEventTimestampMs(event);
-        if (eventTime === undefined || eventTime < sendStart) continue;
+        const minimumEventTime = opts.restartResumePersistedTerminalAfterMs ?? sendStart;
+        if (eventTime === undefined || eventTime < minimumEventTime) continue;
 
         latestEventType = eventType;
         latestEventAt = eventTime;
@@ -1217,7 +1230,8 @@ export class SessionRunner {
 
         const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
         const eventTime = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
-        if (!Number.isFinite(eventTime) || eventTime < sendStart) continue;
+        const minimumEventTime = opts.restartResumePersistedTerminalAfterMs ?? sendStart;
+        if (!Number.isFinite(eventTime) || eventTime < minimumEventTime) continue;
 
         const data = event?.data;
         switch (event?.type) {
@@ -1274,6 +1288,26 @@ export class SessionRunner {
       this.recordSpan("session.resume", resumeDuration, sessionId, { context: `${opts.resumeContext}:stalled-recovery` });
       console.log(`[sdk] [${sid}] Recovery session resumed (${resumeDuration}ms)`);
       return recoveredSession;
+    };
+
+    const resolveRestartResumePersistedTerminalEvent = (reason: string): boolean => {
+      const persistedTerminal = readPersistedTerminalEvent();
+      if (!persistedTerminal) return false;
+      const eventType = typeof persistedTerminal.event?.type === "string"
+        ? persistedTerminal.event.type
+        : "unknown";
+      if (eventType !== "session.shutdown") {
+        return resolvePersistedTerminalEvent(persistedTerminal, reason);
+      }
+
+      const now = Date.now();
+      console.warn(`[sdk] [${sid}] Restart recovery found persisted ${eventType} ${reason} — releasing run state`);
+      recordRunSpan("session.restartResume.persisted_terminal", now - sendStart, {
+        terminalEventType: eventType,
+        recoveryReason: reason,
+      }, now);
+      runController.completePreservedForRestart();
+      return true;
     };
 
     const attemptStalledRecovery = async () => {
@@ -1455,12 +1489,15 @@ export class SessionRunner {
           }
           runController.markPromptAccepted();
           if (opts.restartResumeNoEventTimeoutMs !== undefined && !runController.isCompleted()) {
+            if (resolveRestartResumePersistedTerminalEvent("after resume subscribe")) return;
             restartResumeNoEventTimer = setTimeout(() => {
-              if (runController.isCompleted() || lastLiveEventAt !== undefined) return;
+              if (runController.isCompleted() || restartResumeProgressEventAt !== undefined) return;
+              if (resolveRestartResumePersistedTerminalEvent("after no progress")) return;
               const now = Date.now();
-              console.warn(`[sdk] [${sid}] Restart recovery produced no events after ${opts.restartResumeNoEventTimeoutMs}ms — releasing run state`);
+              console.warn(`[sdk] [${sid}] Restart recovery produced no progress events after ${opts.restartResumeNoEventTimeoutMs}ms — releasing run state`);
               recordRunSpan("session.restartResume.no_events", now - sendStart, {
                 noEventTimeoutMs: opts.restartResumeNoEventTimeoutMs,
+                lastLiveEventType,
               }, now);
               runController.completePreservedForRestart();
             }, opts.restartResumeNoEventTimeoutMs);
