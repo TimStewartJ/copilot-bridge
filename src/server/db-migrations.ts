@@ -528,6 +528,7 @@ function dropScheduleReuseState(db: DatabaseSync): void {
       ALTER TABLE schedules_new RENAME TO schedules;
       CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
       CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+      CREATE INDEX IF NOT EXISTS idx_schedules_enabled_nextRunAt ON schedules(enabled, nextRunAt);
     `);
   }
 

@@ -361,7 +361,7 @@ export function createScheduleStore(db: DatabaseSync) {
   }
 
   function updateNextRunAt(id: string, nextRunAt: string): void {
-    db.prepare("UPDATE schedules SET nextRunAt = ? WHERE id = ?").run(nextRunAt, id);
+    db.prepare("UPDATE schedules SET nextRunAt = ? WHERE id = ?").run(new Date(nextRunAt).toISOString(), id);
   }
 
   function getSchedulesForTask(taskId: string): Schedule[] {
@@ -370,6 +370,18 @@ export function createScheduleStore(db: DatabaseSync) {
 
   function getEnabledSchedules(): Schedule[] {
     return (db.prepare("SELECT * FROM schedules WHERE enabled = 1").all() as any[]).map(hydrate);
+  }
+
+  function listDueSchedules(nowIso: string): Schedule[] {
+    const normalizedNow = new Date(nowIso).toISOString();
+    return (db.prepare(`
+      SELECT *
+      FROM schedules
+      WHERE enabled = 1
+        AND nextRunAt IS NOT NULL
+        AND nextRunAt <= ?
+      ORDER BY nextRunAt ASC, updatedAt ASC, id ASC
+    `).all(normalizedNow) as any[]).map(hydrate);
   }
 
   function listClaimedSessionIds(): string[] {
@@ -413,7 +425,7 @@ export function createScheduleStore(db: DatabaseSync) {
     recordRun, claimScheduleRun, claimAutomaticRun,
     completeAutomaticRun, skipAutomaticRun,
     releaseClaimedAutomaticRun, renewClaimedAutomaticRun,
-    updateNextRunAt, getSchedulesForTask, getEnabledSchedules,
+    updateNextRunAt, getSchedulesForTask, getEnabledSchedules, listDueSchedules,
     listClaimedSessionIds, listScheduleRunSessionIds, listDeletedScheduleRunGroups, deleteRunsForDeletedSchedules,
   };
 }

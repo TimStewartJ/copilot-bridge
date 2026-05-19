@@ -13,7 +13,7 @@ import {
 } from "../session-manager.js";
 import { clearRestartState, writeRestartState } from "../restart-state.js";
 import * as scheduler from "../scheduler.js";
-import { computeNextRunAt, matchesCron, matchesField } from "../scheduler.js";
+import { computeNextRunAt, getCronTriggerScheduledFor, matchesCron, matchesField } from "../scheduler.js";
 import { createTestApp } from "./helpers.js";
 
 afterEach(() => {
@@ -258,6 +258,57 @@ describe("scheduler restart gating", () => {
       configureRestartStateStore(undefined);
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("uses the persisted cron slot for delayed cron triggers and watchdog dedupe", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:31:00.000Z"));
+
+    const { ctx, db } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-slot-session" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Delayed cron slot",
+      prompt: "run delayed slot",
+      type: "cron",
+      cron: "30 * * * *",
+      timezone: "UTC",
+    });
+    db.prepare("UPDATE schedules SET lastRunAt = ?, nextRunAt = ?, runCount = ? WHERE id = ?").run(
+      "2026-04-16T16:00:00.000Z",
+      "2026-04-16T16:30:00.000Z",
+      1,
+      schedule.id,
+    );
+
+    expect(getCronTriggerScheduledFor(schedule.id, new Date("2026-04-16T16:31:00.000Z"))).toBe("2026-04-16T16:30:00.000Z");
+
+    const first = await scheduler.triggerSchedule(schedule.id, {
+      source: "cron",
+      scheduledFor: getCronTriggerScheduledFor(schedule.id, new Date("2026-04-16T16:31:00.000Z")),
+    });
+    const second = await scheduler.triggerSchedule(schedule.id, {
+      source: "catchup",
+      scheduledFor: "2026-04-16T16:30:00.000Z",
+    });
+
+    expect(first).toEqual({ sessionId: "cron-slot-session" });
+    expect(second).toEqual({ skipped: "This scheduled slot already ran" });
+    expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
   });
 
   it("rolls back a newly created schedule session if restart pending flips before startWork", async () => {
@@ -1043,6 +1094,45 @@ describe("scheduler startup recovery", () => {
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     expect(sessionManager.startWork).toHaveBeenCalledWith("one-shot-session", "run later");
+  });
+
+  it("persists one-shot nextRunAt when arming a schedule created after initialization", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
+
+    const { ctx } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "late-one-shot" }),
+      startWork: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const runAt = "2026-04-16T15:59:30Z";
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Late one-shot",
+      prompt: "catch up late one-shot",
+      type: "once",
+      runAt,
+    });
+
+    scheduler.armOneShot(schedule.id, runAt);
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBe("2026-04-16T15:59:30.000Z");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.waitFor(() => {
+      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionManager.startWork).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot");
   });
 
   it("retries a one-shot timer in-process after a transient pre-launch failure", async () => {

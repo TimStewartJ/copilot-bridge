@@ -60,6 +60,27 @@ describe("schedule-store", () => {
       expect(store.listSchedules()).toHaveLength(2);
     });
 
+    it("listDueSchedules returns only enabled schedules with due nextRunAt values", () => {
+      const dueEarly = store.createSchedule({ ...baseCron, name: "Due early" });
+      const dueLate = store.createSchedule({ ...baseCron, name: "Due late" });
+      const future = store.createSchedule({ ...baseCron, name: "Future" });
+      const missingNextRun = store.createSchedule({ ...baseCron, name: "Missing next run" });
+      const disabled = store.createSchedule({ ...baseCron, name: "Disabled" });
+
+      store.updateNextRunAt(dueLate.id, "2026-01-01T08:00:00Z");
+      store.updateNextRunAt(dueEarly.id, "2026-01-01T07:00:00.000Z");
+      store.updateNextRunAt(future.id, "2026-01-01T09:00:00.000Z");
+      store.updateNextRunAt(disabled.id, "2026-01-01T07:30:00.000Z");
+      store.updateSchedule(disabled.id, { enabled: false });
+
+      expect(store.listDueSchedules("2026-01-01T08:30:00.000Z").map((item) => item.id)).toEqual([
+        dueEarly.id,
+        dueLate.id,
+      ]);
+      expect(store.getSchedule(dueLate.id)?.nextRunAt).toBe("2026-01-01T08:00:00.000Z");
+      expect(store.listDueSchedules("2026-01-01T08:30:00.000Z").map((item) => item.id)).not.toContain(missingNextRun.id);
+    });
+
     it("updateSchedule changes fields", () => {
       const s = store.createSchedule(baseCron);
       const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false });
