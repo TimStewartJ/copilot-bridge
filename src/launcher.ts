@@ -18,7 +18,7 @@ import {
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { gitHash } from "./server/git-revisions.js";
-import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
+import { fetchRestartBusyState, waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
@@ -961,21 +961,7 @@ async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise
   const quiesceUrl = bridgeLocalUrl("/api/restart/quiesce");
   const busyUrl = bridgeLocalUrl("/api/busy?ignoreRestartPreservable=1");
   return waitForIdleSessionsImpl({
-    fetchBusy: async () => {
-      let res = await fetch(quiesceUrl, { method: "POST" });
-      if (res.status === 404 || res.status === 405 || res.status >= 500) {
-        res = await fetch(busyUrl);
-      }
-      if (!res.ok) throw new Error(`Busy check failed: ${res.status}`);
-      const data = await res.json() as any;
-      const suspendedSessionIds: string[] = Array.isArray(data.suspendedSessionIds)
-        ? data.suspendedSessionIds.filter((id: unknown): id is string => typeof id === "string")
-        : [];
-      if (suspendedSessionIds.length > 0) {
-        log(`Suspended ${suspendedSessionIds.length} session(s) for restart: ${suspendedSessionIds.map((id) => id.slice(0, 8)).join(", ")}`);
-      }
-      return data;
-    },
+    fetchBusy: () => fetchRestartBusyState({ fetch, quiesceUrl, busyUrl, log }),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log,
     isServerAlive: () => serverProcess !== null,

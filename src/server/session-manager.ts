@@ -1820,7 +1820,8 @@ export class SessionManager {
     mode: RestartPreservationMode,
   ): RestartPreservationCandidate | undefined {
     const runRecord = this.runStateController.getRunRecords().get(sessionId);
-    if (!runRecord || runRecord.runKind !== "message" || runRecord.preserveAcrossRestart !== true) {
+    const isPreservableRunKind = runRecord?.runKind === "message" || runRecord?.runKind === "restart-resume";
+    if (!runRecord || !isPreservableRunKind || runRecord.preserveAcrossRestart !== true) {
       return undefined;
     }
     if (runRecord.promptAccepted !== true) return undefined;
@@ -1914,7 +1915,9 @@ export class SessionManager {
       store.markResuming(record.sessionId);
       const runController = this.sessionRunner.resumeRestartSuspendedSession(record);
       void runController.completion.finally(() => {
-        store.delete(record.sessionId);
+        if (store.get(record.sessionId)?.status === "resuming") {
+          store.delete(record.sessionId);
+        }
       });
       console.log(`[sdk] [${sid}] Restart recovery started`);
     } catch (error) {

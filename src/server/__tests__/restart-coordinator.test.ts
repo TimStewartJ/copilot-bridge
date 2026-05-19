@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { waitForIdleSessions, type BusyState } from "../restart-coordinator.js";
+import { fetchRestartBusyState, waitForIdleSessions, type BusyState } from "../restart-coordinator.js";
 
 function createDeps(
   states: Array<BusyState | Error>,
@@ -73,5 +73,67 @@ describe("waitForIdleSessions", () => {
 
     await expect(waitForIdleSessions(deps)).resolves.toBe(true);
     expect(log).toHaveBeenCalledWith("All 2 session(s) are stuck (no events for 5s+) — proceeding with restart");
+  });
+});
+
+describe("fetchRestartBusyState", () => {
+  function response(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: vi.fn().mockResolvedValue(body),
+    } as unknown as Response;
+  }
+
+  it("uses the restart-blocking busy endpoint after triggering quiesce", async () => {
+    const log = vi.fn();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(200, {
+        busy: true,
+        count: 1,
+        suspendedSessionIds: ["abcdef12-3456-7890-abcd-ef1234567890"],
+        sessions: [{ id: "session-b", staleMs: 0, elapsedMs: 10 }],
+      }))
+      .mockResolvedValueOnce(response(200, {
+        busy: false,
+        count: 0,
+        sessions: [],
+      }));
+
+    await expect(fetchRestartBusyState({
+      fetch,
+      quiesceUrl: "http://bridge/api/restart/quiesce",
+      busyUrl: "http://bridge/api/busy?ignoreRestartPreservable=1",
+      log,
+    })).resolves.toEqual({
+      busy: false,
+      count: 0,
+      sessions: [],
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, "http://bridge/api/restart/quiesce", { method: "POST" });
+    expect(fetch).toHaveBeenNthCalledWith(2, "http://bridge/api/busy?ignoreRestartPreservable=1");
+    expect(log).toHaveBeenCalledWith("Suspended 1 session(s) for restart: abcdef12");
+  });
+
+  it("falls back to the busy endpoint when quiesce is unavailable", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(404, { error: "Not found" }))
+      .mockResolvedValueOnce(response(200, {
+        busy: true,
+        count: 1,
+        sessions: [{ id: "session-a", staleMs: 0, elapsedMs: 10 }],
+      }));
+
+    await expect(fetchRestartBusyState({
+      fetch,
+      quiesceUrl: "http://bridge/api/restart/quiesce",
+      busyUrl: "http://bridge/api/busy?ignoreRestartPreservable=1",
+      log: vi.fn(),
+    })).resolves.toEqual({
+      busy: true,
+      count: 1,
+      sessions: [{ id: "session-a", staleMs: 0, elapsedMs: 10 }],
+    });
   });
 });
