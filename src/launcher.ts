@@ -17,6 +17,7 @@ import {
 } from "./server/platform.js";
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
+import { gitHash } from "./server/git-revisions.js";
 import { waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
@@ -186,17 +187,6 @@ function bridgeLocalUrl(pathname: string, port = currentServerPort): string {
 
 function commandEnv(): NodeJS.ProcessEnv {
   return withNonInteractiveCommandEnv(process.env);
-}
-
-function gitHash(): string {
-  try {
-    return execSync("git --no-pager rev-parse --short HEAD", {
-      cwd: ROOT,
-      encoding: "utf-8",
-      env: commandEnv(),
-      timeout: 5_000,
-    }).trim();
-  } catch { return "unknown"; }
 }
 
 function gitFullHash(): string | null {
