@@ -1,4 +1,4 @@
-import { rmSync, statSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isBridgeReleaseMode } from "./distribution-mode.js";
@@ -153,8 +153,14 @@ export function previewTargetLastActivityMs(target: PreviewTarget): number {
 }
 
 export function removePreviewData(dataDir: string): void {
-  if (statPathExists(dataDir)) {
+  if (!statPathExists(dataDir)) return;
+  if (!statPathExists(join(dataDir, "validation-logs"))) {
     removeDirectoryWithRetries(dataDir);
+    return;
+  }
+  for (const entry of readdirSync(dataDir)) {
+    if (entry === "validation-logs") continue;
+    removeDirectoryWithRetries(join(dataDir, entry));
   }
 }
 
