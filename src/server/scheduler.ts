@@ -2,7 +2,7 @@
 // Registers node-cron jobs, handles triggering, missed-run catch-up
 
 import cron, { type ScheduledTask } from "node-cron";
-import type { AutomaticRunClaim, ScheduleStore, ScheduleTriggerSource } from "./schedule-store.js";
+import type { AutomaticRunClaim, Schedule, ScheduleStore, ScheduleTriggerSource } from "./schedule-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -48,8 +48,22 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 const AUTOMATIC_CLAIM_RENEW_INTERVAL_MS = 30 * 1000;
 const ONE_SHOT_RETRY_DELAY_MS = 30 * 1000;
 const MISSED_RUN_WATCHDOG_INTERVAL_MS = 60 * 1000;
+const CRON_TRIGGER_SLOT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const CRON_CURSOR_REWIND_WINDOW_MS = 60 * 60 * 1000;
+const CRON_CURSOR_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
 const NEXT_RUN_LOOKAHEAD_MINUTES = 35 * 24 * 60;
+const WEEKDAY_BY_SHORT_NAME: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
 let missedRunWatchdogTimer: ReturnType<typeof setInterval> | undefined;
+let lastCronCursorReconcileAt = 0;
+const timezoneDatePartFormatters = new Map<string, Intl.DateTimeFormat>();
 
 const missedRunCatchUp = createMissedRunCatchUpController({
   scheduleStore: () => scheduleStore,
@@ -159,7 +173,7 @@ export function registerSchedule(scheduleId: string): void {
   if (schedule.timezone) opts.timezone = schedule.timezone;
 
   const job = cron.schedule(schedule.cron, () => {
-    triggerSchedule(scheduleId, { source: "cron", scheduledFor: floorToMinuteIso(new Date()) }).catch((err) => {
+    triggerSchedule(scheduleId, { source: "cron", scheduledFor: getCronTriggerScheduledFor(scheduleId) }).catch((err) => {
       console.error(`[scheduler] Error triggering schedule ${scheduleId}:`, err);
     });
   }, opts);
@@ -170,11 +184,25 @@ export function registerSchedule(scheduleId: string): void {
 
   cronJobs.set(scheduleId, job);
 
-  // Compute and store next run time
-  const nextRunAt = computeNextRunAt(schedule.cron, schedule.timezone);
-  if (nextRunAt) scheduleStore.updateNextRunAt(scheduleId, nextRunAt);
+  ensureCronNextRunAt(schedule);
 
   console.log(`[scheduler] Registered cron job for "${schedule.name}" (${schedule.cron})`);
+}
+
+export function getCronTriggerScheduledFor(scheduleId: string, now = new Date()): string {
+  const schedule = scheduleStore.getSchedule(scheduleId);
+  if (schedule?.enabled && schedule.type === "cron") {
+    const nextRunAt = normalizeIso(schedule.nextRunAt);
+    const nextRunAtTime = nextRunAt ? Date.parse(nextRunAt) : NaN;
+    if (
+      nextRunAt
+      && nextRunAtTime <= now.getTime() + 60_000
+      && now.getTime() - nextRunAtTime <= CRON_TRIGGER_SLOT_LOOKBACK_MS
+    ) {
+      return nextRunAt;
+    }
+  }
+  return floorToMinuteIso(now);
 }
 
 /**
@@ -203,12 +231,15 @@ export function armOneShot(scheduleId: string, runAt: string): void {
   const existing = oneShotTimers.get(scheduleId);
   if (existing) clearTimeout(existing);
 
-  const delay = new Date(runAt).getTime() - Date.now();
+  const scheduledFor = new Date(runAt).toISOString();
+  scheduleStore.updateNextRunAt(scheduleId, scheduledFor);
+
+  const delay = Date.parse(scheduledFor) - Date.now();
   if (delay <= 0) return;
 
   const timer = setTimeout(() => {
     oneShotTimers.delete(scheduleId);
-    triggerSchedule(scheduleId, { source: "once", scheduledFor: new Date(runAt).toISOString() }).catch((err) => {
+    triggerSchedule(scheduleId, { source: "once", scheduledFor }).catch((err) => {
       console.error(`[scheduler] One-shot trigger failed for ${scheduleId}:`, err);
     });
   }, delay);
@@ -602,11 +633,58 @@ function registerAllSchedules(): void {
       }
     } else if (schedule.type === "once" && schedule.runAt) {
       armOneShot(schedule.id, schedule.runAt);
-      scheduleStore.updateNextRunAt(schedule.id, schedule.runAt);
       oneShotCount += 1;
     }
   }
+  lastCronCursorReconcileAt = Date.now();
   console.log(`[scheduler] Registered ${cronJobs.size} cron job(s) and ${oneShotCount} one-shot timer(s)`);
+}
+
+function ensureCronNextRunAt(schedule: Schedule, now = new Date()): string | undefined {
+  if (schedule.type !== "cron" || !schedule.cron) return undefined;
+
+  const nowTime = now.getTime();
+  const currentNextRunAt = normalizeIso(schedule.nextRunAt);
+  const currentNextTime = currentNextRunAt ? Date.parse(currentNextRunAt) : NaN;
+  const lastRunAt = normalizeIso(schedule.lastRunAt);
+  let nextRunAt = currentNextRunAt;
+
+  if (lastRunAt) {
+    const lastRunTime = Date.parse(lastRunAt);
+    const expectedAfterLastRun = computeNextRunAt(schedule.cron, schedule.timezone, new Date(lastRunAt));
+    const expectedAfterLastRunTime = expectedAfterLastRun ? Date.parse(expectedAfterLastRun) : NaN;
+    const expectedAfterLastRunIsRecent = Number.isFinite(expectedAfterLastRunTime)
+      && nowTime - expectedAfterLastRunTime <= CRON_CURSOR_REWIND_WINDOW_MS;
+    if (
+      expectedAfterLastRun
+      && (
+        !nextRunAt
+        || !Number.isFinite(currentNextTime)
+        || currentNextTime <= lastRunTime
+        || (expectedAfterLastRunTime <= nowTime && currentNextTime > nowTime && expectedAfterLastRunIsRecent)
+      )
+    ) {
+      nextRunAt = expectedAfterLastRun;
+    }
+  }
+
+  if (!nextRunAt) {
+    nextRunAt = computeNextRunAt(schedule.cron, schedule.timezone, now);
+  }
+  if (nextRunAt && nextRunAt !== schedule.nextRunAt) {
+    scheduleStore.updateNextRunAt(schedule.id, nextRunAt);
+  }
+  return nextRunAt;
+}
+
+function reconcileCronNextRunAt(now = new Date()): void {
+  if (now.getTime() - lastCronCursorReconcileAt < CRON_CURSOR_RECONCILE_INTERVAL_MS) return;
+  lastCronCursorReconcileAt = now.getTime();
+  for (const schedule of scheduleStore.getEnabledSchedules()) {
+    if (schedule.type === "cron" && schedule.cron) {
+      ensureCronNextRunAt(schedule, now);
+    }
+  }
 }
 
 function clearMissedRunWatchdog(): void {
@@ -618,6 +696,9 @@ function clearMissedRunWatchdog(): void {
 function startMissedRunWatchdog(): void {
   clearMissedRunWatchdog();
   missedRunWatchdogTimer = setInterval(() => {
+    if (!isRestartPending()) {
+      reconcileCronNextRunAt();
+    }
     missedRunCatchUp.check();
   }, MISSED_RUN_WATCHDOG_INTERVAL_MS);
 }
@@ -629,17 +710,36 @@ function getDatePartsInTz(date: Date, timezone?: string): { minute: number; hour
   if (!timezone) {
     return { minute: date.getMinutes(), hour: date.getHours(), day: date.getDate(), month: date.getMonth() + 1, weekday: date.getDay() };
   }
-  // Use en-US with numeric parts to get reliable integer extraction
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone, hour12: false,
-    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric",
-  });
+  const fmt = getTimezoneDatePartFormatter(timezone);
   const parts = fmt.formatToParts(date);
   const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? "0", 10);
-  // For weekday, construct a date string in the target TZ and get day-of-week
-  const tzDateStr = date.toLocaleDateString("en-US", { timeZone: timezone });
-  const weekday = new Date(tzDateStr).getDay();
+  const weekdayName = parts.find((p) => p.type === "weekday")?.value.slice(0, 3);
+  const weekday = weekdayName ? WEEKDAY_BY_SHORT_NAME[weekdayName] ?? 0 : 0;
   return { minute: get("minute"), hour: get("hour") % 24, day: get("day"), month: get("month"), weekday };
+}
+
+function getTimezoneDatePartFormatter(timezone: string): Intl.DateTimeFormat {
+  let formatter = timezoneDatePartFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour12: false,
+      weekday: "short",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+    });
+    timezoneDatePartFormatters.set(timezone, formatter);
+  }
+  return formatter;
+}
+
+function normalizeIso(value?: string | null): string | undefined {
+  if (!value) return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
 }
 
 function floorToMinuteIso(date: Date): string {

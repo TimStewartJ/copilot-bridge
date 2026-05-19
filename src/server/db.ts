@@ -280,6 +280,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(sessionId);
     CREATE INDEX IF NOT EXISTS idx_schedules_taskId ON schedules(taskId);
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+    CREATE INDEX IF NOT EXISTS idx_schedules_enabled_nextRunAt ON schedules(enabled, nextRunAt);
     CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(scheduleId, recordedAt DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_schedule_run_claims_status ON schedule_run_claims(status, leaseExpiresAt);
     CREATE INDEX IF NOT EXISTS idx_checklist_items_taskId ON checklist_items(taskId);
