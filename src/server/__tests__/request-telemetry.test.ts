@@ -329,6 +329,72 @@ describe("request telemetry middleware", () => {
     expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
   });
 
+  it("reports in-flight request metadata even without an active operation wrapper", () => {
+    let currentTime = 0;
+    const middleware = createRequestTelemetryMiddleware(store, {
+      now: () => currentTime,
+      requestIdFactory: () => "plain-inflight-id",
+    });
+    const req = createMockRequest("/api/busy");
+    const res = createMockResponse();
+
+    middleware(req, res, vi.fn());
+
+    currentTime = 5_000;
+    expect(recordInflightRequestTelemetry(store, {
+      now: () => currentTime,
+      thresholdMs: 5_000,
+      repeatMs: 5_000,
+    })).toBe(1);
+
+    const spans = store.querySpans({ name: "http.request.inflight" });
+    expect(spans).toHaveLength(1);
+    expect(spans[0].metadata).toMatchObject({
+      requestId: "plain-inflight-id",
+      method: "GET",
+      path: "/api/busy",
+      requestAgeMs: 5_000,
+      operationDepth: 0,
+      activeRequestCount: 1,
+    });
+    expect(spans[0].metadata).not.toHaveProperty("currentOperation");
+
+    res.emit("finish");
+    expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
+  });
+
+  it("does not record completed operations for cheap API route work", async () => {
+    const { app } = createTestApp();
+
+    await request(app).get("/api/sessions?includeArchived=true").expect(200);
+    await request(app).get("/api/busy").expect(200);
+    await request(app).get("/api/copilot-usage").expect(200);
+    await request(app).get("/api/sessions/session-1/messages-fast").expect(200);
+    await request(app).get("/api/read-state").expect(200);
+    await request(app).post("/api/read-state/session-1").expect(200);
+    await request(app).delete("/api/read-state/session-1").expect(200);
+
+    const operationNames = getRecentCompletedRequestOperations({ limit: 50 })
+      .map((operation) => operation.operation);
+    expect(operationNames).toContain("sessions.enrichedList");
+    expect(operationNames).toContain("copilot-usage.readSummary");
+    expect(operationNames).toContain("sessions.messagesFast.diskRead");
+    for (const removedOperation of [
+      "sessions.materialize",
+      "busy.sessionActivity",
+      "copilot-usage.serialize",
+      "sessions.messagesFast.status",
+      "sessions.messagesFast.warmState",
+      "read-state.get",
+      "read-state.resolveActivity",
+      "read-state.markRead",
+      "read-state.emitChanged",
+      "read-state.markUnread",
+    ]) {
+      expect(operationNames).not.toContain(removedOperation);
+    }
+  });
+
   it("skips telemetry and streaming endpoints to avoid noisy recursion", () => {
     let currentTime = 0;
     const middleware = createRequestTelemetryMiddleware(store, {
