@@ -164,7 +164,8 @@ async function main(): Promise<void> {
     assert.equal(settingsRes.body.favicon, "emerald-bridge");
     assert.equal(settingsRes.body.reasoningEffort, undefined);
 
-    const schedulesRes = await request(app).get(`${result.previewPath}api/schedules`);
+    const schedulesRes = await request(app)
+      .get(`${result.previewPath}api/schedules?taskId=${encodeURIComponent(startHere.id)}`);
     assert.equal(schedulesRes.status, 200, "schedules API did not return 200");
     assert(Array.isArray(schedulesRes.body), "schedules response was not an array");
     assert(schedulesRes.body.some((schedule: any) => schedule.name === "Launch follow-up prompt"), "seeded demo schedule was not present");

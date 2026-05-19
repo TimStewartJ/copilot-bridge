@@ -241,10 +241,44 @@ describe("Schedule routes", () => {
     });
   });
 
-  it("GET /api/schedules returns empty list initially", async () => {
-    const res = await request(app).get("/api/schedules");
+  it("GET /api/schedules requires a taskId query parameter", async () => {
+    for (const path of [
+      "/api/schedules",
+      "/api/schedules?taskId=",
+      "/api/schedules?taskId=one&taskId=two",
+    ]) {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/taskId/);
+    }
+  });
+
+  it("GET /api/schedules returns task-scoped schedules", async () => {
+    const otherTask = await request(app)
+      .post("/api/tasks")
+      .send({ title: "Other Schedule Host" });
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Task schedule",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+    ctx.scheduleStore.createSchedule({
+      taskId: otherTask.body.task.id,
+      name: "Other task schedule",
+      prompt: "Continue a different conversation",
+      type: "cron",
+      cron: "0 1 * * *",
+    });
+
+    const res = await request(app).get("/api/schedules").query({ taskId });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.body.map((item: { id: string }) => item.id)).toEqual([schedule.id]);
+
+    const unknownTask = await request(app).get("/api/schedules").query({ taskId: "no-such-task" });
+    expect(unknownTask.status).toBe(200);
+    expect(unknownTask.body).toEqual([]);
   });
 
   it("POST /api/schedules validates required fields", async () => {

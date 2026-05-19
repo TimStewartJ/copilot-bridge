@@ -35,7 +35,6 @@ export const queryKeys = {
   taskSessionStorage: (id: string, sessionIds: readonly string[]) =>
     ["task", id, "session-storage", ...sessionIds] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
-  allSchedules: ["schedules"] as const,
   feed: (filters?: Record<string, unknown>) =>
     filters ? ["feed", filters] as const : ["feed"] as const,
   scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,

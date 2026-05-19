@@ -3397,8 +3397,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   // ── Schedule routes ───────────────────────────────────────────────
 
-  router.get("/schedules", (_req, res) => {
-    const taskId = typeof _req.query.taskId === "string" ? _req.query.taskId : undefined;
+  router.get("/schedules", (req, res) => {
+    const taskId = typeof req.query.taskId === "string" ? req.query.taskId.trim() : "";
+    if (!taskId) {
+      return res.status(400).json({ error: "taskId query parameter is required" });
+    }
     res.json(ctx.scheduleStore.listSchedules(taskId));
   });
 
