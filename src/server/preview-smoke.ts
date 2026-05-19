@@ -1,17 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import type { DatabaseSync } from "./db.js";
+import { openDatabase } from "./db.js";
+import { createDocsStore } from "./docs-store.js";
+import { createGlobalBus } from "./global-bus.js";
+import { createSettingsStore } from "./settings-store.js";
+import { createTaskStore } from "./task-store.js";
 import express from "express";
 import request from "supertest";
-import {
-  STAGING_TOOLS,
-  buildPreviewPrefix,
-  cleanupPreviewTarget,
-  getActivePreviews,
-  getStagingRouter,
-  registerExpressApp,
-} from "./staging-tools.js";
 
 interface PreviewResult {
   success: boolean;
@@ -24,12 +22,51 @@ interface PreviewResult {
   error?: string;
 }
 
-function createSmokeApp() {
+interface PreviewSmokeSource {
+  rootDir: string;
+  dataDir: string;
+  docsDir: string;
+  docsSnapshotsDir: string;
+  copilotHome: string;
+}
+
+interface StagingToolsModule {
+  STAGING_TOOLS: Array<{
+    name: string;
+    handler?: (args: { stagingDir: string; validate?: boolean }, invocation?: unknown) => Promise<PreviewResult>;
+  }>;
+  buildPreviewPrefix(stagingDir: string): string;
+  cleanupPreviewTarget(
+    stagingDir: string,
+    profile?: "clone",
+    options?: { removeData?: boolean },
+  ): Promise<void>;
+  getActivePreviews(): ReadonlyMap<string, string>;
+  getStagingRouter(prefix: string): express.RequestHandler | undefined;
+  registerExpressApp(app: express.Application): void;
+}
+
+const PREVIEW_SMOKE_ENV_KEYS = [
+  "BRIDGE_DATA_DIR",
+  "BRIDGE_DOCS_DIR",
+  "BRIDGE_DOCS_SNAPSHOTS_DIR",
+  "COPILOT_HOME",
+] as const;
+const PREVIEW_SMOKE_CLEANUP_MAX_RETRIES = 10;
+const PREVIEW_SMOKE_CLEANUP_RETRY_DELAY_MS = 50;
+const REQUIRED_FIXTURE_TABLES = [
+  "settings",
+  "tasks",
+  "schedules",
+  "push_subscriptions",
+] as const;
+
+function createSmokeApp(stagingTools: StagingToolsModule) {
   const app = express();
-  registerExpressApp(app);
+  stagingTools.registerExpressApp(app);
 
   app.use("/staging/:prefix/api", (req, res, next) => {
-    const router = getStagingRouter(req.params.prefix);
+    const router = stagingTools.getStagingRouter(req.params.prefix);
     if (router) {
       router(req, res, next);
     } else {
@@ -38,7 +75,7 @@ function createSmokeApp() {
   });
 
   app.use("/staging/:prefix", (req, res, next) => {
-    const distDir = getActivePreviews().get(req.params.prefix);
+    const distDir = stagingTools.getActivePreviews().get(req.params.prefix);
     if (!distDir || !existsSync(distDir)) {
       return res.status(404).send("Staging preview not found.");
     }
@@ -50,12 +87,11 @@ function createSmokeApp() {
   return app;
 }
 
-function findPreviewTool() {
-  const tool = STAGING_TOOLS.find((candidate) => candidate.name === "staging_preview");
+function findPreviewTool(stagingTools: StagingToolsModule) {
+  const tool = stagingTools.STAGING_TOOLS.find((candidate) => candidate.name === "staging_preview");
   assert(tool, "staging_preview tool not found");
-  return tool as {
-    handler: (args: { stagingDir: string; validate?: boolean }, invocation?: unknown) => Promise<PreviewResult>;
-  };
+  assert(typeof tool.handler === "function", "staging_preview handler not found");
+  return tool as { handler: NonNullable<typeof tool.handler> };
 }
 
 function resolveStagingDir(input?: string): string {
@@ -107,15 +143,97 @@ function parseArgs(argv: string[]): { stagingDir?: string; validate: boolean } {
   return { stagingDir, validate };
 }
 
+function isPathAtOrUnder(parent: string, candidate: string): boolean {
+  const rel = relative(resolve(parent), resolve(candidate));
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function assertFixtureSchema(db: DatabaseSync): void {
+  for (const table of REQUIRED_FIXTURE_TABLES) {
+    const row = db.prepare(
+      "SELECT 1 as found FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(table) as { found?: number } | undefined;
+    assert.equal(row?.found, 1, `preview smoke fixture is missing required table: ${table}`);
+  }
+}
+
+function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
+  const fixtureParent = join(stagingDir, ".preview-smoke-fixture");
+  mkdirSync(fixtureParent, { recursive: true });
+  const rootDir = mkdtempSync(join(fixtureParent, "run-"));
+  const dataDir = join(rootDir, "data");
+  const docsDir = join(dataDir, "docs");
+  const docsSnapshotsDir = join(dataDir, "backups", "docs", "snapshots");
+  const copilotHome = join(dataDir, ".copilot");
+  mkdirSync(docsSnapshotsDir, { recursive: true });
+  mkdirSync(copilotHome, { recursive: true });
+
+  const db = openDatabase(dataDir);
+  try {
+    assertFixtureSchema(db);
+    createSettingsStore(db).updateSettings({ theme: "system" });
+    createTaskStore(db, createGlobalBus()).createTask("Preview Smoke Fixture");
+  } finally {
+    db.close();
+  }
+
+  const docsStore = createDocsStore(docsDir);
+  docsStore.writePage("smoke/index", "# Preview Smoke Fixture\n\nSynthetic docs used by preview smoke validation.");
+
+  return { rootDir, dataDir, docsDir, docsSnapshotsDir, copilotHome };
+}
+
+function installPreviewSmokeSourceEnv(source: PreviewSmokeSource): () => void {
+  const previous = new Map<string, string | undefined>();
+  for (const key of PREVIEW_SMOKE_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+  }
+  process.env.BRIDGE_DATA_DIR = source.dataDir;
+  process.env.BRIDGE_DOCS_DIR = source.docsDir;
+  process.env.BRIDGE_DOCS_SNAPSHOTS_DIR = source.docsSnapshotsDir;
+  process.env.COPILOT_HOME = source.copilotHome;
+
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
+function cleanupPreviewSmokeSource(source: PreviewSmokeSource): void {
+  rmSync(source.rootDir, {
+    recursive: true,
+    force: true,
+    maxRetries: PREVIEW_SMOKE_CLEANUP_MAX_RETRIES,
+    retryDelay: PREVIEW_SMOKE_CLEANUP_RETRY_DELAY_MS,
+  });
+}
+
 async function main(): Promise<void> {
   const { stagingDir: stagingArg, validate } = parseArgs(process.argv.slice(2));
   const stagingDir = resolveStagingDir(stagingArg);
   assertStagingWorktree(stagingDir);
-  const prefix = buildPreviewPrefix(stagingDir);
-  const app = createSmokeApp();
-  const previewTool = findPreviewTool();
+  const source = createPreviewSmokeSource(stagingDir);
+  const restoreEnv = installPreviewSmokeSourceEnv(source);
+  let stagingTools: StagingToolsModule | undefined;
 
   try {
+    stagingTools = await import("./staging-tools.js") as StagingToolsModule;
+    const previewShared = await import("./staging-preview-shared.js");
+    assert.equal(
+      resolve(previewShared.PRODUCTION_DATA_DIR),
+      resolve(source.dataDir),
+      "preview smoke must use its synthetic source data directory",
+    );
+    assert(isPathAtOrUnder(source.rootDir, previewShared.STAGING_PREVIEW_PARENT), "preview output must stay under the synthetic fixture root");
+
+    const prefix = stagingTools.buildPreviewPrefix(stagingDir);
+    const app = createSmokeApp(stagingTools);
+    const previewTool = findPreviewTool(stagingTools);
     const validationNote = validate ? "with validation" : "without validation";
     console.log(`[preview-smoke] building staging preview ${validationNote} for ${stagingDir}`);
     const result = await previewTool.handler({ stagingDir, validate }, {});
@@ -124,7 +242,7 @@ async function main(): Promise<void> {
     assert.equal(result.previewPath, `/staging/${prefix}/`);
     assert.equal(result.backendReady, true, result.backendError ?? "preview backend did not start");
 
-    const previewDist = getActivePreviews().get(prefix);
+    const previewDist = stagingTools.getActivePreviews().get(prefix);
     assert(previewDist && existsSync(previewDist), "preview dist directory was not registered");
 
     const previewRes = await request(app).get(result.previewPath);
@@ -173,7 +291,11 @@ async function main(): Promise<void> {
       docsNodeCount: docsTreeRes.body.tree.length,
     }, null, 2));
   } finally {
-    await cleanupPreviewTarget(stagingDir, "clone", { removeData: false });
+    if (stagingTools) {
+      await stagingTools.cleanupPreviewTarget(stagingDir, "clone", { removeData: false });
+    }
+    restoreEnv();
+    cleanupPreviewSmokeSource(source);
   }
 }
 
