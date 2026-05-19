@@ -42,6 +42,7 @@ const SQLITE_STATE_TABLES = [
   "tag_mcp_server_refs",
   "deferred_prompts",
   "defer_loops",
+  "restart_suspended_sessions",
   "push_subscriptions",
 ] as const;
 type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
@@ -462,6 +463,23 @@ function initSchema(db: DatabaseSync): void {
       ON defer_loops(status, nextRunAt);
     CREATE INDEX IF NOT EXISTS idx_defer_loops_sessionId_status_nextRunAt
       ON defer_loops(sessionId, status, nextRunAt);
+
+    -- Active session turns suspended during a Bridge restart and recovered after boot
+    CREATE TABLE IF NOT EXISTS restart_suspended_sessions (
+      sessionId TEXT PRIMARY KEY,
+      runKind TEXT NOT NULL,
+      pendingPrompt TEXT,
+      promptAccepted INTEGER NOT NULL DEFAULT 0,
+      suspendedAt TEXT NOT NULL,
+      lastEventAt TEXT,
+      status TEXT NOT NULL,
+      resumeAttempts INTEGER NOT NULL DEFAULT 0,
+      lastError TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_restart_suspended_sessions_status
+      ON restart_suspended_sessions(status, suspendedAt);
 
     -- Browser Web Push subscriptions
     CREATE TABLE IF NOT EXISTS push_subscriptions (
