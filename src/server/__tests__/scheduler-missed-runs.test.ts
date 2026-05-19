@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RestartState } from "../restart-state.js";
 import type { Schedule } from "../schedule-store.js";
+import { computeNextRunAt } from "../cron-next-run.js";
 import { createMissedRunCatchUpController } from "../scheduler-missed-runs.js";
 
 const NOW = "2026-04-16T17:30:00.000Z";
@@ -126,6 +127,39 @@ describe("scheduler missed-run catch-up", () => {
     expect(triggerSchedule).toHaveBeenCalledWith("cron-1", {
       source: "catchup",
       scheduledFor: "2026-04-16T15:30:00.000Z",
+    });
+  });
+
+  it("derives catch-up slots for supported zero-second six-field crons", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T16:11:00.000Z"));
+
+    const due = schedule({
+      id: "cron-six",
+      cron: "0 */5 * * * *",
+      lastRunAt: "2026-04-16T16:00:00.000Z",
+      nextRunAt: undefined,
+    });
+    const store = fakeStore([due]);
+    const triggerSchedule = vi.fn().mockResolvedValue({ sessionId: "catch-up-session" });
+    const controller = createMissedRunCatchUpController({
+      scheduleStore: () => store as any,
+      computeNextRunAt,
+      unregisterSchedule: vi.fn(),
+      triggerSchedule,
+      isRestartPending: () => false,
+      refreshRestartState: vi.fn().mockResolvedValue(restartState("idle")),
+      getRestartPendingMessage: () => "restart pending",
+    });
+
+    controller.check();
+    await vi.waitFor(() => {
+      expect(triggerSchedule).toHaveBeenCalledTimes(1);
+    });
+
+    expect(triggerSchedule).toHaveBeenCalledWith("cron-six", {
+      source: "catchup",
+      scheduledFor: "2026-04-16T16:05:00.000Z",
     });
   });
 

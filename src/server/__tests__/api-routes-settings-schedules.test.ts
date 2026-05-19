@@ -323,6 +323,39 @@ describe("Schedule routes", () => {
     });
   });
 
+  it("POST /api/schedules accepts supported cron field counts", async () => {
+    for (const cron of ["*/5 * * * *", "0 */5 * * * *"]) {
+      const res = await request(app)
+        .post("/api/schedules")
+        .send({
+          taskId,
+          name: `Supported ${cron}`,
+          prompt: "Continue the conversation",
+          type: "cron",
+          cron,
+          timezone: "UTC",
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.cron).toBe(cron);
+    }
+  });
+
+  it("POST /api/schedules rejects unsupported non-zero seconds crons", async () => {
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Unsupported seconds",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron: "30 */5 * * * *",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("seconds field is 0");
+  });
+
   it("POST /api/schedules accepts autoArchiveKeep", async () => {
     const res = await request(app)
       .post("/api/schedules")
@@ -410,6 +443,49 @@ describe("Schedule routes", () => {
       id: schedule.id,
       name: "Renamed schedule",
     });
+  });
+
+  it("PATCH /api/schedules rejects unsupported non-zero seconds crons", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Reject cron patch",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "0 0 * * *",
+    });
+
+    const res = await request(app)
+      .patch(`/api/schedules/${schedule.id}`)
+      .send({ cron: "30 */5 * * * *" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("seconds field is 0");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.cron).toBe("0 0 * * *");
+  });
+
+  it("PATCH /api/schedules allows unrelated edits to legacy unsupported crons", async () => {
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId,
+      name: "Legacy unsupported cron",
+      prompt: "Continue the conversation",
+      type: "cron",
+      cron: "30 */5 * * * *",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await request(app)
+        .patch(`/api/schedules/${schedule.id}`)
+        .send({ name: "Legacy renamed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        id: schedule.id,
+        name: "Legacy renamed",
+        cron: "30 */5 * * * *",
+      });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("PATCH /api/schedules applies autoArchiveKeep retention immediately", async () => {

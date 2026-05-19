@@ -63,6 +63,10 @@ interface ParsedCronExpression {
   weekday: CronField;
 }
 
+export type SupportedCronValidationResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
 interface LocalDateParts {
   year: number;
   month: number;
@@ -73,6 +77,16 @@ interface LocalDateParts {
 }
 
 const timezoneDatePartFormatters = new Map<string, Intl.DateTimeFormat>();
+
+const SUPPORTED_CRON_FIELD_COUNT_ERROR = "Cron expressions must have 5 fields, or 6 fields with a leading 0 seconds field.";
+const UNSUPPORTED_SECONDS_CRON_ERROR = "Cron expressions with seconds are only supported when the seconds field is 0; use a 5-field expression or a 6-field expression starting with 0.";
+const INVALID_SUPPORTED_CRON_ERROR = "Invalid cron expression. Expected 5 fields, or 6 fields with a leading 0 seconds field.";
+
+export function validateSupportedCronExpression(cronExpr: string): SupportedCronValidationResult {
+  const normalized = normalizeSupportedCronFields(cronExpr);
+  if (!normalized.ok) return normalized;
+  return parseCronFields(normalized.fields) ? { ok: true } : { ok: false, error: INVALID_SUPPORTED_CRON_ERROR };
+}
 
 export function computeNextRunAt(cronExpr: string, timezone?: string, after?: Date): string | undefined {
   try {
@@ -136,12 +150,20 @@ export function matchesField(value: number, field: string): boolean {
 }
 
 function parseCronExpression(cronExpr: string): ParsedCronExpression | undefined {
-  const rawFields = cronExpr.trim().split(/\s+/);
-  const fields = rawFields.length === 6 && rawFields[0] === "0"
-    ? rawFields.slice(1)
-    : rawFields;
-  if (fields.length !== 5) return undefined;
+  const normalized = normalizeSupportedCronFields(cronExpr);
+  if (!normalized.ok) return undefined;
+  return parseCronFields(normalized.fields);
+}
 
+function normalizeSupportedCronFields(cronExpr: string): { ok: true; fields: string[] } | { ok: false; error: string } {
+  const rawFields = cronExpr.trim().split(/\s+/);
+  if (rawFields.length === 5) return { ok: true, fields: rawFields };
+  if (rawFields.length !== 6) return { ok: false, error: SUPPORTED_CRON_FIELD_COUNT_ERROR };
+  if (rawFields[0] !== "0") return { ok: false, error: UNSUPPORTED_SECONDS_CRON_ERROR };
+  return { ok: true, fields: rawFields.slice(1) };
+}
+
+function parseCronFields(fields: string[]): ParsedCronExpression | undefined {
   const minute = parseCronField(fields[0], 0, 59, undefined);
   const hour = parseCronField(fields[1], 0, 23, undefined);
   const day = parseCronField(fields[2], 1, 31, undefined);
