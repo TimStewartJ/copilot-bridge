@@ -40,6 +40,7 @@ describe("browser diagnostics", () => {
       browser: {
         executablePath,
         masterProfileDirectory: profileDir,
+        headed: true,
       },
     });
     telemetryStore.recordSpan({
@@ -69,6 +70,7 @@ describe("browser diagnostics", () => {
     expect(result.config.executablePath).toBe(executablePath);
     expect(result.config.executablePathSource).toBe("settings");
     expect(result.config.masterProfileDirectory).toBe(profileDir);
+    expect(result.config.headed).toBe(true);
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "search.google_captcha", count: 1 }),
       expect.objectContaining({ code: "search.ddg_challenge", count: 1 }),
@@ -93,6 +95,7 @@ describe("browser diagnostics", () => {
       executablePathSource: "environment",
       executablePathConfigured: true,
       executablePathExists: true,
+      headed: false,
     });
   });
 });

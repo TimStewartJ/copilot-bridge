@@ -104,23 +104,44 @@ describe("settings-store", () => {
     expect(reloadedAgain.model).toBeUndefined();
   });
 
-  it("updateSettings persists and clears browser diagnostics paths", () => {
+  it("updateSettings persists and clears browser diagnostics settings", () => {
     const updated = store.updateSettings({
       browser: {
         executablePath: " C:\\Browsers\\chrome.exe ",
         masterProfileDirectory: " C:\\Bridge\\browser-profile ",
+        headed: true,
       },
     });
     expect(updated.browser).toEqual({
       executablePath: "C:\\Browsers\\chrome.exe",
       masterProfileDirectory: "C:\\Bridge\\browser-profile",
+      headed: true,
     });
 
     const reloaded = store.getSettings();
     expect(reloaded.browser).toEqual(updated.browser);
 
+    const pathOnly = store.updateSettings({
+      browser: {
+        executablePath: " C:\\Browsers\\chrome.exe ",
+        headed: false,
+      },
+    });
+    expect(pathOnly.browser).toEqual({
+      executablePath: "C:\\Browsers\\chrome.exe",
+    });
+
+    const headedOnly = store.updateSettings({ browser: { headed: true } });
+    expect(headedOnly.browser).toEqual({ headed: true });
+
     const cleared = store.updateSettings({ browser: {} });
     expect(cleared.browser).toBeUndefined();
     expect(store.getSettings().browser).toBeUndefined();
+  });
+
+  it("rejects non-boolean browser headed settings", () => {
+    expect(() => store.updateSettings({
+      browser: { headed: "true" } as any,
+    })).toThrow("browser.headed must be a boolean");
   });
 });

@@ -78,6 +78,7 @@ export interface BrowserCommandOptions {
 export interface BrowserLaunchConfig {
   executablePath?: string;
   masterProfileDirectory?: string;
+  headed?: boolean;
 }
 
 export type BrowserExecutablePathSource = "settings" | "environment" | "auto-detect";
@@ -95,9 +96,11 @@ export function getBrowserLaunchConfig(settings?: {
 }): BrowserLaunchConfig {
   const executablePath = normalizeConfiguredPath(settings?.browser?.executablePath);
   const masterProfileDirectory = normalizeConfiguredPath(settings?.browser?.masterProfileDirectory);
+  const headed = settings?.browser?.headed === true;
   return {
     ...(executablePath ? { executablePath } : {}),
     ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
+    ...(headed ? { headed } : {}),
   };
 }
 
@@ -129,17 +132,23 @@ export function getBridgeBrowserTarget(
     sessionName: `copilot-bridge-${suffix}`,
     profileDir,
     ...(executablePath ? { executablePath } : {}),
+    ...(launchConfig.headed ? { headed: true } : {}),
   };
 }
 
 function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     AGENT_BROWSER_SESSION: target.sessionName,
     AGENT_BROWSER_PROFILE: target.profileDir,
     ...(target.executablePath ? { AGENT_BROWSER_EXECUTABLE_PATH: target.executablePath } : {}),
-    ...(target.headed ? { AGENT_BROWSER_HEADED: "true" } : {}),
   };
+  if (target.headed) {
+    env.AGENT_BROWSER_HEADED = "true";
+  } else {
+    delete env.AGENT_BROWSER_HEADED;
+  }
+  return env;
 }
 
 function cloneRootDir(copilotHome = process.env.COPILOT_HOME ?? join(homedir(), ".copilot")): string {
@@ -641,6 +650,7 @@ async function createBrowserClone(
     sessionName: `${primaryTarget.sessionName}-clone-${cloneId}`,
     profileDir,
     ...(primaryTarget.executablePath ? { executablePath: primaryTarget.executablePath } : {}),
+    ...(primaryTarget.headed ? { headed: true } : {}),
   };
 
   const startedAt = Date.now();

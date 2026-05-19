@@ -1448,6 +1448,7 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export interface BrowserSettings {
   executablePath?: string;
   masterProfileDirectory?: string;
+  headed?: boolean;
 }
 
 export interface AppSettings {
@@ -1517,6 +1518,7 @@ export interface BrowserDiagnosticsResponse {
     masterProfileDirectory: string;
     masterProfileDirectoryConfigured: boolean;
     masterProfileDirectoryExists: boolean;
+    headed: boolean;
   };
   issues: BrowserDiagnosticsIssue[];
 }
