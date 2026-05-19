@@ -28,6 +28,7 @@ interface PreviewSmokeSource {
   docsDir: string;
   docsSnapshotsDir: string;
   copilotHome: string;
+  taskId: string;
 }
 
 interface StagingToolsModule {
@@ -169,10 +170,12 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
   mkdirSync(copilotHome, { recursive: true });
 
   const db = openDatabase(dataDir);
+  let taskId: string;
   try {
     assertFixtureSchema(db);
     createSettingsStore(db).updateSettings({ theme: "system" });
-    createTaskStore(db, createGlobalBus()).createTask("Preview Smoke Fixture");
+    const fixtureTask = createTaskStore(db, createGlobalBus()).createTask("Preview Smoke Fixture");
+    taskId = fixtureTask.id;
   } finally {
     db.close();
   }
@@ -180,7 +183,7 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
   const docsStore = createDocsStore(docsDir);
   docsStore.writePage("smoke/index", "# Preview Smoke Fixture\n\nSynthetic docs used by preview smoke validation.");
 
-  return { rootDir, dataDir, docsDir, docsSnapshotsDir, copilotHome };
+  return { rootDir, dataDir, docsDir, docsSnapshotsDir, copilotHome, taskId };
 }
 
 function installPreviewSmokeSourceEnv(source: PreviewSmokeSource): () => void {
@@ -263,7 +266,7 @@ async function main(): Promise<void> {
     const settingsRes = await request(app).get(`${result.previewPath}api/settings`);
     assert.equal(settingsRes.status, 200, "settings API did not return 200");
 
-    const schedulesRes = await request(app).get(`${result.previewPath}api/schedules`);
+    const schedulesRes = await request(app).get(`${result.previewPath}api/schedules?taskId=${encodeURIComponent(source.taskId)}`);
     assert.equal(schedulesRes.status, 200, "schedules API did not return 200");
     assert(Array.isArray(schedulesRes.body), "schedules response was not an array");
 
