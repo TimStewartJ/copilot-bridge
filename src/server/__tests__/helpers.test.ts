@@ -64,12 +64,13 @@ describe("test helper runtime isolation", () => {
   });
 
   it("passes explicit runtime paths into stores created by createTestApp", () => {
-    const runtimePaths = makeTestRuntimePaths("demo-app", { demoMode: true });
+    const runtimePaths = makeTestRuntimePaths("explicit-app", { workspaceDir: makeTestDir("explicit-workspace") });
     const { ctx } = createTestApp({ runtimePaths });
 
-    const task = ctx.taskStore.createTask("Demo task");
+    const task = ctx.taskStore.createTask("Runtime task");
 
-    expect(task.cwd).toBe(runtimePaths.workspaceDir);
+    expect(ctx.runtimePaths?.workspaceDir).toBe(runtimePaths.workspaceDir);
+    expect(task.cwd).toBeUndefined();
   });
 
   it("fills in an isolated copilot home when explicit runtime paths omit one", () => {

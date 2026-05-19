@@ -104,7 +104,6 @@ describe("send_attachment tool", () => {
       apiBasePath: undefined,
       isStaging: true,
       runtimePaths: {
-        demoMode: false,
         dataDir: join(tmpdir(), "preview-xyz", "data"),
         docsDir: join(tmpdir(), "preview-xyz", "data", "docs"),
         copilotHome,

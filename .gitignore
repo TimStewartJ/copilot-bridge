@@ -5,7 +5,6 @@ dist/
 .env
 .env.local
 data/
-demo-data/
 .DS_Store
 .vscode/
 .idea/

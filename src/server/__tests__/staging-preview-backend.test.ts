@@ -105,12 +105,10 @@ function runtimePathsFor(stagingDir: string): RuntimePaths {
   mkdirSync(docsDir, { recursive: true });
   mkdirSync(copilotHome, { recursive: true });
   return {
-    demoMode: false,
     dataDir,
     docsDir,
     copilotHome,
     env: {
-      BRIDGE_DEMO_MODE: "false",
       BRIDGE_DATA_DIR: dataDir,
       BRIDGE_DOCS_DIR: docsDir,
       COPILOT_HOME: copilotHome,

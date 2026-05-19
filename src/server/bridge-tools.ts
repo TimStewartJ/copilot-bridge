@@ -11,7 +11,7 @@ import { createChecklistTools } from "./tools/checklist-tools.js";
 import { createDeferTools } from "./tools/defer-tools.js";
 import { createDocsTools } from "./tools/docs-tools.js";
 import { createFeedTools } from "./tools/feed-tools.js";
-import { BRIDGE_TOOLS_REPO_ROOT, isDemoMode } from "./tools/helpers.js";
+import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { createScheduleTools } from "./tools/schedule-tools.js";
 import { createSelfAdminTools } from "./tools/self-admin-tools.js";
 import { createSessionTools } from "./tools/session-tools.js";
@@ -25,7 +25,6 @@ function isReleaseMode(ctx: AppContext): boolean {
 }
 
 export function createBridgeTools(ctx: AppContext) {
-  const demoMode = isDemoMode(ctx.runtimePaths);
   const releaseMode = isReleaseMode(ctx);
   const tools = [
     ...createTaskTools(ctx),
@@ -40,7 +39,7 @@ export function createBridgeTools(ctx: AppContext) {
     ...createScheduleTools(ctx),
     ...createDeferTools(ctx),
     ...createDocsTools(ctx),
-    ...(demoMode || releaseMode ? [] : STAGING_TOOLS),
+    ...(releaseMode ? [] : STAGING_TOOLS),
     ...createWebSearchTools(ctx),
     ...createBrowserFetchTools(ctx),
     ...createBrowserExecTools(ctx),
@@ -49,11 +48,6 @@ export function createBridgeTools(ctx: AppContext) {
   ];
 
   const hiddenTools = new Set<string>();
-  if (demoMode) {
-    hiddenTools.add("self_restart");
-    hiddenTools.add("self_update");
-    for (const tool of STAGING_TOOLS) hiddenTools.add(tool.name);
-  }
   if (releaseMode) {
     hiddenTools.add("self_update");
     for (const tool of STAGING_TOOLS) hiddenTools.add(tool.name);

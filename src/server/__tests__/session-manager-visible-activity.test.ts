@@ -44,7 +44,6 @@ describe("SessionManager visible activity cache", () => {
       config: { sessionMcpServers: {} },
       copilotHome,
       runtimePaths: {
-        demoMode: false,
         dataDir,
         docsDir: join(dataDir, "docs"),
         copilotHome,

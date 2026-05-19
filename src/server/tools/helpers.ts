@@ -1,4 +1,4 @@
-import { dirname, join, resolve, basename } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ok, err, type Result } from "../tool-results.js";
 import { resolveBridgeControlRoot } from "../control-root.js";
@@ -7,15 +7,10 @@ import type { Task } from "../task-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import type { TagStore } from "../tag-store.js";
 import type { TaskGroupStore } from "../task-group-store.js";
-import type { RuntimePaths } from "../runtime-paths.js";
 
 export const BRIDGE_TOOLS_REPO_ROOT = resolveBridgeControlRoot(
   join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
 );
-
-export function isDemoMode(runtimePaths?: RuntimePaths): boolean {
-  return runtimePaths?.demoMode ?? false;
-}
 
 export function ensureTask(ctx: AppContext, taskId: string): Result<Task> {
   const task = ctx.taskStore.getTask(taskId);
@@ -55,13 +50,7 @@ export function getAttachmentApiBasePath(ctx: AppContext): string {
     const stagingRootName = ctx.runtimePaths?.dataDir
       ? basename(dirname(ctx.runtimePaths.dataDir))
       : basename(BRIDGE_TOOLS_REPO_ROOT);
-    const prefix = `${stagingRootName}${ctx.runtimePaths?.demoMode ? "-demo" : ""}`;
-    return `/staging/${prefix}/api`;
+    return `/staging/${stagingRootName}/api`;
   }
   return "/api";
-}
-
-export function resolveDemoWorkspaceDir(runtimePaths?: RuntimePaths): string | undefined {
-  if (!isDemoMode(runtimePaths)) return undefined;
-  return runtimePaths?.workspaceDir ?? (runtimePaths ? join(resolve(runtimePaths.dataDir), "workspace") : undefined);
 }

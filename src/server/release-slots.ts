@@ -27,7 +27,6 @@ const ROOT_COPY_EXCLUDES = new Set([
   ".vitest-slowest.json",
   "coverage",
   "data",
-  "demo-data",
   "dist",
   "node_modules",
 ]);

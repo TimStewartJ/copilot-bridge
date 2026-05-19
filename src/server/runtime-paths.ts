@@ -10,7 +10,6 @@ const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 
 export interface RuntimePaths {
   distributionMode?: BridgeDistributionMode;
-  demoMode: boolean;
   dataDir: string;
   docsDir: string;
   docsSnapshotsDir?: string;
@@ -21,7 +20,6 @@ export interface RuntimePaths {
 
 export interface RuntimePathOverrides {
   distributionMode?: BridgeDistributionMode;
-  demoMode?: boolean;
   dataDir?: string;
   docsDir?: string;
   docsSnapshotsDir?: string;
@@ -52,27 +50,21 @@ export function resolveRuntimePaths(
   overrides: RuntimePathOverrides = {},
 ): RuntimePaths {
   const distributionMode = overrides.distributionMode ?? resolveBridgeDistribution(env, REPO_ROOT).mode;
-  const demoMode = overrides.demoMode ?? env.BRIDGE_DEMO_MODE === "true";
   const releaseMode = distributionMode === "release";
   const dataDir = optionalEnvValue(overrides.dataDir)
     ?? optionalEnvValue(env.BRIDGE_DATA_DIR)
-    ?? (demoMode
-      ? join(REPO_ROOT, "demo-data")
-      : releaseMode
-        ? resolveDefaultReleaseDataDir(env)
-        : join(REPO_ROOT, "data"));
+    ?? (releaseMode ? resolveDefaultReleaseDataDir(env) : join(REPO_ROOT, "data"));
   const docsDir = optionalEnvValue(overrides.docsDir) ?? optionalEnvValue(env.BRIDGE_DOCS_DIR) ?? join(dataDir, "docs");
   const docsSnapshotsDir = optionalEnvValue(overrides.docsSnapshotsDir)
     ?? optionalEnvValue(env.BRIDGE_DOCS_SNAPSHOTS_DIR)
     ?? join(dataDir, "backups", "docs", "snapshots");
   const copilotHome = overrides.copilotHome
     ?? optionalEnvValue(env.COPILOT_HOME)
-    ?? (demoMode || releaseMode ? join(dataDir, ".copilot") : undefined);
-  const workspaceDir = overrides.workspaceDir ?? (demoMode ? join(dataDir, "workspace") : undefined);
+    ?? (releaseMode ? join(dataDir, ".copilot") : undefined);
+  const workspaceDir = overrides.workspaceDir;
 
   return {
     distributionMode,
-    demoMode,
     dataDir,
     docsDir,
     docsSnapshotsDir,
@@ -81,7 +73,6 @@ export function resolveRuntimePaths(
     env: withNonInteractiveCommandEnv({
       ...env,
       BRIDGE_DISTRIBUTION_MODE: distributionMode,
-      BRIDGE_DEMO_MODE: demoMode ? "true" : "false",
       BRIDGE_DATA_DIR: dataDir,
       BRIDGE_DOCS_DIR: docsDir,
       BRIDGE_DOCS_SNAPSHOTS_DIR: docsSnapshotsDir,

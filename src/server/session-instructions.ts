@@ -81,14 +81,3 @@ Delete only when the card is noise, duplicate, or mistaken.
 Use pinned sparingly for cards that should stay above normal feed flow. Add visuals only when the visual is the artifact or materially improves the card. Add prompt actions only when starting a follow-up session from the card is the natural next step.
 </feed_cards>
 `.trim();
-
-export const DEMO_MODE_INSTRUCTIONS = `
-<demo_mode>
-You are running inside a seeded demo workspace for Copilot Bridge.
-
-- Treat the main repository checkout and the user's normal .copilot home as read-only.
-- Keep any file edits inside the demo sandbox workspace unless the user explicitly asks to abandon the demo.
-- Do not suggest or rely on restart, self-update, or staging workflows in demo mode.
-- If a task has no working directory, default to the demo sandbox workspace instead of the live repository.
-</demo_mode>
-`.trim();

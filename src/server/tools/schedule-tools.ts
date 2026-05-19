@@ -17,7 +17,7 @@ function isLocalStagingModule(ctx: AppContext): boolean {
   const dataDir = ctx.runtimePaths?.dataDir;
   if (!dataDir) return false;
   const dataFolder = basename(dataDir);
-  if (dataFolder !== "data" && dataFolder !== "demo-data") return false;
+  if (dataFolder !== "data") return false;
   try {
     return isPathAtOrUnder(dirname(dataDir), fileURLToPath(import.meta.url));
   } catch {

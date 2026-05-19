@@ -342,7 +342,6 @@ function stagingStampJson(prefix: string, commitSha: string, dependencyHash = "s
 }
 
 function expectIsolatedValidationEnv(env: NodeJS.ProcessEnv | undefined) {
-  expect(env?.BRIDGE_DEMO_MODE).toBe("false");
   expect(env?.BRIDGE_DATA_DIR).toBeTruthy();
   expect(env?.BRIDGE_DOCS_DIR).toBeTruthy();
   expect(env?.COPILOT_HOME).toBeTruthy();
@@ -419,46 +418,34 @@ afterEach(() => {
 });
 
 describe("staging tools", () => {
-  it("skips staging artifact management in demo mode", async () => {
-    vi.stubEnv("BRIDGE_DEMO_MODE", "true");
-    const mod = await loadStagingToolsModule();
-    expect(mod.shouldManageStagingArtifacts()).toBe(false);
-  });
-
-  it("manages staging artifacts normally outside demo mode", async () => {
-    vi.stubEnv("BRIDGE_DEMO_MODE", undefined);
+  it("manages staging artifacts normally in development mode", async () => {
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     const mod = await loadStagingToolsModule();
     expect(mod.shouldManageStagingArtifacts()).toBe(true);
   });
 
   it("skips staging artifact management in release mode", async () => {
-    vi.stubEnv("BRIDGE_DEMO_MODE", undefined);
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
     const mod = await loadStagingToolsModule();
     expect(mod.shouldManageStagingArtifacts()).toBe(false);
   });
 
-  it("builds and parses demo preview prefixes", async () => {
+  it("builds and parses staging preview prefixes", async () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = join(tmpdir(), "bridge-staging", "abc12345");
-    expect(mod.buildPreviewPrefix(stagingDir, "clone")).toBe("abc12345");
-    expect(mod.buildPreviewPrefix(stagingDir, "demo")).toBe("abc12345-demo");
+    expect(mod.buildPreviewPrefix(stagingDir)).toBe("abc12345");
     expect(mod.parsePreviewPrefix("abc12345")).toEqual({ stagingName: "abc12345", profile: "clone" });
-    expect(mod.parsePreviewPrefix("abc12345-demo")).toEqual({ stagingName: "abc12345", profile: "demo" });
   });
 
-  it("keeps clone previews unambiguous when worktree names end with demo", async () => {
+  it("keeps staging previews unambiguous when worktree names contain suffix-like text", async () => {
     const mod = await loadStagingToolsModule();
-    const activeWorktrees = new Set(["foo-demo", "foo"]);
-    expect(mod.parsePreviewPrefix("foo-demo", activeWorktrees)).toEqual({ stagingName: "foo-demo", profile: "clone" });
-    expect(mod.parsePreviewPrefix("foo-demo-demo", activeWorktrees)).toEqual({ stagingName: "foo-demo", profile: "demo" });
+    const activeWorktrees = new Set(["foo-preview", "foo"]);
+    expect(mod.parsePreviewPrefix("foo-preview", activeWorktrees)).toEqual({ stagingName: "foo-preview", profile: "clone" });
   });
 
   it("returns null for orphaned preview prefixes when active worktrees are known", async () => {
     const mod = await loadStagingToolsModule();
     const activeWorktrees = new Set(["abc12345"]);
-    expect(mod.parsePreviewPrefix("missing-demo", activeWorktrees)).toBeNull();
     expect(mod.parsePreviewPrefix("missing", activeWorktrees)).toBeNull();
   });
 
@@ -467,7 +454,6 @@ describe("staging tools", () => {
     const stagingDir = createTempDir("bridge-stage-child-entrypoint-");
 
     const runtimePaths = {
-      demoMode: false,
       workspaceDir: join(stagingDir, "workspace"),
       dataDir: join(stagingDir, "data"),
       docsDir: join(stagingDir, "docs"),

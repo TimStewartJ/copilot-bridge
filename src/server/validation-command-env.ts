@@ -53,7 +53,6 @@ export function createValidationCommandEnv(
   const env = withNonInteractiveCommandEnv(options.nodeDir
     ? prependNodePath(baseEnv, options.nodeDir)
     : { ...baseEnv });
-  env.BRIDGE_DEMO_MODE = "false";
   env.BRIDGE_DATA_DIR = dataDir;
   env.BRIDGE_DOCS_DIR = docsDir;
   env.BRIDGE_DOCS_SNAPSHOTS_DIR = docsSnapshotsDir;
