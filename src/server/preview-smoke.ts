@@ -263,8 +263,7 @@ async function main(): Promise<void> {
     const settingsRes = await request(app).get(`${result.previewPath}api/settings`);
     assert.equal(settingsRes.status, 200, "settings API did not return 200");
 
-    const schedulesRes = await request(app)
-      .get(`${result.previewPath}api/schedules?taskId=${encodeURIComponent(startHere.id)}`);
+    const schedulesRes = await request(app).get(`${result.previewPath}api/schedules`);
     assert.equal(schedulesRes.status, 200, "schedules API did not return 200");
     assert(Array.isArray(schedulesRes.body), "schedules response was not an array");
 
