@@ -7,5 +7,5 @@ export function resolveBridgeControlRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const configured = env[BRIDGE_CONTROL_ROOT_ENV]?.trim();
-  return configured ? resolve(configured) : fallbackRoot;
+  return resolve(configured ? configured : fallbackRoot);
 }
