@@ -71,6 +71,40 @@ describe("event-bus", () => {
 
       expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
     });
+
+    it("only clears pendingPrompt for the matching persisted user message", () => {
+      const bus = getOrCreateBus("test-pending-prompt-match-1");
+      bus.setPendingPrompt("steer me");
+
+      bus.clearPendingPrompt("original prompt");
+
+      expect(bus.getSnapshot().pendingPrompt).toBe("steer me");
+
+      bus.clearPendingPrompt("steer me");
+
+      expect(bus.getSnapshot().pendingPrompt).toBeUndefined();
+    });
+
+    it("starts a fresh live turn snapshot on thinking events", () => {
+      const bus = getOrCreateBus("test-thinking-reset-1");
+      bus.setPendingPrompt("steer me");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
+      bus.emit({ type: "delta", content: "old text" });
+      bus.emit({ type: "tool_start", toolCallId: "tc-old", name: "bash" });
+      bus.emit({ type: "intent", intent: "Old turn" });
+
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+
+      expect(bus.getSnapshot()).toMatchObject({
+        accumulatedContent: "",
+        activeTools: [],
+        currentTurnTools: [],
+        intentText: "",
+        pendingPrompt: "steer me",
+        turnId: "turn-2",
+      });
+    });
+
     it("tracks pending native user input requests in snapshots", () => {
       const bus = getOrCreateBus("test-user-input-pending-1");
 

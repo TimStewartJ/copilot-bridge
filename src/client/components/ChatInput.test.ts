@@ -20,6 +20,25 @@ function findButtonByText(root: any, text: string): any {
   return button;
 }
 
+function findButtonByAriaLabel(root: any, label: string): any {
+  const button = queryButtonByAriaLabel(root, label);
+  if (!button) throw new Error(`Button not found with aria-label: ${label}`);
+  return button;
+}
+
+function queryButtonByAriaLabel(root: any, label: string): any | undefined {
+  return findAllByTag(root, "BUTTON").find((candidate) => (
+    getReactProps(candidate)?.["aria-label"] === label
+    || candidate.getAttribute?.("aria-label") === label
+  ));
+}
+
+function findTextarea(root: any): any {
+  const textarea = findAllByTag(root, "TEXTAREA")[0];
+  if (!textarea) throw new Error("Textarea not found");
+  return textarea;
+}
+
 describe("ChatInput voice retry", () => {
   let harness: ReactDomHarness | null = null;
 
@@ -107,5 +126,36 @@ describe("ChatInput voice retry", () => {
 
     expect(getHarness().dom.container.textContent).toContain("Auto-send failed after upload.");
     expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.textContent === "Try again")).toBe(false);
+  });
+
+  it("switches the streaming action between stop and steering send", async () => {
+    const onSend = vi.fn();
+    const onAbort = vi.fn();
+    await renderChatInput({ onSend, onAbort });
+
+    const stopButton = findButtonByAriaLabel(getHarness().dom.container, "Stop generating");
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Send steering note")).toBeUndefined();
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "please adjust",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    const sendButton = findButtonByAriaLabel(getHarness().dom.container, "Send steering note");
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Stop generating")).toBeUndefined();
+
+    await getHarness().act(async () => {
+      getReactProps(sendButton)?.onClick?.();
+    });
+
+    expect(onSend).toHaveBeenCalledWith("please adjust", undefined);
+    expect(onAbort).not.toHaveBeenCalled();
+    expect(stopButton).toBeDefined();
   });
 });

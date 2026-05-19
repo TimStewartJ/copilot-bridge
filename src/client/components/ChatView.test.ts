@@ -26,6 +26,7 @@ const fetchMessagesFastMock = vi.hoisted(() => vi.fn());
 const fetchMcpStatusMock = vi.hoisted(() => vi.fn());
 const warmSessionMock = vi.hoisted(() => vi.fn());
 const reportTimingMock = vi.hoisted(() => vi.fn());
+const chatInputMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../useSessionStream", () => ({
   useSessionStream: (...args: unknown[]) => useSessionStreamMock(...args),
@@ -45,7 +46,10 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 vi.mock("./ChatInput", () => ({
-  default: () => null,
+  default: (props: unknown) => {
+    chatInputMock(props);
+    return null;
+  },
 }));
 
 vi.mock("./McpStatusBar", () => ({
@@ -1055,6 +1059,32 @@ describe("ChatView cached resume loading state", () => {
         warm: true,
         hasMore: true,
       });
+      await cleanup();
+    }
+  });
+});
+
+describe("ChatView steering sends", () => {
+  it("allows sending a steering message while the session is streaming", async () => {
+    const { act, cleanup, sendMessageMock } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        busy: true,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        await props.onSend("please adjust");
+        await waitTick();
+      });
+
+      expect(sendMessageMock).toHaveBeenCalledWith("please adjust", undefined);
+    } finally {
       await cleanup();
     }
   });

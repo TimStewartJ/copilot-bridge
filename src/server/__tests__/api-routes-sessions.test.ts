@@ -589,6 +589,33 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined);
   });
 
+  it("POST /api/chat steers busy sessions instead of rejecting them", async () => {
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.startWork = vi.fn();
+    ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "busy-session", prompt: "adjust course" });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "steered" });
+    expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith("busy-session", "adjust course", undefined);
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/chat reports when a busy session cannot accept steering yet", async () => {
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "busy-session", prompt: "adjust course" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("reconnecting");
+  });
+
   it("POST /api/chat rejects new work while launcher restart cutover is in progress", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();

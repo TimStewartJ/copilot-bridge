@@ -439,9 +439,16 @@ export default function ChatInput({
     ? "text-error"
     : voiceUi.tone === "success"
       ? "text-success"
-    : voiceUi.tone === "accent"
-      ? "text-accent"
-      : "text-text-faint";
+      : voiceUi.tone === "accent"
+        ? "text-accent"
+        : "text-text-faint";
+  const showAbortControl = Boolean(onAbort && !hasContent);
+  const sendTitle = disabled
+    ? (disabledHint ?? "Warming up…")
+    : onAbort
+      ? "Send steering note"
+      : "Send message";
+  const submitControlTitle = showAbortControl ? "Stop generating" : sendTitle;
 
   return (
     <div className="border-t border-border/80 bg-bg-secondary/95">
@@ -587,31 +594,26 @@ export default function ChatInput({
               className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
             />
           </div>
-          {onAbort ? (
-            <button
-              onClick={onAbort}
-              className="p-3 bg-error hover:bg-error-hover text-white rounded-md self-center transition-colors flex items-center justify-center"
-              title="Stop generating"
-              type="button"
-            >
-              <Square size={14} fill="currentColor" />
-            </button>
-          ) : (
-            <button
-              onClick={handleSend}
-              disabled={!canSend}
-              className={`flex h-10 w-10 items-center justify-center self-center rounded-lg transition-colors ${
-                canSend
+          <button
+            onClick={showAbortControl ? onAbort : handleSend}
+            disabled={!showAbortControl && !canSend}
+            className={`flex h-10 w-10 items-center justify-center self-center rounded-lg transition-colors ${
+              showAbortControl
+                ? "bg-error text-white hover:bg-error-hover"
+                : canSend
                   ? "bg-accent text-white hover:bg-accent-hover"
                   : "text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint"
-              }`}
-              title={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
-              aria-label={disabled ? (disabledHint ?? "Warming up…") : "Send message"}
-              type="button"
-            >
+            }`}
+            title={submitControlTitle}
+            aria-label={submitControlTitle}
+            type="button"
+          >
+            {showAbortControl ? (
+              <Square size={14} fill="currentColor" />
+            ) : (
               <SendHorizontal size={18} />
-            </button>
-          )}
+            )}
+          </button>
         </div>
       </div>
     </div>
