@@ -3,6 +3,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
 
 export type SessionRunState = "busy" | "stalled" | "idle";
+export type SessionRunKind = "message" | "fleet" | "restart-resume";
 
 export type PromptDeliveryResult =
   | { status: "accepted" }
@@ -13,6 +14,10 @@ export interface SessionRunRecord {
   startedAt: number;
   lastEventAt: number;
   stalledAt?: number;
+  runKind?: SessionRunKind;
+  pendingPrompt?: string;
+  promptAccepted?: boolean;
+  preserveAcrossRestart?: boolean;
 }
 
 export interface SessionRunController {
@@ -24,6 +29,8 @@ export interface SessionRunController {
   completeError(message: string): void;
   completeAborted(content: string): void;
   completeShutdown(content: string): void;
+  completePreservedForRestart(): void;
+  wasPreservedForRestart(): boolean;
   awaitAbortConfirmation(delayMs: number, getContent: () => string): Promise<boolean>;
   clearAbortWait(): void;
 }
@@ -77,6 +84,7 @@ export class SessionRunStateController {
     bus: SessionEventBus,
   ): SessionRunController {
     let completed = false;
+    let preservedForRestart = false;
     let abortFallbackTimer: ReturnType<typeof setTimeout> | undefined;
     let abortFallbackPromise: Promise<boolean> | null = null;
     let resolveCompletion!: () => void;
@@ -125,6 +133,8 @@ export class SessionRunStateController {
       promptDelivery,
       isCompleted: () => completed,
       markPromptAccepted: () => {
+        const current = this.sessionRuns.get(sessionId);
+        if (current) this.sessionRuns.set(sessionId, { ...current, promptAccepted: true });
         settlePromptDelivery({ status: "accepted" });
       },
       completeDone: (content) => {
@@ -164,6 +174,13 @@ export class SessionRunStateController {
           bus.emit({ type: "shutdown", content, timestamp });
         });
       },
+      completePreservedForRestart: () => {
+        this.completedAssistantPreviews.delete(sessionId);
+        preservedForRestart = true;
+        settlePromptDelivery({ status: "accepted" });
+        finish();
+      },
+      wasPreservedForRestart: () => preservedForRestart,
       awaitAbortConfirmation: (delayMs, getContent) => {
         if (completed) return Promise.resolve(false);
         if (abortFallbackPromise) return abortFallbackPromise;
@@ -193,7 +210,7 @@ export class SessionRunStateController {
   setSessionRunState(
     sessionId: string,
     state: SessionRunState,
-    opts: { now?: number; lastEventAt?: number } = {},
+    opts: { now?: number; lastEventAt?: number; emitIdle?: boolean } = {},
   ): void {
     const current = this.sessionRuns.get(sessionId);
     const now = opts.now ?? Date.now();
@@ -203,11 +220,13 @@ export class SessionRunStateController {
       this.sessionRuns.delete(sessionId);
       const assistantPreview = this.completedAssistantPreviews.get(sessionId);
       this.completedAssistantPreviews.delete(sessionId);
-      this.deps.globalBus.emit({
-        type: "session:idle",
-        sessionId,
-        ...(assistantPreview ? { assistantPreview } : {}),
-      });
+      if (opts.emitIdle !== false) {
+        this.deps.globalBus.emit({
+          type: "session:idle",
+          sessionId,
+          ...(assistantPreview ? { assistantPreview } : {}),
+        });
+      }
       if (this.deps.isRestartPending()) {
         this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
       }
@@ -223,6 +242,10 @@ export class SessionRunStateController {
       startedAt: current?.startedAt ?? now,
       lastEventAt: opts.lastEventAt ?? current?.lastEventAt ?? now,
       stalledAt: state === "stalled" ? current?.stalledAt ?? now : undefined,
+      runKind: current?.runKind,
+      pendingPrompt: current?.pendingPrompt,
+      promptAccepted: current?.promptAccepted,
+      preserveAcrossRestart: current?.preserveAcrossRestart,
     };
     this.sessionRuns.set(sessionId, next);
 
@@ -232,6 +255,18 @@ export class SessionRunStateController {
     if (this.deps.isRestartPending() && !current) {
       this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
     }
+  }
+
+  setSessionRunMetadata(
+    sessionId: string,
+    metadata: Partial<Pick<SessionRunRecord, "runKind" | "pendingPrompt" | "promptAccepted" | "preserveAcrossRestart">>,
+  ): void {
+    const current = this.sessionRuns.get(sessionId);
+    if (!current) return;
+    this.sessionRuns.set(sessionId, {
+      ...current,
+      ...metadata,
+    });
   }
 
   private getActiveSessionCount(): number {

@@ -206,6 +206,7 @@ export function createMockSessionManager() {
     refreshModels: async () => ({ models: [], refreshed: true, activeSessions: 0, refreshedAt: "2026-01-01T00:00:00.000Z" }),
     listSessionsFromDisk: () => [],
     getSessionActivity: () => [],
+    getRestartBlockingSessionActivity: () => [],
     isSessionBusy: () => false,
     getSessionRunState: () => "idle",
     getPendingUserInputCount: () => 0,

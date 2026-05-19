@@ -920,7 +920,7 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
 }
 
 async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
-  const busyUrl = bridgeLocalUrl("/api/busy");
+  const busyUrl = bridgeLocalUrl("/api/busy?ignoreRestartPreservable=1");
   return waitForIdleSessionsImpl({
     fetchBusy: async () => {
       const res = await fetch(busyUrl);
@@ -938,7 +938,7 @@ async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise
 }
 
 async function gracefulStopServer(): Promise<boolean> {
-  const shutdownUrl = bridgeLocalUrl("/api/shutdown");
+  const shutdownUrl = bridgeLocalUrl("/api/shutdown?preserveActiveRuns=1");
   try {
     log("Requesting graceful shutdown...");
     const controller = new AbortController();

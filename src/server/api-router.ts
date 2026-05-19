@@ -1317,11 +1317,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  router.get("/busy", (_req, res) => {
+  router.get("/busy", (req, res) => {
+    const ignoreRestartPreservable = req.query.ignoreRestartPreservable === "1"
+      || req.query.ignoreRestartPreservable === "true";
     const sessions = timeSyncRequestOperation(
       res,
       "busy.sessionActivity",
-      () => ctx.sessionManager.getSessionActivity(),
+      () => ignoreRestartPreservable
+        ? ctx.sessionManager.getRestartBlockingSessionActivity()
+        : ctx.sessionManager.getSessionActivity(),
     );
     res.json({
       busy: sessions.length > 0,
@@ -1457,15 +1461,17 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   // POST /shutdown — graceful shutdown: abort active sessions, stop SDK, exit
-  router.post("/shutdown", async (_req, res) => {
+  router.post("/shutdown", async (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
     console.log("[web] Graceful shutdown requested via API");
+    const preserveActiveRuns = req.query.preserveActiveRuns === "1"
+      || req.query.preserveActiveRuns === "true";
     res.json({ ok: true, message: "Shutting down..." });
     try {
       schedulerModule().setGlobalPause(true);
       ctx.deferredPromptRunner?.shutdown();
       ctx.deferLoopRunner?.shutdown();
-      await ctx.sessionManager.gracefulShutdown();
+      await ctx.sessionManager.gracefulShutdown({ preserveActiveRuns });
       schedulerModule().shutdown();
     } catch (err) {
       console.error("[web] Error during graceful shutdown:", err);

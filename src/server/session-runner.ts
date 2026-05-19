@@ -24,9 +24,11 @@ import {
   refreshRestartStateSync,
 } from "./restart-controller.js";
 import {
+  type SessionRunKind,
   type SessionRunController,
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
+import type { RestartSuspendedSessionRecord } from "./restart-suspended-session-store.js";
 import type { SessionUserInputController } from "./session-user-input-controller.js";
 import { getToolExecutionDisplayText } from "./tool-results.js";
 import type {
@@ -240,7 +242,7 @@ export class SessionRunner {
   private setSessionRunState(
     sessionId: string,
     state: "busy" | "stalled" | "idle",
-    opts: { now?: number; lastEventAt?: number } = {},
+    opts: { now?: number; lastEventAt?: number; emitIdle?: boolean } = {},
   ): void {
     this.deps.runStateController.setSessionRunState(sessionId, state, opts);
   }
@@ -274,6 +276,12 @@ export class SessionRunner {
       sessionId,
       bus,
       (runController) => this.doWork(sessionId, prompt, bus, runController, attachments, options),
+      {
+        runKind: "message",
+        pendingPrompt: prompt,
+        promptAccepted: false,
+        preserveAcrossRestart: true,
+      },
     );
   }
 
@@ -365,18 +373,58 @@ export class SessionRunner {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     bus.reset();
     const fleetPrompt = prompt?.trim() || DEFAULT_FLEET_PROMPT;
-    this.startBackgroundRun(sessionId, bus, (runController) => this.doFleet(sessionId, fleetPrompt, bus, runController));
+    this.startBackgroundRun(
+      sessionId,
+      bus,
+      (runController) => this.doFleet(sessionId, fleetPrompt, bus, runController),
+      {
+        runKind: "fleet",
+        pendingPrompt: fleetPrompt,
+        promptAccepted: false,
+        preserveAcrossRestart: false,
+      },
+    );
+  }
+
+  resumeRestartSuspendedSession(record: RestartSuspendedSessionRecord): SessionRunController {
+    if (!this.client) throw new Error("SessionManager not initialized");
+    if (this.deps.isSessionBusy(record.sessionId)) {
+      throw new Error("Session is busy processing another request");
+    }
+
+    const bus = this.deps.eventBusRegistry.getOrCreateBus(record.sessionId);
+    bus.reset();
+    return this.startBackgroundRun(
+      record.sessionId,
+      bus,
+      (runController) => this.doRestartResume(record, bus, runController),
+      {
+        runKind: "restart-resume",
+        pendingPrompt: record.pendingPrompt,
+        promptAccepted: record.promptAccepted,
+        preserveAcrossRestart: false,
+      },
+    );
   }
 
   private startBackgroundRun(
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
     runner: (runController: SessionRunController) => Promise<void>,
+    metadata?: {
+      runKind?: SessionRunKind;
+      pendingPrompt?: string;
+      promptAccepted?: boolean;
+      preserveAcrossRestart?: boolean;
+    },
   ): SessionRunController {
     const now = Date.now();
     const runController = this.createRunController(sessionId, bus);
     this.deps.activeRunControllers.set(sessionId, runController);
     this.setSessionRunState(sessionId, "busy", { now, lastEventAt: now });
+    if (metadata) {
+      this.deps.runStateController.setSessionRunMetadata(sessionId, metadata);
+    }
 
     runner(runController).catch((err) => {
       console.error(`[sdk] Unhandled error in session ${sessionId}:`, err);
@@ -391,7 +439,9 @@ export class SessionRunner {
       if (this.deps.activeRunControllers.get(sessionId) === runController) {
         this.deps.activeRunControllers.delete(sessionId);
       }
-      this.setSessionRunState(sessionId, "idle");
+      this.setSessionRunState(sessionId, "idle", {
+        emitIdle: !runController.wasPreservedForRestart(),
+      });
       this.deps.flushPendingSessionEviction(sessionId);
     });
     return runController;
@@ -444,6 +494,22 @@ export class SessionRunner {
     });
   }
 
+  private async doRestartResume(
+    record: RestartSuspendedSessionRecord,
+    bus: ReturnType<typeof getOrCreateBus>,
+    runController: SessionRunController,
+  ): Promise<void> {
+    const sid = record.sessionId.slice(0, 8);
+    await this.runSessionOperation(record.sessionId, bus, runController, {
+      resumeContext: "restart-resume",
+      idleSpanName: "session.restartResumeToIdle",
+      startLog: `[sdk] [${sid}] Resuming suspended session after restart...`,
+      resumeOnly: true,
+      continuePendingWork: false,
+      useResumeEventHandler: true,
+    });
+  }
+
   private async runSessionOperation(
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
@@ -452,7 +518,10 @@ export class SessionRunner {
       resumeContext: string;
       idleSpanName: string;
       startLog: string;
-      execute: (session: any) => Promise<void>;
+      execute?: (session: any) => Promise<void>;
+      resumeOnly?: boolean;
+      continuePendingWork?: boolean;
+      useResumeEventHandler?: boolean;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       historyTruncation?: QuietIntervalDeferTailTruncationRequest;
@@ -461,12 +530,26 @@ export class SessionRunner {
     const sid = sessionId.slice(0, 8);
 
     const linkedTask = this.deps.findLinkedTask(sessionId);
+    const resumeEventBuffer: any[] = [];
+    let resumeEventSink: ((event: any) => void) | undefined;
     const resumeConfig = this.deps.buildSessionConfig({
       sessionId,
       task: linkedTask,
       groupNotes: this.deps.lookupGroupNotes(linkedTask?.groupId),
       forResume: true,
     });
+    if (opts.continuePendingWork !== undefined) {
+      resumeConfig.continuePendingWork = opts.continuePendingWork;
+    }
+    if (opts.useResumeEventHandler) {
+      resumeConfig.onEvent = (event: any) => {
+        if (resumeEventSink) {
+          resumeEventSink(event);
+        } else {
+          resumeEventBuffer.push(event);
+        }
+      };
+    }
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -997,7 +1080,14 @@ export class SessionRunner {
     };
 
     const subscribeToSession = (activeSession: typeof session) => {
-      acceptingSessionEvents = false;
+      if (!opts.resumeOnly) acceptingSessionEvents = false;
+      if (opts.useResumeEventHandler) {
+        resumeEventSink = (event: any) => handleEvent(event, { origin: "live" });
+        return () => {
+          resumeEventSink = undefined;
+          resumeEventBuffer.length = 0;
+        };
+      }
       return activeSession.on((event: any) => handleEvent(event, { origin: "live" }));
     };
 
@@ -1330,15 +1420,27 @@ export class SessionRunner {
 
       try {
         if (runController.isCompleted()) return;
-        if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
-        if (runController.isCompleted()) return;
-        unsub = subscribeToSession(session);
-        beginSend();
-        if (runController.isCompleted()) return;
-        if ((await runStepOrCompletion("send prompt", () => opts.execute(session))).completed) return;
-        runController.markPromptAccepted();
+        if (opts.resumeOnly) {
+          beginSend();
+          if (runController.isCompleted()) return;
+          unsub = subscribeToSession(session);
+          for (const event of resumeEventBuffer.splice(0)) {
+            handleEvent(event, { origin: "live" });
+            if (runController.isCompleted()) break;
+          }
+          runController.markPromptAccepted();
+        } else {
+          if (!opts.execute) throw new Error("Session run is missing an execute step");
+          if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
+          if (runController.isCompleted()) return;
+          unsub = subscribeToSession(session);
+          beginSend();
+          if (runController.isCompleted()) return;
+          if ((await runStepOrCompletion("send prompt", () => opts.execute!(session))).completed) return;
+          runController.markPromptAccepted();
+        }
       } catch (operationErr) {
-        if (usedCache && isStaleCachedSessionError(operationErr)) {
+        if (!opts.resumeOnly && usedCache && isStaleCachedSessionError(operationErr)) {
           console.warn(`[sdk] [${sid}] Stale cached session (${getErrorMessage(operationErr)}) — evicting and re-resuming...`);
           unsub?.();
           unsub = undefined;
@@ -1357,7 +1459,9 @@ export class SessionRunner {
           unsub = subscribeToSession(session);
           beginSend();
           if (runController.isCompleted()) return;
-          if ((await runStepOrCompletion("retry send prompt", () => opts.execute(session))).completed) return;
+          if (!opts.execute) throw new Error("Session run is missing an execute step");
+          const retryExecute = opts.execute;
+          if ((await runStepOrCompletion("retry send prompt", () => retryExecute(session))).completed) return;
           runController.markPromptAccepted();
         } else {
           throw operationErr;
@@ -1370,6 +1474,9 @@ export class SessionRunner {
       clearInterval(watchdog);
       syncShellWaits.clear();
       unsub?.();
+      if (opts.useResumeEventHandler) {
+        abandonSession(session);
+      }
     }
   }
 }
