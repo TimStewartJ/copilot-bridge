@@ -128,6 +128,13 @@ describe("SessionManager graceful shutdown", () => {
     const eventBusRegistry = createEventBusRegistry();
     const stop = vi.fn().mockResolvedValue(undefined);
     const { session, emit } = makeSession();
+    session.rpc.suspend = vi.fn(async () => {
+      emit({
+        type: "session.idle",
+        data: {},
+        timestamp: "2026-05-19T17:00:05.000Z",
+      });
+    });
     const manager = new SessionManager({
       tools: [],
       globalBus: createTestBus(),
@@ -155,6 +162,26 @@ describe("SessionManager graceful shutdown", () => {
       data: { content: "hello" },
       timestamp: "2026-05-19T17:00:00.000Z",
     });
+    emit({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-05-19T17:00:01.000Z",
+    });
+    emit({
+      type: "tool.execution_start",
+      data: { toolCallId: "tool-1", toolName: "bash" },
+      timestamp: "2026-05-19T17:00:02.000Z",
+    });
+    emit({
+      type: "tool.execution_complete",
+      data: { toolCallId: "tool-1", success: true },
+      timestamp: "2026-05-19T17:00:03.000Z",
+    });
+    emit({
+      type: "assistant.turn_end",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:04.000Z",
+    });
     await flushMicrotasks();
 
     await manager.gracefulShutdown({ preserveActiveRuns: true });
@@ -170,6 +197,75 @@ describe("SessionManager graceful shutdown", () => {
     expect(manager.getActiveSessions()).toEqual([]);
     expect(eventBusRegistry.getBus("session-1")?.getSnapshot().complete).toBe(false);
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not restart-preserve an open follow-up assistant turn", async () => {
+    const db = setupTestDb();
+    const store = createRestartSuspendedSessionStore(db);
+    const { session, emit } = makeSession();
+    const manager = new SessionManager({
+      tools: [],
+      globalBus: createTestBus(),
+      eventBusRegistry: createEventBusRegistry(),
+      sessionTitles: createSessionTitlesStore(db),
+      taskStore: {
+        findTaskBySessionId: vi.fn().mockReturnValue(null),
+      } as any,
+      settingsStore: {
+        getMcpServers: () => ({}),
+        getSettings: () => ({ mcpServers: {} }),
+      } as any,
+      config: { sessionMcpServers: {} },
+      restartSuspendedSessionStore: store,
+    }) as any;
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    emit({
+      type: "user.message",
+      data: { content: "hello" },
+      timestamp: "2026-05-19T17:00:00.000Z",
+    });
+    emit({
+      type: "assistant.turn_start",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:01.000Z",
+    });
+    emit({
+      type: "tool.execution_start",
+      data: { toolCallId: "tool-1", toolName: "bash" },
+      timestamp: "2026-05-19T17:00:02.000Z",
+    });
+    emit({
+      type: "tool.execution_complete",
+      data: { toolCallId: "tool-1", success: true },
+      timestamp: "2026-05-19T17:00:03.000Z",
+    });
+    emit({
+      type: "assistant.turn_end",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:04.000Z",
+    });
+    emit({
+      type: "assistant.turn_start",
+      data: { turnId: "2" },
+      timestamp: "2026-05-19T17:00:05.000Z",
+    });
+    await flushMicrotasks();
+
+    triggerRestartPending();
+    await refreshRestartState();
+    expect(manager.getRestartBlockingSessionActivity()).toEqual([expect.objectContaining({ id: "session-1" })]);
+
+    await manager.gracefulShutdown({ preserveActiveRuns: true });
+
+    expect(session.rpc.suspend).not.toHaveBeenCalled();
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(store.get("session-1")).toBeUndefined();
   });
 
   it("falls back to aborting active runs that have tools in flight", async () => {
@@ -222,7 +318,7 @@ describe("SessionManager graceful shutdown", () => {
     expect(store.get("session-1")).toBeUndefined();
   });
 
-  it("quiesces restart-preservable runs immediately after tools finish", async () => {
+  it("quiesces restart-preservable runs after a tool turn closes", async () => {
     const db = setupTestDb();
     const store = createRestartSuspendedSessionStore(db);
     const eventBusRegistry = createEventBusRegistry();
@@ -278,6 +374,18 @@ describe("SessionManager graceful shutdown", () => {
       type: "tool.execution_complete",
       data: { toolCallId: "tool-1", success: true },
       timestamp: "2026-05-19T17:00:03.000Z",
+    });
+    await flushMicrotasks();
+    expect(session.rpc.suspend).not.toHaveBeenCalled();
+    expect(await manager.quiesceRestartPreservableSessions()).toMatchObject({
+      suspendedSessionIds: [],
+      blockingSessions: [expect.objectContaining({ id: "session-1" })],
+    });
+
+    emit({
+      type: "assistant.turn_end",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:04.000Z",
     });
     await flushMicrotasks();
 
@@ -337,6 +445,11 @@ describe("SessionManager graceful shutdown", () => {
       data: { toolCallId: "tool-1", success: true },
       timestamp: "2026-05-19T17:00:03.000Z",
     });
+    emit({
+      type: "assistant.turn_end",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:04.000Z",
+    });
     await flushMicrotasks();
 
     triggerRestartPending();
@@ -393,12 +506,12 @@ describe("SessionManager graceful shutdown", () => {
       suspendedSessionIds: [],
       blockingSessions: [expect.objectContaining({ id: "session-1" })],
     });
-    expect(manager.getRestartBlockingSessionActivity()).toEqual([]);
+    expect(manager.getRestartBlockingSessionActivity()).toEqual([expect.objectContaining({ id: "session-1" })]);
     expect(session.rpc.suspend).not.toHaveBeenCalled();
     expect(store.get("session-1")).toBeUndefined();
   });
 
-  it("preserves active restart recovery during a subsequent restart shutdown", async () => {
+  it("preserves active restart recovery during a subsequent restart shutdown after a safe boundary", async () => {
     const db = setupTestDb();
     const store = createRestartSuspendedSessionStore(db);
     store.upsertSuspending({
@@ -411,6 +524,7 @@ describe("SessionManager graceful shutdown", () => {
     });
     store.markSuspended("session-1", "2026-05-19T17:00:02.000Z");
 
+    let resumeConfig: any;
     const recoveredSession = {
       rpc: {
         suspend: vi.fn().mockResolvedValue(undefined),
@@ -421,7 +535,10 @@ describe("SessionManager graceful shutdown", () => {
     const client = {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
-      resumeSession: vi.fn(async () => recoveredSession),
+      resumeSession: vi.fn(async (_sessionId: string, config: any) => {
+        resumeConfig = config;
+        return recoveredSession;
+      }),
     };
     const manager = new SessionManager({
       tools: [],
@@ -443,6 +560,27 @@ describe("SessionManager graceful shutdown", () => {
     await manager.initialize();
     await flushMicrotasks();
     expect(manager.getActiveSessions()).toEqual(["session-1"]);
+    resumeConfig.onEvent({
+      type: "assistant.turn_start",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:03.000Z",
+    });
+    resumeConfig.onEvent({
+      type: "tool.execution_start",
+      data: { toolCallId: "tool-1", toolName: "bash" },
+      timestamp: "2026-05-19T17:00:04.000Z",
+    });
+    resumeConfig.onEvent({
+      type: "tool.execution_complete",
+      data: { toolCallId: "tool-1", success: true },
+      timestamp: "2026-05-19T17:00:05.000Z",
+    });
+    resumeConfig.onEvent({
+      type: "assistant.turn_end",
+      data: { turnId: "1" },
+      timestamp: "2026-05-19T17:00:06.000Z",
+    });
+    await flushMicrotasks();
 
     triggerRestartPending();
     await refreshRestartState();
@@ -592,7 +730,7 @@ describe("SessionManager graceful shutdown", () => {
     }
   });
 
-  it("does not treat persisted shutdown as restart recovery completion", async () => {
+  it("does not treat persisted idle or shutdown after an open follow-up turn as restart recovery completion", async () => {
     vi.useFakeTimers();
     try {
       const db = setupTestDb();
@@ -615,19 +753,29 @@ describe("SessionManager graceful shutdown", () => {
         join(sessionStateDir, "events.jsonl"),
         [
           {
-            type: "user.message",
-            data: { content: "hello" },
-            timestamp: "2026-05-19T17:00:00.000Z",
+            type: "assistant.message",
+            data: { content: "intermediate" },
+            timestamp: "2026-05-19T17:00:03.000Z",
+          },
+          {
+            type: "assistant.turn_end",
+            data: { turnId: "1" },
+            timestamp: "2026-05-19T17:00:04.000Z",
           },
           {
             type: "assistant.turn_start",
+            data: { turnId: "2" },
+            timestamp: "2026-05-19T17:00:05.000Z",
+          },
+          {
+            type: "session.idle",
             data: {},
-            timestamp: "2026-05-19T17:00:01.000Z",
+            timestamp: "2026-05-19T17:00:06.000Z",
           },
           {
             type: "session.shutdown",
             data: {},
-            timestamp: "2026-05-19T17:00:03.000Z",
+            timestamp: "2026-05-19T17:00:07.000Z",
           },
         ].map((event) => JSON.stringify(event)).join("\n") + "\n",
         "utf8",
@@ -643,7 +791,7 @@ describe("SessionManager graceful shutdown", () => {
           queueMicrotask(() => config.onEvent?.({
             type: "session.resume",
             data: {},
-            timestamp: "2026-05-19T17:00:04.000Z",
+            timestamp: "2026-05-19T17:00:08.000Z",
           }));
           return recoveredSession;
         }),

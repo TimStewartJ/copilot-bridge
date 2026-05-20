@@ -1825,7 +1825,7 @@ export class SessionManager {
       return undefined;
     }
     if (runRecord.promptAccepted !== true) return undefined;
-    if (mode === "quiesce" && runRecord.restartSuspendReady !== true) return undefined;
+    if (runRecord.restartSuspendReady !== true || runRecord.restartSuspending === true) return undefined;
 
     const runController = this.activeRunControllers.get(sessionId);
     if (!runController || runController.isCompleted()) return undefined;
@@ -1874,6 +1874,7 @@ export class SessionManager {
         suspendedAt,
         lastEventAt,
       });
+      this.runStateController.setSessionRunMetadata(sessionId, { restartSuspending: true });
       console.log(`[sdk] [${sid}] Suspending active session for restart...`);
       await candidate.session.rpc.suspend();
       store.markSuspended(sessionId, suspendedAt);
@@ -1881,6 +1882,10 @@ export class SessionManager {
       console.log(`[sdk] [${sid}] Suspended for restart`);
       return true;
     } catch (error) {
+      this.runStateController.setSessionRunMetadata(sessionId, {
+        restartSuspendReady: false,
+        restartSuspending: false,
+      });
       const message = error instanceof Error ? error.message : String(error);
       store.markFailed(sessionId, message);
       console.error(`[sdk] [${sid}] Failed to suspend for restart:`, error);

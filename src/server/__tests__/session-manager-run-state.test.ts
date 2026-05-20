@@ -1223,6 +1223,89 @@ describe("SessionManager run state", () => {
     });
   });
 
+  it("does not complete on live session.idle when a follow-up assistant turn is open", async () => {
+    const sessionId = "session-idle-open-followup";
+    const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: { content: "intermediate" },
+    });
+    getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { turnId: "1" },
+    });
+    getHandler()?.({
+      type: "assistant.turn_start",
+      timestamp: new Date(baseTime + 3_000).toISOString(),
+      data: { turnId: "2" },
+    });
+    getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 4_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getSnapshot().complete).toBe(false);
+    expect(telemetryStore!.querySpans({
+      name: "session.run.complete",
+      sessionId,
+    })).toEqual([]);
+    expect(latestSpanMetadata(telemetryStore, "session.idle.ignored_active_turn", sessionId)).toMatchObject({
+      ignoredIdleReason: "active_followup_after_turn_end",
+      idleEventOrigin: "live",
+      lastLiveEventType: "session.idle",
+      liveTurnEndCount: 1,
+      activeEventsAfterLastLiveTurnEnd: 1,
+    });
+
+    getHandler()?.({
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 5_000).toISOString(),
+      data: { content: "final" },
+    });
+    getHandler()?.({
+      type: "assistant.turn_end",
+      timestamp: new Date(baseTime + 6_000).toISOString(),
+      data: { turnId: "2" },
+    });
+    getHandler()?.({
+      type: "session.idle",
+      timestamp: new Date(baseTime + 7_000).toISOString(),
+      data: {},
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    expect(bus.getSnapshot()).toMatchObject({
+      complete: true,
+      terminalType: "done",
+      finalContent: "final",
+    });
+    expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
+      completionSource: "live_session_idle",
+      completionStatus: "done",
+      terminalEventType: "session.idle",
+      liveTurnEndCount: 2,
+      activeEventsAfterLastLiveTurnEnd: 0,
+    });
+  });
+
   it("records diagnostic telemetry when a live turn-end stalls before persisted recovery", async () => {
     const tmpDir = makeTestDir("stall-turn-end-telemetry");
     const sessionId = "session-turn-end-telemetry";
