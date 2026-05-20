@@ -55,9 +55,20 @@ describe("session manager failure results", () => {
   it("normalizes docs path validation failures", async () => {
     const { ctx } = createTestApp();
     const docsReadTool = getTool(ctx, "docs_read");
+    const docsDbQueryTool = getTool(ctx, "docs_db_query");
 
     await expect(docsReadTool.handler({ path: "../escape" }, createInvocation("docs_read")))
       .resolves.toEqual(toolFailure('Invalid page path: directory traversal ("..") is not allowed'));
+    await expect(docsReadTool.handler({ path: "C:foo" }, createInvocation("docs_read")))
+      .resolves.toMatchObject({
+        resultType: "failure",
+        error: expect.stringContaining("Invalid page path"),
+      });
+    await expect(docsDbQueryTool.handler({ folder: "C:foo" }, createInvocation("docs_db_query")))
+      .resolves.toMatchObject({
+        resultType: "failure",
+        error: expect.stringContaining("Invalid folder"),
+      });
   });
 
   it("rejects tagged docs_write pages without a description", async () => {

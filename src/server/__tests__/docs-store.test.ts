@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createDocsStore } from "../docs-store.js";
+import { join, posix, win32 } from "node:path";
+import {
+  createDocsStore,
+  isResolvedPathWithinRoot,
+  normalizeDocsPublicPath,
+  resolveContainedDocsPath,
+  resolveValidatedDocsPath,
+} from "../docs-store.js";
 
 const tempDirs: string[] = [];
 
@@ -13,9 +19,100 @@ function makeStore() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (tempDirs.length) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });
   }
+});
+
+const unsafePathInputs = [
+  ["drive-relative", "C:foo"],
+  ["drive-absolute", "C:/foo"],
+  ["UNC", "\\\\server\\share"],
+  ["directory traversal", ".."],
+] as const;
+
+const pathApis = [
+  { name: "posix", api: posix, root: posix.join("/", "docs-root") },
+  { name: "win32", api: win32, root: win32.join("C:\\", "docs-root") },
+] as const;
+
+describe("docs store path hardening", () => {
+  it.each(pathApis)("validates public docs paths with $name semantics", ({ api, root }) => {
+    for (const [, input] of unsafePathInputs) {
+      expect(() => resolveValidatedDocsPath(root, input, "page path", api)).toThrow(/Invalid page path/);
+    }
+
+    expect(resolveValidatedDocsPath(root, "notes/page.md", "page path", api))
+      .toBe(api.resolve(root, "notes", "page"));
+    expect(normalizeDocsPublicPath("notes\\page.md")).toBe("notes/page");
+  });
+
+  it.each(pathApis)("checks resolved containment with $name semantics", ({ api, root }) => {
+    expect(isResolvedPathWithinRoot(root, api.resolve(root, "notes", "page.md"), api)).toBe(true);
+    expect(isResolvedPathWithinRoot(root, api.resolve(root, "..", "escape.md"), api)).toBe(false);
+    expect(() => resolveContainedDocsPath(root, [".."], ["escape.md"], "page path", api))
+      .toThrow("Invalid page path: resolved path escapes docs root");
+  });
+
+  it.each(unsafePathInputs)("rejects unsafe page paths: %s", (_label, input) => {
+    const store = makeStore();
+
+    expect(() => normalizeDocsPublicPath(input)).toThrow(/Invalid page path/);
+    expect(() => store.writePage(input, "# Unsafe")).toThrow(/Invalid page path/);
+    expect(() => store.readPage(input)).toThrow(/Invalid page path/);
+  });
+
+  it.each(unsafePathInputs)("rejects unsafe DB collection paths: %s", (_label, input) => {
+    const store = makeStore();
+
+    expect(() => store.writeSchema(input, { name: "Unsafe", fields: [] })).toThrow(/Invalid folder/);
+    expect(() => store.readSchema(input)).toThrow(/Invalid folder/);
+    expect(() => store.listDbEntries(input)).toThrow(/Invalid folder/);
+    expect(() => store.deleteFolder(input)).toThrow(/Invalid folder/);
+  });
+
+  it.each(["CON", "nul.md", "notes/foo.", "notes/foo ", "notes/foo:bar"])(
+    "rejects Windows-reserved path forms: %s",
+    (input) => {
+      const store = makeStore();
+
+      expect(() => store.writePage(input, "# Unsafe")).toThrow(/Invalid page path/);
+      expect(() => store.writeSchema(input, { name: "Unsafe", fields: [] })).toThrow(/Invalid folder/);
+    },
+  );
+
+  it("accepts valid relative page and DB collection paths", () => {
+    const store = makeStore();
+
+    const page = store.writePage("notes/valid-page.md", "# Valid Page");
+    expect(page.path).toBe("notes/valid-page");
+    expect(store.readPage("notes/valid-page")?.body).toBe("# Valid Page");
+
+    store.writeSchema("areas/cooking/recipes", { name: "Recipes", fields: [] });
+    const entry = store.addDbEntry("areas/cooking/recipes", { title: "Valid Entry" });
+    expect(entry.path).toBe("areas/cooking/recipes/valid-entry");
+    expect(store.listDbEntries("areas/cooking/recipes")).toHaveLength(1);
+  });
+
+  it("skips unsafe pre-existing disk entries during tree and index scans", () => {
+    if (process.platform === "win32") {
+      expect(true).toBe(true);
+      return;
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = makeStore();
+
+    writeFileSync(join(store.docsDir, "valid.md"), "# Valid", "utf-8");
+    writeFileSync(join(store.docsDir, "CON.md"), "# Unsafe device name", "utf-8");
+    mkdirSync(join(store.docsDir, "bad:folder"), { recursive: true });
+    writeFileSync(join(store.docsDir, "bad:folder", "page.md"), "# Unsafe folder", "utf-8");
+
+    expect(store.listTree().map((node) => node.path)).toEqual(["valid"]);
+    expect(store.scanAllPages().map((page) => page.path)).toEqual(["valid"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Skipping unsafe page path"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Skipping unsafe folder"));
+  });
 });
 
 describe("docs store folder index pages", () => {

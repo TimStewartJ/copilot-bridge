@@ -108,6 +108,14 @@ describe("docs index recovery", () => {
     expect(docsIndex.search("Folder-only").results.map((result) => result.path)).not.toContain("guides");
   });
 
+  it("rejects unsafe DB folder query paths", () => {
+    const { docsIndex } = createIndexFixture();
+
+    expect(() => docsIndex.queryByFolder("C:foo")).toThrow(/Invalid folder/);
+    expect(() => docsIndex.queryByFolder("\\\\server\\share")).toThrow(/Invalid folder/);
+    expect(() => docsIndex.queryByFolder("..")).toThrow(/Invalid folder/);
+  });
+
   it("returns description and exact matched tags for related docs", () => {
     const docsDir = mkdtempSync(join(tmpdir(), "docs-related-test-"));
     tempDirs.push(docsDir);

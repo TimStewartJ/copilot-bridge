@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "./db.js";
-import { normalizeDocsPublicPath, type DocsStore, type DocPage } from "./docs-store.js";
+import { normalizeDocsPublicPath, validateDocsPathSegments, type DocsStore, type DocPage } from "./docs-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -234,8 +234,9 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     offset = 0,
     includeBody = false,
   ): { entries: any[]; total: number } {
+    const normalizedFolder = validateDocsPathSegments(folder, "folder").join("/");
     let where = "folder = ?";
-    const params: any[] = [folder];
+    const params: any[] = [normalizedFolder];
 
     if (filters) {
       for (const [key, value] of Object.entries(filters)) {

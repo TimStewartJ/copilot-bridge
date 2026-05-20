@@ -3945,8 +3945,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const page = docs.readPage(pagePath);
         if (!page) return res.status(404).json({ error: "Page not found" });
         res.json(page);
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 
@@ -3989,8 +3990,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
         if (!schema) return res.status(404).json({ error: "Schema not found" });
         const entries = docs.listDbEntries(folder);
         res.json({ ...schema, entryCount: entries.length });
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 
@@ -4031,8 +4033,9 @@ export function createApiRouter(ctx: AppContext): express.Router {
           includeBody,
         );
         res.json(result);
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 
