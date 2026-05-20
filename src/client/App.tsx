@@ -156,7 +156,7 @@ export default function App() {
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
-  const { data: restartStatus } = useRestartStatusQuery();
+  const { data: restartStatus, refetch: refetchRestartStatus } = useRestartStatusQuery();
   useFavicon(settings?.favicon);
 
   // Buffer task:changed SSE invalidations during optimistic task mutations so
@@ -175,7 +175,6 @@ export default function App() {
       serverInstanceId: restartStatus.serverInstanceId,
     }));
   }, [restartStatus?.pending, restartStatus?.waitingSessions, restartStatus?.requestedAt, restartStatus?.serverInstanceId]);
-
 
   // Derive active IDs and mode from URL
   const mobileRouteMeta = getMobileRouteMeta(location.pathname, location.search);
@@ -504,6 +503,7 @@ export default function App() {
         if (event.readState) applyServerStateRef.current(event.readState);
         break;
       case "status:connected":
+        void refetchRestartStatus();
         setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "status:connected" }));
         // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
@@ -512,7 +512,7 @@ export default function App() {
         invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateFeed, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateFeed, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
 
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
