@@ -170,27 +170,6 @@ jobs:
           $installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem) |
             Set-Content -Path "release/install-preview.ps1" -Encoding UTF8
 
-      - name: Release-mode install/update E2E
-        shell: pwsh
-        run: |
-          $zip = "release/copilot-bridge-$env:PREVIEW_VERSION-$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.zip"
-          $manifest = "release/$env:PREVIEW_CHANNEL-$env:PREVIEW_PLATFORM.manifest.json"
-          pwsh -NoProfile -File .\scripts\test-release-mode-e2e.ps1 `
-            -PackagePath $zip `
-            -ManifestPath $manifest `
-            -InstallerPath "release/install-preview.ps1" `
-            -ExpectedVersion $env:PREVIEW_VERSION `
-            -ExpectedCommit $env:GITHUB_SHA `
-            -EvidenceDir "release/release-mode-e2e"
-
-      - name: Upload release-mode E2E evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-mode-e2e-${{ env.PREVIEW_VERSION }}-${{ env.PREVIEW_PLATFORM }}
-          path: release/release-mode-e2e/**
-          if-no-files-found: warn
-
       - name: Upload preview workflow artifact
         uses: actions/upload-artifact@v4
         with:

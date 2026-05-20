@@ -13,7 +13,7 @@ export default defineConfig({
       provider: "v8",
       include: ["src/server/**/*.ts"],
       exclude: ["src/server/__tests__/**", "src/server/browser-fetch-tools.ts", "src/server/web-search-tools.ts"],
-      reporter: ["text", "text-summary"],
+      reporter: ["text", "text-summary", "json-summary", "html"],
       thresholds: {
         statements: 30,
         branches: 22,
