@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 interface CommandFailureOutputOptions {
@@ -21,10 +21,23 @@ interface ValidationCommandLogOptions {
   timeoutMs: number;
 }
 
+type ValidationCommandLogPathOptions = {
+  source: string;
+  command: string;
+  now?: Date;
+} & (
+  | { rootDir: string; logDir?: undefined }
+  | { rootDir?: string; logDir: string }
+);
+
 export interface ValidationCommandLogResult {
   path?: string;
   error?: string;
 }
+
+export type ValidationCommandLogTailResult =
+  | { ok: true; content: string }
+  | { ok: false; error: string };
 
 const FULL_COMMAND_OUTPUT_PREFIX = "Full command output:";
 const FULL_COMMAND_OUTPUT_WRITE_ERROR_PREFIX = "Unable to write full command output:";
@@ -71,8 +84,39 @@ function sanitizeFilePart(value: string): string {
   return sanitized || "command";
 }
 
-function formatLogError(error: unknown): string {
+export function formatValidationCommandLogError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function getValidationCommandLogDir(rootDir: string): string {
+  return join(rootDir, "data", "validation-logs");
+}
+
+export function buildValidationCommandLogPath({
+  rootDir,
+  logDir,
+  source,
+  command,
+  now = new Date(),
+}: ValidationCommandLogPathOptions): string {
+  const timestamp = now.toISOString().replace(/[:.]/g, "-");
+  const filename = `${timestamp}-${sanitizeFilePart(source)}-${sanitizeFilePart(command)}.log`;
+  return join(logDir ?? getValidationCommandLogDir(rootDir), filename);
+}
+
+export function readValidationCommandLogTail(path: string, maxBytes: number): string {
+  const size = statSync(path).size;
+  const start = Math.max(0, size - maxBytes);
+  const content = readFileSync(path).subarray(start).toString("utf-8");
+  return start > 0 ? `[showing last ${maxBytes} bytes]\n${content}` : content;
+}
+
+export function tryReadValidationCommandLogTail(path: string, maxBytes: number): ValidationCommandLogTailResult {
+  try {
+    return { ok: true, content: readValidationCommandLogTail(path, maxBytes) };
+  } catch (error) {
+    return { ok: false, error: formatValidationCommandLogError(error) };
+  }
 }
 
 export function buildCommandFailureOutput({
@@ -150,10 +194,8 @@ export function writeValidationCommandLog({
   timedOut,
   timeoutMs,
 }: ValidationCommandLogOptions): ValidationCommandLogResult {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `${timestamp}-${sanitizeFilePart(source)}-${sanitizeFilePart(command)}.log`;
-  const logDir = join(rootDir, "data", "validation-logs");
-  const logPath = join(logDir, filename);
+  const logDir = getValidationCommandLogDir(rootDir);
+  const logPath = buildValidationCommandLogPath({ rootDir, source, command });
   const content = [
     "Validation command failure",
     `Source: ${source}`,
@@ -173,6 +215,6 @@ export function writeValidationCommandLog({
     writeFileSync(logPath, content);
     return { path: logPath };
   } catch (error) {
-    return { error: formatLogError(error) };
+    return { error: formatValidationCommandLogError(error) };
   }
 }

@@ -1,10 +1,16 @@
-import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
-import { formatCommandDuration } from "./validation-command-log.js";
+import { killProcessTree } from "./platform.js";
+import {
+  buildValidationCommandLogPath,
+  formatCommandDuration,
+  formatValidationCommandLogError,
+  tryReadValidationCommandLogTail,
+} from "./validation-command-log.js";
+import { runStreamingValidationCommand } from "./validation-command-runner.js";
 
 export const DEPLOY_CHECK_STEPS = [
   // Production-safe deploy validation only. Staging-only preview smoke asserts a
@@ -20,169 +26,76 @@ type DeployCheckStepResult = {
   elapsedMs: number;
   logPath: string;
 };
-type OutputTail = {
-  content: string;
-  truncated: boolean;
-};
-type LogTailResult =
-  | { ok: true; content: string }
-  | { ok: false; error: string };
 
 function npmCommand(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
-function sanitizeLogLabel(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    || "step";
-}
-
-function resolveLogDir(): string {
+function resolveLogDir(cwd: string): string {
   const configured = process.env[VALIDATION_LOG_DIR_ENV]?.trim();
   if (configured) return resolve(configured);
-  return join(resolveBridgeControlRoot(process.cwd()), "data", "validation-logs");
+  return join(resolveBridgeControlRoot(cwd), "data", "validation-logs");
 }
 
-function ensureLogDir(): string {
-  const dir = resolveLogDir();
+function ensureLogDir(cwd: string): string {
+  const dir = resolveLogDir(cwd);
   try {
     mkdirSync(dir, { recursive: true });
     return dir;
   } catch (error) {
     const fallback = join(tmpdir(), "copilot-bridge-validation-logs");
     mkdirSync(fallback, { recursive: true });
-    console.error(`[check:deploy] unable to create validation log dir ${dir}: ${formatError(error)}`);
+    console.error(`[check:deploy] unable to create validation log dir ${dir}: ${formatValidationCommandLogError(error)}`);
     console.error(`[check:deploy] falling back to ${fallback}`);
     return fallback;
   }
 }
 
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function appendOutputTail(tail: OutputTail, chunk: unknown): void {
-  const text = Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
-  const combined = tail.content + text;
-  if (combined.length > LOG_TAIL_BYTES) {
-    tail.content = combined.slice(-LOG_TAIL_BYTES);
-    tail.truncated = true;
-    return;
-  }
-  tail.content = combined;
-}
-
-function renderOutputTail(tail: OutputTail): string {
-  const content = tail.content.trimEnd();
-  if (!content) return "(no captured command output)";
-  return tail.truncated
-    ? `[showing last ${LOG_TAIL_BYTES} captured characters]\n${content}`
-    : content;
-}
-
-function readLogTail(path: string): LogTailResult {
-  try {
-    const size = statSync(path).size;
-    const start = Math.max(0, size - LOG_TAIL_BYTES);
-    const content = readFileSync(path).subarray(start).toString("utf-8");
-    return {
-      ok: true,
-      content: start > 0 ? `[showing last ${LOG_TAIL_BYTES} bytes]\n${content}` : content,
-    };
-  } catch (error) {
-    return { ok: false, error: formatError(error) };
-  }
-}
-
-function printStepFailure(
-  step: DeployCheckStep,
-  elapsed: string,
-  reason: string,
-  logPath: string,
-  captured: OutputTail,
-  logWriteError?: Error,
-): void {
-  console.error(`[check:deploy] ${step.join(" ")} failed after ${elapsed} (${reason})`);
-  console.error(`[check:deploy] full log: ${logPath}`);
-  if (logWriteError) {
-    console.error(`[check:deploy] log write warning: ${logWriteError.message}`);
-  }
-  const logTail = readLogTail(logPath);
-  if (logTail.ok) {
-    console.error(logTail.content);
-    return;
-  }
-  console.error(`[check:deploy] unable to read log tail: ${logTail.error}`);
-  console.error(renderOutputTail(captured));
-}
-
 function runStep(step: DeployCheckStep, stepIndex: number, totalSteps: number): Promise<DeployCheckStepResult> {
-  return new Promise((resolve, reject) => {
-    const dir = ensureLogDir();
-    const label = sanitizeLogLabel(step.join("-"));
-    const logPath = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-deploy-check-${stepIndex + 1}-${label}.log`);
-    const out = createWriteStream(logPath);
-    const startedAt = Date.now();
-    const command = step[0] === "npm" ? npmCommand() : step[0];
-    const shell = process.platform === "win32";
-    let settled = false;
-    let logWriteError: Error | undefined;
-    const captured: OutputTail = { content: "", truncated: false };
-    console.log(`[check:deploy] ${stepIndex + 1}/${totalSteps}: ${step.join(" ")} (log: ${logPath})`);
-    const child = spawn(command, step.slice(1), {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell,
-      windowsHide: true,
-    });
+  const displayCommand = step.join(" ");
+  const cwd = process.cwd();
+  const rootDir = resolveBridgeControlRoot(cwd);
+  const logPath = buildValidationCommandLogPath({
+    logDir: ensureLogDir(cwd),
+    source: `deploy-check-${stepIndex + 1}`,
+    command: displayCommand,
+  });
+  const command = step[0] === "npm" ? npmCommand() : step[0];
+  const shell = process.platform === "win32";
+  console.log(`[check:deploy] ${stepIndex + 1}/${totalSteps}: ${displayCommand} (log: ${logPath})`);
 
-    const settle = (complete: () => void): void => {
-      if (settled) return;
-      settled = true;
-      if (out.destroyed || logWriteError) {
-        complete();
-        return;
+  return runStreamingValidationCommand({
+    rootDir,
+    source: `deploy-check-${stepIndex + 1}`,
+    command,
+    args: step.slice(1),
+    displayCommand,
+    logPath,
+    cwd,
+    env: process.env,
+    shell,
+    killProcessTree,
+  }).then((result) => {
+    const elapsed = formatCommandDuration(result.elapsedMs);
+    if (result.ok) {
+      console.log(`[check:deploy] ${displayCommand} passed in ${elapsed}`);
+      return { step, elapsedMs: result.elapsedMs, logPath };
+    }
+
+    console.error(`[check:deploy] ${displayCommand} failed after ${elapsed} (${result.reason})`);
+    if (result.validationLogPath) {
+      console.error(`[check:deploy] full log: ${result.validationLogPath}`);
+      const logTail = tryReadValidationCommandLogTail(result.validationLogPath, LOG_TAIL_BYTES);
+      if (logTail.ok) {
+        console.error(logTail.content);
+      } else {
+        console.error(`[check:deploy] unable to read log tail: ${logTail.error}`);
+        console.error(result.output);
       }
-      out.end(complete);
-    };
-
-    const handleOutput = (chunk: unknown): void => {
-      appendOutputTail(captured, chunk);
-      if (logWriteError || out.destroyed) return;
-      out.write(chunk);
-    };
-
-    child.stdout?.on("data", handleOutput);
-    child.stderr?.on("data", handleOutput);
-    out.on("error", (error) => {
-      logWriteError = error;
-    });
-    child.on("error", (error) => {
-      const elapsedMs = Date.now() - startedAt;
-      const elapsed = formatCommandDuration(elapsedMs);
-      settle(() => {
-        printStepFailure(step, elapsed, `spawn error: ${formatError(error)}`, logPath, captured, logWriteError);
-        reject(error);
-      });
-    });
-    child.on("close", (code, signal) => {
-      const elapsedMs = Date.now() - startedAt;
-      const elapsed = formatCommandDuration(elapsedMs);
-      settle(() => {
-        if (code === 0) {
-          console.log(`[check:deploy] ${step.join(" ")} passed in ${elapsed}`);
-          resolve({ step, elapsedMs, logPath });
-          return;
-        }
-        const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-        printStepFailure(step, elapsed, reason, logPath, captured, logWriteError);
-        reject(new Error(`${step.join(" ")} failed (${reason})`));
-      });
-    });
+    } else {
+      console.error(result.output);
+    }
+    throw new Error(`${displayCommand} failed (${result.reason})`);
   });
 }
 

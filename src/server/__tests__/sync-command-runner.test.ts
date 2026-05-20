@@ -108,4 +108,46 @@ describe("runSyncCommand", () => {
     expect(result.output).toContain("Command exited with signal SIGTERM");
     expect(result.output).not.toContain("Command timed out");
   });
+
+  it("reports spawnSync timeout failures consistently", () => {
+    const rootDir = makeTestDir("sync-command-runner-timeout");
+    spawnSyncMock.mockImplementation((_command, options) => {
+      writeToStdioFd(options, 2, "still running\n");
+      const error = Object.assign(new Error("spawnSync fake timeout"), { code: "ETIMEDOUT" });
+      return { status: null, signal: null, error };
+    });
+
+    const result = runFakeCommand(rootDir);
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("stderr:\nstill running");
+    expect(result.output).toContain("Command timed out after 1 seconds.");
+    expect(result.validationLogPath).toContain("validation-logs");
+  });
+
+  it("reports signal failures without treating them as timeouts", () => {
+    const rootDir = makeTestDir("sync-command-runner-signal");
+    spawnSyncMock.mockImplementation(() => ({ status: null, signal: "SIGKILL" }));
+
+    const result = runFakeCommand(rootDir);
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("Command exited with signal SIGKILL.");
+    expect(result.output).not.toContain("Command timed out");
+  });
+
+  it("includes spawn errors in failure output", () => {
+    const rootDir = makeTestDir("sync-command-runner-spawn-error");
+    spawnSyncMock.mockImplementation(() => ({
+      status: null,
+      signal: null,
+      error: Object.assign(new Error("spawn fake ENOENT"), { code: "ENOENT" }),
+    }));
+
+    const result = runFakeCommand(rootDir);
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("error:\nspawn fake ENOENT");
+    expect(result.validationLogPath).toContain("validation-logs");
+  });
 });
