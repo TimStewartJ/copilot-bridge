@@ -33,6 +33,20 @@ function restorePlatform(): void {
   }
 }
 
+async function flushMicrotasks(iterations = 5): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function flushUntil(predicate: () => boolean, label: string, iterations = 50): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    if (predicate()) return;
+    await flushMicrotasks();
+  }
+  throw new Error(`Condition was not met after deterministic flushes: ${label}`);
+}
+
 vi.mock("node:child_process", () => ({
   exec: execMock,
   execFile: execFileMock,
@@ -270,16 +284,24 @@ describe("agent-browser wrapper", () => {
     const mod = await import("../agent-browser.js");
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
     const order: string[] = [];
+    let releaseOne!: () => void;
+    const oneCanFinish = new Promise<void>((resolve) => {
+      releaseOne = resolve;
+    });
 
     const one = mod.withBridgeBrowserSession(target, async () => {
       order.push("one:start");
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await oneCanFinish;
       order.push("one:end");
     });
     const two = mod.withBridgeBrowserSession(target, async () => {
       order.push("two:start");
       order.push("two:end");
     });
+
+    await flushUntil(() => order.includes("one:start"), "bridge browser session one started");
+    expect(order).toEqual(["one:start"]);
+    releaseOne();
 
     await Promise.all([one, two]);
     expect(order).toEqual(["one:start", "one:end", "two:start", "two:end"]);
@@ -658,16 +680,24 @@ describe("agent-browser wrapper", () => {
     };
     const mod = await import("../agent-browser.js");
     const order: string[] = [];
+    let releaseOne!: () => void;
+    const oneCanFinish = new Promise<void>((resolve) => {
+      releaseOne = resolve;
+    });
 
     const one = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
       order.push("one:start");
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await oneCanFinish;
       order.push("one:end");
     });
     const two = mod.withPrimaryBrowserLane(COPILOT_HOME, telemetryStore as any, {}, async () => {
       order.push("two:start");
       order.push("two:end");
     });
+
+    await flushUntil(() => order.includes("one:start"), "primary browser lane one started");
+    expect(order).toEqual(["one:start"]);
+    releaseOne();
 
     await Promise.all([one, two]);
     expect(order).toEqual(["one:start", "one:end", "two:start", "two:end"]);
@@ -706,7 +736,7 @@ describe("agent-browser wrapper", () => {
       makeLane("f", false),
     ]);
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flushUntil(() => started.length === 5, "first five clone lanes started");
     expect(started).toEqual(["a", "b", "c", "d", "e"]);
     releaseResolve();
 

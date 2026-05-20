@@ -16,20 +16,6 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
-async function waitForAssertion(assertion: () => void): Promise<void> {
-  let lastError: unknown;
-  for (let i = 0; i < 20; i += 1) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-  }
-  throw lastError;
-}
-
 function createRestartRuntimePaths() {
   return makeTestRuntimePaths("voice-jobs");
 }
@@ -208,11 +194,9 @@ describe("voice job restart gating", () => {
     });
 
     manager.resumePendingJobs();
-    await flushMicrotasks();
+    await manager.shutdown();
 
-    await waitForAssertion(() => {
-      expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge");
-    });
+    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge");
     expect(store.getVoiceJob("job-1")?.status).toBe("done");
   });
 

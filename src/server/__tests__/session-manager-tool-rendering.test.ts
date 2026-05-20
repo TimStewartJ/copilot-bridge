@@ -38,11 +38,11 @@ describe("SessionManager tool result rendering", () => {
         };
       },
       send: vi.fn(async () => {
-        setTimeout(() => {
+        queueMicrotask(() => {
           for (const event of events) {
             for (const handler of [...handlers]) handler(event);
           }
-        }, 0);
+        });
       }),
     };
   }

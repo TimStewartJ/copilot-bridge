@@ -9,9 +9,14 @@ type CreateReactDomHarnessOptions = {
   installDom?: () => DomShim;
 };
 
-const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
+const DEFAULT_WAIT_MAX_FLUSHES = 100;
 type HarnessCleanup = () => Promise<void>;
 const activeHarnessCleanups = new Set<HarnessCleanup>();
+
+export type WaitUntilActOptions = {
+  maxFlushes?: number;
+  label?: string;
+};
 
 async function cleanupActiveHarnesses(): Promise<void> {
   const errors: unknown[] = [];
@@ -119,10 +124,11 @@ export function getReactProps(el: any): Record<string, any> | null {
 
 export async function waitTick(): Promise<void> {
   if (vi.isFakeTimers()) {
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
     return;
   }
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 export async function flushAct(act: Act, ticks = 1): Promise<void> {
@@ -133,25 +139,26 @@ export async function flushAct(act: Act, ticks = 1): Promise<void> {
   }
 }
 
-export async function waitForDelayAct(act: Act, delayMs: number): Promise<void> {
+export async function advanceTimersByTimeAct(act: Act, delayMs: number): Promise<void> {
+  if (!vi.isFakeTimers()) {
+    throw new Error("advanceTimersByTimeAct requires fake timers");
+  }
   await act(async () => {
-    if (vi.isFakeTimers()) {
-      await vi.advanceTimersByTimeAsync(delayMs);
-    } else {
-      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-    }
+    await vi.advanceTimersByTimeAsync(delayMs);
   });
 }
 
 export async function waitUntilAct(
   act: Act,
   predicate: () => boolean,
-  timeoutMs = DEFAULT_WAIT_TIMEOUT_MS,
+  options: WaitUntilActOptions = {},
 ): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
+  if (predicate()) return;
+  const maxFlushes = options.maxFlushes ?? DEFAULT_WAIT_MAX_FLUSHES;
+  for (let flushIndex = 0; flushIndex < maxFlushes; flushIndex += 1) {
     await flushAct(act);
+    if (predicate()) return;
   }
-  throw new Error("Timed out waiting for condition");
+  const suffix = options.label ? ` (${options.label})` : "";
+  throw new Error(`Condition${suffix} was not met after ${maxFlushes} React flushes`);
 }

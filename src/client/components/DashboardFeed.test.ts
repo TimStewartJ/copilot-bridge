@@ -8,6 +8,7 @@ import {
   waitTick,
   waitUntilAct as waitUntilWithAct,
   type ReactDomHarness,
+  type WaitUntilActOptions,
 } from "../test-react-harness";
 
 const apiMocks = vi.hoisted(() => ({
@@ -137,8 +138,8 @@ describe("DashboardFeed feed mutations", () => {
     await getHarness().act(callback);
   }
 
-  async function waitUntilAct(predicate: () => boolean, timeoutMs?: number): Promise<void> {
-    await waitUntilWithAct(getHarness().act, predicate, timeoutMs);
+  async function waitUntilAct(predicate: () => boolean, options?: WaitUntilActOptions): Promise<void> {
+    await waitUntilWithAct(getHarness().act, predicate, options);
   }
 
   beforeEach(async () => {

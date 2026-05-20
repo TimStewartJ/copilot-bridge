@@ -1,11 +1,15 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isChildProcessActive, waitForChildExit } from "./launcher-process.js";
 
 class FakeChildProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("isChildProcessActive", () => {
   it("returns true only when the tracked child is still the active live process", () => {
@@ -31,17 +35,19 @@ describe("waitForChildExit", () => {
     const child = new FakeChildProcess();
     const wait = waitForChildExit(child as any, 100);
 
-    setTimeout(() => {
-      child.exitCode = 0;
-      child.emit("exit", 0, null);
-    }, 0);
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
 
     await expect(wait).resolves.toBe(true);
   });
 
   it("returns false when the child still has not exited by the timeout", async () => {
+    vi.useFakeTimers();
     const child = new FakeChildProcess();
+    const wait = waitForChildExit(child as any, 10);
 
-    await expect(waitForChildExit(child as any, 10)).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(wait).resolves.toBe(false);
   });
 });
