@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
@@ -53,6 +53,8 @@ const VALID_FIELD_TYPES = new Set(["text", "select", "date", "number", "boolean"
 const DB_INPUT_RESERVED_KEYS = new Set(["folder", "slug", "body", "fields"]);
 const DANGEROUS_DB_FIELD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SYSTEM_DB_FIELD_KEYS = new Set(["created", "modified"]);
+const WINDOWS_RESERVED_PATH_CHARS = /[<>:"|?*]/;
+const WINDOWS_RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 export const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
 
 export class DocsStoreValidationError extends Error {
@@ -62,20 +64,80 @@ export class DocsStoreValidationError extends Error {
   }
 }
 
-export function normalizeDocsPublicPath(input: string): string {
-  const normalized = input.replace(/\\/g, "/").replace(/\.md$/, "");
+export interface DocsPathApi {
+  join: (...paths: string[]) => string;
+  resolve: (...paths: string[]) => string;
+  relative: (from: string, to: string) => string;
+  isAbsolute: (path: string) => boolean;
+  sep: string;
+}
+
+const nativePathApi: DocsPathApi = { join, resolve, relative, isAbsolute, sep };
+
+export function validateDocsPathSegments(input: string, label = "path"): string[] {
+  const normalized = input.replace(/\\/g, "/").replace(/\.md$/i, "");
   if (!normalized || normalized.startsWith("/")) {
-    throw new Error("Invalid page path: must be a non-empty relative path");
+    throw new DocsStoreValidationError(`Invalid ${label}: must be a non-empty relative path`);
   }
   const segments = normalized.split("/").filter(Boolean);
   if (segments.length === 0) {
-    throw new Error("Invalid page path: path is empty");
+    throw new DocsStoreValidationError(`Invalid ${label}: path is empty`);
   }
   for (const seg of segments) {
     if (seg === "." || seg === "..") {
-      throw new Error(`Invalid page path: directory traversal ("${seg}") is not allowed`);
+      throw new DocsStoreValidationError(`Invalid ${label}: directory traversal ("${seg}") is not allowed`);
+    }
+    if (WINDOWS_RESERVED_PATH_CHARS.test(seg)) {
+      throw new DocsStoreValidationError(`Invalid ${label}: Windows-reserved path characters are not allowed ("${seg}")`);
+    }
+    if (WINDOWS_RESERVED_DEVICE_NAME.test(seg)) {
+      throw new DocsStoreValidationError(`Invalid ${label}: Windows reserved device name ("${seg}") is not allowed`);
+    }
+    if (seg.endsWith(" ") || seg.endsWith(".")) {
+      throw new DocsStoreValidationError(`Invalid ${label}: Windows path segments cannot end with a space or dot ("${seg}")`);
     }
   }
+  return segments;
+}
+
+export function isResolvedPathWithinRoot(root: string, candidate: string, pathApi: DocsPathApi = nativePathApi): boolean {
+  const resolvedRoot = pathApi.resolve(root);
+  const resolvedCandidate = pathApi.resolve(candidate);
+  if (resolvedCandidate === resolvedRoot) return true;
+
+  const relativePath = pathApi.relative(resolvedRoot, resolvedCandidate);
+  return relativePath !== ""
+    && relativePath !== ".."
+    && !relativePath.startsWith(`..${pathApi.sep}`)
+    && !pathApi.isAbsolute(relativePath);
+}
+
+export function resolveContainedDocsPath(
+  root: string,
+  segments: string[],
+  leafSegments: string[] = [],
+  label = "path",
+  pathApi: DocsPathApi = nativePathApi,
+): string {
+  const resolvedRoot = pathApi.resolve(root);
+  const candidate = pathApi.resolve(pathApi.join(resolvedRoot, ...segments, ...leafSegments));
+  if (!isResolvedPathWithinRoot(resolvedRoot, candidate, pathApi)) {
+    throw new DocsStoreValidationError(`Invalid ${label}: resolved path escapes docs root`);
+  }
+  return candidate;
+}
+
+export function resolveValidatedDocsPath(
+  root: string,
+  input: string,
+  label = "path",
+  pathApi: DocsPathApi = nativePathApi,
+): string {
+  return resolveContainedDocsPath(root, validateDocsPathSegments(input, label), [], label, pathApi);
+}
+
+export function normalizeDocsPublicPath(input: string): string {
+  const segments = validateDocsPathSegments(input, "page path");
   if (segments.length > 1 && segments[segments.length - 1] === "index") {
     return segments.slice(0, -1).join("/");
   }
@@ -109,26 +171,9 @@ export function validateTaggedDocContent(content: string): void {
 
 export function createDocsStore(docsDir: string) {
   if (!existsSync(docsDir)) mkdirSync(docsDir, { recursive: true });
+  const docsRoot = realpathSync(docsDir);
 
   // ── Path helpers ──────────────────────────────────────────────
-
-  /** Validate and split a user-supplied path into safe segments (no traversal, no absolute paths) */
-  function validatePathSegments(input: string, label = "path"): string[] {
-    const normalized = input.replace(/\\/g, "/").replace(/\.md$/, "");
-    if (!normalized || normalized.startsWith("/")) {
-      throw new Error(`Invalid ${label}: must be a non-empty relative path`);
-    }
-    const segments = normalized.split("/").filter(Boolean);
-    if (segments.length === 0) {
-      throw new Error(`Invalid ${label}: path is empty`);
-    }
-    for (const seg of segments) {
-      if (seg === "." || seg === "..") {
-        throw new Error(`Invalid ${label}: directory traversal ("${seg}") is not allowed`);
-      }
-    }
-    return segments;
-  }
 
   interface ParsedPagePath {
     originalSegments: string[];
@@ -142,7 +187,7 @@ export function createDocsStore(docsDir: string) {
   }
 
   function parsePagePath(pagePath: string): ParsedPagePath {
-    const segments = validatePathSegments(pagePath, "page path");
+    const segments = validateDocsPathSegments(pagePath, "page path");
     const isFolderIndexAlias = segments.length > 1 && segments[segments.length - 1] === "index";
     const canonicalSegments = isFolderIndexAlias ? segments.slice(0, -1) : segments;
     return {
@@ -154,12 +199,14 @@ export function createDocsStore(docsDir: string) {
   }
 
   function filePathForSegments(segments: string[]): string {
-    return join(docsDir, ...segments) + ".md";
+    const pageName = segments.at(-1);
+    if (!pageName) throw new DocsStoreValidationError("Invalid page path: path is empty");
+    return resolveContainedDocsPath(docsRoot, segments.slice(0, -1), [`${pageName}.md`], "page path");
   }
 
   /** Convert page path (e.g. "incidents/march-outage") to absolute file path */
   function toFilePath(pagePath: string): string {
-    return filePathForSegments(validatePathSegments(pagePath, "page path"));
+    return filePathForSegments(validateDocsPathSegments(pagePath, "page path"));
   }
 
   /** Extract parent folder from a page path ("incidents/march-outage" → "incidents") */
@@ -170,6 +217,18 @@ export function createDocsStore(docsDir: string) {
 
   function isReservedName(name: string): boolean {
     return name.startsWith("_");
+  }
+
+  function validateDiscoveredPathSegments(input: string, label: "folder" | "page path"): string[] | null {
+    try {
+      return validateDocsPathSegments(input, label);
+    } catch (error) {
+      if (error instanceof DocsStoreValidationError) {
+        console.warn(`[docs-store] Skipping unsafe ${label} "${input}": ${error.message}`);
+        return null;
+      }
+      throw error;
+    }
   }
 
   function isPlainObject(value: unknown): value is Record<string, any> {
@@ -209,11 +268,10 @@ export function createDocsStore(docsDir: string) {
 
   /** Find a unique slug in a folder, appending -2, -3, etc. on collision */
   function resolveSlug(folder: string, baseSlug: string): string {
-    const segments = validatePathSegments(folder, "folder");
-    const folderPath = join(docsDir, ...segments);
+    const segments = validateDocsPathSegments(folder, "folder");
     let slug = baseSlug;
     let counter = 2;
-    while (existsSync(join(folderPath, slug + ".md"))) {
+    while (existsSync(resolveContainedDocsPath(docsRoot, segments, [`${slug}.md`], "folder"))) {
       slug = `${baseSlug}-${counter}`;
       counter++;
     }
@@ -221,8 +279,8 @@ export function createDocsStore(docsDir: string) {
   }
 
   function schemaPath(folder: string): string {
-    const segments = validatePathSegments(folder, "folder");
-    return join(docsDir, ...segments, "_schema.yaml");
+    const segments = validateDocsPathSegments(folder, "folder");
+    return resolveContainedDocsPath(docsRoot, segments, ["_schema.yaml"], "folder");
   }
 
   // ── Schema operations ─────────────────────────────────────────
@@ -249,8 +307,8 @@ export function createDocsStore(docsDir: string) {
   }
 
   function writeSchema(folder: string, schema: DbSchema): DbSchema {
-    const segments = validatePathSegments(folder, "folder");
-    const folderPath = join(docsDir, ...segments);
+    const segments = validateDocsPathSegments(folder, "folder");
+    const folderPath = resolveContainedDocsPath(docsRoot, segments, [], "folder");
     if (!existsSync(folderPath)) mkdirSync(folderPath, { recursive: true });
 
     const yamlContent = stringifyYaml({
@@ -358,7 +416,7 @@ export function createDocsStore(docsDir: string) {
     }
 
     // Fall back: if pagePath is a folder with an index.md, use that
-    const indexPath = join(docsDir, ...parsed.canonicalSegments, "index.md");
+    const indexPath = resolveContainedDocsPath(docsRoot, parsed.canonicalSegments, ["index.md"], "page path");
     if (existsSync(indexPath)) {
       return {
         filePath: indexPath,
@@ -444,11 +502,13 @@ export function createDocsStore(docsDir: string) {
       if (resolved) {
         filePath = resolved.filePath;
       } else {
-        const folderPath = join(docsDir, ...parsed.canonicalSegments);
+        const folderPath = resolveContainedDocsPath(docsRoot, parsed.canonicalSegments, [], "page path");
         const createFolderIndex = parsed.canonicalPath !== "index"
           && existsSync(folderPath)
           && statSync(folderPath).isDirectory();
-        filePath = createFolderIndex ? join(folderPath, "index.md") : filePathForSegments(parsed.canonicalSegments);
+        filePath = createFolderIndex
+          ? resolveContainedDocsPath(docsRoot, parsed.canonicalSegments, ["index.md"], "page path")
+          : filePathForSegments(parsed.canonicalSegments);
       }
     }
     const dir = dirname(filePath);
@@ -503,7 +563,8 @@ export function createDocsStore(docsDir: string) {
   // ── Tree listing ──────────────────────────────────────────────
 
   function listTree(folder?: string): DocTreeNode[] {
-    const rootPath = folder ? join(docsDir, ...validatePathSegments(folder, "folder")) : docsDir;
+    const folderSegments = folder ? validateDocsPathSegments(folder, "folder") : [];
+    const rootPath = folder ? resolveContainedDocsPath(docsRoot, folderSegments, [], "folder") : docsRoot;
     if (!existsSync(rootPath)) return [];
 
     const entries = readdirSync(rootPath, { withFileTypes: true });
@@ -514,9 +575,11 @@ export function createDocsStore(docsDir: string) {
 
       if (entry.isDirectory()) {
         const childPath = folder ? `${folder}/${entry.name}` : entry.name;
+        const childSegments = validateDiscoveredPathSegments(childPath, "folder");
+        if (!childSegments) continue;
         const children = listTree(childPath);
         // Check if the child folder itself has an index.md
-        const childIndexPath = join(rootPath, entry.name, "index.md");
+        const childIndexPath = resolveContainedDocsPath(docsRoot, childSegments, ["index.md"], "folder");
         const childHasIndex = existsSync(childIndexPath);
         nodes.push({
           name: entry.name,
@@ -531,10 +594,12 @@ export function createDocsStore(docsDir: string) {
         if (entry.name === "index.md") continue;
 
         const pageName = entry.name.replace(/\.md$/, "");
+        const pagePath = folder ? `${folder}/${pageName}` : pageName;
+        if (!validateDiscoveredPathSegments(pagePath, "page path")) continue;
         nodes.push({
           name: pageName,
           type: "file",
-          path: folder ? `${folder}/${pageName}` : pageName,
+          path: pagePath,
         });
       }
     }
@@ -609,7 +674,8 @@ export function createDocsStore(docsDir: string) {
     fm.created = now;
     fm.modified = now;
 
-    const filePath = join(docsDir, ...validatePathSegments(folder, "folder"), slug + ".md");
+    const folderSegments = validateDocsPathSegments(folder, "folder");
+    const filePath = resolveContainedDocsPath(docsRoot, folderSegments, [`${slug}.md`], "folder");
     if (!existsSync(dirname(filePath))) mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, matter.stringify(body || "", fm), "utf-8");
 
@@ -651,15 +717,15 @@ export function createDocsStore(docsDir: string) {
   }
 
   function listDbEntries(folder: string): DbEntry[] {
-    const segments = validatePathSegments(folder, "folder");
-    const folderPath = join(docsDir, ...segments);
+    const segments = validateDocsPathSegments(folder, "folder");
+    const folderPath = resolveContainedDocsPath(docsRoot, segments, [], "folder");
     if (!existsSync(folderPath)) return [];
 
     return readdirSync(folderPath, { withFileTypes: true })
       .filter((e) => e.isFile() && e.name.endsWith(".md") && !isReservedName(e.name))
       .map((e) => {
         const slug = e.name.replace(/\.md$/, "");
-        const { data, content } = matter(readFileSync(join(folderPath, e.name), "utf-8"));
+        const { data, content } = matter(readFileSync(resolveContainedDocsPath(docsRoot, segments, [e.name], "folder"), "utf-8"));
         return {
           path: `${folder}/${slug}`, slug, title: data.title || slug,
           fields: data, body: content.trim(),
@@ -678,7 +744,10 @@ export function createDocsStore(docsDir: string) {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (isReservedName(entry.name)) continue;
         if (entry.isDirectory()) {
-          walk(join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
+          const childPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+          const childSegments = validateDiscoveredPathSegments(childPrefix, "folder");
+          if (!childSegments) continue;
+          walk(resolveContainedDocsPath(docsRoot, childSegments, [], "folder"), childPrefix);
         } else if (entry.name.endsWith(".md")) {
           let pagePath: string;
           if (entry.name === "index.md") {
@@ -689,6 +758,7 @@ export function createDocsStore(docsDir: string) {
             pagePath = prefix ? `${prefix}/${entry.name.replace(/\.md$/, "")}` : entry.name.replace(/\.md$/, "");
           }
           if (pagePath) {
+            if (!validateDiscoveredPathSegments(pagePath, "page path")) continue;
             const page = readPage(pagePath);
             if (page && !seen.has(page.path)) {
               pages.push(page);
@@ -698,7 +768,7 @@ export function createDocsStore(docsDir: string) {
         }
       }
     }
-    walk(docsDir, "");
+    walk(docsRoot, "");
     return pages;
   }
 
@@ -731,8 +801,8 @@ export function createDocsStore(docsDir: string) {
   // ── Folder operations ─────────────────────────────────────────
 
   function deleteFolder(folder: string): boolean {
-    const segments = validatePathSegments(folder, "folder");
-    const folderPath = join(docsDir, ...segments);
+    const segments = validateDocsPathSegments(folder, "folder");
+    const folderPath = resolveContainedDocsPath(docsRoot, segments, [], "folder");
     if (!existsSync(folderPath)) return false;
     rmSync(folderPath, { recursive: true });
     return true;

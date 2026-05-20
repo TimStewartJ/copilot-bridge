@@ -33,6 +33,12 @@ installApiRouteTestHooks((state) => {
   ({ app, ctx, db } = state);
 });
 
+const unsafeDocsRoutePaths = [
+  ["drive-relative", "C:foo"],
+  ["drive-absolute", "C:/foo"],
+  ["UNC", "%5C%5Cserver%5Cshare"],
+] as const;
+
 describe("Tag MCP server routes", () => {
   let tagId: string;
 
@@ -161,6 +167,22 @@ tags:
   it("GET /api/docs/pages returns 404 for missing page", async () => {
     const res = await request(app).get("/api/docs/pages/nonexistent");
     expect(res.status).toBe(404);
+  });
+
+  it.each(unsafeDocsRoutePaths)("GET /api/docs/pages rejects unsafe path: %s", async (_label, routePath) => {
+    const res = await request(app).get(`/api/docs/pages/${routePath}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid page path");
+  });
+
+  it.each(unsafeDocsRoutePaths)("PUT /api/docs/pages rejects unsafe path: %s", async (_label, routePath) => {
+    const res = await request(app)
+      .put(`/api/docs/pages/${routePath}`)
+      .send({ content: "# Unsafe" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid page path");
   });
 
   it("DELETE /api/docs/pages deletes a page", async () => {
@@ -366,6 +388,22 @@ describe("Docs DB routes", () => {
     expect(res.body.name).toBe("Incidents");
     expect(res.body.fields.length).toBe(3);
     expect(typeof res.body.entryCount).toBe("number");
+  });
+
+  it.each(unsafeDocsRoutePaths)("PUT /api/docs/schema rejects unsafe collection path: %s", async (_label, routePath) => {
+    const res = await request(app)
+      .put(`/api/docs/schema/${routePath}`)
+      .send({ name: "Unsafe", fields: [] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid folder");
+  });
+
+  it.each(unsafeDocsRoutePaths)("GET /api/docs/db rejects unsafe collection path: %s", async (_label, routePath) => {
+    const res = await request(app).get(`/api/docs/db/${routePath}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid folder");
   });
 
   it("POST /api/docs/db creates an entry", async () => {
