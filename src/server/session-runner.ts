@@ -51,6 +51,9 @@ const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
   "session.idle",
   "session.error",
   "abort",
+]);
+const PERSISTED_RUN_DIAGNOSTIC_TERMINAL_EVENT_TYPES = new Set([
+  ...PERSISTED_RUN_TERMINAL_EVENT_TYPES,
   "session.shutdown",
 ]);
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
@@ -1192,7 +1195,7 @@ export class SessionRunner {
 
         latestEventType = eventType;
         latestEventAt = eventTime;
-        if (PERSISTED_RUN_TERMINAL_EVENT_TYPES.has(eventType)) {
+        if (PERSISTED_RUN_DIAGNOSTIC_TERMINAL_EVENT_TYPES.has(eventType)) {
           latestTerminalEventType = eventType;
           latestTerminalEventAt = eventTime;
         }
@@ -1206,7 +1209,9 @@ export class SessionRunner {
       };
     };
 
-    const readPersistedTerminalEvent = (): { event: any; assistantContent?: string } | null => {
+    const readPersistedTerminalEvent = (
+      options: { treatSessionShutdownAsTerminal?: boolean } = {},
+    ): { event: any; assistantContent?: string } | null => {
       let raw: string;
       try {
         raw = readFileSync(eventsJsonlPath, "utf-8");
@@ -1262,9 +1267,14 @@ export class SessionRunner {
           case "assistant.turn_end":
           case "session.error":
           case "abort":
-          case "session.shutdown":
             latestRelevantState = "terminal";
             terminalEvent = event;
+            break;
+          case "session.shutdown":
+            if (options.treatSessionShutdownAsTerminal !== false) {
+              latestRelevantState = "terminal";
+              terminalEvent = event;
+            }
             break;
           default:
             break;
@@ -1291,24 +1301,13 @@ export class SessionRunner {
     };
 
     const resolveRestartResumePersistedTerminalEvent = (reason: string): boolean => {
-      const persistedTerminal = readPersistedTerminalEvent();
-      if (!persistedTerminal) return false;
-      const eventType = typeof persistedTerminal.event?.type === "string"
-        ? persistedTerminal.event.type
-        : "unknown";
-      if (eventType !== "session.shutdown") {
-        return resolvePersistedTerminalEvent(persistedTerminal, reason);
-      }
-
-      const now = Date.now();
-      console.warn(`[sdk] [${sid}] Restart recovery found persisted ${eventType} ${reason} — releasing run state`);
-      recordRunSpan("session.restartResume.persisted_terminal", now - sendStart, {
-        terminalEventType: eventType,
-        recoveryReason: reason,
-      }, now);
-      runController.completePreservedForRestart();
-      return true;
+      const persistedTerminal = readPersistedTerminalEvent({ treatSessionShutdownAsTerminal: false });
+      return resolvePersistedTerminalEvent(persistedTerminal, reason);
     };
+    const readStalledRecoveryPersistedTerminalEvent = () =>
+      opts.restartResumeNoEventTimeoutMs === undefined
+        ? readPersistedTerminalEvent()
+        : readPersistedTerminalEvent({ treatSessionShutdownAsTerminal: false });
 
     const attemptStalledRecovery = async () => {
       if (recoveryInProgress) return;
@@ -1329,7 +1328,7 @@ export class SessionRunner {
         }, now);
       };
       try {
-        const persistedTerminalBeforeResume = readPersistedTerminalEvent();
+        const persistedTerminalBeforeResume = readStalledRecoveryPersistedTerminalEvent();
         if (persistedTerminalBeforeResume) {
           if (resolvePersistedTerminalEvent(persistedTerminalBeforeResume, "before resume")) {
             recordRecoveryOutcome("resolved_persisted_terminal", {
@@ -1355,7 +1354,7 @@ export class SessionRunner {
           return;
         }
 
-        const persistedTerminalAfterResume = readPersistedTerminalEvent();
+        const persistedTerminalAfterResume = readStalledRecoveryPersistedTerminalEvent();
         if (persistedTerminalAfterResume) {
           try { recoveredSession.disconnect?.(); } catch { /* best-effort */ }
           resolvePersistedTerminalEvent(persistedTerminalAfterResume, "after resume");
@@ -1407,7 +1406,7 @@ export class SessionRunner {
           bufferedEventCount: bufferedRecoveredEvents.length,
         });
       } catch (err) {
-        const persistedTerminalAfterFailedResume = readPersistedTerminalEvent();
+        const persistedTerminalAfterFailedResume = readStalledRecoveryPersistedTerminalEvent();
         if (persistedTerminalAfterFailedResume && resolvePersistedTerminalEvent(persistedTerminalAfterFailedResume, "after failed resume")) {
           const errorName = err instanceof Error ? err.name.slice(0, 64).replace(/\r?\n/g, " ") : undefined;
           recordRecoveryOutcome("resolved_persisted_terminal", {
@@ -1498,6 +1497,7 @@ export class SessionRunner {
               recordRunSpan("session.restartResume.no_events", now - sendStart, {
                 noEventTimeoutMs: opts.restartResumeNoEventTimeoutMs,
                 lastLiveEventType,
+                ...readLatestPersistedRunEventInfo(now),
               }, now);
               runController.completePreservedForRestart();
             }, opts.restartResumeNoEventTimeoutMs);
