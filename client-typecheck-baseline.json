@@ -448,13 +448,6 @@
     "message": "Argument of type 'unknown' is not assignable to parameter of type 'Session[]'."
   },
   {
-    "code": 2322,
-    "file": "src/client/hooks/useBackgroundVoiceJobs.ts",
-    "line": 363,
-    "character": 7,
-    "message": "Type 'VoiceJobStatus' is not assignable to type 'VoiceBackgroundJobStatus'.\n  Type '\"done\"' is not assignable to type 'VoiceBackgroundJobStatus'."
-  },
-  {
     "code": 2345,
     "file": "src/client/hooks/useTaskIndicators.test.ts",
     "line": 54,

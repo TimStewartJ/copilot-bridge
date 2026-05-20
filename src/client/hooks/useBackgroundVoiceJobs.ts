@@ -15,7 +15,23 @@ import { mergeTranscript } from "../lib/voice-transcript";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import type { Draft } from "../useDrafts";
 
-type VoiceBackgroundJobStatus = "uploading" | "accepted" | "transcribing" | "sending" | "error";
+export type VoiceBackgroundJobStatus = "uploading" | "accepted" | "transcribing" | "sending" | "error";
+type VoiceServerActivityStatus = Extract<VoiceJobStatusResponse["status"], "accepted" | "transcribing" | "sending">;
+export type VoiceSessionActivityStatus = "uploading" | VoiceServerActivityStatus;
+export type VoiceSessionSettledStatus = "done" | "recovered" | "error";
+
+export interface VoiceSessionActivity {
+  sessionId: string;
+  taskId?: string;
+  status: VoiceSessionActivityStatus;
+  statusChanged?: boolean;
+}
+
+export interface VoiceSessionSettled {
+  sessionId: string;
+  taskId?: string;
+  status: VoiceSessionSettledStatus;
+}
 
 export interface VoiceBackgroundJob {
   composerKey: string;
@@ -49,6 +65,8 @@ interface UseBackgroundVoiceJobsOptions {
   navigateToSession: (sessionId: string, taskId?: string, replace?: boolean) => void;
   refreshSessions: () => void;
   refreshTasks: () => void;
+  onVoiceSessionActivity?: (activity: VoiceSessionActivity) => void;
+  onVoiceSessionSettled?: (activity: VoiceSessionSettled) => void;
 }
 
 export interface UseBackgroundVoiceJobsResult {
@@ -60,6 +78,10 @@ export interface UseBackgroundVoiceJobsResult {
 }
 
 const SERVER_POLL_DELAY_MS = 1_200;
+
+function isVoiceServerActivityStatus(status: VoiceJobStatusResponse["status"]): status is VoiceServerActivityStatus {
+  return status === "accepted" || status === "transcribing" || status === "sending";
+}
 
 export function useBackgroundVoiceJobs({
   activeComposerKey,
@@ -73,6 +95,8 @@ export function useBackgroundVoiceJobs({
   navigateToSession,
   refreshSessions,
   refreshTasks,
+  onVoiceSessionActivity,
+  onVoiceSessionSettled,
 }: UseBackgroundVoiceJobsOptions): UseBackgroundVoiceJobsResult {
   const [jobs, setJobs] = useState<Record<string, VoiceBackgroundJob>>({});
   const jobsRef = useRef(jobs);
@@ -81,6 +105,7 @@ export function useBackgroundVoiceJobs({
   const retryingComposerKeysRef = useRef<Set<string>>(new Set());
   const pollTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const claimedOriginServerJobIdsRef = useRef<Record<string, string>>({});
+  const lastNotifiedActivityStatusRef = useRef<Record<string, VoiceSessionActivityStatus>>({});
   const optionsRef = useRef({
     activeComposerKey,
     getDraft,
@@ -93,6 +118,8 @@ export function useBackgroundVoiceJobs({
     navigateToSession,
     refreshSessions,
     refreshTasks,
+    onVoiceSessionActivity,
+    onVoiceSessionSettled,
   });
 
   useEffect(() => {
@@ -111,6 +138,8 @@ export function useBackgroundVoiceJobs({
     navigateToSession,
     refreshSessions,
     refreshTasks,
+    onVoiceSessionActivity,
+    onVoiceSessionSettled,
   };
 
   const setJobsState = useCallback((updater: (prev: Record<string, VoiceBackgroundJob>) => Record<string, VoiceBackgroundJob>) => {
@@ -213,6 +242,31 @@ export function useBackgroundVoiceJobs({
     return null;
   }, []);
 
+  const notifyVoiceSessionActivity = useCallback((jobId: string, activity: VoiceSessionActivity) => {
+    const statusChanged = lastNotifiedActivityStatusRef.current[jobId] !== activity.status;
+    lastNotifiedActivityStatusRef.current[jobId] = activity.status;
+    optionsRef.current.onVoiceSessionActivity?.({
+      ...activity,
+      statusChanged,
+    });
+  }, []);
+
+  const notifyVoiceSessionSettled = useCallback((jobId: string, settled: VoiceSessionSettled) => {
+    delete lastNotifiedActivityStatusRef.current[jobId];
+    optionsRef.current.onVoiceSessionSettled?.(settled);
+  }, []);
+
+  const notifySnapshotVoiceSessionActivity = useCallback((snapshot: VoiceJobStatusResponse) => {
+    if (!snapshot.targetSessionId) return;
+    if (!isVoiceServerActivityStatus(snapshot.status)) return;
+
+    notifyVoiceSessionActivity(snapshot.id, {
+      sessionId: snapshot.targetSessionId,
+      taskId: snapshot.taskId,
+      status: snapshot.status,
+    });
+  }, [notifyVoiceSessionActivity]);
+
   const markError = useCallback((
     composerKey: string,
     message: string,
@@ -274,6 +328,7 @@ export function useBackgroundVoiceJobs({
     const displayKey = snapshot.targetSessionId ?? originComposerKey;
     const taskId = snapshot.taskId ?? getTaskIdFromDraftComposerKey(originComposerKey);
     const claimedOriginServerJobId = claimedOriginServerJobIdsRef.current[originComposerKey] ?? null;
+    notifySnapshotVoiceSessionActivity(snapshot);
     const canHandleDraftTarget =
       !!snapshot.targetSessionId
       && isDraftComposerKey(originComposerKey)
@@ -305,6 +360,13 @@ export function useBackgroundVoiceJobs({
     }
 
     if (snapshot.status === "done" || snapshot.status === "recovered") {
+      if (snapshot.status === "done" && snapshot.targetSessionId) {
+        notifyVoiceSessionActivity(snapshot.id, {
+          sessionId: snapshot.targetSessionId,
+          taskId,
+          status: "sending",
+        });
+      }
       setJobsState((prev) => clearOwnedVoiceJobs(
         prev,
         { composerKey: originComposerKey, serverJobId: snapshot.id, claimedServerJobId: claimedOriginServerJobId },
@@ -316,6 +378,13 @@ export function useBackgroundVoiceJobs({
       }
       if (isDraftComposerKey(originComposerKey) && snapshot.targetSessionId) {
         optionsRef.current.clearDraftSession(originComposerKey);
+      }
+      if (snapshot.targetSessionId) {
+        notifyVoiceSessionSettled(snapshot.id, {
+          sessionId: snapshot.targetSessionId,
+          taskId,
+          status: snapshot.status,
+        });
       }
       if (navigateTargetSessionId) {
         optionsRef.current.navigateToSession(navigateTargetSessionId, taskId, true);
@@ -352,15 +421,25 @@ export function useBackgroundVoiceJobs({
       if (claimedOriginServerJobIdsRef.current[originComposerKey] === snapshot.id) {
         delete claimedOriginServerJobIdsRef.current[originComposerKey];
       }
+      if (snapshot.targetSessionId) {
+        notifyVoiceSessionSettled(snapshot.id, {
+          sessionId: snapshot.targetSessionId,
+          taskId,
+          status: "error",
+        });
+      }
       if (navigateTargetSessionId) {
         optionsRef.current.navigateToSession(navigateTargetSessionId, taskId, true);
       }
       return false;
     }
 
+    const activeStatus = snapshot.status;
+    if (!isVoiceServerActivityStatus(activeStatus)) return false;
+
     setJobsState((prev) => replaceVoiceJob(prev, snapshot.id, originComposerKey, {
       composerKey: displayKey,
-      status: snapshot.status,
+      status: activeStatus,
       submitMode: "autosend",
       serverOwned: true,
       serverJobId: snapshot.id,
@@ -374,8 +453,8 @@ export function useBackgroundVoiceJobs({
     if (navigateTargetSessionId) {
       optionsRef.current.navigateToSession(navigateTargetSessionId, taskId, true);
     }
-    return snapshot.status === "accepted" || snapshot.status === "transcribing" || snapshot.status === "sending";
-  }, [draftHasContent, insertTranscriptIntoDraft, moveDraftContent, setJobsState, stopPolling]);
+    return true;
+  }, [draftHasContent, insertTranscriptIntoDraft, moveDraftContent, notifySnapshotVoiceSessionActivity, notifyVoiceSessionSettled, setJobsState, stopPolling]);
 
   const pollServerJob = useCallback((jobId: string, originComposerKey: string) => {
     stopPolling(jobId);
@@ -412,6 +491,7 @@ export function useBackgroundVoiceJobs({
   const startServerAutoSendJob = useCallback((composerKey: string, audio: Blob) => {
     clearUploadTracking(composerKey);
     const controller = new AbortController();
+    const existingSessionComposer = !isDraftComposerKey(composerKey);
     uploadControllersRef.current[composerKey] = controller;
     uploadAudioRef.current[composerKey] = audio;
     delete claimedOriginServerJobIdsRef.current[composerKey];
@@ -422,6 +502,13 @@ export function useBackgroundVoiceJobs({
       serverOwned: true,
       originComposerKey: composerKey,
     });
+    if (existingSessionComposer) {
+      optionsRef.current.onVoiceSessionActivity?.({
+        sessionId: composerKey,
+        status: "uploading",
+        statusChanged: true,
+      });
+    }
 
     const runJob = async () => {
       try {
@@ -445,6 +532,12 @@ export function useBackgroundVoiceJobs({
         retryingComposerKeysRef.current.delete(composerKey);
         if (controller.signal.aborted) return;
         clearUploadController(composerKey, controller);
+        if (existingSessionComposer) {
+          optionsRef.current.onVoiceSessionSettled?.({
+            sessionId: composerKey,
+            status: "error",
+          });
+        }
         markError(composerKey, err instanceof Error ? err.message : String(err), {
           submitMode: "autosend",
           retryable: true,
@@ -538,6 +631,7 @@ export function useBackgroundVoiceJobs({
         clearTimeout(timer);
       }
       pollTimersRef.current = {};
+      lastNotifiedActivityStatusRef.current = {};
     };
   }, []);
 
