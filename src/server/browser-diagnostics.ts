@@ -8,6 +8,7 @@ import {
   getBrowserLaunchConfig,
   isAgentBrowserInstalled,
   safeRecordBrowserSpan,
+  shutdownBridgeBrowser,
   withBridgeBrowserSession,
 } from "./agent-browser.js";
 import type { TelemetrySpan } from "./telemetry-store.js";
@@ -53,6 +54,14 @@ export interface BrowserDiagnosticsResponse {
 export interface BrowserHeadedLaunchResponse {
   ok: true;
   url: string;
+  sessionName: string;
+  masterProfileDirectory: string;
+  executablePath?: string;
+  message: string;
+}
+
+export interface BrowserHeadedCloseResponse {
+  ok: true;
   sessionName: string;
   masterProfileDirectory: string;
   executablePath?: string;
@@ -247,6 +256,43 @@ export async function launchHeadedDiagnosticsBrowser(
     };
   } finally {
     safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_diagnostics_launch_headed", Date.now() - startedAt, {
+      browserOpId,
+      browserSession: headedTarget.sessionName,
+      success,
+      headed: true,
+    });
+  }
+}
+
+export async function closeHeadedDiagnosticsBrowser(
+  ctx: AppContext,
+): Promise<BrowserHeadedCloseResponse> {
+  if (!await isAgentBrowserInstalled()) {
+    throw new Error("agent-browser is not installed.");
+  }
+
+  const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
+  const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
+  const headedTarget = {
+    ...getBridgeBrowserTarget(ctx.copilotHome, launchConfig),
+    headed: true,
+  };
+  const browserOpId = randomUUID();
+  const startedAt = Date.now();
+  let success = false;
+
+  try {
+    await shutdownBridgeBrowser(headedTarget, ctx.telemetryStore);
+    success = true;
+    return {
+      ok: true,
+      sessionName: headedTarget.sessionName,
+      masterProfileDirectory: headedTarget.profileDir,
+      executablePath: effectiveExecutablePath.path,
+      message: "Headed browser close requested. Verified browser state is ready for future browser tool runs.",
+    };
+  } finally {
+    safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_diagnostics_close_headed", Date.now() - startedAt, {
       browserOpId,
       browserSession: headedTarget.sessionName,
       success,

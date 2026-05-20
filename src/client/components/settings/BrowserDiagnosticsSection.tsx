@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Monitor, RotateCw } from "lucide-react";
+import { Loader2, Monitor, RotateCw, X } from "lucide-react";
 import {
+  closeHeadedDiagnosticsBrowser,
   fetchBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
   type AppSettings,
@@ -46,6 +47,7 @@ export function BrowserDiagnosticsSection({
   const [diagnostics, setDiagnostics] = useState<BrowserDiagnosticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
@@ -106,6 +108,21 @@ export function BrowserDiagnosticsSection({
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLaunching(false);
+    }
+  };
+
+  const closeHeaded = async () => {
+    setClosing(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await closeHeadedDiagnosticsBrowser();
+      setMessage(result.message);
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setClosing(false);
     }
   };
 
@@ -249,14 +266,23 @@ export function BrowserDiagnosticsSection({
           <button
             type="button"
             onClick={() => void launchHeaded()}
-            disabled={launching}
+            disabled={launching || closing}
             className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-wait disabled:bg-bg-surface disabled:text-text-faint"
           >
             {launching ? <Loader2 size={12} className="animate-spin" /> : <Monitor size={12} />}
             Launch headed browser
           </button>
+          <button
+            type="button"
+            onClick={() => void closeHeaded()}
+            disabled={launching || closing}
+            className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+          >
+            {closing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+            Close headed browser
+          </button>
           <span className="text-[11px] text-text-faint">
-            Save browser edits first. The launch action uses the saved browser diagnostics settings.
+            Save browser edits first. These actions use the saved browser diagnostics settings.
           </span>
         </div>
 

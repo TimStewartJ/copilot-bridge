@@ -1532,12 +1532,24 @@ export interface BrowserHeadedLaunchResponse {
   message: string;
 }
 
+export interface BrowserHeadedCloseResponse {
+  ok: true;
+  sessionName: string;
+  masterProfileDirectory: string;
+  executablePath?: string;
+  message: string;
+}
+
 export async function fetchBrowserDiagnostics(): Promise<BrowserDiagnosticsResponse> {
   return apiFetch<BrowserDiagnosticsResponse>("/api/browser/diagnostics");
 }
 
 export async function launchHeadedDiagnosticsBrowser(): Promise<BrowserHeadedLaunchResponse> {
   return apiFetch<BrowserHeadedLaunchResponse>("/api/browser/diagnostics/launch-headed", {});
+}
+
+export async function closeHeadedDiagnosticsBrowser(): Promise<BrowserHeadedCloseResponse> {
+  return apiFetch<BrowserHeadedCloseResponse>("/api/browser/diagnostics/close-headed", {});
 }
 
 export interface DeviceHibernateResponse {
