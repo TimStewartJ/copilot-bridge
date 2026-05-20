@@ -9,7 +9,7 @@ import type {
   ToolCall,
   VisualArtifact,
 } from "./api";
-import { API_BASE, startFleetRun } from "./api";
+import { API_BASE, sendChatMessage, startFleetRun } from "./api";
 
 export interface PendingTool {
   toolCallId: string;
@@ -454,6 +454,8 @@ export function useSessionStream(
   });
 
   const [streamState, setStreamState] = useState<StreamState>(mkState("idle"));
+  const streamStateRef = useRef(streamState);
+  streamStateRef.current = streamState;
 
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
@@ -945,22 +947,24 @@ export function useSessionStream(
 
   const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[]) => {
     if (!sessionId) return;
-    setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin: "message" }));
+    const startedFromIdle = streamStateRef.current.streamStatus === "idle";
+    if (startedFromIdle) {
+      setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin: "message" }));
+    }
     try {
-      const res = await fetch(`${API_BASE}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, prompt, ...(attachments?.length ? { attachments } : {}) }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Failed" }));
-        setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
-        throw new Error(err.error);
-      }
+      const response = await sendChatMessage(sessionId, prompt, attachments);
       retryCountRef.current = 0;
+      if (response.mode === "steered") {
+        if (startedFromIdle && sessionRef.current === sessionId) {
+          connectStream(sessionId, "reconnect");
+        }
+        return;
+      }
       connectStream(sessionId, "message");
     } catch (err) {
-      setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+      if (startedFromIdle) {
+        setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+      }
       throw err;
     }
   }, [sessionId, connectStream]);
