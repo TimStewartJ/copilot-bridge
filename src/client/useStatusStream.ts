@@ -16,8 +16,8 @@ export type StatusEvent =
     }
   | { type: "session:defer-summary"; sessionId: string; deferSummary: DeferSummary }
   | { type: "session:history-truncated"; sessionId?: string }
-  | { type: "server:restart-pending"; waitingSessions?: number }
-  | { type: "server:restart-cleared" }
+  | { type: "server:restart-pending"; waitingSessions?: number; serverInstanceId?: string }
+  | { type: "server:restart-cleared"; serverInstanceId?: string }
   | { type: "status:connected" }
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
   | { type: "schedule:changed"; scheduleId?: string }
