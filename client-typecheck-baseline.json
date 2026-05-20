@@ -49,13 +49,6 @@
     "message": "Object literal may only specify known properties, and 'sessionId' does not exist in type 'Pick<Session, \"lastAttentionAt\">'."
   },
   {
-    "code": 2339,
-    "file": "src/client/api.ts",
-    "line": 399,
-    "character": 31,
-    "message": "Property 'env' does not exist on type 'ImportMeta'."
-  },
-  {
     "code": 2345,
     "file": "src/client/App.tsx",
     "line": 516,
@@ -537,13 +530,6 @@
     "line": 34,
     "character": 51,
     "message": "Argument of type 'string | number | boolean | ToolArgs[] | null | undefined' is not assignable to parameter of type 'ToolArgs'.\n  Type 'undefined' is not assignable to type 'ToolArgs'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/main.tsx",
-    "line": 21,
-    "character": 42,
-    "message": "Property 'env' does not exist on type 'ImportMeta'."
   },
   {
     "code": 2322,
