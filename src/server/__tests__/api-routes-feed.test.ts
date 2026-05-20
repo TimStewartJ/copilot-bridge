@@ -110,6 +110,30 @@ describe("Feed routes", () => {
     expect(explicit.body.card.status).toBe("active");
   });
 
+  it("rejects identifier-only feed saves without emitting change events", async () => {
+    const existing = ctx.feedStore.saveCard({ key: "preview:no-op", title: "Preview" }).card;
+    const events: unknown[] = [];
+    ctx.globalBus.subscribe((event) => {
+      if (event.type === "feed:changed") events.push(event);
+    });
+
+    const keyOnly = await request(app)
+      .post("/api/feed")
+      .send({ key: "preview:no-op" });
+
+    expect(keyOnly.status).toBe(400);
+    expect(keyOnly.body.error).toContain("No fields to update");
+    expect(events).toEqual([]);
+    expect(ctx.feedStore.getCard(existing.id)).toEqual(existing);
+
+    const idOnly = await request(app)
+      .post("/api/feed")
+      .send({ id: existing.id });
+
+    expect(idOnly.status).toBe(400);
+    expect(events).toEqual([]);
+  });
+
   it("GET /api/feed filters cards", async () => {
     const task = ctx.taskStore.createTask("Feed task");
     const taskCard = ctx.feedStore.saveCard({ title: "Task todo", taskId: task.id, kind: "todo" }).card;

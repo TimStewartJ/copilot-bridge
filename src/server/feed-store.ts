@@ -904,7 +904,11 @@ export function createFeedStore(db: DatabaseSync, bus: GlobalBus, options: FeedS
     try {
       const existing = getCardByKey(dedupeKey);
       if (existing) {
-        const update = applyUpdate(existing, normalizeUpdateInput(input, { allowIdentityFields: true }), mutationOptions);
+        const updates = normalizeUpdateInput(input, { allowIdentityFields: true });
+        if (Object.keys(updates).length === 0 && !hasVisualOption(mutationOptions)) {
+          throw new FeedCardValidationError("No fields to update");
+        }
+        const update = applyUpdate(existing, updates, mutationOptions);
         db.exec("COMMIT");
         inTransaction = false;
         emitChange(update.card);

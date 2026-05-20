@@ -75,6 +75,21 @@ describe("feed-store", () => {
     expect(reactivated.card.status).toBe("active");
   });
 
+  it("rejects identifier-only keyed upserts without emitting events", () => {
+    const bus = createTestBus();
+    store = createFeedStore(db, bus);
+    const created = store.saveCard({ key: "preview:no-op", title: "Preview" }).card;
+    const events: unknown[] = [];
+    bus.subscribe((event) => {
+      if (event.type === "feed:changed") events.push(event);
+    });
+
+    expect(() => store.saveCard({ key: "preview:no-op" })).toThrow("No fields to update");
+
+    expect(events).toEqual([]);
+    expect(store.getCard(created.id)).toEqual(created);
+  });
+
   it("updates only provided fields", () => {
     const { card } = store.saveCard({
       title: "Decision",
