@@ -1304,40 +1304,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
-  router.get("/busy", (req, res) => {
-    const ignoreRestartPreservable = req.query.ignoreRestartPreservable === "1"
-      || req.query.ignoreRestartPreservable === "true";
-    const sessions = ignoreRestartPreservable
-      ? ctx.sessionManager.getRestartBlockingSessionActivity()
-      : ctx.sessionManager.getSessionActivity();
+  router.get("/busy", (_req, res) => {
+    const sessions = ctx.sessionManager.getSessionActivity();
     res.json({
       busy: sessions.length > 0,
       count: sessions.length,
       sessionIds: sessions.map((s) => s.id),
       sessions,
     });
-  });
-
-  router.post("/restart/quiesce", async (_req, res) => {
-    if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
-    try {
-      const result = await timeRequestOperation(
-        res,
-        "restart.quiesce",
-        () => ctx.sessionManager.quiesceRestartPreservableSessions(),
-      );
-      const sessions = result.blockingSessions;
-      res.json({
-        busy: sessions.length > 0,
-        count: sessions.length,
-        sessionIds: sessions.map((s) => s.id),
-        sessions,
-        suspendedSessionIds: result.suspendedSessionIds,
-      });
-    } catch (error) {
-      console.error("[restart] Quiesce failed:", error);
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-    }
   });
 
   router.get("/health", (_req, res) => {
@@ -1460,14 +1434,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.post("/shutdown", async (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
     console.log("[web] Graceful shutdown requested via API");
-    const preserveActiveRuns = req.query.preserveActiveRuns === "1"
-      || req.query.preserveActiveRuns === "true";
     res.json({ ok: true, message: "Shutting down..." });
     try {
       schedulerModule().setGlobalPause(true);
       ctx.deferredPromptRunner?.shutdown();
       ctx.deferLoopRunner?.shutdown();
-      await ctx.sessionManager.gracefulShutdown({ preserveActiveRuns });
+      await ctx.sessionManager.gracefulShutdown();
       schedulerModule().shutdown();
     } catch (err) {
       console.error("[web] Error during graceful shutdown:", err);

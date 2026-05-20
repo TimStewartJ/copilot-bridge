@@ -707,26 +707,6 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
   }
 }
 
-function ensureRestartSuspendedSessionsTable(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS restart_suspended_sessions (
-      sessionId TEXT PRIMARY KEY,
-      runKind TEXT NOT NULL,
-      pendingPrompt TEXT,
-      promptAccepted INTEGER NOT NULL DEFAULT 0,
-      suspendedAt TEXT NOT NULL,
-      lastEventAt TEXT,
-      status TEXT NOT NULL,
-      resumeAttempts INTEGER NOT NULL DEFAULT 0,
-      lastError TEXT,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_restart_suspended_sessions_status
-      ON restart_suspended_sessions(status, suspendedAt);
-  `);
-}
-
 const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     id: "mcp-registry-from-legacy-settings-and-tag-configs",
@@ -836,14 +816,6 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Rebuild task_work_items when itemId was stored as INTEGER so string identifiers are preserved.",
     apply: migrateTaskWorkItemIdsToText,
-  },
-  {
-    id: "restart-suspended-sessions-table",
-    category: "schema-upgrade",
-    runMode: "every-open",
-    transaction: "auto",
-    description: "Create restart_suspended_sessions for restart-safe active turn recovery.",
-    apply: ensureRestartSuspendedSessionsTable,
   },
 ];
 

@@ -85,25 +85,17 @@ describe("fetchRestartBusyState", () => {
     } as unknown as Response;
   }
 
-  it("uses the restart-blocking busy endpoint after triggering quiesce", async () => {
+  it("returns the busy endpoint payload", async () => {
     const log = vi.fn();
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response(200, {
-        busy: true,
-        count: 1,
-        suspendedSessionIds: ["abcdef12-3456-7890-abcd-ef1234567890"],
-        sessions: [{ id: "session-b", staleMs: 0, elapsedMs: 10 }],
-      }))
-      .mockResolvedValueOnce(response(200, {
-        busy: false,
-        count: 0,
-        sessions: [],
-      }));
+    const fetch = vi.fn().mockResolvedValue(response(200, {
+      busy: false,
+      count: 0,
+      sessions: [],
+    }));
 
     await expect(fetchRestartBusyState({
       fetch,
-      quiesceUrl: "http://bridge/api/restart/quiesce",
-      busyUrl: "http://bridge/api/busy?ignoreRestartPreservable=1",
+      busyUrl: "http://bridge/api/busy",
       log,
     })).resolves.toEqual({
       busy: false,
@@ -111,29 +103,17 @@ describe("fetchRestartBusyState", () => {
       sessions: [],
     });
 
-    expect(fetch).toHaveBeenNthCalledWith(1, "http://bridge/api/restart/quiesce", { method: "POST" });
-    expect(fetch).toHaveBeenNthCalledWith(2, "http://bridge/api/busy?ignoreRestartPreservable=1");
-    expect(log).toHaveBeenCalledWith("Suspended 1 session(s) for restart: abcdef12");
+    expect(fetch).toHaveBeenCalledWith("http://bridge/api/busy");
+    expect(log).not.toHaveBeenCalled();
   });
 
-  it("falls back to the busy endpoint when quiesce is unavailable", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response(404, { error: "Not found" }))
-      .mockResolvedValueOnce(response(200, {
-        busy: true,
-        count: 1,
-        sessions: [{ id: "session-a", staleMs: 0, elapsedMs: 10 }],
-      }));
+  it("throws when the busy endpoint fails", async () => {
+    const fetch = vi.fn().mockResolvedValue(response(503, { error: "unavailable" }));
 
     await expect(fetchRestartBusyState({
       fetch,
-      quiesceUrl: "http://bridge/api/restart/quiesce",
-      busyUrl: "http://bridge/api/busy?ignoreRestartPreservable=1",
+      busyUrl: "http://bridge/api/busy",
       log: vi.fn(),
-    })).resolves.toEqual({
-      busy: true,
-      count: 1,
-      sessions: [{ id: "session-a", staleMs: 0, elapsedMs: 10 }],
-    });
+    })).rejects.toThrow("Busy check failed: 503");
   });
 });
