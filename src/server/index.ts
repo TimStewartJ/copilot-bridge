@@ -9,7 +9,13 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { gitHash } from "./git-revisions.js";
 import { notifyWebhook, getPublicBaseUrl, discoverTunnelUrl, rememberRequestOrigin, shouldTrustProxyHeaders } from "./tunnel.js";
-import { pruneOrphanedWorktrees, getActivePreviews, getStagingRouter, registerExpressApp } from "./staging-tools.js";
+import {
+  pruneOrphanedWorktrees,
+  getActivePreviews,
+  getStagingRouter,
+  registerExistingPreviewsFromDisk,
+  registerExpressApp,
+} from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
@@ -121,6 +127,8 @@ async function main(): Promise<void> {
 
   // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
   initKeepAlive();
+
+  registerExistingPreviewsFromDisk();
 
   const port = config.web.port;
   // Event loop lag monitor — measures how late setInterval fires vs expected

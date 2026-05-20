@@ -100,6 +100,10 @@ export function parsePreviewPrefix(
   prefix: string,
   activeWorktrees?: ReadonlySet<string>,
 ): { stagingName: string; profile: StagingPreviewProfile } | null {
+  if (!isSafePreviewPrefix(prefix)) {
+    return null;
+  }
+
   if (activeWorktrees?.has(prefix)) {
     return { stagingName: prefix, profile: "clone" };
   }
@@ -109,6 +113,10 @@ export function parsePreviewPrefix(
   }
 
   return { stagingName: prefix, profile: "clone" };
+}
+
+function isSafePreviewPrefix(prefix: string): boolean {
+  return /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/.test(prefix) && !prefix.includes("..");
 }
 
 export function escapeSqliteStringLiteral(value: string): string {

@@ -189,6 +189,84 @@ export function getActivePreviews(): ReadonlyMap<string, string> {
   return activePreviews;
 }
 
+type RegisterExistingPreviewsFromDiskOptions = {
+  stagingParent?: string;
+  stagingDistParent?: string;
+  stagingPreviewParents?: string[];
+  activePreviewMap?: Map<string, string>;
+  expressApp?: express.Application | null;
+  log?: (msg: string) => void;
+};
+
+function createRestorablePreviewTarget(
+  stagingParent: string,
+  prefix: string,
+  profile: StagingPreviewProfile,
+  outDir: string,
+): PreviewTarget {
+  return {
+    ...createPreviewTarget(join(stagingParent, prefix), profile),
+    outDir,
+    updatedAtMs: directoryMtimeMs(outDir),
+  };
+}
+
+/**
+ * Cheap startup discovery for already-built previews. This runs before listen()
+ * so restored preview URLs are routeable while heavier prune/warmup work stays async.
+ */
+export function registerExistingPreviewsFromDisk(options: RegisterExistingPreviewsFromDiskOptions = {}): number {
+  const writeLog = options.log ?? log;
+  if (!shouldManageStagingArtifacts()) {
+    return 0;
+  }
+
+  const stagingParent = options.stagingParent ?? STAGING_PARENT;
+  const stagingPreviewParents = options.stagingPreviewParents
+    ?? (options.stagingDistParent ? [options.stagingDistParent] : listStagingPreviewParents());
+  const previewMap = options.activePreviewMap ?? activePreviews;
+  const shouldRegisterBackends = options.expressApp === undefined
+    ? hasRegisteredExpressApp()
+    : options.expressApp !== null;
+  let registeredPreviewDirs = 0;
+
+  for (const stagingPreviewParent of uniqueResolvedPaths(stagingPreviewParents)) {
+    if (!existsSync(stagingPreviewParent)) continue;
+    try {
+      const distEntries = readdirSync(stagingPreviewParent, { withFileTypes: true });
+      for (const entry of distEntries) {
+        if (!entry.isDirectory()) continue;
+        const parsed = parsePreviewPrefix(entry.name);
+        if (!parsed) continue;
+
+        const distDir = join(stagingPreviewParent, entry.name);
+        if (!existsSync(join(distDir, "index.html"))) continue;
+
+        if (!previewMap.has(entry.name)) {
+          const target = createRestorablePreviewTarget(
+            stagingParent,
+            parsed.stagingName,
+            parsed.profile,
+            distDir,
+          );
+          previewMap.set(entry.name, distDir);
+          if (shouldRegisterBackends) {
+            rememberRestorablePreviewTarget(target);
+          }
+          registeredPreviewDirs++;
+        }
+      }
+    } catch (err) {
+      writeLog(`Warning: staging preview startup discovery failed: ${err}`);
+    }
+  }
+
+  if (registeredPreviewDirs > 0) {
+    writeLog(`Registered ${registeredPreviewDirs} staging preview route(s) from disk before pruning`);
+  }
+  return registeredPreviewDirs;
+}
+
 
 function removeStagingDist(prefix: string): void {
   for (const previewParent of listStagingPreviewParents()) {
@@ -484,17 +562,20 @@ async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions
         if (parsed) {
           const distDir = join(stagingPreviewParent, entry.name);
           if (!restorablePreviews.has(entry.name)) {
-            const target = {
-              ...createPreviewTarget(join(stagingParent, parsed.stagingName), parsed.profile),
-              outDir: distDir,
-              updatedAtMs: directoryMtimeMs(distDir),
-            };
+            const target = createRestorablePreviewTarget(
+              stagingParent,
+              parsed.stagingName,
+              parsed.profile,
+              distDir,
+            );
             previewMap.set(entry.name, distDir);
             restorablePreviews.set(entry.name, target);
             restoredPreviewDirs++;
           }
         } else if (!skipOrphanPrune) {
           rmSync(join(stagingPreviewParent, entry.name), { recursive: true, force: true });
+          previewMap.delete(entry.name);
+          forgetStagingPreviewBackend(entry.name);
           orphanedPreviewDirs++;
         }
       }
