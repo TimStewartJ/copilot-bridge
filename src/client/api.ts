@@ -400,6 +400,16 @@ const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
 export { API_BASE };
 const telemetryBatcher = createTelemetryBatcher({ apiBase: API_BASE });
 
+export class ApiError extends Error {
+  readonly details?: unknown;
+
+  constructor(message: string, readonly status: number, details?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    if (details !== undefined) this.details = details;
+  }
+}
+
 export async function uploadFile(sessionId: string, file: File): Promise<UploadedAttachment> {
   const form = new FormData();
   form.append("sessionId", sessionId);
@@ -433,7 +443,11 @@ async function apiFetch<T>(path: string, body?: unknown, options?: { signal?: Ab
   const res = await fetch(`${API_BASE}${path}`, opts);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const errorMessage = err && typeof err === "object" && "error" in err && typeof err.error === "string"
+      ? err.error
+      : res.statusText;
+    const details = err && typeof err === "object" && "details" in err ? err.details : undefined;
+    throw new ApiError(errorMessage || res.statusText, res.status, details);
   }
   const result = await res.json();
   // Fire-and-forget client timing report (skip telemetry endpoint to avoid recursion)
@@ -1539,6 +1553,17 @@ export interface BrowserHeadedCloseResponse {
   masterProfileDirectory: string;
   executablePath?: string;
   message: string;
+}
+
+export interface BrowserHeadedCloseFailureDetails {
+  failureCode?: string;
+  outputSummary?: string;
+  closeFailureCode?: string;
+  closeOutputSummary?: string;
+  terminatedPids: number[];
+  killedPids: number[];
+  remainingPids: number[];
+  clearedRuntimeFiles: number;
 }
 
 export async function fetchBrowserDiagnostics(): Promise<BrowserDiagnosticsResponse> {

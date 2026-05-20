@@ -10,6 +10,7 @@ import {
   safeRecordBrowserSpan,
   shutdownBridgeBrowser,
   withBridgeBrowserSession,
+  type BrowserShutdownResult,
 } from "./agent-browser.js";
 import type { TelemetrySpan } from "./telemetry-store.js";
 
@@ -66,6 +67,55 @@ export interface BrowserHeadedCloseResponse {
   masterProfileDirectory: string;
   executablePath?: string;
   message: string;
+}
+
+export interface BrowserHeadedCloseFailureDetails {
+  failureCode?: BrowserShutdownResult["failureCode"];
+  outputSummary?: string;
+  closeFailureCode?: BrowserShutdownResult["closeFailureCode"];
+  closeOutputSummary?: string;
+  terminatedPids: number[];
+  killedPids: number[];
+  remainingPids: number[];
+  clearedRuntimeFiles: number;
+}
+
+export class BrowserHeadedCloseError extends Error {
+  readonly details: BrowserHeadedCloseFailureDetails;
+
+  constructor(readonly shutdown: BrowserShutdownResult) {
+    super(describeBrowserShutdownFailure(shutdown));
+    this.name = "BrowserHeadedCloseError";
+    this.details = browserHeadedCloseFailureDetails(shutdown);
+  }
+}
+
+function browserHeadedCloseFailureDetails(shutdown: BrowserShutdownResult): BrowserHeadedCloseFailureDetails {
+  return {
+    ...(shutdown.failureCode ? { failureCode: shutdown.failureCode } : {}),
+    ...(shutdown.outputSummary ? { outputSummary: shutdown.outputSummary } : {}),
+    ...(shutdown.closeFailureCode ? { closeFailureCode: shutdown.closeFailureCode } : {}),
+    ...(shutdown.closeOutputSummary ? { closeOutputSummary: shutdown.closeOutputSummary } : {}),
+    terminatedPids: shutdown.terminatedPids,
+    killedPids: shutdown.killedPids,
+    remainingPids: shutdown.remainingPids,
+    clearedRuntimeFiles: shutdown.clearedRuntimeFiles,
+  };
+}
+
+function describeBrowserShutdownFailure(shutdown: BrowserShutdownResult): string {
+  const details: string[] = [];
+  if (shutdown.remainingPids.length > 0) {
+    details.push(`remaining profile-bound browser process PIDs: ${shutdown.remainingPids.join(", ")}`);
+  }
+  if (!shutdown.closeOk) {
+    const code = shutdown.closeFailureCode ?? "unknown";
+    const output = shutdown.closeOutputSummary ? `: ${shutdown.closeOutputSummary}` : "";
+    details.push(`agent-browser close failed (${code})${output}`);
+  }
+  if (details.length === 0 && shutdown.outputSummary) details.push(shutdown.outputSummary);
+  const suffix = details.length > 0 ? ` ${details.join("; ")}.` : "";
+  return `Headed browser close did not leave the browser profile clean.${suffix}`;
 }
 
 function getMetadataString(span: TelemetrySpan, key: string): string | undefined {
@@ -280,9 +330,13 @@ export async function closeHeadedDiagnosticsBrowser(
   const browserOpId = randomUUID();
   const startedAt = Date.now();
   let success = false;
+  let shutdownResult: BrowserShutdownResult | undefined;
 
   try {
-    await shutdownBridgeBrowser(headedTarget, ctx.telemetryStore);
+    shutdownResult = await shutdownBridgeBrowser(headedTarget, ctx.telemetryStore);
+    if (!shutdownResult.ok) {
+      throw new BrowserHeadedCloseError(shutdownResult);
+    }
     success = true;
     return {
       ok: true,
@@ -297,6 +351,9 @@ export async function closeHeadedDiagnosticsBrowser(
       browserSession: headedTarget.sessionName,
       success,
       headed: true,
+      failureCode: shutdownResult?.failureCode,
+      closeFailureCode: shutdownResult?.closeFailureCode,
+      remainingPids: shutdownResult?.remainingPids,
     });
   }
 }

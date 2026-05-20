@@ -562,13 +562,111 @@ describe("agent-browser wrapper", () => {
     const telemetryStore = { recordSpan: vi.fn() };
     const mod = await import("../agent-browser.js");
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    await mod.shutdownBridgeBrowser(target, telemetryStore as any);
+    const result = await mod.shutdownBridgeBrowser(target, telemetryStore as any);
 
+    expect(result).toMatchObject({
+      ok: true,
+      closeOk: true,
+      terminatedPids: [4242],
+      killedPids: [],
+      remainingPids: [],
+      clearedRuntimeFiles: 5,
+    });
     expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
     expect(telemetryStore.recordSpan).toHaveBeenCalledWith(expect.objectContaining({
       name: "browser.lifecycle.shutdown",
       metadata: expect.objectContaining({
+        success: true,
         terminatedPids: [4242],
+        remainingPids: [],
+      }),
+    }));
+  });
+
+  it("returns shutdown failure details when agent-browser close fails", async () => {
+    setPlatform("linux");
+    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (file === "agent-browser") {
+        cb({ stderr: `timed out closing ${BROWSER_PROFILE}` });
+        return {} as any;
+      }
+      if (file === "ps") {
+        cb(null, { stdout: "", stderr: "" });
+        return {} as any;
+      }
+      throw new Error(`Unexpected execFile command: ${file}`);
+    });
+
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+    const result = await mod.shutdownBridgeBrowser(target, telemetryStore as any);
+
+    expect(result).toMatchObject({
+      ok: false,
+      closeOk: false,
+      failureCode: "launch.timeout",
+      closeFailureCode: "launch.timeout",
+      remainingPids: [],
+    });
+    expect(result.closeOutputSummary).toContain("<browser-profile>");
+    expect(result.closeOutputSummary).not.toContain(BROWSER_PROFILE);
+    expect(telemetryStore.recordSpan).toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.lifecycle.shutdown",
+      metadata: expect.objectContaining({
+        success: false,
+        closeOk: false,
+        failureCode: "launch.timeout",
+        closeFailureCode: "launch.timeout",
+        remainingPids: [],
+      }),
+    }));
+  });
+
+  it("returns shutdown failure details when profile-bound processes remain", async () => {
+    setPlatform("linux");
+    const normalizedProfile = normalizePath(BROWSER_PROFILE);
+    execFileMock.mockImplementation((file: string, _args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (file === "agent-browser") {
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      }
+      if (file === "ps") {
+        cb(null, {
+          stdout: `4242 chrome chrome --user-data-dir=${normalizedProfile}`,
+          stderr: "",
+        });
+        return {} as any;
+      }
+      throw new Error(`Unexpected execFile command: ${file}`);
+    });
+    killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+      if (pid !== 4242) throw Object.assign(new Error("unexpected pid"), { code: "ESRCH" });
+      if (signal === "SIGKILL") throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+      return true as never;
+    }) as any);
+
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
+    const result = await mod.shutdownBridgeBrowser(target, telemetryStore as any);
+
+    expect(result).toMatchObject({
+      ok: false,
+      closeOk: true,
+      failureCode: "profile_processes_remaining",
+      terminatedPids: [4242],
+      killedPids: [],
+      remainingPids: [4242],
+      clearedRuntimeFiles: 5,
+    });
+    expect(telemetryStore.recordSpan).toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.lifecycle.shutdown",
+      metadata: expect.objectContaining({
+        success: false,
+        closeOk: true,
+        failureCode: "profile_processes_remaining",
+        remainingPids: [4242],
       }),
     }));
   });
