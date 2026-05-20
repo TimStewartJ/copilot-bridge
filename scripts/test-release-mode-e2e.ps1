@@ -150,7 +150,7 @@ function Wait-Health($Port, [int]$TimeoutSeconds) {
   throw "Copilot Bridge did not become healthy at $healthUrl within $TimeoutSeconds seconds. Last error: $lastError"
 }
 
-function Wait-UpdateStaged($DataDir, [int]$TimeoutSeconds) {
+function Wait-UpdateStagedOrSucceeded($DataDir, [int]$TimeoutSeconds) {
   $statusPath = Join-Path $DataDir "update-status.json"
   $signalPath = Join-Path $DataDir "restart.signal"
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -162,6 +162,9 @@ function Wait-UpdateStaged($DataDir, [int]$TimeoutSeconds) {
       if ($status.phase -eq "staged" -and (Test-Path -LiteralPath $signalPath)) {
         return $status
       }
+      if ($status.phase -eq "succeeded") {
+        return $status
+      }
       if ($status.phase -eq "failed" -or $status.phase -eq "rollback_failed") {
         throw "Update failed before activation. Phase: $($status.phase). Message: $($status.message)"
       }
@@ -169,7 +172,7 @@ function Wait-UpdateStaged($DataDir, [int]$TimeoutSeconds) {
     Start-Sleep -Milliseconds 500
   } while ((Get-Date) -lt $deadline)
 
-  throw "Timed out waiting for update.ps1 to stage a release candidate. Last phase: $lastPhase"
+  throw "Timed out waiting for update.ps1 to stage or activate a release candidate. Last phase: $lastPhase"
 }
 
 function Wait-UpdateSucceeded($DataDir, $ExpectedCommit, [int]$TimeoutSeconds) {
@@ -403,7 +406,7 @@ try {
     throw "update.ps1 exited with $LASTEXITCODE."
   }
 
-  $stagedStatus = Wait-UpdateStaged $dataDir $TimeoutSeconds
+  $stagedStatus = Wait-UpdateStagedOrSucceeded $dataDir $TimeoutSeconds
   $activation = Wait-UpdateSucceeded $dataDir $sourceCommit $TimeoutSeconds
   Wait-Health $port $TimeoutSeconds | Out-Null
 
