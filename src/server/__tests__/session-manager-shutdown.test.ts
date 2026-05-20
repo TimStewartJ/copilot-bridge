@@ -5,6 +5,7 @@ import { clearRestartPending, refreshRestartState, SessionManager, triggerRestar
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createRestartSuspendedSessionStore } from "../restart-suspended-session-store.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 import { makeTestRuntimePaths, setupTestDb, createTestBus, testPath } from "./helpers.js";
 
 const { shutdownBridgeBrowserMock } = vi.hoisted(() => ({
@@ -591,78 +592,110 @@ describe("SessionManager graceful shutdown", () => {
     }
   });
 
-  it("releases restart recovery when a persisted shutdown follows suspension", async () => {
-    const db = setupTestDb();
-    const store = createRestartSuspendedSessionStore(db);
-    store.upsertSuspending({
-      sessionId: "session-1",
-      runKind: "message",
-      pendingPrompt: "hello",
-      promptAccepted: true,
-      suspendedAt: "2026-05-19T17:00:02.000Z",
-      lastEventAt: "2026-05-19T17:00:01.000Z",
-    });
-    store.markSuspended("session-1", "2026-05-19T17:00:02.000Z");
+  it("does not treat persisted shutdown as restart recovery completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const db = setupTestDb();
+      const store = createRestartSuspendedSessionStore(db);
+      const telemetryStore = createTelemetryStore(db);
+      store.upsertSuspending({
+        sessionId: "session-1",
+        runKind: "message",
+        pendingPrompt: "hello",
+        promptAccepted: true,
+        suspendedAt: "2026-05-19T17:00:02.000Z",
+        lastEventAt: "2026-05-19T17:00:01.000Z",
+      });
+      store.markSuspended("session-1", "2026-05-19T17:00:02.000Z");
 
-    const runtimePaths = makeTestRuntimePaths("restart-resume-persisted-shutdown");
-    const sessionStateDir = join(runtimePaths.copilotHome!, "session-state", "session-1");
-    mkdirSync(sessionStateDir, { recursive: true });
-    writeFileSync(
-      join(sessionStateDir, "events.jsonl"),
-      [
-        {
-          type: "user.message",
-          data: { content: "hello" },
-          timestamp: "2026-05-19T17:00:00.000Z",
-        },
-        {
-          type: "session.shutdown",
-          data: {},
-          timestamp: "2026-05-19T17:00:03.000Z",
-        },
-      ].map((event) => JSON.stringify(event)).join("\n") + "\n",
-      "utf8",
-    );
+      const runtimePaths = makeTestRuntimePaths("restart-resume-persisted-shutdown");
+      const sessionStateDir = join(runtimePaths.copilotHome!, "session-state", "session-1");
+      mkdirSync(sessionStateDir, { recursive: true });
+      writeFileSync(
+        join(sessionStateDir, "events.jsonl"),
+        [
+          {
+            type: "user.message",
+            data: { content: "hello" },
+            timestamp: "2026-05-19T17:00:00.000Z",
+          },
+          {
+            type: "assistant.turn_start",
+            data: {},
+            timestamp: "2026-05-19T17:00:01.000Z",
+          },
+          {
+            type: "session.shutdown",
+            data: {},
+            timestamp: "2026-05-19T17:00:03.000Z",
+          },
+        ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+        "utf8",
+      );
 
-    const recoveredSession = {
-      on: vi.fn(() => vi.fn()),
-      disconnect: vi.fn().mockResolvedValue(undefined),
-    };
-    const client = {
-      start: vi.fn().mockResolvedValue(undefined),
-      resumeSession: vi.fn(async (_sessionId: string, config: any) => {
-        config.onEvent?.({
-          type: "session.resume",
-          data: {},
-          timestamp: "2026-05-19T17:00:04.000Z",
-        });
-        return recoveredSession;
-      }),
-    };
-    const manager = new SessionManager({
-      tools: [],
-      globalBus: createTestBus(),
-      eventBusRegistry: createEventBusRegistry(),
-      sessionTitles: createSessionTitlesStore(db),
-      taskStore: {
-        findTaskBySessionId: vi.fn().mockReturnValue(null),
-      } as any,
-      settingsStore: {
-        getMcpServers: () => ({}),
-        getSettings: () => ({ mcpServers: {} }),
-      } as any,
-      config: { sessionMcpServers: {} },
-      runtimePaths,
-      copilotHome: runtimePaths.copilotHome,
-      restartSuspendedSessionStore: store,
-      createCopilotClient: () => client as any,
-    });
+      const recoveredSession = {
+        on: vi.fn(() => vi.fn()),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+      };
+      const client = {
+        start: vi.fn().mockResolvedValue(undefined),
+        resumeSession: vi.fn(async (_sessionId: string, config: any) => {
+          queueMicrotask(() => config.onEvent?.({
+            type: "session.resume",
+            data: {},
+            timestamp: "2026-05-19T17:00:04.000Z",
+          }));
+          return recoveredSession;
+        }),
+      };
+      const manager = new SessionManager({
+        tools: [],
+        globalBus: createTestBus(),
+        eventBusRegistry: createEventBusRegistry(),
+        sessionTitles: createSessionTitlesStore(db),
+        taskStore: {
+          findTaskBySessionId: vi.fn().mockReturnValue(null),
+        } as any,
+        settingsStore: {
+          getMcpServers: () => ({}),
+          getSettings: () => ({ mcpServers: {} }),
+        } as any,
+        config: { sessionMcpServers: {} },
+        runtimePaths,
+        copilotHome: runtimePaths.copilotHome,
+        telemetryStore,
+        restartSuspendedSessionStore: store,
+        createCopilotClient: () => client as any,
+      });
 
-    await manager.initialize();
-    await flushMicrotasks();
+      await manager.initialize();
+      await flushMicrotasks();
 
-    expect(store.get("session-1")).toBeUndefined();
-    expect(manager.getActiveSessions()).toEqual([]);
-    expect(recoveredSession.disconnect).toHaveBeenCalledTimes(1);
+      expect(store.get("session-1")).toMatchObject({ status: "resuming" });
+      expect(manager.getActiveSessions()).toEqual(["session-1"]);
+      expect(recoveredSession.disconnect).not.toHaveBeenCalled();
+      expect(telemetryStore.querySpans({
+        name: "session.restartResume.persisted_terminal",
+        sessionId: "session-1",
+      })).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await flushMicrotasks();
+
+      expect(store.get("session-1")).toBeUndefined();
+      expect(manager.getActiveSessions()).toEqual([]);
+      expect(recoveredSession.disconnect).toHaveBeenCalledTimes(1);
+      const [noEventsSpan] = telemetryStore.querySpans({
+        name: "session.restartResume.no_events",
+        sessionId: "session-1",
+      });
+      expect(noEventsSpan?.metadata).toMatchObject({
+        noEventTimeoutMs: 30_000,
+        lastLiveEventType: "session.resume",
+        latestPersistedTerminalEventType: "session.shutdown",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
