@@ -1,5 +1,5 @@
 diff --git a/node_modules/@github/copilot/definitions/code-review.agent.yaml b/node_modules/@github/copilot/definitions/code-review.agent.yaml
-index d66438c..14685b1 100644
+index 864aaa3..cd30473 100644
 --- a/node_modules/@github/copilot/definitions/code-review.agent.yaml
 +++ b/node_modules/@github/copilot/definitions/code-review.agent.yaml
 @@ -4,7 +4,7 @@ description: >
