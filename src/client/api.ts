@@ -29,11 +29,12 @@ export interface SessionWorkspaceSummary {
   taskCwd?: string;
   sessionOverride?: SessionWorkspaceOverride;
   overridesTaskWorkspace: boolean;
+  warnings?: SessionWorkspaceWarning[];
 }
 
 export type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "none";
 export type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
-export type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace";
+export type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace" | "cleared_pinned_workspace";
 
 export interface SessionWorkspaceWarning {
   code: SessionWorkspaceWarningCode;

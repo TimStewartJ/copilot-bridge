@@ -245,7 +245,8 @@ describe("session workspace routes", () => {
     const task = ctx.taskStore.createTask("Workspace task");
     ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
     ctx.taskStore.linkSession(task.id, "session-1");
-    ctx.sessionWorkspaceStore.setWorkspace("session-1", join(copilotHome, "missing-workspace"));
+    const missingWorkspace = join(copilotHome, "missing-workspace");
+    ctx.sessionWorkspaceStore.setWorkspace("session-1", missingWorkspace);
 
     const res = await request(app).get(`/api/sessions/session-1/workspace?taskId=${task.id}`);
 
@@ -256,7 +257,12 @@ describe("session workspace routes", () => {
       effectiveCwd: taskWorkspace,
       source: "task",
       pathState: "available",
-      warnings: [],
+      warnings: [
+        expect.objectContaining({
+          code: "cleared_pinned_workspace",
+          message: expect.stringContaining(missingWorkspace),
+        }),
+      ],
       gitStatus: expect.objectContaining({
         status: "ok",
         cwd: taskWorkspace,
