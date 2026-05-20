@@ -958,10 +958,9 @@ async function forceKillServerAndWait(reason: string, timeoutMs = FORCED_EXIT_WA
 }
 
 async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
-  const quiesceUrl = bridgeLocalUrl("/api/restart/quiesce");
-  const busyUrl = bridgeLocalUrl("/api/busy?ignoreRestartPreservable=1");
+  const busyUrl = bridgeLocalUrl("/api/busy");
   return waitForIdleSessionsImpl({
-    fetchBusy: () => fetchRestartBusyState({ fetch, quiesceUrl, busyUrl, log }),
+    fetchBusy: () => fetchRestartBusyState({ fetch, busyUrl, log }),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log,
     isServerAlive: () => serverProcess !== null,
@@ -973,7 +972,7 @@ async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise
 }
 
 async function gracefulStopServer(): Promise<boolean> {
-  const shutdownUrl = bridgeLocalUrl("/api/shutdown?preserveActiveRuns=1");
+  const shutdownUrl = bridgeLocalUrl("/api/shutdown");
   try {
     log("Requesting graceful shutdown...");
     const controller = new AbortController();

@@ -106,10 +106,6 @@ import {
 } from "./session-run-state-controller.js";
 import { SessionRunner, type McpServerStatus, type StartWorkOptions } from "./session-runner.js";
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
-import type {
-  RestartSuspendedSessionRecord,
-  RestartSuspendedSessionStore,
-} from "./restart-suspended-session-store.js";
 import {
   deriveModelStateFromEventsFile,
   type DerivedModelState,
@@ -164,24 +160,6 @@ export {
 
 type CopilotClientFactory = (options: CopilotClientOptions | undefined) => CopilotClient;
 type CopilotModelList = Awaited<ReturnType<CopilotClient["listModels"]>>;
-interface RestartPreservationCandidate {
-  runRecord: SessionRunRecord;
-  runController: SessionRunController;
-  session: any;
-  pendingPrompt?: string;
-}
-
-type RestartPreservationMode = "quiesce" | "shutdown";
-
-interface GracefulShutdownOptions {
-  preserveActiveRuns?: boolean;
-}
-
-export interface RestartQuiesceResult {
-  suspendedSessionIds: string[];
-  blockingSessions: SessionActivity[];
-}
-
 export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
@@ -276,7 +254,6 @@ export interface SessionManagerDeps {
   browserSessionStore?: BrowserSessionStore;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   telemetryStore?: TelemetryStore;
-  restartSuspendedSessionStore?: RestartSuspendedSessionStore;
   /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
   createCopilotClient?: CopilotClientFactory;
@@ -335,7 +312,6 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     }),
     telemetryStore: ctx.telemetryStore,
-    restartSuspendedSessionStore: ctx.restartSuspendedSessionStore,
     config: opts.config,
     clientEnv,
     createCopilotClient: opts.createCopilotClient,
@@ -357,7 +333,6 @@ export class SessionManager {
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private pendingSessionEvictions = new Set<string>();
-  private restartSuspendAttempts = new Map<string, Promise<boolean>>();
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
   private readonly runStateController: SessionRunStateController;
@@ -459,7 +434,6 @@ export class SessionManager {
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
-      maybeSuspendForPendingRestart: (sessionId) => this.maybeSuspendForPendingRestart(sessionId),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
       invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
@@ -754,7 +728,6 @@ export class SessionManager {
     this.client = this.createCopilotClient();
     await this.client.start();
     console.log("[sdk] Copilot SDK client ready");
-    this.startRestartSuspendedSessionRecovery();
     this.sweepLeakedDisposableTitleSessions();
     void this.migrateLegacySessionTitles().catch((error) => {
       console.warn(`[sdk] Legacy session title migration failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1838,215 +1811,13 @@ export class SessionManager {
     return this.runStateController.getSessionActivity();
   }
 
-  getRestartBlockingSessionActivity(): SessionActivity[] {
-    return this.getSessionActivity().filter((activity) =>
-      !this.getRestartPreservationCandidate(activity.id, "shutdown")
-    );
-  }
-
-  private getRestartQuiesceBlockingSessionActivity(): SessionActivity[] {
-    return this.getSessionActivity().filter((activity) =>
-      !this.getRestartPreservationCandidate(activity.id, "quiesce")
-    );
-  }
-
-  async quiesceRestartPreservableSessions(): Promise<RestartQuiesceResult> {
-    refreshRestartStateSync();
-    if (!isRestartPending()) {
-      return {
-        suspendedSessionIds: [],
-        blockingSessions: this.getSessionActivity(),
-      };
-    }
-
-    const activeSessionIds = this.getActiveSessions();
-    const settled = await Promise.allSettled(
-      activeSessionIds.map(async (sessionId) => ({
-        sessionId,
-        suspended: await this.trySuspendForPendingRestart(sessionId),
-      })),
-    );
-    const suspendedSessionIds = settled.flatMap((result) =>
-      result.status === "fulfilled" && result.value.suspended ? [result.value.sessionId] : []
-    );
-    return {
-      suspendedSessionIds,
-      blockingSessions: this.getRestartQuiesceBlockingSessionActivity(),
-    };
-  }
-
-  async trySuspendForPendingRestart(sessionId: string): Promise<boolean> {
-    refreshRestartStateSync();
-    if (!isRestartPending()) return false;
-
-    const existing = this.restartSuspendAttempts.get(sessionId);
-    if (existing) return existing;
-
-    let attempt!: Promise<boolean>;
-    attempt = this.preserveActiveSessionForRestart(sessionId, "quiesce")
-      .catch((error) => {
-        console.error(`[sdk] [${sessionId.slice(0, 8)}] Restart quiesce suspend failed unexpectedly:`, error);
-        return false;
-      })
-      .finally(() => {
-        if (this.restartSuspendAttempts.get(sessionId) === attempt) {
-          this.restartSuspendAttempts.delete(sessionId);
-        }
-      });
-    this.restartSuspendAttempts.set(sessionId, attempt);
-    return attempt;
-  }
-
-  private maybeSuspendForPendingRestart(sessionId: string): void {
-    if (!isRestartPending()) return;
-    void this.trySuspendForPendingRestart(sessionId);
-  }
-
-  private getRestartPreservationCandidate(
-    sessionId: string,
-    mode: RestartPreservationMode,
-  ): RestartPreservationCandidate | undefined {
-    const runRecord = this.runStateController.getRunRecords().get(sessionId);
-    const isPreservableRunKind = runRecord?.runKind === "message" || runRecord?.runKind === "restart-resume";
-    if (!runRecord || !isPreservableRunKind || runRecord.preserveAcrossRestart !== true) {
-      return undefined;
-    }
-    if (runRecord.promptAccepted !== true) return undefined;
-    if (runRecord.restartSuspendReady !== true || runRecord.restartSuspending === true) return undefined;
-
-    const runController = this.activeRunControllers.get(sessionId);
-    if (!runController || runController.isCompleted()) return undefined;
-
-    const session = this.sessionObjects.get(sessionId);
-    if (typeof session?.rpc?.suspend !== "function") return undefined;
-
-    const bus = this.deps.eventBusRegistry.getBus(sessionId);
-    const snapshot = bus?.getSnapshot();
-    if (!snapshot) return undefined;
-    if ((snapshot.activeTools?.length ?? 0) > 0) return undefined;
-    if (this.userInputController.getPendingCount(sessionId) > 0) return undefined;
-    if ((snapshot.pendingUserInputs?.length ?? 0) > 0) return undefined;
-
-    return {
-      runRecord,
-      runController,
-      session,
-      pendingPrompt: snapshot.pendingPrompt ?? runRecord.pendingPrompt,
-    };
-  }
-
-  private async preserveActiveSessionForRestart(
-    sessionId: string,
-    mode: RestartPreservationMode,
-  ): Promise<boolean> {
-    const store = this.deps.restartSuspendedSessionStore;
-    if (!store) return false;
-
-    let candidate = this.getRestartPreservationCandidate(sessionId, mode);
-    if (!candidate) return false;
-
-    const latestCandidate = this.getRestartPreservationCandidate(sessionId, mode);
-    if (!latestCandidate) return false;
-    candidate = latestCandidate;
-
-    const sid = sessionId.slice(0, 8);
-    const suspendedAt = new Date().toISOString();
-    const lastEventAt = new Date(candidate.runRecord.lastEventAt).toISOString();
-    try {
-      store.upsertSuspending({
-        sessionId,
-        runKind: "message",
-        pendingPrompt: candidate.pendingPrompt,
-        promptAccepted: true,
-        suspendedAt,
-        lastEventAt,
-      });
-      this.runStateController.setSessionRunMetadata(sessionId, { restartSuspending: true });
-      console.log(`[sdk] [${sid}] Suspending active session for restart...`);
-      await candidate.session.rpc.suspend();
-      store.markSuspended(sessionId, suspendedAt);
-      candidate.runController.completePreservedForRestart();
-      console.log(`[sdk] [${sid}] Suspended for restart`);
-      return true;
-    } catch (error) {
-      this.runStateController.setSessionRunMetadata(sessionId, {
-        restartSuspendReady: false,
-        restartSuspending: false,
-      });
-      const message = error instanceof Error ? error.message : String(error);
-      store.markFailed(sessionId, message);
-      console.error(`[sdk] [${sid}] Failed to suspend for restart:`, error);
-      return false;
-    }
-  }
-
-  private startRestartSuspendedSessionRecovery(): void {
-    const store = this.deps.restartSuspendedSessionStore;
-    if (!store) return;
-
-    const records = store.listRecoverable();
-    if (records.length === 0) return;
-    console.log(`[sdk] Recovering ${records.length} restart-suspended session(s)...`);
-
-    for (const record of records) {
-      this.startRestartSuspendedSessionRecordRecovery(record);
-    }
-  }
-
-  private startRestartSuspendedSessionRecordRecovery(record: RestartSuspendedSessionRecord): void {
-    const store = this.deps.restartSuspendedSessionStore;
-    if (!store) return;
-
-    const sid = record.sessionId.slice(0, 8);
-    if (record.runKind !== "message" || !record.promptAccepted) {
-      store.markFailed(record.sessionId, "Restart recovery only supports accepted message runs");
-      return;
-    }
-
-    try {
-      store.markResuming(record.sessionId);
-      const runController = this.sessionRunner.resumeRestartSuspendedSession(record);
-      void runController.completion.finally(() => {
-        if (store.get(record.sessionId)?.status === "resuming") {
-          store.delete(record.sessionId);
-        }
-      });
-      console.log(`[sdk] [${sid}] Restart recovery started`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      store.markFailed(record.sessionId, message);
-      const bus = this.deps.eventBusRegistry.getOrCreateBus(record.sessionId);
-      bus.emit({ type: "error", message: `Restart recovery failed: ${message}` });
-      console.error(`[sdk] [${sid}] Restart recovery failed:`, error);
-    }
-  }
-
-  async gracefulShutdown(options: GracefulShutdownOptions = {}): Promise<void> {
+  async gracefulShutdown(): Promise<void> {
     const active = this.getActiveSessions();
     if (active.length > 0) {
-      const preserved = new Set<string>();
-      if (options.preserveActiveRuns) {
-        console.log(`[sdk] Graceful shutdown: preserving eligible active session(s) before restart...`);
-        const results = await Promise.allSettled(
-          active.map(async (sessionId) => {
-            if (await this.preserveActiveSessionForRestart(sessionId, "shutdown")) {
-              preserved.add(sessionId);
-            }
-          }),
-        );
-        const rejectedCount = results.filter((result) => result.status === "rejected").length;
-        if (rejectedCount > 0) {
-          console.warn(`[sdk] ${rejectedCount} restart preservation attempt(s) failed unexpectedly`);
-        }
-      }
-
-      const activeToAbort = active.filter((sessionId) => !preserved.has(sessionId));
-      if (activeToAbort.length > 0) {
-        console.log(`[sdk] Graceful shutdown: aborting ${activeToAbort.length} active session(s)...`);
-      }
+      console.log(`[sdk] Graceful shutdown: aborting ${active.length} active session(s)...`);
       // Abort all active sessions in parallel
       await Promise.allSettled(
-        activeToAbort.map(async (sessionId) => {
+        active.map(async (sessionId) => {
           const sid = sessionId.slice(0, 8);
           try {
             if (await this.abortSession(sessionId)) {

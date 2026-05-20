@@ -28,7 +28,6 @@ import {
   type SessionRunController,
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
-import type { RestartSuspendedSessionRecord } from "./restart-suspended-session-store.js";
 import type { SessionUserInputController } from "./session-user-input-controller.js";
 import { getToolExecutionDisplayText } from "./tool-results.js";
 import type {
@@ -45,7 +44,6 @@ const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run indepe
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
 const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
-const RESTART_RESUME_NO_EVENT_TIMEOUT_MS = 30_000;
 const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
   "assistant.turn_end",
   "session.idle",
@@ -82,7 +80,6 @@ const PERSISTED_RUN_RELEVANT_EVENT_TYPES = new Set([
   "abort",
   "session.shutdown",
 ]);
-const RESTART_RESUME_PROGRESS_EVENT_TYPES = PERSISTED_RUN_RELEVANT_EVENT_TYPES;
 const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
   "user.message",
   "assistant.turn_start",
@@ -202,7 +199,6 @@ export interface SessionRunnerDeps {
     reason: UserInputCancelReason,
     message?: string,
   ): void;
-  maybeSuspendForPendingRestart(sessionId: string): void;
   recordSessionAttention(sessionId: string, at?: string): void;
   invalidateSessionListCache(reason?: string): void;
   maybeAutoNameSession(
@@ -286,8 +282,6 @@ export class SessionRunner {
         runKind: "message",
         pendingPrompt: prompt,
         promptAccepted: false,
-        preserveAcrossRestart: true,
-        restartSuspendReady: false,
       },
     );
   }
@@ -388,30 +382,6 @@ export class SessionRunner {
         runKind: "fleet",
         pendingPrompt: fleetPrompt,
         promptAccepted: false,
-        preserveAcrossRestart: false,
-        restartSuspendReady: false,
-      },
-    );
-  }
-
-  resumeRestartSuspendedSession(record: RestartSuspendedSessionRecord): SessionRunController {
-    if (!this.client) throw new Error("SessionManager not initialized");
-    if (this.deps.isSessionBusy(record.sessionId)) {
-      throw new Error("Session is busy processing another request");
-    }
-
-    const bus = this.deps.eventBusRegistry.getOrCreateBus(record.sessionId);
-    bus.reset();
-    return this.startBackgroundRun(
-      record.sessionId,
-      bus,
-      (runController) => this.doRestartResume(record, bus, runController),
-      {
-        runKind: "restart-resume",
-        pendingPrompt: record.pendingPrompt,
-        promptAccepted: record.promptAccepted,
-        preserveAcrossRestart: true,
-        restartSuspendReady: false,
       },
     );
   }
@@ -424,8 +394,6 @@ export class SessionRunner {
       runKind?: SessionRunKind;
       pendingPrompt?: string;
       promptAccepted?: boolean;
-      preserveAcrossRestart?: boolean;
-      restartSuspendReady?: boolean;
     },
   ): SessionRunController {
     const now = Date.now();
@@ -450,7 +418,6 @@ export class SessionRunner {
         this.deps.activeRunControllers.delete(sessionId);
       }
       this.setSessionRunState(sessionId, "idle", {
-        emitIdle: !runController.wasPreservedForRestart(),
       });
       this.deps.flushPendingSessionEviction(sessionId);
     });
@@ -504,25 +471,6 @@ export class SessionRunner {
     });
   }
 
-  private async doRestartResume(
-    record: RestartSuspendedSessionRecord,
-    bus: ReturnType<typeof getOrCreateBus>,
-    runController: SessionRunController,
-  ): Promise<void> {
-    const sid = record.sessionId.slice(0, 8);
-    const suspendedAtMs = Date.parse(record.suspendedAt);
-    await this.runSessionOperation(record.sessionId, bus, runController, {
-      resumeContext: "restart-resume",
-      idleSpanName: "session.restartResumeToIdle",
-      startLog: `[sdk] [${sid}] Resuming suspended session after restart...`,
-      resumeOnly: true,
-      continuePendingWork: true,
-      useResumeEventHandler: true,
-      restartResumeNoEventTimeoutMs: RESTART_RESUME_NO_EVENT_TIMEOUT_MS,
-      restartResumePersistedTerminalAfterMs: Number.isFinite(suspendedAtMs) ? suspendedAtMs : undefined,
-    });
-  }
-
   private async runSessionOperation(
     sessionId: string,
     bus: ReturnType<typeof getOrCreateBus>,
@@ -532,11 +480,6 @@ export class SessionRunner {
       idleSpanName: string;
       startLog: string;
       execute?: (session: any) => Promise<void>;
-      resumeOnly?: boolean;
-      continuePendingWork?: boolean;
-      useResumeEventHandler?: boolean;
-      restartResumeNoEventTimeoutMs?: number;
-      restartResumePersistedTerminalAfterMs?: number;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       historyTruncation?: QuietIntervalDeferTailTruncationRequest;
@@ -545,26 +488,12 @@ export class SessionRunner {
     const sid = sessionId.slice(0, 8);
 
     const linkedTask = this.deps.findLinkedTask(sessionId);
-    const resumeEventBuffer: any[] = [];
-    let resumeEventSink: ((event: any) => void) | undefined;
     const resumeConfig = this.deps.buildSessionConfig({
       sessionId,
       task: linkedTask,
       groupNotes: this.deps.lookupGroupNotes(linkedTask?.groupId),
       forResume: true,
     });
-    if (opts.continuePendingWork !== undefined) {
-      resumeConfig.continuePendingWork = opts.continuePendingWork;
-    }
-    if (opts.useResumeEventHandler) {
-      resumeConfig.onEvent = (event: any) => {
-        if (resumeEventSink) {
-          resumeEventSink(event);
-        } else {
-          resumeEventBuffer.push(event);
-        }
-      };
-    }
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -673,7 +602,6 @@ export class SessionRunner {
     let lastLiveEventType: string | undefined;
     let lastLiveEventAt: number | undefined;
     let lastLiveEventOrigin: SessionEventOrigin | undefined;
-    let restartResumeProgressEventAt: number | undefined;
     let liveTurnEndCount = 0;
     let lastLiveTurnEndAt: number | undefined;
     let eventsAfterLastLiveTurnEnd = 0;
@@ -681,7 +609,6 @@ export class SessionRunner {
     let staleCacheRetryCount = 0;
     let recoveryAttemptIndex = 0;
     let acceptingSessionEvents = false;
-    let currentTurnSawToolExecution = false;
     const resetRunTelemetryState = () => {
       lastDiskMtime = undefined;
       lastLiveEventType = undefined;
@@ -691,7 +618,6 @@ export class SessionRunner {
       lastLiveTurnEndAt = undefined;
       eventsAfterLastLiveTurnEnd = 0;
       activeEventsAfterLastLiveTurnEnd = 0;
-      currentTurnSawToolExecution = false;
     };
     const beginSend = () => {
       sendStart = Date.now();
@@ -722,15 +648,6 @@ export class SessionRunner {
       if (!shouldRecordCompletionAttention(reason)) return;
       this.recordSessionAttention(sessionId, getEventTimestampIso(event));
     };
-    const setRestartSuspendReady = (ready: boolean) => {
-      this.deps.runStateController.setSessionRunMetadata(sessionId, { restartSuspendReady: ready });
-    };
-    const isRestartSuspending = () =>
-      this.deps.runStateController.getRunRecords().get(sessionId)?.restartSuspending === true;
-    const maybeSuspendForPendingRestart = () => {
-      this.deps.maybeSuspendForPendingRestart(sessionId);
-    };
-
     const getAgeMs = (now: number, at: number | undefined): number | undefined =>
       at === undefined ? undefined : Math.max(0, now - at);
     const buildRunTelemetryMetadata = (now = Date.now()): Record<string, unknown> => ({
@@ -870,13 +787,6 @@ export class SessionRunner {
       if (context.origin === "live" || context.origin === "live_recovered") {
         noteLiveEvent(event, eventAt, context.origin);
       }
-      if (
-        opts.restartResumeNoEventTimeoutMs !== undefined
-        && typeof event.type === "string"
-        && RESTART_RESUME_PROGRESS_EVENT_TYPES.has(event.type)
-      ) {
-        restartResumeProgressEventAt = eventAt;
-      }
       const isTerminalEvent = LIVE_RUN_TERMINAL_EVENT_TYPES.has(event.type);
       if (!isTerminalEvent) {
         lastEventTime = eventAt;
@@ -888,7 +798,6 @@ export class SessionRunner {
       }
       switch (event.type) {
         case "user.message":
-          setRestartSuspendReady(false);
           bus.clearPendingPrompt(
             typeof data?.content === "string"
               ? data.content
@@ -902,8 +811,6 @@ export class SessionRunner {
           }
           break;
         case "assistant.turn_start":
-          currentTurnSawToolExecution = false;
-          setRestartSuspendReady(false);
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           bus.emit({ type: "thinking" });
           break;
@@ -919,7 +826,6 @@ export class SessionRunner {
           this.deps.globalBus.emit({ type: "session:intent", sessionId, intent: data?.intent ?? "" });
           break;
         case "assistant.message":
-          setRestartSuspendReady(false);
           if (data?.parentToolCallId && data?.content) {
             subAgentResponseMap.set(data.parentToolCallId, data.content);
             break;
@@ -933,8 +839,6 @@ export class SessionRunner {
           }
           break;
         case "tool.execution_start": {
-          currentTurnSawToolExecution = true;
-          setRestartSuspendReady(false);
           const toolName = data?.toolName ?? data?.name ?? "unknown";
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);
@@ -981,7 +885,6 @@ export class SessionRunner {
           });
           break;
         case "tool.execution_complete": {
-          currentTurnSawToolExecution = true;
           if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const ok = data?.success !== false;
@@ -1008,11 +911,9 @@ export class SessionRunner {
             isSubAgent: isAgent || undefined,
             timestamp: event.timestamp,
           });
-          setRestartSuspendReady(false);
           break;
         }
         case "subagent.started": {
-          currentTurnSawToolExecution = true;
           const displayName = `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`;
           console.log(`[sdk] [${sid}] ${displayName}`);
           if (data?.toolCallId) subAgentMap.set(data.toolCallId, displayName);
@@ -1026,20 +927,8 @@ export class SessionRunner {
         }
         case "subagent.completed":
         case "subagent.failed":
-          currentTurnSawToolExecution = true;
           break;
         case "assistant.turn_end": {
-          if (
-            currentTurnSawToolExecution
-            && bus.getSnapshot().activeTools.length === 0
-            && this.deps.userInputController.getPendingCount(sessionId) === 0
-          ) {
-            setRestartSuspendReady(true);
-            maybeSuspendForPendingRestart();
-          } else {
-            setRestartSuspendReady(false);
-          }
-          currentTurnSawToolExecution = false;
           break;
         }
         case "session.error":
@@ -1064,13 +953,6 @@ export class SessionRunner {
         }
         case "session.shutdown": {
           const shutdownType = getSessionShutdownType(data);
-          if (isRestartSuspending() && shutdownType !== "error") {
-            console.warn(`[sdk] [${sid}] Ignoring routine session shutdown during restart suspend`);
-            recordRunSpan("session.shutdown.ignored_restart_suspending", Date.now() - sendStart, {
-              shutdownType,
-            });
-            break;
-          }
           if (shutdownType === "error") {
             const message = data?.message ?? data?.reason ?? "session shutdown";
             console.error(`[sdk] [${sid}] ❌ Shutdown(error): ${message}`);
@@ -1098,20 +980,10 @@ export class SessionRunner {
         case "session.idle": {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const content = lastAssistantContent ?? "(no response)";
-          if (isRestartSuspending()) {
-            console.warn(`[sdk] [${sid}] Ignoring session idle during restart suspend (${elapsed}s)`);
-            recordRunSpan("session.idle.ignored_restart_suspending", Date.now() - sendStart, {
-              idleEventOrigin: context.origin,
-              finalContentLength: content.length,
-              assistantContentKnown: lastAssistantContent !== undefined,
-            });
-            break;
-          }
           if (
             (context.origin === "live" || context.origin === "live_recovered")
             && hasActiveFollowupAfterTurnEnd()
           ) {
-            setRestartSuspendReady(false);
             console.warn(
               `[sdk] [${sid}] Ignoring session idle with active follow-up after turn end (${elapsed}s)`,
             );
@@ -1171,14 +1043,7 @@ export class SessionRunner {
     };
 
     const subscribeToSession = (activeSession: typeof session) => {
-      if (!opts.resumeOnly) acceptingSessionEvents = false;
-      if (opts.useResumeEventHandler) {
-        resumeEventSink = (event: any) => handleEvent(event, { origin: "live" });
-        return () => {
-          resumeEventSink = undefined;
-          resumeEventBuffer.length = 0;
-        };
-      }
+      acceptingSessionEvents = false;
       return activeSession.on((event: any) => handleEvent(event, { origin: "live" }));
     };
 
@@ -1242,7 +1107,7 @@ export class SessionRunner {
         const eventType = event?.type;
         if (typeof eventType !== "string" || !PERSISTED_RUN_RELEVANT_EVENT_TYPES.has(eventType)) continue;
         const eventTime = getEventTimestampMs(event);
-        const minimumEventTime = opts.restartResumePersistedTerminalAfterMs ?? sendStart;
+        const minimumEventTime = sendStart;
         if (eventTime === undefined || eventTime < minimumEventTime) continue;
 
         latestEventType = eventType;
@@ -1302,7 +1167,7 @@ export class SessionRunner {
 
         const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
         const eventTime = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
-        const minimumEventTime = opts.restartResumePersistedTerminalAfterMs ?? sendStart;
+        const minimumEventTime = sendStart;
         if (!Number.isFinite(eventTime) || eventTime < minimumEventTime) continue;
 
         const data = event?.data;
@@ -1373,14 +1238,7 @@ export class SessionRunner {
       return recoveredSession;
     };
 
-    const resolveRestartResumePersistedTerminalEvent = (reason: string): boolean => {
-      const persistedTerminal = readPersistedTerminalEvent({ treatSessionShutdownAsTerminal: false });
-      return resolvePersistedTerminalEvent(persistedTerminal, reason);
-    };
-    const readStalledRecoveryPersistedTerminalEvent = () =>
-      opts.restartResumeNoEventTimeoutMs === undefined
-        ? readPersistedTerminalEvent()
-        : readPersistedTerminalEvent({ treatSessionShutdownAsTerminal: false });
+    const readStalledRecoveryPersistedTerminalEvent = () => readPersistedTerminalEvent();
 
     const attemptStalledRecovery = async () => {
       if (recoveryInProgress) return;
@@ -1500,7 +1358,6 @@ export class SessionRunner {
     const WATCHDOG_INTERVAL = 60_000;
     const WATCHDOG_TIMEOUT = 300_000;
     const RECOVERY_INTERVAL = 300_000;
-    let restartResumeNoEventTimer: ReturnType<typeof setTimeout> | undefined;
     const watchdog = setInterval(() => {
       const now = Date.now();
 
@@ -1551,42 +1408,16 @@ export class SessionRunner {
 
       try {
         if (runController.isCompleted()) return;
-        if (opts.resumeOnly) {
-          beginSend();
-          if (runController.isCompleted()) return;
-          unsub = subscribeToSession(session);
-          for (const event of resumeEventBuffer.splice(0)) {
-            handleEvent(event, { origin: "live" });
-            if (runController.isCompleted()) break;
-          }
-          runController.markPromptAccepted();
-          if (opts.restartResumeNoEventTimeoutMs !== undefined && !runController.isCompleted()) {
-            if (resolveRestartResumePersistedTerminalEvent("after resume subscribe")) return;
-            restartResumeNoEventTimer = setTimeout(() => {
-              if (runController.isCompleted() || restartResumeProgressEventAt !== undefined) return;
-              if (resolveRestartResumePersistedTerminalEvent("after no progress")) return;
-              const now = Date.now();
-              console.warn(`[sdk] [${sid}] Restart recovery produced no progress events after ${opts.restartResumeNoEventTimeoutMs}ms — releasing run state`);
-              recordRunSpan("session.restartResume.no_events", now - sendStart, {
-                noEventTimeoutMs: opts.restartResumeNoEventTimeoutMs,
-                lastLiveEventType,
-                ...readLatestPersistedRunEventInfo(now),
-              }, now);
-              runController.completePreservedForRestart();
-            }, opts.restartResumeNoEventTimeoutMs);
-          }
-        } else {
-          if (!opts.execute) throw new Error("Session run is missing an execute step");
-          if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
-          if (runController.isCompleted()) return;
-          unsub = subscribeToSession(session);
-          beginSend();
-          if (runController.isCompleted()) return;
-          if ((await runStepOrCompletion("send prompt", () => opts.execute!(session))).completed) return;
-          runController.markPromptAccepted();
-        }
+        if (!opts.execute) throw new Error("Session run is missing an execute step");
+        if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
+        if (runController.isCompleted()) return;
+        unsub = subscribeToSession(session);
+        beginSend();
+        if (runController.isCompleted()) return;
+        if ((await runStepOrCompletion("send prompt", () => opts.execute!(session))).completed) return;
+        runController.markPromptAccepted();
       } catch (operationErr) {
-        if (!opts.resumeOnly && usedCache && isStaleCachedSessionError(operationErr)) {
+        if (usedCache && isStaleCachedSessionError(operationErr)) {
           console.warn(`[sdk] [${sid}] Stale cached session (${getErrorMessage(operationErr)}) — evicting and re-resuming...`);
           unsub?.();
           unsub = undefined;
@@ -1618,12 +1449,8 @@ export class SessionRunner {
     } finally {
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
-      if (restartResumeNoEventTimer) clearTimeout(restartResumeNoEventTimer);
       syncShellWaits.clear();
       unsub?.();
-      if (opts.useResumeEventHandler) {
-        abandonSession(session);
-      }
     }
   }
 }

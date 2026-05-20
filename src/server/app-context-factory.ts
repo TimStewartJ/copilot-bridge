@@ -36,7 +36,6 @@ import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
 import { createDeferLoopStore } from "./defer-loop-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
-import { createRestartSuspendedSessionStore } from "./restart-suspended-session-store.js";
 import { createBridgeTools, createSessionManager } from "./session-manager.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
 
@@ -114,7 +113,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   }
   const deferredPromptStore = createDeferredPromptStore(db);
   const deferLoopStore = createDeferLoopStore(db);
-  const restartSuspendedSessionStore = createRestartSuspendedSessionStore(db);
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
 
@@ -147,7 +145,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     pushSubscriptionStore,
     deferredPromptStore,
     deferLoopStore,
-    restartSuspendedSessionStore,
     scheduler,
     copilotHome,
     apiBasePath: options.apiBasePath,
