@@ -576,20 +576,21 @@ export async function forkSession(id: string, opts?: { toEventId?: string }): Pr
   return data.sessionId;
 }
 
-export async function sendChatMessage(sessionId: string, prompt: string, attachments?: Attachment[]): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sessionId,
-      prompt,
-      ...(attachments?.length ? { attachments } : {}),
-    }),
+export interface ChatMessageAcceptedResponse {
+  status: "accepted";
+  mode?: "steered";
+}
+
+export async function sendChatMessage(
+  sessionId: string,
+  prompt: string,
+  attachments?: Attachment[],
+): Promise<ChatMessageAcceptedResponse> {
+  return apiFetch<ChatMessageAcceptedResponse>("/api/chat", {
+    sessionId,
+    prompt,
+    ...(attachments?.length ? { attachments } : {}),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
 }
 
 export async function fetchMessages(

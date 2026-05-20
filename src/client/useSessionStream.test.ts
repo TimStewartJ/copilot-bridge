@@ -1,12 +1,25 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const telemetryBatcherMock = vi.hoisted(() => ({
+  enqueue: vi.fn(),
+  flush: vi.fn(),
+  flushSync: vi.fn(),
+  getPendingCount: vi.fn(() => 0),
+  dispose: vi.fn(),
+}));
+
+vi.mock("./telemetry-batcher", () => ({
+  createTelemetryBatcher: () => telemetryBatcherMock,
+}));
+
 import {
   createReactDomHarness,
   waitTick,
   waitUntilAct,
   type Act,
 } from "./test-react-harness";
-import type { PendingUserInputRequestView } from "./api";
+import type { Attachment, PendingUserInputRequestView } from "./api";
 import type { PendingTool } from "./useSessionStream";
 import {
   buildSnapshotToolState,
@@ -50,6 +63,13 @@ function createControlledSseResponse() {
   };
 }
 
+function jsonResponse(body: unknown): Response {
+  return {
+    ok: true,
+    json: async () => body,
+  } as Response;
+}
+
 async function withSessionStreamHarness(
   run: (helpers: {
     getState: () => SessionStreamState;
@@ -90,8 +110,11 @@ async function emitAndWait(
 }
 
 afterEach(() => {
-  vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  if (vi.isFakeTimers()) {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
 });
 
 describe("buildTerminalToolEntries", () => {
@@ -257,8 +280,7 @@ describe("useSessionStream user input state", () => {
   it("hydrates pending requests from snapshots and removes answered or canceled requests", async () => {
     await withSessionStreamHarness(async ({ getState, act }) => {
       const sse = createControlledSseResponse();
-      const fetchMock = vi.fn().mockResolvedValue(sse.response);
-      vi.stubGlobal("fetch", fetchMock);
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
 
       await act(async () => {
         getState().reconnect("session-1");
@@ -317,6 +339,134 @@ describe("useSessionStream user input state", () => {
       }, () => getState().pendingUserInputs.length === 0);
 
       expect(getState().pendingUserInputs).toEqual([]);
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
+  });
+});
+
+describe("useSessionStream chat sends", () => {
+  it("uses the chat wrapper and connects the stream for ordinary accepted sends", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/chat") {
+          return jsonResponse({ status: "accepted" });
+        }
+        if (url === "/api/sessions/session-1/stream") {
+          return sse.response;
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+      vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+      await act(async () => {
+        await getState().sendMessage("hello");
+      });
+
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+        sessionId: "session-1",
+        prompt: "hello",
+      });
+      expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+        "/api/chat",
+        "/api/sessions/session-1/stream",
+      ]);
+      expect(getState().pendingOrigin).toBe("message");
+
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
+  });
+
+  it("does not reconnect or clear live stream state for steered sends", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      let streamSignal: AbortSignal | undefined;
+      const attachments: Attachment[] = [
+        {
+          type: "file",
+          path: "attachments/screenshot.png",
+          displayName: "screenshot.png",
+        },
+      ];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/sessions/session-1/stream") {
+          streamSignal = init?.signal ?? undefined;
+          return sse.response;
+        }
+        if (url === "/api/chat") {
+          return jsonResponse({ status: "accepted", mode: "steered" });
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+      vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      const pendingRequest: PendingUserInputRequestView = {
+        requestId: "request-1",
+        question: "Pick a lane",
+        allowFreeform: true,
+      };
+      await emitAndWait(act, sse, {
+        type: "snapshot",
+        accumulatedContent: "Working",
+        activeTools: [
+          {
+            toolCallId: "tool-1",
+            name: "bash",
+            progressText: "Running",
+          },
+        ],
+        intentText: "Investigating",
+        complete: false,
+        pendingUserInputs: [pendingRequest],
+      }, () => getState().streamingContent === "Working");
+
+      await act(async () => {
+        await getState().sendMessage("please adjust", attachments);
+      });
+
+      expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+        sessionId: "session-1",
+        prompt: "please adjust",
+        attachments,
+      });
+      expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+        "/api/sessions/session-1/stream",
+        "/api/chat",
+      ]);
+      expect(streamSignal?.aborted).toBe(false);
+      expect(getState()).toMatchObject({
+        streamingContent: "Working",
+        streamStatus: "streaming",
+        isStreaming: true,
+        intentText: "Investigating",
+        pendingUserInputs: [pendingRequest],
+        activeTools: [
+          {
+            toolCallId: "tool-1",
+            name: "bash",
+            progressText: "Running",
+          },
+        ],
+      });
+
+      await emitAndWait(act, sse, {
+        type: "delta",
+        content: " more",
+      }, () => getState().streamingContent === "Working more");
+
       await act(async () => {
         sse.close();
         await waitTick();
