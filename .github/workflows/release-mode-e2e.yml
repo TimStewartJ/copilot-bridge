@@ -1,0 +1,109 @@
+name: Release Mode E2E
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+  schedule:
+    - cron: "43 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mode-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-mode-e2e:
+    name: Install/update release package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Resolve E2E metadata
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $version = "$packageVersion-e2e.${{ github.run_number }}.${{ github.run_attempt }}.g$shortSha"
+
+          "E2E_VERSION=$version" >> $env:GITHUB_ENV
+          "E2E_CHANNEL=preview" >> $env:GITHUB_ENV
+          "E2E_PLATFORM=win-x64" >> $env:GITHUB_ENV
+
+      - name: Build release package
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File .\scripts\package-release.ps1 `
+            -Version $env:E2E_VERSION `
+            -Channel $env:E2E_CHANNEL `
+            -Platform $env:E2E_PLATFORM `
+            -IncludeNodeModules `
+            -Analyze `
+            -SmokeTest
+
+      - name: Write local E2E manifest
+        shell: pwsh
+        run: |
+          $zip = "release/copilot-bridge-$env:E2E_VERSION-$env:E2E_CHANNEL-$env:E2E_PLATFORM.zip"
+          $packageName = Split-Path -Leaf $zip
+          $manifest = "release/e2e-$env:E2E_PLATFORM.manifest.json"
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item -Path $zip).Length
+
+          [ordered]@{
+            schemaVersion = 1
+            appId = "copilot-bridge"
+            keyId = "local-e2e"
+            version = $env:E2E_VERSION
+            channel = $env:E2E_CHANNEL
+            platform = $env:E2E_PLATFORM
+            sourceCommit = $env:GITHUB_SHA
+            publishedAt = (Get-Date).ToUniversalTime().ToString("o")
+            package = [ordered]@{
+              name = $packageName
+              url = "https://example.invalid/$packageName"
+              sha256 = $hash
+              sizeBytes = $size
+            }
+          } | ConvertTo-Json -Depth 6 | Set-Content -Path $manifest -Encoding UTF8
+
+      - name: Release-mode install/update E2E
+        shell: pwsh
+        run: |
+          $zip = "release/copilot-bridge-$env:E2E_VERSION-$env:E2E_CHANNEL-$env:E2E_PLATFORM.zip"
+          $manifest = "release/e2e-$env:E2E_PLATFORM.manifest.json"
+          pwsh -NoProfile -File .\scripts\test-release-mode-e2e.ps1 `
+            -PackagePath $zip `
+            -ManifestPath $manifest `
+            -ExpectedVersion $env:E2E_VERSION `
+            -ExpectedCommit $env:GITHUB_SHA `
+            -EvidenceDir "release/release-mode-e2e"
+
+      - name: Upload release-mode E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-mode-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/release-mode-e2e/**
+            release/e2e-*.manifest.json
+            release/*.analysis.json
+          if-no-files-found: warn
+

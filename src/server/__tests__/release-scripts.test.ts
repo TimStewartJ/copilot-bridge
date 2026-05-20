@@ -141,25 +141,36 @@ describe("release scripts", () => {
     expect(manifestUpload).toBeGreaterThan(signatureUpload);
   });
 
-  it("runs release-mode install/update E2E safely in the preview workflow", () => {
+  it("keeps preview publishing guarded to mainline branches", () => {
     const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "preview.yml"), "utf-8");
+
+    const immutablePublishStep = workflow.slice(workflow.indexOf("Publish immutable preview prerelease"));
+    expect(workflow).toContain("-SmokeTest");
+    expect(immutablePublishStep).toContain("github.ref == 'refs/heads/master'");
+    expect(immutablePublishStep).toContain("github.event_name == 'workflow_dispatch'");
+    expect(immutablePublishStep).toContain("inputs.publish_prerelease == true");
+    expect(workflow).not.toContain("Release-mode install/update E2E");
+  });
+
+  it("runs release-mode install/update E2E in a dedicated workflow", () => {
+    const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "release-mode-e2e.yml"), "utf-8");
     const script = readFileSync(join(process.cwd(), "scripts", "test-release-mode-e2e.ps1"), "utf-8");
 
-    expect(workflow).toContain("Release-mode install/update E2E");
+    expect(workflow).toContain("name: Release Mode E2E");
     expect(workflow).toContain(".\\scripts\\test-release-mode-e2e.ps1");
     expect(workflow).toContain("-EvidenceDir \"release/release-mode-e2e\"");
     expect(workflow).toContain("Upload release-mode E2E evidence");
     expect(workflow).toContain("if: always()");
-    expect(workflow).toContain("path: release/release-mode-e2e/**");
-
-    const immutablePublishStep = workflow.slice(workflow.indexOf("Publish immutable preview prerelease"));
-    expect(immutablePublishStep).toContain("github.ref == 'refs/heads/master'");
-    expect(immutablePublishStep).toContain("github.event_name == 'workflow_dispatch'");
-    expect(immutablePublishStep).toContain("inputs.publish_prerelease == true");
+    expect(workflow).toContain("release/release-mode-e2e/**");
+    expect(workflow).toContain("-IncludeNodeModules");
+    expect(workflow).toContain("-Analyze");
+    expect(workflow).toContain("-SmokeTest");
+    expect(workflow).not.toContain("gh release");
+    expect(workflow).not.toContain("latest-preview");
 
     expect(script).toContain("[Parameter(Mandatory = $true)]");
     expect(script).toContain("[string]$PackagePath");
-    expect(script).toContain("Wait-UpdateStaged");
+    expect(script).toContain("Wait-UpdateStagedOrSucceeded");
     expect(script).toContain("Wait-UpdateSucceeded");
     expect(script).toContain("-PackagePath $resolvedPackagePath");
     expect(script).toContain('Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"');
@@ -168,5 +179,16 @@ describe("release scripts", () => {
     expect(script).not.toContain("stop-release.ps1");
     expect(script).not.toContain("stop.ps1");
     expect(script).not.toContain("release-slots[\\\\/]");
+  });
+
+  it("writes coverage details into the CI step summary", () => {
+    const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "ci.yml"), "utf-8");
+    const vitestConfig = readFileSync(join(process.cwd(), "vitest.config.ts"), "utf-8");
+
+    expect(vitestConfig).toContain('"json-summary"');
+    expect(vitestConfig).toContain('"html"');
+    expect(workflow).toContain("Write coverage summary");
+    expect(workflow).toContain(".\\scripts\\write-coverage-summary.mjs coverage\\coverage-summary.json");
+    expect(workflow).toContain("Upload coverage report");
   });
 });
