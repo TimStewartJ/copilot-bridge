@@ -119,7 +119,7 @@ describe("listSessionsFromDisk telemetry", () => {
     deps.resolveEffectiveSessionCwdFromWorkspaceYaml = async (sessionId) => {
       activeResolvers += 1;
       maxActiveResolvers = Math.max(maxActiveResolvers, activeResolvers);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await Promise.resolve();
       activeResolvers -= 1;
       return join("workspace", sessionId);
     };

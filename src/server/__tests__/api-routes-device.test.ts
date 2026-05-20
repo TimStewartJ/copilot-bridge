@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request, createTestApp, eventually } from "./api-routes-test-helpers.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate } from "../platform.js";
 
@@ -23,6 +23,10 @@ beforeEach(() => {
   getDeviceHibernateCommandMock.mockReset();
   getDeviceHibernateCommandMock.mockReturnValue(linuxHibernateCommand);
   requestDeviceHibernateMock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Device management routes", () => {
@@ -57,6 +61,7 @@ describe("Device management routes", () => {
   });
 
   it("POST /api/device/hibernate acknowledges before requesting hibernation", async () => {
+    vi.useFakeTimers();
     requestDeviceHibernateMock.mockResolvedValue({
       platform: "linux",
       command: "systemctl",
@@ -75,11 +80,14 @@ describe("Device management routes", () => {
     });
     expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
 
-    await eventually(() => expect(requestDeviceHibernateMock).toHaveBeenCalledOnce(), 600);
+    await vi.advanceTimersByTimeAsync(250);
+
+    await eventually(() => expect(requestDeviceHibernateMock).toHaveBeenCalledOnce());
     expect(requestDeviceHibernateMock).toHaveBeenCalledWith(linuxHibernateCommand);
   });
 
   it("logs background hibernate failures", async () => {
+    vi.useFakeTimers();
     const error = new Error("hibernate unavailable");
     requestDeviceHibernateMock.mockRejectedValue(error);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -90,9 +98,7 @@ describe("Device management routes", () => {
       .send({});
 
     expect(res.status).toBe(202);
-    await eventually(
-      () => expect(errorSpy).toHaveBeenCalledWith("[device] Hibernate request failed:", error),
-      600,
-    );
+    await vi.advanceTimersByTimeAsync(250);
+    await eventually(() => expect(errorSpy).toHaveBeenCalledWith("[device] Hibernate request failed:", error));
   });
 });

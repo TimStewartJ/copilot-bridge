@@ -46,4 +46,28 @@ describe("installDomShim", () => {
       first.cleanup();
     }
   });
+
+  it("runs animation frames through deterministic microtasks", async () => {
+    const shim = installDomShim();
+    try {
+      const callback = vi.fn();
+      window.requestAnimationFrame(callback);
+      expect(callback).not.toHaveBeenCalled();
+
+      await Promise.resolve();
+
+      expect(callback).toHaveBeenCalledOnce();
+      expect(callback.mock.calls[0][0]).toEqual(expect.any(Number));
+
+      const canceledCallback = vi.fn();
+      const id = window.requestAnimationFrame(canceledCallback);
+      window.cancelAnimationFrame(id);
+
+      await Promise.resolve();
+
+      expect(canceledCallback).not.toHaveBeenCalled();
+    } finally {
+      shim.cleanup();
+    }
+  });
 });

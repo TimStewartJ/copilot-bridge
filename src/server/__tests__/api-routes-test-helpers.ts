@@ -109,17 +109,27 @@ export function createWavBuffer(durationSeconds: number, sampleRate = 16_000): B
   return buffer;
 }
 
-export async function eventually(assertion: () => void | Promise<void>, timeoutMs = 1_500): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+async function flushTestMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+export async function eventually(
+  assertion: () => void | Promise<void>,
+  options: { maxAttempts?: number } = {},
+): Promise<void> {
+  // Deterministic retries only: callers that depend on timers should advance
+  // fake timers or await an explicit operation inside the assertion.
+  const maxAttempts = options.maxAttempts ?? 50;
   let lastError: unknown;
 
-  while (Date.now() < deadline) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       await assertion();
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await flushTestMicrotasks();
     }
   }
 

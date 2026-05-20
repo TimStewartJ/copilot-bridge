@@ -208,10 +208,10 @@ describe("Voice job routes", () => {
       safeToLeave: true,
     });
 
-    await eventually(() => {
-      expect(transcribe).toHaveBeenCalledOnce();
-      expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge");
-    });
+    await ctx.voiceJobManager.shutdown();
+
+    expect(transcribe).toHaveBeenCalledOnce();
+    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge");
 
     const jobRes = await request(app).get(`/api/voice-jobs/${res.body.id}`);
     expect(jobRes.status).toBe(200);

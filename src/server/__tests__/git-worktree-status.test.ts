@@ -600,9 +600,10 @@ describe("readCachedGitWorktreeStatus", () => {
     const stale = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => nowMs });
     expect(stale).toMatchObject({ status: "ok", clean: true, modified: 0 });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    nowMs = 62_000;
-    const refreshed = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", { now: () => nowMs });
+    const refreshed = await readCachedGitWorktreeStatus("/workspace/copilot-bridge", {
+      maxStaleMs: 0,
+      now: () => nowMs,
+    });
     expect(refreshed).toMatchObject({ status: "ok", clean: false, modified: 1 });
   });
 });

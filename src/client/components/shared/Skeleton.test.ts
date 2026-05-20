@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createReactDomHarness, waitForDelayAct } from "../../test-react-harness";
+import { advanceTimersByTimeAct, createReactDomHarness } from "../../test-react-harness";
 import {
   LoadingSkeletonRegion,
   Skeleton,
@@ -59,7 +59,7 @@ describe("shared skeleton primitives", () => {
       );
       expect(harness.dom.container.textContent).toBe("");
 
-      await waitForDelayAct(harness.act, 100);
+      await advanceTimersByTimeAct(harness.act, 100);
       expect(harness.dom.container.textContent).toContain("Loading settings");
 
       await harness.render(

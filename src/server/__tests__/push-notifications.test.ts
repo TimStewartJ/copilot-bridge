@@ -210,7 +210,9 @@ describe("push event notification copy", () => {
       ctx.globalBus.emit({ type: "session:busy", sessionId: "muted-session" });
       ctx.globalBus.emit({ type: "session:idle", sessionId: "muted-session", assistantPreview: "Finished silently." });
 
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await Promise.resolve();
+      await Promise.resolve();
+
       expect(sendNotification).not.toHaveBeenCalled();
       unsubscribe();
     });

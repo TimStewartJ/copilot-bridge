@@ -7,7 +7,7 @@ import {
   createReactDomHarness,
   findAllByTag,
   getReactProps,
-  waitForDelayAct,
+  advanceTimersByTimeAct,
   waitTick,
   waitUntilAct,
   type Act,
@@ -469,7 +469,7 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await waitForDelayAct(act, 250);
+      await advanceTimersByTimeAct(act, 250);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Loading newer chat content") ?? false);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
@@ -502,7 +502,7 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await waitForDelayAct(act, 250);
+      await advanceTimersByTimeAct(act, 250);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
       expect(dom.container.textContent).not.toContain("Loading newer chat content");
@@ -534,7 +534,7 @@ describe("ChatView cached resume loading state", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await waitForDelayAct(act, 250);
+      await advanceTimersByTimeAct(act, 250);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
       expect(dom.container.textContent).not.toContain("Loading newer chat content");
@@ -774,7 +774,7 @@ describe("ChatView cached resume loading state", () => {
         busySignal: 1,
       });
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refreshing history...") ?? false);
-      await waitForDelayAct(act, 250);
+      await advanceTimersByTimeAct(act, 250);
 
       expect(dom.container.textContent).toContain("Refreshing history...");
       expect(dom.container.textContent).not.toContain("Loading newer chat content");
@@ -820,7 +820,7 @@ describe("ChatView cached resume loading state", () => {
     });
 
     try {
-      await waitForDelayAct(act, 250);
+      await advanceTimersByTimeAct(act, 250);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Loading newer chat content") ?? false);
 
       await act(async () => {

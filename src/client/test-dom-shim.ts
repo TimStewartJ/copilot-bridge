@@ -57,8 +57,8 @@ type FakeWindow = {
   addEventListener: () => void;
   removeEventListener: () => void;
   getComputedStyle: () => Record<string, string>;
-  requestAnimationFrame: (cb: (ts: number) => void) => ReturnType<typeof setTimeout>;
-  cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => void;
+  requestAnimationFrame: (cb: (ts: number) => void) => number;
+  cancelAnimationFrame: (id: number) => void;
   HTMLElement: typeof HTMLElement;
   Element: typeof Element;
   HTMLIFrameElement: typeof HTMLIFrameElement;
@@ -308,6 +308,8 @@ function createDomShimState(): DomShimState {
   const container = createElement("div");
   const html = createElement("html");
   const navigator = { userAgent: "node" };
+  let animationFrameId = 0;
+  const pendingAnimationFrames = new Set<number>();
 
   const windowObject: FakeWindow = {
     document,
@@ -315,8 +317,18 @@ function createDomShimState(): DomShimState {
     addEventListener() {},
     removeEventListener() {},
     getComputedStyle: () => ({}),
-    requestAnimationFrame: (cb) => setTimeout(() => cb(Date.now()), 0),
-    cancelAnimationFrame: (id) => clearTimeout(id),
+    requestAnimationFrame: (cb) => {
+      const id = animationFrameId += 1;
+      pendingAnimationFrames.add(id);
+      queueMicrotask(() => {
+        if (!pendingAnimationFrames.delete(id)) return;
+        cb(Date.now());
+      });
+      return id;
+    },
+    cancelAnimationFrame: (id) => {
+      pendingAnimationFrames.delete(id);
+    },
     HTMLElement: createFakeConstructor<typeof HTMLElement>(),
     Element: createFakeConstructor<typeof Element>(),
     HTMLIFrameElement: createFakeConstructor<typeof HTMLIFrameElement>(),

@@ -288,9 +288,9 @@ describe("Status stream", () => {
             }
           });
           res.on("error", reject);
-          setTimeout(() => {
+          queueMicrotask(() => {
             ctx.globalBus.emit({ type: "session:stalled", sessionId: "session-123" });
-          }, 10);
+          });
         });
         req.on("error", (error: NodeJS.ErrnoException) => {
           if (error.code === "ECONNRESET") return;
@@ -322,14 +322,14 @@ describe("Status stream", () => {
             }
           });
           res.on("error", reject);
-          setTimeout(() => {
+          queueMicrotask(() => {
             ctx.globalBus.emit({
               type: "session:user-input",
               sessionId: "session-123",
               pendingUserInputCount: 1,
               needsUserInput: true,
             });
-          }, 10);
+          });
         });
         req.on("error", (error: NodeJS.ErrnoException) => {
           if (error.code === "ECONNRESET") return;
