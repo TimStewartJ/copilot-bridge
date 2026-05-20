@@ -182,6 +182,27 @@ export interface RestartQuiesceResult {
   blockingSessions: SessionActivity[];
 }
 
+export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
+
+const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
+  stopPrevious: "stopping the previous client",
+  startNext: "starting the refreshed client",
+  restorePrevious: "restoring the previous client",
+} as const;
+
+type ModelRefreshClientRotationOperation =
+  (typeof MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS)[keyof typeof MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS];
+
+export class ModelRefreshClientRotationTimeoutError extends Error {
+  constructor(
+    readonly operation: ModelRefreshClientRotationOperation,
+    readonly timeoutMs: number,
+  ) {
+    super(`Copilot SDK client model-refresh rotation timed out after ${timeoutMs}ms while ${operation}.`);
+    this.name = "ModelRefreshClientRotationTimeoutError";
+  }
+}
+
 export class ModelRefreshBlockedError extends Error {
   constructor(readonly activeSessions: number) {
     super(`Cannot refresh model list while ${activeSessions} active session(s) are running. Try again after active turns finish.`);
@@ -199,6 +220,40 @@ export interface ModelRefreshResult {
 function isMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /not found|does not exist|no such (file|session)|ENOENT/i.test(message);
+}
+
+function isModelRefreshClientRotationTimeoutError(error: unknown): error is ModelRefreshClientRotationTimeoutError {
+  return error instanceof ModelRefreshClientRotationTimeoutError;
+}
+
+function withModelRefreshClientRotationTimeout<T>(
+  operation: ModelRefreshClientRotationOperation,
+  promise: Promise<T>,
+  timeoutMs = MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new ModelRefreshClientRotationTimeoutError(operation, timeoutMs));
+    }, timeoutMs);
+
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 export interface SessionManagerDeps {
@@ -592,6 +647,17 @@ export class SessionManager {
     return this.deps.createCopilotClient?.(options) ?? new CopilotClient(options);
   }
 
+  private forceStopTimedOutClient(client: CopilotClient, context: string): void {
+    if (typeof client.forceStop !== "function") return;
+    try {
+      void client.forceStop().catch((error) => {
+        console.error(`[sdk] Model refresh client rotation timed out while ${context}; force stop failed:`, error);
+      });
+    } catch (error) {
+      console.error(`[sdk] Model refresh client rotation timed out while ${context}; force stop failed:`, error);
+    }
+  }
+
   private getClient(): CopilotClient {
     if (this.clientRotation) {
       throw new Error("Copilot SDK client refresh is in progress; try again shortly");
@@ -626,23 +692,44 @@ export class SessionManager {
       console.log("[sdk] Rotating Copilot SDK client for model refresh...");
       this.client = null;
       try {
-        await previousClient.stop();
+        await withModelRefreshClientRotationTimeout(
+          MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.stopPrevious,
+          previousClient.stop(),
+        );
       } catch (error) {
-        this.client = previousClient;
+        if (isModelRefreshClientRotationTimeoutError(error)) {
+          this.client = null;
+          this.forceStopTimedOutClient(previousClient, "stopping the previous client");
+        } else {
+          this.client = previousClient;
+        }
         throw error;
       }
 
       const nextClient = this.createCopilotClient();
       try {
-        await nextClient.start();
+        await withModelRefreshClientRotationTimeout(
+          MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.startNext,
+          nextClient.start(),
+        );
       } catch (error) {
+        if (isModelRefreshClientRotationTimeoutError(error)) {
+          this.forceStopTimedOutClient(nextClient, "starting the refreshed client");
+        }
         try {
-          await previousClient.start();
+          await withModelRefreshClientRotationTimeout(
+            MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.restorePrevious,
+            previousClient.start(),
+          );
           this.client = previousClient;
           console.warn("[sdk] Model refresh client rotation failed; restored previous Copilot SDK client");
         } catch (restoreError) {
           this.client = null;
           console.error("[sdk] Model refresh client rotation failed and previous Copilot SDK client could not be restored:", restoreError);
+          if (isModelRefreshClientRotationTimeoutError(restoreError)) {
+            this.forceStopTimedOutClient(previousClient, "restoring the previous client");
+            throw restoreError;
+          }
         }
         throw error;
       }

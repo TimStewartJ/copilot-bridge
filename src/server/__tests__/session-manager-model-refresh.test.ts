@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBusRegistry } from "../event-bus.js";
 import {
+  MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS,
   ModelRefreshBlockedError,
+  ModelRefreshClientRotationTimeoutError,
   SessionManager,
   type SessionManagerDeps,
 } from "../session-manager.js";
@@ -13,8 +15,34 @@ function createClient(models: Array<{ id: string; name: string }>) {
   return {
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
+    forceStop: vi.fn(async () => {}),
     listModels: vi.fn(async () => models),
   };
+}
+
+function neverResolves(): Promise<void> {
+  return new Promise(() => {});
+}
+
+async function advancePastRotationTimeout(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS);
+  await vi.advanceTimersByTimeAsync(0);
+}
+
+async function expectRotationTimeout(promise: Promise<unknown>, operation: string): Promise<void> {
+  await promise.then(
+    () => {
+      throw new Error("Expected model-refresh rotation to time out");
+    },
+    (error) => {
+      expect(error).toBeInstanceOf(ModelRefreshClientRotationTimeoutError);
+      expect(error).toMatchObject({
+        operation,
+        timeoutMs: MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS,
+      });
+    },
+  );
 }
 
 function createManager(clients: unknown[]) {
@@ -39,6 +67,10 @@ function createManager(clients: unknown[]) {
 }
 
 describe("SessionManager model refresh", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("rotates the SDK client and returns models from the fresh client", async () => {
     const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
     const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
@@ -93,5 +125,79 @@ describe("SessionManager model refresh", () => {
     expect(oldClient.stop).toHaveBeenCalledOnce();
     expect(oldClient.start).toHaveBeenCalledTimes(2);
     await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
+  });
+
+  it("times out a stalled previous client stop and clears the rotation", async () => {
+    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
+    oldClient.stop.mockImplementationOnce(neverResolves);
+    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
+    const manager = createManager([oldClient, freshClient]);
+
+    await manager.initialize();
+    vi.useFakeTimers();
+
+    const refreshPromise = manager.refreshModels();
+    const listDuringRotationPromise = manager.listModels();
+    const refreshExpectation = expectRotationTimeout(refreshPromise, "stopping the previous client");
+    const listDuringRotationExpectation = expectRotationTimeout(listDuringRotationPromise, "stopping the previous client");
+
+    await advancePastRotationTimeout();
+
+    await refreshExpectation;
+    await listDuringRotationExpectation;
+    expect((manager as any).clientRotation).toBeNull();
+    expect(oldClient.forceStop).toHaveBeenCalledOnce();
+    expect(freshClient.start).not.toHaveBeenCalled();
+    await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
+  });
+
+  it("times out a stalled fresh client start and restores the previous client", async () => {
+    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
+    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
+    freshClient.start.mockImplementationOnce(neverResolves);
+    const manager = createManager([oldClient, freshClient]);
+
+    await manager.initialize();
+    vi.useFakeTimers();
+
+    const refreshPromise = manager.refreshModels();
+    const listDuringRotationPromise = manager.listModels();
+    const refreshExpectation = expectRotationTimeout(refreshPromise, "starting the refreshed client");
+    const listDuringRotationExpectation = expectRotationTimeout(listDuringRotationPromise, "starting the refreshed client");
+
+    await advancePastRotationTimeout();
+
+    await refreshExpectation;
+    await listDuringRotationExpectation;
+    expect((manager as any).clientRotation).toBeNull();
+    expect(freshClient.forceStop).toHaveBeenCalledOnce();
+    expect(oldClient.start).toHaveBeenCalledTimes(2);
+    await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
+  });
+
+  it("times out a stalled previous client restore and leaves later SDK calls unblocked", async () => {
+    const oldClient = createClient([{ id: "old-model", name: "Old Model" }]);
+    oldClient.start
+      .mockImplementationOnce(async () => {})
+      .mockImplementationOnce(neverResolves);
+    const freshClient = createClient([{ id: "fresh-model", name: "Fresh Model" }]);
+    freshClient.start.mockRejectedValueOnce(new Error("start failed"));
+    const manager = createManager([oldClient, freshClient]);
+
+    await manager.initialize();
+    vi.useFakeTimers();
+
+    const refreshPromise = manager.refreshModels();
+    const listDuringRotationPromise = manager.listModels();
+    const refreshExpectation = expectRotationTimeout(refreshPromise, "restoring the previous client");
+    const listDuringRotationExpectation = expectRotationTimeout(listDuringRotationPromise, "restoring the previous client");
+
+    await advancePastRotationTimeout();
+
+    await refreshExpectation;
+    await listDuringRotationExpectation;
+    expect((manager as any).clientRotation).toBeNull();
+    expect(oldClient.forceStop).toHaveBeenCalledOnce();
+    await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
   });
 });
