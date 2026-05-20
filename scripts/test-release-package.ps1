@@ -94,7 +94,9 @@ try {
   if (Test-Path $nodeModulesRoot) {
     Assert-PathExists "Copilot SDK runtime" (Join-Path $nodeModulesRoot "@github\copilot-sdk\dist\index.js")
     Assert-PathExists "Copilot CLI JavaScript entrypoint" (Join-Path $nodeModulesRoot "@github\copilot\index.js")
-    Assert-PathExists "Copilot CLI Windows x64 native addon" (Join-Path $nodeModulesRoot "@github\copilot\prebuilds\win32-x64\win32_native.dll")
+    $copilotPrebuildRoot = Join-Path $nodeModulesRoot "@github\copilot\prebuilds\win32-x64"
+    Assert-PathExists "Copilot CLI Windows x64 prebuilds" $copilotPrebuildRoot
+    Assert-PathExists "Copilot CLI Windows x64 native addon" (Join-Path $copilotPrebuildRoot "win32-native.node")
   }
 
   Write-Output "Release package layout is valid: $releaseRoot"
