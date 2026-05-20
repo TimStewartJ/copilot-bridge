@@ -73,7 +73,7 @@ import {
   UpdateInstallError,
   type UpdateChannel,
 } from "./update-service.js";
-import { getBrowserDiagnostics, launchHeadedDiagnosticsBrowser } from "./browser-diagnostics.js";
+import { closeHeadedDiagnosticsBrowser, getBrowserDiagnostics, launchHeadedDiagnosticsBrowser } from "./browser-diagnostics.js";
 import {
   DocsSnapshotNotFoundError,
   DocsSnapshotValidationError,
@@ -3725,6 +3725,15 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (rejectCrossSiteUiMutation(req, res, "Headed browser launch")) return;
     try {
       res.json(await launchHeadedDiagnosticsBrowser(ctx, req.body?.url));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/diagnostics/close-headed", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Headed browser close")) return;
+    try {
+      res.json(await closeHeadedDiagnosticsBrowser(ctx));
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }

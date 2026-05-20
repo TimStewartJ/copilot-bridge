@@ -98,4 +98,48 @@ describe("browser diagnostics", () => {
       headed: false,
     });
   });
+
+  it("closes the configured headed diagnostics browser target", async () => {
+    const closeCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "close") {
+        closeCalls.push({ args, env: options?.env });
+      }
+      cb(null, { stdout: "", stderr: "" });
+      return {} as any;
+    });
+    const db = setupTestDb();
+    const settingsStore = createSettingsStore(db);
+    const telemetryStore = createTelemetryStore(db);
+    const executablePath = testExecutablePath("chrome");
+    const profileDir = testPath("browser-master-profile");
+    settingsStore.updateSettings({
+      browser: {
+        executablePath,
+        masterProfileDirectory: profileDir,
+      },
+    });
+
+    const mod = await import("../browser-diagnostics.js");
+    const result = await mod.closeHeadedDiagnosticsBrowser({
+      settingsStore,
+      telemetryStore,
+      copilotHome: testPath(".copilot"),
+    } as AppContext);
+
+    expect(result).toMatchObject({
+      ok: true,
+      masterProfileDirectory: profileDir,
+      executablePath,
+    });
+    expect(result.message).toContain("Headed browser close requested");
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0].args).toEqual(["close"]);
+    expect(closeCalls[0].env).toMatchObject({
+      AGENT_BROWSER_PROFILE: profileDir,
+      AGENT_BROWSER_EXECUTABLE_PATH: executablePath,
+      AGENT_BROWSER_HEADED: "true",
+    });
+    expect(closeCalls[0].env?.AGENT_BROWSER_SESSION).toContain("copilot-bridge-");
+  });
 });
