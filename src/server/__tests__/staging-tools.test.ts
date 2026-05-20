@@ -3,6 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import express from "express";
+import request from "supertest";
 
 type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
@@ -373,6 +375,34 @@ async function loadStagingTools(options: LoadStagingToolsOptions = {}) {
   return Object.fromEntries(mod.STAGING_TOOLS.map((tool: any) => [tool.name, tool])) as Record<string, any>;
 }
 
+type StagingToolsModule = Awaited<ReturnType<typeof loadStagingToolsModule>>;
+
+function createStagingPreviewTestApp(mod: StagingToolsModule) {
+  const app = express();
+  mod.registerExpressApp(app);
+
+  app.use("/staging/:prefix/api", (req, res, next) => {
+    const router = mod.getStagingRouter(req.params.prefix);
+    if (router) {
+      router(req, res, next);
+    } else {
+      next();
+    }
+  });
+
+  app.use("/staging/:prefix", (req, res) => {
+    const distDir = mod.getActivePreviews().get(req.params.prefix);
+    if (!distDir || !existsSync(distDir)) {
+      return res.status(404).send("Staging preview not found.");
+    }
+    express.static(distDir)(req, res, () => {
+      res.sendFile(join(distDir, "index.html"));
+    });
+  });
+
+  return app;
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
@@ -447,6 +477,14 @@ describe("staging tools", () => {
     const mod = await loadStagingToolsModule();
     const activeWorktrees = new Set(["abc12345"]);
     expect(mod.parsePreviewPrefix("missing", activeWorktrees)).toBeNull();
+  });
+
+  it("rejects unsafe staging preview prefixes", async () => {
+    const mod = await loadStagingToolsModule();
+    expect(mod.parsePreviewPrefix("..")).toBeNull();
+    expect(mod.parsePreviewPrefix(".hidden")).toBeNull();
+    expect(mod.parsePreviewPrefix("bad..prefix")).toBeNull();
+    expect(mod.parsePreviewPrefix("bad.")).toBeNull();
   });
 
   it("preserves deploy validation logs while clearing preview runtime data", async () => {
@@ -757,6 +795,79 @@ describe("staging tools", () => {
 
     expect(previewMap.get(prefix)).toBe(join(previewParent, prefix));
     expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+  });
+
+  it("serves startup-discovered previews while prune is still waiting on branch discovery", async () => {
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const prefix = "preview-slow-prune";
+    const distDir = join(previewParent, prefix);
+    const pruneGitWorktrees = vi.fn();
+    let resolveBranches!: (value: Set<string>) => void;
+    const branchSnapshot = new Promise<Set<string>>((resolve) => {
+      resolveBranches = resolve;
+    });
+
+    mkdirSync(join(stagingParent, prefix), { recursive: true });
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, "index.html"), "<!doctype html><p>restored preview</p>");
+
+    const app = createStagingPreviewTestApp(mod);
+    expect(mod.registerExistingPreviewsFromDisk({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+    })).toBe(1);
+    expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+
+    const prunePromise = mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+      listBranchPrefixes: () => branchSnapshot,
+      pruneGitWorktrees,
+    });
+
+    try {
+      const response = await request(app).get(`/staging/${prefix}/`);
+      expect(response.status).toBe(200);
+      expect(response.text).toContain("restored preview");
+      expect(pruneGitWorktrees).not.toHaveBeenCalled();
+    } finally {
+      resolveBranches(new Set([prefix]));
+      await prunePromise;
+    }
+  });
+
+  it("removes startup-discovered preview registrations when prune later finds them orphaned", async () => {
+    vi.stubEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", "0");
+    const mod = await loadStagingToolsModule();
+    const stagingParent = createTempDir("bridge-stage-parent-");
+    const previewParent = createTempDir("bridge-stage-preview-root-");
+    const prefix = "preview-orphan";
+    const distDir = join(previewParent, prefix);
+
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, "index.html"), "<!doctype html><p>orphan preview</p>");
+
+    createStagingPreviewTestApp(mod);
+    expect(mod.registerExistingPreviewsFromDisk({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+    })).toBe(1);
+    expect(mod.getActivePreviews().get(prefix)).toBe(distDir);
+    expect(mod.getStagingRouter(prefix)).toEqual(expect.any(Function));
+
+    await mod.__testing.pruneOrphanedWorktreesImpl({
+      stagingParent,
+      stagingPreviewParents: [previewParent],
+      listBranchPrefixes: () => new Set(),
+      pruneGitWorktrees: vi.fn(),
+    });
+
+    expect(existsSync(distDir)).toBe(false);
+    expect(mod.getActivePreviews().has(prefix)).toBe(false);
+    expect(mod.getStagingRouter(prefix)).toBeUndefined();
   });
 
   it("prunes stale clean staging worktrees while preserving the newest active work", async () => {
