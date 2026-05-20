@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Monitor, RotateCw, X } from "lucide-react";
 import {
+  ApiError,
   closeHeadedDiagnosticsBrowser,
   fetchBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
   type AppSettings,
+  type BrowserHeadedCloseFailureDetails,
   type BrowserSettings,
   type BrowserDiagnosticsResponse,
   type BrowserDiagnosticsTone,
@@ -35,6 +37,27 @@ function compactBrowserDraft(browser: BrowserSettings): BrowserSettings {
     ...(browser.masterProfileDirectory ? { masterProfileDirectory: browser.masterProfileDirectory } : {}),
     ...(browser.headed ? { headed: true } : {}),
   };
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+function isBrowserHeadedCloseFailureDetails(value: unknown): value is BrowserHeadedCloseFailureDetails {
+  if (!value || typeof value !== "object") return false;
+  const details = value as Partial<BrowserHeadedCloseFailureDetails>;
+  return isNumberArray(details.terminatedPids)
+    && isNumberArray(details.killedPids)
+    && isNumberArray(details.remainingPids)
+    && typeof details.clearedRuntimeFiles === "number";
+}
+
+function formatHeadedCloseError(reason: unknown): string {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (!(reason instanceof ApiError) || !isBrowserHeadedCloseFailureDetails(reason.details)) return message;
+  if (reason.details.remainingPids.length === 0) return message;
+  const pids = reason.details.remainingPids.join(", ");
+  return message.includes(pids) ? message : `${message} Remaining PIDs: ${pids}.`;
 }
 
 export function BrowserDiagnosticsSection({
@@ -120,7 +143,7 @@ export function BrowserDiagnosticsSection({
       setMessage(result.message);
       refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatHeadedCloseError(reason));
     } finally {
       setClosing(false);
     }

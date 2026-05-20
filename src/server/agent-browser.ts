@@ -19,6 +19,7 @@ const LOCKED_COPY_ERROR_CODES = new Set(["EACCES", "EBUSY", "ENOENT", "EPERM"]);
 const RUNTIME_METRICS_FILE_RE = /^(?:CrashpadMetrics|BrowserMetrics).*\.pma$/i;
 const SQLITE_RUNTIME_FILE_RE = /(?:-journal|-shm|-wal)$/i;
 const COOKIE_STORE_RE = /(?:^|\/)Default\/Network\/Cookies$/i;
+const SHUTDOWN_OUTPUT_SUMMARY_MAX_LENGTH = 500;
 const BROWSER_PROCESS_NAMES = new Set([
   "chrome",
   "chrome.exe",
@@ -84,6 +85,31 @@ export interface BrowserLaunchConfig {
 export type BrowserExecutablePathSource = "settings" | "environment" | "auto-detect";
 
 export type BrowserCommand = readonly [string, ...string[]];
+export type BrowserCommandFailureCode =
+  | "binary_missing"
+  | "launch.devtools_active_port"
+  | "transport.broken_pipe"
+  | "launch.chrome_exited_early"
+  | "launch.timeout"
+  | "unknown";
+export type BrowserShutdownFailureCode = BrowserCommandFailureCode | "profile_processes_remaining";
+
+export interface BrowserProcessCleanupResult {
+  terminatedPids: number[];
+  killedPids: number[];
+  remainingPids: number[];
+  clearedRuntimeFiles: number;
+}
+
+export interface BrowserShutdownResult extends BrowserProcessCleanupResult {
+  ok: boolean;
+  failureCode?: BrowserShutdownFailureCode;
+  outputSummary?: string;
+  closeOk: boolean;
+  closeFailureCode?: BrowserCommandFailureCode;
+  closeFailureSignature?: string;
+  closeOutputSummary?: string;
+}
 
 function normalizeConfiguredPath(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -210,13 +236,26 @@ function failureSignature(output: string): string | null {
   return null;
 }
 
-function failureCode(output: string): string {
+function failureCode(output: string): BrowserCommandFailureCode {
   if (output.includes("which:") || output.includes("not found")) return "binary_missing";
   if (output.includes("DevToolsActivePort")) return "launch.devtools_active_port";
   if (output.includes("Broken pipe") || output.includes("broken pipe")) return "transport.broken_pipe";
   if (output.includes("Chrome exited early")) return "launch.chrome_exited_early";
   if (output.toLowerCase().includes("timed out")) return "launch.timeout";
   return "unknown";
+}
+
+function summarizeCommandOutput(output: string, profileDir?: string): string | undefined {
+  const compact = output.replace(/\s+/g, " ").trim();
+  if (!compact) return undefined;
+  const bounded = compact.length > SHUTDOWN_OUTPUT_SUMMARY_MAX_LENGTH
+    ? `${compact.slice(0, SHUTDOWN_OUTPUT_SUMMARY_MAX_LENGTH)}...`
+    : compact;
+  if (!profileDir) return bounded;
+  const normalizedProfileDir = profileDir.replaceAll("\\", "/");
+  return bounded
+    .split(profileDir).join("<browser-profile>")
+    .split(normalizedProfileDir).join("<browser-profile>");
 }
 
 function isLaunchProfileWedge(output: string): boolean {
@@ -938,12 +977,7 @@ async function forceCloseProfileBoundBrowserProcesses(
   profileDir: string,
   telemetryStore: TelemetryStore | undefined,
   metadata: Record<string, unknown>,
-): Promise<{
-  terminatedPids: number[];
-  killedPids: number[];
-  remainingPids: number[];
-  clearedRuntimeFiles: number;
-}> {
+): Promise<BrowserProcessCleanupResult> {
   const startedAt = Date.now();
   const result = await killProfileBoundBrowserProcesses(profileDir, metadata);
   const clearedRuntimeFiles = result.terminatedPids.length > 0 || result.killedPids.length > 0
@@ -964,6 +998,34 @@ async function forceCloseProfileBoundBrowserProcesses(
     });
   }
   return { ...result, clearedRuntimeFiles };
+}
+
+function buildBrowserShutdownResult(
+  closeResult: { ok: boolean; output: string },
+  cleanupResult: BrowserProcessCleanupResult,
+  profileDir: string,
+): BrowserShutdownResult {
+  const closeFailureCode = closeResult.ok ? undefined : failureCode(closeResult.output);
+  const closeFailureSignature = closeResult.ok ? null : failureSignature(closeResult.output);
+  const closeOutputSummary = closeResult.ok ? undefined : summarizeCommandOutput(closeResult.output, profileDir);
+  const remainingPids = cleanupResult.remainingPids;
+  const failureCodeValue: BrowserShutdownFailureCode | undefined = remainingPids.length > 0
+    ? "profile_processes_remaining"
+    : closeFailureCode;
+  const outputSummary = remainingPids.length > 0
+    ? `Profile-bound browser processes remain after shutdown: ${remainingPids.join(", ")}`
+    : closeOutputSummary;
+
+  return {
+    ok: closeResult.ok && remainingPids.length === 0,
+    ...(failureCodeValue ? { failureCode: failureCodeValue } : {}),
+    ...(outputSummary ? { outputSummary } : {}),
+    closeOk: closeResult.ok,
+    ...(closeFailureCode ? { closeFailureCode } : {}),
+    ...(closeFailureSignature ? { closeFailureSignature } : {}),
+    ...(closeOutputSummary ? { closeOutputSummary } : {}),
+    ...cleanupResult,
+  };
 }
 
 /**
@@ -1254,32 +1316,42 @@ export async function withCloneBrowserLane<T>(
 export async function shutdownBridgeBrowser(
   browserTarget: BrowserTarget = getBridgeBrowserTarget(),
   telemetryStore?: TelemetryStore,
-): Promise<void> {
-  await withBridgeBrowserSession(browserTarget, async () => {
+): Promise<BrowserShutdownResult> {
+  return withBridgeBrowserSession(browserTarget, async () => {
     const startedAt = Date.now();
-    const result = await runFile("agent-browser", ["close"], 10_000, { env: browserEnv(browserTarget) });
+    const closeResult = await runFile("agent-browser", ["close"], 10_000, { env: browserEnv(browserTarget) });
     const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
       browserSession: browserTarget.sessionName,
-      ...(!result.ok ? { closeFailureCode: failureCode(result.output) } : {}),
+      ...(!closeResult.ok ? { closeFailureCode: failureCode(closeResult.output) } : {}),
       cleanupPhase: "primary_shutdown",
     });
+    const shutdownResult = buildBrowserShutdownResult(closeResult, forceCloseResult, browserTarget.profileDir);
     const duration = Date.now() - startedAt;
     recordBrowserSpan(telemetryStore, "browser.lifecycle.shutdown", duration, {
       session: browserTarget.sessionName,
-      success: result.ok,
-      terminatedPids: forceCloseResult.terminatedPids,
-      killedPids: forceCloseResult.killedPids,
-      remainingPids: forceCloseResult.remainingPids,
-      clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
+      success: shutdownResult.ok,
+      closeOk: shutdownResult.closeOk,
+      failureCode: shutdownResult.failureCode,
+      closeFailureCode: shutdownResult.closeFailureCode,
+      closeFailureSignature: shutdownResult.closeFailureSignature,
+      terminatedPids: shutdownResult.terminatedPids,
+      killedPids: shutdownResult.killedPids,
+      remainingPids: shutdownResult.remainingPids,
+      clearedRuntimeFiles: shutdownResult.clearedRuntimeFiles,
     });
     logBrowser("lifecycle.shutdown", {
       session: browserTarget.sessionName,
       durationMs: duration,
-      success: result.ok,
-      terminatedPids: forceCloseResult.terminatedPids,
-      killedPids: forceCloseResult.killedPids,
-      remainingPids: forceCloseResult.remainingPids,
-      clearedRuntimeFiles: forceCloseResult.clearedRuntimeFiles,
+      success: shutdownResult.ok,
+      closeOk: shutdownResult.closeOk,
+      failureCode: shutdownResult.failureCode,
+      closeFailureCode: shutdownResult.closeFailureCode,
+      closeFailureSignature: shutdownResult.closeFailureSignature,
+      terminatedPids: shutdownResult.terminatedPids,
+      killedPids: shutdownResult.killedPids,
+      remainingPids: shutdownResult.remainingPids,
+      clearedRuntimeFiles: shutdownResult.clearedRuntimeFiles,
     });
+    return shutdownResult;
   });
 }
