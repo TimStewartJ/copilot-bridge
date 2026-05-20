@@ -681,6 +681,7 @@ export class SessionRunner {
     let staleCacheRetryCount = 0;
     let recoveryAttemptIndex = 0;
     let acceptingSessionEvents = false;
+    let currentTurnSawToolExecution = false;
     const resetRunTelemetryState = () => {
       lastDiskMtime = undefined;
       lastLiveEventType = undefined;
@@ -690,6 +691,7 @@ export class SessionRunner {
       lastLiveTurnEndAt = undefined;
       eventsAfterLastLiveTurnEnd = 0;
       activeEventsAfterLastLiveTurnEnd = 0;
+      currentTurnSawToolExecution = false;
     };
     const beginSend = () => {
       sendStart = Date.now();
@@ -723,6 +725,8 @@ export class SessionRunner {
     const setRestartSuspendReady = (ready: boolean) => {
       this.deps.runStateController.setSessionRunMetadata(sessionId, { restartSuspendReady: ready });
     };
+    const isRestartSuspending = () =>
+      this.deps.runStateController.getRunRecords().get(sessionId)?.restartSuspending === true;
     const maybeSuspendForPendingRestart = () => {
       this.deps.maybeSuspendForPendingRestart(sessionId);
     };
@@ -797,6 +801,8 @@ export class SessionRunner {
         ...metadata,
       }, now);
     };
+    const hasActiveFollowupAfterTurnEnd = () =>
+      lastLiveTurnEndAt !== undefined && activeEventsAfterLastLiveTurnEnd > 0;
     const noteLiveEvent = (event: any, eventAt: number, origin: SessionEventOrigin) => {
       const eventType = typeof event?.type === "string" ? event.type : undefined;
       if (!eventType) return;
@@ -896,6 +902,7 @@ export class SessionRunner {
           }
           break;
         case "assistant.turn_start":
+          currentTurnSawToolExecution = false;
           setRestartSuspendReady(false);
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           bus.emit({ type: "thinking" });
@@ -926,6 +933,7 @@ export class SessionRunner {
           }
           break;
         case "tool.execution_start": {
+          currentTurnSawToolExecution = true;
           setRestartSuspendReady(false);
           const toolName = data?.toolName ?? data?.name ?? "unknown";
           if (data?.toolCallId) {
@@ -973,6 +981,7 @@ export class SessionRunner {
           });
           break;
         case "tool.execution_complete": {
+          currentTurnSawToolExecution = true;
           if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const ok = data?.success !== false;
@@ -999,15 +1008,11 @@ export class SessionRunner {
             isSubAgent: isAgent || undefined,
             timestamp: event.timestamp,
           });
-          if (bus.getSnapshot().activeTools.length === 0) {
-            setRestartSuspendReady(true);
-            maybeSuspendForPendingRestart();
-          } else {
-            setRestartSuspendReady(false);
-          }
+          setRestartSuspendReady(false);
           break;
         }
         case "subagent.started": {
+          currentTurnSawToolExecution = true;
           const displayName = `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`;
           console.log(`[sdk] [${sid}] ${displayName}`);
           if (data?.toolCallId) subAgentMap.set(data.toolCallId, displayName);
@@ -1021,7 +1026,22 @@ export class SessionRunner {
         }
         case "subagent.completed":
         case "subagent.failed":
+          currentTurnSawToolExecution = true;
           break;
+        case "assistant.turn_end": {
+          if (
+            currentTurnSawToolExecution
+            && bus.getSnapshot().activeTools.length === 0
+            && this.deps.userInputController.getPendingCount(sessionId) === 0
+          ) {
+            setRestartSuspendReady(true);
+            maybeSuspendForPendingRestart();
+          } else {
+            setRestartSuspendReady(false);
+          }
+          currentTurnSawToolExecution = false;
+          break;
+        }
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
           recordRunCompletion(event, context, "error", {
@@ -1044,6 +1064,13 @@ export class SessionRunner {
         }
         case "session.shutdown": {
           const shutdownType = getSessionShutdownType(data);
+          if (isRestartSuspending() && shutdownType !== "error") {
+            console.warn(`[sdk] [${sid}] Ignoring routine session shutdown during restart suspend`);
+            recordRunSpan("session.shutdown.ignored_restart_suspending", Date.now() - sendStart, {
+              shutdownType,
+            });
+            break;
+          }
           if (shutdownType === "error") {
             const message = data?.message ?? data?.reason ?? "session shutdown";
             console.error(`[sdk] [${sid}] ❌ Shutdown(error): ${message}`);
@@ -1071,6 +1098,31 @@ export class SessionRunner {
         case "session.idle": {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const content = lastAssistantContent ?? "(no response)";
+          if (isRestartSuspending()) {
+            console.warn(`[sdk] [${sid}] Ignoring session idle during restart suspend (${elapsed}s)`);
+            recordRunSpan("session.idle.ignored_restart_suspending", Date.now() - sendStart, {
+              idleEventOrigin: context.origin,
+              finalContentLength: content.length,
+              assistantContentKnown: lastAssistantContent !== undefined,
+            });
+            break;
+          }
+          if (
+            (context.origin === "live" || context.origin === "live_recovered")
+            && hasActiveFollowupAfterTurnEnd()
+          ) {
+            setRestartSuspendReady(false);
+            console.warn(
+              `[sdk] [${sid}] Ignoring session idle with active follow-up after turn end (${elapsed}s)`,
+            );
+            recordRunSpan("session.idle.ignored_active_turn", Date.now() - sendStart, {
+              idleEventOrigin: context.origin,
+              ignoredIdleReason: "active_followup_after_turn_end",
+              finalContentLength: content.length,
+              assistantContentKnown: lastAssistantContent !== undefined,
+            });
+            break;
+          }
           console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
           recordRunCompletion(event, context, "done", {
@@ -1222,6 +1274,21 @@ export class SessionRunner {
       let assistantContentFromDisk = lastAssistantContent;
       let latestRelevantState: "active" | "terminal" | undefined;
       let terminalEvent: any | null = null;
+      let hasTurnEnd = false;
+      let activeEventsAfterTurnEnd = 0;
+
+      const markActive = (eventType: string) => {
+        if (hasTurnEnd && LIVE_TURN_END_FOLLOWUP_EVENT_TYPES.has(eventType)) {
+          activeEventsAfterTurnEnd += 1;
+        }
+        latestRelevantState = "active";
+        terminalEvent = null;
+      };
+
+      const markTerminal = (event: any) => {
+        latestRelevantState = "terminal";
+        terminalEvent = event;
+      };
 
       for (const line of raw.split(/\r?\n/)) {
         if (!line.trim()) continue;
@@ -1245,8 +1312,7 @@ export class SessionRunner {
             if (typeof data?.content === "string") {
               assistantContentFromDisk = data.content;
             }
-            latestRelevantState = "active";
-            terminalEvent = null;
+            markActive(event.type);
             break;
           case "user.message":
           case "assistant.turn_start":
@@ -1260,20 +1326,27 @@ export class SessionRunner {
           case "subagent.started":
           case "subagent.completed":
           case "subagent.failed":
-            latestRelevantState = "active";
-            terminalEvent = null;
+            markActive(event.type);
             break;
           case "session.idle":
+            if (hasTurnEnd && activeEventsAfterTurnEnd > 0) {
+              markActive(event.type);
+              break;
+            }
+            markTerminal(event);
+            break;
           case "assistant.turn_end":
+            hasTurnEnd = true;
+            activeEventsAfterTurnEnd = 0;
+            markTerminal(event);
+            break;
           case "session.error":
           case "abort":
-            latestRelevantState = "terminal";
-            terminalEvent = event;
+            markTerminal(event);
             break;
           case "session.shutdown":
             if (options.treatSessionShutdownAsTerminal !== false) {
-              latestRelevantState = "terminal";
-              terminalEvent = event;
+              markTerminal(event);
             }
             break;
           default:
