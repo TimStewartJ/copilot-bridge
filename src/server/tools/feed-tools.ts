@@ -221,7 +221,7 @@ export function createFeedTools(ctx: AppContext) {
       },
     }),
     defineTool("feed_list", {
-      description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
+      description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use keyPrefix to inspect a keyed proposal family without loading unrelated cards. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
       parameters: {
         type: "object",
         properties: {
@@ -229,6 +229,7 @@ export function createFeedTools(ctx: AppContext) {
           kind: { type: "string", description: "Filter by kind." },
           taskId: { type: "string", description: "Filter by related task ID." },
           sessionId: { type: "string", description: "Filter by related session ID." },
+          keyPrefix: { type: "string", description: "Filter to cards whose stable key/dedupeKey starts with this prefix. Keyless cards are excluded." },
           limit: { type: "number", description: "Maximum cards per page to return, capped by the server." },
           cursor: { type: "string", description: "Opaque nextCursor from a previous feed_list response. Must be paired with the identical filter arguments; pass only when the previous nextCursor was non-null." },
           includeDismissed: { type: "boolean", description: "When true and status is omitted, include all statuses." },
@@ -242,6 +243,7 @@ export function createFeedTools(ctx: AppContext) {
             kind: args.kind,
             taskId: args.taskId,
             sessionId: args.sessionId,
+            keyPrefix: args.keyPrefix,
             limit: args.limit,
             cursor: args.cursor,
             includeDismissed: args.includeDismissed === true,
