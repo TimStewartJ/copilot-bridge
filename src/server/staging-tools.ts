@@ -3,7 +3,6 @@
 // and deploy only after validation passes.
 
 import { defineTool } from "@github/copilot-sdk";
-import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import type express from "express";
@@ -87,11 +86,8 @@ import {
   type StagingPreviewProfile,
 } from "./staging-preview-shared.js";
 import {
-  appendCapturedCommandOutput,
   joinFailureSections,
-  renderCapturedCommandOutput,
   truncateFailureText,
-  type CapturedCommandOutput,
 } from "./staging-command-utils.js";
 import { prepareReleaseSlot } from "./release-slots.js";
 import { log } from "./staging-log.js";
@@ -100,14 +96,13 @@ export { parsePreviewPrefix, shouldManageStagingArtifacts } from "./staging-prev
 export { getStagingRouter, registerExpressApp } from "./staging-backend-manager.js";
 import { toolFailure } from "./tool-results.js";
 import {
-  buildCommandFailureOutput,
   extractCommandFailureLogPath,
   extractCommandFailureLogWriteError,
   formatCommandDuration,
-  writeValidationCommandLog,
 } from "./validation-command-log.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
+import { runValidationCommand } from "./validation-command-runner.js";
 
 
 async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
@@ -220,91 +215,20 @@ async function run(
     : undefined;
   const baseEnv = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
   const env = withNonInteractiveCommandEnv({ ...baseEnv, ...options.env });
-  const startedAt = Date.now();
-
-  return await new Promise((resolve) => {
-    const child = spawn(cmd, { cwd, env, shell: true, windowsHide: true });
-    const stdout: CapturedCommandOutput = { output: "", truncatedChars: 0 };
-    const stderr: CapturedCommandOutput = { output: "", truncatedChars: 0 };
-    let spawnError: Error | undefined;
-    let timedOut = false;
-    let settled = false;
-
-    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      validationEnv?.cleanup();
-
-      const stdoutOutput = renderCapturedCommandOutput("stdout", stdout);
-      const stderrOutput = renderCapturedCommandOutput("stderr", stderr);
-
-      if (code === 0 && !timedOut && !spawnError) {
-        resolve({ ok: true, output: stdoutOutput });
-        return;
-      }
-
-      const elapsedMs = Date.now() - startedAt;
-      const fallbackOutput = timedOut
-        ? `Command timed out after ${Math.ceil(timeoutMs / 1_000)} seconds.`
-        : signal
-          ? `Command exited with signal ${signal}.`
-          : `Command exited with code ${code ?? "unknown"}.`;
-      const rawOutput = joinFailureSections(
-        stderrOutput,
-        stdoutOutput,
-        spawnError ? spawnError.message : undefined,
-      ) ?? fallbackOutput;
-      const annotatedOutput = buildCommandFailureOutput({
-        output: rawOutput,
-        elapsedMs,
-        timedOut,
-        timeoutMs,
-      });
-      const logResult = writeValidationCommandLog({
-        rootDir: PRODUCTION_ROOT,
-        source: "staging",
-        command: cmd,
-        cwd,
-        output: annotatedOutput,
-        elapsedMs,
-        timedOut,
-        timeoutMs,
-      });
-      resolve({
-        ok: false,
-        output: buildCommandFailureOutput({
-          output: rawOutput,
-          elapsedMs,
-          timedOut,
-          timeoutMs,
-          logPath: logResult.path,
-          logWriteError: logResult.error,
-        }),
-      });
-    };
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      if (child.pid) {
-        killProcessTree(child.pid);
-      } else {
-        child.kill("SIGKILL");
-      }
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      appendCapturedCommandOutput(stdout, chunk);
+  try {
+    return await runValidationCommand({
+      rootDir: PRODUCTION_ROOT,
+      source: "staging",
+      command: cmd,
+      cwd,
+      env,
+      timeoutMs,
+      killProcessTree,
+      failureOutputFormat: "plain",
     });
-    child.stderr.on("data", (chunk) => {
-      appendCapturedCommandOutput(stderr, chunk);
-    });
-    child.on("error", (err) => {
-      spawnError = err;
-      finish(null, null);
-    });
-    child.on("close", finish);
-  });
+  } finally {
+    validationEnv?.cleanup();
+  }
 }
 
 function stagingFailure(

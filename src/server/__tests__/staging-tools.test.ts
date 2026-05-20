@@ -1405,7 +1405,48 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("The staged changes did not pass the preview validation gate.");
     expect(result.textResultForLlm).toContain("1 failed");
     expect(result.textResultForLlm).toContain("Full command output:");
+    expect(result.textResultForLlm).not.toContain("Command exited with code 1.");
     expect(result).not.toHaveProperty("error");
+  });
+
+  it("surfaces validation log write errors in staging command telemetry", async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd === "npm run check:pr") {
+        const error = new Error("PR gate failed") as Error & { stderr: string };
+        error.stderr = "validation failed\n";
+        throw error;
+      }
+      return "";
+    });
+    writeFileSyncCallMock.mockImplementation((file) => {
+      if (isValidationLogPath(String(file))) {
+        throw new Error("disk full");
+      }
+    });
+
+    const tools = await loadStagingTools();
+    const stagingDir = createTempDir("bridge-stage-preview-log-error-");
+    const result = await tools.staging_preview.handler(
+      { stagingDir },
+      {
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        toolName: "staging_preview",
+        arguments: {},
+      } satisfies ToolInvocation,
+    ) as any;
+
+    expect(result).toMatchObject({
+      resultType: "failure",
+      toolTelemetry: {
+        command: "npm run check:pr",
+        cwd: stagingDir,
+        stagingDir,
+        validationLogWriteError: "disk full",
+      },
+    });
+    expect(result.toolTelemetry).not.toHaveProperty("validationLogPath");
+    expect(result.textResultForLlm).toContain("Unable to write full command output: disk full");
   });
 
   it("caps noisy staging command output while preserving the diagnostic tail", async () => {
