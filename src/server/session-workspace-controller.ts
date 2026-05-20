@@ -1,11 +1,16 @@
-import { readFileSync, statSync } from "node:fs";
-import { stat as statAsync } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { Task, TaskStore } from "./task-store.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
+import {
+  createWorkspaceAvailabilityLookup,
+  getWorkspaceAvailability,
+  resolveAvailableWorkspaceCwd,
+  resolveAvailableWorkspaceCwdAsync,
+} from "./session-workspace-availability.js";
 
 export type SessionWorkspaceChangeOptions = { allowDuringActiveTurn?: boolean };
 
@@ -28,91 +33,6 @@ export interface ResetSessionWorkspaceResult {
   cwd: string;
   source: "task-default";
   message: string;
-}
-
-interface WorkspaceAvailability {
-  cwd: string;
-  available: boolean;
-  clearStalePin: boolean;
-}
-
-type WorkspaceAvailabilityLookup = (cwd?: string | null) => Promise<WorkspaceAvailability | undefined>;
-
-function getFsErrorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" ? code : undefined;
-}
-
-function normalizeWorkspaceCwd(cwd?: string | null): string | undefined {
-  const normalized = cwd?.trim();
-  return normalized || undefined;
-}
-
-function getWorkspaceAvailability(cwd?: string | null): WorkspaceAvailability | undefined {
-  const normalized = normalizeWorkspaceCwd(cwd);
-  if (!normalized) return undefined;
-  try {
-    return {
-      cwd: normalized,
-      available: statSync(normalized).isDirectory(),
-      clearStalePin: true,
-    };
-  } catch (error) {
-    const code = getFsErrorCode(error);
-    return {
-      cwd: normalized,
-      available: false,
-      clearStalePin: code === "ENOENT" || code === "ENOTDIR",
-    };
-  }
-}
-
-async function getWorkspaceAvailabilityAsync(cwd?: string | null): Promise<WorkspaceAvailability | undefined> {
-  const normalized = normalizeWorkspaceCwd(cwd);
-  if (!normalized) return undefined;
-  try {
-    return {
-      cwd: normalized,
-      available: (await statAsync(normalized)).isDirectory(),
-      clearStalePin: true,
-    };
-  } catch (error) {
-    const code = getFsErrorCode(error);
-    return {
-      cwd: normalized,
-      available: false,
-      clearStalePin: code === "ENOENT" || code === "ENOTDIR",
-    };
-  }
-}
-
-function createWorkspaceAvailabilityLookup(): WorkspaceAvailabilityLookup {
-  const cache = new Map<string, Promise<WorkspaceAvailability | undefined>>();
-  return (cwd?: string | null) => {
-    const normalized = normalizeWorkspaceCwd(cwd);
-    if (!normalized) return Promise.resolve(undefined);
-
-    let promise = cache.get(normalized);
-    if (!promise) {
-      promise = getWorkspaceAvailabilityAsync(normalized);
-      cache.set(normalized, promise);
-    }
-    return promise;
-  };
-}
-
-function resolveAvailableWorkspaceCwd(cwd?: string | null): string | undefined {
-  const availability = getWorkspaceAvailability(cwd);
-  return availability?.available ? availability.cwd : undefined;
-}
-
-async function resolveAvailableWorkspaceCwdAsync(
-  cwd: string | undefined,
-  getAvailability: WorkspaceAvailabilityLookup,
-): Promise<string | undefined> {
-  const availability = await getAvailability(cwd);
-  return availability?.available ? availability.cwd : undefined;
 }
 
 export class SessionWorkspaceController {
@@ -220,6 +140,7 @@ export class SessionWorkspaceController {
 
       if (pinnedAvailability) {
         if (pinnedAvailability.clearStalePin) {
+          // Missing pins are stale preferences; clear them so future SDK resumes do not reuse an invalid cwd.
           this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
         }
         console.warn(
@@ -305,6 +226,7 @@ export class SessionWorkspaceController {
     if (availability?.available) return availability.cwd;
 
     if (availability?.clearStalePin) {
+      // Keep persisted pins aligned with the cwd we can safely pass to the SDK.
       this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
     }
     console.warn(

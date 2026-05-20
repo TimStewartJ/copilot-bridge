@@ -146,12 +146,18 @@ describe("SessionManager workspace resolution", () => {
     const task = taskStore.createTask("Fallback task");
     taskStore.updateTask(task.id, { cwd: taskWorkspace });
     taskStore.linkSession(task.id, "session-1");
-    sessionWorkspaceStore.setWorkspace("session-1", join(copilotHome, "missing-staging-worktree"));
+    const missingWorkspace = join(copilotHome, "missing-staging-worktree");
+    sessionWorkspaceStore.setWorkspace("session-1", missingWorkspace);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const config = manager.buildSessionConfig({ sessionId: "session-1", task: taskStore.getTask(task.id) });
+    try {
+      const config = manager.buildSessionConfig({ sessionId: "session-1", task: taskStore.getTask(task.id) });
 
-    expect(config.workingDirectory).toBe(taskWorkspace);
-    expect(sessionWorkspaceStore.getWorkspace("session-1")).toBeUndefined();
+      expect(config.workingDirectory).toBe(taskWorkspace);
+      expect(sessionWorkspaceStore.getWorkspace("session-1")).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("falls back from legacy yaml to task cwd and omits an unconfigured workspace", () => {
@@ -184,11 +190,17 @@ describe("SessionManager workspace resolution", () => {
     const { manager, taskStore, sessionWorkspaceStore } = createManager({ copilotHome });
     const task = taskStore.createTask("Missing fallback task");
     taskStore.updateTask(task.id, { cwd: join(copilotHome, "missing-task") });
-    sessionWorkspaceStore.setWorkspace("session-missing", join(copilotHome, "missing-pinned"));
+    const missingPinned = join(copilotHome, "missing-pinned");
+    sessionWorkspaceStore.setWorkspace("session-missing", missingPinned);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    expect(manager.buildSessionConfig({ sessionId: "session-missing", task: taskStore.getTask(task.id) }).workingDirectory)
-      .toBeUndefined();
-    expect(sessionWorkspaceStore.getWorkspace("session-missing")).toBeUndefined();
+    try {
+      expect(manager.buildSessionConfig({ sessionId: "session-missing", task: taskStore.getTask(task.id) }).workingDirectory)
+        .toBeUndefined();
+      expect(sessionWorkspaceStore.getWorkspace("session-missing")).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("uses task cwd in disk session lists when the persisted workspace is missing", async () => {
@@ -203,17 +215,23 @@ describe("SessionManager workspace resolution", () => {
     const task = taskStore.createTask("Listed task");
     taskStore.updateTask(task.id, { cwd: taskWorkspace });
     taskStore.linkSession(task.id, "session-listed");
-    sessionWorkspaceStore.setWorkspace("session-listed", join(copilotHome, "missing-pinned"));
+    const missingPinned = join(copilotHome, "missing-pinned");
+    sessionWorkspaceStore.setWorkspace("session-listed", missingPinned);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const sessions = await manager.listSessionsFromDisk({ includeArchived: true });
+    try {
+      const sessions = await manager.listSessionsFromDisk({ includeArchived: true });
 
-    expect(sessions).toEqual([
-      expect.objectContaining({
-        sessionId: "session-listed",
-        context: { cwd: taskWorkspace },
-      }),
-    ]);
-    expect(sessionWorkspaceStore.getWorkspace("session-listed")).toBeUndefined();
+      expect(sessions).toEqual([
+        expect.objectContaining({
+          sessionId: "session-listed",
+          context: { cwd: taskWorkspace },
+        }),
+      ]);
+      expect(sessionWorkspaceStore.getWorkspace("session-listed")).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("pins the task cwd for new task sessions", async () => {

@@ -37,6 +37,7 @@ import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
+import { getWorkspaceAvailability, resolveAvailableWorkspaceCwd } from "./session-workspace-availability.js";
 import {
   feedCardVisualOwner,
   HTML_MIME_TYPE,
@@ -216,7 +217,7 @@ const SESSION_WORKTREE_SELECTION_INVALID_ERROR = "Selected workspace is not a di
 
 type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "none";
 type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
-type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace";
+type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace" | "cleared_pinned_workspace";
 
 interface SessionWorkspaceSummaryPayload {
   effectiveCwd?: string;
@@ -226,6 +227,7 @@ interface SessionWorkspaceSummaryPayload {
     updatedAt: string;
   };
   overridesTaskWorkspace: boolean;
+  warnings?: SessionWorkspaceWarningPayload[];
 }
 
 interface SessionWorkspaceWarningPayload {
@@ -311,40 +313,6 @@ function normalizeWorkspacePath(cwd?: string | null): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function getFsErrorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" ? code : undefined;
-}
-
-function getWorkspaceAvailability(cwd?: string | null): {
-  cwd: string;
-  available: boolean;
-  clearStalePin: boolean;
-} | undefined {
-  const normalized = normalizeWorkspacePath(cwd);
-  if (!normalized) return undefined;
-  try {
-    return {
-      cwd: normalized,
-      available: statSync(normalized).isDirectory(),
-      clearStalePin: true,
-    };
-  } catch (error) {
-    const code = getFsErrorCode(error);
-    return {
-      cwd: normalized,
-      available: false,
-      clearStalePin: code === "ENOENT" || code === "ENOTDIR",
-    };
-  }
-}
-
-function resolveAvailableWorkspaceCwd(cwd?: string | null): string | undefined {
-  const availability = getWorkspaceAvailability(cwd);
-  return availability?.available ? availability.cwd : undefined;
-}
-
 function normalizeWorkspacePathForComparison(cwd: string): string {
   const normalized = cwd.trim().replace(/\\/g, "/");
   if (normalized === "/" || /^[A-Za-z]:\/$/.test(normalized)) return normalized.toLowerCase();
@@ -379,8 +347,14 @@ function buildSessionWorkspaceSummary(
 } {
   const sessionOverride = ctx.sessionWorkspaceStore?.getWorkspace(sessionId);
   const overrideAvailability = getWorkspaceAvailability(sessionOverride?.cwd);
+  const warnings: SessionWorkspaceWarningPayload[] = [];
   if (sessionOverride && overrideAvailability && !overrideAvailability.available && overrideAvailability.clearStalePin) {
+    // A missing pinned cwd is stale user state; clear it before the SDK can resume with an invalid directory.
     ctx.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+    warnings.push({
+      code: "cleared_pinned_workspace",
+      message: `Pinned session workspace was cleared because it is no longer available: ${overrideAvailability.cwd}`,
+    });
   }
   const overrideCwd = overrideAvailability?.available ? overrideAvailability.cwd : undefined;
   const legacyCwd = resolveAvailableWorkspaceCwd(getLegacySessionWorkspaceCwd(ctx, sessionId));
@@ -404,6 +378,7 @@ function buildSessionWorkspaceSummary(
         }
       : undefined,
     overridesTaskWorkspace: !!overrideCwd && !!taskCwd && normalizeWorkspacePathForComparison(overrideCwd) !== normalizeWorkspacePathForComparison(taskCwd),
+    ...(warnings.length > 0 ? { warnings } : {}),
     source,
   };
 }
@@ -523,7 +498,7 @@ async function buildSessionWorkspaceDetails(
     taskId: task?.id,
     ...summary,
     pathState,
-    warnings,
+    warnings: [...(summary.warnings ?? []), ...warnings],
     availableWorktrees,
     canResetToTask: !!summary.taskCwd,
     ...getSessionStatus(ctx, sessionId),
