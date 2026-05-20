@@ -365,7 +365,11 @@ describe("Status stream", () => {
           res.setEncoding("utf8");
           res.on("data", (chunk) => {
             text += chunk;
-            if (text.includes('"type":"server:restart-pending","waitingSessions":2')) {
+            if (
+              text.includes('"type":"server:restart-pending"')
+              && text.includes('"waitingSessions":2')
+              && text.includes('"serverInstanceId"')
+            ) {
               req.destroy();
               resolve(text);
             }
@@ -378,10 +382,51 @@ describe("Status stream", () => {
         });
       });
 
-      expect(body).toContain('data: {"type":"server:restart-pending","waitingSessions":2}');
+      expect(body).toContain('"type":"server:restart-pending"');
+      expect(body).toContain('"waitingSessions":2');
+      expect(body).toContain('"serverInstanceId"');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
+  });
+
+  it("GET /api/restart-status returns persisted restart state", async () => {
+    const runtimePaths = createRestartRuntimePaths();
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
+      requestId: "req-restart-status",
+      phase: "waiting-for-sessions",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      waitingSessions: 2,
+      launcherHeartbeatAt: null,
+    });
+    ({ app, ctx } = createTestApp({ runtimePaths }));
+
+    const res = await request(app).get("/api/restart-status");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      pending: true,
+      phase: "waiting-for-sessions",
+      requestedAt: "2026-04-24T12:00:00.000Z",
+      serverInstanceId: expect.any(String),
+      waitingSessions: 2,
+    });
+  });
+
+  it("GET /api/restart-status returns idle state when no restart is pending", async () => {
+    const runtimePaths = createRestartRuntimePaths();
+    ({ app, ctx } = createTestApp({ runtimePaths }));
+
+    const res = await request(app).get("/api/restart-status");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      pending: false,
+      phase: "idle",
+      requestedAt: null,
+      serverInstanceId: expect.any(String),
+      waitingSessions: 0,
+    });
   });
 });
 

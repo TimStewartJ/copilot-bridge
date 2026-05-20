@@ -25,6 +25,7 @@ export const queryKeys = {
   tags: ["tags"] as const,
   tasks: ["tasks"] as const,
   taskGroups: ["task-groups"] as const,
+  restartStatus: ["restart-status"] as const,
   sessions: (opts?: { includeArchived?: boolean }) =>
     ["sessions", opts ?? {}] as const,
   task: (id: string) => ["task", id] as const,

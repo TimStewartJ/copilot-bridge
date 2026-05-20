@@ -50,6 +50,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
+import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
@@ -142,6 +143,8 @@ export default function App() {
     waitingSessions: 0,
     shouldReload: false,
     reconnectedSincePending: false,
+    pendingSnapshotSeen: false,
+    pendingServerInstanceId: null,
   });
   const [sessionReloads, setSessionReloads] = useState<Record<string, { token: number; servers: McpServerStatus[] }>>({});
   const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
@@ -153,6 +156,7 @@ export default function App() {
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings } = useSettingsQuery();
+  const { data: restartStatus } = useRestartStatusQuery();
   useFavicon(settings?.favicon);
 
   // Buffer task:changed SSE invalidations during optimistic task mutations so
@@ -161,6 +165,16 @@ export default function App() {
     () => createDeferredTaskChangeInvalidator(queryClient),
     [queryClient],
   );
+
+  useEffect(() => {
+    if (!restartStatus) return;
+    setRestartBanner((prev) => reduceRestartBannerState(prev, {
+      type: "snapshot:restart-status",
+      pending: restartStatus.pending,
+      waitingSessions: restartStatus.waitingSessions,
+      serverInstanceId: restartStatus.serverInstanceId,
+    }));
+  }, [restartStatus?.pending, restartStatus?.waitingSessions, restartStatus?.requestedAt, restartStatus?.serverInstanceId]);
 
 
   // Derive active IDs and mode from URL
@@ -449,13 +463,19 @@ export default function App() {
         }
         break;
       case "server:restart-pending":
+        void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
         setRestartBanner((prev) => reduceRestartBannerState(prev, {
           type: "server:restart-pending",
           waitingSessions: event.waitingSessions,
+          serverInstanceId: event.serverInstanceId,
         }));
         break;
       case "server:restart-cleared":
-        setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "server:restart-cleared" }));
+        void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
+        setRestartBanner((prev) => reduceRestartBannerState(prev, {
+          type: "server:restart-cleared",
+          serverInstanceId: event.serverInstanceId,
+        }));
         break;
       case "schedule:triggered":
         // Schedule started work — refresh session list, task data, and schedule run history
@@ -1362,6 +1382,8 @@ export default function App() {
       className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
+      {restartBanner.phase && <RestartBanner phase={restartBanner.phase} waitingSessions={restartBanner.waitingSessions} />}
+
       {/* Row wrapper: TaskRail + sidebar + main content fill space above mobile nav */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
       {/* ── Task Rail (desktop only) ──────────────────────── */}
@@ -1522,8 +1544,6 @@ export default function App() {
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
         ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs ? "flex" : "hidden md:flex"}
       `.trim()}>
-        {restartBanner.phase && <RestartBanner phase={restartBanner.phase} waitingSessions={restartBanner.waitingSessions} />}
-
         {mobileRouteMeta.showSharedHeader && (
           <MobileDetailHeader
             onBack={handleMobileUp}

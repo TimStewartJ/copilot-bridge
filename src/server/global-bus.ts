@@ -20,6 +20,7 @@ export interface StatusEvent {
   scheduleName?: string;
   taskId?: string;
   readState?: Record<string, string>;
+  serverInstanceId?: string;
 }
 
 type Listener = (event: StatusEvent) => void;

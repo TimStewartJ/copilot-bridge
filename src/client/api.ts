@@ -395,6 +395,16 @@ export interface TaskSessionStorage {
 
 export type TaskGitStatus = TaskGitStatusResponse;
 
+export type RestartStatusPhase = "idle" | "queued" | "waiting-for-sessions" | "restarting";
+
+export interface RestartStatus {
+  pending: boolean;
+  phase: RestartStatusPhase;
+  waitingSessions: number;
+  requestedAt: string | null;
+  serverInstanceId: string;
+}
+
 // Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/
 const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
 export { API_BASE };
@@ -482,6 +492,10 @@ export interface TelemetryStats {
 export async function fetchTelemetryStats(since?: string): Promise<TelemetryStats[]> {
   const qs = since ? `?since=${encodeURIComponent(since)}` : "";
   return apiFetch<TelemetryStats[]>(`/api/telemetry/stats${qs}`);
+}
+
+export async function fetchRestartStatus(): Promise<RestartStatus> {
+  return apiFetch<RestartStatus>("/api/restart-status");
 }
 
 export async function fetchSessions(includeArchived = false): Promise<Session[]> {

@@ -2,6 +2,7 @@
 
 import express from "express";
 import multer from "multer";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
 import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename, dirname, sep } from "node:path";
@@ -698,6 +699,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "expiresAt",
   "autoArchiveKeep",
 ] as const;
+const SERVER_INSTANCE_ID = randomUUID();
 
 function validateScheduleCronInput(cronExpr: unknown): string | undefined {
   if (typeof cronExpr !== "string") return "cron expression must be a string";
@@ -768,6 +770,37 @@ function parseWavDurationSeconds(buffer: Buffer): number {
     throw new InvalidWavError("Uploaded WAV file does not contain audio samples.");
   }
   return durationSeconds;
+}
+
+type RestartStatusPhase = "idle" | "queued" | "waiting-for-sessions" | "restarting";
+
+interface RestartStatusResponse {
+  pending: boolean;
+  phase: RestartStatusPhase;
+  waitingSessions: number;
+  requestedAt: string | null;
+  serverInstanceId: string;
+}
+
+function restartStatusResponseFromState(state: {
+  phase: RestartStatusPhase;
+  waitingSessions: number;
+  requestedAt: string | null;
+}): RestartStatusResponse {
+  return {
+    pending: state.phase !== "idle",
+    phase: state.phase,
+    waitingSessions: Math.max(0, state.waitingSessions),
+    requestedAt: state.requestedAt,
+    serverInstanceId: SERVER_INSTANCE_ID,
+  };
+}
+
+function restartStatusEventFromState(state: Parameters<typeof restartStatusResponseFromState>[0]) {
+  const status = restartStatusResponseFromState(state);
+  return status.pending
+    ? { type: "server:restart-pending" as const, waitingSessions: status.waitingSessions, serverInstanceId: status.serverInstanceId }
+    : { type: "server:restart-cleared" as const, serverInstanceId: status.serverInstanceId };
 }
 
 export function createApiRouter(ctx: AppContext): express.Router {
@@ -1476,6 +1509,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
     res.json({ ok: true });
   });
 
+  router.get("/restart-status", async (_req, res) => {
+    res.json(restartStatusResponseFromState(await refreshRestartState()));
+  });
+
   // GET /status-stream — global SSE for session lifecycle events
   router.get("/status-stream", (req, res) => {
     res.writeHead(200, {
@@ -1502,7 +1539,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     const unsub = ctx.globalBus.subscribe((event) => {
       if (closed || res.writableEnded) return;
-      try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { close(); }
+      const clientEvent = event.type === "server:restart-pending" || event.type === "server:restart-cleared"
+        ? { ...event, serverInstanceId: SERVER_INSTANCE_ID }
+        : event;
+      try { res.write(`data: ${JSON.stringify(clientEvent)}\n\n`); } catch { close(); }
     });
 
     try { res.write(`: connected\n\n`); }
@@ -1511,12 +1551,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     void refreshRestartState()
       .then((restartState) => {
         if (closed || res.writableEnded) return;
-        if (restartState.phase !== "idle") {
-          try { res.write(`data: ${JSON.stringify({ type: "server:restart-pending", waitingSessions: restartState.waitingSessions })}\n\n`); }
-          catch { close(); }
-          return;
-        }
-        try { res.write(`data: ${JSON.stringify({ type: "server:restart-cleared" })}\n\n`); }
+        try { res.write(`data: ${JSON.stringify(restartStatusEventFromState(restartState))}\n\n`); }
         catch { close(); }
       })
       .catch(() => {
