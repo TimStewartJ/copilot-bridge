@@ -364,6 +364,44 @@ describe("feed-store", () => {
     expect(listPageCards({ includeDismissed: true })).toHaveLength(3);
   });
 
+  it("filters keyed card families by key prefix and scopes cursors", () => {
+    vi.useFakeTimers();
+    try {
+      const bus = createTestBus();
+      const taskStore = createTaskStore(db, bus);
+      store = createFeedStore(db, bus);
+      const task = taskStore.createTask("Proposal task");
+      vi.setSystemTime(new Date("2026-05-13T10:00:00.000Z"));
+      const first = store.saveCard({ key: "proposal:bridge:one", title: "Proposal one", taskId: task.id }).card;
+      vi.setSystemTime(new Date("2026-05-13T10:01:00.000Z"));
+      const second = store.saveCard({ key: "proposal:bridge:two", title: "Proposal two", taskId: task.id }).card;
+      store.saveCard({ key: "proposal:other:one", title: "Other proposal", taskId: task.id });
+      store.saveCard({ title: "Unkeyed task card", taskId: task.id });
+
+      const firstPage = store.listCardPage({ keyPrefix: "proposal:bridge:", taskId: task.id, limit: 1 });
+      expect(firstPage.cards.map((card) => card.id)).toEqual([second.id]);
+      expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+      const secondPage = store.listCardPage({
+        keyPrefix: "proposal:bridge:",
+        taskId: task.id,
+        limit: 1,
+        cursor: firstPage.nextCursor!,
+      });
+      expect(secondPage.cards.map((card) => card.id)).toEqual([first.id]);
+      expect(secondPage.nextCursor).toBeNull();
+
+      expect(() => store.listCardPage({
+        keyPrefix: "proposal:other:",
+        taskId: task.id,
+        limit: 1,
+        cursor: firstPage.nextCursor!,
+      })).toThrow("cursor does not match feed filters");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("deletes cards by id and key", () => {
     const keyed = store.saveCard({ key: "delete-me", title: "Keyed" }).card;
     const keyless = store.saveCard({ title: "Keyless" }).card;

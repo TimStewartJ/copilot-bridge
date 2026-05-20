@@ -56,12 +56,15 @@ describe("session manager feed tools", () => {
     const { ctx } = createTestApp();
     const listTool = getTool(ctx, "feed_list");
     const cursorDescription = getParameterDescription(ctx, "feed_list", "cursor");
+    const keyPrefixDescription = getParameterDescription(ctx, "feed_list", "keyPrefix");
 
     expect(listTool.description).toContain("Returns { cards, nextCursor }");
     expect(listTool.description).toContain("identical filters");
     expect(listTool.description).toContain("request each status separately");
+    expect(listTool.description).toContain("keyPrefix");
     expect(cursorDescription).toContain("previous feed_list response");
     expect(cursorDescription).toContain("identical filter arguments");
+    expect(keyPrefixDescription).toContain("starts with this prefix");
   });
 
   it("feed_save creates and updates keyed cards", async () => {
@@ -216,6 +219,28 @@ describe("session manager feed tools", () => {
     expect(secondPage.cards).toHaveLength(1);
     expect(secondPage.nextCursor).toBeNull();
     expect(new Set(returnedIds)).toEqual(new Set([first.card.id, second.card.id]));
+  });
+
+  it("feed_list filters keyed card families by keyPrefix", async () => {
+    const { ctx } = createTestApp();
+    const saveTool = getTool(ctx, "feed_save");
+    const listTool = getTool(ctx, "feed_list");
+    const task = ctx.taskStore.createTask("Proposal task");
+    await saveTool.handler({ key: "proposal:bridge:one", title: "Proposal one", taskId: task.id }, createInvocation("feed_save"));
+    await saveTool.handler({ key: "proposal:bridge:two", title: "Proposal two", taskId: task.id }, createInvocation("feed_save"));
+    await saveTool.handler({ key: "proposal:other:one", title: "Other proposal", taskId: task.id }, createInvocation("feed_save"));
+    await saveTool.handler({ title: "Unkeyed task card", taskId: task.id }, createInvocation("feed_save"));
+
+    const page = await listTool.handler({
+      keyPrefix: "proposal:bridge:",
+      taskId: task.id,
+    }, createInvocation("feed_list")) as any;
+
+    expect(page.cards.map((card: any) => card.dedupeKey).sort()).toEqual([
+      "proposal:bridge:one",
+      "proposal:bridge:two",
+    ]);
+    expect(page.nextCursor).toBeNull();
   });
 
   it("feed_save publishes, preserves, replaces, and clears feed visuals", async () => {

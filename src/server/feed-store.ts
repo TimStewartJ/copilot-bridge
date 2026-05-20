@@ -54,6 +54,7 @@ export interface FeedCardPageFilters {
   kind?: string;
   taskId?: string;
   sessionId?: string;
+  keyPrefix?: string;
   includeDismissed?: boolean;
   limit?: number;
   cursor?: string;
@@ -119,6 +120,7 @@ const FIELD_LIMITS = {
   kind: 40,
   taskId: 160,
   sessionId: 160,
+  keyPrefix: 200,
   url: 2 * 1024,
   linksJson: 4 * 1024,
   metadataJson: 4 * 1024,
@@ -189,6 +191,7 @@ interface NormalizedFeedListFilters {
   kind: string | undefined;
   taskId: string | undefined;
   sessionId: string | undefined;
+  keyPrefix: string | undefined;
   limit: number;
   order: FeedListOrder;
 }
@@ -201,6 +204,7 @@ interface FeedCursorPayload {
   kind: string | null;
   taskId: string | null;
   sessionId: string | null;
+  keyPrefix: string | null;
   pinned: 0 | 1;
   statusChangedAt: string;
   createdAt: string;
@@ -620,6 +624,7 @@ function normalizeListFilters(filters: FeedCardPageFilters): NormalizedFeedListF
     kind: normalizeFilterString("kind", filters.kind),
     taskId: normalizeFilterString("taskId", filters.taskId),
     sessionId: normalizeFilterString("sessionId", filters.sessionId),
+    keyPrefix: normalizeFilterString("keyPrefix", filters.keyPrefix),
     limit: normalizeLimit(filters.limit),
     order: feedListOrder(statusFilter),
   };
@@ -646,6 +651,10 @@ function appendFeedListFilters(
     where.push("sessionId = ?");
     values.push(filters.sessionId);
   }
+  if (filters.keyPrefix) {
+    where.push("instr(dedupeKey, ?) = 1");
+    values.push(filters.keyPrefix);
+  }
 }
 
 function cursorStringField(payload: Record<string, unknown>, field: keyof FeedCursorPayload): string {
@@ -659,6 +668,15 @@ function cursorStringField(payload: Record<string, unknown>, field: keyof FeedCu
 function cursorNullableStringField(payload: Record<string, unknown>, field: keyof FeedCursorPayload): string | null {
   const value = payload[field];
   if (value === null) return null;
+  if (typeof value !== "string" || !value) {
+    throw new FeedCardValidationError("cursor is invalid");
+  }
+  return value;
+}
+
+function cursorOptionalNullableStringField(payload: Record<string, unknown>, field: keyof FeedCursorPayload): string | null {
+  const value = payload[field];
+  if (value === undefined || value === null) return null;
   if (typeof value !== "string" || !value) {
     throw new FeedCardValidationError("cursor is invalid");
   }
@@ -697,6 +715,7 @@ function decodeFeedCursor(cursor: string): FeedCursorPayload {
     kind: cursorNullableStringField(parsed, "kind"),
     taskId: cursorNullableStringField(parsed, "taskId"),
     sessionId: cursorNullableStringField(parsed, "sessionId"),
+    keyPrefix: cursorOptionalNullableStringField(parsed, "keyPrefix"),
     pinned,
     statusChangedAt: cursorStringField(parsed, "statusChangedAt"),
     createdAt: cursorStringField(parsed, "createdAt"),
@@ -713,6 +732,7 @@ function assertFeedCursorScope(cursor: FeedCursorPayload, filters: NormalizedFee
     || cursor.kind !== (filters.kind ?? null)
     || cursor.taskId !== (filters.taskId ?? null)
     || cursor.sessionId !== (filters.sessionId ?? null)
+    || cursor.keyPrefix !== (filters.keyPrefix ?? null)
   ) {
     throw new FeedCardValidationError("cursor does not match feed filters");
   }
@@ -727,6 +747,7 @@ function encodeFeedCursor(card: FeedCard, filters: NormalizedFeedListFilters): s
     kind: filters.kind ?? null,
     taskId: filters.taskId ?? null,
     sessionId: filters.sessionId ?? null,
+    keyPrefix: filters.keyPrefix ?? null,
     pinned: card.pinned ? 1 : 0,
     statusChangedAt: card.statusChangedAt,
     createdAt: card.createdAt,
