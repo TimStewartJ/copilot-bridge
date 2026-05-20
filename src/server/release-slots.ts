@@ -10,7 +10,7 @@ import {
   writeFileSync,
   type Dirent,
 } from "node:fs";
-import { cp, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { dependencySyncHash, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import type { RestartValidationMode, RestartReleaseCandidate } from "./restart-signal.js";
@@ -221,20 +221,40 @@ export async function writeActiveRelease(dataDir: string, manifest: ReleaseSlotM
   await rename(tempPath, activePath);
 }
 
-function shouldCopySourcePath(sourceDir: string, currentPath: string): boolean {
+function firstPathSegment(relativePath: string): string | null {
+  const [firstSegment] = relativePath.split(/[\\/]/, 1);
+  return firstSegment || null;
+}
+
+function shouldCopySourcePath(sourceDir: string, currentPath: string, rootExcludes: Set<string>): boolean {
   const rel = relative(sourceDir, currentPath);
   if (!rel) return true;
-  const firstSegment = rel.split(/[\\/]/, 1)[0];
-  return !ROOT_COPY_EXCLUDES.has(firstSegment);
+  const firstSegment = firstPathSegment(rel);
+  return firstSegment === null || !rootExcludes.has(firstSegment);
+}
+
+function buildRootCopyExcludes(sourceDir: string, targetDir: string): Set<string> {
+  const rootExcludes = new Set(ROOT_COPY_EXCLUDES);
+  if (isPathInside(sourceDir, targetDir)) {
+    const firstSegment = firstPathSegment(relative(sourceDir, targetDir));
+    if (firstSegment !== null) rootExcludes.add(firstSegment);
+  }
+  return rootExcludes;
 }
 
 async function copyReleaseSource(sourceDir: string, targetDir: string): Promise<void> {
-  await cp(sourceDir, targetDir, {
-    recursive: true,
-    force: false,
-    errorOnExist: true,
-    filter: (sourcePath) => shouldCopySourcePath(sourceDir, sourcePath),
-  });
+  const rootExcludes = buildRootCopyExcludes(sourceDir, targetDir);
+  await mkdir(targetDir, { recursive: true });
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  await Promise.all(entries.map(async (entry) => {
+    if (rootExcludes.has(entry.name)) return;
+    await cp(join(sourceDir, entry.name), join(targetDir, entry.name), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      filter: (sourcePath) => shouldCopySourcePath(sourceDir, sourcePath, rootExcludes),
+    });
+  }));
 }
 
 async function removePath(path: string): Promise<void> {
