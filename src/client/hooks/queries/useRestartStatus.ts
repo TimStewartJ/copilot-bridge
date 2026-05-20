@@ -1,20 +1,25 @@
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { fetchRestartStatus, type RestartStatus } from "../../api";
 import { queryKeys } from "../../queryClient";
 
-const PENDING_RESTART_REFETCH_MS = 5_000;
+export const PENDING_RESTART_REFETCH_MS = 5_000;
+export const IDLE_RESTART_REFETCH_MS = 30_000;
 
-export function useRestartStatusQuery() {
-  const query = useQuery<RestartStatus>({
+export function getRestartStatusQueryOptions() {
+  return queryOptions({
     queryKey: queryKeys.restartStatus,
     queryFn: fetchRestartStatus,
     refetchInterval: (currentQuery) =>
-      currentQuery.state.data?.pending ? PENDING_RESTART_REFETCH_MS : false,
+      currentQuery.state.data?.pending ? PENDING_RESTART_REFETCH_MS : IDLE_RESTART_REFETCH_MS,
     refetchIntervalInBackground: false,
     refetchOnReconnect: true,
     refetchOnWindowFocus: true,
   });
+}
+
+export function useRestartStatusQuery() {
+  const query = useQuery(getRestartStatusQueryOptions());
 
   useEffect(() => {
     if (typeof document === "undefined" || typeof window === "undefined") return;
