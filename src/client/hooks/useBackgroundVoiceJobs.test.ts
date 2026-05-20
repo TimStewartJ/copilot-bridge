@@ -29,15 +29,27 @@ type HookOptions = Parameters<typeof useBackgroundVoiceJobs>[0];
 type GetDraft = HookOptions["getDraft"];
 type SetDraft = HookOptions["setDraft"];
 
-function voiceJobSnapshot(status: "accepted" | "done" = "accepted") {
+type VoiceJobSnapshotStatus = "accepted" | "transcribing" | "sending" | "done" | "error" | "recovered";
+
+function voiceJobSnapshot(overrides: Partial<{
+  id: string;
+  composerKey: string;
+  taskId: string;
+  targetSessionId: string;
+  status: VoiceJobSnapshotStatus;
+  safeToLeave: true;
+  createdAt: string;
+  updatedAt: string;
+}> = {}) {
   return {
     id: "voice-job-1",
     composerKey: "session-1",
     targetSessionId: "session-1",
-    status,
+    status: "accepted" as const,
     safeToLeave: true,
     createdAt: "2026-05-06T00:00:00.000Z",
     updatedAt: "2026-05-06T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -72,6 +84,8 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       navigateToSession: vi.fn(),
       refreshSessions: vi.fn(),
       refreshTasks: vi.fn(),
+      onVoiceSessionActivity: vi.fn(),
+      onVoiceSessionSettled: vi.fn(),
     };
 
     function Harness() {
@@ -108,6 +122,15 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       retryable: true,
       serverOwned: true,
     });
+    expect(options.onVoiceSessionActivity).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      status: "uploading",
+      statusChanged: true,
+    });
+    expect(options.onVoiceSessionSettled).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      status: "error",
+    });
 
     createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
     getDraftMock.mockReturnValue({ text: "Typed while offline" });
@@ -120,6 +143,83 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     expect(createVoiceJobMock).toHaveBeenCalledTimes(2);
     expect(createVoiceJobMock.mock.calls[1][1]).toBe(audio);
     expect(transcribeAudioMock).not.toHaveBeenCalled();
+  });
+
+  it("notifies existing target session activity immediately when autosend upload starts", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio,
+        submitMode: "autosend",
+      });
+    });
+
+    expect(options.onVoiceSessionActivity).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      status: "uploading",
+      statusChanged: true,
+    });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "accepted");
+    expect(options.onVoiceSessionActivity).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      status: "accepted",
+      statusChanged: true,
+    });
+  });
+
+  it("notifies draft target session activity when the server accepts an autosend", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot({
+      composerKey: "draft:task:task-1",
+      taskId: "task-1",
+      targetSessionId: "new-session",
+    }));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "draft:task:task-1",
+        audio,
+        submitMode: "autosend",
+      });
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("new-session")?.status === "accepted");
+    expect(options.onVoiceSessionActivity).toHaveBeenCalledWith({
+      sessionId: "new-session",
+      taskId: "task-1",
+      status: "accepted",
+      statusChanged: true,
+    });
+    expect(options.rememberDraftSession).toHaveBeenCalledWith("draft:task:task-1", "new-session");
+  });
+
+  it("notifies session activity when autosend completes before the client observes sending", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot({
+      status: "done",
+    }));
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio,
+        submitMode: "autosend",
+      });
+    });
+
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1") === null);
+    expect(options.onVoiceSessionActivity).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      status: "sending",
+      statusChanged: true,
+    });
+    expect(options.onVoiceSessionSettled).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      status: "done",
+    });
   });
 
   it("retries local transcription upload failures and inserts the retried transcript", async () => {

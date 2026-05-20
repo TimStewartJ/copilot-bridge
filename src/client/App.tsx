@@ -39,7 +39,7 @@ import {
 } from "./api";
 import { useReadState } from "./useReadState";
 import { usePageAttention } from "./usePageAttention";
-import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type VoiceBackgroundJob } from "./hooks/useBackgroundVoiceJobs";
+import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type VoiceBackgroundJob, type VoiceSessionActivity, type VoiceSessionSettled } from "./hooks/useBackgroundVoiceJobs";
 import { useDrafts } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
@@ -659,12 +659,12 @@ export default function App() {
   }, [activeSessionId, activeReadThroughActivityAt, markReadThroughRendered, pageHasAttention]);
 
   // Optimistic insert
-  const addOptimisticSession = useCallback((sessionId: string) => {
+  const addOptimisticSession = useCallback((sessionId: string, overrides: Partial<Session> = {}) => {
     const now = new Date();
     const timestamp = now.toISOString();
-    queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) => {
+    queryClient.setQueryData<Session[]>(queryKeys.sessions({ includeArchived: false }), (prev) => {
       if (!prev || prev.some((s) => s.sessionId === sessionId)) return prev;
-      return [{
+      const baseSession: Session = {
         sessionId,
         summary: "New session",
         modifiedTime: timestamp,
@@ -675,9 +675,81 @@ export default function App() {
         deferSummary: { count: 0, nextRunAt: null },
         isOptimistic: true,
         optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
+      };
+      const optimisticSession: Session = {
+        ...baseSession,
+        ...overrides,
+        sessionId,
+        deferSummary: overrides.deferSummary ?? baseSession.deferSummary,
+        isOptimistic: true,
+        optimisticUntil: overrides.optimisticUntil ?? baseSession.optimisticUntil,
+      };
+      return [{
+        ...optimisticSession,
       }, ...prev];
     });
   }, [queryClient]);
+
+  const linkOptimisticTaskSession = useCallback((taskId: string, sessionId: string) => {
+    const addSessionToTask = (task: Task): Task =>
+      task.id === taskId && !task.sessionIds.includes(sessionId)
+        ? { ...task, sessionIds: [...task.sessionIds, sessionId] }
+        : task;
+
+    queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) =>
+      prev?.map(addSessionToTask),
+    );
+    setSelectedTask((prev) => (prev?.id === taskId ? addSessionToTask(prev) : prev));
+  }, [queryClient]);
+
+  const patchVoiceSessionActivityInCache = useCallback((activity: VoiceSessionActivity) => {
+    const intent = getVoiceSessionIntent(activity.status);
+    queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const next = prev.map((session) => {
+        if (session.sessionId !== activity.sessionId) return session;
+        changed = true;
+        const existingIntent = session.intentText?.trim() ?? "";
+        const preserveExistingIntent = isSessionActive(session)
+          && existingIntent.length > 0
+          && !isVoiceSessionIntent(existingIntent);
+        return {
+          ...session,
+          runState: session.runState === "stalled" ? "stalled" as const : "busy" as const,
+          busy: true,
+          intentText: preserveExistingIntent ? session.intentText : intent,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [queryClient]);
+
+  const handleVoiceSessionActivity = useCallback((activity: VoiceSessionActivity) => {
+    const intent = getVoiceSessionIntent(activity.status);
+    addOptimisticSession(activity.sessionId, {
+      runState: "busy",
+      busy: true,
+      intentText: intent,
+    });
+    patchVoiceSessionActivityInCache(activity);
+    if (activity.statusChanged !== false) {
+      bumpSessionBusySignal(activity.sessionId);
+    }
+    if (activity.taskId) {
+      linkOptimisticTaskSession(activity.taskId, activity.sessionId);
+    }
+  }, [addOptimisticSession, bumpSessionBusySignal, linkOptimisticTaskSession, patchVoiceSessionActivityInCache]);
+
+  const handleVoiceSessionSettled = useCallback((settled: VoiceSessionSettled) => {
+    if (settled.status !== "done") {
+      clearSessionBusyHint(settled.sessionId);
+    }
+    void invalidateSessions();
+    if (settled.taskId) {
+      void invalidateTasks();
+    }
+  }, [clearSessionBusyHint, invalidateSessions, invalidateTasks]);
 
   // Sessions not linked to any task
   const globalSessions = useMemo(() => {
@@ -908,6 +980,8 @@ export default function App() {
     refreshTasks: () => {
       void invalidateTasks();
     },
+    onVoiceSessionActivity: handleVoiceSessionActivity,
+    onVoiceSessionSettled: handleVoiceSessionSettled,
   });
 
   const handleNewTask = async (groupId?: string) => {
@@ -1790,6 +1864,18 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function getVoiceSessionIntent(status: VoiceSessionActivity["status"]): string {
+  if (status === "uploading") return "Uploading voice input";
+  if (status === "sending") return "Sending voice message";
+  return "Processing voice input";
+}
+
+function isVoiceSessionIntent(intent: string): boolean {
+  return intent === "Uploading voice input"
+    || intent === "Processing voice input"
+    || intent === "Sending voice message";
 }
 
 // ── Mobile Task List View ────────────────────────────────────────
