@@ -14,8 +14,11 @@ import type { SessionMetaStore } from "./session-meta-store.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
+const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
 const RECENT_MESSAGES_MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
+const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 512;
+const EVENT_LOG_STATS_CACHE_VERSION = 1;
 const SESSION_LIST_WORKSPACE_READ_CONCURRENCY = 32;
 const SESSION_LIST_EVENT_STAT_CONCURRENCY = 64;
 
@@ -81,14 +84,84 @@ interface TailCandidateEvents {
   events: any[];
   bytesRead: number;
   fileSize: number;
+  mtimeMs: number;
   startOffset: number;
   readFullFile: boolean;
   malformedCandidateCount: number;
+  fullContentBuffer?: Buffer;
 }
 
 interface TailTurnState {
   initialTurnIndex: number;
   initialActiveTurnId?: string;
+}
+
+interface EventLogStatsCacheEntry {
+  eventsPath: string;
+  sessionId: string;
+  fileSize: number;
+  mtimeMs: number;
+  turnStateOffset: number;
+  stats: EventLogStats;
+}
+
+const eventLogStatsCache = new Map<string, EventLogStatsCacheEntry>();
+
+function getEventLogStatsCacheKey(
+  eventsPath: string,
+  sessionId: string,
+  fileSize: number,
+  mtimeMs: number,
+  turnStateOffset: number,
+): string {
+  return `${EVENT_LOG_STATS_CACHE_VERSION}\0${eventsPath}\0${sessionId}\0${fileSize}\0${mtimeMs}\0${turnStateOffset}`;
+}
+
+function pruneEventLogStatsCache(): void {
+  while (eventLogStatsCache.size > EVENT_LOG_STATS_CACHE_MAX_ENTRIES) {
+    const oldestKey = eventLogStatsCache.keys().next().value;
+    if (oldestKey === undefined) return;
+    eventLogStatsCache.delete(oldestKey);
+  }
+}
+
+function getCachedEventLogStats(
+  eventsPath: string,
+  sessionId: string,
+  fileSize: number,
+  mtimeMs: number,
+  turnStateOffset: number,
+): EventLogStats | undefined {
+  const key = getEventLogStatsCacheKey(eventsPath, sessionId, fileSize, mtimeMs, turnStateOffset);
+  const entry = eventLogStatsCache.get(key);
+  if (!entry) return undefined;
+  eventLogStatsCache.delete(key);
+  eventLogStatsCache.set(key, entry);
+  return entry.stats;
+}
+
+function setCachedEventLogStats(entry: EventLogStatsCacheEntry): void {
+  const key = getEventLogStatsCacheKey(
+    entry.eventsPath,
+    entry.sessionId,
+    entry.fileSize,
+    entry.mtimeMs,
+    entry.turnStateOffset,
+  );
+  eventLogStatsCache.delete(key);
+  eventLogStatsCache.set(key, entry);
+  pruneEventLogStatsCache();
+}
+
+export function clearEventLogStatsCache(sessionId?: string): void {
+  if (!sessionId) {
+    eventLogStatsCache.clear();
+    return;
+  }
+
+  for (const [key, entry] of eventLogStatsCache) {
+    if (entry.sessionId === sessionId) eventLogStatsCache.delete(key);
+  }
 }
 
 function lineMayAffectMessageTransform(line: string): boolean {
@@ -194,13 +267,17 @@ async function readTailCandidateEvents(
       events: [],
       bytesRead: 0,
       fileSize,
+      mtimeMs: fileStat.mtimeMs,
       startOffset: 0,
       readFullFile: true,
       malformedCandidateCount: 0,
+      fullContentBuffer: Buffer.alloc(0),
     };
   }
 
-  let bytesToRead = Math.min(fileSize, RECENT_MESSAGES_INITIAL_TAIL_BYTES);
+  let bytesToRead = fileSize <= RECENT_MESSAGES_SINGLE_READ_MAX_BYTES
+    ? fileSize
+    : Math.min(fileSize, RECENT_MESSAGES_INITIAL_TAIL_BYTES);
   const maxTailBytes = Math.min(fileSize, RECENT_MESSAGES_MAX_TAIL_BYTES);
   let latest: TailCandidateEvents | undefined;
   const file = await open(eventsPath, "r");
@@ -227,9 +304,11 @@ async function readTailCandidateEvents(
         events: parsed.events,
         bytesRead,
         fileSize,
+        mtimeMs: fileStat.mtimeMs,
         startOffset,
         readFullFile: position === 0,
         malformedCandidateCount: parsed.malformedCandidateCount,
+        ...(position === 0 ? { fullContentBuffer: contentBuffer } : {}),
       };
 
       const transformedCount = transformEventsToMessages(parsed.events, sessionId).length;
@@ -243,11 +322,7 @@ async function readTailCandidateEvents(
   }
 }
 
-async function scanEventLogStats(
-  eventsPath: string,
-  sessionId: string,
-  turnStateOffset: number,
-): Promise<EventLogStats> {
+function createEventLogStatsScanner(sessionId: string, turnStateOffset: number) {
   const openVisibleToolCallIds = new Set<string>();
   const visiblePublishVisualToolCallIds = new Set<string>();
   const visibleActivityTracker = createVisibleActivityTracker(sessionId);
@@ -258,7 +333,7 @@ async function scanEventLogStats(
   let initialTurnIndex = 0;
   let initialActiveTurnId: string | undefined;
 
-  const processLine = (lineBuffer: Buffer, lineStartOffset: number) => {
+  const processLine = (lineBuffer: Buffer, lineStartOffset: number): void => {
     const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
       ? lineBuffer.length - 1
       : lineBuffer.length;
@@ -323,6 +398,52 @@ async function scanEventLogStats(
     }
   };
 
+  return {
+    processLine,
+    finish(): EventLogStats {
+      return {
+        eventCount,
+        candidateEventCount,
+        malformedCandidateCount,
+        totalEntries,
+        lastVisibleActivityAt: visibleActivityTracker.getLastVisibleActivityAt(),
+        turnState: {
+          initialTurnIndex,
+          ...(initialActiveTurnId ? { initialActiveTurnId } : {}),
+        },
+      };
+    },
+  };
+}
+
+function scanEventLogStatsFromBuffer(
+  contentBuffer: Buffer,
+  sessionId: string,
+  turnStateOffset: number,
+): EventLogStats {
+  const scanner = createEventLogStatsScanner(sessionId, turnStateOffset);
+  let lineStart = 0;
+
+  while (true) {
+    const newlineIndex = contentBuffer.indexOf(0x0a, lineStart);
+    if (newlineIndex < 0) break;
+    scanner.processLine(contentBuffer.subarray(lineStart, newlineIndex), lineStart);
+    lineStart = newlineIndex + 1;
+  }
+
+  if (lineStart < contentBuffer.length) {
+    scanner.processLine(contentBuffer.subarray(lineStart), lineStart);
+  }
+
+  return scanner.finish();
+}
+
+async function scanEventLogStats(
+  eventsPath: string,
+  sessionId: string,
+  turnStateOffset: number,
+): Promise<EventLogStats> {
+  const scanner = createEventLogStatsScanner(sessionId, turnStateOffset);
   const file = await open(eventsPath, "r");
   try {
     const chunkBuffer = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
@@ -344,7 +465,7 @@ async function scanEventLogStats(
       while (true) {
         const newlineIndex = combined.indexOf(0x0a, lineStart);
         if (newlineIndex < 0) break;
-        processLine(combined.subarray(lineStart, newlineIndex), combinedStartOffset + lineStart);
+        scanner.processLine(combined.subarray(lineStart, newlineIndex), combinedStartOffset + lineStart);
         lineStart = newlineIndex + 1;
       }
 
@@ -359,23 +480,13 @@ async function scanEventLogStats(
     }
 
     if (leftover.length > 0) {
-      processLine(leftover, leftoverStartOffset);
+      scanner.processLine(leftover, leftoverStartOffset);
     }
   } finally {
     await file.close();
   }
 
-  return {
-    eventCount,
-    candidateEventCount,
-    malformedCandidateCount,
-    totalEntries,
-    lastVisibleActivityAt: visibleActivityTracker.getLastVisibleActivityAt(),
-    turnState: {
-      initialTurnIndex,
-      ...(initialActiveTurnId ? { initialActiveTurnId } : {}),
-    },
-  };
+  return scanner.finish();
 }
 
 async function readMessagesFromDiskFull(
@@ -580,18 +691,13 @@ export async function readMessagesFromDisk(
     return readMessagesFromDiskFull(deps, sessionId, eventsPath, t0, opts);
   }
 
-  try {
-    await stat(eventsPath);
-  } catch {
-    return { messages: [], total: 0, hasMore: false };
-  }
-
   const tailPromise = (async () => {
     const tTail = Date.now();
     const tail = await readTailCandidateEvents(eventsPath, sessionId, latestLimit);
     deps.recordSpan("session.readFromDisk.tailRead", Date.now() - tTail, sessionId, {
       bytesRead: tail.bytesRead,
       fileSize: tail.fileSize,
+      mtimeMs: tail.mtimeMs,
       startOffset: tail.startOffset,
       readFullFile: tail.readFullFile,
       tailEventCount: tail.events.length,
@@ -608,17 +714,58 @@ export async function readMessagesFromDisk(
   }
 
   let stats: EventLogStats;
+  let derivedTailMessages: TransformedEntry[] | undefined;
   try {
-    const tStats = Date.now();
-    stats = await scanEventLogStats(eventsPath, sessionId, tail.startOffset);
-    deps.recordSpan("session.readFromDisk.stats", Date.now() - tStats, sessionId, {
-      eventCount: stats.eventCount,
-      candidateEventCount: stats.candidateEventCount,
-      malformedCandidateCount: stats.malformedCandidateCount,
-      totalMessages: stats.totalEntries,
-      initialTurnIndex: stats.turnState.initialTurnIndex,
-      hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
-    });
+    if (tail.readFullFile && tail.fullContentBuffer) {
+      const tStats = Date.now();
+      stats = scanEventLogStatsFromBuffer(tail.fullContentBuffer, sessionId, tail.startOffset);
+      derivedTailMessages = transformEventsToMessages(tail.events, sessionId, stats.turnState);
+      deps.recordSpan("session.readFromDisk.stats", Date.now() - tStats, sessionId, {
+        cacheResult: "derived",
+        eventCount: stats.eventCount,
+        candidateEventCount: stats.candidateEventCount,
+        malformedCandidateCount: stats.malformedCandidateCount,
+        totalMessages: stats.totalEntries,
+        initialTurnIndex: stats.turnState.initialTurnIndex,
+        hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
+      });
+    } else {
+      const cachedStats = getCachedEventLogStats(eventsPath, sessionId, tail.fileSize, tail.mtimeMs, tail.startOffset);
+      const tStats = Date.now();
+      stats = cachedStats ?? await scanEventLogStats(eventsPath, sessionId, tail.startOffset);
+      const statsMs = Date.now() - tStats;
+      deps.recordSpan("session.readFromDisk.stats", statsMs, sessionId, {
+        cacheResult: cachedStats ? "hit" : "miss",
+        eventCount: stats.eventCount,
+        candidateEventCount: stats.candidateEventCount,
+        malformedCandidateCount: stats.malformedCandidateCount,
+        totalMessages: stats.totalEntries,
+        initialTurnIndex: stats.turnState.initialTurnIndex,
+        hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
+      });
+      if (!cachedStats) {
+        const scannedFileStat = await stat(eventsPath);
+        if (scannedFileStat.size === tail.fileSize && scannedFileStat.mtimeMs === tail.mtimeMs) {
+          setCachedEventLogStats({
+            eventsPath,
+            sessionId,
+            fileSize: tail.fileSize,
+            mtimeMs: tail.mtimeMs,
+            turnStateOffset: tail.startOffset,
+            stats,
+          });
+        } else {
+          deps.recordSpan("session.readFromDisk.statsCache", statsMs, sessionId, {
+            result: "skip",
+            reason: "file-changed-during-scan",
+            initialFileSize: tail.fileSize,
+            currentFileSize: scannedFileStat.size,
+            initialMtimeMs: tail.mtimeMs,
+            currentMtimeMs: scannedFileStat.mtimeMs,
+          });
+        }
+      }
+    }
   } catch (err) {
     if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false };
     throw err;
@@ -631,20 +778,23 @@ export async function readMessagesFromDisk(
     if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false };
     throw err;
   }
-  if (currentFileStat.size !== tail.fileSize) {
+  if (currentFileStat.size !== tail.fileSize || currentFileStat.mtimeMs !== tail.mtimeMs) {
+    const fallbackReason = currentFileStat.size !== tail.fileSize ? "file-size-changed" : "file-mtime-changed";
     deps.recordSpan("session.readFromDisk.tailFallback", Date.now() - t0, sessionId, {
-      reason: "file-size-changed",
+      reason: fallbackReason,
       initialFileSize: tail.fileSize,
       currentFileSize: currentFileStat.size,
+      initialMtimeMs: tail.mtimeMs,
+      currentMtimeMs: currentFileStat.mtimeMs,
     });
     return readMessagesFromDiskFull(deps, sessionId, eventsPath, t0, opts, {
-      fallbackReason: "file-size-changed",
+      fallbackReason,
     });
   }
 
   const tTransform = Date.now();
-  const tailMessages = transformEventsToMessages(tail.events, sessionId, stats.turnState);
-  const transformMs = Date.now() - tTransform;
+  const tailMessages = derivedTailMessages ?? transformEventsToMessages(tail.events, sessionId, stats.turnState);
+  const transformMs = derivedTailMessages ? 0 : Date.now() - tTransform;
 
   if (!tail.readFullFile && tailMessages.length < Math.min(latestLimit, stats.totalEntries)) {
     deps.recordSpan("session.readFromDisk.tailFallback", Date.now() - t0, sessionId, {
@@ -671,7 +821,7 @@ export async function readMessagesFromDisk(
     eventCount: stats.eventCount,
     candidateEventCount: stats.candidateEventCount,
     tailEventCount: tail.events.length,
-    malformedCandidateCount: stats.malformedCandidateCount + tail.malformedCandidateCount,
+    malformedCandidateCount: stats.malformedCandidateCount + (tail.readFullFile ? 0 : tail.malformedCandidateCount),
     messageCount: messages.length,
     totalMessages: total,
     transformMs,

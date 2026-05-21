@@ -79,6 +79,7 @@ import {
   type StartWorkAttachment,
 } from "./session-attachment-routing.js";
 import {
+  clearEventLogStatsCache,
   listSessionsFromDisk as listSessionsFromDiskWithDeps,
   readMessagesFromDisk as readMessagesFromDiskWithDeps,
 } from "./session-disk-reader.js";
@@ -1554,6 +1555,7 @@ export class SessionManager {
       "Session was deleted before the user input request was answered",
     );
     this.evictCachedSession(sessionId);
+    clearEventLogStatsCache(sessionId);
     try {
       await client.deleteSession(sessionId);
     } catch (err: unknown) {

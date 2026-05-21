@@ -1002,12 +1002,26 @@ export function createApiRouter(ctx: AppContext): express.Router {
   // ── Enriched session list cache ─────────────────────────────────
   // Caches the enriched session list (plan checks, workspace summaries, metadata).
   // Invalidated by structural changes; volatile run-state fields are refreshed on read.
-  let enrichedSessionCache: { data: any[]; timestamp: number; includesArchived: boolean } | null = null;
+  type SessionListCacheKind = "active" | "all";
+  type EnrichedSessionCache = { data: any[]; timestamp: number; includesArchived: boolean; generation: number };
   type SessionCacheBuild = { generation: number; promise: Promise<any[]> };
-  let activeSessionCacheBuild: SessionCacheBuild | null = null;
-  let allSessionCacheBuild: SessionCacheBuild | null = null;
+  const enrichedSessionCaches: Record<SessionListCacheKind, EnrichedSessionCache | null> = {
+    active: null,
+    all: null,
+  };
+  const sessionCacheBuilds: Record<SessionListCacheKind, SessionCacheBuild | null> = {
+    active: null,
+    all: null,
+  };
   const ENRICHED_CACHE_TTL = 30_000; // 30 seconds
+  const ENRICHED_CACHE_INVALIDATION_DEBOUNCE_MS = 75;
   let enrichedSessionCacheGeneration = 0;
+  type EnrichedCacheInvalidationDebounceResult = "immediate" | "queued" | "merged" | "flushed";
+  let pendingEnrichedCacheInvalidation: {
+    timer: NodeJS.Timeout;
+    reasons: Set<string>;
+    rawDisk: boolean;
+  } | null = null;
 
   function recordSessionCacheSpan(name: string, duration: number, metadata: Record<string, unknown>): void {
     try {
@@ -1015,21 +1029,98 @@ export function createApiRouter(ctx: AppContext): express.Router {
     } catch { /* telemetry should never break core flow */ }
   }
 
-  function invalidateEnrichedCache(reason: string, opts: { rawDisk?: boolean } = {}) {
-    const hadCache = enrichedSessionCache !== null;
-    const hadActiveBuild = activeSessionCacheBuild !== null;
-    const hadAllBuild = allSessionCacheBuild !== null;
-    enrichedSessionCache = null;
+  function invalidateEnrichedCache(
+    reason: string,
+    opts: { rawDisk?: boolean; debounceResult?: EnrichedCacheInvalidationDebounceResult; skipPendingFlush?: boolean } = {},
+  ) {
+    let rawDisk = opts.rawDisk === true;
+    if (!opts.skipPendingFlush) {
+      const pending = pendingEnrichedCacheInvalidation;
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingEnrichedCacheInvalidation = null;
+        const trigger = `before:${reason}`;
+        reason = [...pending.reasons, reason].join(",");
+        rawDisk ||= pending.rawDisk;
+        recordSessionCacheSpan("session.enrichedList.invalidateDebounce", 0, {
+          debounceResult: "flushed",
+          trigger,
+          reasonCount: pending.reasons.size,
+          rawDisk: pending.rawDisk,
+        });
+      }
+    }
+    const hadActiveCache = enrichedSessionCaches.active !== null;
+    const hadAllCache = enrichedSessionCaches.all !== null;
+    const hadActiveBuild = sessionCacheBuilds.active !== null;
+    const hadAllBuild = sessionCacheBuilds.all !== null;
+    enrichedSessionCaches.active = null;
+    enrichedSessionCaches.all = null;
     enrichedSessionCacheGeneration += 1;
     recordSessionCacheSpan("session.enrichedList.invalidate", 0, {
       reason,
-      rawDisk: opts.rawDisk === true,
+      rawDisk,
+      debounceResult: opts.debounceResult ?? "immediate",
       generation: enrichedSessionCacheGeneration,
-      hadCache,
+      hadActiveCache,
+      hadAllCache,
       hadActiveBuild,
       hadAllBuild,
     });
-    if (opts.rawDisk) ctx.sessionManager.invalidateSessionListCache(reason);
+    if (rawDisk) ctx.sessionManager.invalidateSessionListCache(reason);
+  }
+
+  function flushPendingEnrichedCacheInvalidation(trigger: string): void {
+    const pending = pendingEnrichedCacheInvalidation;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingEnrichedCacheInvalidation = null;
+    invalidateEnrichedCache([...pending.reasons].join(","), {
+      rawDisk: pending.rawDisk,
+      debounceResult: "flushed",
+      skipPendingFlush: true,
+    });
+    recordSessionCacheSpan("session.enrichedList.invalidateDebounce", 0, {
+      debounceResult: "flushed",
+      trigger,
+      reasonCount: pending.reasons.size,
+      rawDisk: pending.rawDisk,
+    });
+  }
+
+  function queueEnrichedCacheInvalidation(reason: string, opts: { rawDisk?: boolean } = {}): void {
+    if (opts.rawDisk) {
+      invalidateEnrichedCache(reason, opts);
+      return;
+    }
+
+    const existing = pendingEnrichedCacheInvalidation;
+    if (existing) {
+      existing.reasons.add(reason);
+      recordSessionCacheSpan("session.enrichedList.invalidateDebounce", 0, {
+        debounceResult: "merged",
+        reason,
+        reasonCount: existing.reasons.size,
+        rawDisk: existing.rawDisk,
+      });
+      return;
+    }
+
+    const timer = setTimeout(
+      () => flushPendingEnrichedCacheInvalidation("timer"),
+      ENRICHED_CACHE_INVALIDATION_DEBOUNCE_MS,
+    );
+    timer.unref();
+    pendingEnrichedCacheInvalidation = {
+      timer,
+      reasons: new Set([reason]),
+      rawDisk: false,
+    };
+    recordSessionCacheSpan("session.enrichedList.invalidateDebounce", 0, {
+      debounceResult: "queued",
+      reason,
+      rawDisk: false,
+    });
   }
 
   function setSessionArchived(sessionId: string, archived: boolean) {
@@ -1090,44 +1181,59 @@ export function createApiRouter(ctx: AppContext): express.Router {
     return publicSessions;
   }
 
-  function getReusableSessionCacheBuild(build: SessionCacheBuild | null): Promise<any[]> | null {
+  function getSessionListCacheKind(includeArchived: boolean): SessionListCacheKind {
+    return includeArchived ? "all" : "active";
+  }
+
+  function isEnrichedSessionCacheValid(cache: EnrichedSessionCache | null, now: number): cache is EnrichedSessionCache {
+    return cache !== null && cache.generation === enrichedSessionCacheGeneration && (now - cache.timestamp) < ENRICHED_CACHE_TTL;
+  }
+
+  function getReusableSessionCacheBuild(kind: SessionListCacheKind): Promise<any[]> | null {
+    const build = sessionCacheBuilds[kind];
     return build?.generation === enrichedSessionCacheGeneration ? build.promise : null;
   }
 
   async function getEnrichedSessionList(includeArchived: boolean): Promise<any[]> {
+    flushPendingEnrichedCacheInvalidation("before:getEnrichedSessionList");
     const now = Date.now();
-    const cacheValid = enrichedSessionCache
-      && (!includeArchived || enrichedSessionCache.includesArchived)
-      && (now - enrichedSessionCache.timestamp) < ENRICHED_CACHE_TTL;
+    const cacheKind = getSessionListCacheKind(includeArchived);
+    const directCache = enrichedSessionCaches[cacheKind];
+    const reusableAllCache = !includeArchived && isEnrichedSessionCacheValid(enrichedSessionCaches.all, now)
+      ? enrichedSessionCaches.all
+      : null;
+    const reusableCache = isEnrichedSessionCacheValid(directCache, now) ? directCache : reusableAllCache;
 
-    if (cacheValid) {
+    if (reusableCache) {
       recordSessionCacheSpan("session.enrichedList.cache", 0, {
         result: "hit",
         includeArchived,
-        cacheIncludesArchived: enrichedSessionCache!.includesArchived,
-        count: enrichedSessionCache!.data.length,
+        cacheKind,
+        cacheIncludesArchived: reusableCache.includesArchived,
+        reusedAllCache: reusableCache === reusableAllCache,
+        count: reusableCache.data.length,
       });
-      return enrichedSessionCache!.data;
+      return reusableCache.data;
     }
 
-    const existingBuild = includeArchived
-      ? getReusableSessionCacheBuild(allSessionCacheBuild)
-      : (getReusableSessionCacheBuild(allSessionCacheBuild) ?? getReusableSessionCacheBuild(activeSessionCacheBuild));
+    const existingBuild = getReusableSessionCacheBuild(cacheKind);
     if (existingBuild) {
       const tWait = Date.now();
       const sessions = await existingBuild;
       recordSessionCacheSpan("session.enrichedList.cache", Date.now() - tWait, {
         result: "coalesced",
         includeArchived,
+        cacheKind,
         count: sessions.length,
       });
       return sessions;
     }
 
     recordSessionCacheSpan("session.enrichedList.cache", 0, {
-      result: enrichedSessionCache ? "stale" : "miss",
+      result: directCache ? "stale" : "miss",
       includeArchived,
-      cacheIncludesArchived: enrichedSessionCache?.includesArchived,
+      cacheKind,
+      cacheIncludesArchived: directCache?.includesArchived,
     });
 
     const buildGeneration = enrichedSessionCacheGeneration;
@@ -1261,27 +1367,30 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
       const stored = buildGeneration === enrichedSessionCacheGeneration;
       if (stored) {
-        enrichedSessionCache = { data: enriched, timestamp: Date.now(), includesArchived: buildIncludesArchived };
+        enrichedSessionCaches[cacheKind] = {
+          data: enriched,
+          timestamp: Date.now(),
+          includesArchived: buildIncludesArchived,
+          generation: buildGeneration,
+        };
       }
       recordSessionCacheSpan("session.enrichedList.build", Date.now() - tBuild, {
         result: stored ? "stored" : "discarded",
         includeArchived: buildIncludesArchived,
+        cacheKind,
         count: enriched.length,
         generation: buildGeneration,
         currentGeneration: enrichedSessionCacheGeneration,
       });
       return enriched;
     })().finally(() => {
-      if (buildIncludesArchived) {
-        if (allSessionCacheBuild?.promise === build) allSessionCacheBuild = null;
-      } else if (activeSessionCacheBuild?.promise === build) {
-        activeSessionCacheBuild = null;
+      if (sessionCacheBuilds[cacheKind]?.promise === build) {
+        sessionCacheBuilds[cacheKind] = null;
       }
     });
 
     const buildRecord = { generation: buildGeneration, promise: build };
-    if (buildIncludesArchived) allSessionCacheBuild = buildRecord;
-    else activeSessionCacheBuild = buildRecord;
+    sessionCacheBuilds[cacheKind] = buildRecord;
     return build;
   }
 
@@ -1289,19 +1398,19 @@ export function createApiRouter(ctx: AppContext): express.Router {
   ctx.globalBus.subscribe((event: any) => {
     switch (event.type) {
       case "session:title":
-        invalidateEnrichedCache("bus:session:title");
+        queueEnrichedCacheInvalidation("bus:session:title");
         break;
       case "session:archived":
         invalidateEnrichedCache("bus:session:archived", { rawDisk: true });
         break;
       case "task:changed":
-        invalidateEnrichedCache("bus:task:changed");
+        queueEnrichedCacheInvalidation("bus:task:changed");
         break;
       case "schedule:changed":
-        invalidateEnrichedCache("bus:schedule:changed");
+        queueEnrichedCacheInvalidation("bus:schedule:changed");
         break;
       case "sessions:changed":
-        invalidateEnrichedCache("bus:sessions:changed");
+        queueEnrichedCacheInvalidation("bus:sessions:changed");
         break;
     }
   });
