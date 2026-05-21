@@ -648,6 +648,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("does not canonicalize load-more history before active metadata is known", async () => {
+    vi.useFakeTimers();
     const tailEntries = Array.from({ length: 50 }, (_, index) =>
       createMessage(`entry-${index + 50}`));
     const olderEntries = Array.from({ length: 50 }, (_, index) =>
@@ -687,6 +688,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("does not reuse stale cached freshness after a noncanonical resume refresh", async () => {
+    vi.useFakeTimers();
     const cachedTailEntries = Array.from({ length: 50 }, (_, index) =>
       createMessage(`fresh-entry-${index + 50}`));
     const staleTailEntries = Array.from({ length: 50 }, (_, index) =>
@@ -844,6 +846,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("keeps the pending tail refresh when loading older messages without the latest tail", async () => {
+    vi.useFakeTimers();
     const backgroundRefresh = createDeferred<FetchMessagesFastResult>();
     const cachedEntries = Array.from({ length: 50 }, (_, index) =>
       createMessage(`entry-${index + 100}`));
@@ -919,6 +922,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("keeps the pending tail refresh when older messages return stale same-count activity", async () => {
+    vi.useFakeTimers();
     const backgroundRefresh = createDeferred<FetchMessagesFastResult>();
     const cachedEntries = Array.from({ length: 50 }, (_, index) =>
       createMessage(`entry-${index + 100}`));
@@ -994,6 +998,7 @@ describe("ChatView cached resume loading state", () => {
   });
 
   it("keeps the pending tail refresh when cached tail freshness metadata is missing", async () => {
+    vi.useFakeTimers();
     const backgroundRefresh = createDeferred<FetchMessagesFastResult>();
     const cachedEntries = Array.from({ length: 50 }, (_, index) =>
       createMessage(`entry-${index + 100}`));
@@ -1066,6 +1071,7 @@ describe("ChatView cached resume loading state", () => {
 
 describe("ChatView history pagination", () => {
   it("manual load-more leaves bottom-follow mode before prepending older messages", async () => {
+    vi.useFakeTimers();
     const tailEntries = [
       createMessage("entry-3"),
       createMessage("entry-4"),
@@ -1135,6 +1141,7 @@ describe("ChatView history pagination", () => {
   });
 
   it("shows a load-more error when older history fails", async () => {
+    vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {
