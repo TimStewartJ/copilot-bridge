@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartPending } from "./session-manager.js";
+import { requireToolHandlers } from "./tool-handler.js";
 import {
   createDirectoryLink,
   killProcessTree,
@@ -640,7 +641,7 @@ export const __testing = {
   listStagingPreviewParents,
 };
 
-export const STAGING_TOOLS = [
+export const STAGING_TOOLS = requireToolHandlers([
   defineTool("staging_init", {
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
@@ -1376,4 +1377,4 @@ export const STAGING_TOOLS = [
       return { success: true, message: `Staging worktree removed: ${stagingDir}` };
     },
   }),
-];
+]);

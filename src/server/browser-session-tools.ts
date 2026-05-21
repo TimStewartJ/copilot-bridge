@@ -4,6 +4,7 @@ import type { AppContext } from "./app-context.js";
 import { getBrowserLaunchConfig, safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
+import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure, toolFailureWithContext } from "./tool-results.js";
 
 const AGENT_BROWSER_INSTALL_GUIDANCE =
@@ -54,7 +55,7 @@ export function createBrowserSessionTools(ctx: AppContext) {
     getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
   });
 
-  return [
+  return requireToolHandlers([
     defineTool("browser_session_start", {
       description:
         "Create an explicit browser session handle for multi-turn continuity. Use mode='persistent' " +
@@ -285,5 +286,5 @@ export function createBrowserSessionTools(ctx: AppContext) {
         return { success: true, browserSessionId: args.browserSessionId };
       },
     }),
-  ];
+  ]);
 }

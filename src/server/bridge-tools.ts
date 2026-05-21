@@ -20,6 +20,7 @@ import { createTagTools } from "./tools/tag-tools.js";
 import { createTaskGroupTools } from "./tools/task-group-tools.js";
 import { createTaskTools } from "./tools/task-tools.js";
 import { createVisualTools } from "./tools/visual-tools.js";
+import { requireToolHandlers } from "./tool-handler.js";
 
 function isReleaseMode(ctx: AppContext): boolean {
   return ctx.runtimePaths?.distributionMode === "release" || isBridgeReleaseMode(process.env, BRIDGE_TOOLS_REPO_ROOT);
@@ -27,7 +28,7 @@ function isReleaseMode(ctx: AppContext): boolean {
 
 export function createBridgeTools(ctx: AppContext) {
   const releaseMode = isReleaseMode(ctx);
-  const tools = [
+  const tools = requireToolHandlers([
     ...createReportIntentTools(),
     ...createTaskTools(ctx),
     ...createTaskGroupTools(ctx),
@@ -47,7 +48,7 @@ export function createBridgeTools(ctx: AppContext) {
     ...createBrowserExecTools(ctx),
     ...createBrowserSessionTools(ctx),
     ...createComputerUseTools(ctx),
-  ];
+  ]);
 
   const hiddenTools = new Set<string>();
   if (releaseMode) {
