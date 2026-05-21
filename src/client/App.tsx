@@ -910,11 +910,21 @@ export default function App() {
     navigate(getSessionPath({ sessionId, taskId }), { replace });
   }, [navigate]);
 
+  const addPendingPromptSession = useCallback((sessionId: string) => {
+    addOptimisticSession(sessionId, { runState: "busy", busy: true });
+    bumpSessionBusySignal(sessionId);
+    markRead(sessionId);
+  }, [addOptimisticSession, bumpSessionBusySignal, markRead]);
+  const clearPendingPromptSession = useCallback((sessionId: string) => {
+    clearSessionBusyHint(sessionId);
+    patchSessionInCache(sessionId, { runState: "idle", busy: false, intentText: null });
+  }, [clearSessionBusyHint, patchSessionInCache]);
+
   // Actually create a session on the server (called on first message send)
   const materializeSession = useCallback(async (taskId?: string): Promise<string> => {
     if (taskId) {
       const sessionId = await createTaskSession(taskId);
-      addOptimisticSession(sessionId);
+      addPendingPromptSession(sessionId);
       const addSession = (t: Task) =>
         t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
       queryClient.setQueryData<Task[]>(queryKeys.tasks, (prev) => prev?.map(addSession));
@@ -922,10 +932,10 @@ export default function App() {
       return sessionId;
     } else {
       const sessionId = await createSession();
-      addOptimisticSession(sessionId);
+      addPendingPromptSession(sessionId);
       return sessionId;
     }
-  }, [addOptimisticSession, queryClient]);
+  }, [addPendingPromptSession, queryClient]);
 
   const handleStartPromptSession = useCallback(async (
     prompt: string,
@@ -937,6 +947,7 @@ export default function App() {
     try {
       await sendChatMessage(newSessionId, prompt);
     } catch (error) {
+      clearPendingPromptSession(newSessionId);
       setDraftImmediate(newSessionId, prompt);
       if (options?.navigateOnError !== false) {
         navigateToSession(newSessionId, taskId);
@@ -944,7 +955,7 @@ export default function App() {
       throw error;
     }
     return newSessionId;
-  }, [materializeSession, navigateToSession, setDraftImmediate]);
+  }, [clearPendingPromptSession, materializeSession, navigateToSession, setDraftImmediate]);
 
   const isSessionBusy = useCallback((sessionId: string) => {
     const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
@@ -1753,6 +1764,7 @@ export default function App() {
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
                   materializeSession={materializeSession}
+                  clearPendingPromptSession={clearPendingPromptSession}
                   getVoiceJob={getJobForComposer}
                   startBackgroundVoiceJob={startBackgroundVoiceJob}
                   retryVoiceJobUpload={retryVoiceJobUpload}
@@ -1824,6 +1836,7 @@ export default function App() {
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
                   materializeSession={materializeSession}
+                  clearPendingPromptSession={clearPendingPromptSession}
                   getVoiceJob={getJobForComposer}
                   startBackgroundVoiceJob={startBackgroundVoiceJob}
                   retryVoiceJobUpload={retryVoiceJobUpload}
@@ -2052,6 +2065,7 @@ function SessionRoute({
   clearDraftSession,
   clearDraftSessionBySessionId,
   materializeSession,
+  clearPendingPromptSession,
   getVoiceJob,
   startBackgroundVoiceJob,
   retryVoiceJobUpload,
@@ -2072,6 +2086,7 @@ function SessionRoute({
   clearDraftSession: (composerKey: string) => void;
   clearDraftSessionBySessionId: (sessionId: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
+  clearPendingPromptSession: (sessionId: string) => void;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
   startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
   retryVoiceJobUpload: (composerKey: string) => void;
@@ -2136,14 +2151,19 @@ function SessionRoute({
     const newSessionId = await materializeSession(taskId);
     // Send the message BEFORE navigating so the session is busy when
     // ChatView's effect reconnects the stream (avoids idle-close race).
-    await sendChatMessage(newSessionId, prompt, attachments);
+    try {
+      await sendChatMessage(newSessionId, prompt, attachments);
+    } catch (error) {
+      clearPendingPromptSession(newSessionId);
+      throw error;
+    }
     clearDraft(composerKey);
     // Navigate to real session URL (replace draft URL in history)
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
     navigate(path, { replace: true });
-  }, [clearDraft, composerKey, materializeSession, navigate, taskId]);
+  }, [clearDraft, clearPendingPromptSession, composerKey, materializeSession, navigate, taskId]);
 
   return (
     <ChatView
