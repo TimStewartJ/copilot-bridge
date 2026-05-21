@@ -20,6 +20,8 @@ const RUNTIME_METRICS_FILE_RE = /^(?:CrashpadMetrics|BrowserMetrics).*\.pma$/i;
 const SQLITE_RUNTIME_FILE_RE = /(?:-journal|-shm|-wal)$/i;
 const COOKIE_STORE_RE = /(?:^|\/)Default\/Network\/Cookies$/i;
 const SHUTDOWN_OUTPUT_SUMMARY_MAX_LENGTH = 500;
+export const BROWSER_PROFILE_SIGTERM_GRACE_MS = 500;
+export const BROWSER_LOCK_OWNER_KILL_GRACE_MS = 250;
 const BROWSER_PROCESS_NAMES = new Set([
   "chrome",
   "chrome.exe",
@@ -946,7 +948,7 @@ async function killProfileBoundBrowserProcesses(
       });
     }
   }
-  if (terminatedPids.length > 0) await delay(500);
+  if (terminatedPids.length > 0) await delay(BROWSER_PROFILE_SIGTERM_GRACE_MS);
 
   const killedPids: number[] = [];
   const remainingPids: number[] = [];
@@ -1188,7 +1190,7 @@ export async function ab(
         });
         return result;
       }
-      await delay(250);
+      await delay(BROWSER_LOCK_OWNER_KILL_GRACE_MS);
       clearStaleLocks(browserTarget.profileDir);
       const killDuration = Date.now() - killStartedAt;
       logBrowser("recovery.kill_lock_owner", {
