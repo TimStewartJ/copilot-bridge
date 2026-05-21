@@ -4,6 +4,26 @@ import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
 import { initializeDocsFts } from "../db.js";
 
 describe("createBridgeTools", () => {
+  it("overrides report_intent with minimal no-op-safe guidance", async () => {
+    const { ctx } = createTestApp();
+
+    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "report_intent");
+    expect(tool).toBeTruthy();
+    expect(tool!.overridesBuiltInTool).toBe(true);
+    expect(tool!.skipPermission).toBe(true);
+    expect(tool!.description).toContain("Use only with real tool work");
+
+    await expect(tool!.handler({ intent: "Running checks" }, {} as any)).resolves.toMatchObject({
+      textResultForLlm: "Intent logged",
+      resultType: "success",
+      sessionLog: "Running checks",
+    });
+    await expect(tool!.handler({ intent: "   " }, {} as any)).resolves.toMatchObject({
+      resultType: "failure",
+      error: "blank intent",
+    });
+  });
+
   it("hides git-backed tools in release mode while keeping restart available", () => {
     const runtimePaths = makeTestRuntimePaths("release-tools", { distributionMode: "release" });
     const { ctx } = createTestApp({ runtimePaths });

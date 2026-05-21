@@ -12,6 +12,7 @@ import { createDeferTools } from "./tools/defer-tools.js";
 import { createDocsTools } from "./tools/docs-tools.js";
 import { createFeedTools } from "./tools/feed-tools.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
+import { createReportIntentTools } from "./tools/report-intent-tool.js";
 import { createScheduleTools } from "./tools/schedule-tools.js";
 import { createSelfAdminTools } from "./tools/self-admin-tools.js";
 import { createSessionTools } from "./tools/session-tools.js";
@@ -27,6 +28,7 @@ function isReleaseMode(ctx: AppContext): boolean {
 export function createBridgeTools(ctx: AppContext) {
   const releaseMode = isReleaseMode(ctx);
   const tools = [
+    ...createReportIntentTools(),
     ...createTaskTools(ctx),
     ...createTaskGroupTools(ctx),
     ...createTagTools(ctx),
