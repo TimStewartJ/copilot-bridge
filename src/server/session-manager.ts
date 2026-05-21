@@ -432,6 +432,7 @@ export class SessionManager {
       replaceCachedSession: (sessionId, expectedSession, nextSession) =>
         this.replaceCachedSession(sessionId, expectedSession, nextSession),
       probeMcpStatus: (sessionId, session) => this.probeMcpStatus(sessionId, session),
+      markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
@@ -554,6 +555,16 @@ export class SessionManager {
     if (!this.pendingSessionEvictions.has(sessionId) || this.isSessionBusy(sessionId)) return;
     this.pendingSessionEvictions.delete(sessionId);
     this.evictCachedSession(sessionId);
+  }
+
+  private markCachedSessionForEviction(sessionId: string, reason: string): void {
+    if (!this.sessionObjects.has(sessionId)) return;
+    const alreadyPending = this.pendingSessionEvictions.has(sessionId);
+    this.pendingSessionEvictions.add(sessionId);
+    if (!alreadyPending) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Scheduling cached session refresh after ${reason}`);
+    }
+    this.flushPendingSessionEviction(sessionId);
   }
 
   private syncRestartWaitingIfPending(): void {
