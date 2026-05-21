@@ -457,6 +457,7 @@ export default function ChatView({
   const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const {
     bind: bindMessageMenu,
     menu: messageMenu,
@@ -766,6 +767,7 @@ export default function ChatView({
     prevSessionRef.current = sessionId;
     prevComposerKeyRef.current = composerKey;
     setForkError(null);
+    setLoadMoreError(null);
 
     if (!sessionId) {
       // Clear draft-only state when entering draft mode from an existing
@@ -788,6 +790,7 @@ export default function ChatView({
       setCreating(false);
       setLoadingMore(false);
       setHasMore(false);
+      setLoadMoreError(null);
       setShowJumpToLatest(false);
       setMcpStatus([]);
       setManualMcpOverride(null);
@@ -1142,6 +1145,7 @@ export default function ChatView({
     const { limit = INITIAL_PAGE_SIZE, preserveScrollPosition = true } = opts;
     loadingMoreRef.current = true;
     setLoadingMore(true);
+    setLoadMoreError(null);
     const beforeIndex = firstItemIndex.current;
     const requestSessionId = sessionId;
     fetchMessages(sessionId, { limit, before: beforeIndex })
@@ -1202,7 +1206,11 @@ export default function ChatView({
           });
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (sessionIdRef.current !== requestSessionId || firstItemIndex.current !== beforeIndex) return;
+        console.error("Failed to load older messages:", err);
+        setLoadMoreError(`Could not load older messages: ${getErrorMessage(err)}`);
+      })
       .finally(() => {
         loadingMoreRef.current = false;
         setLoadingMore(false);
@@ -1213,8 +1221,9 @@ export default function ChatView({
     clearPendingAutoLoad();
     suppressAutoLoadRef.current = true;
     autoLoadArmedRef.current = false;
+    handleUserScrollIntent();
     loadOlderMessages({ limit: MANUAL_LOAD_PAGE_SIZE, preserveScrollPosition: false });
-  }, [clearPendingAutoLoad, loadOlderMessages]);
+  }, [clearPendingAutoLoad, handleUserScrollIntent, loadOlderMessages]);
 
   const handleLoadMorePointerDown = useCallback(() => {
     clearPendingAutoLoad();
@@ -1790,6 +1799,11 @@ export default function ChatView({
                 <Loader2 size={12} className="animate-spin text-accent/70" />
                 Refreshing history...
               </div>
+            </div>
+          )}
+          {loadMoreError && (
+            <div className="px-3 py-2 text-center text-xs text-error" role="alert">
+              {loadMoreError}
             </div>
           )}
           {loadingMore ? (

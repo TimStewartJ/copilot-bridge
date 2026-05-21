@@ -1064,6 +1064,106 @@ describe("ChatView cached resume loading state", () => {
   });
 });
 
+describe("ChatView history pagination", () => {
+  it("manual load-more leaves bottom-follow mode before prepending older messages", async () => {
+    const tailEntries = [
+      createMessage("entry-3"),
+      createMessage("entry-4"),
+    ];
+    const olderEntries = [
+      createMessage("entry-0"),
+      createMessage("entry-1"),
+      createMessage("entry-2"),
+    ];
+    const olderMessages = createDeferred<{
+      messages: ChatEntry[];
+      hasMore: boolean;
+      total: number;
+      lastVisibleActivityAt?: string;
+    }>();
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: tailEntries,
+        busy: false,
+        total: 5,
+        warm: true,
+        hasMore: true,
+      },
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+    fetchMessagesMock.mockReturnValueOnce(olderMessages.promise);
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
+      const scrollContainer = findScrollContainer(dom.container);
+      setScrollGeometry(scrollContainer, { scrollHeight: 300, clientHeight: 600, scrollTop: 0 });
+
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Scroll up for more"));
+        await waitTick();
+      });
+
+      expect(fetchMessagesMock).toHaveBeenCalledWith("session-1", {
+        limit: 200,
+        before: 3,
+      });
+
+      setScrollGeometry(scrollContainer, {
+        scrollHeight: 1200,
+        clientHeight: 600,
+        scrollTop: scrollContainer.scrollTop,
+      });
+      await act(async () => {
+        olderMessages.resolve({
+          messages: olderEntries,
+          hasMore: false,
+          total: 5,
+        });
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-0") ?? false);
+
+      expect(scrollContainer.scrollTop).toBe(0);
+    } finally {
+      olderMessages.resolve({
+        messages: olderEntries,
+        hasMore: false,
+        total: 5,
+      });
+      await cleanup();
+    }
+  });
+
+  it("shows a load-more error when older history fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        busy: false,
+        total: 2,
+        warm: true,
+        hasMore: true,
+      },
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+    fetchMessagesMock.mockRejectedValueOnce(new Error("network unavailable"));
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
+
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Scroll up for more"));
+        await waitTick();
+      });
+
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Could not load older messages: network unavailable") ?? false);
+    } finally {
+      errorSpy.mockRestore();
+      await cleanup();
+    }
+  });
+});
+
 describe("ChatView steering sends", () => {
   it("allows sending a steering message while the session is streaming", async () => {
     const { act, cleanup, sendMessageMock } = await renderChatView({
