@@ -155,6 +155,7 @@ function describeDiagnosticsSummary(input: {
   executablePathConfigured: boolean;
   executablePathExists?: boolean;
   googleCaptchaCount: number;
+  bingCaptchaCount: number;
   duckDuckGoChallengeCount: number;
   recoveryCount: number;
 }): BrowserDiagnosticsSummary {
@@ -173,7 +174,7 @@ function describeDiagnosticsSummary(input: {
     };
   }
 
-  const searchChallengeCount = input.googleCaptchaCount + input.duckDuckGoChallengeCount;
+  const searchChallengeCount = input.googleCaptchaCount + input.bingCaptchaCount + input.duckDuckGoChallengeCount;
   if (searchChallengeCount > 0) {
     return {
       tone: "warning",
@@ -210,12 +211,15 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
 
   const googleCaptchaSpans = recentTelemetry(ctx, "browser.tool.browser_web_search.google.failed", since)
     .filter((span) => getMetadataString(span, "failureCode") === "search.google_captcha");
+  const bingCaptchaSpans = recentTelemetry(ctx, "browser.tool.browser_web_search.bing.failed", since)
+    .filter((span) => getMetadataString(span, "failureCode") === "search.bing_captcha");
   const duckDuckGoChallengeSpans = recentTelemetry(ctx, "browser.tool.browser_web_search.duckduckgo.failed", since)
     .filter((span) => getMetadataString(span, "failureCode") === "search.ddg_challenge");
   const recoverySpans = recentTelemetry(ctx, "browser.recovery.detected", since);
   const cloneFallbackSpans = recentTelemetry(ctx, "browser.clone.fallback_to_primary", since);
   const issues = [
     toIssue("search.google_captcha", "Google CAPTCHA during browser_web_search", googleCaptchaSpans),
+    toIssue("search.bing_captcha", "Bing CAPTCHA during browser_web_search", bingCaptchaSpans),
     toIssue("search.ddg_challenge", "DuckDuckGo challenge during browser_web_search", duckDuckGoChallengeSpans),
     toIssue("browser.recovery.detected", "Browser recovery path invoked", recoverySpans),
     toIssue("browser.clone.fallback_to_primary", "Clone lane fell back to primary", cloneFallbackSpans),
@@ -230,6 +234,7 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
       executablePathConfigured,
       executablePathExists,
       googleCaptchaCount: googleCaptchaSpans.length,
+      bingCaptchaCount: bingCaptchaSpans.length,
       duckDuckGoChallengeCount: duckDuckGoChallengeSpans.length,
       recoveryCount: recoverySpans.length,
     }),

@@ -58,6 +58,12 @@ describe("browser diagnostics", () => {
       source: "server",
       metadata: { failureCode: "search.ddg_challenge" },
     });
+    telemetryStore.recordSpan({
+      name: "browser.tool.browser_web_search.bing.failed",
+      duration: 0,
+      source: "server",
+      metadata: { failureCode: "search.bing_captcha" },
+    });
 
     const mod = await import("../browser-diagnostics.js");
     const result = await mod.getBrowserDiagnostics({
@@ -76,6 +82,7 @@ describe("browser diagnostics", () => {
     expect(result.config.headed).toBe(true);
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "search.google_captcha", count: 1 }),
+      expect.objectContaining({ code: "search.bing_captcha", count: 1 }),
       expect.objectContaining({ code: "search.ddg_challenge", count: 1 }),
     ]));
   });
