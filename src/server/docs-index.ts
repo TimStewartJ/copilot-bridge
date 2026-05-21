@@ -1,4 +1,4 @@
-import type { DatabaseSync } from "./db.js";
+import { getDocsFtsHealth, initializeDocsFts, type DatabaseSync, type DocsFtsHealth } from "./db.js";
 import { normalizeDocsPublicPath, validateDocsPathSegments, type DocsStore, type DocPage } from "./docs-store.js";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -25,6 +25,52 @@ export interface RelatedDocMatch {
   modified: string;
   description?: string;
   matchedTags: string[];
+}
+
+export const DOCS_FTS_UNAVAILABLE_CODE = "docs_fts_unavailable" as const;
+
+export interface DocsFtsUnavailablePayload {
+  error: string;
+  code: typeof DOCS_FTS_UNAVAILABLE_CODE;
+  operation: string;
+  health: DocsFtsHealth;
+}
+
+export type DocsFtsMutationResult =
+  | { indexed: true }
+  | { indexed: false; indexError: DocsFtsUnavailablePayload };
+
+function formatDocsFtsUnavailableMessage(operation: string, health: DocsFtsHealth): string {
+  if (health.ok) {
+    return `Docs full-text search is unavailable while attempting to ${operation}.`;
+  }
+  return `Docs full-text search is unavailable while attempting to ${operation}: ${health.message} Cause: ${health.cause}`;
+}
+
+export class DocsFtsUnavailableError extends Error {
+  readonly code = DOCS_FTS_UNAVAILABLE_CODE;
+  readonly operation: string;
+  readonly health: DocsFtsHealth;
+
+  constructor(operation: string, health: DocsFtsHealth) {
+    super(formatDocsFtsUnavailableMessage(operation, health));
+    this.name = "DocsFtsUnavailableError";
+    this.operation = operation;
+    this.health = health;
+  }
+}
+
+export function isDocsFtsUnavailableError(error: unknown): error is DocsFtsUnavailableError {
+  return error instanceof DocsFtsUnavailableError;
+}
+
+export function docsFtsUnavailablePayload(error: DocsFtsUnavailableError): DocsFtsUnavailablePayload {
+  return {
+    error: error.message,
+    code: error.code,
+    operation: error.operation,
+    health: error.health,
+  };
 }
 
 const TAG_MATCH_COLLATOR = new Intl.Collator("und", { usage: "search", sensitivity: "accent" });
@@ -79,6 +125,27 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
     db.exec("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')");
   }
 
+  function getFtsHealth(): DocsFtsHealth {
+    return getDocsFtsHealth(db);
+  }
+
+  function ensureFtsAvailable(operation: string, options: { retryInit?: boolean } = {}): void {
+    let health = getDocsFtsHealth(db);
+    if (!health.ok && options.retryInit) {
+      health = initializeDocsFts(db, { warnOnFailure: false });
+    }
+    if (!health.ok) throw new DocsFtsUnavailableError(operation, health);
+  }
+
+  function skippedFtsMutation(operation: string): DocsFtsMutationResult | null {
+    const health = getDocsFtsHealth(db);
+    if (health.ok) return null;
+    return {
+      indexed: false,
+      indexError: docsFtsUnavailablePayload(new DocsFtsUnavailableError(operation, health)),
+    };
+  }
+
   function isRecoverableFtsError(error: unknown): boolean {
     const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
     return message.includes("database disk image is malformed")
@@ -86,11 +153,12 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
       || message.includes("database corruption");
   }
 
-  function withFtsRepair<T>(operation: () => T): T {
+  function withFtsRepair<T>(operationName: string, operation: () => T): T {
     try {
       return operation();
     } catch (error) {
       if (!isRecoverableFtsError(error)) throw error;
+      ensureFtsAvailable(`repair docs FTS for ${operationName}`);
       rebuildFtsFromContent();
       return operation();
     }
@@ -100,6 +168,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
   /** Rebuild the entire index from files on disk */
   function reindex(): { indexed: number } {
+    ensureFtsAvailable("reindex docs", { retryInit: true });
     const pages = docsStore.scanAllPages();
     runInTransaction(() => {
       db.exec("DELETE FROM docs_pages");
@@ -123,11 +192,18 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
   }
 
   /** Index a single page (after create or update) */
-  function indexPage(page: DocPage): void {
-    withFtsRepair(() => {
-      const tagsStr = page.tags.join(", ");
-      const fmJson = JSON.stringify(page.frontmatter);
+  function indexPage(page: DocPage): DocsFtsMutationResult {
+    const skipped = skippedFtsMutation("index docs page");
+    const tagsStr = page.tags.join(", ");
+    const fmJson = JSON.stringify(page.frontmatter);
+    if (skipped) {
+      runInTransaction(() => {
+        upsertDocsPageRow(page, tagsStr, fmJson);
+      });
+      return skipped;
+    }
 
+    withFtsRepair("index docs page", () => {
       runInTransaction(() => {
         const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
         if (existing) {
@@ -146,24 +222,45 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
         }
       });
     });
+    return { indexed: true };
   }
 
-  function insert(page: DocPage, tagsStr: string, fmJson: string): void {
+  function upsertDocsPageRow(page: DocPage, tagsStr: string, fmJson: string): number | null {
+    const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
+    if (existing) {
+      db.prepare(`
+        UPDATE docs_pages SET title=?, tags=?, body=?, frontmatter_json=?, folder=?, created=?, modified=?
+        WHERE path=?
+      `).run(page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified, page.path);
+      return existing.rowid;
+    }
+
     db.prepare(`
       INSERT OR REPLACE INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(page.path, page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified);
     const row = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
-    if (row) {
+    return row?.rowid ?? null;
+  }
+
+  function insert(page: DocPage, tagsStr: string, fmJson: string): void {
+    const rowid = upsertDocsPageRow(page, tagsStr, fmJson);
+    if (rowid !== null) {
       db.prepare("INSERT INTO docs_fts (rowid, path, title, tags, body) VALUES (?, ?, ?, ?, ?)").run(
-        row.rowid, page.path, page.title, tagsStr, page.body,
+        rowid, page.path, page.title, tagsStr, page.body,
       );
     }
   }
 
   /** Remove a page from the index */
-  function removePage(pagePath: string): void {
-    withFtsRepair(() => {
+  function removePage(pagePath: string): DocsFtsMutationResult {
+    const skipped = skippedFtsMutation("remove docs page from search index");
+    if (skipped) {
+      db.prepare("DELETE FROM docs_pages WHERE path = ?").run(pagePath);
+      return skipped;
+    }
+
+    withFtsRepair("remove docs page from search index", () => {
       runInTransaction(() => {
         const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(pagePath) as any;
         if (existing) {
@@ -172,11 +269,18 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
         }
       });
     });
+    return { indexed: true };
   }
 
   /** Remove all pages under a folder from the index */
-  function removeFolder(folder: string): void {
-    withFtsRepair(() => {
+  function removeFolder(folder: string): DocsFtsMutationResult {
+    const skipped = skippedFtsMutation("remove docs folder from search index");
+    if (skipped) {
+      db.prepare("DELETE FROM docs_pages WHERE path LIKE ? || '%'").run(folder);
+      return skipped;
+    }
+
+    withFtsRepair("remove docs folder from search index", () => {
       runInTransaction(() => {
         const rows = db.prepare("SELECT rowid FROM docs_pages WHERE path LIKE ? || '%'").all(folder) as any[];
         for (const row of rows) {
@@ -185,12 +289,14 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
         db.prepare("DELETE FROM docs_pages WHERE path LIKE ? || '%'").run(folder);
       });
     });
+    return { indexed: true };
   }
 
   // ── Search ────────────────────────────────────────────────────
 
   function search(query: string, limit = 50, offset = 0): { results: SearchResult[]; total: number } {
     if (!query.trim()) return { results: [], total: 0 };
+    ensureFtsAvailable("search docs");
 
     // Sanitize query for FTS5 — wrap terms in quotes to avoid syntax errors
     const sanitized = query
@@ -202,7 +308,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
 
     if (!sanitized) return { results: [], total: 0 };
 
-    return withFtsRepair(() => {
+    return withFtsRepair("search docs", () => {
       const countRow = db.prepare(`
         SELECT count(*) as total FROM docs_fts WHERE docs_fts MATCH ?
       `).get(sanitized) as any;
@@ -367,7 +473,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
   return {
     reindex, indexPage, removePage, removeFolder,
     search, queryByFolder, resolveWikilink, resolveWikilinks,
-    findDocsByTagNames,
+    findDocsByTagNames, getFtsHealth,
   };
 }
 

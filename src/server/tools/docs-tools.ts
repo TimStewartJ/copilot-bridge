@@ -1,10 +1,30 @@
 import { defineTool } from "@github/copilot-sdk";
-import { toolFailure } from "../tool-results.js";
+import { toolFailure, toolFailureWithContext } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "../docs-snapshot-store.js";
+import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "../docs-index.js";
 
 function normalizeDocsToolFailure(error: unknown) {
+  if (isDocsFtsUnavailableError(error)) {
+    const payload = docsFtsUnavailablePayload(error);
+    return toolFailureWithContext(payload.error, {
+      code: payload.code,
+      operation: payload.operation,
+      health: payload.health,
+    }, {
+      toolTelemetry: {
+        docsFtsStatus: payload.health.status,
+        ...(!payload.health.ok ? { docsFtsDetectedBy: payload.health.detectedBy } : {}),
+      },
+    });
+  }
   return toolFailure(error instanceof Error ? error.message : String(error));
+}
+
+function docsIndexMutationWarning(result: DocsFtsMutationResult | undefined): { indexed?: false; indexError?: DocsFtsUnavailablePayload } {
+  return result && !result.indexed
+    ? { indexed: false, indexError: result.indexError }
+    : {};
 }
 
 function createPreDeleteSnapshot(ctx: AppContext): void {
@@ -26,7 +46,13 @@ export function createDocsTools(ctx: AppContext) {
     defineTool("docs_search", {
       description: "Search the knowledge base using full-text search. Returns matching pages with titles, snippets, and relevance scores.",
       parameters: { type: "object", properties: { query: { type: "string", description: "Search query text" }, limit: { type: "number", description: "Max results (default 20)" }, offset: { type: "number", description: "Offset for pagination (default 0)" } }, required: ["query"] },
-      handler: async (args: any) => ctx.docsIndex!.search(args.query, args.limit ?? 20, args.offset ?? 0),
+      handler: async (args: any) => {
+        try {
+          return ctx.docsIndex!.search(args.query, args.limit ?? 20, args.offset ?? 0);
+        } catch (error) {
+          return normalizeDocsToolFailure(error);
+        }
+      },
     }),
     defineTool("docs_read", {
       description: "Read a knowledge base page by its path. Returns frontmatter metadata and markdown body.",
@@ -47,8 +73,8 @@ export function createDocsTools(ctx: AppContext) {
       handler: async (args: any) => {
         try {
           const page = ctx.docsStore!.writePage(args.path, args.content);
-          ctx.docsIndex!.indexPage(page);
-          return { path: page.path, success: true };
+          const indexResult = ctx.docsIndex!.indexPage(page);
+          return { path: page.path, success: true, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }
@@ -61,8 +87,8 @@ export function createDocsTools(ctx: AppContext) {
         try {
           const updatedContent = ctx.docsStore!.previewEditPageContent(args.path, args.old_str, args.new_str);
           const page = ctx.docsStore!.writePage(args.path, updatedContent);
-          ctx.docsIndex!.indexPage(page);
-          return { path: page.path, success: true };
+          const indexResult = ctx.docsIndex!.indexPage(page);
+          return { path: page.path, success: true, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }
@@ -101,8 +127,8 @@ export function createDocsTools(ctx: AppContext) {
           const { fields, body } = ctx.docsStore!.normalizeDbEntryInput(args, "add", args.folder);
           const entry = ctx.docsStore!.addDbEntry(args.folder, fields, body);
           const page = ctx.docsStore!.readPage(entry.path);
-          if (page) ctx.docsIndex!.indexPage(page);
-          return { path: entry.path, slug: entry.slug, success: true };
+          const indexResult = page ? ctx.docsIndex!.indexPage(page) : undefined;
+          return { path: entry.path, slug: entry.slug, success: true, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }
@@ -116,8 +142,8 @@ export function createDocsTools(ctx: AppContext) {
           const { fields, body } = ctx.docsStore!.normalizeDbEntryInput(args, "update", args.folder);
           const entry = ctx.docsStore!.updateDbEntry(args.folder, args.slug, fields, body);
           const page = ctx.docsStore!.readPage(entry.path);
-          if (page) ctx.docsIndex!.indexPage(page);
-          return { path: entry.path, success: true };
+          const indexResult = page ? ctx.docsIndex!.indexPage(page) : undefined;
+          return { path: entry.path, success: true, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }
@@ -187,14 +213,31 @@ export function createDocsTools(ctx: AppContext) {
             const result = ctx.docsSnapshotStore!.restoreSnapshot(args.id);
             let reindexed = true;
             let reindexError: string | undefined;
+            let reindexErrorCode: string | undefined;
+            let reindexHealth: unknown;
             try {
               ctx.docsIndex!.reindex();
             } catch (error) {
               reindexed = false;
-              reindexError = error instanceof Error ? error.message : String(error);
-              console.warn(`[docs-snapshots] Restore succeeded but reindex failed: ${reindexError}`);
+              if (isDocsFtsUnavailableError(error)) {
+                const payload = docsFtsUnavailablePayload(error);
+                reindexError = payload.error;
+                reindexErrorCode = payload.code;
+                reindexHealth = payload.health;
+              } else {
+                reindexError = error instanceof Error ? error.message : String(error);
+              }
+              const codeSuffix = reindexErrorCode ? ` (${reindexErrorCode})` : "";
+              console.warn(`[docs-snapshots] Restore succeeded but reindex failed${codeSuffix}: ${reindexError}`);
             }
-            return { success: true, reindexed, ...(reindexError ? { reindexError } : {}), ...result };
+            return {
+              success: true,
+              reindexed,
+              ...(reindexError ? { reindexError } : {}),
+              ...(reindexErrorCode ? { reindexErrorCode } : {}),
+              ...(reindexHealth ? { reindexHealth } : {}),
+              ...result,
+            };
           } catch (error) {
             return normalizeDocsToolFailure(error);
           }
@@ -208,8 +251,8 @@ export function createDocsTools(ctx: AppContext) {
         try {
           const pagePath: string = args.path;
           const result = ctx.docsStore!.deleteUserPage(pagePath, () => createPreDeleteSnapshot(ctx));
-          if (result.deleted) ctx.docsIndex!.removePage(result.path);
-          return result;
+          const indexResult = result.deleted ? ctx.docsIndex!.removePage(result.path) : undefined;
+          return { ...result, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }
@@ -232,8 +275,8 @@ export function createDocsTools(ctx: AppContext) {
             createPreDeleteSnapshot(ctx);
           }
           const deleted = ctx.docsStore!.deletePage(pagePath);
-          if (deleted) ctx.docsIndex!.removePage(pagePath);
-          return { folder: args.folder, slug: args.slug, deleted };
+          const indexResult = deleted ? ctx.docsIndex!.removePage(pagePath) : undefined;
+          return { folder: args.folder, slug: args.slug, deleted, ...docsIndexMutationWarning(indexResult) };
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }

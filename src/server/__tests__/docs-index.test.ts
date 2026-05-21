@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openMemoryDatabase } from "../db.js";
+import { DatabaseSync } from "node:sqlite";
+import { getDocsFtsHealth, initializeDocsFts, openDatabase, openMemoryDatabase } from "../db.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
 
@@ -30,6 +31,119 @@ afterEach(() => {
 });
 
 describe("docs index recovery", () => {
+  it("self-heals a conflicting docs_fts table and preserves it under quarantine", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "docs-fts-db-test-"));
+    const docsDir = mkdtempSync(join(tmpdir(), "docs-fts-docs-test-"));
+    tempDirs.push(dataDir, docsDir);
+    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    legacyDb.exec("CREATE TABLE docs_fts(dummy TEXT)");
+    legacyDb.prepare("INSERT INTO docs_fts(dummy) VALUES (?)").run("operator data");
+    legacyDb.close();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const db = openDatabase(dataDir);
+    try {
+      const health = getDocsFtsHealth(db);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain("[docs-fts]");
+      expect(warn.mock.calls[0]?.[0]).toContain("Repaired docs full-text search index");
+      expect(health).toMatchObject({
+        ok: true,
+        status: "available",
+        repaired: true,
+        previousFailure: {
+          detectedBy: "schema_probe",
+        },
+      });
+      expect(health.ok ? health.quarantinedTable : "").toMatch(/^quarantined_docs_fts_/);
+      const quarantined = db.prepare(`SELECT dummy FROM "${health.ok ? health.quarantinedTable : ""}"`).get() as { dummy: string };
+      expect(quarantined.dummy).toBe("operator data");
+
+      const docsStore = createDocsStore(docsDir);
+      docsStore.writePage("searchable", `---
+title: Searchable
+tags:
+  - degraded
+description: Degraded docs metadata remains usable.
+---
+# Searchable
+
+This page contains xylophone content.`);
+      const docsIndex = createDocsIndex(db, docsStore);
+      const page = docsStore.readPage("searchable");
+      expect(page).not.toBeNull();
+      const indexResult = docsIndex.indexPage(page!);
+
+      expect(indexResult).toEqual({ indexed: true });
+      expect(docsIndex.search("xylophone").results.map((result) => result.path)).toContain("searchable");
+      expect(docsIndex.queryByFolder("", undefined, undefined, 10, 0, true).entries).toHaveLength(1);
+      expect(docsIndex.findDocsByTagNames(["degraded"])).toMatchObject([
+        { path: "searchable", matchedTags: ["degraded"] },
+      ]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("self-heals leftover docs FTS shadow tables that block virtual table creation", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "docs-fts-shadow-test-"));
+    tempDirs.push(dataDir);
+    const legacyDb = new DatabaseSync(join(dataDir, "bridge.db"));
+    legacyDb.exec("CREATE TABLE docs_fts_data(blocker TEXT)");
+    legacyDb.exec("CREATE TABLE docs_fts_archive(note TEXT)");
+    legacyDb.prepare("INSERT INTO docs_fts_archive(note) VALUES (?)").run("preserve me");
+    legacyDb.close();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const db = openDatabase(dataDir);
+    try {
+      const health = getDocsFtsHealth(db);
+
+      expect(health).toMatchObject({
+        ok: true,
+        status: "available",
+        repaired: true,
+        previousFailure: {
+          detectedBy: "create_virtual_table",
+        },
+      });
+      expect(health.ok ? health.repairMessage : "").toContain("dropped leftover docs FTS shadow table docs_fts_data");
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'docs_fts_data'").get()).toBeTruthy();
+      const archived = db.prepare("SELECT note FROM docs_fts_archive").get() as { note: string };
+      expect(archived.note).toBe("preserve me");
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reports a clear unhealthy state when docs FTS repair fails", () => {
+    const db = openMemoryDatabase();
+    const realExec = db.exec.bind(db);
+    db.exec("DROP TABLE docs_fts");
+    db.exec("CREATE TABLE docs_fts(dummy TEXT)");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(db, "exec").mockImplementation((sql) => {
+      if (sql.includes("ALTER TABLE docs_fts RENAME")) {
+        throw new Error("rename blocked");
+      }
+      return realExec(sql);
+    });
+
+    const health = initializeDocsFts(db);
+
+    expect(health).toMatchObject({
+      ok: false,
+      status: "unavailable",
+      code: "docs_fts_init_failed",
+      detectedBy: "repair",
+    });
+    expect(health.ok ? "" : health.cause).toContain("rename blocked");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("[docs-fts]");
+  });
+
   it("repairs recoverable FTS search failures and retries once", () => {
     const { db, docsIndex } = createIndexFixture();
     const realPrepare = db.prepare.bind(db);
