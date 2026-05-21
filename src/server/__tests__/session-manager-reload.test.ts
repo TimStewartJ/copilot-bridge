@@ -20,6 +20,7 @@ describe("SessionManager reloadSession", () => {
         getSettings: () => ({ mcpServers: { demo: { command: "echo", args: ["hi"] } } }),
       } as any,
       config: { sessionMcpServers: {} },
+      clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
     }) as any;
   }
 
@@ -173,6 +174,7 @@ describe("SessionManager warmSession", () => {
         getSettings: () => ({ model: "claude-opus-4.7" }),
       } as any,
       config: { sessionMcpServers: {} },
+      clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
     }) as any;
   }
 

@@ -315,7 +315,7 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    const result = await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async (lane) => {
+    const result = await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_web_search" }, async (lane) => {
       expect(lane.laneType).toBe("clone");
       expect(lane.cloneId).toBeTruthy();
       expect(normalizePath(lane.browserTarget.profileDir)).toContain(normalizePath(BROWSER_CLONES) + "/profile-");
@@ -458,7 +458,7 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async () => "ok");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_web_search" }, async () => "ok");
 
     expect(cpMock).toHaveBeenCalledTimes(2);
     const secondFilter = cpMock.mock.calls[1][2].filter;
@@ -695,7 +695,7 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async () => "ok");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_web_search" }, async () => "ok");
 
     expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {
       recursive: true,
@@ -717,7 +717,7 @@ describe("agent-browser wrapper", () => {
     });
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "web_search" }, async () => "ok");
+    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_web_search" }, async () => "ok");
 
     expect(cpMock).toHaveBeenCalledTimes(2);
     expect(normalizePath(cpMock.mock.calls[0][0])).toContain("/.copilot/browser-profile");
@@ -857,7 +857,7 @@ describe("agent-browser wrapper", () => {
     };
     const mod = await import("../agent-browser.js");
 
-    const result = await mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName: "web_search" }, async (lane) => lane.cloneId);
+    const result = await mod.withCloneBrowserLane(COPILOT_HOME, telemetryStore as any, { toolName: "browser_web_search" }, async (lane) => lane.cloneId);
 
     expect(result).toBeTruthy();
     expect(rmMock).toHaveBeenCalledWith(expect.stringContaining("browser-clones"), {

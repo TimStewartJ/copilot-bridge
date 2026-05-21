@@ -33,7 +33,7 @@ describe("browser diagnostics", () => {
     vi.unstubAllEnvs();
   });
 
-  it("summarizes configured paths and recent web_search challenge telemetry", async () => {
+  it("summarizes configured paths and recent browser_web_search challenge telemetry", async () => {
     const db = setupTestDb();
     const settingsStore = createSettingsStore(db);
     const telemetryStore = createTelemetryStore(db);
@@ -47,13 +47,13 @@ describe("browser diagnostics", () => {
       },
     });
     telemetryStore.recordSpan({
-      name: "browser.tool.web_search.google.failed",
+      name: "browser.tool.browser_web_search.google.failed",
       duration: 0,
       source: "server",
       metadata: { failureCode: "search.google_captcha" },
     });
     telemetryStore.recordSpan({
-      name: "browser.tool.web_search.duckduckgo.failed",
+      name: "browser.tool.browser_web_search.duckduckgo.failed",
       duration: 0,
       source: "server",
       metadata: { failureCode: "search.ddg_challenge" },

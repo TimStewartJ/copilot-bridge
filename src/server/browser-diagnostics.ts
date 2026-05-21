@@ -178,7 +178,7 @@ function describeDiagnosticsSummary(input: {
     return {
       tone: "warning",
       label: "Search challenges detected",
-      detail: `Bridge observed ${searchChallengeCount} web_search challenge event(s) in the last ${DIAGNOSTICS_WINDOW_HOURS} hours. Launch a headed browser with this profile when manual verification is needed.`,
+      detail: `Bridge observed ${searchChallengeCount} browser_web_search challenge event(s) in the last ${DIAGNOSTICS_WINDOW_HOURS} hours. Launch a headed browser with this profile when manual verification is needed.`,
     };
   }
   if (input.recoveryCount > 0) {
@@ -208,15 +208,15 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
     : undefined;
   const masterProfileDirectoryExists = existsSync(target.profileDir);
 
-  const googleCaptchaSpans = recentTelemetry(ctx, "browser.tool.web_search.google.failed", since)
+  const googleCaptchaSpans = recentTelemetry(ctx, "browser.tool.browser_web_search.google.failed", since)
     .filter((span) => getMetadataString(span, "failureCode") === "search.google_captcha");
-  const duckDuckGoChallengeSpans = recentTelemetry(ctx, "browser.tool.web_search.duckduckgo.failed", since)
+  const duckDuckGoChallengeSpans = recentTelemetry(ctx, "browser.tool.browser_web_search.duckduckgo.failed", since)
     .filter((span) => getMetadataString(span, "failureCode") === "search.ddg_challenge");
   const recoverySpans = recentTelemetry(ctx, "browser.recovery.detected", since);
   const cloneFallbackSpans = recentTelemetry(ctx, "browser.clone.fallback_to_primary", since);
   const issues = [
-    toIssue("search.google_captcha", "Google CAPTCHA during web_search", googleCaptchaSpans),
-    toIssue("search.ddg_challenge", "DuckDuckGo challenge during web_search", duckDuckGoChallengeSpans),
+    toIssue("search.google_captcha", "Google CAPTCHA during browser_web_search", googleCaptchaSpans),
+    toIssue("search.ddg_challenge", "DuckDuckGo challenge during browser_web_search", duckDuckGoChallengeSpans),
     toIssue("browser.recovery.detected", "Browser recovery path invoked", recoverySpans),
     toIssue("browser.clone.fallback_to_primary", "Clone lane fell back to primary", cloneFallbackSpans),
   ].filter((issue): issue is BrowserDiagnosticsIssue => issue !== null);

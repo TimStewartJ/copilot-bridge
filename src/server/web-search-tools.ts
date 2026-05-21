@@ -1,4 +1,4 @@
-// Web search tool — uses agent-browser to search Google (with DuckDuckGo fallback).
+// Browser web search tool — uses agent-browser to search Google (with DuckDuckGo fallback).
 // Returns an accessibility-tree snapshot of the results page for the LLM to interpret,
 // avoiding fragile CSS selectors that break when search engines change their DOM.
 
@@ -77,12 +77,12 @@ function webSearchFailure(
 
 export function createWebSearchTools(ctx: AppContext) {
   return [
-    defineTool("web_search", {
+    defineTool("browser_web_search", {
       description:
-        "Search the web using a real browser. Returns structured results (title, URL, snippet) " +
-        "from Google with automatic DuckDuckGo fallback. Use this for current information, " +
-        "documentation lookup, source discovery, and parallel fact gathering when you want to " +
-        "verify claims or compare multiple sources quickly. After identifying promising results, " +
+        "Search the web using a real browser. Returns structured results from Google with " +
+        "automatic DuckDuckGo fallback. Use this as a browser-backed fallback when the GitHub " +
+        "MCP web_search tool is unavailable, challenged, or not suitable for search-engine " +
+        "verification. After identifying promising results, " +
         "follow up with browser_fetch when you need rendered-page confirmation or the canonical " +
         "source. Requires agent-browser to be installed.",
       parameters: {
@@ -114,7 +114,7 @@ export function createWebSearchTools(ctx: AppContext) {
         if (!check) {
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
             browserOpId,
-            toolName: "web_search",
+            toolName: "browser_web_search",
             browserSession: primaryTarget.sessionName,
             queryHash,
           });
@@ -125,7 +125,7 @@ export function createWebSearchTools(ctx: AppContext) {
         }
         safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
           browserOpId,
-          toolName: "web_search",
+          toolName: "browser_web_search",
           browserSession: primaryTarget.sessionName,
           queryHash,
         });
@@ -135,7 +135,7 @@ export function createWebSearchTools(ctx: AppContext) {
           browserSession = lane.browserTarget.sessionName;
           const commandOptions = {
             telemetryStore: ctx.telemetryStore,
-            toolName: "web_search",
+            toolName: "browser_web_search",
             browserOpId,
             browserTarget: lane.browserTarget,
             metadata: {
@@ -157,7 +157,7 @@ export function createWebSearchTools(ctx: AppContext) {
               const googleCurrentUrl = await ab(["get", "url"], undefined, commandOptions);
               if (googleCurrentUrl.ok && isGoogleCaptchaUrl(googleCurrentUrl.output)) {
                 googleChallengeFailure = "Google requires captcha verification before search results can be returned.";
-                safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
+                safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.google.failed", Date.now() - googleStart, {
                   browserOpId,
                   browserSession: lane.browserTarget.sessionName,
                   browserLane: lane.laneType,
@@ -168,7 +168,7 @@ export function createWebSearchTools(ctx: AppContext) {
               } else {
                 const snapshot = await takeSnapshot("#rso", commandOptions);
                 const googleDuration = Date.now() - googleStart;
-                safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google", googleDuration, {
+                safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.google", googleDuration, {
                   browserOpId,
                   browserSession: lane.browserTarget.sessionName,
                   browserLane: lane.laneType,
@@ -189,7 +189,7 @@ export function createWebSearchTools(ctx: AppContext) {
                 }
                 if (snapshot.ok && isGoogleCaptchaSnapshot(snapshot.output)) {
                   googleChallengeFailure = "Google requires captcha verification before search results can be returned.";
-                  safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", googleDuration, {
+                  safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.google.failed", googleDuration, {
                     browserOpId,
                     browserSession: lane.browserTarget.sessionName,
                     browserLane: lane.laneType,
@@ -200,7 +200,7 @@ export function createWebSearchTools(ctx: AppContext) {
                 }
               }
             } else {
-              safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
+              safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.google.failed", Date.now() - googleStart, {
                 browserOpId,
                 browserSession: lane.browserTarget.sessionName,
                 browserLane: lane.laneType,
@@ -210,7 +210,7 @@ export function createWebSearchTools(ctx: AppContext) {
               });
             }
           } else {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.google.failed", Date.now() - googleStart, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.google.failed", Date.now() - googleStart, {
               browserOpId,
               browserSession: lane.browserTarget.sessionName,
               browserLane: lane.laneType,
@@ -221,7 +221,7 @@ export function createWebSearchTools(ctx: AppContext) {
           }
 
           console.log(`[browser] ${JSON.stringify({
-            event: "web_search.fallback",
+            event: "browser_web_search.fallback",
             browserOpId,
             browserSession: lane.browserTarget.sessionName,
             browserLane: lane.laneType,
@@ -231,7 +231,7 @@ export function createWebSearchTools(ctx: AppContext) {
             queryHash,
             queryLength,
           })}`);
-          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.fallback", 0, {
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.fallback", 0, {
             browserOpId,
             browserSession: lane.browserTarget.sessionName,
             browserLane: lane.laneType,
@@ -245,7 +245,7 @@ export function createWebSearchTools(ctx: AppContext) {
           const ddgStart = Date.now();
           const ddgOpen = await ab(["open", ddgUrl], undefined, commandOptions);
           if (!ddgOpen.ok) {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", Date.now() - ddgStart, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.duckduckgo.failed", Date.now() - ddgStart, {
               browserOpId,
               browserSession: lane.browserTarget.sessionName,
               browserLane: lane.laneType,
@@ -263,7 +263,7 @@ export function createWebSearchTools(ctx: AppContext) {
 
           const ddgWait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
           if (!ddgWait.ok) {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", Date.now() - ddgStart, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.duckduckgo.failed", Date.now() - ddgStart, {
               browserOpId,
               browserSession: lane.browserTarget.sessionName,
               browserLane: lane.laneType,
@@ -280,7 +280,7 @@ export function createWebSearchTools(ctx: AppContext) {
 
           const snapshot = await takeSnapshot(undefined, commandOptions);
           const ddgDuration = Date.now() - ddgStart;
-          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo", ddgDuration, {
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.duckduckgo", ddgDuration, {
             browserOpId,
             browserSession: lane.browserTarget.sessionName,
             browserLane: lane.laneType,
@@ -290,7 +290,7 @@ export function createWebSearchTools(ctx: AppContext) {
           });
 
           if (!snapshot.ok) {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.duckduckgo.failed", ddgDuration, {
               browserOpId,
               browserSession: lane.browserTarget.sessionName,
               browserLane: lane.laneType,
@@ -306,7 +306,7 @@ export function createWebSearchTools(ctx: AppContext) {
           }
 
           if (isDuckDuckGoChallengeSnapshot(snapshot.output)) {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.duckduckgo.failed", ddgDuration, {
               browserOpId,
               browserSession: lane.browserTarget.sessionName,
               browserLane: lane.laneType,
@@ -322,7 +322,7 @@ export function createWebSearchTools(ctx: AppContext) {
           }
 
           if (!hasResults(snapshot.output)) {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.duckduckgo.failed", ddgDuration, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.duckduckgo.failed", ddgDuration, {
               browserOpId,
               browserSession: lane.browserTarget.sessionName,
               browserLane: lane.laneType,
@@ -352,14 +352,14 @@ export function createWebSearchTools(ctx: AppContext) {
           try {
             return await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
               browserOpId,
-              toolName: "web_search",
+              toolName: "browser_web_search",
               queryHash,
             }, runFlow, launchConfig);
           } catch (err) {
             fallbackToPrimary = true;
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
               browserOpId,
-              toolName: "web_search",
+              toolName: "browser_web_search",
               queryHash,
               reason: "exception",
               error: err instanceof Error ? err.message : String(err),
@@ -368,14 +368,14 @@ export function createWebSearchTools(ctx: AppContext) {
 
           return await withPrimaryBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
             browserOpId,
-            toolName: "web_search",
+            toolName: "browser_web_search",
             queryHash,
           }, runFlow, launchConfig);
         } catch (err: any) {
           return webSearchFailure(`Search failed: ${String(err).slice(0, 200)}`, { query });
         } finally {
           const duration = Date.now() - toolStart;
-          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search", duration, {
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search", duration, {
             browserOpId,
             browserSession,
             success,
@@ -387,7 +387,7 @@ export function createWebSearchTools(ctx: AppContext) {
             fallbackToPrimary,
           });
           if (!success) {
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.web_search.failed", duration, {
+            safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.failed", duration, {
               browserOpId,
               browserSession,
               queryHash,
