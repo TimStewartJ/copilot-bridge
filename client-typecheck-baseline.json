@@ -170,21 +170,21 @@
   {
     "code": 2339,
     "file": "src/client/components/ChatView.tsx",
-    "line": 1413,
+    "line": 1422,
     "character": 20,
     "message": "Property 'turnId' does not exist on type 'ToolCall'."
   },
   {
     "code": 2339,
     "file": "src/client/components/ChatView.tsx",
-    "line": 1423,
+    "line": 1432,
     "character": 51,
     "message": "Property 'turnId' does not exist on type 'ToolCall'."
   },
   {
     "code": 2339,
     "file": "src/client/components/ChatView.tsx",
-    "line": 1423,
+    "line": 1432,
     "character": 60,
     "message": "Property 'turnId' does not exist on type 'ToolCall'."
   },
