@@ -7,6 +7,11 @@ import type { ChecklistStore } from "../checklist-store.js";
 import { setupTestDb } from "./helpers.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createTagStore } from "../tag-store.js";
+import {
+  GITHUB_COPILOT_MCP_SERVER_NAME,
+  GITHUB_COPILOT_MCP_READONLY_URL,
+  GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
+} from "../github-copilot-mcp.js";
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -40,6 +45,7 @@ function createDeps(overrides: Partial<SessionConfigBuilderDeps> = {}): SessionC
   return {
     tools: [],
     config: { sessionMcpServers: {} },
+    clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
     ...overrides,
   };
 }
@@ -121,6 +127,73 @@ describe("session-config-builder", () => {
     });
   });
 
+  it("adds CLI-hosted GitHub Copilot web search MCP when the Bridge Copilot token is configured", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "  token-123  " },
+      }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      [GITHUB_COPILOT_MCP_SERVER_NAME]: {
+        type: "http",
+        url: GITHUB_COPILOT_MCP_READONLY_URL,
+        headers: {
+          Authorization: "Bearer token-123",
+          "X-MCP-Host": "copilot-bridge",
+          "X-MCP-Readonly": "true",
+          "X-MCP-Tools": GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
+        },
+        tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
+      },
+    });
+  });
+
+  it("does not add GitHub Copilot web search MCP without a Bridge Copilot token", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps({ clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "   " } }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({});
+  });
+
+  it("preserves an existing manual GitHub MCP server when adding Copilot web search", () => {
+    const { mcpServerStore } = createMcpRegistryDeps();
+    mcpServerStore.createMcpServer({
+      name: "github",
+      config: {
+        type: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        headers: {
+          Authorization: "Bearer manual-account-token",
+          "X-MCP-Toolsets": "repos,pull_requests",
+        },
+      },
+      enabledByDefault: true,
+    });
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "copilot-account-token" },
+        mcpServerStore,
+      }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers.github).toEqual({
+      type: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      headers: {
+        Authorization: "Bearer manual-account-token",
+        "X-MCP-Toolsets": "repos,pull_requests",
+      },
+    });
+    expect(cfg.mcpServers[GITHUB_COPILOT_MCP_SERVER_NAME].headers.Authorization)
+      .toBe("Bearer copilot-account-token");
+  });
+
   it("adds MCP servers selected by task tags", () => {
     const { mcpServerStore, tagStore } = createMcpRegistryDeps();
     const taskServer = mcpServerStore.createMcpServer({
@@ -139,6 +212,42 @@ describe("session-config-builder", () => {
 
     expect(cfg.mcpServers).toEqual({
       "Task MCP": { command: "task-mcp", args: ["serve"] },
+    });
+  });
+
+  it("preserves GitHub Copilot web search MCP when task tags rebuild MCP selection", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const taskServer = mcpServerStore.createMcpServer({
+      name: "Task MCP",
+      config: { command: "task-mcp", args: ["serve"] },
+    });
+    const tag = tagStore.createTag("Task tools");
+    tagStore.addTagMcpServerRef(tag.id, taskServer.id);
+    tagStore.setEntityTags("task", "task-1", [tag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "copilot-token" },
+        mcpServerStore,
+        tagStore,
+      }),
+      options: { task: createTask() },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      "Task MCP": { command: "task-mcp", args: ["serve"] },
+      [GITHUB_COPILOT_MCP_SERVER_NAME]: {
+        type: "http",
+        url: GITHUB_COPILOT_MCP_READONLY_URL,
+        headers: {
+          Authorization: "Bearer copilot-token",
+          "X-MCP-Host": "copilot-bridge",
+          "X-MCP-Readonly": "true",
+          "X-MCP-Tools": GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
+        },
+        tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
+      },
     });
   });
 

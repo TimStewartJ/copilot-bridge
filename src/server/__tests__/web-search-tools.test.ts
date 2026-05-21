@@ -41,7 +41,7 @@ vi.mock("node:fs", () => ({
   unlinkSync: unlinkSyncMock,
 }));
 
-describe("web_search tool", () => {
+describe("browser_web_search tool", () => {
   beforeEach(() => {
     vi.resetModules();
     execMock.mockReset();
@@ -88,6 +88,7 @@ describe("web_search tool", () => {
 
     const mod = await import("../web-search-tools.js");
     const tools = mod.createWebSearchTools(createBrowserToolContext());
+    expect(tools[0].name).toBe("browser_web_search");
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({

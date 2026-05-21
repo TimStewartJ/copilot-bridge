@@ -25,6 +25,7 @@ import {
   formatRelatedDocManifestEntry,
 } from "./session-formatting.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
+import { buildGitHubCopilotSearchMcpServer } from "./github-copilot-mcp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -63,6 +64,7 @@ export interface SessionConfigBuilderDeps {
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
+  clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
 }
 
@@ -145,6 +147,15 @@ function resolveSessionMcpServers(
   return resolved;
 }
 
+function addBuiltInMcpServers(
+  deps: SessionConfigBuilderDeps,
+  servers: Record<string, McpServerConfig>,
+): Record<string, McpServerConfig> {
+  const builtInServer = buildGitHubCopilotSearchMcpServer(deps.clientEnv);
+  if (!builtInServer || servers[builtInServer.name]) return servers;
+  return { ...servers, [builtInServer.name]: builtInServer.config };
+}
+
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
   const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes, forResume } = params.options ?? {};
@@ -158,7 +169,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     includeSubAgentStreamingEvents: false,
     tools: deps.tools,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
-    mcpServers: resolveSessionMcpServers(deps),
+    mcpServers: addBuiltInMcpServers(deps, resolveSessionMcpServers(deps)),
     skillDirectories: [
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
@@ -273,7 +284,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
     // Merge tag-selected MCP registry servers into session config.
     if (resolved.mcpServerIds.length > 0 || Object.keys(resolved.mergedMcpServers).length > 0) {
-      cfg.mcpServers = resolveSessionMcpServers(deps, resolved.mcpServerIds, resolved.mergedMcpServers);
+      cfg.mcpServers = addBuiltInMcpServers(
+        deps,
+        resolveSessionMcpServers(deps, resolved.mcpServerIds, resolved.mergedMcpServers),
+      );
     }
 
     // Inject related docs manifest — tell the AI which docs are available

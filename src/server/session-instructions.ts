@@ -50,6 +50,7 @@ When a question depends on current facts, third-party behavior, online documenta
 - Prefer web_search for source discovery and narrow fact-finding checks.
 - Split independent claims into separate checks, and run those checks in parallel when practical.
 - Use browser_fetch to confirm rendered or canonical pages after search fan-out, especially for JS-heavy or bot-protected sites.
+- Use browser_web_search when the GitHub MCP web_search tool is unavailable or when a browser-backed search-engine fallback is needed.
 - Use browser_exec when verification or extraction needs multiple browser steps but should stay on the bridge-managed browser lane.
 - Use browser_session_* tools when browser work must persist explicitly across turns.
 - For important claims, compare more than one source when reasonable before making a strong assertion.

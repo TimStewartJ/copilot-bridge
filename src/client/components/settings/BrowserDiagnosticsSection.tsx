@@ -170,7 +170,7 @@ export function BrowserDiagnosticsSection({
   return (
     <SettingsSection
       title="Browser Diagnostics"
-      description="Configure the Bridge-owned browser target, choose whether browser tools run headed, and review recent browser friction such as web_search challenge pages."
+      description="Configure the Bridge-owned browser target, choose whether browser tools run headed, and review recent browser friction such as browser_web_search challenge pages."
       action={(
         <button
           type="button"
