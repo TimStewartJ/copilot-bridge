@@ -70,7 +70,7 @@ describe("browser_web_search tool", () => {
     });
   });
 
-  it("returns normalized DuckDuckGo snapshot failures after fallback", async () => {
+  it("returns normalized DuckDuckGo snapshot failures after all fallbacks", async () => {
     execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
       else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
@@ -92,9 +92,9 @@ describe("browser_web_search tool", () => {
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
-      textResultForLlm: "Failed to capture results: snapshot failed",
+      textResultForLlm: "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
       resultType: "failure",
-      sessionLog: "Search engine: duckduckgo\n\nQuery: copilot bridge\n\nFailed to capture results: snapshot failed",
+      sessionLog: "Query: copilot bridge\n\nFailed to capture Google results: snapshot failed\n\nFailed to capture Bing results: snapshot failed\n\nFailed to capture DuckDuckGo results: snapshot failed\n\nAll browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
     });
   });
 
@@ -122,25 +122,34 @@ describe("browser_web_search tool", () => {
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
-      textResultForLlm: "Failed to capture results: snapshot failed",
+      textResultForLlm: "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
       resultType: "failure",
-      sessionLog: "Search engine: duckduckgo\n\nQuery: copilot bridge\n\nFailed to capture results: snapshot failed",
+      sessionLog: "Query: copilot bridge\n\nFailed to capture Google results: snapshot failed\n\nFailed to capture Bing results: snapshot failed\n\nFailed to capture DuckDuckGo results: snapshot failed\n\nAll browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
     });
     expect(commandSessions.some((entry) => /:(?!.*-clone-).*copilot-bridge-/.test(entry))).toBe(false);
     expect(commandSessions.some((entry) => entry.includes("-clone-"))).toBe(true);
   });
 
-  it("falls back to DuckDuckGo after Google sorry redirects", async () => {
+  it("falls back to Bing after Google sorry redirects", async () => {
+    let currentUrl = "";
     execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
-      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
+      if (args[0] === "open") {
+        currentUrl = args[1] ?? "";
+        cb(null, { stdout: "opened", stderr: "" });
+      }
       else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
       else if (args[0] === "get" && args[1] === "url") {
-        cb(null, { stdout: "https://www.google.com/sorry/index?continue=https://www.google.com/search", stderr: "" });
-      } else if (args[0] === "snapshot") {
+        cb(null, {
+          stdout: currentUrl.includes("bing.com")
+            ? "https://www.bing.com/search?q=copilot%20bridge"
+            : "https://www.google.com/sorry/index?continue=https://www.google.com/search",
+          stderr: "",
+        });
+      } else if (args[0] === "snapshot" && args.includes("#b_results")) {
         cb(null, {
           stdout: [
-            "heading DuckDuckGo Result",
-            "- link DuckDuckGo Result",
+            "heading Bing Result",
+            "- link Bing Result",
             "heading Another Result",
             "- link Another Result",
             "- link Third Result",
@@ -160,14 +169,14 @@ describe("browser_web_search tool", () => {
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toMatchObject({
-      source: "duckduckgo",
+      source: "bing",
       query: "copilot bridge",
-      url: "https://html.duckduckgo.com/html/?q=copilot%20bridge",
+      url: "https://www.bing.com/search?q=copilot%20bridge",
     });
-    expect(result.snapshot).toContain("heading DuckDuckGo Result");
+    expect(result.snapshot).toContain("heading Bing Result");
   });
 
-  it("reports Google captcha context when DuckDuckGo is also challenged", async () => {
+  it("reports prior provider context when DuckDuckGo is also challenged", async () => {
     execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
       else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
@@ -198,9 +207,9 @@ describe("browser_web_search tool", () => {
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
-      textResultForLlm: "DuckDuckGo requires challenge verification before search results can be returned.",
+      textResultForLlm: "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
       resultType: "failure",
-      sessionLog: "Search engine: duckduckgo\n\nQuery: copilot bridge\n\nGoogle requires captcha verification before search results can be returned.\n\nDuckDuckGo requires challenge verification before search results can be returned.",
+      sessionLog: "Query: copilot bridge\n\nGoogle requires captcha verification before search results can be returned. Google will be skipped for 15m.\n\nBing did not return recognizable search results.\n\nDuckDuckGo requires challenge verification before search results can be returned. DuckDuckGo will be skipped for 15m.\n\nAll browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
     });
   });
 
@@ -238,10 +247,124 @@ describe("browser_web_search tool", () => {
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
     expect(result).toEqual({
-      textResultForLlm: "DuckDuckGo requires challenge verification before search results can be returned.",
+      textResultForLlm: "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
       resultType: "failure",
-      sessionLog: "Search engine: duckduckgo\n\nQuery: copilot bridge\n\nDuckDuckGo requires challenge verification before search results can be returned.",
+      sessionLog: "Query: copilot bridge\n\nGoogle did not return recognizable search results.\n\nBing did not return recognizable search results.\n\nDuckDuckGo requires challenge verification before search results can be returned. DuckDuckGo will be skipped for 15m.\n\nAll browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
     });
+  });
+
+  it("skips only the provider cooling down after captcha", async () => {
+    let currentUrl = "";
+    const openUrls: string[] = [];
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") {
+        currentUrl = args[1] ?? "";
+        openUrls.push(currentUrl);
+        cb(null, { stdout: "opened", stderr: "" });
+      } else if (args[0] === "wait") {
+        cb(null, { stdout: "ready", stderr: "" });
+      } else if (args[0] === "get" && args[1] === "url") {
+        cb(null, {
+          stdout: currentUrl.includes("bing.com")
+            ? "https://www.bing.com/turing/captcha?foo=bar"
+            : currentUrl,
+          stderr: "",
+        });
+      } else if (args[0] === "snapshot" && args.includes("#rso")) {
+        cb(null, { stdout: "heading Google Result\n- link Google Result", stderr: "" });
+      } else if (args[0] === "snapshot") {
+        cb(null, {
+          stdout: [
+            "heading DuckDuckGo Result",
+            "- link DuckDuckGo Result",
+            "heading Another Result",
+            "- link Another Result",
+            "- link Third Result",
+          ].join("\n"),
+          stderr: "",
+        });
+      } else if (args[0] === "close") {
+        cb(null, { stdout: "closed", stderr: "" });
+      } else {
+        cb(null, { stdout: "ok", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../web-search-tools.js");
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
+    const firstResult = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+    openUrls.length = 0;
+    const secondResult = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+
+    expect(firstResult).toMatchObject({
+      source: "duckduckgo",
+      url: "https://duck.com/?q=copilot%20bridge&ia=web",
+    });
+    expect(secondResult).toMatchObject({
+      source: "duckduckgo",
+      url: "https://duck.com/?q=copilot%20bridge&ia=web",
+    });
+    expect(openUrls.some((url) => url.includes("google.com/search"))).toBe(true);
+    expect(openUrls.some((url) => url.includes("bing.com/search"))).toBe(false);
+    expect(openUrls.some((url) => url.includes("duck.com"))).toBe(true);
+  });
+
+  it("returns a cooldown failure without opening a provider when all are cooling down", async () => {
+    let currentUrl = "";
+    const openUrls: string[] = [];
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") {
+        currentUrl = args[1] ?? "";
+        openUrls.push(currentUrl);
+        cb(null, { stdout: "opened", stderr: "" });
+      } else if (args[0] === "wait") {
+        cb(null, { stdout: "ready", stderr: "" });
+      } else if (args[0] === "get" && args[1] === "url") {
+        cb(null, {
+          stdout: currentUrl.includes("bing.com")
+            ? "https://www.bing.com/turing/captcha?foo=bar"
+            : "https://www.google.com/sorry/index?continue=https://www.google.com/search",
+          stderr: "",
+        });
+      } else if (args[0] === "snapshot") {
+        cb(null, {
+          stdout: [
+            "- link DuckDuckGo",
+            "iframe",
+            "checkbox image challenge 1",
+            "checkbox image challenge 2",
+            "button Submit",
+            "Images not loading?",
+          ].join("\n"),
+          stderr: "",
+        });
+      } else if (args[0] === "close") {
+        cb(null, { stdout: "closed", stderr: "" });
+      } else {
+        cb(null, { stdout: "ok", stderr: "" });
+      }
+      return {} as any;
+    });
+
+    const mod = await import("../web-search-tools.js");
+    const tools = mod.createWebSearchTools(createBrowserToolContext());
+    const firstResult = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+    expect(firstResult).toMatchObject({
+      textResultForLlm: "All browser web search providers are blocked by challenge verification or cooling down. Do not retry browser_web_search until the cooldown expires; use a different research tool/source or ask the user to resolve the browser challenges.",
+      resultType: "failure",
+    });
+    openUrls.length = 0;
+    const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
+
+    expect(openUrls).toHaveLength(0);
+    expect(result).toMatchObject({
+      textResultForLlm: "All browser web search providers are blocked by challenge verification or cooling down. Do not retry browser_web_search until the cooldown expires; use a different research tool/source or ask the user to resolve the browser challenges.",
+      resultType: "failure",
+    });
+    expect(result.sessionLog).toContain("Google is cooling down after a recent captcha/challenge.");
+    expect(result.sessionLog).toContain("Bing is cooling down after a recent captcha/challenge.");
+    expect(result.sessionLog).toContain("DuckDuckGo is cooling down after a recent captcha/challenge.");
   });
 
   it("still succeeds with normal Google results", async () => {
