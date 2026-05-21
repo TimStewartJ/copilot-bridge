@@ -82,6 +82,18 @@ import {
   PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS,
 } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError } from "./docs-store.js";
+import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
+
+function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
+  if (!isDocsFtsUnavailableError(error)) return null;
+  return { status: 503, body: docsFtsUnavailablePayload(error) };
+}
+
+function docsIndexMutationWarning(result: DocsFtsMutationResult | undefined): { indexed?: false; indexError?: DocsFtsUnavailablePayload } {
+  return result && !result.indexed
+    ? { indexed: false, indexError: result.indexError }
+    : {};
+}
 
 function getDirSize(dirPath: string): number {
   let size = 0;
@@ -1323,7 +1335,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
   });
 
   router.get("/health", (_req, res) => {
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      ...(ctx.docsIndex ? { docsFts: ctx.docsIndex.getFtsHealth() } : {}),
+    });
   });
 
   router.post("/maintenance/session-overlay-reaper", (req, res) => {
@@ -3841,6 +3856,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const offset = Number(req.query.offset) || 0;
         res.json(docsIdx.search(q, limit, offset));
       } catch (err) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(500).json({ error: String(err) });
       }
     });
@@ -3873,6 +3890,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const result = docsIdx.reindex();
         res.json(result);
       } catch (err) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(500).json({ error: String(err) });
       }
     });
@@ -3908,14 +3927,31 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const result = docsSnapshots.restoreSnapshot(String(req.params.id));
         let reindexed = true;
         let reindexError: string | undefined;
+        let reindexErrorCode: string | undefined;
+        let reindexHealth: unknown;
         try {
           docsIdx.reindex();
         } catch (error) {
           reindexed = false;
-          reindexError = error instanceof Error ? error.message : String(error);
-          console.warn(`[docs-snapshots] Restore succeeded but reindex failed: ${reindexError}`);
+          if (isDocsFtsUnavailableError(error)) {
+            const payload = docsFtsUnavailablePayload(error);
+            reindexError = payload.error;
+            reindexErrorCode = payload.code;
+            reindexHealth = payload.health;
+          } else {
+            reindexError = error instanceof Error ? error.message : String(error);
+          }
+          const codeSuffix = reindexErrorCode ? ` (${reindexErrorCode})` : "";
+          console.warn(`[docs-snapshots] Restore succeeded but reindex failed${codeSuffix}: ${reindexError}`);
         }
-        res.json({ success: true, reindexed, ...(reindexError ? { reindexError } : {}), ...result });
+        res.json({
+          success: true,
+          reindexed,
+          ...(reindexError ? { reindexError } : {}),
+          ...(reindexErrorCode ? { reindexErrorCode } : {}),
+          ...(reindexHealth ? { reindexHealth } : {}),
+          ...result,
+        });
       } catch (err: any) {
         if (err instanceof DocsSnapshotNotFoundError) return res.status(404).json({ error: err.message });
         if (err instanceof DocsSnapshotValidationError) return res.status(422).json({ error: err.message });
@@ -3944,9 +3980,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const { content } = req.body;
         if (typeof content !== "string") return res.status(400).json({ error: "content is required" });
         const page = docs.writePage(pagePath, content);
-        docsIdx.indexPage(page);
-        res.json({ path: page.path, success: true });
+        const indexResult = docsIdx.indexPage(page);
+        res.json({ path: page.path, success: true, ...docsIndexMutationWarning(indexResult) });
       } catch (err: any) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(400).json({ error: err.message || String(err) });
       }
     });
@@ -3956,11 +3994,14 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const raw = (req.params as any).path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const result = docs.deleteUserPage(pagePath, createPreDeleteDocsSnapshot);
+        let indexResult: DocsFtsMutationResult | undefined;
         if (result.deleted) {
-          docsIdx.removePage(result.path);
+          indexResult = docsIdx.removePage(result.path);
         }
-        res.json(result);
+        res.json({ ...result, ...docsIndexMutationWarning(indexResult) });
       } catch (err: any) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         const message = err?.message || String(err);
         res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
@@ -4032,9 +4073,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const entry = docs.addDbEntry(folder, fields, body);
         // Index the new page
         const page = docs.readPage(entry.path);
-        if (page) docsIdx.indexPage(page);
-        res.json({ path: entry.path, slug: entry.slug, success: true });
+        const indexResult = page ? docsIdx.indexPage(page) : undefined;
+        res.json({ path: entry.path, slug: entry.slug, success: true, ...docsIndexMutationWarning(indexResult) });
       } catch (err: any) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(400).json({ error: err.message || String(err) });
       }
     });
@@ -4050,9 +4093,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
         const entry = docs.updateDbEntry(folder, slug, fields, body);
         // Re-index the updated page
         const page = docs.readPage(entry.path);
-        if (page) docsIdx.indexPage(page);
-        res.json({ path: entry.path, success: true });
+        const indexResult = page ? docsIdx.indexPage(page) : undefined;
+        res.json({ path: entry.path, success: true, ...docsIndexMutationWarning(indexResult) });
       } catch (err: any) {
+        const ftsError = docsFtsHttpError(err);
+        if (ftsError) return res.status(ftsError.status).json(ftsError.body);
         res.status(400).json({ error: err.message || String(err) });
       }
     });

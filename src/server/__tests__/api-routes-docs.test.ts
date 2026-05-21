@@ -24,6 +24,7 @@ import {
   writeFileSync,
   writeRestartState,
 } from "./api-routes-test-helpers.js";
+import { initializeDocsFts } from "../db.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -265,6 +266,88 @@ tags:
     const res = await request(app).get("/api/docs/search?q=xylophone");
     expect(res.status).toBe(200);
     expect(res.body.results.length).toBeGreaterThan(0);
+  });
+
+  it("self-heals a conflicting docs FTS table before docs search", async () => {
+    await request(app)
+      .put("/api/docs/pages/self-healing-search")
+      .send({ content: "# Self Healing Search\n\nThis page has xylophone content" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      db.exec("DROP TABLE docs_fts");
+      db.exec("CREATE TABLE docs_fts(dummy TEXT)");
+      initializeDocsFts(db);
+
+      const health = await request(app).get("/api/health");
+      expect(health.status).toBe(200);
+      expect(health.body).toMatchObject({
+        ok: true,
+        docsFts: {
+          ok: true,
+          status: "available",
+          repaired: true,
+          previousFailure: { detectedBy: "schema_probe" },
+        },
+      });
+
+      const res = await request(app).get("/api/docs/search?q=xylophone");
+      expect(res.status).toBe(200);
+      expect(res.body.results.map((result: any) => result.path)).toContain("self-healing-search");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain("Repaired docs full-text search index");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("GET /api/docs/search surfaces unhealthy docs FTS state when repair is unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      db.exec("DROP TABLE docs_fts");
+      db.exec("CREATE TABLE docs_fts(dummy TEXT)");
+      initializeDocsFts(db, { repair: false });
+
+      const write = await request(app)
+        .put("/api/docs/pages/degraded-search")
+        .send({ content: "# Degraded Search\n\nThis page persists even when FTS is unhealthy." });
+      expect(write.status).toBe(200);
+      expect(write.body).toMatchObject({
+        success: true,
+        indexed: false,
+        indexError: {
+          code: "docs_fts_unavailable",
+          health: { ok: false },
+        },
+      });
+
+      const health = await request(app).get("/api/health");
+      expect(health.status).toBe(200);
+      expect(health.body).toMatchObject({
+        ok: true,
+        docsFts: {
+          ok: false,
+          status: "unavailable",
+          code: "docs_fts_init_failed",
+        },
+      });
+
+      const res = await request(app).get("/api/docs/search?q=xylophone");
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({
+        code: "docs_fts_unavailable",
+        operation: "search docs",
+        health: {
+          ok: false,
+          status: "unavailable",
+          code: "docs_fts_init_failed",
+          detectedBy: "schema_probe",
+        },
+      });
+      expect(res.body.error).toContain("Docs full-text search is unavailable");
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("POST /api/docs/reindex rebuilds the index", async () => {

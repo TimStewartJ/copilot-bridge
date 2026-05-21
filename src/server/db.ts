@@ -46,6 +46,296 @@ const SQLITE_STATE_TABLES = [
 ] as const;
 type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
 
+export type DocsFtsFailureDetectedBy =
+  | "create_virtual_table"
+  | "schema_probe"
+  | "smoke_query"
+  | "repair";
+
+export interface DocsFtsFailure {
+  code: "docs_fts_init_failed";
+  message: string;
+  cause: string;
+  detectedBy: DocsFtsFailureDetectedBy;
+  checkedAt: string;
+}
+
+export type DocsFtsHealth =
+  | {
+      ok: true;
+      status: "available";
+      checkedAt: string;
+      /**
+       * Process-local signal that this connection repaired docs_fts while opening
+       * or rechecking the database. The source of truth remains docs_pages/files.
+       */
+      repaired?: boolean;
+      previousFailure?: DocsFtsFailure;
+      repairMessage?: string;
+      quarantinedTable?: string;
+    }
+  | (DocsFtsFailure & {
+      ok: false;
+      status: "unavailable";
+      previousFailure?: DocsFtsFailure;
+    });
+
+const docsFtsHealthByDb = new WeakMap<DatabaseSync, DocsFtsHealth>();
+const docsFtsWarningLoggedByDb = new WeakSet<DatabaseSync>();
+const docsFtsRepairLoggedByDb = new WeakSet<DatabaseSync>();
+const DOCS_FTS_SHADOW_TABLES = [
+  "docs_fts_config",
+  "docs_fts_content",
+  "docs_fts_data",
+  "docs_fts_docsize",
+  "docs_fts_idx",
+] as const;
+
+interface DocsFtsInitializeOptions {
+  warnOnFailure?: boolean;
+  warnOnRepair?: boolean;
+  repair?: boolean;
+  rebuild?: boolean;
+}
+
+interface DocsFtsRepairResult {
+  health: Extract<DocsFtsHealth, { ok: true }>;
+  actions: string[];
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function quoteSqlIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, "\"\"")}"`;
+}
+
+function unavailableDocsFtsFailure(
+  detectedBy: DocsFtsFailureDetectedBy,
+  cause: string,
+): DocsFtsFailure {
+  return {
+    code: "docs_fts_init_failed",
+    message: "Docs full-text search initialization failed. Docs search and reindex operations are unavailable until the docs_fts schema is repaired.",
+    cause,
+    detectedBy,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function unavailableDocsFtsHealth(detectedBy: DocsFtsFailureDetectedBy, cause: string): Extract<DocsFtsHealth, { ok: false }> {
+  return {
+    ok: false,
+    status: "unavailable",
+    ...unavailableDocsFtsFailure(detectedBy, cause),
+  };
+}
+
+function availableDocsFtsHealth(options: Partial<Extract<DocsFtsHealth, { ok: true }>> = {}): Extract<DocsFtsHealth, { ok: true }> {
+  return {
+    ok: true,
+    status: "available",
+    checkedAt: new Date().toISOString(),
+    ...options,
+  };
+}
+
+function recordDocsFtsHealth(db: DatabaseSync, health: DocsFtsHealth, options: DocsFtsInitializeOptions = {}): DocsFtsHealth {
+  docsFtsHealthByDb.set(db, health);
+  if (!health.ok && options.warnOnFailure !== false && !docsFtsWarningLoggedByDb.has(db)) {
+    docsFtsWarningLoggedByDb.add(db);
+    console.warn(`[docs-fts] ${health.message} Detected by ${health.detectedBy}. Cause: ${health.cause}`);
+  }
+  if (health.ok && health.repaired && options.warnOnRepair !== false && !docsFtsRepairLoggedByDb.has(db)) {
+    docsFtsRepairLoggedByDb.add(db);
+    const previous = health.previousFailure;
+    const quarantine = health.quarantinedTable ? ` Quarantined conflicting table as ${health.quarantinedTable}.` : "";
+    console.warn(`[docs-fts] Repaired docs full-text search index.${quarantine}${previous ? ` Previous failure detected by ${previous.detectedBy}: ${previous.cause}` : ""}`);
+  }
+  return health;
+}
+
+function getDocsFtsSchemaRow(db: DatabaseSync): { type?: string; sql?: string } | undefined {
+  return db.prepare("SELECT type, sql FROM sqlite_master WHERE name = 'docs_fts'").get() as { type?: string; sql?: string } | undefined;
+}
+
+function isFts5VirtualTableSql(sql: string | undefined): boolean {
+  const normalizedSql = (sql ?? "").toLowerCase().replace(/\s+/g, " ");
+  return normalizedSql.includes("create virtual table") && normalizedSql.includes("using fts5");
+}
+
+function validateDocsFtsSchema(db: DatabaseSync): DocsFtsFailure | null {
+  const row = getDocsFtsSchemaRow(db);
+  const sql = row?.sql;
+  if (!sql) {
+    return unavailableDocsFtsFailure("schema_probe", "docs_fts was not found in sqlite_master after setup");
+  }
+
+  const normalizedSql = sql.toLowerCase().replace(/\s+/g, " ");
+  const hasExpectedShape = isFts5VirtualTableSql(sql)
+    && /\bpath\b/.test(normalizedSql)
+    && /\btitle\b/.test(normalizedSql)
+    && /\btags\b/.test(normalizedSql)
+    && /\bbody\b/.test(normalizedSql)
+    && normalizedSql.includes("content='docs_pages'")
+    && normalizedSql.includes("content_rowid='rowid'");
+
+  if (!hasExpectedShape) {
+    return unavailableDocsFtsFailure("schema_probe", `docs_fts exists but is not the expected external-content FTS5 table: ${sql}`);
+  }
+
+  return null;
+}
+
+function createDocsFtsTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+      path, title, tags, body,
+      content='docs_pages', content_rowid='rowid'
+    );
+  `);
+}
+
+function probeDocsFts(db: DatabaseSync): DocsFtsFailure | null {
+  const schemaFailure = validateDocsFtsSchema(db);
+  if (schemaFailure) return schemaFailure;
+
+  try {
+    db.prepare(`
+      SELECT snippet(docs_fts, 3, '', '', '', 1) as snippet
+      FROM docs_fts
+      WHERE docs_fts MATCH ?
+      LIMIT 0
+    `).all("\"__bridge_docs_fts_probe__\"");
+  } catch (error) {
+    return unavailableDocsFtsFailure("smoke_query", getErrorMessage(error));
+  }
+
+  return null;
+}
+
+function attemptInitializeDocsFts(db: DatabaseSync): DocsFtsHealth {
+  try {
+    createDocsFtsTable(db);
+  } catch (error) {
+    return {
+      ok: false,
+      status: "unavailable",
+      ...unavailableDocsFtsFailure("create_virtual_table", getErrorMessage(error)),
+    };
+  }
+
+  const probeFailure = probeDocsFts(db);
+  if (probeFailure) return { ok: false, status: "unavailable", ...probeFailure };
+  return availableDocsFtsHealth();
+}
+
+function listDocsFtsShadowTables(db: DatabaseSync): string[] {
+  return DOCS_FTS_SHADOW_TABLES.filter((name) =>
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+  );
+}
+
+function createQuarantineTableName(db: DatabaseSync): string {
+  let suffix = Date.now().toString(36);
+  let candidate = `quarantined_docs_fts_${suffix}`;
+  let index = 0;
+  while (db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(candidate)) {
+    index += 1;
+    suffix = `${Date.now().toString(36)}_${index}`;
+    candidate = `quarantined_docs_fts_${suffix}`;
+  }
+  return candidate;
+}
+
+function runInImmediateTransaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Preserve the original repair failure.
+    }
+    throw error;
+  }
+}
+
+function repairDocsFtsCache(db: DatabaseSync, previousFailure: DocsFtsFailure, options: DocsFtsInitializeOptions): DocsFtsRepairResult {
+  return runInImmediateTransaction(db, () => {
+    const actions: string[] = [];
+    let quarantinedTable: string | undefined;
+    const existing = getDocsFtsSchemaRow(db);
+
+    if (existing?.sql) {
+      if (isFts5VirtualTableSql(existing.sql)) {
+        db.exec("DROP TABLE IF EXISTS docs_fts");
+        actions.push("dropped existing docs_fts virtual table");
+      } else if (existing.type === "table") {
+        quarantinedTable = createQuarantineTableName(db);
+        db.exec(`ALTER TABLE docs_fts RENAME TO ${quoteSqlIdentifier(quarantinedTable)}`);
+        actions.push(`quarantined conflicting docs_fts table as ${quarantinedTable}`);
+      } else {
+        throw new Error(`Cannot repair docs_fts because an unsupported ${existing.type ?? "object"} named docs_fts exists`);
+      }
+    }
+
+    for (const shadowTable of listDocsFtsShadowTables(db)) {
+      db.exec(`DROP TABLE IF EXISTS ${quoteSqlIdentifier(shadowTable)}`);
+      actions.push(`dropped leftover docs FTS shadow table ${shadowTable}`);
+    }
+
+    createDocsFtsTable(db);
+    actions.push("created docs_fts virtual table");
+
+    if (options.rebuild !== false) {
+      db.exec("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')");
+      actions.push("rebuilt docs_fts from docs_pages");
+    }
+
+    const probeFailure = probeDocsFts(db);
+    if (probeFailure) {
+      throw new Error(`docs_fts still failed validation after repair: ${probeFailure.cause}`);
+    }
+
+    return {
+      actions,
+      health: availableDocsFtsHealth({
+        repaired: true,
+        previousFailure,
+        repairMessage: actions.join("; "),
+        ...(quarantinedTable ? { quarantinedTable } : {}),
+      }),
+    };
+  });
+}
+
+export function initializeDocsFts(db: DatabaseSync, options: DocsFtsInitializeOptions = {}): DocsFtsHealth {
+  const health = attemptInitializeDocsFts(db);
+  if (health.ok || options.repair === false) return recordDocsFtsHealth(db, health, options);
+
+  try {
+    const repaired = repairDocsFtsCache(db, health, options);
+    return recordDocsFtsHealth(db, repaired.health, options);
+  } catch (repairError) {
+    const failedRepair = unavailableDocsFtsHealth(
+      "repair",
+      `Initial failure detected by ${health.detectedBy}: ${health.cause}. Repair failed: ${getErrorMessage(repairError)}`,
+    );
+    failedRepair.previousFailure = health;
+    return recordDocsFtsHealth(db, failedRepair, options);
+  }
+}
+
+export function getDocsFtsHealth(db: DatabaseSync): DocsFtsHealth {
+  return docsFtsHealthByDb.get(db)
+    ?? unavailableDocsFtsHealth("schema_probe", "docs FTS health was not recorded for this database connection");
+}
+
 function legacyJsonFileHasState(dataDir: string, file: typeof LEGACY_JSON_STATE_FILES[number]): boolean {
   const content = readFileSync(join(dataDir, file), "utf-8").trim();
   if (content === "") return false;
@@ -482,16 +772,7 @@ function initSchema(db: DatabaseSync): void {
   runDatabaseMigrations(db);
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
-  try {
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-        path, title, tags, body,
-        content='docs_pages', content_rowid='rowid'
-      );
-    `);
-  } catch {
-    // FTS5 table already exists or other issue — safe to ignore
-  }
+  initializeDocsFts(db);
 }
 
 export type { DatabaseSync };
