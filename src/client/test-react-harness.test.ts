@@ -52,6 +52,17 @@ describe("React DOM harness deterministic waits", () => {
     expect(ready).toBe(true);
   });
 
+  it("resolves waitUntilAct after React scheduler task yields", async () => {
+    let ready = false;
+    setTimeout(() => {
+      ready = true;
+    }, 0);
+
+    await waitUntilAct(passthroughAct, () => ready);
+
+    expect(ready).toBe(true);
+  });
+
   it("fails waitUntilAct after bounded React flushes instead of wall-clock time", async () => {
     await expect(waitUntilAct(passthroughAct, () => false, {
       label: "missing state",

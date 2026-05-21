@@ -131,6 +131,11 @@ export async function waitTick(): Promise<void> {
   await Promise.resolve();
 }
 
+async function waitSchedulerTask(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await Promise.resolve();
+}
+
 export async function flushAct(act: Act, ticks = 1): Promise<void> {
   for (let index = 0; index < ticks; index += 1) {
     await act(async () => {
@@ -158,6 +163,12 @@ export async function waitUntilAct(
   for (let flushIndex = 0; flushIndex < maxFlushes; flushIndex += 1) {
     await flushAct(act);
     if (predicate()) return;
+    if (!vi.isFakeTimers()) {
+      await act(async () => {
+        await waitSchedulerTask();
+      });
+      if (predicate()) return;
+    }
   }
   const suffix = options.label ? ` (${options.label})` : "";
   throw new Error(`Condition${suffix} was not met after ${maxFlushes} React flushes`);
