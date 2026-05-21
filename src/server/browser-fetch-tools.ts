@@ -7,6 +7,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
 import { ab, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 
 const CLONE_SAFE_BROWSER_FETCH_HOSTS = new Set([
@@ -45,7 +46,7 @@ function isCloneSafeBrowserFetchHost(urlHost: string | undefined): boolean {
 }
 
 export function createBrowserFetchTools(ctx: AppContext) {
-  return [
+  return requireToolHandlers([
     defineTool("browser_fetch", {
       description:
         "Fetch a web page using a real browser and return its content as an accessibility snapshot. " +
@@ -220,5 +221,5 @@ export function createBrowserFetchTools(ctx: AppContext) {
         }
       },
     }),
-  ];
+  ]);
 }

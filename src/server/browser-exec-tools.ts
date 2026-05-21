@@ -7,6 +7,7 @@ import type { AppContext } from "./app-context.js";
 import type { BrowserLane } from "./agent-browser.js";
 import { getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
+import { requireToolHandlers } from "./tool-handler.js";
 import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
 
 type BrowserExecLane = "auto" | "primary" | "clone";
@@ -94,7 +95,7 @@ export function resolveBrowserExecLane(
 }
 
 export function createBrowserExecTools(ctx: AppContext) {
-  return [
+  return requireToolHandlers([
     defineTool("browser_exec", {
       description:
         "Execute structured browser automation steps through the bridge-managed browser session. " +
@@ -289,5 +290,5 @@ export function createBrowserExecTools(ctx: AppContext) {
         }
       },
     }),
-  ];
+  ]);
 }

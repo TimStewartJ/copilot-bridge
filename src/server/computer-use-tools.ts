@@ -11,6 +11,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
+import { requireToolHandlers } from "./tool-handler.js";
 import { toolFailure } from "./tool-results.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -136,7 +137,7 @@ export function createComputerUseTools(ctx: AppContext) {
     getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
   });
 
-  const tools = [
+  const tools = requireToolHandlers([
     defineTool("computer_screenshot", {
       description:
         "Take a screenshot of the desktop. Returns the image as a base64-encoded PNG. " +
@@ -499,7 +500,7 @@ export function createComputerUseTools(ctx: AppContext) {
         });
       },
     }),
-  ];
+  ]);
 
   console.log(`[computer-use] Registered ${tools.length} tools: ${tools.map(t => t.name).join(", ")}`);
   return tools;

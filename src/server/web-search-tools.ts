@@ -7,6 +7,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
 import { ab, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 
 async function takeSnapshot(
@@ -238,7 +239,7 @@ function webSearchFailure(
 }
 
 export function createWebSearchTools(ctx: AppContext) {
-  return [
+  return requireToolHandlers([
     defineTool("browser_web_search", {
       description:
         "Search the web using a real browser. Returns structured results from Google with " +
@@ -553,5 +554,5 @@ export function createWebSearchTools(ctx: AppContext) {
         }
       },
     }),
-  ];
+  ]);
 }
