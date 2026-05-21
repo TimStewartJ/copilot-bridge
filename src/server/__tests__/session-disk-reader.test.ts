@@ -1,7 +1,8 @@
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clearEventLogStatsCache,
   listSessionsFromDisk,
   readMessagesFromDisk,
   type SessionDiskReaderDeps,
@@ -138,6 +139,10 @@ describe("listSessionsFromDisk telemetry", () => {
 });
 
 describe("readMessagesFromDisk latest-page path", () => {
+  beforeEach(() => {
+    clearEventLogStatsCache();
+  });
+
   it("uses a bounded tail transform for giant histories while preserving response shape", async () => {
     const copilotHome = makeTestDir("session-disk-reader-tail");
     const oldMessages = Array.from({ length: 120 }, (_, index) => ({
@@ -181,6 +186,131 @@ describe("readMessagesFromDisk latest-page path", () => {
       readFullFile: false,
     });
     expect(readSpan?.metadata?.tailEventCount as number).toBeLessThan(5_180);
+  });
+
+  it("reuses event-log stats while the event log size and mtime are unchanged", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-stats-cache");
+    const sessionId = "stats-cache";
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    const recentMessages = Array.from({ length: 60 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `recent-${index}` },
+    }));
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [...padding, ...recentMessages],
+    });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const { deps, spans } = createDeps(copilotHome);
+
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    appendFileSync(
+      eventsPath,
+      `${JSON.stringify({
+        type: "user.message",
+        timestamp: "2026-04-30T11:00:00.000Z",
+        data: { content: "cache-bust" },
+      })}\n`,
+    );
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(spans
+      .filter((span) => span.name === "session.readFromDisk.stats")
+      .map((span) => span.metadata?.cacheResult))
+      .toEqual(["miss", "hit", "miss"]);
+  });
+
+  it("clears cached event-log stats for a specific session", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-stats-cache-clear");
+    const sessionId = "stats-cache-clear";
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    const recentMessages = Array.from({ length: 60 }, (_, index) => ({
+      type: "user.message",
+      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      data: { content: `recent-${index}` },
+    }));
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [...padding, ...recentMessages],
+    });
+    const { deps, spans } = createDeps(copilotHome);
+
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    clearEventLogStatsCache(sessionId);
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(spans
+      .filter((span) => span.name === "session.readFromDisk.stats")
+      .map((span) => span.metadata?.cacheResult))
+      .toEqual(["miss", "hit", "miss"]);
+  });
+
+  it("derives stats from a single full-file tail read for small event logs", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-small-derived");
+    const sessionId = "small-derived";
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        { type: "internal.trace", timestamp: "2026-04-30T10:00:00.000Z", data: { payload: "ignored" } },
+        { type: "user.message", timestamp: "2026-04-30T10:00:01.000Z", data: { content: "hello" } },
+      ],
+    });
+    const { deps, spans } = createDeps(copilotHome);
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(result.total).toBe(1);
+    expect(result.messages).toMatchObject([{ id: "entry-0", content: "hello" }]);
+    expect(spans.find((span) => span.name === "session.readFromDisk.stats")?.metadata)
+      .toMatchObject({ cacheResult: "derived", eventCount: 2, totalMessages: 1 });
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
+      .toMatchObject({ readFullFile: true, eventCount: 2, totalMessages: 1 });
+  });
+
+  it("falls back to a full read when event log mtime changes without a size change", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-mtime-race");
+    const sessionId = "mtime-race";
+    const initialEvent = {
+      type: "user.message",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { content: "initial" },
+    };
+    const replacementEvent = {
+      type: "user.message",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { content: "changed" },
+    };
+    writeSessionFiles(copilotHome, sessionId, { events: [initialEvent] });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const replacementContent = `${JSON.stringify(replacementEvent)}\n`;
+    expect(replacementContent).toHaveLength(`${JSON.stringify(initialEvent)}\n`.length);
+    const { deps, spans } = createDeps(copilotHome);
+    let replaced = false;
+    deps.recordSpan = (name, duration, spanSessionId, metadata) => {
+      spans.push({ name, duration, sessionId: spanSessionId, metadata });
+      if (name !== "session.readFromDisk.tailRead" || replaced) return;
+      replaced = true;
+      writeFileSync(eventsPath, replacementContent);
+      const future = new Date(Date.now() + 2_000);
+      utimesSync(eventsPath, future, future);
+    };
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
+
+    expect(result.total).toBe(1);
+    expect(result.messages).toMatchObject([{ id: "entry-0", content: "changed" }]);
+    expect(spans.find((span) => span.name === "session.readFromDisk.tailFallback")?.metadata)
+      .toMatchObject({ reason: "file-mtime-changed" });
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
+      .toMatchObject({ mode: "full", fallbackReason: "file-mtime-changed" });
   });
 
   it("preserves full-history turn ids for tailed messages", async () => {
