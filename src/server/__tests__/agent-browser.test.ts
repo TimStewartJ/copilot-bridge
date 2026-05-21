@@ -47,6 +47,33 @@ async function flushUntil(predicate: () => boolean, label: string, iterations = 
   throw new Error(`Condition was not met after deterministic flushes: ${label}`);
 }
 
+async function runWithAdvancedFakeTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  const promise = operation();
+  let settled = false;
+  promise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+
+  for (let index = 0; index < 20 && !settled; index += 1) {
+    await flushMicrotasks();
+    if (settled) break;
+    if (vi.getTimerCount() > 0) {
+      await vi.advanceTimersToNextTimerAsync();
+    }
+  }
+
+  if (!settled) {
+    throw new Error("Operation did not settle after advancing fake timers");
+  }
+  return promise;
+}
+
 vi.mock("node:child_process", () => ({
   exec: execMock,
   execFile: execFileMock,
@@ -94,6 +121,7 @@ describe("agent-browser wrapper", () => {
   afterEach(() => {
     restorePlatform();
     vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   it("passes explicit bridge session env to browser commands", async () => {
@@ -187,7 +215,10 @@ describe("agent-browser wrapper", () => {
 
     const mod = await import("../agent-browser.js");
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
+    expect(mod.BROWSER_LOCK_OWNER_KILL_GRACE_MS).toBe(250);
+    const result = await runWithAdvancedFakeTimers(() => (
+      mod.ab(["open", "https://example.com"], undefined, { browserTarget: target })
+    ));
 
     expect(result.ok).toBe(true);
     expect(unlinkSyncMock).toHaveBeenCalledTimes(5);
@@ -385,10 +416,13 @@ describe("agent-browser wrapper", () => {
     }) as any);
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
-      cloneProfile = lane.browserTarget.profileDir;
-      return "ok";
-    });
+    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
+    await runWithAdvancedFakeTimers(() => (
+      mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
+        cloneProfile = lane.browserTarget.profileDir;
+        return "ok";
+      })
+    ));
 
     expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
     expect(unlinkSyncMock).toHaveBeenCalledWith(join(cloneProfile, "DevToolsActivePort"));
@@ -432,10 +466,13 @@ describe("agent-browser wrapper", () => {
     }) as any);
 
     const mod = await import("../agent-browser.js");
-    await mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
-      cloneProfile = lane.browserTarget.profileDir;
-      return "ok";
-    });
+    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
+    await runWithAdvancedFakeTimers(() => (
+      mod.withCloneBrowserLane(COPILOT_HOME, undefined, { toolName: "browser_exec" }, async (lane) => {
+        cloneProfile = lane.browserTarget.profileDir;
+        return "ok";
+      })
+    ));
 
     expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
     expect(rmMock).toHaveBeenCalledWith(cloneProfile, {
@@ -519,7 +556,10 @@ describe("agent-browser wrapper", () => {
 
     const mod = await import("../agent-browser.js");
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    const result = await mod.ab(["open", "https://example.com"], undefined, { browserTarget: target });
+    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
+    const result = await runWithAdvancedFakeTimers(() => (
+      mod.ab(["open", "https://example.com"], undefined, { browserTarget: target })
+    ));
 
     expect(result.ok).toBe(true);
     expect(killed).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
@@ -562,7 +602,10 @@ describe("agent-browser wrapper", () => {
     const telemetryStore = { recordSpan: vi.fn() };
     const mod = await import("../agent-browser.js");
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    const result = await mod.shutdownBridgeBrowser(target, telemetryStore as any);
+    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
+    const result = await runWithAdvancedFakeTimers(() => (
+      mod.shutdownBridgeBrowser(target, telemetryStore as any)
+    ));
 
     expect(result).toMatchObject({
       ok: true,
@@ -600,7 +643,10 @@ describe("agent-browser wrapper", () => {
     const telemetryStore = { recordSpan: vi.fn() };
     const mod = await import("../agent-browser.js");
     const target = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    const result = await mod.shutdownBridgeBrowser(target, telemetryStore as any);
+    expect(mod.BROWSER_PROFILE_SIGTERM_GRACE_MS).toBe(500);
+    const result = await runWithAdvancedFakeTimers(() => (
+      mod.shutdownBridgeBrowser(target, telemetryStore as any)
+    ));
 
     expect(result).toMatchObject({
       ok: false,
