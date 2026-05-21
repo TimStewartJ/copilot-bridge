@@ -193,6 +193,7 @@ export interface SessionRunnerDeps {
   cacheResumedSession(sessionId: string, session: any): any;
   replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): any;
   probeMcpStatus(sessionId: string, session: any): void;
+  markCachedSessionForEviction(sessionId: string, reason: string): void;
   flushPendingSessionEviction(sessionId: string): void;
   cancelPendingUserInputRequests(
     sessionId: string,
@@ -494,6 +495,12 @@ export class SessionRunner {
       groupNotes: this.deps.lookupGroupNotes(linkedTask?.groupId),
       forResume: true,
     });
+    const configuredMcpServerNames = new Set(
+      Object.keys(resumeConfig.mcpServers ?? {}).map((name) => name.trim().toLocaleLowerCase()),
+    );
+    const isConfiguredMcpServer = (name: unknown): name is string =>
+      typeof name === "string"
+      && configuredMcpServerNames.has(name.trim().toLocaleLowerCase());
 
     if (linkedTask) {
       console.log(`[sdk] [${sid}] Injecting task context for "${linkedTask.title}"`);
@@ -1026,6 +1033,7 @@ export class SessionRunner {
           const name = data?.serverName;
           const status = data?.status ?? "unknown";
           const existing = current.find((s) => s.name === name);
+          const previousStatus = existing?.status;
           if (existing) {
             existing.status = status;
             if (data?.error) existing.error = data.error;
@@ -1033,6 +1041,14 @@ export class SessionRunner {
             current.push({ name, status, error: data?.error, source: data?.source });
           }
           this.deps.mcpStatus.set(sessionId, current);
+          if (
+            (context.origin === "live" || context.origin === "live_recovered")
+            && previousStatus === "connected"
+            && status === "not_configured"
+            && isConfiguredMcpServer(name)
+          ) {
+            this.deps.markCachedSessionForEviction(sessionId, "mcp_status_connected_to_not_configured");
+          }
           console.log(`[sdk] [${sid}] 🔌 MCP ${name}: ${status}${data?.error ? ` — ${data.error}` : ""}`);
           bus.emit({ type: "mcp_status", servers: current });
           break;
