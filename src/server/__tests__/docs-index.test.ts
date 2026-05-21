@@ -60,7 +60,7 @@ describe("docs index recovery", () => {
       expect(quarantined.dummy).toBe("operator data");
 
       const docsStore = createDocsStore(docsDir);
-      docsStore.writePage("searchable", `---
+      docsStore.writePage("notes/searchable", `---
 title: Searchable
 tags:
   - degraded
@@ -70,15 +70,15 @@ description: Degraded docs metadata remains usable.
 
 This page contains xylophone content.`);
       const docsIndex = createDocsIndex(db, docsStore);
-      const page = docsStore.readPage("searchable");
+      const page = docsStore.readPage("notes/searchable");
       expect(page).not.toBeNull();
       const indexResult = docsIndex.indexPage(page!);
 
       expect(indexResult).toEqual({ indexed: true });
-      expect(docsIndex.search("xylophone").results.map((result) => result.path)).toContain("searchable");
-      expect(docsIndex.queryByFolder("", undefined, undefined, 10, 0, true).entries).toHaveLength(1);
+      expect(docsIndex.search("xylophone").results.map((result) => result.path)).toContain("notes/searchable");
+      expect(docsIndex.queryByFolder("notes", undefined, undefined, 10, 0, true).entries).toHaveLength(1);
       expect(docsIndex.findDocsByTagNames(["degraded"])).toMatchObject([
-        { path: "searchable", matchedTags: ["degraded"] },
+        { path: "notes/searchable", matchedTags: ["degraded"] },
       ]);
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
