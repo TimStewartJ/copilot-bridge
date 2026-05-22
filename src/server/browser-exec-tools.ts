@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserLane } from "./agent-browser.js";
-import { getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
 import { requireToolHandlers } from "./tool-handler.js";
 import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
@@ -166,8 +166,7 @@ export function createBrowserExecTools(ctx: AppContext) {
         let success = false;
         let laneType: BrowserExecResolvedLane = resolvedLane;
         let browserSession = primaryTarget.sessionName;
-        let attemptedClone = false;
-        let fallbackToPrimary = false;
+        const laneFallback = createBrowserLaneFallbackState();
 
         const check = await isAgentBrowserInstalled();
         if (!check) {
@@ -223,39 +222,22 @@ export function createBrowserExecTools(ctx: AppContext) {
         };
 
         try {
-          if (resolvedLane === "clone") {
-            attemptedClone = true;
-            try {
-              return await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
-                browserOpId,
-                toolName: "browser_exec",
-                requestedLane,
-                resolvedLane,
-                stepCount: normalizedInput.commands.length,
-                stepNames,
-              }, runFlow, launchConfig);
-            } catch (err) {
-              if (requestedLane !== "auto") throw err;
-              fallbackToPrimary = true;
-              safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
-                browserOpId,
-                toolName: "browser_exec",
-                requestedLane,
-                resolvedLane,
-                reason: "exception",
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-
-          return await withPrimaryBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
-            browserOpId,
-            toolName: "browser_exec",
-            requestedLane,
-            resolvedLane,
-            stepCount: normalizedInput.commands.length,
-            stepNames,
-          }, runFlow, launchConfig);
+          return await withBrowserLaneFallback({
+            copilotHome: ctx.copilotHome,
+            telemetryStore: ctx.telemetryStore,
+            metadata: {
+              browserOpId,
+              toolName: "browser_exec",
+              requestedLane,
+              resolvedLane,
+              stepCount: normalizedInput.commands.length,
+              stepNames,
+            },
+            launchConfig,
+            tryClone: resolvedLane === "clone",
+            fallbackToPrimaryOnCloneException: requestedLane === "auto",
+            state: laneFallback,
+          }, runFlow);
         } catch (err: any) {
           const detail = `Browser exec failed: ${String(err).slice(0, 200)}`;
           return toolFailure("Browser exec failed.", {
@@ -272,8 +254,7 @@ export function createBrowserExecTools(ctx: AppContext) {
             resolvedLane,
             browserLane: laneType,
             stepCount: normalizedInput.commands.length,
-            attemptedClone,
-            fallbackToPrimary,
+            ...browserLaneFallbackTelemetry(laneFallback),
           });
           if (!success) {
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_exec.failed", duration, {
@@ -283,8 +264,7 @@ export function createBrowserExecTools(ctx: AppContext) {
               resolvedLane,
               browserLane: laneType,
               stepCount: normalizedInput.commands.length,
-              attemptedClone,
-              fallbackToPrimary,
+              ...browserLaneFallbackTelemetry(laneFallback),
             });
           }
         }

@@ -3,10 +3,11 @@ import { testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 
-function createBrowserToolContext() {
+function createBrowserToolContext(telemetryStore?: { recordSpan: ReturnType<typeof vi.fn> }) {
   return {
     copilotHome: COPILOT_HOME,
     settingsStore: { getSettings: () => ({}) },
+    ...(telemetryStore ? { telemetryStore } : {}),
   } as any;
 }
 
@@ -99,6 +100,7 @@ describe("browser_web_search tool", () => {
   });
 
   it("keeps ordinary search failures on the clone lane", async () => {
+    const telemetryStore = { recordSpan: vi.fn() };
     const commandSessions: string[] = [];
     execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
       const session = options?.env?.AGENT_BROWSER_SESSION;
@@ -118,9 +120,12 @@ describe("browser_web_search tool", () => {
     });
 
     const mod = await import("../web-search-tools.js");
-    const tools = mod.createWebSearchTools(createBrowserToolContext());
+    const tools = mod.createWebSearchTools(createBrowserToolContext(telemetryStore));
     const result = await tools[0].handler({ query: "copilot bridge" }, {} as any) as any;
 
+    const toolSpan = telemetryStore.recordSpan.mock.calls
+      .map(([span]: any[]) => span)
+      .find((span: any) => span.name === "browser.tool.browser_web_search");
     expect(result).toEqual({
       textResultForLlm: "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.",
       resultType: "failure",
@@ -128,6 +133,17 @@ describe("browser_web_search tool", () => {
     });
     expect(commandSessions.some((entry) => /:(?!.*-clone-).*copilot-bridge-/.test(entry))).toBe(false);
     expect(commandSessions.some((entry) => entry.includes("-clone-"))).toBe(true);
+    expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.clone.fallback_to_primary",
+    }));
+    expect(toolSpan).toMatchObject({
+      name: "browser.tool.browser_web_search",
+      metadata: {
+        browserLane: "clone",
+        attemptedClone: true,
+        fallbackToPrimary: false,
+      },
+    });
   });
 
   it("falls back to Bing after Google sorry redirects", async () => {

@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { ab, browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
 import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 
@@ -270,8 +270,7 @@ export function createWebSearchTools(ctx: AppContext) {
         let source: string | undefined;
         let laneType: "primary" | "clone" = "primary";
         let browserSession = primaryTarget.sessionName;
-        let attemptedClone = false;
-        let fallbackToPrimary = false;
+        const laneFallback = createBrowserLaneFallbackState();
 
         const check = await isAgentBrowserInstalled();
         if (!check) {
@@ -503,29 +502,19 @@ export function createWebSearchTools(ctx: AppContext) {
         };
 
         try {
-          attemptedClone = true;
-          try {
-            return await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
+          return await withBrowserLaneFallback({
+            copilotHome: ctx.copilotHome,
+            telemetryStore: ctx.telemetryStore,
+            metadata: {
               browserOpId,
               toolName: "browser_web_search",
               queryHash,
-            }, runFlow, launchConfig);
-          } catch (err) {
-            fallbackToPrimary = true;
-            safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
-              browserOpId,
-              toolName: "browser_web_search",
-              queryHash,
-              reason: "exception",
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-
-          return await withPrimaryBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
-            browserOpId,
-            toolName: "browser_web_search",
-            queryHash,
-          }, runFlow, launchConfig);
+            },
+            launchConfig,
+            tryClone: true,
+            fallbackToPrimaryOnCloneException: true,
+            state: laneFallback,
+          }, runFlow);
         } catch (err: any) {
           return webSearchFailure(`Search failed: ${String(err).slice(0, 200)}`, { query });
         } finally {
@@ -538,8 +527,7 @@ export function createWebSearchTools(ctx: AppContext) {
             queryHash,
             queryLength,
             browserLane: laneType,
-            attemptedClone,
-            fallbackToPrimary,
+            ...browserLaneFallbackTelemetry(laneFallback),
           });
           if (!success) {
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search.failed", duration, {
@@ -547,8 +535,7 @@ export function createWebSearchTools(ctx: AppContext) {
               browserSession,
               queryHash,
               browserLane: laneType,
-              attemptedClone,
-              fallbackToPrimary,
+              ...browserLaneFallbackTelemetry(laneFallback),
             });
           }
         }

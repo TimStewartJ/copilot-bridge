@@ -816,6 +816,143 @@ describe("agent-browser wrapper", () => {
     expect(removedPaths.filter((path: string) => path === activePath)).toHaveLength(1);
   });
 
+  it("uses the clone lane through the shared fallback helper when clone setup succeeds", async () => {
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: any, cb: (err: any, result: { stdout: string; stderr: string }) => void) => {
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const state = mod.createBrowserLaneFallbackState();
+
+    const result = await mod.withBrowserLaneFallback({
+      copilotHome: COPILOT_HOME,
+      telemetryStore: telemetryStore as any,
+      metadata: {
+        browserOpId: "op-clone-success",
+        toolName: "browser_web_search",
+        queryHash: "abc123",
+      },
+      tryClone: true,
+      fallbackToPrimaryOnCloneException: true,
+      state,
+    }, async (lane) => lane.laneType);
+
+    expect(result).toBe("clone");
+    expect(state).toEqual({
+      attemptedClone: true,
+      fallbackToPrimary: false,
+    });
+    expect(mod.browserLaneFallbackTelemetry(state)).toEqual({
+      attemptedClone: true,
+      fallbackToPrimary: false,
+    });
+    expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.clone.fallback_to_primary",
+    }));
+  });
+
+  it("falls back to primary through the shared helper when clone setup throws", async () => {
+    cpMock.mockRejectedValueOnce(Object.assign(new Error("clone copy failed"), { code: "EIO" }));
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const state = mod.createBrowserLaneFallbackState();
+    const lanes: string[] = [];
+
+    const result = await mod.withBrowserLaneFallback({
+      copilotHome: COPILOT_HOME,
+      telemetryStore: telemetryStore as any,
+      metadata: {
+        browserOpId: "op-clone-fallback",
+        toolName: "browser_fetch",
+        urlHost: "example.com",
+      },
+      tryClone: true,
+      fallbackToPrimaryOnCloneException: true,
+      state,
+    }, async (lane) => {
+      lanes.push(lane.laneType);
+      return lane.laneType;
+    });
+
+    const fallbackSpan = telemetryStore.recordSpan.mock.calls
+      .map(([span]) => span)
+      .find((span) => span.name === "browser.clone.fallback_to_primary");
+    expect(result).toBe("primary");
+    expect(lanes).toEqual(["primary"]);
+    expect(state).toEqual({
+      attemptedClone: true,
+      fallbackToPrimary: true,
+    });
+    expect(fallbackSpan).toMatchObject({
+      name: "browser.clone.fallback_to_primary",
+      metadata: {
+        browserOpId: "op-clone-fallback",
+        toolName: "browser_fetch",
+        urlHost: "example.com",
+        reason: "exception",
+        error: "clone copy failed",
+      },
+      source: "server",
+    });
+  });
+
+  it("rethrows clone setup errors through the shared helper when fallback is disabled", async () => {
+    cpMock.mockRejectedValueOnce(Object.assign(new Error("clone requested explicitly"), { code: "EIO" }));
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const state = mod.createBrowserLaneFallbackState();
+
+    await expect(mod.withBrowserLaneFallback({
+      copilotHome: COPILOT_HOME,
+      telemetryStore: telemetryStore as any,
+      metadata: {
+        browserOpId: "op-no-fallback",
+        toolName: "browser_exec",
+        requestedLane: "clone",
+        resolvedLane: "clone",
+      },
+      tryClone: true,
+      fallbackToPrimaryOnCloneException: false,
+      state,
+    }, async (lane) => lane.laneType)).rejects.toThrow("clone requested explicitly");
+
+    expect(state).toEqual({
+      attemptedClone: true,
+      fallbackToPrimary: false,
+    });
+    expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.clone.fallback_to_primary",
+    }));
+  });
+
+  it("uses the primary lane through the shared helper when clone is not eligible", async () => {
+    const telemetryStore = { recordSpan: vi.fn() };
+    const mod = await import("../agent-browser.js");
+    const state = mod.createBrowserLaneFallbackState();
+
+    const result = await mod.withBrowserLaneFallback({
+      copilotHome: COPILOT_HOME,
+      telemetryStore: telemetryStore as any,
+      metadata: {
+        browserOpId: "op-primary-only",
+        toolName: "browser_fetch",
+        urlHost: "bridge.internal",
+      },
+      tryClone: false,
+      fallbackToPrimaryOnCloneException: true,
+      state,
+    }, async (lane) => lane.laneType);
+
+    expect(result).toBe("primary");
+    expect(cpMock).not.toHaveBeenCalled();
+    expect(state).toEqual({
+      attemptedClone: false,
+      fallbackToPrimary: false,
+    });
+  });
+
   it("does not let queue telemetry break primary-lane progress", async () => {
     const telemetryStore = {
       recordSpan: vi.fn((span: { name: string }) => {
