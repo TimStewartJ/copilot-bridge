@@ -155,27 +155,11 @@ try {
   $nodeModulesRoot = if ($appRoot) { Join-Path $appRoot "node_modules" } else { $null }
   $runtimeRoot = if ($appRoot) { Join-Path $appRoot "runtime" } else { $null }
   $manifestPath = if ($appRoot) { Join-Path $appRoot ".bridge-release.json" } else { $null }
-
-  $requiredChecks = [ordered]@{
-    startScript = Test-Path (Join-Path $releaseRoot "start.ps1")
-    stopScript = Test-Path (Join-Path $releaseRoot "stop.ps1")
-    updateScript = Test-Path (Join-Path $releaseRoot "update.ps1")
-    installStartupTaskScript = Test-Path (Join-Path $releaseRoot "install-startup-task.ps1")
-    uninstallStartupTaskScript = Test-Path (Join-Path $releaseRoot "uninstall-startup-task.ps1")
-    appRoot = $null -ne $appRoot -and (Test-Path $appRoot)
-    launcher = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\launcher.js"))
-  }
-
-  $optionalChecks = [ordered]@{
-    serverEntry = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\server\index.js"))
-    nodeModules = $null -ne $nodeModulesRoot -and (Test-Path $nodeModulesRoot)
-    bundledNode = $null -ne $runtimeRoot -and (Test-Path (Join-Path $runtimeRoot "node.exe"))
-    manifest = $null -ne $manifestPath -and (Test-Path $manifestPath)
-  }
+  $commonScriptPath = Join-Path $releaseRoot "release-common.ps1"
 
   $manifest = $null
   $manifestWarnings = @()
-  if ($optionalChecks.manifest) {
+  if ($manifestPath -and (Test-Path $manifestPath)) {
     try {
       $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
       if ([string]::IsNullOrWhiteSpace($manifest.version)) {
@@ -193,6 +177,31 @@ try {
     } catch {
       $manifestWarnings += ".bridge-release.json could not be parsed: $($_.Exception.Message)"
     }
+  }
+
+  $packageLayoutVersion = 0
+  if ($manifest -and $null -ne $manifest.packageLayoutVersion) {
+    $packageLayoutVersion = [int]$manifest.packageLayoutVersion
+  }
+  $requiresCommonScript = $packageLayoutVersion -ge 3
+
+  $requiredChecks = [ordered]@{
+    startScript = Test-Path (Join-Path $releaseRoot "start.ps1")
+    stopScript = Test-Path (Join-Path $releaseRoot "stop.ps1")
+    updateScript = Test-Path (Join-Path $releaseRoot "update.ps1")
+    installStartupTaskScript = Test-Path (Join-Path $releaseRoot "install-startup-task.ps1")
+    uninstallStartupTaskScript = Test-Path (Join-Path $releaseRoot "uninstall-startup-task.ps1")
+    commonScript = if ($requiresCommonScript) { Test-Path $commonScriptPath } else { $true }
+    appRoot = $null -ne $appRoot -and (Test-Path $appRoot)
+    launcher = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\launcher.js"))
+  }
+
+  $optionalChecks = [ordered]@{
+    serverEntry = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\server\index.js"))
+    nodeModules = $null -ne $nodeModulesRoot -and (Test-Path $nodeModulesRoot)
+    bundledNode = $null -ne $runtimeRoot -and (Test-Path (Join-Path $runtimeRoot "node.exe"))
+    manifest = $null -ne $manifestPath -and (Test-Path $manifestPath)
+    commonScript = Test-Path $commonScriptPath
   }
 
   $allFiles = @(Get-ChildItem -Path $releaseRoot -Recurse -Force -File -ErrorAction SilentlyContinue)

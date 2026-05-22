@@ -123,6 +123,7 @@ Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination $appDir
 Copy-Item -Path (Join-Path $repoRoot "scripts\start-release.ps1") -Destination (Join-Path $releaseRoot "start.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\stop-release.ps1") -Destination (Join-Path $releaseRoot "stop.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\update-release.ps1") -Destination (Join-Path $releaseRoot "update.ps1")
+Copy-Item -Path (Join-Path $repoRoot "scripts\release-common.ps1") -Destination (Join-Path $releaseRoot "release-common.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\install-startup-task.ps1") -Destination (Join-Path $releaseRoot "install-startup-task.ps1")
 Copy-Item -Path (Join-Path $repoRoot "scripts\uninstall-startup-task.ps1") -Destination (Join-Path $releaseRoot "uninstall-startup-task.ps1")
 
@@ -156,7 +157,7 @@ $manifest = [ordered]@{
   platform = $Platform
   sourceCommit = $sourceCommit
   createdAt = (Get-Date).ToUniversalTime().ToString("o")
-  packageLayoutVersion = 2
+  packageLayoutVersion = 3
   distributionMode = "release"
   includesNodeModules = [bool]$IncludeNodeModules
   nodeModulesMode = if ($IncludeNodeModules) { "runtime" } else { "none" }

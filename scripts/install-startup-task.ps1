@@ -6,33 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Get-StoredStateRoot($Path) {
-  if (-not (Test-Path $Path)) { return $null }
-  $value = (Get-Content $Path -Raw).Trim()
-  if ([string]::IsNullOrWhiteSpace($value)) { return $null }
-  return $value
-}
-
-function Assert-StateRootDoesNotSwitch($StoredStateRoot, $InputStateRoot, $StateRootFile) {
-  if ([string]::IsNullOrWhiteSpace($StoredStateRoot) -or [string]::IsNullOrWhiteSpace($InputStateRoot)) { return }
-  $storedFullPath = [System.IO.Path]::GetFullPath($StoredStateRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  $inputFullPath = [System.IO.Path]::GetFullPath($InputStateRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  if (-not [string]::Equals($storedFullPath, $inputFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to switch release state root from '$StoredStateRoot' to '$InputStateRoot'. Remove or update $StateRootFile intentionally before changing the active state root."
-  }
-}
 function ConvertTo-PowerShellSingleQuotedLiteral($Value) {
   return "'" + $Value.Replace("'", "''") + "'"
-}
-
-function Test-AbsolutePath($Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-  $root = [System.IO.Path]::GetPathRoot($Path)
-  if ([string]::IsNullOrWhiteSpace($root)) { return $false }
-  if ($env:OS -eq "Windows_NT") {
-    return ($root -match '^[A-Za-z]:[\\/]$') -or ($root -match '^[\\/]{2}[^\\/]+[\\/]+[^\\/]+[\\/]?$')
-  }
-  return $root -eq "/"
 }
 
 if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
@@ -40,14 +15,20 @@ if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
 }
 
 $installRoot = (Resolve-Path $PSScriptRoot).Path
+$bridgeReleaseCommonScript = Join-Path $PSScriptRoot "release-common.ps1"
+if (-not (Test-Path $bridgeReleaseCommonScript)) {
+  throw "Shared release helper not found at $bridgeReleaseCommonScript. The install package may be incomplete; reinstall Copilot Bridge."
+}
+. $bridgeReleaseCommonScript
+
 $stateRootFile = Join-Path $installRoot ".bridge-state-root"
 $storedStateRoot = Get-StoredStateRoot $stateRootFile
 $startScript = Join-Path $installRoot "start.ps1"
 if (-not (Test-Path $startScript)) {
   throw "start.ps1 was not found at $startScript. Run this script from the Copilot Bridge release root."
 }
-if (-not [string]::IsNullOrWhiteSpace($StateRoot) -and -not (Test-AbsolutePath $StateRoot)) {
-  throw "StateRoot must be an absolute path in release mode. Received: $StateRoot"
+if (-not [string]::IsNullOrWhiteSpace($StateRoot)) {
+  Assert-AbsolutePath "StateRoot" $StateRoot
 }
 Assert-StateRootDoesNotSwitch $storedStateRoot $StateRoot $stateRootFile
 if (-not [string]::IsNullOrWhiteSpace($StateRoot)) {

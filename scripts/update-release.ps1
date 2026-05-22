@@ -34,6 +34,12 @@ $stateRootFile = Join-Path $installRoot ".bridge-state-root"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "copilot-bridge-update-$timestamp"
 
+$bridgeReleaseCommonScript = Join-Path $PSScriptRoot "release-common.ps1"
+if (-not (Test-Path $bridgeReleaseCommonScript)) {
+  throw "Shared release helper not found at $bridgeReleaseCommonScript. The install package may be incomplete; reinstall Copilot Bridge."
+}
+. $bridgeReleaseCommonScript
+
 function Import-BridgeEnvFile($Path) {
   if (-not (Test-Path $Path)) { return }
   Get-Content $Path | ForEach-Object {
@@ -55,39 +61,8 @@ function Get-EnvPathOrDefault($Name, $DefaultPath) {
   return $value
 }
 
-function Get-StoredStateRoot($Path) {
-  if (-not (Test-Path $Path)) { return $null }
-  $value = (Get-Content $Path -Raw).Trim()
-  if ([string]::IsNullOrWhiteSpace($value)) { return $null }
-  return $value
-}
-
-function Assert-StateRootDoesNotSwitch($StoredStateRoot, $InputStateRoot, $StateRootFile) {
-  if ([string]::IsNullOrWhiteSpace($StoredStateRoot) -or [string]::IsNullOrWhiteSpace($InputStateRoot)) { return }
-  $storedFullPath = [System.IO.Path]::GetFullPath($StoredStateRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  $inputFullPath = [System.IO.Path]::GetFullPath($InputStateRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  if (-not [string]::Equals($storedFullPath, $inputFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to switch release state root from '$StoredStateRoot' to '$InputStateRoot'. Remove or update $StateRootFile intentionally before changing the active state root."
-  }
-}
-function Test-AbsolutePath($Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-  $root = [System.IO.Path]::GetPathRoot($Path)
-  if ([string]::IsNullOrWhiteSpace($root)) { return $false }
-  if ($env:OS -eq "Windows_NT") {
-    return ($root -match '^[A-Za-z]:[\\/]$') -or ($root -match '^[\\/]{2}[^\\/]+[\\/]+[^\\/]+[\\/]?$')
-  }
-  return $root -eq "/"
-}
-
-function Assert-AbsolutePath($Name, $Path) {
-  if (-not (Test-AbsolutePath $Path)) {
-    throw "$Name must be an absolute path in release mode. Received: $Path"
-  }
-}
-
 function Copy-ReleaseWrappers($SourceRoot, $DestinationRoot) {
-  foreach ($scriptName in @("start.ps1", "stop.ps1", "update.ps1", "install-startup-task.ps1", "uninstall-startup-task.ps1")) {
+  foreach ($scriptName in @("release-common.ps1", "start.ps1", "stop.ps1", "update.ps1", "install-startup-task.ps1", "uninstall-startup-task.ps1")) {
     $source = Join-Path $SourceRoot $scriptName
     if (Test-Path $source) {
       Copy-Item -Path $source -Destination (Join-Path $DestinationRoot $scriptName) -Force

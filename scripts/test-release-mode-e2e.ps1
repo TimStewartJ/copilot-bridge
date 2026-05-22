@@ -351,6 +351,9 @@ try {
     if ($installerText.Contains("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__")) {
       throw "Installer still contains the update manifest public key placeholder."
     }
+    if ($installerText.Contains("__BRIDGE_RELEASE_COMMON_SCRIPT_BASE64__")) {
+      throw "Installer still contains the release common helper placeholder."
+    }
   }
 
   New-Item -ItemType Directory -Path $testRoot, $stateRoot, $dataDir, $logsDir, $configDir -Force | Out-Null
@@ -359,6 +362,7 @@ try {
   $appRoot = Join-Path $releaseRoot "app"
   Assert-PathExists "release start.ps1" (Join-Path $releaseRoot "start.ps1")
   Assert-PathExists "release update.ps1" (Join-Path $releaseRoot "update.ps1")
+  Assert-PathExists "release common helper" (Join-Path $releaseRoot "release-common.ps1")
   Assert-PathExists "release install-startup-task.ps1" (Join-Path $releaseRoot "install-startup-task.ps1")
   Assert-PathExists "release uninstall-startup-task.ps1" (Join-Path $releaseRoot "uninstall-startup-task.ps1")
   Assert-PathExists "release app launcher" (Join-Path $appRoot "dist\launcher.js")
