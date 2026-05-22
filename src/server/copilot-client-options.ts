@@ -7,6 +7,10 @@ export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COPILOT_CLI_WRAPPER_FILENAME = "copilot-cli-wrapper.js";
 
+export interface BridgeCopilotClientOptions extends CopilotClientOptions {
+  cliPath: string;
+}
+
 export function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -29,7 +33,7 @@ export function resolveBridgeCopilotCliPath(): string {
 
 export function buildCopilotClientOptions(
   clientEnv?: Record<string, string | undefined>,
-): CopilotClientOptions {
+): BridgeCopilotClientOptions {
   const gitHubToken = resolveBridgeCopilotGitHubToken(clientEnv);
 
   return {
