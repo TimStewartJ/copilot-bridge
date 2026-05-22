@@ -40,12 +40,33 @@ describe("release scripts", () => {
     expect(script).toContain('$restartSignalPath = Join-Path $effectiveDataDir "restart.signal"');
     expect(script).toContain('Write-UpdateStatus "staged"');
     expect(script).toContain("Copy-ReleaseWrappersWithBackup");
+    expect(script).toContain("Copy-ReleaseWrappers $DestinationRoot $BackupRoot");
+    expect(script).toContain("Copy-ReleaseWrappers $BackupRoot $DestinationRoot");
+    expect(script).toContain('$wrapperBackupRoot = Join-Path (Join-Path (Join-Path $stateRoot "backups") "update-$timestamp") "wrappers"');
+    expect(script).toContain("Copy-ReleaseWrappersWithBackup $newReleaseRoot $installRoot $wrapperBackupRoot");
     expect(script).toContain("function Remove-PathWithRetry");
     expect(script).toContain("Timed out waiting to remove $Path");
+    expect(script).toContain("New-Item -ItemType Directory -Path $tempDir -Force");
     expect(script.indexOf('Write-UpdateStatus "staged"')).toBeLessThan(script.indexOf("Move-Item -Path $restartSignalTempPath"));
     expect(script).not.toContain('Write-UpdateStatus "stopping"');
-    expect(script).not.toContain("Wait-BridgeHealth -TimeoutSeconds 60");
+    expect(script).not.toContain("Wait-BridgeHealth");
     expect(script).not.toContain("Copy-DirectoryTree $appBackup $appDir");
+    expect(script).not.toContain("Backup-ConfiguredDirectories");
+    expect(script).not.toContain("Restore-BackupEntry");
+    expect(script).not.toContain("Normalize-BackupPath");
+    expect(script).not.toContain("Test-SameOrChildPath");
+    expect(script).not.toContain("Assert-BackupPathSafe");
+    expect(script).not.toContain("Get-BridgePort");
+    expect(script).not.toContain("$backupEntries");
+    expect(script).not.toContain("$bridgeStopped");
+    expect(script).not.toContain("$appBackedUp");
+    expect(script).not.toContain("$appExistedBefore");
+    expect(script).not.toContain("RollbackAttempted");
+    expect(script).not.toContain("rollbackAttempted");
+    expect(script).not.toContain("mutableDirectoriesPreservedOnRollback");
+    expect(script).not.toContain("backupDir =");
+    expect(script).not.toContain("$backupDir");
+    expect(script).not.toContain("New-Item -ItemType Directory -Path $backupDir, $tempDir");
   });
 
   it("uses fast Windows archive and copy tools with PowerShell fallbacks", () => {
