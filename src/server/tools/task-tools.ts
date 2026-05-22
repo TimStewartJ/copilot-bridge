@@ -1,7 +1,8 @@
 import { defineTool } from "@github/copilot-sdk";
-import { InvalidTaskUpdateError } from "../task-store.js";
+import { InvalidTaskUpdateError, normalizeOptionalText, normalizeOptionalTimestamp } from "../task-store.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
+import type { Task } from "../task-store.js";
 import type { TagStore } from "../tag-store.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 
@@ -11,6 +12,15 @@ function hasOwn(args: Record<string, unknown>, key: string): boolean {
 
 function normalizeFollowUpMode(value: unknown): "set" | "keep" | "clear" | undefined {
   return value === "set" || value === "keep" || value === "clear" ? value : undefined;
+}
+
+function isTaskMomentumAlreadyCurrent(
+  task: Task,
+  target: { nextAction?: string; waitingOn?: string; nextTouchAt?: string },
+): boolean {
+  return (task.nextAction ?? undefined) === target.nextAction
+    && (task.waitingOn ?? undefined) === target.waitingOn
+    && (task.nextTouchAt ?? undefined) === target.nextTouchAt;
 }
 
 const TASK_INFO_SESSION_ID_PREVIEW_LIMIT = 10;
@@ -176,6 +186,30 @@ export function createTaskTools(ctx: AppContext) {
       if (!task.ok) return toolFailure(task.error);
       if (task.value.status !== "active") {
         return toolFailure("task_update_momentum can only be used on active tasks");
+      }
+
+      let targetNextAction = task.value.nextAction ?? undefined;
+      let targetWaitingOn = task.value.waitingOn ?? undefined;
+      let targetNextTouchAt = task.value.nextTouchAt ?? undefined;
+      try {
+        if (hasNextActionUpdate) targetNextAction = normalizeOptionalText(args.nextAction);
+        if (hasWaitingOnUpdate) targetWaitingOn = normalizeOptionalText(args.waitingOn);
+        if (mode === "set") targetNextTouchAt = normalizeOptionalTimestamp(followUp.nextTouchAt, { strict: true });
+        if (mode === "clear") targetNextTouchAt = undefined;
+      } catch (error) {
+        if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
+        throw error;
+      }
+
+      if (isTaskMomentumAlreadyCurrent(task.value, {
+        nextAction: targetNextAction,
+        waitingOn: targetWaitingOn,
+        nextTouchAt: targetNextTouchAt,
+      })) {
+        return toolFailure(
+          "Task momentum is already current; no changes were applied. Do not call task_update_momentum again with the same values.",
+          { resultType: "rejected" },
+        );
       }
 
       const updates: Record<string, unknown> = {};
