@@ -77,7 +77,7 @@ interface ChatViewProps {
   historySignal?: number;
   activeSessionActivityAt?: string;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
-  onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
+  onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void; newWorkDisabled?: boolean; newWorkDisabledHint?: string;
 }
 
 function useThrottledText(value: string, intervalMs: number): string {
@@ -437,7 +437,7 @@ export default function ChatView({
   historySignal = 0,
   activeSessionActivityAt,
   onForkSession,
-  onRenderedReadThrough,
+  onRenderedReadThrough, newWorkDisabled = false, newWorkDisabledHint,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -1563,6 +1563,8 @@ export default function ChatView({
   const isDraft = !sessionId && !!onCreateAndSend;
   const runFleetDisabledReason = !hasPlan
     ? "This session does not have a plan yet."
+    : newWorkDisabled
+      ? (newWorkDisabledHint ?? "Wait for Bridge to reconnect before launching Fleet.")
     : loading
       ? "Wait for the current session history to finish loading."
       : creating
@@ -1573,8 +1575,14 @@ export default function ChatView({
             ? "Wait for the current run to finish before launching Fleet."
             : null;
   const isLaunchingFleet = isStreaming && pendingOrigin === "fleet";
-  const composerDisabled = warming || loading;
-  const composerDisabledHint = loading ? "Loading history…" : warming ? "Reconnecting…" : undefined;
+  const composerDisabled = newWorkDisabled || warming || loading;
+  const composerDisabledHint = newWorkDisabled
+    ? newWorkDisabledHint
+    : loading
+      ? "Loading history…"
+      : warming
+        ? "Reconnecting…"
+        : undefined;
   const forkFromHereDisabled = loading || isStreaming || creating || warming || refreshingHistory;
   const handleForkFromHere = useCallback(async (message: ChatMessage) => {
     if (!sessionId || !onForkSession || !message.forkBoundaryEventId) return;

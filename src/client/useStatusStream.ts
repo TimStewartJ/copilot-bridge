@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
-import type { DeferSummary } from "./api";
+import type { DeferSummary, RestartStatusPhase } from "./api";
 
 export type StatusEvent =
   | { type: "session:busy" | "session:stalled" | "session:idle"; sessionId?: string }
@@ -16,7 +16,13 @@ export type StatusEvent =
     }
   | { type: "session:defer-summary"; sessionId: string; deferSummary: DeferSummary }
   | { type: "session:history-truncated"; sessionId?: string }
-  | { type: "server:restart-pending"; waitingSessions?: number; serverInstanceId?: string }
+  | {
+      type: "server:restart-pending";
+      waitingSessions?: number;
+      phase?: RestartStatusPhase;
+      canAcceptNewWork?: boolean;
+      serverInstanceId?: string;
+    }
   | { type: "server:restart-cleared"; serverInstanceId?: string }
   | { type: "status:connected" }
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
