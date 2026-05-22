@@ -206,10 +206,15 @@ export function createTaskTools(ctx: AppContext) {
         waitingOn: targetWaitingOn,
         nextTouchAt: targetNextTouchAt,
       })) {
-        return toolFailure(
-          "Task momentum is already current; no changes were applied. Do not call task_update_momentum again with the same values.",
-          { resultType: "rejected" },
-        );
+        return {
+          success: true,
+          changed: false,
+          message: "Task momentum is already current; no changes were applied.",
+          nextAction: task.value.nextAction ?? null,
+          waitingOn: task.value.waitingOn ?? null,
+          nextTouchAt: task.value.nextTouchAt ?? null,
+          kind: task.value.kind,
+        };
       }
 
       const updates: Record<string, unknown> = {};
@@ -233,6 +238,7 @@ export function createTaskTools(ctx: AppContext) {
       ].join(", ");
       return {
         success: true,
+        changed: true,
         message: `Task momentum updated (${fields})`,
         nextAction: updatedTask.nextAction ?? null,
         waitingOn: updatedTask.waitingOn ?? null,
