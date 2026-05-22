@@ -33,7 +33,6 @@ const SESSION_ID_RE = /^[a-f0-9-]{36}$/i;
 export interface PublishOutboundAttachmentInput {
   copilotHome: string;
   sessionId: string;
-  apiBasePath?: string;
   sourcePath?: string;
   content?: string;
   displayName?: string;
@@ -45,10 +44,6 @@ export interface PublishedOutboundAttachment {
   mimeType: string;
   size: number;
   filePath: string;
-  urlPath: string;
-  linkMarkdown: string;
-  imageMarkdown?: string;
-  recommendedMarkdown: string;
   inline: boolean;
 }
 
@@ -80,25 +75,6 @@ function deduplicateFilename(dir: string, name: string): string {
   return `${stem} (${i})${ext}`;
 }
 
-function escapeMarkdownText(text: string): string {
-  return text
-    .replace(/\\/g, "\\\\")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]");
-}
-
-function encodeMarkdownUrlSegment(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
-    `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function normalizeApiBasePath(apiBasePath: string | undefined): string {
-  const trimmed = apiBasePath?.trim();
-  if (!trimmed) return "/api";
-  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  return normalized.replace(/\/+$/, "");
-}
-
 export function inferOutboundAttachmentMimeType(fileName: string): string {
   const dot = fileName.lastIndexOf(".");
   if (dot < 0 || dot === fileName.length - 1) return "application/octet-stream";
@@ -108,11 +84,6 @@ export function inferOutboundAttachmentMimeType(fileName: string): string {
 
 export function isInlineRenderableAttachment(mimeType: string): boolean {
   return INLINE_RENDERABLE_MIME_TYPES.has(mimeType.toLowerCase());
-}
-
-export function buildOutboundAttachmentUrlPath(sessionId: string, attachmentId: string, apiBasePath?: string): string {
-  const base = normalizeApiBasePath(apiBasePath);
-  return `${base}/sessions/${encodeMarkdownUrlSegment(sessionId)}/attachments/${encodeMarkdownUrlSegment(attachmentId)}`;
 }
 
 export function getOutboundAttachmentDir(copilotHome: string, sessionId: string): string {
@@ -163,11 +134,6 @@ export function publishOutboundAttachment(input: PublishOutboundAttachmentInput)
     const { size } = statSync(filePath);
     const mimeType = inferOutboundAttachmentMimeType(storedName);
     const attachmentId = storedName;
-    const urlPath = buildOutboundAttachmentUrlPath(input.sessionId, attachmentId, input.apiBasePath);
-    const linkMarkdown = `[${escapeMarkdownText(`Download ${storedName}`)}](${urlPath})`;
-    const imageMarkdown = isInlineRenderableAttachment(mimeType)
-      ? `![${escapeMarkdownText(storedName)}](${urlPath})`
-      : undefined;
 
     return ok({
       attachmentId,
@@ -175,11 +141,7 @@ export function publishOutboundAttachment(input: PublishOutboundAttachmentInput)
       mimeType,
       size,
       filePath,
-      urlPath,
-      linkMarkdown,
-      imageMarkdown,
-      recommendedMarkdown: imageMarkdown ?? linkMarkdown,
-      inline: !!imageMarkdown,
+      inline: isInlineRenderableAttachment(mimeType),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -32,7 +32,6 @@ export function createAttachmentTools(ctx: AppContext) {
       const published = publishOutboundAttachment({
         copilotHome: ctx.copilotHome ?? join(homedir(), ".copilot"),
         sessionId: invocation.sessionId,
-        apiBasePath: attachmentApiBasePath,
         ...(rawPath ? { sourcePath: resolvePublishableAttachmentSourcePath(rawPath, BRIDGE_TOOLS_REPO_ROOT) } : {}),
         ...(content !== undefined ? { content } : {}),
         ...(typeof args.displayName === "string" ? { displayName: args.displayName } : {}),
