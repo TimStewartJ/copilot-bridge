@@ -127,6 +127,15 @@ function emitRestartEvent(event: Parameters<GlobalBus["emit"]>[0]): void {
   }
 }
 
+function emitRestartPendingEvent(state: RestartState): void {
+  emitRestartEvent({
+    type: "server:restart-pending",
+    waitingSessions: state.waitingSessions,
+    phase: state.phase,
+    canAcceptNewWork: !isRestartCutoverInProgress(state),
+  });
+}
+
 export async function refreshRestartState(): Promise<RestartState> {
   await _restartStateWriteQueue;
   const persisted = await readRestartState(_restartStatePath);
@@ -216,7 +225,7 @@ export function triggerRestartPending(): number {
       setCachedRestartState(persistedState);
     }
   });
-  emitRestartEvent({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
+  emitRestartPendingEvent(nextState);
   return waitingCount;
 }
 
@@ -228,7 +237,7 @@ export function syncRestartWaitingSessions(waitingSessions: number): void {
       ..._restartState,
       waitingSessions,
     });
-    emitRestartEvent({ type: "server:restart-pending", waitingSessions });
+    emitRestartPendingEvent(_restartState);
     return;
   }
   const nextPhase = getRestartPhaseForWaitingSessions(_restartState.phase, waitingSessions);
@@ -249,5 +258,5 @@ export function syncRestartWaitingSessions(waitingSessions: number): void {
   // The persisted restart-state file is only used to publish the initial restart
   // request. After that, waiting-session countdown stays in memory/SSE so the
   // launcher is the sole writer once it picks up the request.
-  emitRestartEvent({ type: "server:restart-pending", waitingSessions: nextState.waitingSessions });
+  emitRestartPendingEvent(nextState);
 }

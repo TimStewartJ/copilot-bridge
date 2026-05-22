@@ -368,6 +368,8 @@ describe("Status stream", () => {
             if (
               text.includes('"type":"server:restart-pending"')
               && text.includes('"waitingSessions":2')
+              && text.includes('"phase":"waiting-for-sessions"')
+              && text.includes('"canAcceptNewWork":true')
               && text.includes('"serverInstanceId"')
             ) {
               req.destroy();
@@ -384,6 +386,8 @@ describe("Status stream", () => {
 
       expect(body).toContain('"type":"server:restart-pending"');
       expect(body).toContain('"waitingSessions":2');
+      expect(body).toContain('"phase":"waiting-for-sessions"');
+      expect(body).toContain('"canAcceptNewWork":true');
       expect(body).toContain('"serverInstanceId"');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -410,6 +414,7 @@ describe("Status stream", () => {
       requestedAt: "2026-04-24T12:00:00.000Z",
       serverInstanceId: expect.any(String),
       waitingSessions: 2,
+      canAcceptNewWork: true,
     });
   });
 
@@ -426,6 +431,7 @@ describe("Status stream", () => {
       requestedAt: null,
       serverInstanceId: expect.any(String),
       waitingSessions: 0,
+      canAcceptNewWork: true,
     });
   });
 });

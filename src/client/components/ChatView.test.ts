@@ -120,6 +120,8 @@ type RenderChatViewOptions = {
   waitForQuestion?: boolean;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
+  newWorkDisabled?: boolean;
+  newWorkDisabledHint?: string;
 };
 
 function createMessage(id: string, content = id): ChatEntry {
@@ -330,6 +332,8 @@ async function renderChatView(
             activeSessionActivityAt: nextOptions.activeSessionActivityAt,
             onForkSession: nextOptions.onForkSession,
             onRenderedReadThrough: nextOptions.onRenderedReadThrough,
+            newWorkDisabled: nextOptions.newWorkDisabled,
+            newWorkDisabledHint: nextOptions.newWorkDisabledHint,
           }),
         ),
       ),
@@ -361,6 +365,23 @@ afterEach(() => {
 });
 
 describe("ChatView cached resume loading state", () => {
+  it("passes restart cutover disabled state to the composer", async () => {
+    const hint = "Bridge is restarting; new messages and chats will resume after reconnect.";
+    const { cleanup } = await renderChatView({
+      newWorkDisabled: true,
+      newWorkDisabledHint: hint,
+      streamOverrides: { isStreaming: false },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { disabled?: boolean; disabledHint?: string };
+      expect(props.disabled).toBe(true);
+      expect(props.disabledHint).toBe(hint);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("reports the rendered read-through cursor from loaded history", async () => {
     const onRenderedReadThrough = vi.fn();
     const { act, cleanup } = await renderChatView({

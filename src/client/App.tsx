@@ -139,8 +139,8 @@ export default function App() {
     });
   }, []);
   const [restartBanner, setRestartBanner] = useState<RestartBannerState>({
-    phase: null,
-    waitingSessions: 0,
+    phase: null, restartPhase: "idle",
+    waitingSessions: 0, canAcceptNewWork: true,
     shouldReload: false,
     reconnectedSincePending: false,
     pendingSnapshotSeen: false,
@@ -170,11 +170,11 @@ export default function App() {
     if (!restartStatus) return;
     setRestartBanner((prev) => reduceRestartBannerState(prev, {
       type: "snapshot:restart-status",
-      pending: restartStatus.pending,
-      waitingSessions: restartStatus.waitingSessions,
+      pending: restartStatus.pending, phase: restartStatus.phase,
+      waitingSessions: restartStatus.waitingSessions, canAcceptNewWork: restartStatus.canAcceptNewWork,
       serverInstanceId: restartStatus.serverInstanceId,
     }));
-  }, [restartStatus?.pending, restartStatus?.waitingSessions, restartStatus?.requestedAt, restartStatus?.serverInstanceId]);
+  }, [restartStatus?.pending, restartStatus?.phase, restartStatus?.waitingSessions, restartStatus?.canAcceptNewWork, restartStatus?.requestedAt, restartStatus?.serverInstanceId]);
 
   // Derive active IDs and mode from URL
   const mobileRouteMeta = getMobileRouteMeta(location.pathname, location.search);
@@ -464,8 +464,8 @@ export default function App() {
       case "server:restart-pending":
         void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
         setRestartBanner((prev) => reduceRestartBannerState(prev, {
-          type: "server:restart-pending",
-          waitingSessions: event.waitingSessions,
+          type: "server:restart-pending", phase: event.phase,
+          waitingSessions: event.waitingSessions, canAcceptNewWork: event.canAcceptNewWork,
           serverInstanceId: event.serverInstanceId,
         }));
         break;
@@ -1489,13 +1489,24 @@ export default function App() {
     settings: mobileRouteMeta.route === "settings",
     docs: mobileRouteMeta.route === "docs-root" || mobileRouteMeta.route === "docs-detail",
   };
+  const newWorkDisabledByRestart = restartBanner.phase === "pending" && !restartBanner.canAcceptNewWork;
+  const newWorkDisabledByRestartHint = newWorkDisabledByRestart
+    ? "Bridge is restarting; new messages and chats will resume after reconnect."
+    : undefined;
 
   return (
     <div
       className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
-      {restartBanner.phase && <RestartBanner phase={restartBanner.phase} waitingSessions={restartBanner.waitingSessions} />}
+      {restartBanner.phase && (
+        <RestartBanner
+          phase={restartBanner.phase}
+          restartPhase={restartBanner.restartPhase}
+          waitingSessions={restartBanner.waitingSessions}
+          canAcceptNewWork={restartBanner.canAcceptNewWork}
+        />
+      )}
 
       {/* Row wrapper: TaskRail + sidebar + main content fill space above mobile nav */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -1802,6 +1813,8 @@ export default function App() {
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
                   sessionHistorySignals={sessionHistorySignals}
+                  newWorkDisabled={newWorkDisabledByRestart}
+                  newWorkDisabledHint={newWorkDisabledByRestartHint}
                 />
               }
             />
@@ -1874,6 +1887,8 @@ export default function App() {
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
                   sessionHistorySignals={sessionHistorySignals}
+                  newWorkDisabled={newWorkDisabledByRestart}
+                  newWorkDisabledHint={newWorkDisabledByRestartHint}
                 />
               }
             />
@@ -2103,6 +2118,8 @@ function SessionRoute({
   sessionBusySignals,
   onForkSession,
   sessionHistorySignals,
+  newWorkDisabled,
+  newWorkDisabledHint,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -2124,6 +2141,8 @@ function SessionRoute({
   sessionBusySignals: Record<string, number>;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   sessionHistorySignals: Record<string, number>;
+  newWorkDisabled?: boolean;
+  newWorkDisabledHint?: string;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -2220,6 +2239,8 @@ function SessionRoute({
       historySignal={historySignal}
       activeSessionActivityAt={activeSessionActivityAt}
       onForkSession={onForkSession}
+      newWorkDisabled={newWorkDisabled}
+      newWorkDisabledHint={newWorkDisabledHint}
     />
   );
 }

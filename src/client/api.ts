@@ -404,6 +404,7 @@ export interface RestartStatus {
   waitingSessions: number;
   requestedAt: string | null;
   serverInstanceId: string;
+  canAcceptNewWork: boolean;
 }
 
 // Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/

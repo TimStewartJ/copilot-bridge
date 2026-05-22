@@ -767,6 +767,7 @@ interface RestartStatusResponse {
   waitingSessions: number;
   requestedAt: string | null;
   serverInstanceId: string;
+  canAcceptNewWork: boolean;
 }
 
 function restartStatusResponseFromState(state: {
@@ -780,13 +781,20 @@ function restartStatusResponseFromState(state: {
     waitingSessions: Math.max(0, state.waitingSessions),
     requestedAt: state.requestedAt,
     serverInstanceId: SERVER_INSTANCE_ID,
+    canAcceptNewWork: state.phase !== "restarting",
   };
 }
 
 function restartStatusEventFromState(state: Parameters<typeof restartStatusResponseFromState>[0]) {
   const status = restartStatusResponseFromState(state);
   return status.pending
-    ? { type: "server:restart-pending" as const, waitingSessions: status.waitingSessions, serverInstanceId: status.serverInstanceId }
+    ? {
+        type: "server:restart-pending" as const,
+        waitingSessions: status.waitingSessions,
+        phase: status.phase,
+        canAcceptNewWork: status.canAcceptNewWork,
+        serverInstanceId: status.serverInstanceId,
+      }
     : { type: "server:restart-cleared" as const, serverInstanceId: status.serverInstanceId };
 }
 

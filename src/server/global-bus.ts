@@ -2,6 +2,7 @@
 // Pushes run-state/title/intent events to all connected SSE clients
 
 import type { DeferSummary } from "./defer-summary.js";
+import type { RestartPhase } from "./restart-state.js";
 
 export interface StatusEvent {
   type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "feed:changed";
@@ -16,6 +17,8 @@ export interface StatusEvent {
   assistantPreview?: string;
   deferSummary?: DeferSummary;
   waitingSessions?: number;
+  phase?: RestartPhase;
+  canAcceptNewWork?: boolean;
   scheduleId?: string;
   scheduleName?: string;
   taskId?: string;
