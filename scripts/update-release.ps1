@@ -33,9 +33,6 @@ $appDir = Join-Path $installRoot "app"
 $stateRootFile = Join-Path $installRoot ".bridge-state-root"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "copilot-bridge-update-$timestamp"
-$bridgeStopped = $false
-$appBackedUp = $false
-$appExistedBefore = $false
 
 function Import-BridgeEnvFile($Path) {
   if (-not (Test-Path $Path)) { return }
@@ -87,24 +84,6 @@ function Assert-AbsolutePath($Name, $Path) {
   if (-not (Test-AbsolutePath $Path)) {
     throw "$Name must be an absolute path in release mode. Received: $Path"
   }
-}
-
-function Normalize-BackupPath($Path) {
-  $fullPath = [System.IO.Path]::GetFullPath($Path)
-  $trimmed = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  if ([string]::IsNullOrWhiteSpace($trimmed)) {
-    return $fullPath
-  }
-  return $trimmed
-}
-
-function Test-SameOrChildPath($Path, $ParentPath) {
-  $normalizedPath = Normalize-BackupPath $Path
-  $normalizedParent = Normalize-BackupPath $ParentPath
-  if ([string]::Equals($normalizedPath, $normalizedParent, [System.StringComparison]::OrdinalIgnoreCase)) {
-    return $true
-  }
-  return $normalizedPath.StartsWith("$normalizedParent$([System.IO.Path]::DirectorySeparatorChar)", [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Copy-ReleaseWrappers($SourceRoot, $DestinationRoot) {
@@ -256,78 +235,6 @@ function Copy-DirectoryTree($SourcePath, $DestinationPath) {
   Copy-Item -Path $SourcePath -Destination $DestinationPath -Recurse -Force
 }
 
-function Assert-BackupPathSafe($Path) {
-  if ((Test-SameOrChildPath $backupRoot $Path) -or (Test-SameOrChildPath $Path $backupRoot)) {
-    throw "Configured durable path $Path overlaps the backup root $backupRoot. Choose a data/docs/COPILOT_HOME path outside the backups folder before updating."
-  }
-  if ((Test-SameOrChildPath $appDir $Path) -or (Test-SameOrChildPath $Path $appDir)) {
-    throw "Configured durable path $Path overlaps the app folder $appDir. Move Bridge data/config outside the app folder before updating."
-  }
-}
-
-$backupEntries = @()
-
-function Add-BackupEntry($Name, $Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { return }
-  $normalizedPath = Normalize-BackupPath $Path
-  Assert-BackupPathSafe $normalizedPath
-
-  $remainingEntries = @()
-  foreach ($entry in $script:backupEntries) {
-    if (Test-SameOrChildPath $normalizedPath $entry.NormalizedPath) {
-      return
-    }
-    if (-not (Test-SameOrChildPath $entry.NormalizedPath $normalizedPath)) {
-      $remainingEntries += $entry
-    }
-  }
-
-  $script:backupEntries = $remainingEntries + [pscustomobject]@{
-    Name = $Name
-    Path = $normalizedPath
-    NormalizedPath = $normalizedPath
-    BackupPath = Join-Path $backupDir $Name
-    BackedUp = $false
-    ExistedBefore = $false
-  }
-}
-
-function Backup-ConfiguredDirectories {
-  foreach ($entry in $backupEntries) {
-    if (Test-Path $entry.Path) {
-      Copy-Item -Path $entry.Path -Destination $entry.BackupPath -Recurse -Force
-      $entry.ExistedBefore = $true
-    }
-    $entry.BackedUp = $true
-  }
-}
-
-function Restore-BackupEntry($Entry) {
-  if (-not $Entry.BackedUp) {
-    return
-  }
-  if ($Entry.ExistedBefore -and -not (Test-Path $Entry.BackupPath)) {
-    Write-Warning "Skipping restore for $($Entry.Path) because its backup was not found at $($Entry.BackupPath)."
-    return
-  }
-  if (Test-Path $Entry.Path) {
-    Remove-PathWithRetry $Entry.Path
-  }
-  if ($Entry.ExistedBefore) {
-    Copy-Item -Path $Entry.BackupPath -Destination $Entry.Path -Recurse -Force
-  }
-}
-
-function Get-BridgePort {
-  $rawPort = $env:BRIDGE_PORT
-  if (-not $rawPort) { return 3333 }
-  $port = 0
-  if ([int]::TryParse($rawPort, [ref]$port) -and $port -gt 0) {
-    return $port
-  }
-  throw "Invalid BRIDGE_PORT value: $rawPort"
-}
-
 $storedStateRoot = Get-StoredStateRoot $stateRootFile
 $stateRootFromInput = -not [string]::IsNullOrWhiteSpace($StateRoot)
 $stateRoot = if ($stateRootFromInput) {
@@ -337,35 +244,11 @@ $stateRoot = if ($stateRootFromInput) {
 } else {
   Join-Path $env:LOCALAPPDATA "CopilotBridge"
 }
-$backupRoot = Join-Path $stateRoot "backups"
-$backupDir = Join-Path $backupRoot "update-$timestamp"
-
-function Wait-BridgeHealth {
-  param(
-    [int]$TimeoutSeconds = 120
-  )
-
-  $port = Get-BridgePort
-  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-  $healthUrl = "http://localhost:$port/api/health"
-  do {
-    try {
-      $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 3
-      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
-        return
-      }
-    } catch {
-      Start-Sleep -Seconds 2
-    }
-  } while ((Get-Date) -lt $deadline)
-
-  throw "Copilot Bridge did not become healthy at $healthUrl within $TimeoutSeconds seconds."
-}
 
 Assert-StateRootDoesNotSwitch $storedStateRoot $StateRoot $stateRootFile
 Assert-AbsolutePath "BRIDGE_STATE_ROOT" $stateRoot
 Set-Item -Path "Env:BRIDGE_STATE_ROOT" -Value $stateRoot
-New-Item -ItemType Directory -Path $backupDir, $tempDir -Force | Out-Null
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 Import-BridgeEnvFile (Join-Path $stateRoot "config\.env")
 
 $effectiveDataDir = Get-EnvPathOrDefault "BRIDGE_DATA_DIR" (Join-Path $stateRoot "data")
@@ -374,10 +257,6 @@ $effectiveCopilotHome = Get-EnvPathOrDefault "COPILOT_HOME" (Join-Path $effectiv
 Assert-AbsolutePath "BRIDGE_DATA_DIR" $effectiveDataDir
 Assert-AbsolutePath "BRIDGE_DOCS_DIR" $effectiveDocsDir
 Assert-AbsolutePath "COPILOT_HOME" $effectiveCopilotHome
-Add-BackupEntry "config" (Join-Path $stateRoot "config")
-Add-BackupEntry "data" $effectiveDataDir
-Add-BackupEntry "docs" $effectiveDocsDir
-Add-BackupEntry "copilot-home" $effectiveCopilotHome
 
 if ([string]::IsNullOrWhiteSpace($StatusPath)) {
   $StatusPath = Join-Path $effectiveDataDir "update-status.json"
@@ -391,7 +270,7 @@ $releaseCandidateId = $null
 $releaseCandidateRoot = $null
 $resolvedPackageSha256 = $ExpectedSha256
 
-function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAttempted = $false) {
+function Write-UpdateStatus($Phase, [string]$Message = $null) {
   $now = (Get-Date).ToUniversalTime().ToString("o")
   $status = [ordered]@{
     id = if (-not [string]::IsNullOrWhiteSpace($InstallId)) { $InstallId } else { $timestamp }
@@ -405,20 +284,15 @@ function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAtt
     startedAt = $statusStartedAt
     updatedAt = $now
     logPath = $LogPath
-    backupDir = $backupDir
   }
-  if ($Phase -eq "succeeded" -or $Phase -eq "failed" -or $Phase -eq "rollback_failed") {
+  if ($Phase -eq "succeeded" -or $Phase -eq "failed") {
     $status.completedAt = $now
   }
   if (-not [string]::IsNullOrWhiteSpace($Message)) {
     $status.message = $Message
   }
-  if (($Phase -eq "failed" -or $Phase -eq "rollback_failed") -and -not [string]::IsNullOrWhiteSpace($Message)) {
+  if ($Phase -eq "failed" -and -not [string]::IsNullOrWhiteSpace($Message)) {
     $status.error = $Message
-  }
-  if ($RollbackAttempted) {
-    $status.rollbackAttempted = $true
-    $status.mutableDirectoriesPreservedOnRollback = @($backupEntries | ForEach-Object { $_.Path })
   }
   if (-not [string]::IsNullOrWhiteSpace($script:releaseCandidateId)) {
     $status.releaseCandidateId = $script:releaseCandidateId
@@ -428,7 +302,7 @@ function Write-UpdateStatus($Phase, [string]$Message = $null, [bool]$RollbackAtt
   }
   if ($Phase -eq "staged") {
     $status.pendingRestart = $true
-  } elseif ($Phase -eq "succeeded" -or $Phase -eq "failed" -or $Phase -eq "rollback_failed") {
+  } elseif ($Phase -eq "succeeded" -or $Phase -eq "failed") {
     $status.pendingRestart = $false
   }
   $status | ConvertTo-Json -Depth 4 | Set-Content -Path $StatusPath -Encoding UTF8
@@ -523,7 +397,8 @@ try {
 
   Write-UpdateStatus "staging" "Refreshing release wrapper scripts."
   $newReleaseRoot = Split-Path -Parent $newApp
-  Copy-ReleaseWrappersWithBackup $newReleaseRoot $installRoot (Join-Path $backupDir "wrappers")
+  $wrapperBackupRoot = Join-Path (Join-Path (Join-Path $stateRoot "backups") "update-$timestamp") "wrappers"
+  Copy-ReleaseWrappersWithBackup $newReleaseRoot $installRoot $wrapperBackupRoot
 
   if ($stateRootFromInput) {
     Set-Content -Path $stateRootFile -Value $stateRoot -Encoding UTF8

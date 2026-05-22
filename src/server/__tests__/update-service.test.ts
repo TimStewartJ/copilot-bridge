@@ -386,8 +386,8 @@ describe("update service", () => {
       phase: "failed",
       pendingRestart: false,
       error: "health failed",
-      rollbackAttempted: true,
     });
+    expect(readUpdateInstallStatus({ runtimePaths }).status).not.toHaveProperty("rollbackAttempted");
   });
 
   it("returns a sanitized and bounded update log tail", () => {
@@ -405,7 +405,7 @@ describe("update service", () => {
     );
     writeInstallStatus(runtimePaths, {
       id,
-      phase: "installing",
+      phase: "staging",
       channel: "preview",
       fromVersion: "0.1.0-preview.1",
       toVersion: "0.1.0-preview.2",
@@ -418,7 +418,7 @@ describe("update service", () => {
 
     const result = readUpdateInstallStatus({ runtimePaths });
 
-    expect(result.status?.phase).toBe("installing");
+    expect(result.status?.phase).toBe("staging");
     expect(result.logTail).toHaveLength(40);
     expect(result.logTail?.[0]).toContain("line-6");
     expect(result.logTail?.some((line) => line.includes("\u001b") || line.includes("\u0001"))).toBe(false);
@@ -434,7 +434,7 @@ describe("update service", () => {
     writeFileSync(outsideLogPath, "secret line\n");
     writeInstallStatus(runtimePaths, {
       id: "outside",
-      phase: "installing",
+      phase: "staging",
       channel: "preview",
       fromVersion: "0.1.0-preview.1",
       toVersion: "0.1.0-preview.2",
@@ -447,7 +447,7 @@ describe("update service", () => {
 
     const result = readUpdateInstallStatus({ runtimePaths });
 
-    expect(result.status?.phase).toBe("installing");
+    expect(result.status?.phase).toBe("staging");
     expect(result.logTail).toBeUndefined();
   });
 
