@@ -1059,6 +1059,112 @@ describe("SessionManager run state", () => {
     expect(resumeSession).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps quiet external tools busy instead of recovering them as stalled sessions", async () => {
+    const sessionId = "session-external-tool-wait";
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.client = { resumeSession };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    getHandler()?.({
+      type: "external_tool.requested",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: {
+        requestId: "external-req-1",
+        sessionId,
+        toolCallId: "external-call-1",
+        toolName: "staging_preview",
+        arguments: {},
+      },
+    });
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+    expect(telemetryStore!.querySpans({ name: "session.run.stalled", sessionId })).toEqual([]);
+    expect(latestSpanMetadata(telemetryStore, "session.run.waiting_on_external_tool", sessionId)).toMatchObject({
+      watchdogTimeoutMs: 300_000,
+      activeExternalToolCount: 1,
+      activeExternalToolNames: ["staging_preview"],
+      oldestActiveExternalToolName: "staging_preview",
+      oldestActiveExternalToolRequestId: "external-req-1",
+      oldestActiveExternalToolCallId: "external-call-1",
+    });
+
+    getHandler()?.({
+      type: "external_tool.completed",
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+      data: {
+        requestId: "external-req-1",
+      },
+    });
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("stalled");
+    expect(resumeSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears quiet external tool protection when the matching tool execution completes", async () => {
+    const sessionId = "session-external-tool-execution-complete";
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.client = { resumeSession };
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    const baseTime = Date.now();
+
+    getHandler()?.({
+      type: "external_tool.requested",
+      timestamp: new Date(baseTime + 1_000).toISOString(),
+      data: {
+        requestId: "external-req-2",
+        sessionId,
+        toolCallId: "external-call-2",
+        toolName: "staging_preview",
+        arguments: {},
+      },
+    });
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(resumeSession).toHaveBeenCalledTimes(1);
+
+    getHandler()?.({
+      type: "tool.execution_complete",
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+      data: {
+        toolCallId: "external-call-2",
+        success: true,
+        output: "done",
+      },
+    });
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("stalled");
+    expect(resumeSession).toHaveBeenCalledTimes(2);
+  });
+
   it("retries recovery every 5 minutes while the session remains stalled", async () => {
     const { manager } = createManager();
     const { session } = makeSession();

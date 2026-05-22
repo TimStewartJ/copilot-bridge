@@ -44,6 +44,7 @@ const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run indepe
 
 const SYNC_SHELL_TOOL_NAMES = new Set(["bash", "powershell"]);
 const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
+const EXTERNAL_TOOL_WAIT_SPAN_INTERVAL_MS = 5 * 60_000;
 const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
   "assistant.turn_end",
   "session.idle",
@@ -72,6 +73,8 @@ const PERSISTED_RUN_RELEVANT_EVENT_TYPES = new Set([
   "tool.execution_progress",
   "tool.execution_partial_result",
   "tool.execution_complete",
+  "external_tool.requested",
+  "external_tool.completed",
   "subagent.started",
   "subagent.completed",
   "subagent.failed",
@@ -86,6 +89,8 @@ const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
   "assistant.message",
   "tool.execution_start",
   "tool.execution_complete",
+  "external_tool.requested",
+  "external_tool.completed",
   "subagent.started",
   "subagent.completed",
   "subagent.failed",
@@ -103,6 +108,14 @@ interface PersistedRunEventInfo {
   latestPersistedEventAgeMs?: number;
   latestPersistedTerminalEventType?: string;
   latestPersistedTerminalEventAgeMs?: number;
+}
+
+interface ActiveExternalToolCall {
+  requestId: string;
+  toolCallId?: string;
+  toolName?: string;
+  startedAt: number;
+  lastActivityAt: number;
 }
 
 export interface McpServerStatus {
@@ -585,6 +598,8 @@ export class SessionRunner {
     const toolStartTimes = new Map<string, number>();
     const subAgentMap = new Map<string, string>();
     const subAgentResponseMap = new Map<string, string>();
+    const activeExternalTools = new Map<string, ActiveExternalToolCall>();
+    let lastExternalToolWaitSpanAt = 0;
     const rememberToolName = (toolCallId: unknown, toolName: unknown): string | undefined => {
       if (typeof toolName !== "string") return undefined;
       const normalized = toolName.trim();
@@ -599,6 +614,45 @@ export class SessionRunner {
         return subAgentMap.get(toolCallId) ?? toolNameMap.get(toolCallId) ?? fallbackName ?? "unknown";
       }
       return fallbackName ?? "unknown";
+    };
+    const rememberExternalToolRequest = (data: any, eventAt: number) => {
+      const requestId = typeof data?.requestId === "string" && data.requestId ? data.requestId : undefined;
+      if (!requestId) return;
+      const toolName = rememberToolName(data?.toolCallId, data?.toolName ?? data?.name);
+      const toolCallId = typeof data?.toolCallId === "string" && data.toolCallId
+        ? data.toolCallId
+        : undefined;
+      activeExternalTools.set(requestId, {
+        requestId,
+        startedAt: eventAt,
+        lastActivityAt: eventAt,
+        ...(toolCallId ? { toolCallId } : {}),
+        ...(toolName ? { toolName } : {}),
+      });
+      if (activeExternalTools.size === 1) {
+        lastExternalToolWaitSpanAt = eventAt;
+      }
+    };
+    const clearExternalToolRequest = (requestId: unknown, eventAt: number) => {
+      if (typeof requestId !== "string" || !requestId) return;
+      const active = activeExternalTools.get(requestId);
+      if (active) active.lastActivityAt = eventAt;
+      activeExternalTools.delete(requestId);
+      if (activeExternalTools.size === 0) {
+        lastExternalToolWaitSpanAt = 0;
+      }
+    };
+    const clearExternalToolsForToolCall = (toolCallId: unknown, eventAt: number) => {
+      if (typeof toolCallId !== "string" || !toolCallId) return;
+      for (const [requestId, active] of activeExternalTools) {
+        if (active.toolCallId === toolCallId) {
+          active.lastActivityAt = eventAt;
+          activeExternalTools.delete(requestId);
+        }
+      }
+      if (activeExternalTools.size === 0) {
+        lastExternalToolWaitSpanAt = 0;
+      }
     };
     const syncShellWaits = new Map<string, number>();
     const handledCurrentTurnEventKeys = new Set<string>();
@@ -631,6 +685,8 @@ export class SessionRunner {
       lastEventTime = sendStart;
       handledCurrentTurnEventKeys.clear();
       lastAssistantContent = undefined;
+      activeExternalTools.clear();
+      lastExternalToolWaitSpanAt = 0;
       resetRunTelemetryState();
       acceptingSessionEvents = true;
     };
@@ -657,6 +713,24 @@ export class SessionRunner {
     };
     const getAgeMs = (now: number, at: number | undefined): number | undefined =>
       at === undefined ? undefined : Math.max(0, now - at);
+    const getActiveExternalToolTelemetry = (now: number): Record<string, unknown> => {
+      const active = [...activeExternalTools.values()];
+      if (active.length === 0) return {};
+      const oldest = active.reduce((currentOldest, candidate) =>
+        candidate.startedAt < currentOldest.startedAt ? candidate : currentOldest,
+      );
+      const latestActivityAt = Math.max(...active.map((tool) => tool.lastActivityAt));
+      const toolNames = [...new Set(active.map((tool) => tool.toolName ?? "unknown"))];
+      return {
+        activeExternalToolCount: active.length,
+        activeExternalToolNames: toolNames,
+        oldestActiveExternalToolName: oldest.toolName ?? "unknown",
+        oldestActiveExternalToolRequestId: oldest.requestId,
+        oldestActiveExternalToolCallId: oldest.toolCallId,
+        oldestActiveExternalToolAgeMs: getAgeMs(now, oldest.startedAt),
+        activeExternalToolLastActivityAgeMs: getAgeMs(now, latestActivityAt),
+      };
+    };
     const buildRunTelemetryMetadata = (now = Date.now()): Record<string, unknown> => ({
       runStartedAt: new Date(sendStart).toISOString(),
       elapsedMs: Math.max(0, now - sendStart),
@@ -671,6 +745,7 @@ export class SessionRunner {
       activeEventsAfterLastLiveTurnEnd,
       pendingUserInputCount: this.deps.userInputController.getPendingCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
+      ...getActiveExternalToolTelemetry(now),
     });
     const recordRunSpan = (
       name: string,
@@ -845,6 +920,18 @@ export class SessionRunner {
             bus.emit({ type: "assistant_partial", content: data.content ?? "" });
           }
           break;
+        case "external_tool.requested": {
+          rememberExternalToolRequest(data, eventAt);
+          const toolName = getTrackedToolDisplayName(
+            data?.toolCallId,
+            rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
+          );
+          console.log(`[sdk] [${sid}] 🧰 External tool requested: ${toolName}`);
+          break;
+        }
+        case "external_tool.completed":
+          clearExternalToolRequest(data?.requestId, eventAt);
+          break;
         case "tool.execution_start": {
           const toolName = data?.toolName ?? data?.name ?? "unknown";
           if (data?.toolCallId) {
@@ -893,6 +980,7 @@ export class SessionRunner {
           break;
         case "tool.execution_complete": {
           if (data?.toolCallId) syncShellWaits.delete(data.toolCallId);
+          clearExternalToolsForToolCall(data?.toolCallId, eventAt);
           const completedToolName = toolNameMap.get(data?.toolCallId) ?? "unknown";
           const ok = data?.success !== false;
           const isAgent = subAgentMap.has(data?.toolCallId);
@@ -1204,6 +1292,8 @@ export class SessionRunner {
           case "tool.execution_progress":
           case "tool.execution_partial_result":
           case "tool.execution_complete":
+          case "external_tool.requested":
+          case "external_tool.completed":
           case "subagent.started":
           case "subagent.completed":
           case "subagent.failed":
@@ -1397,6 +1487,20 @@ export class SessionRunner {
         return;
       }
 
+      if (activeExternalTools.size > 0) {
+        this.touchSessionRun(sessionId, now);
+        if (now - lastExternalToolWaitSpanAt >= EXTERNAL_TOOL_WAIT_SPAN_INTERVAL_MS) {
+          lastExternalToolWaitSpanAt = now;
+          const activeToolNames = [...new Set([...activeExternalTools.values()].map((tool) => tool.toolName ?? "unknown"))];
+          console.log(`[sdk] [${sid}] ⏳ Waiting for external tool(s): ${activeToolNames.join(", ")}`);
+          recordRunSpan("session.run.waiting_on_external_tool", 0, {
+            watchdogTimeoutMs: WATCHDOG_TIMEOUT,
+            ...getActiveExternalToolTelemetry(now),
+          }, now);
+        }
+        return;
+      }
+
       if (now - lastEventTime < WATCHDOG_TIMEOUT) return;
 
       const currentState = this.deps.runStateController.getSessionRunState(sessionId);
@@ -1465,6 +1569,8 @@ export class SessionRunner {
     } finally {
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
+      activeExternalTools.clear();
+      lastExternalToolWaitSpanAt = 0;
       syncShellWaits.clear();
       unsub?.();
     }
