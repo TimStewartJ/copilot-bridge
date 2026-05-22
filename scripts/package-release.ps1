@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $packageJson = Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
@@ -111,7 +112,6 @@ New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 
 Copy-Item -Path (Join-Path $repoRoot "dist") -Destination (Join-Path $appDir "dist") -Recurse
 Copy-Item -Path (Join-Path $repoRoot "public") -Destination (Join-Path $appDir "public") -Recurse
-Copy-Item -Path (Join-Path $repoRoot "scripts") -Destination (Join-Path $appDir "scripts") -Recurse
 $runtimePackageJson | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $appDir "package.json") -Encoding UTF8
 if (Test-Path $packageLockPath) {
   Copy-Item -Path $packageLockPath -Destination $appDir

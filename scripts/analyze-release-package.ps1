@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 if (($PackagePath -and $PackageRoot) -or (-not $PackagePath -and -not $PackageRoot)) {
   throw "Provide exactly one of -PackagePath or -PackageRoot."
@@ -60,6 +61,67 @@ function Find-AppRoot($ReleaseRoot) {
   return $null
 }
 
+function Get-RelativePath([string]$Root, [string]$Path) {
+  $relative = $Path
+  if ($relative.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $relative = $relative.Substring($Root.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  }
+  return $relative
+}
+
+function Get-AppScriptsFindings([string]$ReleaseRoot, [string]$AppRoot) {
+  $scriptsRoot = Join-Path $AppRoot "scripts"
+  if (-not (Test-Path $scriptsRoot)) {
+    return @()
+  }
+
+  $entries = @(Get-ChildItem -Path $scriptsRoot -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-RelativePath $ReleaseRoot $_.FullName
+  })
+  if ($entries.Count -eq 0) {
+    return @(Get-RelativePath $ReleaseRoot $scriptsRoot)
+  }
+  return $entries
+}
+
+function Expand-WithArchiveTool($ArchivePath, $DestinationPath) {
+  $tarCommand = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+  if ($tarCommand) {
+    & $tarCommand.Source -xf $ArchivePath -C $DestinationPath
+    if ($LASTEXITCODE -eq 0) {
+      $global:LASTEXITCODE = 0
+      return $true
+    }
+    $global:LASTEXITCODE = 0
+  }
+
+  $unzipCommand = Get-Command "unzip" -ErrorAction SilentlyContinue
+  if ($unzipCommand) {
+    & $unzipCommand.Source -q $ArchivePath -d $DestinationPath
+    if ($LASTEXITCODE -eq 0) {
+      $global:LASTEXITCODE = 0
+      return $true
+    }
+    $global:LASTEXITCODE = 0
+  }
+
+  return $false
+}
+
+function Expand-BridgePackage($ArchivePath, $DestinationPath) {
+  if (Test-Path $DestinationPath) {
+    Remove-Item -Path $DestinationPath -Recurse -Force
+  }
+  New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+
+  if (Expand-WithArchiveTool $ArchivePath $DestinationPath) {
+    return
+  }
+
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path $ArchivePath).Path, (Resolve-Path $DestinationPath).Path, $true)
+}
+
 function Test-SensitiveFileName($RelativePath) {
   $normalizedPath = $RelativePath -replace '[\\/]+', '/'
   if ($normalizedPath -eq "app/update-manifest-public-key.pem") {
@@ -82,8 +144,7 @@ try {
     $zipBytes = (Get-Item $resolvedPackagePath).Length
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "copilot-bridge-package-analysis-$([System.Guid]::NewGuid().ToString('N'))"
     $expandedDir = Join-Path $tempDir "expanded"
-    New-Item -ItemType Directory -Path $expandedDir -Force | Out-Null
-    Expand-Archive -Path $resolvedPackagePath -DestinationPath $expandedDir -Force
+    Expand-BridgePackage $resolvedPackagePath $expandedDir
     $releaseRoot = Find-ReleaseRoot $expandedDir
   } else {
     $releaseRoot = Find-ReleaseRoot ((Resolve-Path $PackageRoot).Path)
@@ -99,6 +160,8 @@ try {
     startScript = Test-Path (Join-Path $releaseRoot "start.ps1")
     stopScript = Test-Path (Join-Path $releaseRoot "stop.ps1")
     updateScript = Test-Path (Join-Path $releaseRoot "update.ps1")
+    installStartupTaskScript = Test-Path (Join-Path $releaseRoot "install-startup-task.ps1")
+    uninstallStartupTaskScript = Test-Path (Join-Path $releaseRoot "uninstall-startup-task.ps1")
     appRoot = $null -ne $appRoot -and (Test-Path $appRoot)
     launcher = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\launcher.js"))
   }
@@ -134,12 +197,17 @@ try {
 
   $allFiles = @(Get-ChildItem -Path $releaseRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
   $sensitiveFiles = @($allFiles | ForEach-Object {
-    $relative = $_.FullName
-    if ($relative.StartsWith($releaseRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-      $relative = $relative.Substring($releaseRoot.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-    }
+    $relative = Get-RelativePath $releaseRoot $_.FullName
     if (Test-SensitiveFileName $relative) { $relative }
   })
+  $unexpectedRuntimeFiles = @()
+  if ($appRoot) {
+    $unexpectedRuntimeFiles = @(Get-AppScriptsFindings $releaseRoot $appRoot)
+  }
+  $layoutWarnings = @()
+  if ($unexpectedRuntimeFiles.Count -gt 0) {
+    $layoutWarnings += "Release app includes app\scripts; root wrapper scripts are copied separately, so source scripts should not be shipped in the app."
+  }
 
   $releaseSummary = Get-TreeSummary $releaseRoot
   $appSummary = if ($appRoot) { Get-TreeSummary $appRoot } else { [pscustomobject]@{ bytes = 0; files = 0 } }
@@ -168,7 +236,9 @@ try {
     optionalChecks = $optionalChecks
     manifest = $manifest
     manifestWarnings = $manifestWarnings
+    layoutWarnings = $layoutWarnings
     sensitiveFiles = $sensitiveFiles
+    unexpectedRuntimeFiles = $unexpectedRuntimeFiles
     topAppDirectories = if ($appRoot) { Get-TopDirectorySummaries $appRoot $Top } else { @() }
     topNodeModulesDirectories = if ($nodeModulesRoot) { Get-TopDirectorySummaries $nodeModulesRoot $Top } else { @() }
   }
@@ -193,8 +263,14 @@ try {
   foreach ($warning in $manifestWarnings) {
     Write-Warning $warning
   }
+  foreach ($warning in $layoutWarnings) {
+    Write-Warning $warning
+  }
   foreach ($file in $sensitiveFiles) {
     Write-Warning "Potentially sensitive file included in release package: $file"
+  }
+  foreach ($file in $unexpectedRuntimeFiles) {
+    Write-Warning "Unexpected runtime path included in release package: $file"
   }
 
   if ($analysis.topAppDirectories.Count -gt 0) {
@@ -224,6 +300,9 @@ try {
   }
   if ($FailOnSensitiveFiles -and $sensitiveFiles.Count -gt 0) {
     throw "Release package contains potentially sensitive files."
+  }
+  if ($FailOnSensitiveFiles -and $unexpectedRuntimeFiles.Count -gt 0) {
+    throw "Release package contains unexpected app scripts."
   }
 } finally {
   if ($tempDir -and (Test-Path $tempDir)) {

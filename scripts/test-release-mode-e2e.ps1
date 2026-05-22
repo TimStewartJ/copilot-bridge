@@ -104,6 +104,18 @@ function Assert-PathExists($Name, $Path) {
   }
 }
 
+function Assert-PathAbsent($Name, $Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+
+  $entries = @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object {
+    $_.FullName
+  })
+  $detail = if ($entries.Count -gt 0) { " Found: $($entries -join ', ')" } else { "" }
+  throw "$Name should not be included at $Path.$detail"
+}
+
 function Resolve-CommandPath($CommandName) {
   $command = Get-Command $CommandName -ErrorAction SilentlyContinue
   if (-not $command) {
@@ -347,9 +359,12 @@ try {
   $appRoot = Join-Path $releaseRoot "app"
   Assert-PathExists "release start.ps1" (Join-Path $releaseRoot "start.ps1")
   Assert-PathExists "release update.ps1" (Join-Path $releaseRoot "update.ps1")
+  Assert-PathExists "release install-startup-task.ps1" (Join-Path $releaseRoot "install-startup-task.ps1")
+  Assert-PathExists "release uninstall-startup-task.ps1" (Join-Path $releaseRoot "uninstall-startup-task.ps1")
   Assert-PathExists "release app launcher" (Join-Path $appRoot "dist\launcher.js")
   Assert-PathExists "release app server" (Join-Path $appRoot "dist\server\index.js")
   Assert-PathExists "release node_modules" (Join-Path $appRoot "node_modules")
+  Assert-PathAbsent "release app scripts directory" (Join-Path $appRoot "scripts")
 
   $releaseManifest = Read-JsonFile (Join-Path $appRoot ".bridge-release.json")
   if (-not $releaseManifest) {
