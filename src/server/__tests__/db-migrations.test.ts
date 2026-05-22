@@ -128,6 +128,7 @@ describe("database migration registry", () => {
   it("keeps the compatibility migration order explicit", () => {
     expect(listDatabaseMigrations().map((migration) => migration.id)).toEqual([
       "mcp-registry-from-legacy-settings-and-tag-configs",
+      "tag-name-key-normalization",
       "task-sessions-linked-at-column",
       "session-meta-last-visible-activity-column",
       "bridge-session-state-last-attention-column",
@@ -153,6 +154,7 @@ describe("database migration registry", () => {
 
     expect(transactionsById).toEqual({
       "mcp-registry-from-legacy-settings-and-tag-configs": "self",
+      "tag-name-key-normalization": "auto",
       "task-sessions-linked-at-column": "auto",
       "session-meta-last-visible-activity-column": "auto",
       "bridge-session-state-last-attention-column": "auto",

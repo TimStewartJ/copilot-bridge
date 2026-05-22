@@ -1,5 +1,6 @@
 import { getDocsFtsHealth, initializeDocsFts, type DatabaseSync, type DocsFtsHealth } from "./db.js";
 import { normalizeDocsPublicPath, validateDocsPathSegments, type DocsStore, type DocPage } from "./docs-store.js";
+import { tagNamesMatch } from "./tag-name.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -73,8 +74,6 @@ export function docsFtsUnavailablePayload(error: DocsFtsUnavailableError): DocsF
   };
 }
 
-const TAG_MATCH_COLLATOR = new Intl.Collator("und", { usage: "search", sensitivity: "accent" });
-
 const DOCS_SNIPPET_SQL = `
   SELECT
     docs_pages.path,
@@ -93,11 +92,6 @@ const DOCS_SNIPPET_SQL = `
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
-  function tagsMatch(a: string, b: string): boolean {
-    if (TAG_MATCH_COLLATOR.compare(a, b) === 0) return true;
-    return a.normalize("NFC").toLocaleUpperCase("und") === b.normalize("NFC").toLocaleUpperCase("und");
-  }
-
   function parseFrontmatter(frontmatterJson?: string): Record<string, unknown> {
     return frontmatterJson ? JSON.parse(frontmatterJson) as Record<string, unknown> : {};
   }
@@ -455,7 +449,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore) {
       .map((r) => {
         const frontmatter = parseFrontmatter(typeof r.frontmatter_json === "string" ? r.frontmatter_json : undefined);
         const tags = extractDocTags(frontmatter, typeof r.tags === "string" ? r.tags : undefined);
-        const matchedTags = tagNames.filter((candidate) => tags.some((tag) => tagsMatch(tag, candidate)));
+        const matchedTags = tagNames.filter((candidate) => tags.some((tag) => tagNamesMatch(tag, candidate)));
         return {
           path: r.path as string,
           title: (r.title || r.path) as string,

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "./db.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
+import { normalizeTagNameKey } from "./tag-name.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -71,20 +72,22 @@ export function createTagStore(db: DatabaseSync) {
   }
 
   function getTagByName(name: string): Tag | undefined {
-    const row = db.prepare("SELECT * FROM tags WHERE name = ?").get(name) as any;
+    const row = db.prepare("SELECT * FROM tags WHERE nameKey = ?").get(normalizeTagNameKey(name)) as any;
     return row ? hydrate(row) : undefined;
   }
 
   function createTag(name: string, color?: TagColor): Tag {
+    if (getTagByName(name)) throw new Error(`Tag "${name}" already exists`);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const count = (db.prepare("SELECT COUNT(*) as cnt FROM tags").get() as any).cnt;
     const resolvedColor = color && TAG_COLORS.includes(color) ? color : nextColor();
+    const nameKey = normalizeTagNameKey(name);
 
     db.prepare(`
-      INSERT INTO tags (id, name, color, instructions, "order", createdAt, updatedAt)
-      VALUES (?, ?, ?, '', ?, ?, ?)
-    `).run(id, name, resolvedColor, count, now, now);
+      INSERT INTO tags (id, name, nameKey, color, instructions, "order", createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, '', ?, ?, ?)
+    `).run(id, name, nameKey, resolvedColor, count, now, now);
 
     return getTag(id)!;
   }
@@ -99,7 +102,12 @@ export function createTagStore(db: DatabaseSync) {
     const fields: string[] = ["updatedAt = ?"];
     const values: any[] = [new Date().toISOString()];
 
-    if (updates.name !== undefined) { fields.push("name = ?"); values.push(updates.name); }
+    if (updates.name !== undefined) {
+      const existing = getTagByName(updates.name);
+      if (existing && existing.id !== id) throw new Error(`Tag "${updates.name}" already exists`);
+      fields.push("name = ?", "nameKey = ?");
+      values.push(updates.name, normalizeTagNameKey(updates.name));
+    }
     if (updates.color !== undefined && TAG_COLORS.includes(updates.color)) {
       fields.push("color = ?"); values.push(updates.color);
     }

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlin
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { tagNamesMatch } from "./tag-name.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -778,7 +779,7 @@ export function createDocsStore(docsDir: string) {
     let updated = 0;
     const pages = scanAllPages();
     for (const page of pages) {
-      const idx = page.tags.findIndex((t) => t.toLowerCase() === oldName.toLowerCase());
+      const idx = page.tags.findIndex((t) => tagNamesMatch(t, oldName));
       if (idx === -1) continue;
 
       const resolved = resolveFilePath(page.path);
@@ -787,7 +788,7 @@ export function createDocsStore(docsDir: string) {
       const raw = readFileSync(resolved.filePath, "utf-8");
       const { data, content } = matter(raw);
       const tags: string[] = Array.isArray(data.tags) ? data.tags : data.tags ? [data.tags] : [];
-      const tagIdx = tags.findIndex((t) => t.toLowerCase() === oldName.toLowerCase());
+      const tagIdx = tags.findIndex((t) => tagNamesMatch(t, oldName));
       if (tagIdx === -1) continue;
 
       tags[tagIdx] = newName;

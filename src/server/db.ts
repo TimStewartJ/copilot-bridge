@@ -674,6 +674,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      nameKey TEXT NOT NULL,
       color TEXT NOT NULL DEFAULT 'slate',
       instructions TEXT NOT NULL DEFAULT '',
       "order" INTEGER NOT NULL DEFAULT 0,

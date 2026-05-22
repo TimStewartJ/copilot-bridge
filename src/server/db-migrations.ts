@@ -4,6 +4,7 @@ import {
   mcpServerConfigsEqual,
   type McpServerConfig,
 } from "./mcp-config.js";
+import { normalizeTagNameKey } from "./tag-name.js";
 
 // This registry is for idempotent database/schema compatibility only. Runtime
 // compatibility remains next to its call site, e.g. API aliases, workspace.yaml
@@ -707,6 +708,141 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
   }
 }
 
+interface TagNameKeyMigrationRow {
+  id: string;
+  name: string;
+  instructions: string;
+  order: number;
+  createdAt: string;
+  updatedAt: string;
+  nameKey: string | null;
+}
+
+function ensureTagNameKeyColumn(db: DatabaseSync): boolean {
+  if (!sqliteTableExists(db, "tags")) return false;
+  const tagCols = getTableInfo(db, "tags");
+  if (!tagCols.some((c: any) => c.name === "nameKey")) {
+    db.exec("ALTER TABLE tags ADD COLUMN nameKey TEXT");
+  }
+  return true;
+}
+
+function selectTagNameKeyMigrationRows(db: DatabaseSync): TagNameKeyMigrationRow[] {
+  const rows = db.prepare(`
+    SELECT id, name, instructions, "order" AS "order", createdAt, updatedAt, nameKey
+    FROM tags
+    ORDER BY "order", createdAt, id
+  `).all() as any[];
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    instructions: String(row.instructions ?? ""),
+    order: Number(row.order ?? 0),
+    createdAt: String(row.createdAt ?? ""),
+    updatedAt: String(row.updatedAt ?? ""),
+    nameKey: typeof row.nameKey === "string" ? row.nameKey : null,
+  }));
+}
+
+function mergeTagInstructions(rows: TagNameKeyMigrationRow[]): string {
+  const parts: string[] = [];
+  for (const row of rows) {
+    if (!row.instructions.trim() || parts.includes(row.instructions)) continue;
+    parts.push(row.instructions);
+  }
+  return parts.join("\n\n");
+}
+
+function latestTagUpdatedAt(rows: TagNameKeyMigrationRow[]): string {
+  return rows.reduce(
+    (latest, row) => row.updatedAt > latest ? row.updatedAt : latest,
+    rows[0]?.updatedAt ?? new Date().toISOString(),
+  );
+}
+
+function redirectTagReferences(db: DatabaseSync, fromTagId: string, toTagId: string): void {
+  if (sqliteTableExists(db, "entity_tags")) {
+    db.prepare(`
+      INSERT OR IGNORE INTO entity_tags (entityType, entityId, tagId)
+      SELECT entityType, entityId, ? FROM entity_tags WHERE tagId = ?
+    `).run(toTagId, fromTagId);
+    db.prepare("DELETE FROM entity_tags WHERE tagId = ?").run(fromTagId);
+  }
+
+  if (sqliteTableExists(db, "tag_mcp_server_refs")) {
+    db.prepare(`
+      INSERT OR IGNORE INTO tag_mcp_server_refs (tagId, serverId)
+      SELECT ?, serverId FROM tag_mcp_server_refs WHERE tagId = ?
+    `).run(toTagId, fromTagId);
+    db.prepare("DELETE FROM tag_mcp_server_refs WHERE tagId = ?").run(fromTagId);
+  }
+
+  if (sqliteTableExists(db, "tag_mcp_servers")) {
+    db.prepare(`
+      INSERT OR IGNORE INTO tag_mcp_servers (tagId, serverName, config)
+      SELECT ?, serverName, config FROM tag_mcp_servers WHERE tagId = ?
+    `).run(toTagId, fromTagId);
+    db.prepare("DELETE FROM tag_mcp_servers WHERE tagId = ?").run(fromTagId);
+  }
+}
+
+function mergeTagNameKeyGroup(db: DatabaseSync, key: string, rows: TagNameKeyMigrationRow[]): void {
+  const [survivor, ...duplicates] = rows;
+  if (!survivor) return;
+
+  for (const duplicate of duplicates) {
+    redirectTagReferences(db, duplicate.id, survivor.id);
+    db.prepare("DELETE FROM tags WHERE id = ?").run(duplicate.id);
+  }
+
+  db.prepare(`
+    UPDATE tags
+    SET nameKey = ?, instructions = ?, updatedAt = ?
+    WHERE id = ?
+  `).run(key, mergeTagInstructions(rows), latestTagUpdatedAt(rows), survivor.id);
+}
+
+function compactTagOrders(db: DatabaseSync): void {
+  const rows = db.prepare('SELECT id FROM tags ORDER BY "order", createdAt, id').all() as Array<{ id: string }>;
+  const update = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
+  rows.forEach((row, index) => update.run(index, row.id));
+}
+
+function normalizeTagNameKeys(db: DatabaseSync): void {
+  if (!ensureTagNameKeyColumn(db)) return;
+
+  db.exec("DROP INDEX IF EXISTS idx_tags_name_key");
+  const rows = selectTagNameKeyMigrationRows(db);
+  const rowsByKey = new Map<string, TagNameKeyMigrationRow[]>();
+  for (const row of rows) {
+    const key = normalizeTagNameKey(row.name);
+    const keyRows = rowsByKey.get(key);
+    if (keyRows) {
+      keyRows.push(row);
+    } else {
+      rowsByKey.set(key, [row]);
+    }
+  }
+
+  let mergedDuplicates = false;
+  for (const [key, keyRows] of rowsByKey) {
+    if (keyRows.length === 1) {
+      db.prepare("UPDATE tags SET nameKey = ? WHERE id = ?").run(key, keyRows[0].id);
+    } else {
+      mergeTagNameKeyGroup(db, key, keyRows);
+      mergedDuplicates = true;
+    }
+  }
+
+  if (mergedDuplicates) compactTagOrders(db);
+
+  const missingKeyRows = (db.prepare("SELECT COUNT(*) AS count FROM tags WHERE nameKey IS NULL").get() as any).count ?? 0;
+  if (missingKeyRows > 0) {
+    throw new Error(`Tag name-key migration left ${missingKeyRows} row(s) without a canonical key`);
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name_key ON tags(nameKey)");
+}
+
 const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     id: "mcp-registry-from-legacy-settings-and-tag-configs",
@@ -715,6 +851,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "self",
     description: "Promote legacy settings.mcpServers and tag_mcp_servers rows into the canonical MCP server registry.",
     apply: migrateMcpRegistry,
+  },
+  {
+    id: "tag-name-key-normalization",
+    category: "data-repair",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Backfill canonical tag name keys and merge Unicode-equivalent duplicate tags.",
+    apply: normalizeTagNameKeys,
   },
   {
     id: "task-sessions-linked-at-column",
