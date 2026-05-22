@@ -35,10 +35,15 @@ export function buildCopilotClientOptions(
   clientEnv?: Record<string, string | undefined>,
 ): BridgeCopilotClientOptions {
   const gitHubToken = resolveBridgeCopilotGitHubToken(clientEnv);
+  const cliPath = resolveBridgeCopilotCliPath();
+  const env = {
+    ...(clientEnv ?? process.env),
+    COPILOT_CLI_PATH: cliPath,
+  };
 
   return {
-    cliPath: resolveBridgeCopilotCliPath(),
-    ...(clientEnv ? { env: clientEnv } : {}),
+    cliPath,
+    env,
     ...(gitHubToken ? { gitHubToken, useLoggedInUser: false } : {}),
   };
 }
