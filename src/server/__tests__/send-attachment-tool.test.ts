@@ -78,6 +78,33 @@ describe("send_attachment tool", () => {
     });
   });
 
+  it("renders canonical public markdown for tricky inline image filenames", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-tool-home-"));
+    tempDirs.push(copilotHome);
+
+    const { ctx } = createTestApp({ copilotHome });
+    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    if (!tool) throw new Error("send_attachment tool not found");
+
+    const displayName = "Cafe\u0301 [final] (Bob's copy).png";
+    const result = await tool.handler({ content: "fake image", displayName }, createInvocation());
+    const url = "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/Cafe%CC%81%20%5Bfinal%5D%20%28Bob%27s%20copy%29.png";
+    const imageMarkdown = `![Cafe\u0301 \\[final\\] (Bob's copy).png](${url})`;
+    const linkMarkdown = `[Download Cafe\u0301 \\[final\\] (Bob's copy).png](${url})`;
+
+    expect(result).toMatchObject({
+      success: true,
+      attachmentId: displayName,
+      displayName,
+      mimeType: "image/png",
+      url,
+      markdown: imageMarkdown,
+      linkMarkdown,
+      imageMarkdown,
+      content: expect.stringContaining(imageMarkdown),
+    });
+  });
+
   it("uses the context apiBasePath when generating attachment links", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-tool-home-"));
     tempDirs.push(copilotHome);

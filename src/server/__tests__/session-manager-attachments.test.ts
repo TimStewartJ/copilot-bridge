@@ -6,7 +6,7 @@ import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { buildOutboundAttachmentUrlPath, publishOutboundAttachment, resolveOutboundAttachment } from "../outbound-attachments.js";
+import { publishOutboundAttachment, resolveOutboundAttachment } from "../outbound-attachments.js";
 
 describe("persistAndRouteAttachments", () => {
   const tempDirs: string[] = [];
@@ -233,7 +233,7 @@ describe("outbound attachments", () => {
     }
   });
 
-  it("publishes an existing file and returns markdown details", () => {
+  it("publishes an existing file and returns attachment metadata", () => {
     const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
     tempDirs.push(home);
     const sourceDir = mkdtempSync(join(tmpdir(), "bridge-source-"));
@@ -253,9 +253,6 @@ describe("outbound attachments", () => {
       attachmentId: "report.csv",
       displayName: "report.csv",
       mimeType: "text/csv",
-      urlPath: buildOutboundAttachmentUrlPath(sessionId, "report.csv"),
-      linkMarkdown: `[Download report.csv](${buildOutboundAttachmentUrlPath(sessionId, "report.csv")})`,
-      recommendedMarkdown: `[Download report.csv](${buildOutboundAttachmentUrlPath(sessionId, "report.csv")})`,
       inline: false,
     });
     expect(readFileSync(join(outgoingDir(home), "report.csv"), "utf-8")).toBe("name,count\nalpha,2\n");
@@ -299,8 +296,8 @@ describe("outbound attachments", () => {
     expect(second).toMatchObject({ ok: true });
     if (!second.ok) return;
     expect(second.value.attachmentId).toBe("summary (1).txt");
-    expect(second.value.urlPath).toBe(buildOutboundAttachmentUrlPath(sessionId, "summary (1).txt"));
-    expect(second.value.linkMarkdown).toBe(`[Download summary (1).txt](${buildOutboundAttachmentUrlPath(sessionId, "summary (1).txt")})`);
+    expect(second.value.displayName).toBe("summary (1).txt");
+    expect(second.value.filePath.endsWith(`${sep}summary (1).txt`)).toBe(true);
     expect(readFileSync(join(outgoingDir(home), "summary (1).txt"), "utf-8")).toBe("second");
   });
 
