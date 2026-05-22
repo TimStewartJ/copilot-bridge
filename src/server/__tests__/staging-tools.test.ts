@@ -532,6 +532,7 @@ describe("staging tools", () => {
     expect(spawnConfig.env.BRIDGE_STAGING_API_BASE_PATH).toBe("/staging/test/api");
     expect(spawnConfig.env.BRIDGE_STAGING_BACKEND_PORT).toBe("0");
     expect(spawnConfig.env.BRIDGE_STAGING_MODEL).toBe("claude-haiku-4.5");
+    expect(spawnConfig.env.BRIDGE_ENV_FILE).toBe(join(stagingDir, ".env"));
     expect(spawnConfig.args.join("\n")).not.toContain("task-store.ts");
   });
 

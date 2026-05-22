@@ -158,6 +158,7 @@ export { createBridgeTools } from "./bridge-tools.js";
 export {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
+  resolveBridgeCopilotCliPath,
 } from "./copilot-client-options.js";
 
 type CopilotClientFactory = (options: CopilotClientOptions | undefined) => CopilotClient;

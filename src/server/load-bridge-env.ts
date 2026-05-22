@@ -1,3 +1,3 @@
 import { loadBridgeEnv } from "./env-loader.js";
 
-loadBridgeEnv();
+loadBridgeEnv(process.env.BRIDGE_ENV_FILE?.trim() || undefined);

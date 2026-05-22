@@ -728,6 +728,7 @@ export function buildStagingBackendSpawnConfig(
   const env = prependNodePath({
     ...process.env,
     ...runtimePaths.env,
+    BRIDGE_ENV_FILE: join(stagingDir, ".env"),
     BRIDGE_STAGING_PREVIEW: "true",
     BRIDGE_STAGING_API_BASE_PATH: apiBasePath,
     BRIDGE_STAGING_BACKEND_PORT: "0",

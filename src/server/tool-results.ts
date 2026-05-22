@@ -1,4 +1,4 @@
-import type { ToolResultObject, ToolTelemetry } from "@github/copilot-sdk";
+import type { ToolResultObject } from "@github/copilot-sdk";
 
 export type ToolFailureResultType = Exclude<ToolResultObject["resultType"], "success">;
 
@@ -46,7 +46,7 @@ function getDisplayText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function normalizeToolTelemetry(toolTelemetry: Record<string, unknown> | undefined): ToolTelemetry | undefined {
+function normalizeToolTelemetry(toolTelemetry: Record<string, unknown> | undefined): ToolResultObject["toolTelemetry"] {
   if (!toolTelemetry) return undefined;
   const fields = Object.fromEntries(
     Object.entries(toolTelemetry).filter(([, value]) => value !== undefined),

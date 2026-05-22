@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
+  resolveBridgeCopilotCliPath,
   SessionManager,
 } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -30,8 +31,11 @@ describe("SessionManager session config", () => {
     tempDirs.push(copilotHome);
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: undefined }, () => {
-      expect(buildCopilotClientOptions()).toBeUndefined();
+      expect(buildCopilotClientOptions()).toEqual({
+        cliPath: resolveBridgeCopilotCliPath(),
+      });
       expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
+        cliPath: resolveBridgeCopilotCliPath(),
         env: { COPILOT_HOME: copilotHome },
       });
     });
@@ -43,6 +47,7 @@ describe("SessionManager session config", () => {
 
     await withTestEnv({ [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: " github_pat_bridge " }, () => {
       expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome })).toEqual({
+        cliPath: resolveBridgeCopilotCliPath(),
         env: { COPILOT_HOME: copilotHome },
         gitHubToken: "github_pat_bridge",
         useLoggedInUser: false,
@@ -59,6 +64,7 @@ describe("SessionManager session config", () => {
         COPILOT_HOME: copilotHome,
         [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
       })).toEqual({
+        cliPath: resolveBridgeCopilotCliPath(),
         env: {
           COPILOT_HOME: copilotHome,
           [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
