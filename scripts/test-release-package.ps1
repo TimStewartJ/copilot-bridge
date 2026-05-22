@@ -26,11 +26,8 @@ function Find-ReleaseRoot($ExpandedPath) {
 }
 
 function Find-AppRoot($ReleaseRoot) {
-  $currentApp = Join-Path $ReleaseRoot "app\current"
-  if (Test-Path (Join-Path $currentApp "dist\launcher.js")) { return $currentApp }
-
-  $flatApp = Join-Path $ReleaseRoot "app"
-  if (Test-Path $flatApp) { return $flatApp }
+  $appRoot = Join-Path $ReleaseRoot "app"
+  if (Test-Path $appRoot) { return $appRoot }
   return $null
 }
 
