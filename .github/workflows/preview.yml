@@ -167,8 +167,11 @@ jobs:
           }
 
           $installerTemplate = Get-Content -Path "scripts/install-preview.ps1" -Raw
-          $installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem) |
-            Set-Content -Path "release/install-preview.ps1" -Encoding UTF8
+          $releaseCommonScript = Get-Content -Path "scripts/release-common.ps1" -Raw
+          $releaseCommonScriptBase64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($releaseCommonScript))
+          $installerText = $installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem)
+          $installerText = $installerText.Replace("__BRIDGE_RELEASE_COMMON_SCRIPT_BASE64__", $releaseCommonScriptBase64)
+          $installerText | Set-Content -Path "release/install-preview.ps1" -Encoding UTF8
 
       - name: Upload preview workflow artifact
         uses: actions/upload-artifact@v4

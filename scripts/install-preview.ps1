@@ -15,26 +15,26 @@ $embeddedManifestPublicKeyPem = @'
 __BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__
 '@
 $embeddedManifestPublicKeyPlaceholder = "__BRIDGE_UPDATE_MANIFEST_" + "PUBLIC_KEY_PEM__"
+$embeddedReleaseCommonScriptBase64 = "__BRIDGE_RELEASE_COMMON_SCRIPT_BASE64__"
+$embeddedReleaseCommonScriptPlaceholder = "__BRIDGE_RELEASE_" + "COMMON_SCRIPT_BASE64__"
+
+$bridgeReleaseCommonScript = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+  Join-Path $PSScriptRoot "release-common.ps1"
+} else {
+  $null
+}
+if ($bridgeReleaseCommonScript -and (Test-Path $bridgeReleaseCommonScript)) {
+  . $bridgeReleaseCommonScript
+} elseif ($embeddedReleaseCommonScriptBase64 -ne $embeddedReleaseCommonScriptPlaceholder) {
+  $embeddedReleaseCommonScript = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($embeddedReleaseCommonScriptBase64.Trim()))
+  . ([scriptblock]::Create($embeddedReleaseCommonScript))
+} else {
+  throw "Shared release helper not found. Download the published install-preview.ps1 asset or run this script from the repository scripts directory."
+}
 
 try {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 } catch {
-}
-
-function Test-AbsolutePath($Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-  $root = [System.IO.Path]::GetPathRoot($Path)
-  if ([string]::IsNullOrWhiteSpace($root)) { return $false }
-  if ($env:OS -eq "Windows_NT") {
-    return ($root -match '^[A-Za-z]:[\\/]$') -or ($root -match '^[\\/]{2}[^\\/]+[\\/]+[^\\/]+[\\/]?$')
-  }
-  return $root -eq "/"
-}
-
-function Assert-AbsolutePath($Name, $Path) {
-  if (-not (Test-AbsolutePath $Path)) {
-    throw "$Name must be an absolute path. Received: $Path"
-  }
 }
 
 function Assert-HttpsUrl($Name, $Value) {
@@ -50,22 +50,6 @@ function Assert-Sha256($Name, $Value) {
     throw "$Name must be a 64-character SHA256 hash."
   }
   return $Value.ToLowerInvariant()
-}
-
-function Get-StoredStateRoot($Path) {
-  if (-not (Test-Path $Path)) { return $null }
-  $value = (Get-Content $Path -Raw).Trim()
-  if ([string]::IsNullOrWhiteSpace($value)) { return $null }
-  return $value
-}
-
-function Assert-StateRootDoesNotSwitch($StoredStateRoot, $InputStateRoot, $StateRootFile) {
-  if ([string]::IsNullOrWhiteSpace($StoredStateRoot) -or [string]::IsNullOrWhiteSpace($InputStateRoot)) { return }
-  $storedFullPath = [System.IO.Path]::GetFullPath($StoredStateRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  $inputFullPath = [System.IO.Path]::GetFullPath($InputStateRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  if (-not [string]::Equals($storedFullPath, $inputFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to switch release state root from '$StoredStateRoot' to '$InputStateRoot'. Remove or update $StateRootFile intentionally before changing the active state root."
-  }
 }
 
 function Remove-PathWithRetry($Path, [int]$TimeoutSeconds = 30) {
@@ -244,8 +228,8 @@ if ([string]::IsNullOrWhiteSpace($SignatureUrl)) {
 $SignatureUrl = Assert-HttpsUrl "SignatureUrl" $SignatureUrl
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $StateRoot = [System.IO.Path]::GetFullPath($StateRoot)
-Assert-AbsolutePath "InstallRoot" $InstallRoot
-Assert-AbsolutePath "StateRoot" $StateRoot
+Assert-AbsolutePath "InstallRoot" $InstallRoot ""
+Assert-AbsolutePath "StateRoot" $StateRoot ""
 
 $nodePath = Resolve-NodePath
 if (-not [string]::IsNullOrWhiteSpace($ManifestPublicKeyPem)) {

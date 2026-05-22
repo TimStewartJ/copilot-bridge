@@ -3,23 +3,61 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("release scripts", () => {
+  const commonHelperFunctions = [
+    "Test-AbsolutePath",
+    "Assert-AbsolutePath",
+    "Normalize-FullPath",
+    "Test-SameOrChildPath",
+    "Get-StoredStateRoot",
+    "Get-ConfiguredStateRoot",
+    "Assert-StateRootDoesNotSwitch",
+    "Remove-OldBridgeLogArchives",
+    "Move-ExistingBridgeLog",
+  ];
+
+  function readScript(scriptName: string) {
+    return readFileSync(join(process.cwd(), "scripts", scriptName), "utf-8");
+  }
+
+  function expectReleaseCommonDotSource(script: string) {
+    expect(script).toContain('$bridgeReleaseCommonScript = Join-Path $PSScriptRoot "release-common.ps1"');
+    expect(script).toContain(". $bridgeReleaseCommonScript");
+  }
+
+  function expectNoLocalCommonHelperDefinitions(script: string) {
+    const localDefinitions = commonHelperFunctions.filter((name) =>
+      new RegExp(`function\\s+${name}\\b`).test(script),
+    );
+    expect(localDefinitions).toEqual([]);
+  }
+
   function expectBridgeLogRotationBeforeRedirect(script: string, stdoutRoot: string, stderrRoot: string) {
-    expect(script).toContain("function Remove-OldBridgeLogArchives($Path, $MaxArchives)");
-    expect(script).toContain("function Move-ExistingBridgeLog($Path, $MaxArchives)");
+    const commonScript = readScript("release-common.ps1");
+
+    expectReleaseCommonDotSource(script);
+    expectNoLocalCommonHelperDefinitions(script);
+    expect(commonScript).toContain("function Remove-OldBridgeLogArchives($Path, $MaxArchives)");
+    expect(commonScript).toContain("function Move-ExistingBridgeLog($Path, $MaxArchives)");
     expect(script).toContain(`$bridgeStdoutLog = Join-Path $${stdoutRoot} "bridge.log"`);
     expect(script).toContain(`$bridgeStderrLog = Join-Path $${stderrRoot} "bridge-error.log"`);
     expect(script).toContain("$bridgeLogArchiveRetention = 20");
-    expect(script).toContain("Test-Path -LiteralPath $logDirectory -PathType Container");
-    expect(script).toContain("Where-Object { $_.Name -match $archivePattern }");
-    expect(script).toContain("Select-Object -Skip $MaxArchives");
-    expect(script).toContain("Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop");
-    expect(script).toContain("Remove-OldBridgeLogArchives $Path $MaxArchives");
-    expect(script).toContain("Remove-Item -LiteralPath $archive.FullName -Force -ErrorAction Stop");
-    expect(script).toContain('Write-Warning "Could not remove old Bridge log archive $($archive.FullName): $($_.Exception.Message)"');
-    expect(script).toContain('throw "Could not rotate existing Bridge log $Path to $archivePath after $attempt attempts: $($_.Exception.Message)"');
+    expect(commonScript).toContain("Test-Path -LiteralPath $logDirectory -PathType Container");
+    expect(commonScript).toContain("Where-Object { $_.Name -match $archivePattern }");
+    expect(commonScript).toContain("Select-Object -Skip $MaxArchives");
+    expect(commonScript).toContain("Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop");
+    expect(commonScript).toContain("Remove-OldBridgeLogArchives $Path $MaxArchives");
+    expect(commonScript).toContain("Remove-Item -LiteralPath $archive.FullName -Force -ErrorAction Stop");
+    expect(commonScript).toContain(
+      'Write-Warning "Could not remove old Bridge log archive $($archive.FullName): $($_.Exception.Message)"',
+    );
+    expect(commonScript).toContain(
+      'throw "Could not rotate existing Bridge log $Path to $archivePath after $attempt attempts: $($_.Exception.Message)"',
+    );
 
-    const moveExistingLog = script.indexOf("Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop");
-    const pruneArchives = script.indexOf("Remove-OldBridgeLogArchives $Path $MaxArchives");
+    const moveExistingLog = commonScript.indexOf(
+      "Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop",
+    );
+    const pruneArchives = commonScript.indexOf("Remove-OldBridgeLogArchives $Path $MaxArchives");
     const stdoutRotation = script.indexOf("Move-ExistingBridgeLog $bridgeStdoutLog $bridgeLogArchiveRetention");
     const stderrRotation = script.indexOf("Move-ExistingBridgeLog $bridgeStderrLog $bridgeLogArchiveRetention");
     const stdoutRedirect = script.indexOf("-RedirectStandardOutput $bridgeStdoutLog");
@@ -32,9 +70,35 @@ describe("release scripts", () => {
     expect(stderrRedirect).toBeGreaterThan(stderrRotation);
   }
 
-  it("stages release updates as inactive slots and queues launcher activation", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "update-release.ps1"), "utf-8");
+  it("keeps release wrapper helper logic in the shared common script", () => {
+    const commonScript = readScript("release-common.ps1");
+    const wrappers = [
+      "start-release.ps1",
+      "stop-release.ps1",
+      "update-release.ps1",
+      "install-preview.ps1",
+      "install-startup-task.ps1",
+      "start-bridge.ps1",
+    ];
 
+    for (const functionName of commonHelperFunctions) {
+      expect(commonScript).toContain(`function ${functionName}`);
+    }
+    expect(commonScript).not.toContain("Import-BridgeEnvFile");
+    expect(commonScript).not.toContain("$ErrorActionPreference");
+    expect(commonScript).not.toMatch(/^\s*param\s*\(/m);
+
+    for (const wrapperName of wrappers) {
+      const script = readScript(wrapperName);
+      expectNoLocalCommonHelperDefinitions(script);
+      expect(script).toContain("release-common.ps1");
+    }
+  });
+
+  it("stages release updates as inactive slots and queues launcher activation", () => {
+    const script = readScript("update-release.ps1");
+
+    expectReleaseCommonDotSource(script);
     expect(script).toContain('$releaseSlotsDir = Join-Path $effectiveDataDir "release-slots"');
     expect(script).toContain('Write-JsonFile (Join-Path $tempSlotRoot "release-slot.json") $releaseSlotManifest');
     expect(script).toContain('$restartSignalPath = Join-Path $effectiveDataDir "restart.signal"');
@@ -44,6 +108,8 @@ describe("release scripts", () => {
     expect(script).toContain("Copy-ReleaseWrappers $BackupRoot $DestinationRoot");
     expect(script).toContain('$wrapperBackupRoot = Join-Path (Join-Path (Join-Path $stateRoot "backups") "update-$timestamp") "wrappers"');
     expect(script).toContain("Copy-ReleaseWrappersWithBackup $newReleaseRoot $installRoot $wrapperBackupRoot");
+    expect(script).toContain('"release-common.ps1"');
+    expect(script.indexOf('"release-common.ps1"')).toBeLessThan(script.indexOf('"start.ps1"'));
     expect(script).toContain("function Remove-PathWithRetry");
     expect(script).toContain("Timed out waiting to remove $Path");
     expect(script).toContain("New-Item -ItemType Directory -Path $tempDir -Force");
@@ -70,7 +136,7 @@ describe("release scripts", () => {
   });
 
   it("uses fast Windows archive and copy tools with PowerShell fallbacks", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "update-release.ps1"), "utf-8");
+    const script = readScript("update-release.ps1");
 
     expect(script).toContain('Get-Command "tar.exe"');
     expect(script).toContain("Expand-Archive -Path $PackagePath");
@@ -102,8 +168,9 @@ describe("release scripts", () => {
   });
 
   it("forces packaged starts to release mode instead of inheriting dev mode", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
+    const script = readScript("start-release.ps1");
 
+    expectReleaseCommonDotSource(script);
     expect(script).toContain('Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"');
     expect(script).toContain('Set-Item -Path "Env:BRIDGE_RELEASE_ROOT" -Value $installRoot');
     expect(script).toContain("Get-ActiveReleaseAppRoot $effectiveDataDir");
@@ -139,7 +206,7 @@ describe("release scripts", () => {
   });
 
   it("rotates release stdout and stderr logs before redirecting to active log paths", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
+    const script = readScript("start-release.ps1");
 
     expectBridgeLogRotationBeforeRedirect(script, "logsDir", "logsDir");
     expect(script).not.toMatch(/-RedirectStandardOutput\s+\(Join-Path\s+\$logsDir\s+"bridge\.log"\)/);
@@ -147,7 +214,7 @@ describe("release scripts", () => {
   });
 
   it("rotates local stdout and stderr logs before redirecting to active log paths", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "start-bridge.ps1"), "utf-8");
+    const script = readScript("start-bridge.ps1");
 
     expectBridgeLogRotationBeforeRedirect(script, "dataDir", "dataDir");
     expect(script).not.toMatch(/-RedirectStandardOutput\s+"\$dataDir\\bridge\.log"/);
@@ -155,8 +222,9 @@ describe("release scripts", () => {
   });
 
   it("does not stop the active updater when stopping release processes", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "stop-release.ps1"), "utf-8");
+    const script = readScript("stop-release.ps1");
 
+    expectReleaseCommonDotSource(script);
     expect(script).toContain("$updaterProcessPattern");
     expect(script).toContain("function Test-ReleaseUpdaterProcess");
     expect(script).toContain("function Add-ProcessTree($Process, [bool]$RequireReleaseInstallProcess = $true)");
@@ -171,22 +239,39 @@ describe("release scripts", () => {
   });
 
   it("bootstraps preview installs from a signed manifest and verified package", () => {
-    const script = readFileSync(join(process.cwd(), "scripts", "install-preview.ps1"), "utf-8");
+    const script = readScript("install-preview.ps1");
 
     expect(script).toContain("latest-preview/preview-win-x64.manifest.json");
     expect(script).toContain("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__");
-    expect(script).toContain("createPublicKey");
-    expect(script).toContain("verify(null, manifest, publicKey, signature)");
+    expect(script).toContain("__BRIDGE_RELEASE_COMMON_SCRIPT_BASE64__");
     expect(script).toContain('$embeddedManifestPublicKeyPlaceholder = "__BRIDGE_UPDATE_MANIFEST_" + "PUBLIC_KEY_PEM__"');
+    expect(script).toContain(
+      '$embeddedReleaseCommonScriptPlaceholder = "__BRIDGE_RELEASE_" + "COMMON_SCRIPT_BASE64__"',
+    );
+    expect(script).toContain(". $bridgeReleaseCommonScript");
+    expect(script).toContain(". ([scriptblock]::Create($embeddedReleaseCommonScript))");
     expect(script).toContain("$embedded = $embeddedManifestPublicKeyPem.Trim()");
     expect(script).toContain("Downloaded package SHA256 mismatch");
     expect(script).toContain('Resolve-CommandPath "tar.exe"');
     expect(script).toContain("Expand-Archive -Path $PackagePath");
     expect(script).toContain('Join-Path $env:LOCALAPPDATA "Programs\\CopilotBridge"');
     expect(script).toContain('Join-Path $env:LOCALAPPDATA "CopilotBridge"');
+    expect(script).toContain('Assert-AbsolutePath "InstallRoot" $InstallRoot ""');
     expect(script).toContain("Set-Content -Path (Join-Path $InstallRoot \".bridge-state-root\")");
     expect(script).toContain("& (Join-Path $InstallRoot \"stop.ps1\")");
     expect(script).toContain("& (Join-Path $InstallRoot \"start.ps1\")");
+  });
+
+  it("packages and analyzes the shared release helper", () => {
+    const packageScript = readScript("package-release.ps1");
+    const analyzeScript = readScript("analyze-release-package.ps1");
+    const smokeScript = readScript("test-release-package.ps1");
+
+    expect(packageScript).toContain('Copy-Item -Path (Join-Path $repoRoot "scripts\\release-common.ps1")');
+    expect(packageScript).toContain("packageLayoutVersion = 3");
+    expect(analyzeScript).toContain('$commonScriptPath = Join-Path $releaseRoot "release-common.ps1"');
+    expect(analyzeScript).toContain("commonScript = if ($requiresCommonScript) { Test-Path $commonScriptPath } else { $true }");
+    expect(smokeScript).toContain('Assert-PathExists "release-common.ps1"');
   });
 
   it("publishes latest-preview installer and package alias assets", () => {
@@ -195,7 +280,8 @@ describe("release scripts", () => {
     expect(workflow).toContain("Prepare latest preview aliases");
     expect(workflow).toContain("release/copilot-bridge-${{ env.PREVIEW_CHANNEL }}-${{ env.PREVIEW_PLATFORM }}.zip");
     expect(workflow).toContain("release/install-preview.ps1");
-    expect(workflow).toContain('$installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem)');
+    expect(workflow).toContain('$installerText = $installerTemplate.Replace("__BRIDGE_UPDATE_MANIFEST_PUBLIC_KEY_PEM__", $publicKeyPem)');
+    expect(workflow).toContain('$installerText = $installerText.Replace("__BRIDGE_RELEASE_COMMON_SCRIPT_BASE64__", $releaseCommonScriptBase64)');
     expect(workflow).toContain("function Test-ReleaseAsset");
     expect(workflow).toContain("function Upload-ReleaseAsset");
 
@@ -223,11 +309,11 @@ describe("release scripts", () => {
 
   it("runs release-mode install/update E2E in a dedicated workflow", () => {
     const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "release-mode-e2e.yml"), "utf-8");
-    const script = readFileSync(join(process.cwd(), "scripts", "test-release-mode-e2e.ps1"), "utf-8");
+    const script = readScript("test-release-mode-e2e.ps1");
 
     expect(workflow).toContain("name: Release Mode E2E");
     expect(workflow).toContain(".\\scripts\\test-release-mode-e2e.ps1");
-    expect(workflow).toContain("-EvidenceDir \"release/release-mode-e2e\"");
+    expect(workflow).toContain('-EvidenceDir "release/release-mode-e2e"');
     expect(workflow).toContain("Upload release-mode E2E evidence");
     expect(workflow).toContain("if: always()");
     expect(workflow).toContain("release/release-mode-e2e/**");
@@ -245,6 +331,8 @@ describe("release scripts", () => {
     expect(script).toContain('Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"');
     expect(script).toContain("Get-IsolatedProcesses $testRoot");
     expect(script).toContain("Stop-Process -Id $processId");
+    expect(script).toContain("Installer still contains the release common helper placeholder.");
+    expect(script).toContain('Assert-PathExists "release common helper"');
     expect(script).not.toContain("stop-release.ps1");
     expect(script).not.toContain("stop.ps1");
     expect(script).not.toContain("release-slots[\\\\/]");
