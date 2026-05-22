@@ -69,6 +69,33 @@ describe("release scripts", () => {
     expect(script).not.toContain('Set-DefaultEnv "BRIDGE_DISTRIBUTION_MODE" "release"');
   });
 
+  it("does not fall back to the obsolete app/current release layout", () => {
+    const startScript = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
+    const analyzeScript = readFileSync(join(process.cwd(), "scripts", "analyze-release-package.ps1"), "utf-8");
+    const testPackageScript = readFileSync(join(process.cwd(), "scripts", "test-release-package.ps1"), "utf-8");
+
+    for (const script of [startScript, analyzeScript, testPackageScript]) {
+      expect(script).not.toMatch(/app[\\/]current/i);
+      expect(script).not.toMatch(/\$currentApp\b/);
+    }
+
+    const packagedAppRoot = startScript.indexOf('$appRoot = Join-Path $installRoot "app"');
+    const activeReleaseRoot = startScript.indexOf("$activeReleaseRoot = Get-ActiveReleaseAppRoot $effectiveDataDir");
+    const activeReleaseAssignment = startScript.indexOf("$appRoot = $activeReleaseRoot");
+    const launcherCheck = startScript.indexOf('if (-not (Test-Path (Join-Path $appRoot "dist\\launcher.js"))) {');
+
+    expect(packagedAppRoot).toBeGreaterThanOrEqual(0);
+    expect(activeReleaseRoot).toBeGreaterThan(packagedAppRoot);
+    expect(activeReleaseAssignment).toBeGreaterThan(activeReleaseRoot);
+    expect(launcherCheck).toBeGreaterThan(activeReleaseAssignment);
+    expect(analyzeScript).toContain('$appRoot = Join-Path $ReleaseRoot "app"');
+    expect(analyzeScript).toContain("appRoot = $null -ne $appRoot -and (Test-Path $appRoot)");
+    expect(analyzeScript).toContain('launcher = $null -ne $appRoot -and (Test-Path (Join-Path $appRoot "dist\\launcher.js"))');
+    expect(testPackageScript).toContain('$appRoot = Join-Path $ReleaseRoot "app"');
+    expect(testPackageScript).toContain('throw "Release app root not found under $releaseRoot"');
+    expect(testPackageScript).toContain('Assert-PathExists "packaged launcher" (Join-Path $appRoot "dist\\launcher.js")');
+  });
+
   it("rotates release stdout and stderr logs before redirecting to active log paths", () => {
     const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
 
