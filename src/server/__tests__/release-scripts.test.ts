@@ -80,6 +80,27 @@ describe("release scripts", () => {
     expect(script).toContain("$global:LASTEXITCODE = 0");
   });
 
+  it("keeps source scripts out of packaged app layout while preserving release wrappers", () => {
+    const packageScript = readFileSync(join(process.cwd(), "scripts", "package-release.ps1"), "utf-8");
+    const smokeScript = readFileSync(join(process.cwd(), "scripts", "test-release-package.ps1"), "utf-8");
+    const analysisScript = readFileSync(join(process.cwd(), "scripts", "analyze-release-package.ps1"), "utf-8");
+
+    expect(packageScript).not.toContain('Destination (Join-Path $appDir "scripts")');
+    expect(packageScript).toContain('Destination (Join-Path $releaseRoot "start.ps1")');
+    expect(packageScript).toContain('Destination (Join-Path $releaseRoot "stop.ps1")');
+    expect(packageScript).toContain('Destination (Join-Path $releaseRoot "update.ps1")');
+    expect(packageScript).toContain('Destination (Join-Path $releaseRoot "install-startup-task.ps1")');
+    expect(packageScript).toContain('Destination (Join-Path $releaseRoot "uninstall-startup-task.ps1")');
+
+    expect(smokeScript).toContain('Assert-PathAbsent "app scripts directory"');
+    expect(smokeScript).toContain('Assert-PathExists "install-startup-task.ps1"');
+    expect(smokeScript).toContain('Assert-PathExists "uninstall-startup-task.ps1"');
+    expect(analysisScript).toContain("Get-AppScriptsFindings");
+    expect(analysisScript).toContain("unexpectedRuntimeFiles");
+    expect(analysisScript).toContain("installStartupTaskScript");
+    expect(analysisScript).toContain("uninstallStartupTaskScript");
+  });
+
   it("forces packaged starts to release mode instead of inheriting dev mode", () => {
     const script = readFileSync(join(process.cwd(), "scripts", "start-release.ps1"), "utf-8");
 

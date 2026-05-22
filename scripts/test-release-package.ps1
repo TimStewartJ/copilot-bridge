@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 function Get-FreeTcpPort {
   $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -31,10 +32,60 @@ function Find-AppRoot($ReleaseRoot) {
   return $null
 }
 
+function Expand-WithArchiveTool($ArchivePath, $DestinationPath) {
+  $tarCommand = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+  if ($tarCommand) {
+    & $tarCommand.Source -xf $ArchivePath -C $DestinationPath
+    if ($LASTEXITCODE -eq 0) {
+      $global:LASTEXITCODE = 0
+      return $true
+    }
+    $global:LASTEXITCODE = 0
+  }
+
+  $unzipCommand = Get-Command "unzip" -ErrorAction SilentlyContinue
+  if ($unzipCommand) {
+    & $unzipCommand.Source -q $ArchivePath -d $DestinationPath
+    if ($LASTEXITCODE -eq 0) {
+      $global:LASTEXITCODE = 0
+      return $true
+    }
+    $global:LASTEXITCODE = 0
+  }
+
+  return $false
+}
+
+function Expand-BridgePackage($ArchivePath, $DestinationPath) {
+  if (Test-Path $DestinationPath) {
+    Remove-Item -Path $DestinationPath -Recurse -Force
+  }
+  New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+
+  if (Expand-WithArchiveTool $ArchivePath $DestinationPath) {
+    return
+  }
+
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path $ArchivePath).Path, (Resolve-Path $DestinationPath).Path, $true)
+}
+
 function Assert-PathExists($Name, $Path) {
   if (-not (Test-Path $Path)) {
     throw "$Name not found at $Path"
   }
+}
+
+function Assert-PathAbsent($Name, $Path) {
+  if (-not (Test-Path $Path)) {
+    return
+  }
+
+  $entries = @(Get-ChildItem -Path $Path -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object {
+    $_.FullName
+  })
+  $detail = if ($entries.Count -gt 0) { " Found: $($entries -join ', ')" } else { "" }
+  throw "$Name should not be included at $Path.$detail"
 }
 
 function Wait-Health($HealthUrl, $TimeoutSeconds) {
@@ -75,17 +126,20 @@ $envNames = @(
 )
 
 try {
-  New-Item -ItemType Directory -Path $expandedDir -Force | Out-Null
-  Expand-Archive -Path $resolvedPackagePath -DestinationPath $expandedDir -Force
+  Expand-BridgePackage $resolvedPackagePath $expandedDir
 
   $releaseRoot = Find-ReleaseRoot $expandedDir
   $appRoot = Find-AppRoot $releaseRoot
   Assert-PathExists "start.ps1" (Join-Path $releaseRoot "start.ps1")
   Assert-PathExists "stop.ps1" (Join-Path $releaseRoot "stop.ps1")
+  Assert-PathExists "update.ps1" (Join-Path $releaseRoot "update.ps1")
+  Assert-PathExists "install-startup-task.ps1" (Join-Path $releaseRoot "install-startup-task.ps1")
+  Assert-PathExists "uninstall-startup-task.ps1" (Join-Path $releaseRoot "uninstall-startup-task.ps1")
   if (-not $appRoot) {
     throw "Release app root not found under $releaseRoot"
   }
   Assert-PathExists "packaged launcher" (Join-Path $appRoot "dist\launcher.js")
+  Assert-PathAbsent "app scripts directory" (Join-Path $appRoot "scripts")
 
   $nodeModulesRoot = Join-Path $appRoot "node_modules"
   if (Test-Path $nodeModulesRoot) {
