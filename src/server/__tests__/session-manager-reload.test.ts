@@ -257,21 +257,21 @@ describe("SessionManager getSessionMessages resume", () => {
     const manager = createManager();
     const resumedSession = {
       setModel: vi.fn(),
-      getMessages: vi.fn().mockResolvedValue([]),
+      getEvents: vi.fn().mockResolvedValue([]),
     };
     manager.client = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
 
     await manager.getSessionMessages("session-msg-1");
 
     expect(resumedSession.setModel).not.toHaveBeenCalled();
-    expect(resumedSession.getMessages).toHaveBeenCalledOnce();
+    expect(resumedSession.getEvents).toHaveBeenCalledOnce();
   });
 
   it("treats cold message resume as busy until messages are loaded", async () => {
     const manager = createManager();
     const resumedSession = {
       setModel: vi.fn(),
-      getMessages: vi.fn().mockResolvedValue([]),
+      getEvents: vi.fn().mockResolvedValue([]),
     };
     let resolveResume!: (session: typeof resumedSession) => void;
     manager.client = {
@@ -299,11 +299,11 @@ describe("SessionManager getSessionMessages resume", () => {
     const manager = createManager();
     const firstSession = {
       disconnect: vi.fn(),
-      getMessages: vi.fn().mockResolvedValue([]),
+      getEvents: vi.fn().mockResolvedValue([]),
     };
     const secondSession = {
       disconnect: vi.fn(),
-      getMessages: vi.fn().mockResolvedValue([]),
+      getEvents: vi.fn().mockResolvedValue([]),
     };
     type ResumedSession = typeof firstSession;
     const resumeResolvers: Array<(session: ResumedSession) => void> = [];
@@ -343,11 +343,11 @@ describe("SessionManager getSessionMessages resume", () => {
     const manager = createManager();
     const resumedSession = {
       disconnect: vi.fn(),
-      getMessages: vi.fn().mockResolvedValue([{ type: "assistant.message", data: { content: "stale" } }]),
+      getEvents: vi.fn().mockResolvedValue([{ type: "assistant.message", data: { content: "stale" } }]),
     };
     let resolveResume!: (session: typeof resumedSession) => void;
     const newerSession = {
-      getMessages: vi.fn().mockResolvedValue([]),
+      getEvents: vi.fn().mockResolvedValue([]),
     };
     manager.client = {
       resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
@@ -363,19 +363,19 @@ describe("SessionManager getSessionMessages resume", () => {
 
     expect(manager.sessionObjects.get("session-msg-superseded")).toBe(newerSession);
     expect(resumedSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(resumedSession.getMessages).not.toHaveBeenCalled();
-    expect(newerSession.getMessages).toHaveBeenCalledOnce();
+    expect(resumedSession.getEvents).not.toHaveBeenCalled();
+    expect(newerSession.getEvents).toHaveBeenCalledOnce();
   });
 
   it("does not call setModel when re-resuming after stale cache failure", async () => {
     const manager = createManager();
     const staleSession = {
       setModel: vi.fn(),
-      getMessages: vi.fn().mockRejectedValue(new Error("RPC disconnected")),
+      getEvents: vi.fn().mockRejectedValue(new Error("RPC disconnected")),
     };
     const freshSession = {
       setModel: vi.fn(),
-      getMessages: vi.fn().mockResolvedValue([]),
+      getEvents: vi.fn().mockResolvedValue([]),
     };
     manager.sessionObjects.set("session-msg-2", staleSession);
     manager.client = { resumeSession: vi.fn().mockResolvedValue(freshSession) };
@@ -384,6 +384,6 @@ describe("SessionManager getSessionMessages resume", () => {
 
     expect(staleSession.setModel).not.toHaveBeenCalled();
     expect(freshSession.setModel).not.toHaveBeenCalled();
-    expect(freshSession.getMessages).toHaveBeenCalledOnce();
+    expect(freshSession.getEvents).toHaveBeenCalledOnce();
   });
 });

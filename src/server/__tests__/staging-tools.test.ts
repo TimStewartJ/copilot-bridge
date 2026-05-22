@@ -1148,11 +1148,13 @@ describe("staging tools", () => {
       resultType: "failure",
       sessionLog: expect.stringContaining("Command: npm run check:pr"),
       toolTelemetry: {
-        command: "npm run check:pr",
-        cwd: stagingDir,
-        stagingDir,
-        prodBranch: "main",
-        validationLogPath: expect.stringContaining("validation-logs"),
+        bridge: {
+          command: "npm run check:pr",
+          cwd: stagingDir,
+          stagingDir,
+          prodBranch: "main",
+          validationLogPath: expect.stringContaining("validation-logs"),
+        },
       },
     });
     expect(result.textResultForLlm).toContain("Staging deploy validation failed.");
@@ -1215,12 +1217,14 @@ describe("staging tools", () => {
       resultType: "failure",
       sessionLog: expect.stringContaining("Command: git push origin main"),
       toolTelemetry: {
-        command: "git push origin main",
-        stagingDir,
-        prodBranch: "main",
-        commitSha: "2222222",
-        revertedTo: "1111111111111111111111111111111111111111",
-        validationLogPath: expect.stringContaining("validation-logs"),
+        bridge: {
+          command: "git push origin main",
+          stagingDir,
+          prodBranch: "main",
+          commitSha: "2222222",
+          revertedTo: "1111111111111111111111111111111111111111",
+          validationLogPath: expect.stringContaining("validation-logs"),
+        },
       },
     });
     expect(result.textResultForLlm).toContain("Push to origin failed; production merge reverted and restart blocked.");
@@ -1471,8 +1475,10 @@ describe("staging tools", () => {
       resultType: "failure",
       sessionLog: expect.stringContaining("Command: git branch"),
       toolTelemetry: {
-        command: expect.stringContaining('git branch "staging/'),
-        cwd: expect.any(String),
+        bridge: {
+          command: expect.stringContaining('git branch "staging/'),
+          cwd: expect.any(String),
+        },
       },
     });
     expect(result.textResultForLlm).toContain("Failed to create staging branch.");
@@ -1507,9 +1513,11 @@ describe("staging tools", () => {
       resultType: "failure",
       sessionLog: expect.stringContaining("Command: npm run check:pr"),
       toolTelemetry: {
-        command: "npm run check:pr",
-        cwd: stagingDir,
-        stagingDir,
+        bridge: {
+          command: "npm run check:pr",
+          cwd: stagingDir,
+          stagingDir,
+        },
       },
     });
     expect(result.textResultForLlm).toContain("Staging preview validation failed.");
@@ -1550,13 +1558,15 @@ describe("staging tools", () => {
     expect(result).toMatchObject({
       resultType: "failure",
       toolTelemetry: {
-        command: "npm run check:pr",
-        cwd: stagingDir,
-        stagingDir,
-        validationLogWriteError: "disk full",
+        bridge: {
+          command: "npm run check:pr",
+          cwd: stagingDir,
+          stagingDir,
+          validationLogWriteError: "disk full",
+        },
       },
     });
-    expect(result.toolTelemetry).not.toHaveProperty("validationLogPath");
+    expect(result.toolTelemetry.bridge).not.toHaveProperty("validationLogPath");
     expect(result.textResultForLlm).toContain("Unable to write full command output: disk full");
   });
 
@@ -1585,9 +1595,11 @@ describe("staging tools", () => {
     expect(result).toMatchObject({
       resultType: "failure",
       toolTelemetry: {
-        command: "npm run check:pr",
-        cwd: stagingDir,
-        stagingDir,
+        bridge: {
+          command: "npm run check:pr",
+          cwd: stagingDir,
+          stagingDir,
+        },
       },
     });
     expect(result.textResultForLlm).toContain("kept-tail-marker");
@@ -1622,9 +1634,11 @@ describe("staging tools", () => {
       resultType: "failure",
       sessionLog: expect.stringContaining("Command: npm install --no-audit --no-fund --include=dev"),
       toolTelemetry: {
-        command: "npm install --no-audit --no-fund --include=dev",
-        cwd: stagingDir,
-        stagingDir,
+        bridge: {
+          command: "npm install --no-audit --no-fund --include=dev",
+          cwd: stagingDir,
+          stagingDir,
+        },
       },
     });
     expect(result.textResultForLlm).toContain("Staging dependency install failed.");
@@ -1777,10 +1791,12 @@ describe("staging tools", () => {
       resultType: "failure",
       sessionLog: expect.stringContaining("Command: git rebase main"),
       toolTelemetry: {
-        command: "git rebase main",
-        cwd: stagingDir,
-        stagingDir,
-        prodBranch: "main",
+        bridge: {
+          command: "git rebase main",
+          cwd: stagingDir,
+          stagingDir,
+          prodBranch: "main",
+        },
       },
     });
     expect(result.textResultForLlm).toContain("Staging branch conflicts with production.");

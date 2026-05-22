@@ -19,6 +19,7 @@ import {
   refreshRestartStateSync,
 } from "./restart-controller.js";
 import type { SetSessionNameOptions } from "./session-name-rpc.js";
+import { readSdkSessionEvents } from "./sdk-session-events.js";
 
 const SESSION_NAME_GENERATION_RETRY_MS = 60 * 60 * 1000;
 const TITLE_HELPER_TIMEOUT_MS = 30_000;
@@ -126,9 +127,9 @@ export class SessionNameAutogenerator {
     let historyMessageCount: number | undefined;
     let historyReadFailed = false;
     if (options.session) {
-      if (typeof options.session.getMessages === "function") {
+      if (typeof options.session.getEvents === "function") {
         try {
-          const events = await options.session.getMessages();
+          const events = await readSdkSessionEvents(options.session);
           const historyMessages = collectRecentUserMessages(events);
           historyMessageCount = historyMessages.length;
           userMessages = mergeRecentUserMessages(historyMessages, providedUserMessages);
@@ -140,7 +141,7 @@ export class SessionNameAutogenerator {
       } else if (userMessages.length === 0) {
         this.recordSpan("session.name.autogen", start, sessionId, {
           result: "skipped_no_messages",
-          reason: "getMessages_unavailable",
+          reason: "session_events_unavailable",
         });
         return;
       }

@@ -1,4 +1,4 @@
-import type { ToolResultObject } from "@github/copilot-sdk";
+import type { ToolResultObject, ToolTelemetry } from "@github/copilot-sdk";
 
 export type ToolFailureResultType = Exclude<ToolResultObject["resultType"], "success">;
 
@@ -44,6 +44,14 @@ function mergeFailureText(summary: string | undefined, detail: string | undefine
 
 function getDisplayText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function normalizeToolTelemetry(toolTelemetry: Record<string, unknown> | undefined): ToolTelemetry | undefined {
+  if (!toolTelemetry) return undefined;
+  const fields = Object.fromEntries(
+    Object.entries(toolTelemetry).filter(([, value]) => value !== undefined),
+  );
+  return Object.keys(fields).length > 0 ? { bridge: fields } : undefined;
 }
 
 export function joinFailureSections(...sections: Array<string | undefined>): string | undefined {
@@ -97,13 +105,14 @@ export function toolFailure(summary: string, options: ToolFailureOptions = {}): 
   const textResultForLlm = mergeFailureText(summary, detail) ?? "Tool failed.";
   const sessionLog = normalizeText(options.sessionLog);
   const error = !detail && !sessionLog ? textResultForLlm : undefined;
+  const toolTelemetry = normalizeToolTelemetry(options.toolTelemetry);
 
   return {
     textResultForLlm,
     resultType: options.resultType ?? "failure",
     ...(error ? { error } : {}),
     ...(sessionLog ? { sessionLog } : {}),
-    ...(options.toolTelemetry ? { toolTelemetry: options.toolTelemetry } : {}),
+    ...(toolTelemetry ? { toolTelemetry } : {}),
   };
 }
 

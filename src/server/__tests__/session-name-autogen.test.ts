@@ -66,7 +66,7 @@ describe("session name autogenerator", () => {
     const rpcNameGet = vi.fn(async () => ({ name: "Please investigate a tricky production bug" }));
     const session = {
       rpc: { name: { get: rpcNameGet } },
-      getMessages: vi.fn(async () => [
+      getEvents: vi.fn(async () => [
         { type: "user.message", data: { content: "Please investigate a tricky production bug" } },
       ]),
     };
@@ -84,7 +84,7 @@ describe("session name autogenerator", () => {
   it("uses session history when a delayed live trigger includes only a follow-up", async () => {
     const { generator, generateSessionName } = createHarness(undefined);
     const session = {
-      getMessages: vi.fn(async () => [
+      getEvents: vi.fn(async () => [
         { type: "user.message", data: { content: "Investigate why deployment restarts wedge the bridge" } },
         { type: "assistant.message", data: { content: "I found the restart issue." } },
         { type: "user.message", data: { content: "Can you show the exact diff?" } },
@@ -106,7 +106,7 @@ describe("session name autogenerator", () => {
     const { generator, setSessionName, generateSessionName } = createHarness(undefined);
     const session = {
       rpc: { name: { get: vi.fn(async () => ({ name: "Manual live title" })) } },
-      getMessages: vi.fn(async () => [
+      getEvents: vi.fn(async () => [
         { type: "user.message", data: { content: "Please fix this complicated issue" } },
       ]),
     };
@@ -114,7 +114,7 @@ describe("session name autogenerator", () => {
     await (generator as any).generateAndSetMissingSessionName("session-1", { session });
 
     expect(session.rpc.name.get).toHaveBeenCalled();
-    expect(session.getMessages).not.toHaveBeenCalled();
+    expect(session.getEvents).not.toHaveBeenCalled();
     expect(generateSessionName).not.toHaveBeenCalled();
     expect(setSessionName).not.toHaveBeenCalled();
   });
@@ -185,7 +185,7 @@ describe("session name autogenerator", () => {
       "session.name.autogen",
       expect.any(Number),
       "session-1",
-      { result: "skipped_no_messages", reason: "getMessages_unavailable" },
+      { result: "skipped_no_messages", reason: "session_events_unavailable" },
     );
   });
 
