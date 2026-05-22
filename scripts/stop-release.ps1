@@ -4,6 +4,12 @@ $ErrorActionPreference = "Stop"
 
 $installRoot = (Resolve-Path $PSScriptRoot).Path
 
+$bridgeReleaseCommonScript = Join-Path $PSScriptRoot "release-common.ps1"
+if (-not (Test-Path $bridgeReleaseCommonScript)) {
+  throw "Shared release helper not found at $bridgeReleaseCommonScript. The install package may be incomplete; reinstall Copilot Bridge."
+}
+. $bridgeReleaseCommonScript
+
 function Import-BridgeEnvFile($Path) {
   if (-not (Test-Path $Path)) { return }
   Get-Content $Path | ForEach-Object {
@@ -15,20 +21,6 @@ function Import-BridgeEnvFile($Path) {
       }
     }
   }
-}
-
-function Get-ConfiguredStateRoot($InstallRoot) {
-  if (-not [string]::IsNullOrWhiteSpace($env:BRIDGE_STATE_ROOT)) {
-    return $env:BRIDGE_STATE_ROOT
-  }
-  $stateRootFile = Join-Path $InstallRoot ".bridge-state-root"
-  if (Test-Path $stateRootFile) {
-    $storedStateRoot = (Get-Content $stateRootFile -Raw).Trim()
-    if (-not [string]::IsNullOrWhiteSpace($storedStateRoot)) {
-      return $storedStateRoot
-    }
-  }
-  return Join-Path $env:LOCALAPPDATA "CopilotBridge"
 }
 
 $stateRoot = Get-ConfiguredStateRoot $installRoot

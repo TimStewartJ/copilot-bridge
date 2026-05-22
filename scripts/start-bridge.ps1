@@ -1,67 +1,11 @@
 # Start Copilot Bridge as hidden background process (via launcher supervisor)
 $workDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
-function Remove-OldBridgeLogArchives($Path, $MaxArchives) {
-  $logDirectory = [System.IO.Path]::GetDirectoryName($Path)
-  if ([string]::IsNullOrWhiteSpace($logDirectory)) { return }
-  if (-not (Test-Path -LiteralPath $logDirectory -PathType Container)) { return }
-
-  $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Path)
-  $extension = [System.IO.Path]::GetExtension($Path)
-  $archivePattern = "^" + [regex]::Escape($baseName) + "-\d{8}-\d{6}(-\d+)?" + [regex]::Escape($extension) + "$"
-
-  try {
-    $oldArchives = Get-ChildItem -LiteralPath $logDirectory -File -ErrorAction Stop |
-      Where-Object { $_.Name -match $archivePattern } |
-      Sort-Object -Property LastWriteTimeUtc -Descending |
-      Select-Object -Skip $MaxArchives
-  } catch {
-    Write-Warning "Could not list Bridge log archives for retention in ${logDirectory}: $($_.Exception.Message)"
-    return
-  }
-
-  foreach ($archive in $oldArchives) {
-    try {
-      Remove-Item -LiteralPath $archive.FullName -Force -ErrorAction Stop
-    } catch {
-      Write-Warning "Could not remove old Bridge log archive $($archive.FullName): $($_.Exception.Message)"
-    }
-  }
+$bridgeReleaseCommonScript = Join-Path $PSScriptRoot "release-common.ps1"
+if (-not (Test-Path $bridgeReleaseCommonScript)) {
+  throw "Shared release helper not found at $bridgeReleaseCommonScript. The script directory may be incomplete; reinstall Copilot Bridge."
 }
-
-function Move-ExistingBridgeLog($Path, $MaxArchives) {
-  if (-not (Test-Path -LiteralPath $Path)) { return }
-
-  $logDirectory = [System.IO.Path]::GetDirectoryName($Path)
-  $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Path)
-  $extension = [System.IO.Path]::GetExtension($Path)
-  $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-  $archivePath = Join-Path $logDirectory ("{0}-{1}{2}" -f $baseName, $timestamp, $extension)
-  $suffix = 1
-  while (Test-Path -LiteralPath $archivePath) {
-    $archivePath = Join-Path $logDirectory ("{0}-{1}-{2}{3}" -f $baseName, $timestamp, $suffix, $extension)
-    $suffix += 1
-    if ($suffix -gt 1000) {
-      throw "Could not find an available archive path for $Path"
-    }
-  }
-
-  $attempt = 1
-  while ($true) {
-    try {
-      Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop
-    } catch {
-      if ($attempt -ge 5) {
-        throw "Could not rotate existing Bridge log $Path to $archivePath after $attempt attempts: $($_.Exception.Message)"
-      }
-      Start-Sleep -Milliseconds 500
-      $attempt += 1
-      continue
-    }
-    Remove-OldBridgeLogArchives $Path $MaxArchives
-    return
-  }
-}
+. $bridgeReleaseCommonScript
 
 # Stop any existing bridge processes first
 & "$workDir\scripts\stop-bridge.ps1"

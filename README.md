@@ -94,7 +94,7 @@ For teammate installs that should not require git history, build a release bundl
 pwsh -NoProfile -File .\scripts\package-release.ps1 -IncludeNodeModules
 ```
 
-That creates a `release\copilot-bridge-<version>-stable-win-x64.zip` package with root-level `start.ps1`, `stop.ps1`, `update.ps1`, `install-startup-task.ps1`, and `uninstall-startup-task.ps1` scripts. Release mode starts the compiled launcher from `dist\launcher.js`, skips startup `git pull`, disables git-backed self-update/staging tools, and stores durable state outside the app folder.
+That creates a `release\copilot-bridge-<version>-stable-win-x64.zip` package with root-level `start.ps1`, `stop.ps1`, `update.ps1`, `install-startup-task.ps1`, and `uninstall-startup-task.ps1` scripts plus their shared `release-common.ps1` helper. Release mode starts the compiled launcher from `dist\launcher.js`, skips startup `git pull`, disables git-backed self-update/staging tools, and stores durable state outside the app folder.
 
 Use `-IncludeNodeModules` for teammate installs and update packages. It installs only the packaged server's runtime dependencies into `app\node_modules` instead of copying the full repository dependency tree, omits optional npm packages, and prunes Copilot CLI assets down to the Windows x64 runtime files the Bridge uses. Packages built without `node_modules` are source-light bundles for manual installs only; `update.ps1` rejects them because it cannot safely start and health-check the new app without dependencies.
 
@@ -324,6 +324,7 @@ src/
 
 scripts/
 ├── start-bridge.ps1               # Start on Windows
+├── release-common.ps1             # Shared release wrapper helpers
 └── stop-bridge.ps1                # Stop on Windows
 
 data/                              # Runtime data (git-ignored)
