@@ -240,12 +240,7 @@ function markReleaseUpdateActivationFailed(candidateId: string, message: string)
 }
 
 function markReleaseUpdateActivationRejected(candidateId: string, message: string): void {
-  if (markUpdateInstallActivationFailed({
-    runtimePaths: RUNTIME_PATHS,
-    candidateId,
-    message,
-    rollbackAttempted: false,
-  })) {
+  if (markUpdateInstallActivationFailed({ runtimePaths: RUNTIME_PATHS, candidateId, message })) {
     log(`Marked release update candidate ${candidateId} as rejected: ${message}`);
   }
 }

@@ -41,33 +41,18 @@ const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; descriptio
     label: "Restart queued",
     description: "The update candidate is staged and waiting for the launcher to activate it safely.",
   },
-  stopping: {
-    label: "Stopping Bridge",
-    description: "The updater is stopping the current Bridge process before replacing app files.",
-  },
-  installing: {
-    label: "Copying app files",
-    description: "Bridge is backing up the old app and copying the new app into place.",
-  },
-  starting: {
-    label: "Starting Bridge",
-    description: "The updated app is starting and waiting for the health check.",
-  },
   succeeded: {
     label: "Update complete",
-    description: "Bridge restarted with the updated package.",
+    description: "Bridge activated the staged release package.",
   },
   failed: {
     label: "Update failed",
-    description: "Bridge kept user data and attempted to restore the previous app.",
-  },
-  rollback_failed: {
-    label: "Rollback needs attention",
-    description: "The update failed and the automatic rollback did not finish cleanly.",
+    description: "Bridge kept the previous active release and did not activate the staged candidate.",
   },
 };
 
-const TERMINAL_INSTALL_PHASES = new Set<UpdateInstallPhase>(["succeeded", "failed", "rollback_failed"]);
+const TERMINAL_INSTALL_PHASES = new Set<string>(["succeeded", "failed", "rollback_failed"]);
+const FAILED_INSTALL_PHASES = new Set<string>(["failed", "rollback_failed"]);
 
 export function UpdatesSection() {
   const [channel, setChannel] = useState<UpdateChannel | null>(null);
@@ -154,10 +139,10 @@ export function UpdatesSection() {
   const installTone = !installStatus
     ? "border-border bg-bg-primary text-text-muted"
     : installStatus.phase === "succeeded"
-      ? "border-success/30 bg-success/10 text-success"
-      : installStatus.phase === "failed" || installStatus.phase === "rollback_failed"
-        ? "border-error/30 bg-error/10 text-error"
-        : "border-accent/30 bg-accent/10 text-accent";
+    ? "border-success/30 bg-success/10 text-success"
+    : FAILED_INSTALL_PHASES.has(installStatus.phase)
+      ? "border-error/30 bg-error/10 text-error"
+      : "border-accent/30 bg-accent/10 text-accent";
 
   const statusTone = status?.status === "update_available"
     ? "text-accent"

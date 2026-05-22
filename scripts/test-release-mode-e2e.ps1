@@ -260,6 +260,41 @@ function Write-StepSummary($SummaryPath) {
   ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
 }
 
+function Assert-JsonPropertyAbsent($Object, [string]$PropertyName, [string]$Description) {
+  if ($Object.PSObject.Properties.Name -contains $PropertyName) {
+    throw "$Description unexpectedly included obsolete property '$PropertyName'."
+  }
+}
+
+function Assert-UpdateWrapperBackups($StateRoot) {
+  $backupRoot = Join-Path $StateRoot "backups"
+  if (-not (Test-Path -LiteralPath $backupRoot -PathType Container)) {
+    throw "Update wrapper backup root was not created at $backupRoot."
+  }
+
+  $updateBackupDirs = @(Get-ChildItem -LiteralPath $backupRoot -Directory -Filter "update-*")
+  if ($updateBackupDirs.Count -eq 0) {
+    throw "No update wrapper backup directories were created under $backupRoot."
+  }
+
+  foreach ($backupDir in $updateBackupDirs) {
+    $children = @(Get-ChildItem -LiteralPath $backupDir.FullName -Force)
+    if ($children.Count -eq 0) {
+      throw "Update backup directory was unexpectedly empty: $($backupDir.FullName)"
+    }
+
+    $wrappersDir = Join-Path $backupDir.FullName "wrappers"
+    if (-not (Test-Path -LiteralPath $wrappersDir -PathType Container)) {
+      throw "Update backup directory did not contain wrapper backups: $($backupDir.FullName)"
+    }
+
+    $wrapperFiles = @(Get-ChildItem -LiteralPath $wrappersDir -File -Force)
+    if ($wrapperFiles.Count -eq 0) {
+      throw "Update wrapper backup directory was empty: $wrappersDir"
+    }
+  }
+}
+
 $resolvedPackagePath = Resolve-ExistingPath "PackagePath" $PackagePath
 $resolvedManifestPath = if ([string]::IsNullOrWhiteSpace($ManifestPath)) { $null } else { Resolve-ExistingPath "ManifestPath" $ManifestPath }
 $resolvedInstallerPath = if ([string]::IsNullOrWhiteSpace($InstallerPath)) { $null } else { Resolve-ExistingPath "InstallerPath" $InstallerPath }
@@ -414,6 +449,10 @@ try {
   if (-not $slotManifest -or $slotManifest.commitSha -ne $sourceCommit) {
     throw "Active release slot metadata did not match expected commit '$sourceCommit'."
   }
+  foreach ($obsoleteStatusProperty in @("mutableDirectoriesPreservedOnRollback", "backupDir", "rollbackAttempted")) {
+    Assert-JsonPropertyAbsent $activation.Status $obsoleteStatusProperty "update-status.json"
+  }
+  Assert-UpdateWrapperBackups $stateRoot
 
   $summary = [ordered]@{
     result = "passed"
@@ -486,4 +525,3 @@ try {
 
   Write-StepSummary $summaryPath
 }
-

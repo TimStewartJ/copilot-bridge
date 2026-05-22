@@ -61,12 +61,8 @@ export type UpdateInstallPhase =
   | "verifying"
   | "staging"
   | "staged"
-  | "stopping"
-  | "installing"
-  | "starting"
   | "succeeded"
-  | "failed"
-  | "rollback_failed";
+  | "failed";
 
 export interface UpdateInstallStatus {
   id: string;
@@ -82,9 +78,7 @@ export interface UpdateInstallStatus {
   completedAt?: string;
   message?: string;
   error?: string;
-  rollbackAttempted?: boolean;
   logPath?: string;
-  backupDir?: string;
   pendingRestart?: boolean;
   releaseCandidateId?: string;
   releaseCandidateRoot?: string;
@@ -133,7 +127,7 @@ const ACTIVE_INSTALL_STALE_MS = 30 * 60 * 1000;
 const UPDATE_LOG_TAIL_BYTES = 64 * 1024;
 const UPDATE_LOG_TAIL_LINES = 40;
 const UPDATE_LOG_TAIL_LINE_LENGTH = 500;
-const TERMINAL_INSTALL_PHASES = new Set<UpdateInstallPhase>(["succeeded", "failed", "rollback_failed"]);
+const TERMINAL_INSTALL_PHASES = new Set<string>(["succeeded", "failed", "rollback_failed"]);
 
 function getInstalledAppRoot(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -291,7 +285,6 @@ export function markUpdateInstallActivationFailed(options: {
   runtimePaths: RuntimePaths;
   candidateId: string;
   message: string;
-  rollbackAttempted?: boolean;
   now?: Date;
 }): boolean {
   return updateStagedReleaseInstallStatus(
@@ -303,7 +296,6 @@ export function markUpdateInstallActivationFailed(options: {
       updatedAt: timestamp,
       completedAt: timestamp,
       pendingRestart: false,
-      rollbackAttempted: options.rollbackAttempted ?? true,
       message: options.message,
       error: options.message,
     }),

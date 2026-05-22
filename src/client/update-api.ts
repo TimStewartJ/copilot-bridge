@@ -56,12 +56,8 @@ export type UpdateInstallPhase =
   | "verifying"
   | "staging"
   | "staged"
-  | "stopping"
-  | "installing"
-  | "starting"
   | "succeeded"
-  | "failed"
-  | "rollback_failed";
+  | "failed";
 
 export interface UpdateInstallStatus {
   id: string;
@@ -77,9 +73,7 @@ export interface UpdateInstallStatus {
   completedAt?: string;
   message?: string;
   error?: string;
-  rollbackAttempted?: boolean;
   logPath?: string;
-  backupDir?: string;
   pendingRestart?: boolean;
   releaseCandidateId?: string;
   releaseCandidateRoot?: string;
