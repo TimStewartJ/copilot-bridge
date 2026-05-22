@@ -84,7 +84,7 @@ function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): numb
   return a.kind === "ongoing" ? -1 : 1;
 }
 
-function normalizeOptionalText(value: unknown): string | undefined {
+export function normalizeOptionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
@@ -169,7 +169,7 @@ function parseIsoTimestampWithTimezone(text: string): string | undefined {
   return new Date(utcMillis).toISOString();
 }
 
-function normalizeOptionalTimestamp(value: unknown, opts: { strict?: boolean } = {}): string | undefined {
+export function normalizeOptionalTimestamp(value: unknown, opts: { strict?: boolean } = {}): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
     if (opts.strict) throw new InvalidTaskUpdateError("nextTouchAt must be a valid ISO timestamp with timezone");

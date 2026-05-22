@@ -226,6 +226,57 @@ describe("session manager task tools", () => {
     });
   });
 
+  it("task_update_momentum rejects no-op updates with stop guidance", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Momentum no-op");
+    ctx.taskStore.updateTask(task.id, {
+      nextAction: "Check existing review",
+      waitingOn: "Initial reviewer",
+      nextTouchAt: "2026-05-02T10:00:00.000Z",
+    });
+    const tool = getTool(ctx, "task_update_momentum");
+
+    const noOpArgs = {
+      taskId: task.id,
+      nextAction: "Check existing review",
+      waitingOn: "Initial reviewer",
+      followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
+    };
+
+    await expect(tool.handler(noOpArgs, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      resultType: "rejected",
+      textResultForLlm: expect.stringContaining("Task momentum is already current"),
+    });
+
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
+      nextAction: "Check existing review",
+      waitingOn: "Initial reviewer",
+      nextTouchAt: "2026-05-02T10:00:00.000Z",
+    }));
+  });
+
+  it("task_update_momentum rejects clear requests when momentum is already empty", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Momentum clear no-op");
+    const tool = getTool(ctx, "task_update_momentum");
+
+    await expect(tool.handler({
+      taskId: task.id,
+      nextAction: null,
+      waitingOn: null,
+      followUp: { mode: "clear" },
+    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      resultType: "rejected",
+      textResultForLlm: expect.stringContaining("Do not call task_update_momentum again"),
+    });
+
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
+      nextAction: undefined,
+      waitingOn: undefined,
+      nextTouchAt: undefined,
+    }));
+  });
+
   it("task_get_info includes momentum fields", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum info");
