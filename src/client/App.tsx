@@ -29,7 +29,6 @@ import {
   isSessionActive,
   markSessionReadOnPageHide,
   API_BASE,
-  sendChatMessage,
   type ChecklistItem,
   type EnrichedTaskData,
   type Session,
@@ -50,6 +49,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
+import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useTasksQuery } from "./hooks/queries/useTasks";
@@ -920,6 +920,30 @@ export default function App() {
     patchSessionInCache(sessionId, { runState: "idle", busy: false, intentText: null });
   }, [clearSessionBusyHint, patchSessionInCache]);
 
+  const cleanupRejectedFirstSendSession = useCallback((sessionId: string, taskId?: string) =>
+    cleanupFailedFirstSendSession({
+      sessionId,
+      taskId,
+      queryClient,
+      clearPendingPromptSession,
+      clearDraft,
+      clearDraftSessionBySessionId,
+      markUnread,
+      clearLastViewedSession,
+      clearLastActiveQuickChat,
+      updateSelectedTask: setSelectedTask,
+      invalidateAllSessionQueries,
+      invalidateTasks,
+    }), [
+      clearDraft,
+      clearDraftSessionBySessionId,
+      clearPendingPromptSession,
+      invalidateAllSessionQueries,
+      invalidateTasks,
+      markUnread,
+      queryClient,
+    ]);
+
   // Actually create a session on the server (called on first message send)
   const materializeSession = useCallback(async (taskId?: string): Promise<string> => {
     if (taskId) {
@@ -944,18 +968,22 @@ export default function App() {
   ) => {
     const newSessionId = await materializeSession(taskId);
     // Send before navigating so the destination reconnect sees an active stream.
-    try {
-      await sendChatMessage(newSessionId, prompt);
-    } catch (error) {
-      clearPendingPromptSession(newSessionId);
-      setDraftImmediate(newSessionId, prompt);
-      if (options?.navigateOnError !== false) {
+    await sendMaterializedFirstPrompt({
+      sessionId: newSessionId,
+      prompt,
+      onRejected: async () => {
+        if (options?.navigateOnError === false) {
+          await cleanupRejectedFirstSendSession(newSessionId, taskId);
+          return;
+        }
+
+        clearPendingPromptSession(newSessionId);
+        setDraftImmediate(newSessionId, prompt);
         navigateToSession(newSessionId, taskId);
-      }
-      throw error;
-    }
+      },
+    });
     return newSessionId;
-  }, [clearPendingPromptSession, materializeSession, navigateToSession, setDraftImmediate]);
+  }, [cleanupRejectedFirstSendSession, clearPendingPromptSession, materializeSession, navigateToSession, setDraftImmediate]);
 
   const isSessionBusy = useCallback((sessionId: string) => {
     const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
@@ -1764,7 +1792,7 @@ export default function App() {
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
                   materializeSession={materializeSession}
-                  clearPendingPromptSession={clearPendingPromptSession}
+                  cleanupFailedFirstSendSession={cleanupRejectedFirstSendSession}
                   getVoiceJob={getJobForComposer}
                   startBackgroundVoiceJob={startBackgroundVoiceJob}
                   retryVoiceJobUpload={retryVoiceJobUpload}
@@ -1836,7 +1864,7 @@ export default function App() {
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
                   materializeSession={materializeSession}
-                  clearPendingPromptSession={clearPendingPromptSession}
+                  cleanupFailedFirstSendSession={cleanupRejectedFirstSendSession}
                   getVoiceJob={getJobForComposer}
                   startBackgroundVoiceJob={startBackgroundVoiceJob}
                   retryVoiceJobUpload={retryVoiceJobUpload}
@@ -2065,7 +2093,7 @@ function SessionRoute({
   clearDraftSession,
   clearDraftSessionBySessionId,
   materializeSession,
-  clearPendingPromptSession,
+  cleanupFailedFirstSendSession,
   getVoiceJob,
   startBackgroundVoiceJob,
   retryVoiceJobUpload,
@@ -2086,7 +2114,7 @@ function SessionRoute({
   clearDraftSession: (composerKey: string) => void;
   clearDraftSessionBySessionId: (sessionId: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
-  clearPendingPromptSession: (sessionId: string) => void;
+  cleanupFailedFirstSendSession: (sessionId: string, taskId?: string) => Promise<void>;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
   startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
   retryVoiceJobUpload: (composerKey: string) => void;
@@ -2151,19 +2179,20 @@ function SessionRoute({
     const newSessionId = await materializeSession(taskId);
     // Send the message BEFORE navigating so the session is busy when
     // ChatView's effect reconnects the stream (avoids idle-close race).
-    try {
-      await sendChatMessage(newSessionId, prompt, attachments);
-    } catch (error) {
-      clearPendingPromptSession(newSessionId);
-      throw error;
-    }
+    await sendMaterializedFirstPrompt({
+      sessionId: newSessionId,
+      prompt,
+      attachments,
+      // Retry stays on the draft route and materializes a fresh session.
+      onRejected: () => cleanupFailedFirstSendSession(newSessionId, taskId),
+    });
     clearDraft(composerKey);
     // Navigate to real session URL (replace draft URL in history)
     const path = taskId
       ? `/tasks/${taskId}/sessions/${newSessionId}`
       : `/sessions/${newSessionId}`;
     navigate(path, { replace: true });
-  }, [clearDraft, clearPendingPromptSession, composerKey, materializeSession, navigate, taskId]);
+  }, [cleanupFailedFirstSendSession, clearDraft, composerKey, materializeSession, navigate, taskId]);
 
   return (
     <ChatView
