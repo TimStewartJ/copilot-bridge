@@ -84,6 +84,21 @@ export interface BrowserLaunchConfig {
   headed?: boolean;
 }
 
+export interface BrowserLaneFallbackState {
+  attemptedClone: boolean;
+  fallbackToPrimary: boolean;
+}
+
+export interface BrowserLaneFallbackOptions {
+  copilotHome: string | undefined;
+  telemetryStore: TelemetryStore | undefined;
+  metadata: Record<string, unknown>;
+  launchConfig?: BrowserLaunchConfig;
+  tryClone: boolean;
+  fallbackToPrimaryOnCloneException: boolean;
+  state: BrowserLaneFallbackState;
+}
+
 export type BrowserExecutablePathSource = "settings" | "environment" | "auto-detect";
 
 export type BrowserCommand = readonly [string, ...string[]];
@@ -210,6 +225,22 @@ export function recordBrowserSpan(
   metadata?: Record<string, unknown>,
 ): void {
   telemetryStore?.recordSpan({ name, duration, metadata, source: "server" });
+}
+
+export function createBrowserLaneFallbackState(): BrowserLaneFallbackState {
+  return {
+    attemptedClone: false,
+    fallbackToPrimary: false,
+  };
+}
+
+export function browserLaneFallbackTelemetry(
+  state: BrowserLaneFallbackState,
+): BrowserLaneFallbackState {
+  return {
+    attemptedClone: state.attemptedClone,
+    fallbackToPrimary: state.fallbackToPrimary,
+  };
 }
 
 function hostFromCommand(command: BrowserCommand): string | undefined {
@@ -1313,6 +1344,40 @@ export async function withCloneBrowserLane<T>(
       });
     }
   });
+}
+
+export async function withBrowserLaneFallback<T>(
+  options: BrowserLaneFallbackOptions,
+  fn: (lane: BrowserLane) => Promise<T>,
+): Promise<T> {
+  if (options.tryClone) {
+    options.state.attemptedClone = true;
+    try {
+      return await withCloneBrowserLane(
+        options.copilotHome,
+        options.telemetryStore,
+        options.metadata,
+        fn,
+        options.launchConfig,
+      );
+    } catch (err) {
+      if (!options.fallbackToPrimaryOnCloneException) throw err;
+      options.state.fallbackToPrimary = true;
+      safeRecordBrowserSpan(options.telemetryStore, "browser.clone.fallback_to_primary", 0, {
+        ...options.metadata,
+        reason: "exception",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return withPrimaryBrowserLane(
+    options.copilotHome,
+    options.telemetryStore,
+    options.metadata,
+    fn,
+    options.launchConfig,
+  );
 }
 
 export async function shutdownBridgeBrowser(

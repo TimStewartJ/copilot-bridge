@@ -3,10 +3,11 @@ import { testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 
-function createBrowserToolContext(settings = {}) {
+function createBrowserToolContext(settings = {}, telemetryStore?: { recordSpan: ReturnType<typeof vi.fn> }) {
   return {
     copilotHome: COPILOT_HOME,
     settingsStore: { getSettings: () => settings },
+    ...(telemetryStore ? { telemetryStore } : {}),
   } as any;
 }
 
@@ -120,6 +121,50 @@ describe("browser_fetch tool", () => {
     });
     expect(sessions.some((entry) => /:(?!.*-clone-).*copilot-bridge-/.test(entry))).toBe(false);
     expect(sessions.some((entry) => entry.includes("-clone-"))).toBe(true);
+  });
+
+  it("uses primary without clone fallback metadata for clone-unsafe hosts", async () => {
+    const telemetryStore = { recordSpan: vi.fn() };
+    const sessions: string[] = [];
+    execFileMock.mockImplementation((_file: string, args: string[], options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      sessions.push(options.env.AGENT_BROWSER_SESSION);
+      if (args[0] === "open") cb(null, { stdout: "opened", stderr: "" });
+      else if (args[0] === "wait") cb(null, { stdout: "ready", stderr: "" });
+      else if (args[0] === "snapshot") cb(null, { stdout: "snapshot", stderr: "" });
+      else if (args[0] === "get" && args[1] === "title") cb(null, { stdout: "Example", stderr: "" });
+      else if (args[0] === "get" && args[1] === "url") cb(null, { stdout: "https://bridge.internal/example", stderr: "" });
+      else cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+
+    const mod = await import("../browser-fetch-tools.js");
+    const tools = mod.createBrowserFetchTools(createBrowserToolContext({}, telemetryStore));
+    const result = await tools[0].handler({
+      url: "https://bridge.internal/example",
+    }, {} as any) as any;
+
+    const toolSpan = telemetryStore.recordSpan.mock.calls
+      .map(([span]: any[]) => span)
+      .find((span: any) => span.name === "browser.tool.browser_fetch");
+    expect(result).toMatchObject({
+      url: "https://bridge.internal/example",
+      title: "Example",
+      snapshot: "snapshot",
+    });
+    expect(cpMock).not.toHaveBeenCalled();
+    expect(sessions.every((session) => !session.includes("-clone-"))).toBe(true);
+    expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.clone.fallback_to_primary",
+    }));
+    expect(toolSpan).toMatchObject({
+      name: "browser.tool.browser_fetch",
+      metadata: {
+        urlHost: "bridge.internal",
+        browserLane: "primary",
+        attemptedClone: false,
+        fallbackToPrimary: false,
+      },
+    });
   });
 
   it("applies the headed browser setting to browser operations", async () => {

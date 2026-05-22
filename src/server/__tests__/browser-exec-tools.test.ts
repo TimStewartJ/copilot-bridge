@@ -3,10 +3,11 @@ import { testCopilotHome } from "./test-paths.js";
 
 const COPILOT_HOME = testCopilotHome();
 
-function createBrowserToolContext() {
+function createBrowserToolContext(telemetryStore?: { recordSpan: ReturnType<typeof vi.fn> }) {
   return {
     copilotHome: COPILOT_HOME,
     settingsStore: { getSettings: () => ({}) },
+    ...(telemetryStore ? { telemetryStore } : {}),
   } as any;
 }
 
@@ -158,6 +159,46 @@ describe("browser_exec tool", () => {
     expect(result.lane).toBe("primary");
     expect(result.steps[0]).toMatchObject({ command: "snapshot", ok: true, output: "current-page" });
     expect(sessions.every((session) => !session.includes("-clone-"))).toBe(true);
+  });
+
+  it("does not fall back to primary when the clone lane is explicitly requested", async () => {
+    cpMock.mockRejectedValueOnce(Object.assign(new Error("clone setup failed"), { code: "EIO" }));
+    execFileMock.mockImplementation((_file: string, args: string[], _options: any, cb: (err: any, result?: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "open") throw new Error("unexpected primary open");
+      cb(null, { stdout: "ok", stderr: "" });
+      return {} as any;
+    });
+    const telemetryStore = { recordSpan: vi.fn() };
+
+    const mod = await import("../browser-exec-tools.js");
+    const tools = mod.createBrowserExecTools(createBrowserToolContext(telemetryStore));
+    const result = await tools[0].handler({
+      lane: "clone",
+      commands: [{ command: "open", args: ["https://example.com"] }],
+    }, invocation) as any;
+
+    const toolSpan = telemetryStore.recordSpan.mock.calls
+      .map(([span]: any[]) => span)
+      .find((span: any) => span.name === "browser.tool.browser_exec");
+    expect(result).toMatchObject({
+      textResultForLlm: "Browser exec failed: Error: clone setup failed",
+      resultType: "failure",
+      sessionLog: "Browser exec failed: Error: clone setup failed",
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(telemetryStore.recordSpan).not.toHaveBeenCalledWith(expect.objectContaining({
+      name: "browser.clone.fallback_to_primary",
+    }));
+    expect(toolSpan).toMatchObject({
+      name: "browser.tool.browser_exec",
+      metadata: {
+        requestedLane: "clone",
+        resolvedLane: "clone",
+        browserLane: "clone",
+        attemptedClone: true,
+        fallbackToPrimary: false,
+      },
+    });
   });
 
   it("returns a structured failure with prior step results", async () => {

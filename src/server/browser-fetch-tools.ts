@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
-import { ab, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withCloneBrowserLane, withPrimaryBrowserLane } from "./agent-browser.js";
+import { ab, browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
 import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 
@@ -81,8 +81,7 @@ export function createBrowserFetchTools(ctx: AppContext) {
         let success = false;
         let laneType: "primary" | "clone" = "primary";
         let browserSession = primaryTarget.sessionName;
-        let attemptedClone = false;
-        let fallbackToPrimary = false;
+        const laneFallback = createBrowserLaneFallbackState();
 
         const check = await isAgentBrowserInstalled();
         if (!check) {
@@ -166,31 +165,19 @@ export function createBrowserFetchTools(ctx: AppContext) {
         };
 
         try {
-          if (isCloneSafeBrowserFetchHost(urlHost)) {
-            attemptedClone = true;
-            try {
-              return await withCloneBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
-                browserOpId,
-                toolName: "browser_fetch",
-                urlHost,
-              }, runFlow, launchConfig);
-            } catch (err) {
-              fallbackToPrimary = true;
-              safeRecordBrowserSpan(ctx.telemetryStore, "browser.clone.fallback_to_primary", 0, {
-                browserOpId,
-                toolName: "browser_fetch",
-                urlHost,
-                reason: "exception",
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-
-          return await withPrimaryBrowserLane(ctx.copilotHome, ctx.telemetryStore, {
-            browserOpId,
-            toolName: "browser_fetch",
-            urlHost,
-          }, runFlow, launchConfig);
+          return await withBrowserLaneFallback({
+            copilotHome: ctx.copilotHome,
+            telemetryStore: ctx.telemetryStore,
+            metadata: {
+              browserOpId,
+              toolName: "browser_fetch",
+              urlHost,
+            },
+            launchConfig,
+            tryClone: isCloneSafeBrowserFetchHost(urlHost),
+            fallbackToPrimaryOnCloneException: true,
+            state: laneFallback,
+          }, runFlow);
         } catch (err: any) {
           return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 200)}`, {
             url,
@@ -205,8 +192,7 @@ export function createBrowserFetchTools(ctx: AppContext) {
             urlHost,
             selectorPresent: !!selector,
             browserLane: laneType,
-            attemptedClone,
-            fallbackToPrimary,
+            ...browserLaneFallbackTelemetry(laneFallback),
           });
           if (!success) {
             safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_fetch.failed", duration, {
@@ -214,8 +200,7 @@ export function createBrowserFetchTools(ctx: AppContext) {
               browserSession,
               urlHost,
               browserLane: laneType,
-              attemptedClone,
-              fallbackToPrimary,
+              ...browserLaneFallbackTelemetry(laneFallback),
             });
           }
         }
