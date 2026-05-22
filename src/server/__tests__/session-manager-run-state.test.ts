@@ -331,7 +331,7 @@ describe("SessionManager run state", () => {
         },
       });
 
-      const messageSession = { getMessages: vi.fn().mockResolvedValue([]) };
+      const messageSession = { getEvents: vi.fn().mockResolvedValue([]) };
       let resolveMessageResume!: (session: typeof messageSession) => void;
       const { session: runSession, getHandler, getReleaseSend } = makeSession();
       manager.client = {
@@ -403,7 +403,7 @@ describe("SessionManager run state", () => {
       });
       await refreshRestartState();
 
-      const resumedSession = { getMessages: vi.fn().mockResolvedValue([]) };
+      const resumedSession = { getEvents: vi.fn().mockResolvedValue([]) };
       let resolveResume!: (session: typeof resumedSession) => void;
       manager.client = {
         resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
@@ -880,7 +880,7 @@ describe("SessionManager run state", () => {
     const statusEvents: any[] = [];
     const truncate = vi.fn(async () => ({ eventsRemoved: 3 }));
     const sessionWithHistory = Object.assign(session, {
-      getMessages: vi.fn(async () => [
+      getEvents: vi.fn(async () => [
         {
           id: "previous-quiet-user",
           type: "user.message",
@@ -916,7 +916,7 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
-    expect(sessionWithHistory.getMessages).toHaveBeenCalled();
+    expect(sessionWithHistory.getEvents).toHaveBeenCalled();
     expect(truncate).toHaveBeenCalledWith({ eventId: "previous-quiet-user" });
     expect(truncate.mock.invocationCallOrder[0]).toBeLessThan(session.send.mock.invocationCallOrder[0]);
     expect(statusEvents).toContainEqual({ type: "session:history-truncated", sessionId: "session-1" });

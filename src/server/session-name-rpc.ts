@@ -38,7 +38,7 @@ function workspaceYamlPath(
 export function buildSessionNameResumeConfig(): any {
   return {
     onPermissionRequest: approveAll,
-    disableResume: true,
+    suppressResumeEvent: true,
     continuePendingWork: false,
     tools: [],
     availableTools: [],

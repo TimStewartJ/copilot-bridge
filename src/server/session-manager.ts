@@ -117,6 +117,7 @@ import {
   type SetSessionNameOptions,
   type SessionNameRpc,
 } from "./session-name-rpc.js";
+import { readSdkSessionEvents } from "./sdk-session-events.js";
 import {
   createSessionNameAutogenerator,
   type SessionNameAutogenerator,
@@ -1372,14 +1373,14 @@ export class SessionManager {
     let events: any[];
     let cacheHit = true;
     let resumeMs = 0;
-    let getMessagesMs = 0;
+    let getEventsMs = 0;
 
     if (session) {
       console.log(`[sdk] [${sid}] Loading messages (cached session)...`);
       try {
         const tGm = Date.now();
-        events = await session.getMessages();
-        getMessagesMs = Date.now() - tGm;
+        events = await readSdkSessionEvents(session);
+        getEventsMs = Date.now() - tGm;
         console.log(`[sdk] [${sid}] Loaded ${events.length} events from cached session`);
       } catch (err) {
         // Stale cache — CLI may have restarted. Evict and re-resume.
@@ -1398,8 +1399,8 @@ export class SessionManager {
           resumeMs = Date.now() - tResume;
           session = this.cacheResumedSession(sessionId, session);
           const tGm = Date.now();
-          events = await session.getMessages();
-          getMessagesMs = Date.now() - tGm;
+          events = await readSdkSessionEvents(session);
+          getEventsMs = Date.now() - tGm;
           console.log(`[sdk] [${sid}] Loaded ${events.length} events after re-resume`);
         } finally {
           this.endSessionResume(sessionId);
@@ -1421,8 +1422,8 @@ export class SessionManager {
         resumeMs = Date.now() - tResume;
         session = this.cacheResumedSession(sessionId, session);
         const tGm = Date.now();
-        events = await session.getMessages();
-        getMessagesMs = Date.now() - tGm;
+        events = await readSdkSessionEvents(session);
+        getEventsMs = Date.now() - tGm;
         console.log(`[sdk] [${sid}] Loaded ${events.length} events after fresh resume`);
       } finally {
         this.endSessionResume(sessionId);
@@ -1437,13 +1438,13 @@ export class SessionManager {
 
     console.log(`[sdk] Loaded ${messages.length} messages for session ${sessionId}`);
     const transformMs = Date.now() - tTransform;
-    this.recordSpan("session.getMessages", Date.now() - t0, sessionId, {
+    this.recordSpan("session.getEvents", Date.now() - t0, sessionId, {
       eventCount: events.length,
       messageCount: messages.length,
       cacheHit,
       configMs: tConfig - t0,
       resumeMs,
-      getMessagesMs,
+      getEventsMs,
       transformMs,
     });
 

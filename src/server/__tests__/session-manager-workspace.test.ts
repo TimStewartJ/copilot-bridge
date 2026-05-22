@@ -542,7 +542,7 @@ describe("SessionManager forkSession", () => {
 
     const workspacePath = join(copilotHome, "session-state", "forked-session", "workspace.yaml");
     expect(existsSync(workspacePath)).toBe(false);
-    expect(resumeSession).toHaveBeenCalledWith("forked-session", expect.objectContaining({ disableResume: true }));
+    expect(resumeSession).toHaveBeenCalledWith("forked-session", expect.objectContaining({ suppressResumeEvent: true }));
     expect(set).toHaveBeenCalledWith({ name: "Fork of Original session" });
     expect(get).toHaveBeenCalled();
     expect(disconnect).toHaveBeenCalled();

@@ -1,4 +1,5 @@
 import { isQuietIntervalDeferEvent } from "./event-transform.js";
+import { readSdkSessionEvents } from "./sdk-session-events.js";
 
 export const QUIET_INTERVAL_DEFER_TAIL_TRUNCATION_MODE = "replace-quiet-interval-defer-tail" as const;
 
@@ -15,11 +16,11 @@ export interface QuietIntervalDeferTailTruncationCandidate {
 export type QuietIntervalDeferTailTruncationResult =
   | { status: "truncated"; eventId: string; eventsRemoved: number; candidateEventsToRemove: number }
   | { status: "skipped"; reason: "no-candidate" | "missing-api" }
-  | { status: "failed"; reason: "get-messages-failed" | "truncate-failed"; error: unknown };
+  | { status: "failed"; reason: "read-events-failed" | "truncate-failed"; error: unknown };
 
 interface TruncateQuietIntervalDeferTailOptions {
   session: {
-    getMessages?: () => Promise<unknown>;
+    getEvents?: () => Promise<unknown>;
     rpc?: {
       history?: {
         truncate?: (params: { eventId: string }) => Promise<{ eventsRemoved?: number }>;
@@ -166,7 +167,7 @@ export async function truncateQuietIntervalDeferTail({
 }: TruncateQuietIntervalDeferTailOptions): Promise<QuietIntervalDeferTailTruncationResult> {
   const start = Date.now();
   const truncate = session.rpc?.history?.truncate;
-  if (typeof session.getMessages !== "function" || typeof truncate !== "function") {
+  if (typeof session.getEvents !== "function" || typeof truncate !== "function") {
     logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Quiet defer history truncation unavailable`);
     recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
       outcome: "skipped",
@@ -178,15 +179,15 @@ export async function truncateQuietIntervalDeferTail({
 
   let rawEvents: unknown;
   try {
-    rawEvents = await session.getMessages();
+    rawEvents = await readSdkSessionEvents(session);
   } catch (error) {
     logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to inspect quiet defer history: ${getErrorMessage(error)}`);
     recordSpan?.("session.history.truncate", Date.now() - start, sessionId, {
       outcome: "failed",
-      reason: "get-messages-failed",
+      reason: "read-events-failed",
       deferId,
     });
-    return { status: "failed", reason: "get-messages-failed", error };
+    return { status: "failed", reason: "read-events-failed", error };
   }
 
   const events = Array.isArray(rawEvents) ? rawEvents : [];
