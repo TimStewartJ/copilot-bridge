@@ -198,9 +198,6 @@ Assert-AbsolutePath "COPILOT_HOME" $env:COPILOT_HOME
 New-Item -ItemType Directory -Path $effectiveDataDir, $env:BRIDGE_DOCS_DIR, $env:COPILOT_HOME -Force | Out-Null
 
 $appRoot = Join-Path $installRoot "app"
-if (Test-Path (Join-Path $installRoot "app\current\dist\launcher.js")) {
-  $appRoot = Join-Path $installRoot "app\current"
-}
 $activeReleaseRoot = Get-ActiveReleaseAppRoot $effectiveDataDir
 if ($activeReleaseRoot) {
   $appRoot = $activeReleaseRoot
