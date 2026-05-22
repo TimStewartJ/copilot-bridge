@@ -226,7 +226,7 @@ describe("session manager task tools", () => {
     });
   });
 
-  it("task_update_momentum rejects no-op updates with stop guidance", async () => {
+  it("task_update_momentum treats no-op updates as successful unchanged requests", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum no-op");
     ctx.taskStore.updateTask(task.id, {
@@ -244,8 +244,12 @@ describe("session manager task tools", () => {
     };
 
     await expect(tool.handler(noOpArgs, createInvocation("task_update_momentum"))).resolves.toMatchObject({
-      resultType: "rejected",
-      textResultForLlm: expect.stringContaining("Task momentum is already current"),
+      success: true,
+      changed: false,
+      message: "Task momentum is already current; no changes were applied.",
+      nextAction: "Check existing review",
+      waitingOn: "Initial reviewer",
+      nextTouchAt: "2026-05-02T10:00:00.000Z",
     });
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
@@ -255,7 +259,7 @@ describe("session manager task tools", () => {
     }));
   });
 
-  it("task_update_momentum rejects clear requests when momentum is already empty", async () => {
+  it("task_update_momentum treats clear requests as unchanged when momentum is already empty", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum clear no-op");
     const tool = getTool(ctx, "task_update_momentum");
@@ -266,8 +270,12 @@ describe("session manager task tools", () => {
       waitingOn: null,
       followUp: { mode: "clear" },
     }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
-      resultType: "rejected",
-      textResultForLlm: expect.stringContaining("Do not call task_update_momentum again"),
+      success: true,
+      changed: false,
+      message: "Task momentum is already current; no changes were applied.",
+      nextAction: null,
+      waitingOn: null,
+      nextTouchAt: null,
     });
 
     expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
