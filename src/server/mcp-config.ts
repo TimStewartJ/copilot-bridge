@@ -13,6 +13,12 @@ export interface RemoteMcpServerConfig extends McpServerConfigBase {
   type: "http" | "sse";
   url: string;
   headers?: Record<string, string>;
+  oauthClientId?: string;
+  oauthPublicClient?: boolean;
+  oauthGrantType?: "authorization_code" | "client_credentials";
+  auth?: {
+    redirectPort?: number;
+  };
 }
 
 export type McpServerConfig = LocalMcpServerConfig | RemoteMcpServerConfig;
@@ -36,7 +42,29 @@ export function isMcpServerConfig(config: unknown): config is McpServerConfig {
   if (config.type === "http" || config.type === "sse") {
     return typeof config.url === "string"
       && config.url.trim().length > 0
-      && (config.headers === undefined || isStringRecord(config.headers));
+      && (config.headers === undefined || isStringRecord(config.headers))
+      && (config.oauthClientId === undefined || typeof config.oauthClientId === "string")
+      && (config.oauthPublicClient === undefined || typeof config.oauthPublicClient === "boolean")
+      && (
+        config.oauthGrantType === undefined
+        || config.oauthGrantType === "authorization_code"
+        || config.oauthGrantType === "client_credentials"
+      )
+      && (
+        config.auth === undefined
+        || (
+          isRecord(config.auth)
+          && (
+            config.auth.redirectPort === undefined
+            || (
+              typeof config.auth.redirectPort === "number"
+              && Number.isInteger(config.auth.redirectPort)
+              && config.auth.redirectPort > 0
+              && config.auth.redirectPort <= 65_535
+            )
+          )
+        )
+      );
   }
 
   if (config.type !== undefined && config.type !== "local" && config.type !== "stdio") {

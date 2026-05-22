@@ -58,6 +58,12 @@ function createMcpRegistryDeps() {
   };
 }
 
+function createGitHubCopilotMcpToolOptions() {
+  return {
+    additionalTools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
+  };
+}
+
 describe("session-config-builder", () => {
   it("renders identity, custom instructions, model settings, and common system guidance", () => {
     const settingsStore = {
@@ -88,6 +94,7 @@ describe("session-config-builder", () => {
     expect(cfg.streaming).toBe(true);
     expect(cfg.includeSubAgentStreamingEvents).toBe(false);
     expect(cfg.mcpServers).toEqual({ configured: { command: "configured-mcp", args: [] } });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
     expect(cfg.systemMessage.sections.identity).toEqual({ action: "replace", content: "Custom Bridge identity" });
     expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
     expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
@@ -125,6 +132,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({
       Default: { command: "default-mcp", args: [] },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("adds CLI-hosted GitHub Copilot web search MCP when the Bridge Copilot token is configured", () => {
@@ -148,15 +156,45 @@ describe("session-config-builder", () => {
         tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
       },
     });
+    expect(cfg.githubMcpToolOptions).toBeUndefined();
   });
 
-  it("does not add GitHub Copilot web search MCP without a Bridge Copilot token", () => {
+  it("requests the SDK-hosted GitHub MCP when no Bridge Copilot token is configured", () => {
     const cfg = buildSessionConfig({
       deps: createDeps({ clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "   " } }),
       callbacks: createCallbacks(),
     });
 
     expect(cfg.mcpServers).toEqual({});
+    expect(cfg.enableConfigDiscovery).toBeUndefined();
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
+  });
+
+  it("preserves an existing SDK-named GitHub MCP server instead of adding SDK-hosted GitHub MCP options", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "   " },
+        config: {
+          sessionMcpServers: {
+            [GITHUB_COPILOT_MCP_SERVER_NAME]: {
+              type: "http",
+              url: GITHUB_COPILOT_MCP_READONLY_URL,
+              headers: { Authorization: "Bearer manual-token" },
+            },
+          },
+        },
+      }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      [GITHUB_COPILOT_MCP_SERVER_NAME]: {
+        type: "http",
+        url: GITHUB_COPILOT_MCP_READONLY_URL,
+        headers: { Authorization: "Bearer manual-token" },
+      },
+    });
+    expect(cfg.githubMcpToolOptions).toBeUndefined();
   });
 
   it("preserves an existing manual GitHub MCP server when adding Copilot web search", () => {
@@ -192,6 +230,7 @@ describe("session-config-builder", () => {
     });
     expect(cfg.mcpServers[GITHUB_COPILOT_MCP_SERVER_NAME].headers.Authorization)
       .toBe("Bearer copilot-account-token");
+    expect(cfg.githubMcpToolOptions).toBeUndefined();
   });
 
   it("adds MCP servers selected by task tags", () => {
@@ -213,6 +252,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({
       "Task MCP": { command: "task-mcp", args: ["serve"] },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("preserves GitHub Copilot web search MCP when task tags rebuild MCP selection", () => {
@@ -249,6 +289,7 @@ describe("session-config-builder", () => {
         tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
       },
     });
+    expect(cfg.githubMcpToolOptions).toBeUndefined();
   });
 
   it("adds MCP servers selected by inherited group tags", () => {
@@ -270,6 +311,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({
       "Group MCP": { type: "http", url: "https://group.example/mcp" },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("combines default-enabled, task-tag, and group-tag MCP selections", () => {
@@ -305,6 +347,7 @@ describe("session-config-builder", () => {
       "Task MCP": { command: "task-mcp", args: [] },
       "Group MCP": { type: "sse", url: "https://group.example/sse" },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("deduplicates a registry server selected by both default and tag", () => {
@@ -328,6 +371,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({
       "Shared MCP": { command: "shared-mcp", args: [] },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("deduplicates one registry server selected by task and group tags during resume", () => {
@@ -364,6 +408,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({
       "Shared Tagged MCP": { command: "shared-tagged-mcp", args: ["serve"] },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("merges legacy tag-owned MCP configs when the registry store is unavailable", () => {
@@ -392,6 +437,7 @@ describe("session-config-builder", () => {
       Default: { command: "default-mcp", args: [] },
       "Legacy Tag": { type: "sse", url: "https://legacy.example/sse" },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("refreshes registry MCP servers while preserving forResume model behavior", () => {
@@ -417,6 +463,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({
       "Resume MCP": { command: "resume-mcp", args: [] },
     });
+    expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
   it("includes model and reasoningEffort for new-session paths (forResume omitted/false)", () => {

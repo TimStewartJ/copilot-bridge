@@ -12,6 +12,16 @@ export interface BuiltInMcpServerConfig {
   config: McpServerConfig;
 }
 
+export interface GitHubCopilotMcpToolOptions {
+  additionalTools: string[];
+}
+
+export function buildGitHubCopilotMcpToolOptions(): GitHubCopilotMcpToolOptions {
+  return {
+    additionalTools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
+  };
+}
+
 export function buildGitHubCopilotSearchMcpServer(
   clientEnv?: Record<string, string | undefined>,
 ): BuiltInMcpServerConfig | undefined {

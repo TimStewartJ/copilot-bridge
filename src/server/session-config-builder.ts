@@ -25,7 +25,11 @@ import {
   formatRelatedDocManifestEntry,
 } from "./session-formatting.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
-import { buildGitHubCopilotSearchMcpServer } from "./github-copilot-mcp.js";
+import {
+  buildGitHubCopilotMcpToolOptions,
+  buildGitHubCopilotSearchMcpServer,
+  GITHUB_COPILOT_MCP_SERVER_NAME,
+} from "./github-copilot-mcp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -156,11 +160,20 @@ function addBuiltInMcpServers(
   return { ...servers, [builtInServer.name]: builtInServer.config };
 }
 
+function shouldUseSdkGitHubMcp(
+  deps: SessionConfigBuilderDeps,
+  servers: Record<string, McpServerConfig>,
+): boolean {
+  return !buildGitHubCopilotSearchMcpServer(deps.clientEnv)
+    && !servers[GITHUB_COPILOT_MCP_SERVER_NAME];
+}
+
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
   const { sessionId, task, isNewTask, prDescriptions, scheduleContext, groupNotes, forResume } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
 
+  const resolvedMcpServers = resolveSessionMcpServers(deps);
   const cfg: any = {
     onPermissionRequest: approveAll,
     onUserInputRequest: (request: NativeUserInputRequest, invocation: { sessionId: string }) =>
@@ -169,12 +182,16 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     includeSubAgentStreamingEvents: false,
     tools: deps.tools,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
-    mcpServers: addBuiltInMcpServers(deps, resolveSessionMcpServers(deps)),
+    mcpServers: addBuiltInMcpServers(deps, resolvedMcpServers),
     skillDirectories: [
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
     ],
   };
+
+  if (shouldUseSdkGitHubMcp(deps, resolvedMcpServers)) {
+    cfg.githubMcpToolOptions = buildGitHubCopilotMcpToolOptions();
+  }
 
   const settings = deps.settingsStore?.getSettings();
 

@@ -111,6 +111,8 @@ if (Test-Path $releaseRoot) {
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 
 Copy-Item -Path (Join-Path $repoRoot "dist") -Destination (Join-Path $appDir "dist") -Recurse
+Copy-Item -Path (Join-Path $repoRoot "src\server\copilot-cli-wrapper.js") -Destination (Join-Path $appDir "dist\server\copilot-cli-wrapper.js")
+Copy-Item -Path (Join-Path $repoRoot "src\server\copilot-cli-loader.js") -Destination (Join-Path $appDir "dist\server\copilot-cli-loader.js")
 Copy-Item -Path (Join-Path $repoRoot "public") -Destination (Join-Path $appDir "public") -Recurse
 $runtimePackageJson | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $appDir "package.json") -Encoding UTF8
 if (Test-Path $packageLockPath) {
