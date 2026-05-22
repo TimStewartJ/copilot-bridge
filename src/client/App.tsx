@@ -928,7 +928,6 @@ export default function App() {
       clearPendingPromptSession,
       clearDraft,
       clearDraftSessionBySessionId,
-      markUnread,
       clearLastViewedSession,
       clearLastActiveQuickChat,
       updateSelectedTask: setSelectedTask,
@@ -940,7 +939,6 @@ export default function App() {
       clearPendingPromptSession,
       invalidateAllSessionQueries,
       invalidateTasks,
-      markUnread,
       queryClient,
     ]);
 

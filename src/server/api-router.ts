@@ -1131,6 +1131,24 @@ export function createApiRouter(ctx: AppContext): express.Router {
     });
   }
 
+  function emitReadStateChanged(): void {
+    ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
+  }
+
+  async function deleteSessionWithOwnedState(sessionId: string, cacheInvalidationReason: string): Promise<void> {
+    await ctx.sessionManager.deleteSession(sessionId);
+    invalidateEnrichedCache(cacheInvalidationReason);
+    ctx.sessionMetaStore.deleteMeta(sessionId);
+    ctx.readStateStore.markUnread(sessionId);
+
+    const tasks = ctx.taskStore.listTasks();
+    for (const task of tasks) {
+      if (task.sessionIds.includes(sessionId)) {
+        ctx.taskStore.unlinkSession(task.id, sessionId);
+      }
+    }
+  }
+
   function setSessionArchived(sessionId: string, archived: boolean) {
     ctx.sessionMetaStore.setArchived(sessionId, archived);
     ctx.globalBus.emit({ type: "session:archived", sessionId, archived });
@@ -2356,16 +2374,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
   router.delete("/sessions/:id", async (req, res) => {
     const sessionId = req.params.id;
     try {
-      await ctx.sessionManager.deleteSession(sessionId);
-      invalidateEnrichedCache("route:session:delete");
-      ctx.sessionMetaStore.deleteMeta(sessionId);
-      // Unlink from any tasks that reference this session
-      const tasks = ctx.taskStore.listTasks();
-      for (const task of tasks) {
-        if (task.sessionIds.includes(sessionId)) {
-          ctx.taskStore.unlinkSession(task.id, sessionId);
-        }
-      }
+      await deleteSessionWithOwnedState(sessionId, "route:session:delete");
+      emitReadStateChanged();
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -2383,6 +2393,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
       return res.status(400).json({ error: "sessionIds array is required" });
     }
     const errors: Record<string, string> = {};
+    let deletedAny = false;
     for (const sid of sessionIds) {
       try {
         switch (action) {
@@ -2393,15 +2404,8 @@ export function createApiRouter(ctx: AppContext): express.Router {
             setSessionArchived(sid, false);
             break;
           case "delete": {
-            await ctx.sessionManager.deleteSession(sid);
-            invalidateEnrichedCache("route:session-batch:delete");
-            ctx.sessionMetaStore.deleteMeta(sid);
-            const tasks = ctx.taskStore.listTasks();
-            for (const task of tasks) {
-              if (task.sessionIds.includes(sid)) {
-                ctx.taskStore.unlinkSession(task.id, sid);
-              }
-            }
+            await deleteSessionWithOwnedState(sid, "route:session-batch:delete");
+            deletedAny = true;
             break;
           }
           case "markRead":
@@ -2413,7 +2417,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
       }
     }
     if (action === "markRead" && sessionIds.length > 0) {
-      ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
+      emitReadStateChanged();
+    }
+    if (action === "delete" && deletedAny) {
+      emitReadStateChanged();
     }
     res.json({ ok: Object.keys(errors).length === 0, errors });
   });
@@ -3197,15 +3204,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
     const readThroughActivityAt = resolveReadThroughActivityAt(req.params.sessionId, requestedReadThrough);
     const ts = ctx.readStateStore.markRead(req.params.sessionId, readThroughActivityAt);
-    const current = ctx.readStateStore.getReadState();
-    ctx.globalBus.emit({ type: "readstate:changed", readState: current });
+    emitReadStateChanged();
     res.json({ ok: true, lastReadAt: ts, readThroughActivityAt });
   });
 
   router.delete("/read-state/:sessionId", (req, res) => {
     ctx.readStateStore.markUnread(req.params.sessionId);
-    const current = ctx.readStateStore.getReadState();
-    ctx.globalBus.emit({ type: "readstate:changed", readState: current });
+    emitReadStateChanged();
     res.json({ ok: true });
   });
 

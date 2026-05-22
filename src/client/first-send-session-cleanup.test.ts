@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, Task } from "./api";
 import {
   cleanupFailedFirstSendSession,
@@ -47,6 +47,10 @@ function createTask(overrides: Partial<Task> = {}): Task {
   };
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("first-send session cleanup", () => {
   it("deletes and removes optimistic session state when the first send rejects", async () => {
     const queryClient = createQueryClient();
@@ -68,11 +72,14 @@ describe("first-send session cleanup", () => {
     const sendChatMessage = vi.fn(async () => {
       throw sendError;
     });
-    const deleteSession = vi.fn(async () => {});
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
     const clearPendingPromptSession = vi.fn();
     const clearDraft = vi.fn();
     const clearDraftSessionBySessionId = vi.fn();
-    const markUnread = vi.fn();
     const clearLastViewedSession = vi.fn();
     const clearLastActiveQuickChat = vi.fn();
     const invalidateAllSessionQueries = vi.fn(async () => {});
@@ -89,24 +96,22 @@ describe("first-send session cleanup", () => {
         clearPendingPromptSession,
         clearDraft,
         clearDraftSessionBySessionId,
-        markUnread,
         clearLastViewedSession,
         clearLastActiveQuickChat,
         updateSelectedTask: (updater) => {
           selectedTask = updater(selectedTask);
         },
-        deleteSession,
         invalidateAllSessionQueries,
         invalidateTasks,
       }),
     })).rejects.toBe(sendError);
 
     expect(sendChatMessage).toHaveBeenCalledWith("session-new", "hello", undefined);
-    expect(deleteSession).toHaveBeenCalledWith("session-new");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/session-new", { method: "DELETE" });
     expect(clearPendingPromptSession).toHaveBeenCalledWith("session-new");
     expect(clearDraft).toHaveBeenCalledWith("session-new");
     expect(clearDraftSessionBySessionId).toHaveBeenCalledWith("session-new");
-    expect(markUnread).toHaveBeenCalledWith("session-new");
     expect(clearLastViewedSession).toHaveBeenCalledWith("session-new");
     expect(clearLastActiveQuickChat).toHaveBeenCalledWith("session-new");
 
