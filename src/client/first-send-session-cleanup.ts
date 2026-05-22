@@ -24,7 +24,6 @@ export interface FailedFirstSendSessionCleanupOptions {
   clearPendingPromptSession: (sessionId: string) => void;
   clearDraft?: (composerKey: string) => void;
   clearDraftSessionBySessionId?: (sessionId: string) => void;
-  markUnread?: (sessionId: string) => void;
   clearLastViewedSession?: (sessionId: string) => void;
   clearLastActiveQuickChat?: (sessionId: string) => void;
   updateSelectedTask?: SelectedTaskUpdater;
@@ -79,7 +78,6 @@ export async function cleanupFailedFirstSendSession({
   clearPendingPromptSession,
   clearDraft,
   clearDraftSessionBySessionId,
-  markUnread,
   clearLastViewedSession,
   clearLastActiveQuickChat,
   updateSelectedTask,
@@ -91,7 +89,6 @@ export async function cleanupFailedFirstSendSession({
   clearPendingPromptSession(sessionId);
   clearDraft?.(sessionId);
   clearDraftSessionBySessionId?.(sessionId);
-  markUnread?.(sessionId);
   clearLastViewedSession?.(sessionId);
   clearLastActiveQuickChat?.(sessionId);
   removeFailedFirstSendSessionFromCache(queryClient, sessionId, taskId, updateSelectedTask);

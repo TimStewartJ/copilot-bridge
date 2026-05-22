@@ -64,6 +64,19 @@ describe("Session metadata routes", () => {
     expect(res.body.ok).toBe(true);
   });
 
+  it("DELETE /api/sessions/:id prunes read state for the deleted session", async () => {
+    ctx.readStateStore.markRead("deleted-sess", "2026-05-21T12:00:00.000Z");
+    ctx.readStateStore.markRead("kept-sess", "2026-05-21T12:05:00.000Z");
+
+    const res = await request(app).delete("/api/sessions/deleted-sess");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+
+    const state = await request(app).get("/api/read-state");
+    expect(state.body["deleted-sess"]).toBeUndefined();
+    expect(state.body["kept-sess"]).toBe("2026-05-21T12:05:00.000Z");
+  });
+
   it("POST /api/sessions/batch archives multiple sessions", async () => {
     const res = await request(app)
       .post("/api/sessions/batch")
