@@ -1,0 +1,40 @@
+diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/@github/copilot-sdk/dist/cjs/client.js
+index 2748bb5..d25ee35 100644
+--- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
++++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
+@@ -634,6 +634,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+         defaultAgent: config.defaultAgent,
+@@ -756,6 +757,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+         defaultAgent: config.defaultAgent,
+diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
+index e1278a0..f07adfd 100644
+--- a/node_modules/@github/copilot-sdk/dist/client.js
++++ b/node_modules/@github/copilot-sdk/dist/client.js
+@@ -620,6 +620,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+         defaultAgent: config.defaultAgent,
+@@ -742,6 +743,7 @@ class CopilotClient {
+         streaming: config.streaming,
+         includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
+         mcpServers: toWireMcpServers(config.mcpServers),
++        githubMcpToolOptions: config.githubMcpToolOptions,
+         envValueMode: "direct",
+         customAgents: toWireCustomAgents(config.customAgents),
+         defaultAgent: config.defaultAgent,
