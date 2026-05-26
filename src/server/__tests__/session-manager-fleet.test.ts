@@ -48,7 +48,7 @@ describe("SessionManager Fleet", () => {
       },
     };
 
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -72,7 +72,7 @@ describe("SessionManager Fleet", () => {
   it("rejects Fleet launches when the session has no plan", () => {
     const { manager } = createManager();
     vi.spyOn(manager, "hasPlan").mockReturnValue(false);
-    manager.client = {};
+    manager.backend = {};
 
     expect(() => manager.startFleet("session-1")).toThrow("Session has no plan to run with Fleet");
   });

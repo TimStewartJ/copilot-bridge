@@ -242,7 +242,7 @@ describe("SessionManager workspace resolution", () => {
     const task = taskStore.createTask("Pinned task");
     taskStore.updateTask(task.id, { cwd: taskWorkspace });
 
-    manager.client = {
+    manager.backend = {
       createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
@@ -260,7 +260,7 @@ describe("SessionManager workspace resolution", () => {
     const task = taskStore.createTask("Pinned task");
     taskStore.updateTask(task.id, { cwd: taskWorkspaceV1 });
 
-    manager.client = {
+    manager.backend = {
       createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
@@ -301,7 +301,7 @@ describe("SessionManager workspace resolution", () => {
     writeFileSync(join(sourceDir, "workspace.yaml"), `cwd: ${legacyWorkspace}\n`);
 
     const { manager, sessionWorkspaceStore } = createManager({ copilotHome });
-    manager.client = {
+    manager.backend = {
       rpc: {
         sessions: {
           fork: vi.fn(async () => ({ sessionId: "forked-session" })),
@@ -492,7 +492,7 @@ describe("SessionManager forkSession", () => {
     const { manager, sessionWorkspaceStore } = createManager(copilotHome);
     sessionWorkspaceStore.setWorkspace("source-session", sourceWorkspace);
     const fork = vi.fn(async () => ({ sessionId: "forked-session" }));
-    manager.client = {
+    manager.backend = {
       rpc: { sessions: { fork } },
     };
 
@@ -509,7 +509,7 @@ describe("SessionManager forkSession", () => {
     tempDirs.push(copilotHome);
     const { manager } = createManager(copilotHome);
     const fork = vi.fn(async () => ({ sessionId: "bounded-fork" }));
-    manager.client = {
+    manager.backend = {
       rpc: { sessions: { fork } },
     };
 
@@ -534,7 +534,7 @@ describe("SessionManager forkSession", () => {
       disconnect,
       rpc: { name: { set, get } },
     }));
-    manager.client = {
+    manager.backend = {
       resumeSession,
     };
 

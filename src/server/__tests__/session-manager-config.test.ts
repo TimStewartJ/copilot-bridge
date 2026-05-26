@@ -235,7 +235,7 @@ describe("SessionManager session config", () => {
       config: { sessionMcpServers: {} },
       copilotHome,
     }) as any;
-    manager.client = {
+    manager.backend = {
       createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
@@ -248,7 +248,7 @@ describe("SessionManager session config", () => {
       updatedTask.cwd,
     );
 
-    const createSessionConfig = manager.client.createSession.mock.calls[0][0];
+    const createSessionConfig = manager.backend.createSession.mock.calls[0][0];
     const content = createSessionConfig.systemMessage.content;
     expect(content).toContain("- Done when: Preview is approved");
     expect(content).toContain("- Next action: Open the preview");
@@ -276,7 +276,7 @@ describe("SessionManager session config", () => {
       config: { sessionMcpServers: {} },
       copilotHome,
     }) as any;
-    manager.client = {
+    manager.backend = {
       createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
@@ -289,7 +289,7 @@ describe("SessionManager session config", () => {
       completedTask.cwd,
     );
 
-    const createSessionConfig = manager.client.createSession.mock.calls[0][0];
+    const createSessionConfig = manager.backend.createSession.mock.calls[0][0];
     const content = createSessionConfig.systemMessage.content;
     expect(content).toContain("Task status: archived.");
     expect(content).toContain("- Done when: Preview shipped");

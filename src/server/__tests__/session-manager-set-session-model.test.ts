@@ -44,7 +44,7 @@ describe("SessionManager.setSessionModel", () => {
   it("calls setModel on a cached session and returns model info", async () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.5");
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "gpt-5.5");
@@ -56,7 +56,7 @@ describe("SessionManager.setSessionModel", () => {
   it("passes reasoningEffort to setModel", async () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.5");
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "claude-opus-4.7", "high");
@@ -69,7 +69,7 @@ describe("SessionManager.setSessionModel", () => {
     const manager = createManager();
     const session = createMockSession("previous-model");
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     const result = await manager.setSessionModel("cold-session", "gpt-5.5");
 
@@ -93,7 +93,7 @@ describe("SessionManager.setSessionModel", () => {
     const resumeSession = vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
       resolveResume = resolve;
     }));
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     const switching = manager.setSessionModel("cold-session", "gpt-5.5");
     manager.sessionObjects.set("cold-session", newerSession);
@@ -114,7 +114,7 @@ describe("SessionManager.setSessionModel", () => {
     session.setModel = vi.fn(() => new Promise<void>((resolve) => {
       resolveSetModel = resolve;
     }));
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     const switching = manager.setSessionModel("session-1", "gpt-5.5");
@@ -140,7 +140,7 @@ describe("SessionManager.setSessionModel", () => {
     session.setModel = vi.fn(() => new Promise<void>((resolve) => {
       resolveSetModel = resolve;
     }));
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     const switching = manager.setSessionModel("session-1", "gpt-5.5");
@@ -163,7 +163,7 @@ describe("SessionManager.setSessionModel", () => {
     const resumeSession = vi.fn(() => new Promise<typeof session>((resolve) => {
       resolveResume = resolve;
     }));
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     const switching = manager.setSessionModel("cold-session", "gpt-5.5");
     manager.evictAllCachedSessions();
@@ -187,7 +187,7 @@ describe("SessionManager.setSessionModel", () => {
     );
     const manager = createManager(copilotHome);
     const session = createMockSession("claude-opus-4.7");
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "claude-opus-4.7");
@@ -206,7 +206,7 @@ describe("SessionManager.setSessionModel", () => {
     );
     const manager = createManager(copilotHome);
     const session = createMockSession("gpt-5.5");
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     await manager.setSessionModel("session-1", "gpt-5.5", "high");
@@ -237,7 +237,7 @@ describe("SessionManager.setSessionModel", () => {
       rpc: { model: { getCurrent } },
       disconnect: vi.fn(),
     };
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     await manager.setSessionModel("session-1", "gpt-5.5", "high");
@@ -249,7 +249,7 @@ describe("SessionManager.setSessionModel", () => {
 
   it("rejects busy sessions", async () => {
     const manager = createManager();
-    manager.client = { resumeSession: vi.fn() };
+    manager.backend = { resumeSession: vi.fn() };
     manager.sessionRuns.set("busy-session", {
       state: "busy",
       startedAt: Date.now(),
@@ -259,7 +259,7 @@ describe("SessionManager.setSessionModel", () => {
     await expect(manager.setSessionModel("busy-session", "gpt-5.5")).rejects.toThrow(
       "Cannot switch model on a busy session",
     );
-    expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
   });
 
   it("rejects when client is not initialized", async () => {
@@ -274,7 +274,7 @@ describe("SessionManager.setSessionModel", () => {
   it("omits reasoningEffort from result when not provided", async () => {
     const manager = createManager();
     const session = createMockSession(undefined);
-    manager.client = {};
+    manager.backend = {};
     manager.sessionObjects.set("session-1", session);
 
     const result = await manager.setSessionModel("session-1", "gpt-5.5");

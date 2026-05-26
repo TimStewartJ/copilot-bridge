@@ -92,7 +92,7 @@ describe("SessionManager stale cached session recovery", () => {
       });
     });
 
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(freshSession),
     };
     manager.sessionObjects.set("session-1", cachedSession);
@@ -101,7 +101,7 @@ describe("SessionManager stale cached session recovery", () => {
 
     expect(cachedSession.send).toHaveBeenCalledTimes(1);
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.client.resumeSession).toHaveBeenCalledTimes(1);
+    expect(manager.backend.resumeSession).toHaveBeenCalledTimes(1);
     expect(freshSession.send).toHaveBeenCalledTimes(1);
     expect(freshSession.send).toHaveBeenCalledWith({ prompt: "hello" });
     expect(manager.sessionObjects.get("session-1")).toBe(freshSession);
@@ -118,13 +118,13 @@ describe("SessionManager stale cached session recovery", () => {
       throw createConnectionClosedError();
     });
 
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(resumedSession),
     };
 
     await expect(manager._doWork("session-1", "hello", bus)).rejects.toThrow("Connection is closed");
 
-    expect(manager.client.resumeSession).toHaveBeenCalledTimes(1);
+    expect(manager.backend.resumeSession).toHaveBeenCalledTimes(1);
     expect(resumedSession.send).toHaveBeenCalledTimes(1);
   });
 
@@ -317,7 +317,7 @@ describe("SessionManager stale cached session recovery", () => {
       });
     });
 
-    manager.client = {} as any;
+    manager.backend = {} as any;
     manager.sessionObjects.set("session-1", cachedSession);
     manager.startWork("session-1", "hello");
     await flushMicrotasks();

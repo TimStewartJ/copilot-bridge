@@ -92,7 +92,7 @@ describe("SessionManager graceful shutdown", () => {
       browserSessionStore: { closeAll },
       copilotHome,
     }) as any;
-    manager.client = { stop };
+    manager.backend = { stop };
 
     await manager.gracefulShutdown();
 
@@ -104,7 +104,7 @@ describe("SessionManager graceful shutdown", () => {
       undefined,
     );
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(manager.client).toBeNull();
+    expect(manager.backend).toBeNull();
   });
 
   it("continues shutdown when primary bridge browser cleanup fails", async () => {
@@ -115,21 +115,21 @@ describe("SessionManager graceful shutdown", () => {
     const manager = createManager({
       browserSessionStore: { closeAll },
     }) as any;
-    manager.client = { stop };
+    manager.backend = { stop };
 
     await manager.gracefulShutdown();
 
     expect(closeAll).toHaveBeenCalledTimes(1);
     expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(manager.client).toBeNull();
+    expect(manager.backend).toBeNull();
   });
 
   it("aborts active runs instead of suspending them during graceful shutdown", async () => {
     const session = makeSession();
     const stop = vi.fn().mockResolvedValue(undefined);
     const manager = createManager() as any;
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
       stop,
     };

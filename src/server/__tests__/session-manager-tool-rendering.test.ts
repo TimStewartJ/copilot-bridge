@@ -122,7 +122,7 @@ describe("SessionManager tool result rendering", () => {
       { type: "session.idle", timestamp: "2026-04-10T10:00:09.000Z", data: {} },
     ]);
 
-    manager.client = {} as any;
+    manager.backend = {} as any;
     manager.sessionObjects.set("session-1", session);
 
     await manager._doWork("session-1", "show tool results", bus);
@@ -191,7 +191,7 @@ describe("SessionManager tool result rendering", () => {
       { type: "session.idle", timestamp: "2026-04-10T11:00:03.000Z", data: {} },
     ]);
 
-    manager.client = {} as any;
+    manager.backend = {} as any;
     manager.sessionObjects.set("session-2", session);
 
     await manager._doWork("session-2", "show failed tool results", bus);
@@ -253,7 +253,7 @@ describe("SessionManager tool result rendering", () => {
       { type: "session.idle", timestamp: "2026-04-10T12:00:07.000Z", data: {} },
     ]);
 
-    manager.client = {} as any;
+    manager.backend = {} as any;
     manager.sessionObjects.set("session-3", session);
 
     await manager._doWork("session-3", "show progress labels", bus);

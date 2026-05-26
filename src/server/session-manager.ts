@@ -1,7 +1,24 @@
-// Copilot SDK session manager
-// Universal tools — taskId is a parameter, same tools for every session
+// Coding-agent session manager (currently backed by `@github/copilot-sdk`
+// via `CopilotBackend`).
+//
+// As of Step 1 of the agent-agnostic roadmap, this file no longer imports
+// the SDK directly. All client/session lifecycle goes through the
+// `AgentBackend` / `AgentSession` interfaces in `./agent-backend`. Tool
+// definitions still flow through `defineTool` from the SDK — that coupling
+// moves to Step 2 (tools-as-MCP).
+//
+// Universal tools — taskId is a parameter, same tools for every session.
 
-import { CopilotClient, defineTool, type CopilotClientOptions } from "@github/copilot-sdk";
+import { defineTool } from "@github/copilot-sdk";
+import {
+  CopilotBackend,
+  createAgentBackend,
+  type AgentBackend,
+  type AgentBackendFactory,
+  type AgentModelInfo,
+  type AgentSession,
+  type CopilotClientFactory,
+} from "./agent-backend/index.js";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -161,8 +178,7 @@ export {
   resolveBridgeCopilotCliPath,
 } from "./copilot-client-options.js";
 
-type CopilotClientFactory = (options: CopilotClientOptions | undefined) => CopilotClient;
-type CopilotModelList = Awaited<ReturnType<CopilotClient["listModels"]>>;
+type CopilotModelList = AgentModelInfo[];
 export const MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS = 30_000;
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
@@ -179,7 +195,7 @@ export class ModelRefreshClientRotationTimeoutError extends Error {
     readonly operation: ModelRefreshClientRotationOperation,
     readonly timeoutMs: number,
   ) {
-    super(`Copilot SDK client model-refresh rotation timed out after ${timeoutMs}ms while ${operation}.`);
+    super(`Agent backend model-refresh rotation timed out after ${timeoutMs}ms while ${operation}.`);
     this.name = "ModelRefreshClientRotationTimeoutError";
   }
 }
@@ -257,9 +273,20 @@ export interface SessionManagerDeps {
   browserSessionStore?: BrowserSessionStore;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   telemetryStore?: TelemetryStore;
-  /** Custom env for CopilotClient — use to set COPILOT_HOME for session isolation */
+  /** Custom env for the agent backend — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
+  /**
+   * Test seam: build the underlying Copilot SDK client. Step 1 keeps this
+   * Copilot-specific because the only backend wired here is Copilot.
+   * Replaced by a backend-neutral factory in Step 3 when a second backend
+   * lands.
+   */
   createCopilotClient?: CopilotClientFactory;
+  /**
+   * Test seam: build an arbitrary AgentBackend. Overrides
+   * `createCopilotClient` when both are provided.
+   */
+  createBackend?: AgentBackendFactory;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
@@ -271,6 +298,7 @@ export interface CreateSessionManagerOpts {
   config: SessionManagerDeps["config"];
   clientEnv?: SessionManagerDeps["clientEnv"];
   createCopilotClient?: CopilotClientFactory;
+  createBackend?: AgentBackendFactory;
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
 }
@@ -318,6 +346,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     config: opts.config,
     clientEnv,
     createCopilotClient: opts.createCopilotClient,
+    createBackend: opts.createBackend,
     copilotHome,
     runtimePaths,
   });
@@ -325,14 +354,14 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
 
 export class SessionManager {
   private static DISPOSABLE_TITLE_SWEEP_GRACE_MS = 60_000;
-  private client: CopilotClient | null = null;
-  private clientRotation: Promise<CopilotClient> | null = null;
+  private backend: AgentBackend | null = null;
+  private backendRotation: Promise<AgentBackend> | null = null;
   private deps: SessionManagerDeps;
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
   private modelSwitchingSessions = new Set<string>();
-  private sessionObjects = new Map<string, any>(); // cached CopilotSession objects
+  private sessionObjects = new Map<string, AgentSession>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
   private pendingSessionEvictions = new Set<string>();
@@ -397,11 +426,11 @@ export class SessionManager {
     this.sessionNameAutogenerator = createSessionNameAutogenerator({
       listModels: () => this.listModels(),
       createSession: async (sessionConfig) => {
-        const client = await this.getClientAfterRotation();
+        const client = await this.getBackendAfterRotation();
         return client.createSession(sessionConfig);
       },
       deleteSession: async (sessionId) => {
-        const client = await this.getClientAfterRotation();
+        const client = await this.getBackendAfterRotation();
         await client.deleteSession(sessionId);
       },
       getCopilotHome: () => this.getCopilotHome(),
@@ -412,7 +441,7 @@ export class SessionManager {
       logger: console,
     });
     this.sessionRunner = new SessionRunner({
-      getClient: () => this.client,
+      getBackend: () => this.backend,
       sessionObjects: this.sessionObjects,
       mcpStatus: this.mcpStatus,
       activeRunControllers: this.activeRunControllers,
@@ -630,41 +659,41 @@ export class SessionManager {
     });
   }
 
-  private createCopilotClient(): CopilotClient {
-    const options = buildCopilotClientOptions(this.deps.clientEnv);
-    return this.deps.createCopilotClient?.(options) ?? new CopilotClient(options);
+  private createBackend(): AgentBackend {
+
+    return this.deps.createBackend?.(undefined) ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv, createCopilotClient: this.deps.createCopilotClient });
   }
 
-  private forceStopTimedOutClient(client: CopilotClient, context: string): void {
-    if (typeof client.forceStop !== "function") return;
+  private forceStopTimedOutBackend(backend: AgentBackend, context: string): void {
+    if (typeof backend.forceStop !== "function") return;
     try {
-      void client.forceStop().catch((error) => {
-        console.error(`[sdk] Model refresh client rotation timed out while ${context}; force stop failed:`, error);
+      void backend.forceStop().catch((error) => {
+        console.error(`[sdk] Model refresh backend rotation timed out while ${context}; force stop failed:`, error);
       });
     } catch (error) {
-      console.error(`[sdk] Model refresh client rotation timed out while ${context}; force stop failed:`, error);
+      console.error(`[sdk] Model refresh backend rotation timed out while ${context}; force stop failed:`, error);
     }
   }
 
-  private getClient(): CopilotClient {
-    if (this.clientRotation) {
+  private getBackend(): AgentBackend {
+    if (this.backendRotation) {
       throw new Error("Copilot SDK client refresh is in progress; try again shortly");
     }
-    if (!this.client) throw new Error("SessionManager not initialized");
-    return this.client;
+    if (!this.backend) throw new Error("SessionManager not initialized");
+    return this.backend;
   }
 
-  private async getClientAfterRotation(): Promise<CopilotClient> {
-    if (this.clientRotation) {
-      await this.clientRotation;
+  private async getBackendAfterRotation(): Promise<AgentBackend> {
+    if (this.backendRotation) {
+      await this.backendRotation;
     }
-    if (!this.client) throw new Error("SessionManager not initialized");
-    return this.client;
+    if (!this.backend) throw new Error("SessionManager not initialized");
+    return this.backend;
   }
 
-  private async rotateCopilotClientForModelRefresh(): Promise<CopilotClient> {
-    if (this.clientRotation) {
-      return this.clientRotation;
+  private async rotateBackendForModelRefresh(): Promise<AgentBackend> {
+    if (this.backendRotation) {
+      return this.backendRotation;
     }
 
     const activeSessions = this.getActiveSessions().length;
@@ -672,29 +701,29 @@ export class SessionManager {
       throw new ModelRefreshBlockedError(activeSessions);
     }
 
-    const previousClient = this.client;
-    if (!previousClient) throw new Error("SessionManager not initialized");
+    const previousBackend = this.backend;
+    if (!previousBackend) throw new Error("SessionManager not initialized");
 
     this.evictAllCachedSessions();
     const rotation = Promise.resolve().then(async () => {
-      console.log("[sdk] Rotating Copilot SDK client for model refresh...");
-      this.client = null;
+      console.log("[sdk] Rotating agent backend for model refresh...");
+      this.backend = null;
       try {
         await withModelRefreshClientRotationTimeout(
           MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.stopPrevious,
-          previousClient.stop(),
+          previousBackend.stop(),
         );
       } catch (error) {
         if (isModelRefreshClientRotationTimeoutError(error)) {
-          this.client = null;
-          this.forceStopTimedOutClient(previousClient, "stopping the previous client");
+          this.backend = null;
+          this.forceStopTimedOutBackend(previousBackend, "stopping the previous client");
         } else {
-          this.client = previousClient;
+          this.backend = previousBackend;
         }
         throw error;
       }
 
-      const nextClient = this.createCopilotClient();
+      const nextClient = this.createBackend();
       try {
         await withModelRefreshClientRotationTimeout(
           MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.startNext,
@@ -702,46 +731,46 @@ export class SessionManager {
         );
       } catch (error) {
         if (isModelRefreshClientRotationTimeoutError(error)) {
-          this.forceStopTimedOutClient(nextClient, "starting the refreshed client");
+          this.forceStopTimedOutBackend(nextClient, "starting the refreshed client");
         }
         try {
           await withModelRefreshClientRotationTimeout(
             MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS.restorePrevious,
-            previousClient.start(),
+            previousBackend.start(),
           );
-          this.client = previousClient;
-          console.warn("[sdk] Model refresh client rotation failed; restored previous Copilot SDK client");
+          this.backend = previousBackend;
+          console.warn("[sdk] Model refresh backend rotation failed; restored previous agent backend");
         } catch (restoreError) {
-          this.client = null;
-          console.error("[sdk] Model refresh client rotation failed and previous Copilot SDK client could not be restored:", restoreError);
+          this.backend = null;
+          console.error("[sdk] Model refresh backend rotation failed and previous agent backend could not be restored:", restoreError);
           if (isModelRefreshClientRotationTimeoutError(restoreError)) {
-            this.forceStopTimedOutClient(previousClient, "restoring the previous client");
+            this.forceStopTimedOutBackend(previousBackend, "restoring the previous client");
             throw restoreError;
           }
         }
         throw error;
       }
-      this.client = nextClient;
-      console.log("[sdk] Copilot SDK client rotated for model refresh");
+      this.backend = nextClient;
+      console.log("[sdk] Agent backend rotated for model refresh");
       return nextClient;
     });
 
-    this.clientRotation = rotation;
+    this.backendRotation = rotation;
     try {
       return await rotation;
     } finally {
-      if (this.clientRotation === rotation) {
-        this.clientRotation = null;
+      if (this.backendRotation === rotation) {
+        this.backendRotation = null;
       }
     }
   }
 
   async initialize(): Promise<void> {
-    console.log("[sdk] Initializing Copilot SDK client...");
+    console.log("[sdk] Initializing agent backend...");
     configureRestartActiveSessionCountProvider(() => this.getActiveSessions().length);
-    this.client = this.createCopilotClient();
-    await this.client.start();
-    console.log("[sdk] Copilot SDK client ready");
+    this.backend = this.createBackend();
+    await this.backend.start();
+    console.log("[sdk] Agent backend ready");
     this.sweepLeakedDisposableTitleSessions();
     void this.migrateLegacySessionTitles().catch((error) => {
       console.warn(`[sdk] Legacy session title migration failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -773,7 +802,7 @@ export class SessionManager {
   }
 
   async listSessions() {
-    const client = await this.getClientAfterRotation();
+    const client = await this.getBackendAfterRotation();
 
     const now = Date.now();
     if (this.sessionListCache && (now - this.sessionListCache.timestamp) < SessionManager.SESSION_LIST_TTL) {
@@ -789,7 +818,7 @@ export class SessionManager {
 
   /** List available models from the Copilot SDK */
   async listModels() {
-    const client = await this.getClientAfterRotation();
+    const client = await this.getBackendAfterRotation();
     const t0 = Date.now();
     const models = await client.listModels();
     this.recordSpan("session.listModels", Date.now() - t0);
@@ -798,7 +827,7 @@ export class SessionManager {
 
   async refreshModels(): Promise<ModelRefreshResult> {
     const t0 = Date.now();
-    const client = await this.rotateCopilotClientForModelRefresh();
+    const client = await this.rotateBackendForModelRefresh();
     const models = await client.listModels();
     this.recordSpan("session.refreshModels", Date.now() - t0, undefined, {
       count: Array.isArray(models) ? models.length : undefined,
@@ -902,7 +931,7 @@ export class SessionManager {
   }
 
   private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
-    const client = this.getClient();
+    const client = this.getBackend();
 
     const cachedSession = this.sessionObjects.get(sessionId);
     if (cachedSession) return operation(cachedSession);
@@ -955,7 +984,7 @@ export class SessionManager {
   }
 
   async getSessionMetadata(sessionId: string) {
-    const client = this.getClient();
+    const client = this.getBackend();
     return client.getSessionMetadata(sessionId);
   }
 
@@ -980,7 +1009,7 @@ export class SessionManager {
     } catch { /* session.rpc may not exist */ }
   }
 
-  private cacheResumedSession(sessionId: string, session: any): any {
+  private cacheResumedSession(sessionId: string, session: AgentSession): AgentSession {
     const current = this.sessionObjects.get(sessionId);
     if (current && current !== session) {
       try { session.disconnect?.(); } catch { /* best-effort */ }
@@ -991,7 +1020,7 @@ export class SessionManager {
     return session;
   }
 
-  private replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): any {
+  private replaceCachedSession(sessionId: string, expectedSession: AgentSession, nextSession: AgentSession): AgentSession {
     const current = this.sessionObjects.get(sessionId);
     if (current && current !== expectedSession && current !== nextSession) {
       try { nextSession.disconnect?.(); } catch { /* best-effort */ }
@@ -1026,7 +1055,7 @@ export class SessionManager {
     serverName: string,
     options: { forceReauth?: boolean } = {},
   ): Promise<McpLoginResult> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot authenticate MCP server for a busy session");
     }
@@ -1163,7 +1192,7 @@ export class SessionManager {
   }
 
   async createSession(): Promise<{ sessionId: string }> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
@@ -1183,7 +1212,7 @@ export class SessionManager {
   }
 
   async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
@@ -1213,7 +1242,7 @@ export class SessionManager {
   }
 
   async createTaskSession(taskId: string, taskTitle: string, workItems: WorkItemRef[], prDescriptions: string[], notes: string, cwd?: string, scheduleContext?: ScheduleContext, groupNotes?: { groupName: string; notes: string } | null): Promise<{ sessionId: string }> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
@@ -1361,7 +1390,7 @@ export class SessionManager {
   }
 
   async getSessionMessages(sessionId: string, opts?: { limit?: number; before?: number }): Promise<{ messages: TransformedEntry[]; total: number; hasMore: boolean; lastVisibleActivityAt?: string }> {
-    const client = this.getClient();
+    const client = this.getBackend();
 
     const t0 = Date.now();
     const sid = sessionId.slice(0, 8);
@@ -1485,7 +1514,7 @@ export class SessionManager {
    * Returns a promise that resolves when the session is ready for interaction.
    */
   async warmSession(sessionId: string): Promise<void> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (this.sessionObjects.has(sessionId)) {
       this.recordSpan("session.warm.alreadyCached", 0, sessionId);
       return;
@@ -1557,7 +1586,7 @@ export class SessionManager {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot delete a busy session");
     }
@@ -1601,7 +1630,7 @@ export class SessionManager {
   }
 
   async reloadSession(sessionId: string): Promise<McpServerStatus[]> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (this.isSessionBusy(sessionId)) {
       throw new Error("Cannot reload a busy session");
     }
@@ -1704,7 +1733,7 @@ export class SessionManager {
     model: string,
     reasoningEffort?: string,
   ): Promise<{ model: string; reasoningEffort?: string; modelId?: string }> {
-    const client = this.getClient();
+    const client = this.getBackend();
     if (isRestartPending()) throw new Error("Cannot switch model while a restart is pending");
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
 
@@ -1880,10 +1909,10 @@ export class SessionManager {
     }
 
     // Stop the SDK client
-    if (this.client) {
+    if (this.backend) {
       console.log("[sdk] Stopping Copilot SDK client...");
-      await this.client.stop();
-      this.client = null;
+      await this.backend.stop();
+      this.backend = null;
     }
     console.log("[sdk] Graceful shutdown complete");
   }
@@ -1893,10 +1922,10 @@ export class SessionManager {
       "session_ended",
       "Session manager shut down before the user input request was answered",
     );
-    if (this.client) {
+    if (this.backend) {
       console.log("[sdk] Shutting down Copilot SDK client...");
-      await this.client.stop();
-      this.client = null;
+      await this.backend.stop();
+      this.backend = null;
     }
   }
 }

@@ -145,7 +145,7 @@ describe("SessionManager model refresh", () => {
 
     await refreshExpectation;
     await listDuringRotationExpectation;
-    expect((manager as any).clientRotation).toBeNull();
+    expect((manager as any).backendRotation).toBeNull();
     expect(oldClient.forceStop).toHaveBeenCalledOnce();
     expect(freshClient.start).not.toHaveBeenCalled();
     await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
@@ -169,7 +169,7 @@ describe("SessionManager model refresh", () => {
 
     await refreshExpectation;
     await listDuringRotationExpectation;
-    expect((manager as any).clientRotation).toBeNull();
+    expect((manager as any).backendRotation).toBeNull();
     expect(freshClient.forceStop).toHaveBeenCalledOnce();
     expect(oldClient.start).toHaveBeenCalledTimes(2);
     await expect(manager.listModels()).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
@@ -196,7 +196,7 @@ describe("SessionManager model refresh", () => {
 
     await refreshExpectation;
     await listDuringRotationExpectation;
-    expect((manager as any).clientRotation).toBeNull();
+    expect((manager as any).backendRotation).toBeNull();
     expect(oldClient.forceStop).toHaveBeenCalledOnce();
     await expect(manager.listModels()).rejects.toThrow("SessionManager not initialized");
   });
