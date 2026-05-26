@@ -1,5 +1,5 @@
 const GITHUB_MCP_CONFIG_METHOD_PATTERN = /async createBuiltInGitHubMcpConfig\((\w+)\)\{let (\w+);try\{\2=await (\w+)\(\1\)\}catch\{return\}if\(\2\)return (\w+)\(\2,\1,\{\},(\w+)\)\}/g;
-const GITHUB_MCP_CONFIG_CALL_PATTERN = /if\(r\.enableConfigDiscovery&&o&&!r\.provider&&!r\.gitHubToken\)\{let (\w+)=await this\.createBuiltInGitHubMcpConfig\(o\);\1&&\(s\.mcpServers=\{"github-mcp-server":\1,\.\.\.s\.mcpServers\}\)\}/g;
+const GITHUB_MCP_CONFIG_CALL_PATTERN = /if\(r\.enableConfigDiscovery&&o&&!r\.provider&&!r\.gitHubToken\)\{let (\w+)=await this\.createBuiltInGitHubMcpConfig\(o\);\1&&\((\w+)\.mcpServers=\{"github-mcp-server":\1,\.\.\.(\w+)\.mcpServers\}\)\}/g;
 
 function patchCopilotAppSource(source) {
   let methodMatches = 0;
@@ -17,9 +17,9 @@ function patchCopilotAppSource(source) {
   let callMatches = 0;
   source = source.replace(
     GITHUB_MCP_CONFIG_CALL_PATTERN,
-    (match, configVar) => {
+    (match, configVar, sessionVar) => {
       callMatches++;
-      return `if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&o&&!r.provider&&!r.gitHubToken){let ${configVar}=await this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions);${configVar}&&(s.mcpServers={"github-mcp-server":${configVar},...s.mcpServers})}`;
+      return `if((r.enableConfigDiscovery||r.githubMcpToolOptions)&&o&&!r.provider&&!r.gitHubToken){let ${configVar}=await this.createBuiltInGitHubMcpConfig(o,r.githubMcpToolOptions);${configVar}&&(${sessionVar}.mcpServers={"github-mcp-server":${configVar},...${sessionVar}.mcpServers})}`;
     },
   );
   if (callMatches !== 2) {
