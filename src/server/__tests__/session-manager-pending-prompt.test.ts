@@ -36,11 +36,7 @@ describe("SessionManager pendingPrompt lifecycle", () => {
     let releaseSend: (() => void) | undefined;
 
     const session = {
-      rpc: {
-        mode: {
-          set: vi.fn().mockResolvedValue(undefined),
-        },
-      },
+      setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((cb: (event: any) => void) => {
         handler = cb;
         return vi.fn();

@@ -29,7 +29,7 @@ describe("session name RPC persistence", () => {
       if (set.mock.calls.length >= 3) visibleName = name;
     });
     const get = vi.fn(async () => ({ name: visibleName }));
-    const session = { rpc: { name: { set, get } } };
+    const session = { setName: set, getName: get };
     const { rpc, withSessionNameRpc, emitted } = createRpc({ session });
 
     await rpc.setSessionName("session-1", "New concise title");
@@ -37,8 +37,8 @@ describe("session name RPC persistence", () => {
     expect(withSessionNameRpc).toHaveBeenCalledTimes(1);
     expect(set).toHaveBeenCalledTimes(3);
     expect(get).toHaveBeenCalledTimes(3);
-    expect(set.mock.contexts.every((context) => context === session.rpc.name)).toBe(true);
-    expect(get.mock.contexts.every((context) => context === session.rpc.name)).toBe(true);
+    expect(set.mock.contexts.every((context) => context === session)).toBe(true);
+    expect(get.mock.contexts.every((context) => context === session)).toBe(true);
     expect(emitted).toEqual([{ sessionId: "session-1", name: "New concise title" }]);
   });
 
@@ -48,13 +48,13 @@ describe("session name RPC persistence", () => {
       if (set.mock.calls.length >= 2) visibleName = name;
     });
     const get = vi.fn(async () => ({ name: visibleName }));
-    const session = { rpc: { name: { set, get } } };
+    const session = { setName: set, getName: get };
     const withSessionNameRpc = vi.fn(async <T>(_sessionId: string, _operation: (session: any) => Promise<T>) => {
       throw new Error("unexpected resume");
     });
     const { rpc, emitted } = createRpc({ session, withSessionNameRpc, retryDelaysMs: [0, 0] });
 
-    await rpc.setSessionName("session-1", "Live session title", { session });
+    await rpc.setSessionName("session-1", "Live session title", { session: session as unknown as any });
 
     expect(withSessionNameRpc).not.toHaveBeenCalled();
     expect(set).toHaveBeenCalledTimes(2);
@@ -67,7 +67,7 @@ describe("session name RPC persistence", () => {
     const get = vi.fn(async () => ({ name: null }));
     const emitted: Array<{ sessionId: string; name: string }> = [];
     const { rpc } = createRpc({
-      session: { rpc: { name: { set, get } } },
+      session: { setName: set, getName: get },
       emitted,
       retryDelaysMs: [0, 0],
     });
@@ -83,7 +83,7 @@ describe("session name RPC persistence", () => {
   it("requires both name.set and name.get so rename success can be verified", async () => {
     const emitted: Array<{ sessionId: string; name: string }> = [];
     const { rpc } = createRpc({
-      session: { rpc: { name: { set: vi.fn(async () => {}) } } },
+      session: { setName: vi.fn(async () => {}) },
       emitted,
     });
 

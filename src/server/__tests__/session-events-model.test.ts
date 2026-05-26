@@ -203,11 +203,7 @@ describe("SessionManager.getSessionModelState", () => {
     );
     const manager = createManager(dir);
     const mockSession = {
-      rpc: {
-        model: {
-          getCurrent: vi.fn().mockResolvedValue({ modelId: "live-model-id" }),
-        },
-      },
+      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "live-model-id" }),
     };
     manager.sessionObjects.set("live-session", mockSession);
 
@@ -228,11 +224,7 @@ describe("SessionManager.getSessionModelState", () => {
     );
     const manager = createManager(dir);
     const mockSession = {
-      rpc: {
-        model: {
-          getCurrent: vi.fn().mockRejectedValue(new Error("RPC error")),
-        },
-      },
+      getCurrentModel: vi.fn().mockRejectedValue(new Error("RPC error")),
     };
     manager.sessionObjects.set("session-x", mockSession);
 
@@ -251,7 +243,7 @@ describe("SessionManager.getSessionModelState", () => {
     );
     const manager = createManager(dir);
     const mockSession = {
-      rpc: { model: { getCurrent: vi.fn().mockResolvedValue({ modelId: undefined }) } },
+      getCurrentModel: vi.fn().mockResolvedValue({ modelId: undefined }),
     };
     manager.sessionObjects.set("session-y", mockSession);
 
@@ -273,7 +265,7 @@ describe("SessionManager.getSessionModelState", () => {
     );
     const manager = createManager(dir);
     const mockSession = {
-      rpc: { model: { getCurrent: vi.fn().mockResolvedValue({ modelId: "live-current" }) } },
+      getCurrentModel: vi.fn().mockResolvedValue({ modelId: "live-current" }),
     };
     manager.sessionObjects.set("session-z", mockSession);
 

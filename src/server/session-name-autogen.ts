@@ -114,8 +114,8 @@ export class SessionNameAutogenerator {
     }
     const providedUserMessages = normalizeUserMessages(options.userMessages);
     if (!existingMetadata?.effectiveName && providedUserMessages.length === 0) {
-      const existingName = options.session && typeof options.session.rpc?.name?.get === "function"
-        ? (await options.session.rpc.name.get())?.name
+      const existingName = options.session && typeof options.session.getName === "function"
+        ? (await options.session.getName())?.name
         : await this.deps.getSessionName(sessionId);
       if (typeof existingName === "string" && existingName.trim()) {
         this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing" });

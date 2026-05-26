@@ -61,11 +61,7 @@ describe("SessionManager run state", () => {
     const handlers: Array<(event: any) => void> = [];
     let releaseSend: (() => void) | undefined;
     const session = {
-      rpc: {
-        mode: {
-          set: vi.fn().mockResolvedValue(undefined),
-        },
-      },
+      setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((cb: (event: any) => void) => {
         handlers.push(cb);
         if (opts.replayOnSubscribe) {
@@ -223,15 +219,15 @@ describe("SessionManager run state", () => {
   it("sets the SDK session mode before sending normal work", async () => {
     const { manager } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
     manager.startWork("session-1", "hello", undefined, { mode: "autopilot" });
     await flushMicrotasks();
 
-    expect(session.rpc.mode.set).toHaveBeenCalledWith({ mode: "autopilot" });
-    expect(session.rpc.mode.set.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(session.setSendMode).toHaveBeenCalledWith({ mode: "autopilot" });
+    expect(session.setSendMode.mock.invocationCallOrder[0]).toBeLessThan(
       session.send.mock.invocationCallOrder[0],
     );
 
@@ -248,8 +244,8 @@ describe("SessionManager run state", () => {
   it("fails delivery before sending when SDK session mode cannot be set", async () => {
     const { manager } = createManager();
     const { session } = makeSession();
-    session.rpc.mode.set.mockRejectedValueOnce(new Error("mode unavailable"));
-    manager.client = {
+    session.setSendMode.mockRejectedValueOnce(new Error("mode unavailable"));
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -272,7 +268,7 @@ describe("SessionManager run state", () => {
       send: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
     };
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -524,7 +520,7 @@ describe("SessionManager run state", () => {
         setModel: vi.fn(() => new Promise<void>((resolve) => {
           resolveSetModel = resolve;
         })),
-        rpc: { model: { getCurrent: vi.fn().mockResolvedValue({ modelId: "gpt-5.5" }) } },
+        getCurrentModel: vi.fn().mockResolvedValue({ modelId: "gpt-5.5" }),
         disconnect: vi.fn(),
       };
       const { session: runSession, getHandler, getReleaseSend } = makeSession();
@@ -934,11 +930,7 @@ describe("SessionManager run state", () => {
   it("startWorkAndWaitForDelivery rejects when send fails before acceptance", async () => {
     const { manager } = createManager();
     const session = {
-      rpc: {
-        mode: {
-          set: vi.fn().mockResolvedValue(undefined),
-        },
-      },
+      setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn(() => vi.fn()),
       send: vi.fn(async () => {
         throw new Error("send failed");
@@ -981,7 +973,7 @@ describe("SessionManager run state", () => {
         { id: "previous-assistant", type: "assistant.message", data: { content: "No change" } },
         { id: "previous-idle", type: "session.idle", data: {} },
       ]),
-      rpc: { ...session.rpc, history: { truncate } },
+      truncateHistory: truncate,
     });
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -1769,11 +1761,7 @@ describe("SessionManager run state", () => {
     });
     const send = vi.fn().mockResolvedValue(undefined);
     const session = {
-      rpc: {
-        mode: {
-          set: vi.fn().mockResolvedValue(undefined),
-        },
-      },
+      setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn(() => vi.fn()),
       send,
       abort: vi.fn().mockResolvedValue(undefined),

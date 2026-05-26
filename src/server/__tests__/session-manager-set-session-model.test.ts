@@ -31,7 +31,7 @@ function createMockSession(currentModelId?: string) {
   const getCurrent = vi.fn(async () => ({ modelId: currentModelId }));
   return {
     setModel,
-    rpc: { model: { getCurrent } },
+    getCurrentModel: getCurrent,
     disconnect: vi.fn(),
   };
 }
@@ -234,7 +234,7 @@ describe("SessionManager.setSessionModel", () => {
       .mockResolvedValueOnce({ modelId: "claude-opus-4.7" });
     const session = {
       setModel,
-      rpc: { model: { getCurrent } },
+      getCurrentModel: getCurrent,
       disconnect: vi.fn(),
     };
     manager.backend = {};

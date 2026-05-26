@@ -3,7 +3,7 @@
 // tool/sub-agent event rendering. SessionManager remains the public facade
 // and delegates the run-loop concerns here.
 
-import type { AgentBackend } from "./agent-backend/index.js";
+import type { AgentBackend, AgentSession } from "./agent-backend/index.js";
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -143,13 +143,12 @@ export interface StartWorkOptions {
   mode?: SendMode;
 }
 
-async function setSessionModeForSend(session: any, mode: SendMode): Promise<void> {
-  const setMode = session?.rpc?.mode?.set;
-  if (typeof setMode !== "function") {
+async function setSessionModeForSend(session: AgentSession, mode: SendMode): Promise<void> {
+  if (typeof session.setSendMode !== "function") {
     if (mode === DEFAULT_SEND_MODE) return;
     throw new Error("Session mode switching is not available in this Copilot SDK build");
   }
-  await setMode.call(session.rpc.mode, { mode });
+  await session.setSendMode({ mode });
 }
 
 function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -493,10 +492,10 @@ export class SessionRunner {
       idleSpanName: "session.fleetToIdle",
       startLog: `[sdk] [${sid}] Starting Fleet (${prompt.length} chars)...`,
       execute: async (session) => {
-        if (typeof session.rpc?.fleet?.start !== "function") {
+        if (typeof session.startFleet !== "function") {
           throw new Error("Fleet mode is not available in this Copilot SDK build");
         }
-        await session.rpc.fleet.start({ prompt });
+        await session.startFleet({ prompt });
       },
     });
   }

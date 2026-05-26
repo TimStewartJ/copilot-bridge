@@ -2,6 +2,7 @@ import { approveAll } from "@github/copilot-sdk";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { AgentSession } from "./agent-backend/index.js";
 import {
   isSessionStatePathSegment,
   parseWorkspaceYamlSessionNameMetadata,
@@ -10,12 +11,12 @@ import {
 } from "./session-workspace-yaml.js";
 
 export interface SetSessionNameOptions {
-  session?: any;
+  session?: AgentSession;
   emit?: boolean;
 }
 
 export interface SessionNameRpcDeps {
-  withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T>;
+  withSessionNameRpc<T>(sessionId: string, operation: (session: AgentSession) => Promise<T>): Promise<T>;
   getSessionStateDir(sessionId: string): string;
   emitSessionNameChanged(sessionId: string, name: string): void;
   retryDelaysMs?: readonly number[];
@@ -88,9 +89,8 @@ export function createSessionNameRpc(deps: SessionNameRpcDeps) {
     readSessionNameMetadataFromWorkspace(deps.getSessionStateDir, sessionId);
   const retryDelaysMs = deps.retryDelaysMs?.length ? deps.retryDelaysMs : DEFAULT_SESSION_NAME_RETRY_DELAYS_MS;
 
-  const applyNameWithRetry = async (sessionId: string, session: any, title: string): Promise<void> => {
-    const nameRpc = session.rpc?.name;
-    if (typeof nameRpc?.set !== "function" || typeof nameRpc?.get !== "function") {
+  const applyNameWithRetry = async (sessionId: string, session: AgentSession, title: string): Promise<void> => {
+    if (typeof session.setName !== "function" || typeof session.getName !== "function") {
       throw new Error("Session name RPC is not available in this Copilot SDK build");
     }
 
@@ -99,7 +99,7 @@ export function createSessionNameRpc(deps: SessionNameRpcDeps) {
     for (const delayMs of retryDelaysMs) {
       if (delayMs > 0) await sleep(delayMs);
       try {
-        await nameRpc.set({ name: title });
+        await session.setName({ name: title });
         lastError = undefined;
       } catch (error) {
         lastError = error;
@@ -107,7 +107,7 @@ export function createSessionNameRpc(deps: SessionNameRpcDeps) {
       }
 
       try {
-        const result = await nameRpc.get();
+        const result = await session.getName();
         observedName = normalizeRpcSessionName(result?.name);
         if (observedName === title) return;
       } catch (error) {
@@ -128,10 +128,10 @@ export function createSessionNameRpc(deps: SessionNameRpcDeps) {
     if (workspaceName) return workspaceName;
 
     return deps.withSessionNameRpc(sessionId, async (session) => {
-      if (typeof session.rpc?.name?.get !== "function") {
+      if (typeof session.getName !== "function") {
         return readWorkspaceName(sessionId);
       }
-      const result = await session.rpc.name.get();
+      const result = await session.getName();
       return typeof result?.name === "string" && result.name.trim() ? result.name.trim() : undefined;
     });
   }

@@ -114,31 +114,74 @@ export interface AgentSetModelOptions {
 export type AgentSessionEventHandler = (event: unknown) => void;
 
 /**
- * Live or resumed session object. Mirrors `CopilotSession` 1:1 in Step 1.
+ * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
+ * through typed methods. Each optional method may be absent on older SDK
+ * builds or alternative backends; callers should treat `undefined` as "this
+ * capability is not available" and surface a clear error to the user.
  *
  * `sessionId` (not `id`) is preserved as the property name to match the
  * SDK and avoid rippling renames across api-router, push-notification,
  * schedule-retention, and other call sites that already read
  * `.sessionId` from session summaries. Step 3 may consolidate to `id`.
- *
- * `rpc` is the raw SDK escape hatch used by:
- *   - session-manager: mcp.list, mcp.oauth.login, model.getCurrent
- *   - session-history-truncation: history.truncate
- *   - session-name-rpc / session-name-autogen: name.get/set
- * Step 3 will replace these with first-class methods.
  */
 export interface AgentSession {
   readonly sessionId: string;
+
   send(args: AgentSendArgs): Promise<unknown>;
   abort(): Promise<unknown>;
   setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown>;
   disconnect?(): Promise<unknown> | void;
+
   /** Subscribe to live session events. Returns an unsubscribe function. */
   on(handler: AgentSessionEventHandler): () => void;
+
   /** Read the full on-disk event log. Used by readSdkSessionEvents. */
   getEvents?(): Promise<unknown>;
-  /** Raw SDK rpc surface — Step 1 escape hatch; Step 3 will wrap properly. */
-  readonly rpc?: any;
+
+  /** Switch the session's send mode. Optional — older SDK builds may lack `mode.set`. */
+  setSendMode?(opts: { mode: string }): Promise<unknown>;
+
+  /** Start a Fleet run. Optional — only present on Copilot SDK builds that ship Fleet. */
+  startFleet?(opts: { prompt: string }): Promise<unknown>;
+
+  /** Fetch the session's currently-selected model id. */
+  getCurrentModel?(): Promise<{ modelId?: string } | undefined>;
+
+  /** Truncate the session's persisted event history at the named event. */
+  truncateHistory?(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;
+
+  /** List MCP servers configured for the session. */
+  listMcpServers?(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined>;
+
+  /** Begin an OAuth login flow for the named MCP server. */
+  startMcpOauthLogin?(opts: AgentMcpOauthLoginOptions): Promise<unknown>;
+
+  /** Read the persisted session title/name. */
+  getName?(): Promise<{ name?: string } | undefined>;
+
+  /** Persist a new session title/name. */
+  setName?(opts: { name: string }): Promise<unknown>;
+}
+
+/**
+ * Loose MCP server status shape returned by `listMcpServers`. The Copilot
+ * SDK populates extra fields; this captures the ones the Bridge actually
+ * consumes.
+ */
+export type AgentMcpServerStatus = {
+  name: string;
+  status?: string;
+  error?: string;
+  source?: string;
+} & Record<string, unknown>;
+
+/** Arguments for `AgentSession.startMcpOauthLogin`. */
+export interface AgentMcpOauthLoginOptions {
+  serverName: string;
+  forceReauth?: boolean;
+  clientName?: string;
+  callbackSuccessMessage?: string;
+  [extra: string]: unknown;
 }
 
 /**
@@ -190,11 +233,13 @@ export interface AgentBackend {
   getSessionMetadata(sessionId: string): Promise<unknown>;
 
   /**
-   * Raw SDK rpc surface — Step 1 escape hatch. Currently consumed only by
-   * SessionManager.forkSession (`backend.rpc.sessions.fork`). Step 3 will
-   * replace this with a first-class `forkSession` method on the interface.
+   * Fork an existing session at a specific event. Optional — older SDK
+   * builds may lack the `sessions.fork` RPC.
    */
-  readonly rpc?: any;
+  forkSession?(
+    sourceSessionId: string,
+    opts?: { toEventId?: string },
+  ): Promise<{ sessionId: string }>;
 }
 
 /**

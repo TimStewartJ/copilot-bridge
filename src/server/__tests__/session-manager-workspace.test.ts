@@ -302,11 +302,7 @@ describe("SessionManager workspace resolution", () => {
 
     const { manager, sessionWorkspaceStore } = createManager({ copilotHome });
     manager.backend = {
-      rpc: {
-        sessions: {
-          fork: vi.fn(async () => ({ sessionId: "forked-session" })),
-        },
-      },
+      forkSession: vi.fn(async () => ({ sessionId: "forked-session" })),
     };
 
     await manager.forkSession("source-session");
@@ -493,13 +489,13 @@ describe("SessionManager forkSession", () => {
     sessionWorkspaceStore.setWorkspace("source-session", sourceWorkspace);
     const fork = vi.fn(async () => ({ sessionId: "forked-session" }));
     manager.backend = {
-      rpc: { sessions: { fork } },
+      forkSession: fork,
     };
 
     const result = await manager.forkSession("source-session");
 
     expect(result).toEqual({ sessionId: "forked-session" });
-    expect(fork).toHaveBeenCalledWith({ sessionId: "source-session" });
+    expect(fork).toHaveBeenCalledWith("source-session", undefined);
     expect(sessionWorkspaceStore.getWorkspace("forked-session")).toMatchObject({ cwd: sourceWorkspace });
     expect(existsSync(join(copilotHome, "session-state", "forked-session", "workspace.yaml"))).toBe(false);
   });
@@ -510,12 +506,12 @@ describe("SessionManager forkSession", () => {
     const { manager } = createManager(copilotHome);
     const fork = vi.fn(async () => ({ sessionId: "bounded-fork" }));
     manager.backend = {
-      rpc: { sessions: { fork } },
+      forkSession: fork,
     };
 
     await manager.forkSession("source-session", { toEventId: " next-event " });
 
-    expect(fork).toHaveBeenCalledWith({ sessionId: "source-session", toEventId: "next-event" });
+    expect(fork).toHaveBeenCalledWith("source-session", { toEventId: "next-event" });
   });
 
   it("sets a CLI-owned fork name through one resumed session", async () => {
@@ -532,7 +528,7 @@ describe("SessionManager forkSession", () => {
     const get = vi.fn(async () => ({ name: visibleName }));
     const resumeSession = vi.fn(async () => ({
       disconnect,
-      rpc: { name: { set, get } },
+      setName: set, getName: get,
     }));
     manager.backend = {
       resumeSession,

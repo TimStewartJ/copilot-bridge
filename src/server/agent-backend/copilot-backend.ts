@@ -1,17 +1,24 @@
-// CopilotBackend — AgentBackend implementation that delegates 1:1 to
+// CopilotBackend — AgentBackend implementation that delegates to
 // `@github/copilot-sdk`.
 //
-// Step 1 design rule: this file is the ONLY place outside of
-// agent-backend/index.ts that imports the Copilot SDK on the server
-// side (apart from the per-tool defineTool calls and SDK-specific helpers
-// which Step 2 owns). SessionManager and SessionRunner consume AgentBackend
-// / AgentSession from this module and never reach for CopilotClient again.
+// This file is the only place outside of agent-backend/index.ts that
+// imports the Copilot SDK on the server side (apart from the per-tool
+// defineTool calls and SDK-specific helpers which Step 2 owns).
+// SessionManager and SessionRunner consume AgentBackend / AgentSession
+// from this module and never reach for CopilotClient again.
+//
+// All previously-exposed rpc escape hatches (`backend.rpc`, `session.rpc`)
+// are now hidden behind typed methods. Callers reach for typed methods like
+// `forkSession`, `truncateHistory`, `getName`, etc.; this file knows about
+// the underlying SDK rpc namespaces.
 
 import { CopilotClient } from "@github/copilot-sdk";
 
 import type {
   AgentBackend,
   AgentCapabilities,
+  AgentMcpOauthLoginOptions,
+  AgentMcpServerStatus,
   AgentModelInfo,
   AgentSendArgs,
   AgentSession,
@@ -36,18 +43,15 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
 
 /**
  * Wraps a CopilotSession so the rest of the Bridge talks to AgentSession.
- * Method signatures intentionally mirror the SDK 1:1 — every call passes
- * its arguments through unchanged.
+ * Method signatures intentionally mirror the SDK 1:1 — every typed method
+ * delegates to the underlying rpc namespace, returning `undefined` when
+ * the namespace is missing on older SDK builds.
  */
 class CopilotAgentSession implements AgentSession {
   constructor(private readonly session: any) {}
 
   get sessionId(): string {
     return this.session.sessionId;
-  }
-
-  get rpc(): any {
-    return this.session.rpc;
   }
 
   send(args: AgentSendArgs): Promise<unknown> {
@@ -77,14 +81,60 @@ class CopilotAgentSession implements AgentSession {
     return this.session.getEvents();
   }
 
-  /**
-   * Escape hatch for SessionManager helpers that still need direct access
-   * to the underlying CopilotSession (e.g. caching by reference identity,
-   * passing into truncateQuietIntervalDeferTail which structurally types
-   * against the SDK shape). Step 3 should remove these last call sites.
-   */
-  get raw(): any {
-    return this.session;
+  async setSendMode(opts: { mode: string }): Promise<unknown> {
+    const setMode = this.session?.rpc?.mode?.set;
+    if (typeof setMode !== "function") {
+      throw new Error("Session mode switching is not available in this Copilot SDK build");
+    }
+    return setMode.call(this.session.rpc.mode, opts);
+  }
+
+  async startFleet(opts: { prompt: string }): Promise<unknown> {
+    const start = this.session?.rpc?.fleet?.start;
+    if (typeof start !== "function") {
+      throw new Error("Fleet mode is not available in this Copilot SDK build");
+    }
+    return start.call(this.session.rpc.fleet, opts);
+  }
+
+  async getCurrentModel(): Promise<{ modelId?: string } | undefined> {
+    const get = this.session?.rpc?.model?.getCurrent;
+    if (typeof get !== "function") return undefined;
+    return get.call(this.session.rpc.model);
+  }
+
+  async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {
+    const truncate = this.session?.rpc?.history?.truncate;
+    if (typeof truncate !== "function") return undefined;
+    return truncate.call(this.session.rpc.history, opts);
+  }
+
+  async listMcpServers(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined> {
+    const list = this.session?.rpc?.mcp?.list;
+    if (typeof list !== "function") return undefined;
+    return list.call(this.session.rpc.mcp);
+  }
+
+  async startMcpOauthLogin(opts: AgentMcpOauthLoginOptions): Promise<unknown> {
+    const login = this.session?.rpc?.mcp?.oauth?.login;
+    if (typeof login !== "function") {
+      throw new Error("MCP OAuth login is not available in this Copilot SDK build");
+    }
+    return login.call(this.session.rpc.mcp.oauth, opts);
+  }
+
+  async getName(): Promise<{ name?: string } | undefined> {
+    const get = this.session?.rpc?.name?.get;
+    if (typeof get !== "function") return undefined;
+    return get.call(this.session.rpc.name);
+  }
+
+  async setName(opts: { name: string }): Promise<unknown> {
+    const set = this.session?.rpc?.name?.set;
+    if (typeof set !== "function") {
+      throw new Error("Session name RPC is not available in this Copilot SDK build");
+    }
+    return set.call(this.session.rpc.name, opts);
   }
 }
 
@@ -98,10 +148,6 @@ export class CopilotBackend implements AgentBackend {
   readonly capabilities: AgentCapabilities = COPILOT_CAPABILITIES;
 
   constructor(private readonly client: CopilotClient) {}
-
-  get rpc(): any {
-    return (this.client as any).rpc;
-  }
 
   start(): Promise<unknown> {
     return this.client.start();
@@ -145,23 +191,17 @@ export class CopilotBackend implements AgentBackend {
     return this.client.getSessionMetadata(sessionId) as Promise<unknown>;
   }
 
-  /**
-   * Bridge between the structural `AgentSession` shape and the SessionManager
-   * helpers that still expect to cache the raw SDK session object (notably
-   * `cacheResumedSession`, `replaceCachedSession`, and the
-   * `truncateQuietIntervalDeferTail` consumer which structurally types
-   * against `getEvents` + `rpc.history.truncate`).
-   *
-   * Step 1 keeps these helpers working with the underlying CopilotSession
-   * because the AgentSession wrapper is invisible to them. Use this when
-   * the call site needs to compare by identity or pass through to a
-   * structurally-typed helper. Step 3 will fold the remaining call sites
-   * back through the AgentSession interface.
-   */
-  static unwrapSession(session: AgentSession): any {
-    if (session instanceof CopilotAgentSession) {
-      return (session as any).raw;
+  async forkSession(
+    sourceSessionId: string,
+    opts?: { toEventId?: string },
+  ): Promise<{ sessionId: string }> {
+    const fork = (this.client as any).rpc?.sessions?.fork;
+    if (typeof fork !== "function") {
+      throw new Error("Session fork is not available in this Copilot SDK build");
     }
-    return session;
+    const params = opts?.toEventId
+      ? { sessionId: sourceSessionId, toEventId: opts.toEventId }
+      : { sessionId: sourceSessionId };
+    return fork.call((this.client as any).rpc.sessions, params);
   }
 }

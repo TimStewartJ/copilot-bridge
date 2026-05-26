@@ -41,11 +41,7 @@ describe("SessionManager Fleet", () => {
         handler = cb;
         return vi.fn();
       }),
-      rpc: {
-        fleet: {
-          start: fleetStart,
-        },
-      },
+      startFleet: fleetStart,
     };
 
     manager.backend = {

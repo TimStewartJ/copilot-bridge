@@ -2,14 +2,14 @@
 //
 // These do NOT assert behavior. They assert that each AgentBackend /
 // AgentSession method delegates to the underlying CopilotClient /
-// CopilotSession with the exact arguments the SessionManager and
-// SessionRunner pass today. Behavioral coverage stays in the existing
-// session-manager-*/session-runner-* tests.
+// CopilotSession rpc namespaces with the exact arguments the
+// SessionManager and SessionRunner pass today. Behavioral coverage stays
+// in the existing session-manager-*/session-runner-* tests.
 
 import { describe, expect, it, vi } from "vitest";
 import { CopilotBackend } from "../copilot-backend.js";
 
-function createFakeSession() {
+function createFakeSession(rpc: any = {}) {
   return {
     sessionId: "fake-session-id",
     send: vi.fn(async () => undefined),
@@ -18,11 +18,11 @@ function createFakeSession() {
     disconnect: vi.fn(),
     on: vi.fn(() => () => undefined),
     getEvents: vi.fn(async () => [{ type: "test" }]),
-    rpc: { sentinel: true },
+    rpc,
   };
 }
 
-function createFakeClient(session = createFakeSession()) {
+function createFakeClient(session: ReturnType<typeof createFakeSession> = createFakeSession()) {
   return {
     session,
     start: vi.fn(async () => undefined),
@@ -34,7 +34,7 @@ function createFakeClient(session = createFakeSession()) {
     resumeSession: vi.fn(async () => session),
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({ sessionId: "s1" })),
-    rpc: { sessions: { fork: vi.fn() } },
+    rpc: { sessions: { fork: vi.fn(async () => ({ sessionId: "fork-id" })) } },
   };
 }
 
@@ -103,18 +103,29 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.getSessionMetadata).toHaveBeenCalledWith("zzz");
   });
 
-  it("exposes the raw rpc handle through .rpc for legacy escape hatches", () => {
+  it("forkSession passes sessionId and toEventId to rpc.sessions.fork", async () => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
-    expect(backend.rpc).toBe(client.rpc);
+
+    await expect(backend.forkSession!("src-id")).resolves.toEqual({ sessionId: "fork-id" });
+    expect(client.rpc.sessions.fork).toHaveBeenCalledWith({ sessionId: "src-id" });
+
+    await backend.forkSession!("src-id", { toEventId: "evt-7" });
+    expect(client.rpc.sessions.fork).toHaveBeenLastCalledWith({ sessionId: "src-id", toEventId: "evt-7" });
+  });
+
+  it("forkSession throws when rpc.sessions.fork is missing", async () => {
+    const client = createFakeClient();
+    delete (client as any).rpc;
+    const backend = new CopilotBackend(client as any);
+    await expect(backend.forkSession!("src-id")).rejects.toThrow(/fork is not available/);
   });
 });
 
 describe("CopilotAgentSession wrap fidelity", () => {
   it("forwards send/abort/setModel with identical arguments", async () => {
     const session = createFakeSession();
-    const client = createFakeClient(session);
-    const backend = new CopilotBackend(client as any);
+    const backend = new CopilotBackend(createFakeClient(session) as any);
     const wrapped = await backend.createSession({} as any);
 
     const sendArgs = { prompt: "hi", attachments: [{ kind: "image" }], mode: "immediate" as const };
@@ -128,15 +139,10 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(session.setModel).toHaveBeenCalledWith("gpt-5", { reasoningEffort: "high" });
   });
 
-  it("exposes sessionId, rpc, and disconnect from the underlying session", async () => {
+  it("exposes sessionId and disconnect from the underlying session", async () => {
     const session = createFakeSession();
-    const client = createFakeClient(session);
-    const backend = new CopilotBackend(client as any);
-    const wrapped = await backend.createSession({} as any);
-
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
     expect(wrapped.sessionId).toBe("fake-session-id");
-    expect(wrapped.rpc).toBe(session.rpc);
-
     wrapped.disconnect?.();
     expect(session.disconnect).toHaveBeenCalledOnce();
   });
@@ -145,9 +151,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const unsub = vi.fn();
     const onImpl = vi.fn(() => unsub);
     const session = { ...createFakeSession(), on: onImpl };
-    const client = createFakeClient(session as any);
-    const backend = new CopilotBackend(client as any);
-    const wrapped = await backend.createSession({} as any);
+    const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
 
     const handler = vi.fn();
     const off = wrapped.on(handler);
@@ -158,9 +162,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
 
   it("delegates getEvents and surfaces a clear error when the SDK lacks it", async () => {
     const session = createFakeSession();
-    const client = createFakeClient(session);
-    const backend = new CopilotBackend(client as any);
-    const wrapped = await backend.createSession({} as any);
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
 
     await expect(wrapped.getEvents!()).resolves.toEqual([{ type: "test" }]);
 
@@ -168,11 +170,85 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped.getEvents!()).rejects.toThrow(/event API is not available/);
   });
 
-  it("CopilotBackend.unwrapSession returns the raw SDK session for legacy callers", async () => {
-    const session = createFakeSession();
-    const client = createFakeClient(session);
-    const backend = new CopilotBackend(client as any);
-    const wrapped = await backend.createSession({} as any);
-    expect(CopilotBackend.unwrapSession(wrapped)).toBe(session);
+  it("setSendMode delegates to rpc.mode.set and throws when unavailable", async () => {
+    const setMode = vi.fn(async () => undefined);
+    const session = createFakeSession({ mode: { set: setMode } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await wrapped.setSendMode!({ mode: "immediate" });
+    expect(setMode).toHaveBeenCalledWith({ mode: "immediate" });
+
+    const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped2.setSendMode!({ mode: "immediate" })).rejects.toThrow(/mode switching is not available/);
+  });
+
+  it("startFleet delegates to rpc.fleet.start and throws when unavailable", async () => {
+    const start = vi.fn(async () => undefined);
+    const session = createFakeSession({ fleet: { start } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await wrapped.startFleet!({ prompt: "go" });
+    expect(start).toHaveBeenCalledWith({ prompt: "go" });
+
+    const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped2.startFleet!({ prompt: "go" })).rejects.toThrow(/Fleet mode is not available/);
+  });
+
+  it("getCurrentModel returns undefined when rpc.model.getCurrent is missing", async () => {
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped.getCurrentModel!()).resolves.toBeUndefined();
+
+    const getCurrent = vi.fn(async () => ({ modelId: "gpt-5" }));
+    const session2 = createFakeSession({ model: { getCurrent } });
+    const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
+    await expect(wrapped2.getCurrentModel!()).resolves.toEqual({ modelId: "gpt-5" });
+  });
+
+  it("truncateHistory returns undefined when rpc.history.truncate is missing", async () => {
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped.truncateHistory!({ eventId: "x" })).resolves.toBeUndefined();
+
+    const truncate = vi.fn(async () => ({ eventsRemoved: 4 }));
+    const session2 = createFakeSession({ history: { truncate } });
+    const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
+    await expect(wrapped2.truncateHistory!({ eventId: "x" })).resolves.toEqual({ eventsRemoved: 4 });
+    expect(truncate).toHaveBeenCalledWith({ eventId: "x" });
+  });
+
+  it("listMcpServers returns undefined when rpc.mcp.list is missing", async () => {
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped.listMcpServers!()).resolves.toBeUndefined();
+
+    const list = vi.fn(async () => ({ servers: [{ name: "a", status: "connected" }] }));
+    const session2 = createFakeSession({ mcp: { list } });
+    const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
+    await expect(wrapped2.listMcpServers!()).resolves.toEqual({ servers: [{ name: "a", status: "connected" }] });
+  });
+
+  it("startMcpOauthLogin throws when rpc.mcp.oauth.login is missing, delegates otherwise", async () => {
+    const session = createFakeSession({ mcp: {} });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+    await expect(wrapped.startMcpOauthLogin!({ serverName: "x" })).rejects.toThrow(/OAuth login is not available/);
+
+    const login = vi.fn(async () => ({ authorizationUrl: "https://x" }));
+    const session2 = createFakeSession({ mcp: { oauth: { login } } });
+    const wrapped2 = await new CopilotBackend(createFakeClient(session2) as any).createSession({} as any);
+    await wrapped2.startMcpOauthLogin!({ serverName: "x" });
+    expect(login).toHaveBeenCalledWith({ serverName: "x" });
+  });
+
+  it("getName/setName delegate to rpc.name and throw on setName when missing", async () => {
+    const get = vi.fn(async () => ({ name: "title" }));
+    const set = vi.fn(async () => undefined);
+    const session = createFakeSession({ name: { get, set } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.getName!()).resolves.toEqual({ name: "title" });
+    await wrapped.setName!({ name: "new" });
+    expect(set).toHaveBeenCalledWith({ name: "new" });
+
+    const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped2.getName!()).resolves.toBeUndefined();
+    await expect(wrapped2.setName!({ name: "new" })).rejects.toThrow(/Session name RPC is not available/);
   });
 });

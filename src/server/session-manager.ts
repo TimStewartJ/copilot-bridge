@@ -219,6 +219,17 @@ function isMissingSessionError(error: unknown): boolean {
   return /not found|does not exist|no such (file|session)|ENOENT/i.test(message);
 }
 
+const MCP_SERVER_STATUS_VALUES = new Set<McpServerStatus["status"]>([
+  "connected", "failed", "needs-auth", "pending", "disabled", "not_configured", "unknown",
+]);
+
+function coerceMcpServerStatus(value: unknown): McpServerStatus["status"] {
+  if (typeof value === "string" && MCP_SERVER_STATUS_VALUES.has(value as McpServerStatus["status"])) {
+    return value as McpServerStatus["status"];
+  }
+  return "unknown";
+}
+
 function isModelRefreshClientRotationTimeoutError(error: unknown): error is ModelRefreshClientRotationTimeoutError {
   return error instanceof ModelRefreshClientRotationTimeoutError;
 }
@@ -989,24 +1000,24 @@ export class SessionManager {
   }
 
   /** Probe MCP server status via SDK RPC (fire-and-forget, updates mcpStatus map) */
-  private probeMcpStatus(sessionId: string, session: any): void {
-    try {
-      session.rpc?.mcp?.list?.()
-        .then((result: any) => {
-          if (result?.servers) {
-            const servers: McpServerStatus[] = result.servers.map((s: any) => ({
-              name: s.name,
-              status: s.status ?? "unknown",
-              error: s.error,
-              source: s.source,
-            }));
-            this.mcpStatus.set(sessionId, servers);
-            const sid = sessionId.slice(0, 8);
-            console.log(`[sdk] [${sid}] 🔌 MCP probe: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
-          }
-        })
-        .catch(() => { /* best-effort */ });
-    } catch { /* session.rpc may not exist */ }
+  private probeMcpStatus(sessionId: string, session: AgentSession): void {
+    const list = session.listMcpServers;
+    if (typeof list !== "function") return;
+    void list.call(session)
+      .then((result) => {
+        if (result?.servers) {
+          const servers: McpServerStatus[] = result.servers.map((s) => ({
+            name: s.name,
+            status: coerceMcpServerStatus(s.status),
+            error: typeof s.error === "string" ? s.error : undefined,
+            source: typeof s.source === "string" ? s.source : undefined,
+          }));
+          this.mcpStatus.set(sessionId, servers);
+          const sid = sessionId.slice(0, 8);
+          console.log(`[sdk] [${sid}] 🔌 MCP probe: ${servers.map((s) => `${s.name}=${s.status}`).join(", ")}`);
+        }
+      })
+      .catch(() => { /* best-effort */ });
   }
 
   private cacheResumedSession(sessionId: string, session: AgentSession): AgentSession {
@@ -1033,15 +1044,15 @@ export class SessionManager {
   /** Get cached MCP status for a session, or probe live if session is cached */
   async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
     const session = this.sessionObjects.get(sessionId);
-    if (session) {
+    if (session && typeof session.listMcpServers === "function") {
       try {
-        const result = await session.rpc?.mcp?.list?.();
+        const result = await session.listMcpServers();
         if (result?.servers) {
-          const servers: McpServerStatus[] = result.servers.map((s: any) => ({
+          const servers: McpServerStatus[] = result.servers.map((s) => ({
             name: s.name,
-            status: s.status ?? "unknown",
-            error: s.error,
-            source: s.source,
+            status: coerceMcpServerStatus(s.status),
+            error: typeof s.error === "string" ? s.error : undefined,
+            source: typeof s.source === "string" ? s.source : undefined,
           }));
           this.mcpStatus.set(sessionId, servers);
           return servers;
@@ -1091,16 +1102,17 @@ export class SessionManager {
         session = this.cacheResumedSession(sessionId, session);
       }
 
-      if (typeof session.rpc?.mcp?.oauth?.login !== "function") {
+      if (typeof session.startMcpOauthLogin !== "function") {
         throw new Error("MCP OAuth login is not available in this Copilot SDK build");
       }
 
-      const result = await session.rpc.mcp.oauth.login({
+      const rawResult = await session.startMcpOauthLogin({
         serverName: configuredServerName,
         forceReauth: options.forceReauth,
         clientName: "Copilot Bridge",
         callbackSuccessMessage: "Authentication complete. You can return to Copilot Bridge.",
       });
+      const result = rawResult as { authorizationUrl?: string } | undefined;
       const servers = await this.getMcpStatus(sessionId);
       console.log(`[sdk] [${sid}] MCP auth started for ${configuredServerName}${result?.authorizationUrl ? " (browser required)" : ""}`);
       return {
@@ -1212,23 +1224,21 @@ export class SessionManager {
   }
 
   async forkSession(sourceSessionId: string, options: { toEventId?: string } = {}): Promise<{ sessionId: string }> {
-    const client = this.getBackend();
+    const backend = this.getBackend();
     if (isRestartCutoverInProgress(refreshRestartStateSync())) {
       throw new Error(RESTART_PENDING_MESSAGE);
     }
 
     const sourceTask = this.findLinkedTask(sourceSessionId);
     const sourceCwd = this.resolveEffectiveSessionCwd({ sessionId: sourceSessionId, task: sourceTask });
-    if (typeof client.rpc?.sessions?.fork !== "function") {
+    if (typeof backend.forkSession !== "function") {
       throw new Error("Session fork is not available in this Copilot SDK build");
     }
 
     const toEventId = options.toEventId?.trim();
-    const params = toEventId
-      ? { sessionId: sourceSessionId, toEventId }
-      : { sessionId: sourceSessionId };
+    const forkOpts = toEventId ? { toEventId } : undefined;
     const t0 = Date.now();
-    const result = await client.rpc.sessions.fork(params);
+    const result = await backend.forkSession(sourceSessionId, forkOpts);
     const duration = Date.now() - t0;
     this.persistSessionWorkspace(result.sessionId, sourceCwd);
 
@@ -1771,8 +1781,10 @@ export class SessionManager {
       let currentModelBeforeSwitch: string | undefined;
       if (reasoningEffort === undefined && liveState?.reasoningEffort !== undefined) {
         try {
-          const current = await session.rpc?.model?.getCurrent?.();
-          currentModelBeforeSwitch = current?.modelId;
+          if (typeof session.getCurrentModel === "function") {
+            const current = await session.getCurrentModel();
+            currentModelBeforeSwitch = current?.modelId;
+          }
         } catch { /* best-effort */ }
       }
       const knownLiveReasoningEffort =
@@ -1788,8 +1800,10 @@ export class SessionManager {
 
       let modelId: string | undefined;
       try {
-        const current = await session.rpc?.model?.getCurrent?.();
-        modelId = current?.modelId;
+        if (typeof session.getCurrentModel === "function") {
+          const current = await session.getCurrentModel();
+          modelId = current?.modelId;
+        }
       } catch { /* best-effort */ }
 
       const liveModel = modelId ?? model;
@@ -1828,18 +1842,20 @@ export class SessionManager {
     const cached = this.sessionObjects.get(sessionId);
     if (cached) {
       try {
-        const current = await cached.rpc?.model?.getCurrent?.();
-        const liveModelId: string | undefined = current?.modelId;
-        if (liveModelId) {
-          const liveState = this.liveSessionModelState.get(sessionId);
-          const reasoningEffort = liveState?.model === liveModelId
-            ? liveState.reasoningEffort
-            : eventsState.reasoningEffort;
-          return {
-            model: liveModelId,
-            ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-            source: "live",
-          };
+        if (typeof cached.getCurrentModel === "function") {
+          const current = await cached.getCurrentModel();
+          const liveModelId: string | undefined = current?.modelId;
+          if (liveModelId) {
+            const liveState = this.liveSessionModelState.get(sessionId);
+            const reasoningEffort = liveState?.model === liveModelId
+              ? liveState.reasoningEffort
+              : eventsState.reasoningEffort;
+            return {
+              model: liveModelId,
+              ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+              source: "live",
+            };
+          }
         }
       } catch { /* best-effort */ }
     }
