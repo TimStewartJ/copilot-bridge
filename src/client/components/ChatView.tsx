@@ -26,6 +26,7 @@ import { useSessionStream } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import type { Draft } from "../useDrafts";
+import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import MessageBubble from "./MessageBubble";
 import {
   MessageActionsMenu,
@@ -63,7 +64,7 @@ interface ChatViewProps {
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
   onDraftClear?: () => void;
-  onCreateAndSend?: (prompt: string, attachments?: Attachment[]) => Promise<void>;
+  onCreateAndSend?: (prompt: string, attachments?: Attachment[], mode?: SendMode) => Promise<void>;
   voiceJob?: VoiceBackgroundJob | null;
   onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
   onReviewVoiceJob?: (composerKey: string) => void;
@@ -500,6 +501,7 @@ export default function ChatView({
     composerKey: string;
     prompt: string;
     attachments?: Attachment[];
+    mode?: SendMode;
   } | null>(null);
   // Exposed for external triggers (e.g. busySignal from scheduled work)
   const loadAndReconnectRef = useRef<(opts?: { background?: boolean; replace?: boolean }) => void>(() => {});
@@ -596,6 +598,7 @@ export default function ChatView({
     streamStatus,
     hadVisibleOutput,
     pendingOrigin,
+    runMode,
     pendingUserInputs = [],
     mcpServers: streamMcpServers,
     sendMessage,
@@ -1287,15 +1290,16 @@ export default function ChatView({
     scheduleAutoLoad({ consumeTopAutoFill: true });
   }, [entries, hasMore, loading, loadingMore, scheduleAutoLoad, sessionId]);
 
-  const handleSend = useCallback(async (prompt: string, attachments?: Attachment[]) => {
+  const handleSend = useCallback(async (prompt: string, attachments?: Attachment[], mode?: SendMode) => {
     if (loading) {
-      queuedSendRef.current = { sessionId, composerKey, prompt, attachments };
+      queuedSendRef.current = { sessionId, composerKey, prompt, attachments, mode };
       return;
     }
     if (creating || (isStreaming && !sessionId)) return;
 
     // Draft mode: create session on first message
     if (!sessionId && onCreateAndSend) {
+      const draftMode = mode ?? DEFAULT_SEND_MODE;
       setCreating(true);
       applyHistory([{ role: "user", content: prompt, id: `draft-user-0`, ...(attachments?.length ? { attachments } : {}) }], {
         ownerSessionId: null,
@@ -1305,7 +1309,7 @@ export default function ChatView({
         isCanonical: false,
       });
       try {
-        await onCreateAndSend(prompt, attachments);
+        await onCreateAndSend(prompt, attachments, draftMode);
       } catch (err: any) {
         const nextEntries = [
           ...entriesRef.current,
@@ -1336,7 +1340,12 @@ export default function ChatView({
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
     try {
-      await sendMessage(prompt, attachments);
+      const messageMode = isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE);
+      if (messageMode) {
+        await sendMessage(prompt, attachments, messageMode);
+      } else {
+        await sendMessage(prompt, attachments);
+      }
     } catch (err: any) {
       const nextEntriesWithError = [...entriesRef.current, { role: "assistant", content: `⚠️ Error: ${err.message}`, id: `err-${Date.now()}` } satisfies ChatEntry];
       applyHistory(nextEntriesWithError, {
@@ -1357,7 +1366,7 @@ export default function ChatView({
       return;
     }
     queuedSendRef.current = null;
-    void handleSend(queuedSend.prompt, queuedSend.attachments);
+    void handleSend(queuedSend.prompt, queuedSend.attachments, queuedSend.mode);
   }, [composerKey, creating, handleSend, isStreaming, loading, sessionId]);
 
   const handleRunFleet = useCallback(async () => {
@@ -1467,11 +1476,12 @@ export default function ChatView({
     isStreaming,
     streamStatus,
     pendingOrigin,
+    runMode,
     streamingContent,
     activeTrackCount: activeRootNodes.length,
     intentText,
     hadVisibleOutput,
-  }), [creating, isStreaming, streamStatus, pendingOrigin, streamingContent, activeRootNodes.length, intentText, hadVisibleOutput]);
+  }), [creating, isStreaming, streamStatus, pendingOrigin, runMode, streamingContent, activeRootNodes.length, intentText, hadVisibleOutput]);
 
   useLayoutEffect(() => {
     const previousMessageKey = latestMessageAnchorKeyRef.current;

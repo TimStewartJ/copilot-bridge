@@ -10,6 +10,7 @@ import type {
   VisualArtifact,
 } from "./api";
 import { API_BASE, sendChatMessage, startFleetRun } from "./api";
+import type { SendMode } from "../shared/send-mode.js";
 
 export interface PendingTool {
   toolCallId: string;
@@ -50,6 +51,7 @@ export interface StreamState {
   hadVisibleOutput: boolean;
   mcpServers: McpServerStatus[];
   pendingOrigin: PendingOrigin;
+  runMode?: SendMode;
 }
 
 const VISUAL_KIND_MIME_TYPES: Record<VisualArtifact["kind"], string> = {
@@ -468,7 +470,7 @@ export function useSessionStream(
   const retryCountRef = useRef(0);
   const renderedActiveToolsRef = useRef<PendingTool[]>([]);
 
-  const connectStream = useCallback((sid: string, pendingOrigin: PendingOrigin = "reconnect") => {
+  const connectStream = useCallback((sid: string, pendingOrigin: PendingOrigin = "reconnect", runMode?: SendMode) => {
     abortRef.current?.abort();
     const abort = new AbortController();
     abortRef.current = abort;
@@ -479,6 +481,7 @@ export function useSessionStream(
     setStreamState((s) => mkState("sending", {
       mcpServers: s.mcpServers,
       pendingOrigin,
+      runMode: pendingOrigin === "fleet" ? undefined : (runMode ?? s.runMode),
       pendingUserInputs: pendingOrigin === "reconnect" ? s.pendingUserInputs : [],
     }));
 
@@ -945,14 +948,18 @@ export function useSessionStream(
     return () => { abortRef.current?.abort(); };
   }, [sessionId]);
 
-  const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[]) => {
+  const sendMessage = useCallback(async (prompt: string, attachments?: Attachment[], mode?: SendMode) => {
     if (!sessionId) return;
     const startedFromIdle = streamStateRef.current.streamStatus === "idle";
     if (startedFromIdle) {
-      setStreamState((s) => mkState("sending", { mcpServers: s.mcpServers, pendingOrigin: "message" }));
+      setStreamState((s) => mkState("sending", {
+        mcpServers: s.mcpServers,
+        pendingOrigin: "message",
+        runMode: mode ?? s.runMode,
+      }));
     }
     try {
-      const response = await sendChatMessage(sessionId, prompt, attachments);
+      const response = await sendChatMessage(sessionId, prompt, attachments, mode);
       retryCountRef.current = 0;
       if (response.mode === "steered") {
         if (startedFromIdle && sessionRef.current === sessionId) {
@@ -960,7 +967,7 @@ export function useSessionStream(
         }
         return;
       }
-      connectStream(sessionId, "message");
+      connectStream(sessionId, "message", mode);
     } catch (err) {
       if (startedFromIdle) {
         setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));

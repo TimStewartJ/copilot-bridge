@@ -110,11 +110,38 @@ async function emitAndWait(
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   if (vi.isFakeTimers()) {
     vi.clearAllTimers();
     vi.useRealTimers();
   }
+});
+
+describe("useSessionStream send modes", () => {
+  it("posts autopilot mode and tracks it while opening the live stream", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response)
+        .mockResolvedValueOnce(sse.response);
+      vi.stubGlobal("fetch", fetchMock);
+
+      await act(async () => {
+        await getState().sendMessage("keep going", undefined, "autopilot");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 2);
+
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/chat");
+      expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+        sessionId: "session-1",
+        prompt: "keep going",
+        mode: "autopilot",
+      });
+      expect(getState().pendingOrigin).toBe("message");
+      expect(getState().runMode).toBe("autopilot");
+    });
+  });
 });
 
 describe("buildTerminalToolEntries", () => {

@@ -1,6 +1,7 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
+import type { SendMode } from "../shared/send-mode.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
   NativeUserInputResponse as NativeUserInputResponseType,
@@ -615,11 +616,13 @@ export async function sendChatMessage(
   sessionId: string,
   prompt: string,
   attachments?: Attachment[],
+  mode?: SendMode,
 ): Promise<ChatMessageAcceptedResponse> {
   return apiFetch<ChatMessageAcceptedResponse>("/api/chat", {
     sessionId,
     prompt,
     ...(attachments?.length ? { attachments } : {}),
+    ...(mode ? { mode } : {}),
   });
 }
 

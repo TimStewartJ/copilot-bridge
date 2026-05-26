@@ -4,6 +4,7 @@ import type { BlobAttachment, Attachment } from "../api";
 import { uploadFile } from "../api";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { useVoiceInput } from "../hooks/useVoiceInput";
+import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
   canAutoSendVoiceTranscript,
   resolveVoiceSubmitMode,
@@ -20,6 +21,8 @@ import {
 } from "../lib/voice-accepted-flash";
 import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
+import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
+import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 py-3 sm:px-4 md:px-6 md:py-4 lg:px-8";
@@ -47,7 +50,7 @@ function revokePreviewUrls(items: Attachment[]): void {
 }
 
 interface ChatInputProps {
-  onSend: (text: string, attachments?: Attachment[]) => void;
+  onSend: (text: string, attachments?: Attachment[], mode?: SendMode) => void;
   onAbort?: () => void;
   composerKey: string;
   sessionId?: string | null;
@@ -100,6 +103,12 @@ export default function ChatInput({
   const previousVoiceJobRef = useRef<VoiceBackgroundJob | null>(null);
   const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
+  const {
+    bind: bindSendModeMenu,
+    menu: sendModeMenu,
+    closeMenu: closeSendModeMenu,
+    isTarget: isSendModeMenuTarget,
+  } = useLongPressMenu<"send-mode">();
 
   useEffect(() => {
     inputRef.current = input;
@@ -372,7 +381,7 @@ export default function ChatInput({
 
   const manualSendBlockedByVoiceJob = !!activeVoiceJob?.serverOwned && isDraftComposerKey(composerKey);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback((mode: SendMode = DEFAULT_SEND_MODE) => {
     if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
 
     const text = inputRef.current.trim();
@@ -391,14 +400,21 @@ export default function ChatInput({
         : att,
     );
 
+    const cleanAttachmentsOrUndefined = cleanAttachments.length > 0 ? cleanAttachments : undefined;
+    const selectedMode = onAbort ? undefined : mode;
+
     onClearVoiceJobError?.(composerKey);
-    onSend(text || "(attachment)", cleanAttachments.length > 0 ? cleanAttachments : undefined);
+    if (selectedMode) {
+      onSend(text || "(attachment)", cleanAttachmentsOrUndefined, selectedMode);
+    } else {
+      onSend(text || "(attachment)", cleanAttachmentsOrUndefined);
+    }
     clearComposer();
 
     if (textareaRef.current && !window.matchMedia("(pointer: fine)").matches) {
       textareaRef.current.blur();
     }
-  }, [clearComposer, composerKey, disabled, manualSendBlockedByVoiceJob, onClearVoiceJobError, onSend, uploading]);
+  }, [clearComposer, composerKey, disabled, manualSendBlockedByVoiceJob, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -449,6 +465,15 @@ export default function ChatInput({
       ? "Send steering note"
       : "Send message";
   const submitControlTitle = showAbortControl ? "Stop generating" : sendTitle;
+  const modeMenuBindings = bindSendModeMenu(
+    "send-mode",
+    showAbortControl ? () => onAbort?.() : () => handleSend(DEFAULT_SEND_MODE),
+  );
+  const handleMenuSend = useCallback((mode: SendMode) => {
+    closeSendModeMenu();
+    handleSend(mode);
+  }, [closeSendModeMenu, handleSend]);
+  const modeMenuEnabled = !showAbortControl;
 
   return (
     <div className="border-t border-border/80 bg-bg-secondary/95">
@@ -594,27 +619,55 @@ export default function ChatInput({
               className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
             />
           </div>
-          <button
-            onClick={showAbortControl ? onAbort : handleSend}
-            disabled={!showAbortControl && !canSend}
-            className={`flex h-10 w-10 items-center justify-center self-center rounded-lg transition-colors ${
-              showAbortControl
-                ? "bg-error text-white hover:bg-error-hover"
-                : canSend
-                  ? "bg-accent text-white hover:bg-accent-hover"
-                  : "text-text-faint disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-faint"
-            }`}
-            title={submitControlTitle}
-            aria-label={submitControlTitle}
-            type="button"
+          <div
+            className={`self-center select-none touch-manipulation ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
+            style={{ WebkitTouchCallout: "none" } as React.CSSProperties}
+            onClick={modeMenuBindings.onClick}
+            onContextMenu={modeMenuEnabled ? modeMenuBindings.onContextMenu : undefined}
+            onTouchStart={modeMenuEnabled ? modeMenuBindings.onTouchStart : undefined}
+            onTouchMove={modeMenuEnabled ? modeMenuBindings.onTouchMove : undefined}
+            onTouchEnd={modeMenuEnabled ? modeMenuBindings.onTouchEnd : undefined}
+            onTouchCancel={modeMenuEnabled ? modeMenuBindings.onTouchCancel : undefined}
           >
-            {showAbortControl ? (
-              <Square size={14} fill="currentColor" />
-            ) : (
-              <SendHorizontal size={18} />
-            )}
-          </button>
+            <button
+              aria-disabled={!showAbortControl && !canSend}
+              aria-haspopup={modeMenuEnabled ? "menu" : undefined}
+              aria-expanded={modeMenuEnabled ? Boolean(sendModeMenu) : undefined}
+              tabIndex={!showAbortControl && !canSend ? -1 : undefined}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                showAbortControl
+                  ? "bg-error text-white hover:bg-error-hover"
+                  : canSend
+                    ? "bg-accent text-white hover:bg-accent-hover"
+                    : "cursor-not-allowed text-text-faint hover:bg-transparent hover:text-text-faint"
+              }`}
+              title={submitControlTitle}
+              aria-label={submitControlTitle}
+              type="button"
+            >
+              {showAbortControl ? (
+                <Square size={14} fill="currentColor" />
+              ) : (
+                <SendHorizontal size={18} />
+              )}
+            </button>
+          </div>
         </div>
+        {sendModeMenu && (
+          <ContextMenu position={sendModeMenu} onClose={closeSendModeMenu}>
+            <div className="px-3 py-2 text-xs text-text-muted">
+              Send options
+            </div>
+            <CtxDivider />
+            <CtxItem
+              icon={<span className="h-[14px] w-[14px]" aria-hidden="true" />}
+              label="Send with Autopilot"
+              onClick={() => handleMenuSend("autopilot")}
+              disabled={!canSend}
+              title="Let Copilot continue until task complete, error, stop, or limit."
+            />
+          </ContextMenu>
+        )}
       </div>
     </div>
   );

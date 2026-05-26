@@ -54,6 +54,9 @@ describe("SessionManager graceful shutdown", () => {
     const session = {
       rpc: {
         suspend: vi.fn().mockResolvedValue(undefined),
+        mode: {
+          set: vi.fn().mockResolvedValue(undefined),
+        },
       },
       on: vi.fn((handler: (event: any) => void) => {
         handlers.push(handler);

@@ -39,6 +39,7 @@ import {
   truncateQuietIntervalDeferTail,
   type QuietIntervalDeferTailTruncationRequest,
 } from "./session-history-truncation.js";
+import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
 
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
@@ -47,6 +48,7 @@ const STALLED_RUN_FORCE_RELEASE_MS = 10 * 60_000;
 const EXTERNAL_TOOL_WAIT_SPAN_INTERVAL_MS = 5 * 60_000;
 const PERSISTED_RUN_TERMINAL_EVENT_TYPES = new Set([
   "assistant.turn_end",
+  "session.task_complete",
   "session.idle",
   "session.error",
   "abort",
@@ -57,6 +59,7 @@ const PERSISTED_RUN_DIAGNOSTIC_TERMINAL_EVENT_TYPES = new Set([
 ]);
 const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
   "session.idle",
+  "session.task_complete",
   "session.error",
   "abort",
   "session.shutdown",
@@ -69,6 +72,7 @@ const PERSISTED_RUN_RELEVANT_EVENT_TYPES = new Set([
   "assistant.streaming_delta",
   "assistant.intent",
   "assistant.turn_end",
+  "session.task_complete",
   "tool.execution_start",
   "tool.execution_progress",
   "tool.execution_partial_result",
@@ -136,6 +140,16 @@ export interface StartWorkOptions {
   attentionMode?: SessionAttentionMode;
   completionAttention?: boolean | CompletionAttentionOptions;
   historyTruncation?: QuietIntervalDeferTailTruncationRequest;
+  mode?: SendMode;
+}
+
+async function setSessionModeForSend(session: any, mode: SendMode): Promise<void> {
+  const setMode = session?.rpc?.mode?.set;
+  if (typeof setMode !== "function") {
+    if (mode === DEFAULT_SEND_MODE) return;
+    throw new Error("Session mode switching is not available in this Copilot SDK build");
+  }
+  await setMode.call(session.rpc.mode, { mode });
 }
 
 function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -450,15 +464,17 @@ export class SessionRunner {
     const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
     const activeRunController = runController ?? this.createRunController(sessionId, bus);
+    const mode = options.mode ?? DEFAULT_SEND_MODE;
 
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
       attentionMode: options.attentionMode ?? "normal",
       completionAttention: options.completionAttention,
       idleSpanName: "session.sendToIdle",
-      startLog: `[sdk] [${sid}] Sending prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
+      startLog: `[sdk] [${sid}] Sending ${mode} prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       historyTruncation: options.historyTruncation,
       execute: async (session) => {
+        await setSessionModeForSend(session, mode);
         await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
       },
     });
@@ -1072,7 +1088,8 @@ export class SessionRunner {
           bus.emit({ type: "title_changed", title: data?.title ?? "" });
           this.deps.globalBus.emit({ type: "session:title", sessionId, title: data?.title ?? "" });
           break;
-        case "session.idle": {
+        case "session.idle":
+        case "session.task_complete": {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const content = lastAssistantContent ?? "(no response)";
           if (
@@ -1080,7 +1097,7 @@ export class SessionRunner {
             && hasActiveFollowupAfterTurnEnd()
           ) {
             console.warn(
-              `[sdk] [${sid}] Ignoring session idle with active follow-up after turn end (${elapsed}s)`,
+              `[sdk] [${sid}] Ignoring ${event.type} with active follow-up after turn end (${elapsed}s)`,
             );
             recordRunSpan("session.idle.ignored_active_turn", Date.now() - sendStart, {
               idleEventOrigin: context.origin,
@@ -1090,7 +1107,7 @@ export class SessionRunner {
             });
             break;
           }
-          console.log(`[sdk] [${sid}] 💤 Session idle — done: ${content.length} chars (${elapsed}s)`);
+          console.log(`[sdk] [${sid}] 💤 ${event.type} — done: ${content.length} chars (${elapsed}s)`);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
           recordRunCompletion(event, context, "done", {
             finalContentLength: content.length,
@@ -1300,6 +1317,7 @@ export class SessionRunner {
             markActive(event.type);
             break;
           case "session.idle":
+          case "session.task_complete":
             if (hasTurnEnd && activeEventsAfterTurnEnd > 0) {
               markActive(event.type);
               break;

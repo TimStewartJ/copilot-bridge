@@ -30,6 +30,11 @@ describe("SessionManager tool result rendering", () => {
   function createSession(events: any[]) {
     const handlers: Array<(event: any) => void> = [];
     return {
+      rpc: {
+        mode: {
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
       on(handler: (event: any) => void) {
         handlers.push(handler);
         return () => {
