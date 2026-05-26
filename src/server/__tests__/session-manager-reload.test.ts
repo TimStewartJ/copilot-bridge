@@ -34,13 +34,9 @@ describe("SessionManager reloadSession", () => {
     const otherSession = { disconnect: vi.fn() };
     const resumedSession = {
       setModel: vi.fn(),
-      rpc: {
-        mcp: {
-          list: vi.fn().mockResolvedValue({
-            servers: [{ name: "demo", status: "connected", source: "settings" }],
-          }),
-        },
-      },
+      listMcpServers: vi.fn().mockResolvedValue({
+        servers: [{ name: "demo", status: "connected", source: "settings" }],
+      }),
     };
     const resumeSession = vi.fn().mockResolvedValue(resumedSession);
 
@@ -101,7 +97,7 @@ describe("SessionManager reloadSession", () => {
     });
     manager.backend = { resumeSession: vi.fn() };
     manager.sessionObjects.set("session-auth", {
-      rpc: { mcp: { oauth: { login }, list } },
+      startMcpOauthLogin: login, listMcpServers: list,
     });
 
     const result = await manager.loginMcpServer("session-auth", "DEMO", { forceReauth: true });
@@ -127,7 +123,7 @@ describe("SessionManager reloadSession", () => {
       servers: [{ name: "demo", status: "pending", source: "settings" }],
     });
     const resumedSession = {
-      rpc: { mcp: { oauth: { login }, list } },
+      startMcpOauthLogin: login, listMcpServers: list,
     };
     const resumeSession = vi.fn().mockResolvedValue(resumedSession);
     manager.backend = { resumeSession };
@@ -182,9 +178,7 @@ describe("SessionManager warmSession", () => {
     const manager = createManager();
     const resumedSession = {
       setModel: vi.fn(),
-      rpc: {
-        mcp: { list: vi.fn().mockResolvedValue({ servers: [] }) },
-      },
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
     };
     manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
 
@@ -198,9 +192,7 @@ describe("SessionManager warmSession", () => {
     const manager = createManager();
     const resumedSession = {
       setModel: vi.fn(),
-      rpc: {
-        mcp: { list: vi.fn().mockResolvedValue({ servers: [] }) },
-      },
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
     };
     let resolveResume!: (session: typeof resumedSession) => void;
     const resumeSession = vi.fn(() => new Promise<typeof resumedSession>((resolve) => {

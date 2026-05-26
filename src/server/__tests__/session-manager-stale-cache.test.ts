@@ -39,11 +39,7 @@ function createManager() {
 function createSession(sendImpl: (emit: EmitSdkEvent) => Promise<void> | void) {
   const handlers: Array<(event: any) => void> = [];
   const session = {
-    rpc: {
-      mode: {
-        set: vi.fn().mockResolvedValue(undefined),
-      },
-    },
+    setSendMode: vi.fn().mockResolvedValue(undefined),
     on: vi.fn((handler: (event: any) => void) => {
       handlers.push(handler);
       return vi.fn(() => {

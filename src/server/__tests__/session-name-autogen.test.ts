@@ -65,7 +65,7 @@ describe("session name autogenerator", () => {
     const { generator, setSessionName, generateSessionName } = createHarness(undefined);
     const rpcNameGet = vi.fn(async () => ({ name: "Please investigate a tricky production bug" }));
     const session = {
-      rpc: { name: { get: rpcNameGet } },
+      getName: rpcNameGet,
       getEvents: vi.fn(async () => [
         { type: "user.message", data: { content: "Please investigate a tricky production bug" } },
       ]),
@@ -105,7 +105,7 @@ describe("session name autogenerator", () => {
   it("still skips existing SDK names for warm or no-message checks", async () => {
     const { generator, setSessionName, generateSessionName } = createHarness(undefined);
     const session = {
-      rpc: { name: { get: vi.fn(async () => ({ name: "Manual live title" })) } },
+      getName: vi.fn(async () => ({ name: "Manual live title" })),
       getEvents: vi.fn(async () => [
         { type: "user.message", data: { content: "Please fix this complicated issue" } },
       ]),
@@ -113,7 +113,7 @@ describe("session name autogenerator", () => {
 
     await (generator as any).generateAndSetMissingSessionName("session-1", { session });
 
-    expect(session.rpc.name.get).toHaveBeenCalled();
+    expect(session.getName).toHaveBeenCalled();
     expect(session.getEvents).not.toHaveBeenCalled();
     expect(generateSessionName).not.toHaveBeenCalled();
     expect(setSessionName).not.toHaveBeenCalled();

@@ -52,12 +52,7 @@ describe("SessionManager graceful shutdown", () => {
   function makeSession() {
     const handlers: Array<(event: any) => void> = [];
     const session = {
-      rpc: {
-        suspend: vi.fn().mockResolvedValue(undefined),
-        mode: {
-          set: vi.fn().mockResolvedValue(undefined),
-        },
-      },
+      setSendMode: vi.fn().mockResolvedValue(undefined),
       on: vi.fn((handler: (event: any) => void) => {
         handlers.push(handler);
         return vi.fn(() => {
@@ -140,7 +135,6 @@ describe("SessionManager graceful shutdown", () => {
     await manager.gracefulShutdown();
 
     expect(session.abort).toHaveBeenCalledTimes(1);
-    expect(session.rpc.suspend).not.toHaveBeenCalled();
     expect(manager.getActiveSessions()).toEqual([]);
     expect(stop).toHaveBeenCalledTimes(1);
   });
