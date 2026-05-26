@@ -50,6 +50,7 @@ import {
 import { createCopilotUsageReader } from "./copilot-usage.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
+import { isSendMode } from "../shared/send-mode.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
@@ -2010,10 +2011,13 @@ export function createApiRouter(ctx: AppContext): express.Router {
 
   // POST /chat — fire and forget, starts work in background
   router.post("/chat", async (req, res) => {
-    const { sessionId, prompt, attachments } = req.body;
+    const { sessionId, prompt, attachments, mode } = req.body;
 
     if (!sessionId || !prompt) {
       return res.status(400).json({ error: "sessionId and prompt are required" });
+    }
+    if (mode !== undefined && !isSendMode(mode)) {
+      return res.status(400).json({ error: "mode must be one of: interactive, autopilot" });
     }
 
     if (isRestartCutoverInProgress(await refreshRestartState())) {
@@ -2038,7 +2042,11 @@ export function createApiRouter(ctx: AppContext): express.Router {
         return;
       }
 
-      ctx.sessionManager.startWork(sessionId, prompt, attachments);
+      if (mode) {
+        ctx.sessionManager.startWork(sessionId, prompt, attachments, { mode });
+      } else {
+        ctx.sessionManager.startWork(sessionId, prompt, attachments);
+      }
       res.status(202).json({ status: "accepted" });
     } catch (err) {
       if (isRestartPendingError(err)) {

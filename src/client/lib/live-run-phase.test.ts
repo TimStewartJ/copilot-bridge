@@ -65,4 +65,22 @@ describe("deriveLiveRunHeaderState", () => {
       title: "Running validation",
     });
   });
+
+  it("surfaces autopilot mode in the live run header", () => {
+    expect(deriveLiveRunHeaderState({
+      creating: false,
+      isStreaming: true,
+      streamStatus: "thinking",
+      pendingOrigin: "message",
+      runMode: "autopilot",
+      streamingContent: "",
+      activeTrackCount: 0,
+      intentText: "",
+      hadVisibleOutput: false,
+    })).toMatchObject({
+      phase: "thinking",
+      label: "Autopilot",
+      title: "Autopilot running",
+    });
+  });
 });

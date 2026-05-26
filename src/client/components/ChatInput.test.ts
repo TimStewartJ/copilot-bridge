@@ -151,11 +151,74 @@ describe("ChatInput voice retry", () => {
     expect(queryButtonByAriaLabel(getHarness().dom.container, "Stop generating")).toBeUndefined();
 
     await getHarness().act(async () => {
-      getReactProps(sendButton)?.onClick?.();
+      getReactProps(sendButton.parentNode)?.onClick?.();
     });
 
     expect(onSend).toHaveBeenCalledWith("please adjust", undefined);
+    expect(onSend.mock.calls[0]).toHaveLength(2);
     expect(onAbort).not.toHaveBeenCalled();
     expect(stopButton).toBeDefined();
+  });
+
+  it("sends once with autopilot from the send button context menu", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({ onSend });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "keep going",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    const sendButton = findButtonByAriaLabel(getHarness().dom.container, "Send message");
+    const wrapper = sendButton.parentNode;
+    if (!wrapper) throw new Error("Send button wrapper not found");
+    const preventDefault = vi.fn();
+
+    await getHarness().act(async () => {
+      getReactProps(wrapper)?.onContextMenu?.({
+        preventDefault,
+        clientX: 10,
+        clientY: 20,
+      });
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.textContent === "Send normally")).toBe(false);
+    const autopilotItem = findButtonByText(getHarness().dom.container, "Send with Autopilot");
+
+    await getHarness().act(async () => {
+      getReactProps(autopilotItem)?.onClick?.();
+    });
+
+    expect(onSend).toHaveBeenCalledWith("keep going", undefined, "autopilot");
+  });
+
+  it("left-click sends in interactive mode by default", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({ onSend });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "hello",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    const sendButton = findButtonByAriaLabel(getHarness().dom.container, "Send message");
+    await getHarness().act(async () => {
+      getReactProps(sendButton.parentNode)?.onClick?.();
+    });
+
+    expect(onSend).toHaveBeenCalledWith("hello", undefined, "interactive");
   });
 });

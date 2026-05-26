@@ -61,6 +61,11 @@ describe("SessionManager run state", () => {
     const handlers: Array<(event: any) => void> = [];
     let releaseSend: (() => void) | undefined;
     const session = {
+      rpc: {
+        mode: {
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
       on: vi.fn((cb: (event: any) => void) => {
         handlers.push(cb);
         if (opts.replayOnSubscribe) {
@@ -213,6 +218,77 @@ describe("SessionManager run state", () => {
       timestamp: "2026-04-24T12:00:01.000Z",
     });
     expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
+  });
+
+  it("sets the SDK session mode before sending normal work", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello", undefined, { mode: "autopilot" });
+    await flushMicrotasks();
+
+    expect(session.rpc.mode.set).toHaveBeenCalledWith({ mode: "autopilot" });
+    expect(session.rpc.mode.set.mock.invocationCallOrder[0]).toBeLessThan(
+      session.send.mock.invocationCallOrder[0],
+    );
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    await flushMicrotasks();
+  });
+
+  it("fails delivery before sending when SDK session mode cannot be set", async () => {
+    const { manager } = createManager();
+    const { session } = makeSession();
+    session.rpc.mode.set.mockRejectedValueOnce(new Error("mode unavailable"));
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    await expect(manager.startWorkAndWaitForDelivery("session-1", "hello", undefined, { mode: "autopilot" }))
+      .rejects.toThrow("mode unavailable");
+    await flushMicrotasks();
+
+    expect(session.send).not.toHaveBeenCalled();
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("continues default interactive sends when the SDK mode RPC is missing", async () => {
+    const { manager } = createManager();
+    const handlers: Array<(event: any) => void> = [];
+    const session = {
+      on: vi.fn((handler: (event: any) => void) => {
+        handlers.push(handler);
+        return vi.fn();
+      }),
+      send: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn(),
+    };
+    manager.client = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+
+    expect(session.send).toHaveBeenCalledWith({ prompt: "hello" });
+    for (const handler of handlers) {
+      handler({
+        type: "session.idle",
+        data: {},
+        timestamp: "2026-04-24T12:00:00.000Z",
+      });
+    }
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
   it("rejects steering while a session is busy without an active run", async () => {
@@ -858,6 +934,11 @@ describe("SessionManager run state", () => {
   it("startWorkAndWaitForDelivery rejects when send fails before acceptance", async () => {
     const { manager } = createManager();
     const session = {
+      rpc: {
+        mode: {
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
       on: vi.fn(() => vi.fn()),
       send: vi.fn(async () => {
         throw new Error("send failed");
@@ -900,7 +981,7 @@ describe("SessionManager run state", () => {
         { id: "previous-assistant", type: "assistant.message", data: { content: "No change" } },
         { id: "previous-idle", type: "session.idle", data: {} },
       ]),
-      rpc: { history: { truncate } },
+      rpc: { ...session.rpc, history: { truncate } },
     });
     manager.client = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -915,6 +996,9 @@ describe("SessionManager run state", () => {
       },
     });
     await flushMicrotasks();
+    for (let attempt = 0; attempt < 5 && session.send.mock.calls.length === 0; attempt += 1) {
+      await flushMicrotasks();
+    }
 
     expect(sessionWithHistory.getEvents).toHaveBeenCalled();
     expect(truncate).toHaveBeenCalledWith({ eventId: "previous-quiet-user" });
@@ -1685,6 +1769,11 @@ describe("SessionManager run state", () => {
     });
     const send = vi.fn().mockResolvedValue(undefined);
     const session = {
+      rpc: {
+        mode: {
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
       on: vi.fn(() => vi.fn()),
       send,
       abort: vi.fn().mockResolvedValue(undefined),

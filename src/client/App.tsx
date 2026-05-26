@@ -76,6 +76,7 @@ import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat } from "./last-viewed";
 import { createTaskCompletionFeedback, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
+import type { SendMode } from "../shared/send-mode.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
@@ -2192,7 +2193,11 @@ function SessionRoute({
   }, [clearDraftSessionBySessionId, onMessageSent, sessionId]);
 
   // Create session on first message, then redirect to real URL
-  const onCreateAndSend = useCallback(async (prompt: string, attachments?: import("./api").Attachment[]) => {
+  const onCreateAndSend = useCallback(async (
+    prompt: string,
+    attachments?: import("./api").Attachment[],
+    mode?: SendMode,
+  ) => {
     const newSessionId = await materializeSession(taskId);
     // Send the message BEFORE navigating so the session is busy when
     // ChatView's effect reconnects the stream (avoids idle-close race).
@@ -2200,6 +2205,7 @@ function SessionRoute({
       sessionId: newSessionId,
       prompt,
       attachments,
+      mode,
       // Retry stays on the draft route and materializes a fresh session.
       onRejected: () => cleanupFailedFirstSendSession(newSessionId, taskId),
     });

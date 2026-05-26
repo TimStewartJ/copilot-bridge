@@ -528,6 +528,29 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined);
   });
 
+  it("POST /api/chat passes autopilot mode to new work", async () => {
+    ctx.sessionManager.startWork = vi.fn();
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello", mode: "autopilot" });
+
+    expect(res.status).toBe(202);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined, { mode: "autopilot" });
+  });
+
+  it("POST /api/chat rejects unsupported send modes", async () => {
+    ctx.sessionManager.startWork = vi.fn();
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello", mode: "plan" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("mode must be one of");
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
   it("POST /api/chat steers busy sessions instead of rejecting them", async () => {
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.startWork = vi.fn();
@@ -535,7 +558,7 @@ describe("Session routes (mocked)", () => {
 
     const res = await request(app)
       .post("/api/chat")
-      .send({ sessionId: "busy-session", prompt: "adjust course" });
+      .send({ sessionId: "busy-session", prompt: "adjust course", mode: "autopilot" });
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ status: "accepted", mode: "steered" });

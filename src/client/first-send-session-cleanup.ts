@@ -7,12 +7,14 @@ import {
   type Task,
 } from "./api";
 import { queryKeys } from "./queryClient";
+import type { SendMode } from "../shared/send-mode.js";
 
 type DeleteSession = (sessionId: string) => Promise<void>;
 type SendChatMessage = (
   sessionId: string,
   prompt: string,
   attachments?: Attachment[],
+  mode?: SendMode,
 ) => Promise<unknown>;
 type QueryInvalidator = () => Promise<unknown>;
 type SelectedTaskUpdater = (updater: (task: Task | null) => Task | null) => void;
@@ -37,6 +39,7 @@ export interface SendMaterializedFirstPromptOptions {
   sessionId: string;
   prompt: string;
   attachments?: Attachment[];
+  mode?: SendMode;
   sendChatMessage?: SendChatMessage;
   onRejected?: (error: unknown) => void | Promise<void>;
   logger?: Pick<Console, "error">;
@@ -112,12 +115,17 @@ export async function sendMaterializedFirstPrompt({
   sessionId,
   prompt,
   attachments,
+  mode,
   sendChatMessage = sendChatMessageApi,
   onRejected,
   logger = console,
 }: SendMaterializedFirstPromptOptions): Promise<void> {
   try {
-    await sendChatMessage(sessionId, prompt, attachments);
+    if (mode) {
+      await sendChatMessage(sessionId, prompt, attachments, mode);
+    } else {
+      await sendChatMessage(sessionId, prompt, attachments);
+    }
   } catch (error) {
     try {
       await onRejected?.(error);
