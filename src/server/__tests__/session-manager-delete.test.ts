@@ -69,7 +69,7 @@ function readCliSessionCounts(copilotHome: string, sessionId: string): { session
 }
 
 type TestSessionManager = Pick<SessionManager, "deleteSession"> & {
-  client: { deleteSession: ReturnType<typeof vi.fn> };
+  backend: { deleteSession: ReturnType<typeof vi.fn> };
 };
 
 function requireCopilotHome(runtimePaths: RuntimePaths): string {
@@ -114,11 +114,11 @@ describe("SessionManager.deleteSession", () => {
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(join(sessionDir, "workspace.yaml"), "created_at: 2026-05-08T12:00:00.000Z\n");
     const manager = createManager(copilotHome);
-    manager.client = { deleteSession: vi.fn().mockRejectedValue(new Error("Session does not exist")) };
+    manager.backend = { deleteSession: vi.fn().mockRejectedValue(new Error("Session does not exist")) };
 
     await expect(manager.deleteSession(sessionId)).resolves.toBeUndefined();
 
-    expect(manager.client.deleteSession).toHaveBeenCalledWith(sessionId);
+    expect(manager.backend.deleteSession).toHaveBeenCalledWith(sessionId);
     expect(existsSync(sessionDir)).toBe(false);
     expect(readCliSessionCounts(copilotHome, sessionId)).toEqual({ sessions: 0, turns: 0, searchIndex: 0 });
   });
@@ -133,7 +133,7 @@ describe("SessionManager.deleteSession", () => {
     writeFileSync(join(sessionDir, "workspace.yaml"), "created_at: 2026-05-08T12:00:00.000Z\n");
     const manager = createManager(copilotHome);
     const error = new Error("permission denied");
-    manager.client = { deleteSession: vi.fn().mockRejectedValue(error) };
+    manager.backend = { deleteSession: vi.fn().mockRejectedValue(error) };
 
     await expect(manager.deleteSession(sessionId)).rejects.toThrow("permission denied");
 

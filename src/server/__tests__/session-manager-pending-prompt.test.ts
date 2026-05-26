@@ -57,7 +57,7 @@ describe("SessionManager pendingPrompt lifecycle", () => {
       }),
     };
 
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 

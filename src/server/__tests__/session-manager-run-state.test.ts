@@ -136,7 +136,7 @@ describe("SessionManager run state", () => {
         copilotHome,
       });
       const { session, getHandler, getReleaseSend } = makeSession();
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn().mockResolvedValue(session),
       };
 
@@ -161,8 +161,8 @@ describe("SessionManager run state", () => {
       expect(() => manager.startWork("session-1", "hello")).not.toThrow();
       await flushMicrotasks();
 
-      expect(manager.client.resumeSession).toHaveBeenCalled();
-      expect(manager.client.resumeSession.mock.calls[0]?.[0]).toBe("session-1");
+      expect(manager.backend.resumeSession).toHaveBeenCalled();
+      expect(manager.backend.resumeSession.mock.calls[0]?.[0]).toBe("session-1");
       expect(manager.getSessionRunState("session-1")).toBe("busy");
       expect(getRestartWaitingCount()).toBe(1);
 
@@ -186,7 +186,7 @@ describe("SessionManager run state", () => {
   it("sends steering prompts immediately through the active cached session", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -293,7 +293,7 @@ describe("SessionManager run state", () => {
 
   it("rejects steering while a session is busy without an active run", async () => {
     const { manager } = createManager();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn(),
     };
     (manager as any).modelSwitchingSessions.add("session-1");
@@ -304,7 +304,7 @@ describe("SessionManager run state", () => {
   it("rejects steering if the active run completes before the immediate send returns", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -329,7 +329,7 @@ describe("SessionManager run state", () => {
   it("rejects steering while the busy session is still reconnecting", async () => {
     const { manager } = createManager();
     let resolveResume!: (session: ReturnType<typeof makeSession>["session"]) => void;
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn(() => new Promise((resolve) => {
         resolveResume = resolve;
       })),
@@ -360,7 +360,7 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({
         copilotHome,
       });
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn(),
       };
 
@@ -383,7 +383,7 @@ describe("SessionManager run state", () => {
       await refreshRestartState();
 
       expect(() => manager.startWork("session-1", "hello")).toThrow(RESTART_PENDING_MESSAGE);
-      expect(manager.client.resumeSession).not.toHaveBeenCalled();
+      expect(manager.backend.resumeSession).not.toHaveBeenCalled();
     } finally {
       configureRestartStateStore(undefined);
       rmSync(dataDir, { recursive: true, force: true });
@@ -410,7 +410,7 @@ describe("SessionManager run state", () => {
       const messageSession = { getEvents: vi.fn().mockResolvedValue([]) };
       let resolveMessageResume!: (session: typeof messageSession) => void;
       const { session: runSession, getHandler, getReleaseSend } = makeSession();
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn((sessionId: string) => {
           if (sessionId === "message-session") {
             return new Promise<typeof messageSession>((resolve) => {
@@ -481,7 +481,7 @@ describe("SessionManager run state", () => {
 
       const resumedSession = { getEvents: vi.fn().mockResolvedValue([]) };
       let resolveResume!: (session: typeof resumedSession) => void;
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
           resolveResume = resolve;
         })),
@@ -528,7 +528,7 @@ describe("SessionManager run state", () => {
         disconnect: vi.fn(),
       };
       const { session: runSession, getHandler, getReleaseSend } = makeSession();
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn().mockResolvedValue(runSession),
       };
       manager.sessionObjects.set("switch-session", switchSession);
@@ -575,7 +575,7 @@ describe("SessionManager run state", () => {
         copilotHome,
       });
       const { session, getHandler, getReleaseSend } = makeSession();
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn().mockResolvedValue(session),
       };
 
@@ -600,7 +600,7 @@ describe("SessionManager run state", () => {
       expect(() => manager.startWork("session-1", "hello")).not.toThrow();
       await flushMicrotasks();
 
-      expect(manager.client.resumeSession).toHaveBeenCalledWith("session-1", expect.anything());
+      expect(manager.backend.resumeSession).toHaveBeenCalledWith("session-1", expect.anything());
       expect(manager.getSessionRunState("session-1")).toBe("busy");
       expect(getRestartWaitingCount()).toBe(1);
 
@@ -625,7 +625,7 @@ describe("SessionManager run state", () => {
     const stale = makeSession();
     const current = makeSession();
     let resolveResume!: (session: typeof stale.session) => void;
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn(() => new Promise<typeof stale.session>((resolve) => {
         resolveResume = resolve;
       })),
@@ -687,14 +687,14 @@ describe("SessionManager run state", () => {
 
       const { manager } = createManager();
       const { session, getHandler, getReleaseSend } = makeSession();
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn().mockResolvedValue(session),
       };
 
       const accepted = manager.startWorkAndWaitForDelivery("session-isolated", "hello");
       await flushMicrotasks();
 
-      expect(manager.client.resumeSession).toHaveBeenCalledOnce();
+      expect(manager.backend.resumeSession).toHaveBeenCalledOnce();
       getHandler()?.({
         type: "user.message",
         data: {},
@@ -723,7 +723,7 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({
         copilotHome,
       });
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn(),
       };
 
@@ -754,7 +754,7 @@ describe("SessionManager run state", () => {
       });
 
       expect(() => manager.startWork("session-1", "hello")).toThrow(RESTART_PENDING_MESSAGE);
-      expect(manager.client.resumeSession).not.toHaveBeenCalled();
+      expect(manager.backend.resumeSession).not.toHaveBeenCalled();
     } finally {
       configureRestartStateStore(undefined);
       rmSync(dataDir, { recursive: true, force: true });
@@ -769,7 +769,7 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({
         copilotHome,
       });
-      manager.client = {
+      manager.backend = {
         createSession: vi.fn().mockResolvedValue({ sessionId: "created-session" }),
       };
 
@@ -792,7 +792,7 @@ describe("SessionManager run state", () => {
       await refreshRestartState();
 
       await expect(manager.createSession()).resolves.toEqual({ sessionId: "created-session" });
-      expect(manager.client.createSession).toHaveBeenCalledOnce();
+      expect(manager.backend.createSession).toHaveBeenCalledOnce();
     } finally {
       configureRestartStateStore(undefined);
       rmSync(dataDir, { recursive: true, force: true });
@@ -807,7 +807,7 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({
         copilotHome,
       });
-      manager.client = {
+      manager.backend = {
         createSession: vi.fn(),
       };
 
@@ -840,7 +840,7 @@ describe("SessionManager run state", () => {
       await expect(manager.createSession()).rejects.toThrow(RESTART_PENDING_MESSAGE);
       await expect(manager.forkSession("source-session")).rejects.toThrow(RESTART_PENDING_MESSAGE);
       await expect(manager.createTaskSession("task-1", "Task one", [], [], "")).rejects.toThrow(RESTART_PENDING_MESSAGE);
-      expect(manager.client.createSession).not.toHaveBeenCalled();
+      expect(manager.backend.createSession).not.toHaveBeenCalled();
     } finally {
       configureRestartStateStore(undefined);
       rmSync(dataDir, { recursive: true, force: true });
@@ -851,7 +851,7 @@ describe("SessionManager run state", () => {
   it("startWorkAndWaitForDelivery resolves when the user prompt is accepted", async () => {
     const { manager } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -882,7 +882,7 @@ describe("SessionManager run state", () => {
   it("records completion attention on natural idle when enabled", async () => {
     const { manager, db } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -913,7 +913,7 @@ describe("SessionManager run state", () => {
   it("does not record completion attention on aborts", async () => {
     const { manager, db } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -945,7 +945,7 @@ describe("SessionManager run state", () => {
       }),
       disconnect: vi.fn(),
     };
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -983,7 +983,7 @@ describe("SessionManager run state", () => {
       ]),
       rpc: { ...session.rpc, history: { truncate } },
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
     globalBus.subscribe((event) => statusEvents.push(event));
@@ -1032,7 +1032,7 @@ describe("SessionManager run state", () => {
     });
 
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1092,7 +1092,7 @@ describe("SessionManager run state", () => {
     });
 
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1128,7 +1128,7 @@ describe("SessionManager run state", () => {
     const { manager } = createManager();
     const { session } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
@@ -1148,7 +1148,7 @@ describe("SessionManager run state", () => {
     const { manager, telemetryStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork(sessionId, "hello");
     await flushMicrotasks();
@@ -1205,7 +1205,7 @@ describe("SessionManager run state", () => {
     const { manager } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork(sessionId, "hello");
     await flushMicrotasks();
@@ -1253,7 +1253,7 @@ describe("SessionManager run state", () => {
     const { manager } = createManager();
     const { session } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
@@ -1279,7 +1279,7 @@ describe("SessionManager run state", () => {
     });
     const initial = makeSession();
     const recovered = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -1322,7 +1322,7 @@ describe("SessionManager run state", () => {
     const recovered = makeSession();
     const current = makeSession();
     let resolveRecovery!: (session: typeof recovered.session) => void;
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockReturnValueOnce(new Promise<typeof recovered.session>((resolve) => {
@@ -1371,7 +1371,7 @@ describe("SessionManager run state", () => {
     const sessionId = "session-live-idle-telemetry";
     const { manager, telemetryStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1417,7 +1417,7 @@ describe("SessionManager run state", () => {
     const sessionId = "session-idle-open-followup";
     const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1505,7 +1505,7 @@ describe("SessionManager run state", () => {
     const { manager, telemetryStore } = createManager({ copilotHome: tmpDir, telemetry: true });
     const initial = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(initial.session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork(sessionId, "hello");
     await flushMicrotasks();
@@ -1584,7 +1584,7 @@ describe("SessionManager run state", () => {
 
       const initial = makeSession();
       const resumeSession = vi.fn().mockResolvedValue(initial.session);
-      manager.client = { resumeSession };
+      manager.backend = { resumeSession };
 
       manager.startWork(sessionId, "hello");
       await flushMicrotasks();
@@ -1619,7 +1619,7 @@ describe("SessionManager run state", () => {
       const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
       const initial = makeSession();
       const resumeSession = vi.fn().mockResolvedValue(initial.session);
-      manager.client = { resumeSession };
+      manager.backend = { resumeSession };
 
       const bus = eventBusRegistry.getOrCreateBus(sessionId);
       manager.startWork(sessionId, "hello");
@@ -1651,7 +1651,7 @@ describe("SessionManager run state", () => {
   it("treats routine session.shutdown as a shutdown terminal event", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1686,7 +1686,7 @@ describe("SessionManager run state", () => {
   it("treats error session.shutdown as a terminal error", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1714,7 +1714,7 @@ describe("SessionManager run state", () => {
   it("resolves abort locally when the runtime never confirms it", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getReleaseSend } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1740,7 +1740,7 @@ describe("SessionManager run state", () => {
   it("clears run state when an abort event arrives while send is still pending", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler } = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
@@ -1779,7 +1779,7 @@ describe("SessionManager run state", () => {
       abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
     };
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn().mockReturnValue(resumePromise),
     };
 
@@ -1807,7 +1807,7 @@ describe("SessionManager run state", () => {
     const resumeSession = vi.fn()
       .mockResolvedValueOnce(session)
       .mockReturnValueOnce(recoveryPromise.then(() => session));
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
@@ -1831,7 +1831,7 @@ describe("SessionManager run state", () => {
     const resumeSession = vi.fn()
       .mockResolvedValueOnce(initial.session)
       .mockRejectedValueOnce(new Error("resume failed"));
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
@@ -1871,7 +1871,7 @@ describe("SessionManager run state", () => {
     const resumeSession = vi.fn()
       .mockResolvedValueOnce(initial.session)
       .mockReturnValueOnce(recoveryPromise);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
@@ -1904,7 +1904,7 @@ describe("SessionManager run state", () => {
     const recoveryPromise = new Promise<any>((resolve) => {
       resolveRecovery = resolve;
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockReturnValueOnce(recoveryPromise),
@@ -1945,7 +1945,7 @@ describe("SessionManager run state", () => {
         timestamp: staleTimestamp,
       },
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -1987,7 +1987,7 @@ describe("SessionManager run state", () => {
         timestamp: new Date(Date.now() + 1_000).toISOString(),
       }),
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -2015,7 +2015,7 @@ describe("SessionManager run state", () => {
         timestamp: replayedTurnStart,
       },
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -2058,7 +2058,7 @@ describe("SessionManager run state", () => {
         timestamp: replayedDeltaTimestamp,
       },
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -2102,7 +2102,7 @@ describe("SessionManager run state", () => {
         timestamp: sharedTimestamp,
       },
     });
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -2132,7 +2132,7 @@ describe("SessionManager run state", () => {
     const initialTurnBase = Date.now();
     const initial = makeSession();
     const recovered = makeSession();
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn()
         .mockResolvedValueOnce(initial.session)
         .mockResolvedValueOnce(recovered.session),
@@ -2178,7 +2178,7 @@ describe("SessionManager run state", () => {
       const recoveryPromise = new Promise<any>((resolve) => {
         resolveRecovery = resolve;
       });
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn()
           .mockResolvedValueOnce(initial.session)
           .mockReturnValueOnce(recoveryPromise),
@@ -2223,7 +2223,7 @@ describe("SessionManager run state", () => {
       const recoveryPromise = new Promise<any>((_, reject) => {
         rejectRecovery = reject;
       });
-      manager.client = {
+      manager.backend = {
         resumeSession: vi.fn()
           .mockResolvedValueOnce(initial.session)
           .mockReturnValueOnce(recoveryPromise),
@@ -2262,7 +2262,7 @@ describe("SessionManager run state", () => {
 
       const { manager } = createManager({ copilotHome: tmpDir });
       const { session } = makeSession();
-      manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+      manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
 
       manager.startWork(sessionId, "hello");
       await flushMicrotasks();
@@ -2300,7 +2300,7 @@ describe("SessionManager run state", () => {
       const { manager } = createManager({ copilotHome: tmpDir });
       const { session } = makeSession();
       const resumeSession = vi.fn().mockResolvedValue(session);
-      manager.client = { resumeSession };
+      manager.backend = { resumeSession };
 
       // Create events.jsonl before starting so its mtime is close to the fake-timer epoch.
       // The live listener stays silent throughout, which is the condition under test.
@@ -2335,7 +2335,7 @@ describe("SessionManager run state", () => {
     const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
     const { session } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     const bus = eventBusRegistry.getOrCreateBus("session-1");
     manager.startWork("session-1", "hello");
@@ -2362,7 +2362,7 @@ describe("SessionManager run state", () => {
     const { manager } = createManager();
     const { session, getHandler } = makeSession();
     const resumeSession = vi.fn().mockResolvedValue(session);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     manager.startWork("session-1", "hello");
     await flushMicrotasks();
@@ -2403,7 +2403,7 @@ describe("SessionManager run state", () => {
       const { manager, eventBusRegistry } = createManager({ copilotHome: tmpDir });
       const initial = makeSession();
       const resumeSession = vi.fn().mockResolvedValue(initial.session);
-      manager.client = { resumeSession };
+      manager.backend = { resumeSession };
 
       const bus = eventBusRegistry.getOrCreateBus(sessionId);
       manager.startWork(sessionId, "hello");
@@ -2446,7 +2446,7 @@ describe("SessionManager run state", () => {
 
         // Start a session BEFORE restart becomes pending (startWork throws if restart is pending)
         const { session, getHandler, getReleaseSend } = makeSession();
-        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
         manager.startWork("session-1", "hello");
         await flushMicrotasks();
 
@@ -2510,7 +2510,7 @@ describe("SessionManager run state", () => {
         });
 
         const { session, getHandler, getReleaseSend } = makeSession();
-        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
         manager.startWork("session-handoff-event", "hello");
         await flushMicrotasks();
 
@@ -2574,7 +2574,7 @@ describe("SessionManager run state", () => {
         const restartStatePath = join(dataDir, "restart-state.json");
 
         const { session, getHandler, getReleaseSend } = makeSession();
-        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
         manager.startWork("session-2", "hello");
         await flushMicrotasks();
 
@@ -2626,7 +2626,7 @@ describe("SessionManager run state", () => {
         const restartStatePath = join(dataDir, "restart-state.json");
 
         const { session, getHandler, getReleaseSend } = makeSession();
-        manager.client = { resumeSession: vi.fn().mockResolvedValue(session) };
+        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
         manager.startWork("session-3", "hello");
         await flushMicrotasks();
 

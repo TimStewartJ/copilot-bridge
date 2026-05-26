@@ -44,7 +44,7 @@ describe("SessionManager reloadSession", () => {
     };
     const resumeSession = vi.fn().mockResolvedValue(resumedSession);
 
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
     manager.sessionObjects.set("session-1", oldSession);
     manager.sessionObjects.set("session-2", otherSession);
     manager.mcpStatus.set("session-1", [{ name: "stale", status: "failed" }]);
@@ -68,7 +68,7 @@ describe("SessionManager reloadSession", () => {
 
   it("rejects busy sessions", async () => {
     const manager = createManager();
-    manager.client = { resumeSession: vi.fn() };
+    manager.backend = { resumeSession: vi.fn() };
     manager.sessionRuns.set("busy-session", {
       state: "busy",
       startedAt: Date.now(),
@@ -76,12 +76,12 @@ describe("SessionManager reloadSession", () => {
     });
 
     await expect(manager.reloadSession("busy-session")).rejects.toThrow("Cannot reload a busy session");
-    expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
   });
 
   it("rejects stalled sessions", async () => {
     const manager = createManager();
-    manager.client = { resumeSession: vi.fn() };
+    manager.backend = { resumeSession: vi.fn() };
     manager.sessionRuns.set("stalled-session", {
       state: "stalled",
       startedAt: Date.now() - 5_000,
@@ -90,7 +90,7 @@ describe("SessionManager reloadSession", () => {
     });
 
     await expect(manager.reloadSession("stalled-session")).rejects.toThrow("Cannot reload a busy session");
-    expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
   });
 
   it("starts MCP OAuth on an already cached session", async () => {
@@ -99,14 +99,14 @@ describe("SessionManager reloadSession", () => {
     const list = vi.fn().mockResolvedValue({
       servers: [{ name: "demo", status: "needs-auth", source: "settings" }],
     });
-    manager.client = { resumeSession: vi.fn() };
+    manager.backend = { resumeSession: vi.fn() };
     manager.sessionObjects.set("session-auth", {
       rpc: { mcp: { oauth: { login }, list } },
     });
 
     const result = await manager.loginMcpServer("session-auth", "DEMO", { forceReauth: true });
 
-    expect(manager.client.resumeSession).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
     expect(login).toHaveBeenCalledWith(expect.objectContaining({
       serverName: "demo",
       forceReauth: true,
@@ -130,7 +130,7 @@ describe("SessionManager reloadSession", () => {
       rpc: { mcp: { oauth: { login }, list } },
     };
     const resumeSession = vi.fn().mockResolvedValue(resumedSession);
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     const result = await manager.loginMcpServer("session-auth-cold", "demo");
 
@@ -150,7 +150,7 @@ describe("SessionManager reloadSession", () => {
   it("rejects MCP OAuth for servers not configured on the session", async () => {
     const manager = createManager();
     const resumeSession = vi.fn();
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     await expect(manager.loginMcpServer("session-auth-missing", "ado"))
       .rejects.toThrow('MCP server "ado" is not configured for this session');
@@ -186,7 +186,7 @@ describe("SessionManager warmSession", () => {
         mcp: { list: vi.fn().mockResolvedValue({ servers: [] }) },
       },
     };
-    manager.client = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
 
     await manager.warmSession("session-warm-1");
 
@@ -206,7 +206,7 @@ describe("SessionManager warmSession", () => {
     const resumeSession = vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
       resolveResume = resolve;
     }));
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
 
     const firstWarm = manager.warmSession("session-warm-race");
     const secondWarm = manager.warmSession("session-warm-race");
@@ -221,7 +221,7 @@ describe("SessionManager warmSession", () => {
   it("skips warm when the session is already running", async () => {
     const manager = createManager();
     const resumeSession = vi.fn();
-    manager.client = { resumeSession };
+    manager.backend = { resumeSession };
     manager.sessionRuns.set("session-running", {
       state: "busy",
       startedAt: Date.now(),
@@ -259,7 +259,7 @@ describe("SessionManager getSessionMessages resume", () => {
       setModel: vi.fn(),
       getEvents: vi.fn().mockResolvedValue([]),
     };
-    manager.client = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
 
     await manager.getSessionMessages("session-msg-1");
 
@@ -274,7 +274,7 @@ describe("SessionManager getSessionMessages resume", () => {
       getEvents: vi.fn().mockResolvedValue([]),
     };
     let resolveResume!: (session: typeof resumedSession) => void;
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
         resolveResume = resolve;
       })),
@@ -307,7 +307,7 @@ describe("SessionManager getSessionMessages resume", () => {
     };
     type ResumedSession = typeof firstSession;
     const resumeResolvers: Array<(session: ResumedSession) => void> = [];
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn(() => new Promise<ResumedSession>((resolve) => {
         resumeResolvers.push(resolve);
       })),
@@ -349,7 +349,7 @@ describe("SessionManager getSessionMessages resume", () => {
     const newerSession = {
       getEvents: vi.fn().mockResolvedValue([]),
     };
-    manager.client = {
+    manager.backend = {
       resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
         resolveResume = resolve;
       })),
@@ -378,7 +378,7 @@ describe("SessionManager getSessionMessages resume", () => {
       getEvents: vi.fn().mockResolvedValue([]),
     };
     manager.sessionObjects.set("session-msg-2", staleSession);
-    manager.client = { resumeSession: vi.fn().mockResolvedValue(freshSession) };
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(freshSession) };
 
     await manager.getSessionMessages("session-msg-2");
 

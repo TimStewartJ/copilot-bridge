@@ -258,7 +258,7 @@ describe("SessionManager user input responses", () => {
   it("cancels all pending user input when the session manager shuts down", async () => {
     const { manager, userInputBroker } = createManager(["request-1", "request-2"]);
     const cfg = (Reflect.get(manager, "buildSessionConfig") as () => UserInputSessionConfig).call(manager);
-    (manager as any).client = { stop: vi.fn().mockResolvedValue(undefined) };
+    (manager as any).backend = { stop: vi.fn().mockResolvedValue(undefined) };
 
     const first = cfg.onUserInputRequest({ question: "First?" }, { sessionId: "session-1" });
     const second = cfg.onUserInputRequest({ question: "Second?" }, { sessionId: "session-2" });
@@ -274,7 +274,7 @@ describe("SessionManager user input responses", () => {
     await manager.shutdown();
 
     expect(userInputBroker.getPendingCount()).toBe(0);
-    expect((manager as any).client).toBeNull();
+    expect((manager as any).backend).toBeNull();
     await firstRejected;
     await secondRejected;
   });

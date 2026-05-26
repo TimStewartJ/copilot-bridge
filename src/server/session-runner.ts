@@ -3,7 +3,7 @@
 // tool/sub-agent event rendering. SessionManager remains the public facade
 // and delegates the run-loop concerns here.
 
-import type { CopilotClient } from "@github/copilot-sdk";
+import type { AgentBackend } from "./agent-backend/index.js";
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -190,8 +190,8 @@ function isStaleCachedSessionError(error: unknown): boolean {
 }
 
 export interface SessionRunnerDeps {
-  /** Lazy accessor for the SDK client; the manager owns lifecycle. */
-  getClient(): CopilotClient | null;
+  /** Lazy accessor for the agent backend; the manager owns lifecycle. */
+  getBackend(): AgentBackend | null;
   /** Shared cache of CopilotSession objects (owned by SessionManager). */
   sessionObjects: Map<string, any>;
   /** Shared per-session MCP status cache (owned by SessionManager). */
@@ -238,8 +238,8 @@ export interface SessionRunnerDeps {
 export class SessionRunner {
   constructor(private readonly deps: SessionRunnerDeps) {}
 
-  private get client(): CopilotClient | null {
-    return this.deps.getClient();
+  private get client(): AgentBackend | null {
+    return this.deps.getBackend();
   }
 
   private recordSpan(name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>): void {
