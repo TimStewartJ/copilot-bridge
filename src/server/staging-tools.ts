@@ -12,6 +12,11 @@ import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated }
 import { isRestartPending } from "./session-manager.js";
 import { requireToolHandlers } from "./tool-handler.js";
 import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "./agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
+import {
   createDirectoryLink,
   killProcessTree,
   removeDirectoryLink,
@@ -1378,3 +1383,24 @@ export const STAGING_TOOLS = requireToolHandlers([
     },
   }),
 ]);
+
+export interface RegisterStagingToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createStagingToolDefinitions(): BridgeToolDefinition[] {
+  return STAGING_TOOLS.map((tool) => defineBridgeTool(tool.name, {
+    description: (tool as any).description,
+    parameters: (tool as any).parameters,
+    handler: (args) => (tool as any).handler(args, {}),
+  }));
+}
+
+export function registerStagingTools(
+  server: BridgeToolsMcpServer,
+  options: RegisterStagingToolsOptions = {},
+): void {
+  const definitions = createStagingToolDefinitions()
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
+}

@@ -10,12 +10,6 @@ type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
 type ReadFileSyncPath = Parameters<typeof import("node:fs").readFileSync>[0];
 type UnlinkSyncPath = Parameters<typeof import("node:fs").unlinkSync>[0];
-type ToolInvocation = {
-  sessionId: string;
-  toolCallId: string;
-  toolName: string;
-  arguments: Record<string, unknown>;
-};
 
 const execSyncMock = vi.hoisted(() => vi.fn<(cmd: string) => string>(() => ""));
 const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
@@ -100,9 +94,14 @@ function createToolContext() {
   } as any;
 }
 
-async function loadSessionManagerModule() {
+async function loadTestModules() {
   vi.resetModules();
-  return import("../session-manager.js");
+  const sessionMod = await import("../session-manager.js");
+  const selfAdminMod = await import("../tools/self-admin-tools.js");
+  return {
+    ...sessionMod,
+    createSelfAdminToolDefinitions: selfAdminMod.createSelfAdminToolDefinitions,
+  };
 }
 
 afterEach(async () => {
@@ -147,8 +146,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     const result = await tool.handler({}, {
@@ -156,7 +155,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation) as {
+    } as any) as {
       success: boolean;
       previousSha: string;
       newSha: string;
@@ -209,8 +208,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     const result = await tool.handler({}, {
@@ -218,7 +217,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation) as any;
+    } as any) as any;
 
     expect(result).toMatchObject({ resultType: "failure" });
     expect(result.textResultForLlm).toContain("Updated code but restart signal could not be written.");
@@ -253,8 +252,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     await tool.handler({}, {
@@ -262,7 +261,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation);
+    } as any);
 
     expect(
       writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
@@ -292,8 +291,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     const result = await tool.handler({}, {
@@ -301,7 +300,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation) as any;
+    } as any) as any;
 
     expect(result).toMatchObject({ resultType: "failure" });
     expect(result.textResultForLlm).toContain("Git pull failed — likely due to merge conflicts or network issues.");
@@ -335,8 +334,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     const result = await tool.handler({}, {
@@ -344,7 +343,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation) as any;
+    } as any) as any;
 
     expect(result).toMatchObject({ resultType: "failure" });
     expect(result.textResultForLlm).toContain("Git pull failed — likely due to merge conflicts or network issues.");
@@ -375,8 +374,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     await tool.handler({}, {
@@ -384,7 +383,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation);
+    } as any);
 
     expect(
       writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
@@ -415,8 +414,8 @@ describe("self_update", () => {
       throw new Error(`Unexpected command: ${cmd}`);
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     await tool.handler({}, {
@@ -424,7 +423,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation);
+    } as any);
 
     expect(
       writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
@@ -440,8 +439,8 @@ describe("self_update", () => {
       return undefined;
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     await expect(tool.handler({}, {
@@ -449,7 +448,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation)).resolves.toEqual(
+    } as any)).resolves.toEqual(
       toolFailure("A restart is already pending. Wait for it to complete before updating."),
     );
   });
@@ -457,10 +456,10 @@ describe("self_update", () => {
   it("rejects when restart is already pending via restart state", async () => {
     existsSyncOverrideMock.mockImplementation(() => undefined);
 
-    const mod = await loadSessionManagerModule();
+    const mod = await loadTestModules();
     mod.triggerRestartPending();
 
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     await expect(tool.handler({}, {
@@ -468,7 +467,7 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } satisfies ToolInvocation)).resolves.toEqual(
+    } as any)).resolves.toEqual(
       toolFailure("A restart is already pending. Wait for it to complete before updating."),
     );
 
@@ -481,10 +480,10 @@ describe("self_restart", () => {
   it("rejects when restart is already pending", async () => {
     existsSyncOverrideMock.mockImplementation(() => undefined);
 
-    const mod = await loadSessionManagerModule();
+    const mod = await loadTestModules();
     mod.triggerRestartPending();
 
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
 
     await expect(tool.handler({}, {
@@ -492,7 +491,7 @@ describe("self_restart", () => {
       toolCallId: "tool-1",
       toolName: "self_restart",
       arguments: {},
-    } satisfies ToolInvocation)).resolves.toEqual(
+    } as any)).resolves.toEqual(
       toolFailure("A restart is already pending. Wait for it to complete before restarting."),
     );
 
@@ -504,7 +503,7 @@ describe("self_restart", () => {
 
     const callOrder: string[] = [];
 
-    const mod = await loadSessionManagerModule();
+    const mod = await loadTestModules();
 
     const originalTrigger = mod.triggerRestartPending;
     vi.spyOn(mod, "triggerRestartPending").mockImplementation(() => {
@@ -519,7 +518,7 @@ describe("self_restart", () => {
       }
     });
 
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
 
     const result = await tool.handler({}, {
@@ -527,7 +526,7 @@ describe("self_restart", () => {
       toolCallId: "tool-1",
       toolName: "self_restart",
       arguments: {},
-    } satisfies ToolInvocation) as { success: boolean };
+    } as any) as { success: boolean };
 
     expect(result.success).toBe(true);
     expect(callOrder.indexOf("triggerRestartPending")).toBeLessThan(callOrder.indexOf("writeSignalFile"));
@@ -543,8 +542,8 @@ describe("self_restart", () => {
       }
     });
 
-    const mod = await loadSessionManagerModule();
-    const tool = mod.createBridgeTools(createToolContext()).find((candidate) => candidate.name === "self_restart");
+    const mod = await loadTestModules();
+    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_restart");
     if (!tool) throw new Error("self_restart tool not found");
 
     const result = await tool.handler({}, {
@@ -552,7 +551,7 @@ describe("self_restart", () => {
       toolCallId: "tool-1",
       toolName: "self_restart",
       arguments: {},
-    } satisfies ToolInvocation) as any;
+    } as any) as any;
 
     expect(result).toMatchObject({ resultType: "failure" });
     expect(result.textResultForLlm).toContain("Restart signal could not be written.");

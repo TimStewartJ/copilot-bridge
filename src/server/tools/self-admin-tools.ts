@@ -1,4 +1,3 @@
-import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +9,11 @@ import { clearRestartPending, isRestartPending, triggerRestartPending } from "..
 import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "../restart-signal.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "../agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
 
 const SELF_UPDATE_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
@@ -69,9 +73,13 @@ function writeRestartSignalOrRollback(
   return otherBusy;
 }
 
-export function createSelfAdminTools(ctx: AppContext) {
+export interface RegisterSelfAdminToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("self_restart", {
+  defineBridgeTool("self_restart", {
     description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will run operational restart checks, sync dependencies if needed, and swap processes without the full deploy validation gate unless source files changed. IMPORTANT: This session counts as active — after a successful restart signal, do not make further tool calls or you will block the restart. Status/progress-only tool calls may be batched with self_restart in the same tool-calling message; do not create no-op companion tool calls solely to satisfy tool-batching guidance. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
@@ -103,7 +111,7 @@ export function createSelfAdminTools(ctx: AppContext) {
       };
     },
   }),
-  defineTool("self_update", {
+  defineBridgeTool("self_update", {
     description:
       "Pull the latest code from the remote repository and restart the server. " +
       "Use this to update the Copilot Bridge to the latest version without the full staging workflow. " +
@@ -235,4 +243,14 @@ export function createSelfAdminTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerSelfAdminTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterSelfAdminToolsOptions = {},
+): void {
+  const definitions = createSelfAdminToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

@@ -5,10 +5,15 @@ import { registerDocsTools } from "../tools/docs-tools.js";
 import { registerFeedTools } from "../tools/feed-tools.js";
 import { registerReportIntentTool } from "../tools/report-intent-tool.js";
 import { registerScheduleTools } from "../tools/schedule-tools.js";
+import { registerSelfAdminTools } from "../tools/self-admin-tools.js";
 import { registerTagTools } from "../tools/tag-tools.js";
 import { registerTaskTools } from "../tools/task-tools.js";
 import { registerTaskGroupTools } from "../tools/task-group-tools.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "../tools/helpers.js";
+import { registerStagingTools, STAGING_TOOLS } from "../staging-tools.js";
+import { registerWebSearchTools } from "../web-search-tools.js";
+import { registerBrowserFetchTools } from "../browser-fetch-tools.js";
+import { registerBrowserExecTools } from "../browser-exec-tools.js";
 import type { BridgeToolsMcpServer } from "./server.js";
 
 export interface RegisterAllBridgeToolsOptions {
@@ -27,6 +32,7 @@ export function registerAllBridgeTools(
   const hiddenTools = new Set<string>(options.excludedToolNames ?? []);
   if (isReleaseMode(ctx)) {
     hiddenTools.add("self_update");
+    for (const tool of STAGING_TOOLS) hiddenTools.add(tool.name);
   }
 
   registerReportIntentTool(server, ctx);
@@ -37,4 +43,9 @@ export function registerAllBridgeTools(
   registerFeedTools(server, ctx, { hiddenTools });
   registerScheduleTools(server, ctx, { hiddenTools });
   registerDocsTools(server, ctx, { hiddenTools });
+  registerSelfAdminTools(server, ctx, { hiddenTools });
+  registerStagingTools(server, { hiddenTools });
+  registerWebSearchTools(server, ctx);
+  registerBrowserFetchTools(server, ctx);
+  registerBrowserExecTools(server, ctx);
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createBridgeTools } from "../bridge-tools.js";
+import { BridgeToolsMcpServer, registerAllBridgeTools } from "../agent-tools-mcp/index.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
 import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
 import { initializeDocsFts } from "../db.js";
@@ -11,13 +12,10 @@ describe("createBridgeTools", () => {
     expect(tool).toBeUndefined();
   });
 
-  it("hides git-backed tools in release mode while keeping restart available", () => {
-    const runtimePaths = makeTestRuntimePaths("release-tools", { distributionMode: "release" });
-    const { ctx } = createTestApp({ runtimePaths });
-
+  it("does not expose self-admin or staging tools (they are registered via MCP)", () => {
+    const { ctx } = createTestApp();
     const toolNames = new Set(createBridgeTools(ctx).map((tool) => tool.name));
-
-    expect(toolNames.has("self_restart")).toBe(true);
+    expect(toolNames.has("self_restart")).toBe(false);
     expect(toolNames.has("self_update")).toBe(false);
     expect(toolNames.has("staging_init")).toBe(false);
     expect(toolNames.has("staging_deploy")).toBe(false);
@@ -50,5 +48,32 @@ describe("createBridgeTools", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("registerAllBridgeTools (MCP)", () => {
+  it("hides git-backed tools in release mode while keeping self_restart available", () => {
+    const runtimePaths = makeTestRuntimePaths("release-tools-mcp", { distributionMode: "release" });
+    const { ctx } = createTestApp({ runtimePaths });
+    const server = new BridgeToolsMcpServer(ctx);
+    registerAllBridgeTools(server, ctx);
+    const toolNames = new Set(server.getToolNames());
+
+    expect(toolNames.has("self_restart")).toBe(true);
+    expect(toolNames.has("self_update")).toBe(false);
+    expect(toolNames.has("staging_init")).toBe(false);
+    expect(toolNames.has("staging_deploy")).toBe(false);
+  });
+
+  it("exposes git-backed tools in non-release mode", () => {
+    const { ctx } = createTestApp();
+    const server = new BridgeToolsMcpServer(ctx);
+    registerAllBridgeTools(server, ctx);
+    const toolNames = new Set(server.getToolNames());
+
+    expect(toolNames.has("self_restart")).toBe(true);
+    expect(toolNames.has("self_update")).toBe(true);
+    expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_deploy")).toBe(true);
   });
 });
