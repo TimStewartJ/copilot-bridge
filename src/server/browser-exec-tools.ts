@@ -2,13 +2,14 @@
 // bridge-owned browser session wrappers instead of raw bash.
 
 import { randomUUID } from "node:crypto";
-import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserLane } from "./agent-browser.js";
 import { browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationCommandName, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
-import { requireToolHandlers } from "./tool-handler.js";
 import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
+import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
+import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 
 type BrowserExecLane = "auto" | "primary" | "clone";
 type BrowserExecResolvedLane = "primary" | "clone";
@@ -94,9 +95,9 @@ export function resolveBrowserExecLane(
   return commands[0]?.command === "open" ? "clone" : "primary";
 }
 
-export function createBrowserExecTools(ctx: AppContext) {
-  return requireToolHandlers([
-    defineTool("browser_exec", {
+export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] {
+  return [
+    defineBridgeTool("browser_exec", {
       description:
         "Execute structured browser automation steps through the bridge-managed browser session. " +
         "Use this for hardened freeform browsing when browser_fetch is too narrow but you still " +
@@ -270,5 +271,9 @@ export function createBrowserExecTools(ctx: AppContext) {
         }
       },
     }),
-  ]);
+  ];
+}
+
+export function registerBrowserExecTools(server: BridgeToolsMcpServer, ctx: AppContext): void {
+  registerBridgeToolDefinitions(server, createBrowserExecTools(ctx));
 }

@@ -3,12 +3,13 @@
 // (pure HTTP) and the full browser skill (multi-step interactive flows).
 
 import { randomUUID } from "node:crypto";
-import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
 import { ab, browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
-import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
+import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
+import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 
 const CLONE_SAFE_BROWSER_FETCH_HOSTS = new Set([
   "example.com",
@@ -45,9 +46,9 @@ function isCloneSafeBrowserFetchHost(urlHost: string | undefined): boolean {
   return !!urlHost && CLONE_SAFE_BROWSER_FETCH_HOSTS.has(urlHost);
 }
 
-export function createBrowserFetchTools(ctx: AppContext) {
-  return requireToolHandlers([
-    defineTool("browser_fetch", {
+export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[] {
+  return [
+    defineBridgeTool("browser_fetch", {
       description:
         "Fetch a web page using a real browser and return its content as an accessibility snapshot. " +
         "Use this to confirm rendered or canonical pages after web_search or browser_web_search, or instead of web_fetch " +
@@ -206,5 +207,9 @@ export function createBrowserFetchTools(ctx: AppContext) {
         }
       },
     }),
-  ]);
+  ];
+}
+
+export function registerBrowserFetchTools(server: BridgeToolsMcpServer, ctx: AppContext): void {
+  registerBridgeToolDefinitions(server, createBrowserFetchTools(ctx));
 }
