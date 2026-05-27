@@ -9,7 +9,6 @@ describe("SessionManager Fleet", () => {
     const db = setupTestDb();
     const eventBusRegistry = createEventBusRegistry();
     const manager = new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry,
       sessionTitles: createSessionTitlesStore(db),

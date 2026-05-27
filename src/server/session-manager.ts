@@ -1,5 +1,4 @@
-// Coding-agent session manager (currently backed by `@github/copilot-sdk`
-// via `CopilotBackend`).
+// Coding-agent session manager (currently backed by Copilot via `CopilotBackend`).
 //
 // As of Step 1 of the agent-agnostic roadmap, this file no longer imports
 // the SDK directly. All client/session lifecycle goes through the
@@ -170,7 +169,6 @@ export type {
   SessionRunState,
 } from "./session-run-state-controller.js";
 
-export { createBridgeTools } from "./bridge-tools.js";
 export {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
@@ -264,8 +262,6 @@ function withModelRefreshClientRotationTimeout<T>(
 }
 
 export interface SessionManagerDeps {
-  /** @deprecated Bridge tools are MCP-backed; accepted only for old test fixtures during migration. */
-  tools?: unknown[];
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   userInputBroker?: UserInputBroker;
@@ -307,8 +303,6 @@ export interface SessionManagerDeps {
 
 /** Options that don't come from AppContext — caller provides these directly. */
 export interface CreateSessionManagerOpts {
-  /** @deprecated Bridge tools are MCP-backed; accepted only for old test fixtures during migration. */
-  tools?: unknown[];
   config: SessionManagerDeps["config"];
   builtInMcpServers?: SessionManagerDeps["builtInMcpServers"];
   clientEnv?: SessionManagerDeps["clientEnv"];
@@ -671,7 +665,7 @@ export class SessionManager {
       ...sessionBuiltInMcpServers,
     };
     return buildSessionConfigWithDeps({
-      deps: { ...this.deps, builtInMcpServers },
+      deps: { ...this.deps, builtInMcpServers, permissionPolicy: this.backend?.permissionPolicy },
       options: opts,
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
@@ -1007,7 +1001,7 @@ export class SessionManager {
     let session: any | undefined;
     try {
       session = await Promise.race([
-        client.resumeSession(sessionId, buildSessionNameResumeConfig()),
+        client.resumeSession(sessionId, buildSessionNameResumeConfig(this.backend?.permissionPolicy)),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("name resume timed out after 60s")), 60_000),
         ),

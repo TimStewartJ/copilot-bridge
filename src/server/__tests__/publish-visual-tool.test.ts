@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./helpers.js";
 
@@ -37,7 +37,7 @@ describe("publish_visual tool", () => {
     writeFileSync(srcPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]));
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -64,7 +64,7 @@ describe("publish_visual tool", () => {
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -90,7 +90,7 @@ describe("publish_visual tool", () => {
     writeFileSync(srcPath, Buffer.from([0xff, 0xd8, 0xff]));
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -105,7 +105,7 @@ describe("publish_visual tool", () => {
   it("returns toolFailure when kind is unsupported", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -119,7 +119,7 @@ describe("publish_visual tool", () => {
   it("publishes a mermaid diagram and returns structured visual result", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -144,7 +144,7 @@ describe("publish_visual tool", () => {
   it("returns toolFailure for mermaid with empty content", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -158,7 +158,7 @@ describe("publish_visual tool", () => {
   it("returns toolFailure for mermaid with content exceeding the character limit", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -173,7 +173,7 @@ describe("publish_visual tool", () => {
   it("returns toolFailure when SVG mime type is provided", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -187,7 +187,7 @@ describe("publish_visual tool", () => {
   it("returns toolFailure when sessionId is missing", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -205,7 +205,7 @@ describe("publish_visual tool", () => {
     writeFileSync(srcPath, Buffer.from([0x89, 0x50]));
 
     const { ctx } = createTestApp({ copilotHome, apiBasePath: "/staging/preview-xyz/api" });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -246,7 +246,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("publishes a vega-lite spec and returns structured visual result", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -271,7 +271,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure for empty vega-lite content", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -286,7 +286,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure for invalid JSON vega-lite content", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -301,7 +301,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure when vega-lite spec is too large", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     // Build a spec that exceeds 500KB
@@ -320,7 +320,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure when vega-lite spec is too deeply nested", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     // Build a 25-deep nested object
@@ -338,7 +338,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure when spec uses data.url at top level", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const networkSpec = JSON.stringify({
@@ -359,7 +359,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure when a layer view uses data.url", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const layerSpec = JSON.stringify({
@@ -384,7 +384,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("returns toolFailure when a lookup transform uses data.url", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const lookupSpec = JSON.stringify({
@@ -415,7 +415,7 @@ describe("publish_visual tool — vega-lite", () => {
   it("allows inline data.values without rejecting", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -445,7 +445,7 @@ describe("publish_visual tool — html", () => {
   it("publishes an HTML sandbox and returns structured visual result", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
@@ -470,7 +470,7 @@ describe("publish_visual tool — html", () => {
   it("returns toolFailure for HTML with empty content", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result = await tool.handler(
@@ -485,7 +485,7 @@ describe("publish_visual tool — html", () => {
   it("returns toolFailure for HTML with content exceeding the size limit", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((t) => t.name === "publish_visual");
+    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const bigContent = "A".repeat(1_048_577); // > 1 MB

@@ -1,4 +1,4 @@
-import { approveAll, type SectionOverride } from "@github/copilot-sdk";
+import type { SectionOverride } from "@github/copilot-sdk";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
@@ -12,6 +12,7 @@ import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
+import type { AgentPermissionPolicy } from "./agent-backend/index.js";
 import {
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
@@ -19,6 +20,7 @@ import {
   FEED_GUIDANCE,
   RESEARCH_GUIDANCE,
   STAGING_INSTRUCTIONS,
+  TOOL_NAMING_GUIDANCE,
 } from "./session-instructions.js";
 import {
   formatPromptTagList,
@@ -60,8 +62,6 @@ export interface SessionConfigOptions {
 }
 
 export interface SessionConfigBuilderDeps {
-  /** @deprecated Bridge tools are MCP-backed; accepted only for old test fixtures during migration. */
-  tools?: unknown[];
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
@@ -71,6 +71,7 @@ export interface SessionConfigBuilderDeps {
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   builtInMcpServers?: Record<string, McpServerConfig>;
   resolveBuiltInMcpServers?: (opts: { sessionId?: string }) => Record<string, McpServerConfig>;
+  permissionPolicy?: AgentPermissionPolicy;
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
 }
@@ -184,7 +185,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
   const cfg: any = {
-    onPermissionRequest: approveAll,
     onUserInputRequest: (request: NativeUserInputRequest, invocation: { sessionId: string }) =>
       callbacks.handleUserInputRequest(request, invocation),
     streaming: true,
@@ -196,6 +196,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       join(callbacks.getCopilotHome(), "skills"),
     ],
   };
+  if (deps.permissionPolicy) {
+    cfg.onPermissionRequest = deps.permissionPolicy;
+  }
 
   if (shouldUseSdkGitHubMcp(deps, resolvedMcpServers)) {
     cfg.githubMcpToolOptions = buildGitHubCopilotMcpToolOptions();
@@ -235,7 +238,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     );
     if (isNewTask) {
       contextParts.push(
-        'This task was just created without a title. After reading the user\'s first message, call `task_update` with a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.',
+        "This task was just created without a title. After reading the user's first message, use the task update tool to set a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.",
       );
     }
     if (task.workItems.length > 0) {
@@ -302,6 +305,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   contextParts.push(RESEARCH_GUIDANCE);
   contextParts.push(FEED_GUIDANCE);
+  contextParts.push(TOOL_NAMING_GUIDANCE);
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
   if (task && deps.tagStore) {

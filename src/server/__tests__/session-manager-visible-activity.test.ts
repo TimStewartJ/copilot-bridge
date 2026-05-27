@@ -35,7 +35,6 @@ describe("SessionManager visible activity cache", () => {
     const sessionMetaStore = createSessionMetaStore(db);
     const dataDir = join(copilotHome, "data");
     const manager = new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),

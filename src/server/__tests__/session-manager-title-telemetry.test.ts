@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createBridgeTools, SessionManager } from "../session-manager.js";
+import { SessionManager } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { setupTestDb, createTestBus, createTestApp } from "./helpers.js";
@@ -24,7 +25,7 @@ describe("session CLI renames", () => {
       eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title });
       globalBus.emit({ type: "session:title", sessionId, title });
     });
-    const tool = createBridgeTools({
+    const tool = getBridgeToolDefinitions({
       taskStore: { findTaskBySessionId: () => undefined } as any,
       taskGroupStore: {} as any,
       scheduleStore: {} as any,
@@ -121,7 +122,6 @@ describe("session CLI renames", () => {
       .run("already-named", "Legacy Should Not Win");
 
     const manager = new MigrationTestSessionManager({
-      tools: [],
       globalBus: ctx.globalBus,
       eventBusRegistry: ctx.eventBusRegistry,
       sessionTitles: ctx.sessionTitles,

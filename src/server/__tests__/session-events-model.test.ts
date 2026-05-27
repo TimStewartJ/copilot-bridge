@@ -156,7 +156,6 @@ describe("deriveModelStateFromEventsFile", () => {
 function createManager(copilotHome: string) {
   const db = setupTestDb();
   return new SessionManager({
-    tools: [],
     globalBus: createTestBus(),
     eventBusRegistry: createEventBusRegistry(),
     sessionTitles: createSessionTitlesStore(db),

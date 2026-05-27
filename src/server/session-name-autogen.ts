@@ -1,4 +1,4 @@
-import { approveAll, type ModelInfo } from "@github/copilot-sdk";
+import type { ModelInfo } from "@github/copilot-sdk";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -183,7 +183,6 @@ export class SessionNameAutogenerator {
       helperSession = await this.deps.createSession({
         sessionId: helperSessionId,
         clientName: "Copilot Bridge Title Helper",
-        onPermissionRequest: approveAll,
         model,
         tools: [],
         availableTools: [],

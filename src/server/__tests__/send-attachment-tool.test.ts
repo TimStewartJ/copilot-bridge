@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./helpers.js";
 
@@ -32,7 +32,7 @@ describe("send_attachment tool", () => {
     writeFileSync(sourcePath, "total\n3\n");
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
     if (!tool) throw new Error("send_attachment tool not found");
 
     const result = await tool.handler({ path: sourcePath }, createInvocation());
@@ -53,7 +53,7 @@ describe("send_attachment tool", () => {
     tempDirs.push(copilotHome);
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
     if (!tool) throw new Error("send_attachment tool not found");
 
     await expect(tool.handler({ content: "hello" }, createInvocation()))
@@ -65,7 +65,7 @@ describe("send_attachment tool", () => {
     tempDirs.push(copilotHome);
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
     if (!tool) throw new Error("send_attachment tool not found");
 
     const result = await tool.handler({ content: "# Hi\n", displayName: "note.md" }, createInvocation());
@@ -83,7 +83,7 @@ describe("send_attachment tool", () => {
     tempDirs.push(copilotHome);
 
     const { ctx } = createTestApp({ copilotHome });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
     if (!tool) throw new Error("send_attachment tool not found");
 
     const displayName = "Cafe\u0301 [final] (Bob's copy).png";
@@ -110,7 +110,7 @@ describe("send_attachment tool", () => {
     tempDirs.push(copilotHome);
 
     const { ctx } = createTestApp({ copilotHome, apiBasePath: "/staging/preview-123/api" });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
     if (!tool) throw new Error("send_attachment tool not found");
 
     const result = await tool.handler({ content: "hello", displayName: "note.md" }, createInvocation());
@@ -137,7 +137,7 @@ describe("send_attachment tool", () => {
         env: {},
       },
     });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "send_attachment");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
     if (!tool) throw new Error("send_attachment tool not found");
 
     const result = await tool.handler({ content: "hello", displayName: "note.md" }, createInvocation());

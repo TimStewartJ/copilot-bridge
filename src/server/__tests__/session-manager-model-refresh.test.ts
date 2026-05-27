@@ -50,7 +50,6 @@ function createManager(clients: unknown[]) {
   const copilotHome = makeTestDir("model-refresh");
   const globalBus = createTestBus();
   const deps: SessionManagerDeps = {
-    tools: [],
     globalBus,
     eventBusRegistry: createEventBusRegistry(),
     sessionTitles: createSessionTitlesStore(db),

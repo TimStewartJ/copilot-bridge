@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppContext } from "../app-context.js";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createChecklistToolDefinitions } from "../tools/checklist-tools.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
@@ -12,7 +12,7 @@ const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty front
 
 function getTool(ctx: AppContext, name: string) {
   const tool = [
-    ...createBridgeTools(ctx),
+    ...getBridgeToolDefinitions(ctx),
     ...createTaskToolDefinitions(ctx),
     ...createChecklistToolDefinitions(ctx),
     ...createTagToolDefinitions(ctx),
@@ -46,10 +46,10 @@ describe("session manager failure results", () => {
 
   it("does not expose removed todo tools", () => {
     const { ctx } = createTestApp();
-    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_add")).toBe(false);
-    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_list")).toBe(false);
-    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_update")).toBe(false);
-    expect(createBridgeTools(ctx).some((tool) => tool.name === "todo_remove")).toBe(false);
+    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_add")).toBe(false);
+    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_list")).toBe(false);
+    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_update")).toBe(false);
+    expect(getBridgeToolDefinitions(ctx).some((tool) => tool.name === "todo_remove")).toBe(false);
   });
 
   it("normalizes duplicate tag creation failures", async () => {

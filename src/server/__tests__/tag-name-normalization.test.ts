@@ -5,7 +5,7 @@ import type { AppContext } from "../app-context.js";
 import { openDatabase } from "../db.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createTagStore } from "../tag-store.js";
 import { createTagToolDefinitions } from "../tools/tag-tools.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
@@ -18,7 +18,7 @@ const CAFE_KEY = "CAFÉ";
 
 function getTool(ctx: AppContext, name: string) {
   const tool = [
-    ...createBridgeTools(ctx),
+    ...getBridgeToolDefinitions(ctx),
     ...createTaskToolDefinitions(ctx),
     ...createTagToolDefinitions(ctx),
   ].find((candidate) => candidate.name === name);

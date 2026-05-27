@@ -18,7 +18,6 @@ describe("SessionManager tool result rendering", () => {
 
   function createManager() {
     return new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry,
       sessionTitles,

@@ -1,21 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBridgeTools } from "../bridge-tools.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { BridgeToolsMcpServer, registerAllBridgeTools } from "../agent-tools-mcp/index.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
 import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
 import { initializeDocsFts } from "../db.js";
 
-describe("createBridgeTools", () => {
+describe("Bridge MCP tool definitions", () => {
   it("provides compatibility access to MCP-backed report_intent definitions", () => {
     const { ctx } = createTestApp();
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "report_intent");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "report_intent");
     expect(tool).toBeTruthy();
     expect(tool?.scope).toBeUndefined();
   });
 
   it("provides compatibility access to MCP-backed self-admin and staging definitions", () => {
     const { ctx } = createTestApp();
-    const toolNames = new Set(createBridgeTools(ctx).map((tool) => tool.name));
+    const toolNames = new Set(getBridgeToolDefinitions(ctx).map((tool) => tool.name));
     expect(toolNames.has("self_restart")).toBe(true);
     expect(toolNames.has("self_update")).toBe(true);
     expect(toolNames.has("staging_init")).toBe(true);

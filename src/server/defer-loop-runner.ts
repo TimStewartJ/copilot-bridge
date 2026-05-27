@@ -220,7 +220,7 @@ export function createDeferLoopRunner(
       "Quiet recurring deferral instructions:",
       "- This is an automated polling check. If there is nothing actionable for the user, give a concise status and stop.",
       "- Do not ask a question just to report no change.",
-      "- If user action is needed, cancel this recurring deferral with defer_cancel using the deferId above, then clearly state the required next step and stop.",
+      "- If user action is needed, cancel this recurring deferral with the defer cancel tool using the deferId above, then clearly state the required next step and stop.",
       "",
       "User prompt:",
       loop.prompt,

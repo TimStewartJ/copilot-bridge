@@ -20,7 +20,7 @@ import { registerWebSearchTools } from "../web-search-tools.js";
 import { registerBrowserFetchTools } from "../browser-fetch-tools.js";
 import { registerBrowserExecTools } from "../browser-exec-tools.js";
 import { registerComputerUseSessionTools, registerComputerUseStatelessTools } from "../computer-use-tools.js";
-import type { BridgeToolsMcpServer } from "./server.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./server.js";
 
 export interface RegisterAllBridgeToolsOptions {
   excludedToolNames?: Iterable<string>;
@@ -61,4 +61,18 @@ export function registerAllBridgeTools(
   registerDeferTools(server, ctx, { hiddenTools });
   registerBrowserSessionTools(server, ctx, { hiddenTools });
   registerComputerUseSessionTools(server, ctx);
+}
+
+export function getBridgeToolDefinitions(
+  ctx: AppContext,
+  options: RegisterAllBridgeToolsOptions = {},
+): BridgeToolDefinition[] {
+  const definitions: BridgeToolDefinition[] = [];
+  const collector = {
+    registerTool(definition: BridgeToolDefinition): void {
+      definitions.push(definition);
+    },
+  };
+  registerAllBridgeTools(collector as BridgeToolsMcpServer, ctx, options);
+  return definitions;
 }

@@ -8,7 +8,6 @@ describe("SessionManager reloadSession", () => {
   function createManager() {
     const db = setupTestDb();
     return new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -158,7 +157,6 @@ describe("SessionManager warmSession", () => {
   function createManager() {
     const db = setupTestDb();
     return new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -230,7 +228,6 @@ describe("SessionManager getSessionMessages resume", () => {
   function createManager() {
     const db = setupTestDb();
     return new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),

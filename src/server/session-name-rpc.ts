@@ -1,8 +1,8 @@
-import { approveAll } from "@github/copilot-sdk";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AgentSession } from "./agent-backend/index.js";
+import type { AgentPermissionPolicy } from "./agent-backend/index.js";
 import {
   isSessionStatePathSegment,
   parseWorkspaceYamlSessionNameMetadata,
@@ -36,9 +36,9 @@ function workspaceYamlPath(
   return join(getSessionStateDir(sessionId), "workspace.yaml");
 }
 
-export function buildSessionNameResumeConfig(): any {
+export function buildSessionNameResumeConfig(permissionPolicy?: AgentPermissionPolicy): any {
   return {
-    onPermissionRequest: approveAll,
+    ...(permissionPolicy ? { onPermissionRequest: permissionPolicy } : {}),
     suppressResumeEvent: true,
     continuePendingWork: false,
     tools: [],

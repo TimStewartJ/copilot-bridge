@@ -28,7 +28,6 @@ function createManager(ids: string[] = ["request-1"]) {
     now: () => new Date("2026-04-29T12:00:00.000Z"),
   });
   const manager = new SessionManager({
-    tools: [],
     globalBus,
     eventBusRegistry,
     userInputBroker,

@@ -35,7 +35,6 @@ describe("SessionManager run state", () => {
     const copilotHome = opts.copilotHome ?? runtimePaths.copilotHome;
     configureRestartStateStore(runtimePaths);
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry,
       sessionTitles: createSessionTitlesStore(db),

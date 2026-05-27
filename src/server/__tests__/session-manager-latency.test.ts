@@ -12,7 +12,6 @@ function createManager(copilotHome: string) {
   const db = setupTestDb();
   const telemetryStore = createTelemetryStore(db);
   const manager = new SessionManager({
-    tools: [],
     globalBus: createTestBus(),
     eventBusRegistry: createEventBusRegistry(),
     sessionTitles: createSessionTitlesStore(db),

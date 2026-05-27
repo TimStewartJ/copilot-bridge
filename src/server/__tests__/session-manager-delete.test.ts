@@ -83,7 +83,6 @@ function createManager(copilotHome: string): TestSessionManager {
   const runtimePaths = makeTestRuntimePaths("session-delete", { copilotHome });
   configureRestartStateStore(runtimePaths);
   const manager = new SessionManager({
-    tools: [],
     globalBus,
     eventBusRegistry: createEventBusRegistry(),
     sessionTitles: createSessionTitlesStore(db),
