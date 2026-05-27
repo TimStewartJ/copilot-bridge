@@ -1,7 +1,7 @@
 // Platform abstraction — encapsulates OS-specific operations behind a unified API.
-// Windows uses taskkill/wmic; Linux uses kill/pkill. Filesystem links use Node APIs.
+// Windows uses taskkill/wmic/CIM; POSIX uses process signals and ps. Filesystem links use Node APIs.
 
-import { execFile, execFileSync, execSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { lstatSync, rmSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -273,25 +273,6 @@ export async function waitForProcessTreeExit(
     if (!isProcessTreeAlive(snapshot)) return true;
   }
   return !isProcessTreeAlive(snapshot);
-}
-
-/**
- * Find and kill processes whose command line matches the given pattern.
- * Used for cleaning up orphaned devtunnel processes.
- */
-export function killProcessByPattern(pattern: string): void {
-  try {
-    if (isWindows()) {
-      execSync(
-        `wmic process where "commandline like '%${pattern}%'" call terminate`,
-        { timeout: 10_000, stdio: "ignore" },
-      );
-    } else {
-      execSync(`pkill -f '${pattern}'`, { timeout: 10_000, stdio: "ignore" });
-    }
-  } catch {
-    // Process may not exist — that's fine
-  }
 }
 
 /**
