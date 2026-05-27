@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./helpers.js";
 import { parseDeferId } from "../defer-ids.js";
 
-function findTool(tools: ReturnType<typeof createBridgeTools>, name: string) {
+function findTool(tools: ReturnType<typeof getBridgeToolDefinitions>, name: string) {
   const tool = tools.find((t) => t.name === name);
   if (!tool) throw new Error(`Tool "${name}" not found`);
   return tool;
@@ -22,7 +22,7 @@ function expectFailure(result: unknown): string {
 describe("unified defer tools", () => {
   it("advertises defer_create/list/cancel but not legacy defer_session", () => {
     const { ctx } = createTestApp();
-    const names = createBridgeTools(ctx).map((tool) => tool.name);
+    const names = getBridgeToolDefinitions(ctx).map((tool) => tool.name);
     expect(names).toContain("defer_create");
     expect(names).toContain("defer_list");
     expect(names).toContain("defer_cancel");
@@ -31,7 +31,7 @@ describe("unified defer tools", () => {
 
   it("creates a one-shot defer with a public once_ deferId", async () => {
     const { ctx } = createTestApp();
-    const createTool = findTool(createBridgeTools(ctx), "defer_create");
+    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
 
     const result = await createTool.handler(
       { prompt: "check on the build", delaySeconds: 60 },
@@ -52,7 +52,7 @@ describe("unified defer tools", () => {
 
   it("creates a one-shot defer from runAt with a public once_ deferId", async () => {
     const { ctx } = createTestApp();
-    const createTool = findTool(createBridgeTools(ctx), "defer_create");
+    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
     const runAt = new Date(Date.now() + 120_000).toISOString();
 
     const result = await createTool.handler(
@@ -75,7 +75,7 @@ describe("unified defer tools", () => {
     const { ctx } = createTestApp();
     const pokeSpy = vi.fn();
     ctx.deferLoopRunner = { start: vi.fn(), poke: pokeSpy, shutdown: vi.fn() } as any;
-    const createTool = findTool(createBridgeTools(ctx), "defer_create");
+    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
 
     const result = await createTool.handler(
       { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3, name: "deploy poller" },
@@ -102,7 +102,7 @@ describe("unified defer tools", () => {
 
   it("validates timing modes and recurring-only options", async () => {
     const { ctx } = createTestApp();
-    const createTool = findTool(createBridgeTools(ctx), "defer_create");
+    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
     await expect(createTool.handler({ prompt: "hi" }, makeInvocation("s1")))
       .resolves.toEqual(toolFailure("Provide exactly one timing mode: delaySeconds, runAt, or intervalSeconds."));
     await expect(createTool.handler({ prompt: "hi", delaySeconds: 10, runAt: new Date(Date.now() + 60_000).toISOString() }, makeInvocation("s1")))
@@ -133,7 +133,7 @@ describe("unified defer tools", () => {
 
   it("lists active one-shot and recurring defers without legacy IDs", async () => {
     const { ctx } = createTestApp();
-    const tools = createBridgeTools(ctx);
+    const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const listTool = findTool(tools, "defer_list");
 
@@ -154,7 +154,7 @@ describe("unified defer tools", () => {
 
   it("cancels one-shot and recurring defers by public deferId", async () => {
     const { ctx } = createTestApp();
-    const tools = createBridgeTools(ctx);
+    const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
     const markAttention = vi.spyOn(ctx.sessionManager, "markSessionAttention");
@@ -195,7 +195,7 @@ describe("unified defer tools", () => {
 
   it("rejects legacy deferredPromptId and loopId surfaces", async () => {
     const { ctx } = createTestApp();
-    const tools = createBridgeTools(ctx);
+    const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
     const listTool = findTool(tools, "defer_list");
@@ -210,7 +210,7 @@ describe("unified defer tools", () => {
 
   it("does not cancel another session's defer", async () => {
     const { ctx } = createTestApp();
-    const tools = createBridgeTools(ctx);
+    const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
 
@@ -221,7 +221,7 @@ describe("unified defer tools", () => {
 
   it("does not cancel another session's recurring interval defer", async () => {
     const { ctx } = createTestApp();
-    const tools = createBridgeTools(ctx);
+    const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
 

@@ -33,7 +33,6 @@ describe("SessionManager graceful shutdown", () => {
   function createManager(overrides: Record<string, unknown> = {}) {
     const db = setupTestDb();
     return new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),

@@ -12,7 +12,10 @@
 // `forkSession`, `truncateHistory`, `getName`, etc.; this file knows about
 // the underlying SDK rpc namespaces.
 
-import { CopilotClient } from "@github/copilot-sdk";
+import {
+  approveAll,
+  CopilotClient,
+} from "@github/copilot-sdk";
 
 import type {
   AgentBackend,
@@ -20,6 +23,7 @@ import type {
   AgentMcpOauthLoginOptions,
   AgentMcpServerStatus,
   AgentModelInfo,
+  AgentPermissionPolicy,
   AgentSendArgs,
   AgentSession,
   AgentSessionConfig,
@@ -146,6 +150,7 @@ class CopilotAgentSession implements AgentSession {
 export class CopilotBackend implements AgentBackend {
   readonly id = "copilot" as const;
   readonly capabilities: AgentCapabilities = COPILOT_CAPABILITIES;
+  readonly permissionPolicy: AgentPermissionPolicy = approveAll;
 
   constructor(private readonly client: CopilotClient) {}
 

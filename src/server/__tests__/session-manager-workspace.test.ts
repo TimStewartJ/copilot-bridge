@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { AppContext } from "../app-context.js";
-import { SessionManager, createBridgeTools } from "../session-manager.js";
+import { SessionManager } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTaskStore } from "../task-store.js";
@@ -39,7 +40,6 @@ describe("SessionManager workspace resolution", () => {
     const taskStore = createTaskStore(db, globalBus, opts.runtimePaths ? { runtimePaths: opts.runtimePaths } : undefined);
     const sessionWorkspaceStore = createSessionWorkspaceStore(db);
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -60,7 +60,7 @@ describe("SessionManager workspace resolution", () => {
   }
 
   function getTool(ctx: AppContext, name: string) {
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === name);
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === name);
     if (!tool) throw new Error(`${name} tool not found`);
     return tool;
   }
@@ -82,7 +82,6 @@ describe("SessionManager workspace resolution", () => {
     const sessionWorkspaceStore = createSessionWorkspaceStore(db);
     const sessionTitles = createSessionTitlesStore(db);
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry,
       sessionTitles,
@@ -467,7 +466,6 @@ describe("SessionManager forkSession", () => {
     const taskStore = createTaskStore(db, globalBus);
     const sessionWorkspaceStore = createSessionWorkspaceStore(db);
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),

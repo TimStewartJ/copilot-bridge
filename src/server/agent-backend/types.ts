@@ -33,6 +33,9 @@
 import type {
   CopilotClientOptions,
   ModelInfo,
+  PermissionHandler,
+  PermissionRequest,
+  PermissionRequestResult,
   SectionOverride,
 } from "@github/copilot-sdk";
 
@@ -72,6 +75,10 @@ export interface AgentCapabilities {
 export type AgentClientOptions = CopilotClientOptions;
 export type AgentModelInfo = ModelInfo;
 export type AgentSectionOverride = SectionOverride;
+// Step 3: replace these Copilot-shaped aliases with backend-neutral permission types.
+export type AgentPermissionRequest = PermissionRequest;
+export type AgentPermissionDecision = PermissionRequestResult;
+export type AgentPermissionPolicy = PermissionHandler;
 
 /**
  * Loose alias for the configuration object passed to createSession /
@@ -204,6 +211,13 @@ export interface AgentBackend {
 
   /** Capability flags surfaced to the UI / run loop for graceful degradation. */
   readonly capabilities: AgentCapabilities;
+
+  /**
+   * Backend-native handler for permission requests during session execution.
+   * Backends that auto-accept via CLI flags can return undefined.
+   * Step 3 will replace the Copilot-shaped alias with a backend-neutral type.
+   */
+  readonly permissionPolicy: AgentPermissionPolicy | undefined;
 
   /** Boot the underlying CLI process and JSON-RPC channel. */
   start(): Promise<unknown>;

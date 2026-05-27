@@ -82,7 +82,6 @@ describe("SessionManager session config", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
     tempDirs.push(copilotHome);
     const manager = new SessionManager({
-      tools: [],
       globalBus: createTestBus(),
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -137,7 +136,6 @@ describe("SessionManager session config", () => {
       nextTouchAt: "9999-05-03T11:00:00.000Z",
     });
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -165,7 +163,6 @@ describe("SessionManager session config", () => {
     const taskStore = createTaskStore(db, globalBus);
     const task = taskStore.createTask("Ongoing task", undefined, "ongoing");
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -197,7 +194,6 @@ describe("SessionManager session config", () => {
     const taskStore = createTaskStore(db, globalBus);
     const task = taskStore.createTask("Needs decision");
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -210,7 +206,7 @@ describe("SessionManager session config", () => {
     const content = cfg.systemMessage.content;
 
     expect(content).toContain("Task momentum:");
-    expect(content).toContain("- Next action / waiting on / follow up: none set; update with task_update_momentum when clear.");
+    expect(content).toContain("- Next action / waiting on / follow up: none set; update with the task momentum tool when clear.");
   });
 
   it("includes stored task momentum in newly created task sessions", async () => {
@@ -227,7 +223,6 @@ describe("SessionManager session config", () => {
       nextTouchAt: "9999-05-04T11:00:00.000Z",
     });
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -268,7 +263,6 @@ describe("SessionManager session config", () => {
       doneWhen: "Preview shipped",
     });
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -386,7 +380,6 @@ description: Path and tag should stay on one line.
     tagStore.setEntityTags("task", task.id, [deployTag.id, infraTag.id, maliciousTag.id, commaTag.id, unicodeSeparatorTag.id]);
 
     const manager = new SessionManager({
-      tools: [],
       globalBus,
       eventBusRegistry,
       sessionTitles,

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import * as scheduler from "../scheduler.js";
 import { createScheduleToolDefinitions } from "../tools/schedule-tools.js";
 import { createMockSessionManager, createTestApp } from "./helpers.js";
 
 function getTool(ctx: ReturnType<typeof createTestApp>["ctx"], name: string) {
   const tool = [
-    ...createBridgeTools(ctx),
+    ...getBridgeToolDefinitions(ctx),
     ...createScheduleToolDefinitions(ctx),
   ].find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);

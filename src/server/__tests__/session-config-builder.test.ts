@@ -43,7 +43,6 @@ function createCallbacks(overrides: Partial<SessionConfigBuilderCallbacks> = {})
 
 function createDeps(overrides: Partial<SessionConfigBuilderDeps> = {}): SessionConfigBuilderDeps {
   return {
-    tools: [],
     config: { sessionMcpServers: {} },
     clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
     ...overrides,
@@ -95,6 +94,7 @@ describe("session-config-builder", () => {
     expect(cfg.includeSubAgentStreamingEvents).toBe(false);
     expect(cfg.mcpServers).toEqual({ configured: { command: "configured-mcp", args: [] } });
     expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
+    expect(cfg.onPermissionRequest).toBeUndefined();
     expect(cfg.systemMessage.sections.identity).toEqual({ action: "replace", content: "Custom Bridge identity" });
     expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
     expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
@@ -102,6 +102,17 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content).toContain("Prefer concise summaries.");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
+  });
+
+  it("uses the backend permission policy when one is provided", () => {
+    const permissionPolicy = vi.fn();
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ permissionPolicy: permissionPolicy as any }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.onPermissionRequest).toBe(permissionPolicy);
   });
 
   it("uses default-enabled registry MCP servers for unlinked sessions", () => {
@@ -626,7 +637,7 @@ describe("session-config-builder", () => {
     expect(userInputHandler).toHaveBeenCalledWith({ prompt: "Need input" }, { sessionId: "session-1" });
     expect(cfg.systemMessage.sections.code_change_rules.content).toContain("<staging_workflow>");
     expect(cfg.systemMessage.content).toContain('You are helping with task "Config task" (taskId: task-1).');
-    expect(cfg.systemMessage.content).toContain("call `task_update`");
+    expect(cfg.systemMessage.content).toContain("use the task update tool");
     expect(cfg.systemMessage.content).toContain("Currently linked work items: #ABC-123 (linear).");
     expect(cfg.systemMessage.content).toContain("Currently linked PRs: custom/repo #99.");
     expect(cfg.systemMessage.content).toContain("Task notes:\nTask note body");

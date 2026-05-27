@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBridgeTools } from "../session-manager.js";
+import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createFeedToolDefinitions } from "../tools/feed-tools.js";
 import type { ApiRouteTestState } from "./api-routes-test-helpers.js";
 import { installApiRouteTestHooks, request } from "./api-routes-test-helpers.js";
@@ -18,7 +18,7 @@ function createInvocation(toolName: string) {
 
 function getTool(name: string) {
   const tool = [
-    ...createBridgeTools(ctx),
+    ...getBridgeToolDefinitions(ctx),
     ...createFeedToolDefinitions(ctx),
   ].find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
