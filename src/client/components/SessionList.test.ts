@@ -152,6 +152,29 @@ describe("session model menu labels", () => {
       .toBe("custom-model");
   });
 
+  it("shows long context from session state before model metadata loads", () => {
+    expect(formatSessionModelLabel(
+      { model: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context", source: "events" },
+      null,
+    )).toBe("gpt-5.5 · Extra High · Long context");
+  });
+
+  it("uses detailed context labels when model metadata is available", () => {
+    expect(formatSessionModelLabel(
+      { model: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context", source: "events" },
+      [{
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        billing: {
+          tokenPrices: {
+            contextMax: 272_000,
+            longContext: { contextMax: 1_050_000 },
+          },
+        },
+      }],
+    )).toBe("GPT-5.5 · Extra High · Long context (1.1M)");
+  });
+
   it("keeps unknown reasoning effort values visible", () => {
     expect(formatReasoningEffortLabel("experimental")).toBe("experimental");
   });

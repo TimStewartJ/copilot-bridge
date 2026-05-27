@@ -49,6 +49,12 @@ export function formatReasoningEffortLabel(effort?: string): string | undefined 
   return REASONING_EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? effort;
 }
 
+function formatContextTierFallbackLabel(tier?: CopilotContextTier): string | undefined {
+  if (tier === "long_context") return "Long context";
+  if (tier === "default") return "Standard context";
+  return undefined;
+}
+
 export function formatSessionModelLabel(
   state?: SessionModelState,
   models?: readonly ModelInfo[] | null,
@@ -60,7 +66,7 @@ export function formatSessionModelLabel(
   const contextTierLabel = getContextTierLabel(
     models?.find((model) => model.id === state.model),
     state.contextTier,
-  );
+  ) ?? formatContextTierFallbackLabel(state.contextTier);
   return [modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
 }
 
