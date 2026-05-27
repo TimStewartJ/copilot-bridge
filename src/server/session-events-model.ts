@@ -11,14 +11,20 @@
  */
 
 import { readFileSync } from "node:fs";
+import {
+  isCopilotContextTier,
+  type CopilotContextTier,
+} from "../shared/copilot-context.js";
 
 export interface DerivedModelState {
   model?: string;
   reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
 }
 
 interface ExtractedModelEvent extends DerivedModelState {
   preserveReasoningEffort: boolean;
+  preserveContextTier: boolean;
 }
 
 function extractFromEvent(event: unknown): ExtractedModelEvent | null {
@@ -32,22 +38,29 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
     const model = typeof data.newModel === "string" ? data.newModel : undefined;
     const reasoningEffort =
       typeof data.reasoningEffort === "string" ? data.reasoningEffort : undefined;
+    const hasContextTier = "contextTier" in data;
+    const contextTier = isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
     if (model !== undefined) {
       return {
         model,
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(contextTier !== undefined ? { contextTier } : {}),
         preserveReasoningEffort: reasoningEffort === undefined,
+        preserveContextTier: !hasContextTier,
       };
     }
   } else if (type === "session.resume" || type === "session.start") {
     const model = typeof data.selectedModel === "string" ? data.selectedModel : undefined;
     const reasoningEffort =
       typeof data.reasoningEffort === "string" ? data.reasoningEffort : undefined;
+    const contextTier = isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
     if (model !== undefined) {
       return {
         model,
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(contextTier !== undefined ? { contextTier } : {}),
         preserveReasoningEffort: false,
+        preserveContextTier: false,
       };
     }
   }
@@ -67,11 +80,14 @@ export function deriveModelStateFromEventsContent(content: string): DerivedModel
       const event = JSON.parse(trimmed);
       const extracted = extractFromEvent(event);
       if (extracted !== null) {
-        const { preserveReasoningEffort, ...nextState } = extracted;
+        const { preserveReasoningEffort, preserveContextTier, ...nextState } = extracted;
         state = {
           ...nextState,
           ...(preserveReasoningEffort && state.reasoningEffort !== undefined
             ? { reasoningEffort: state.reasoningEffort }
+            : {}),
+          ...(preserveContextTier && state.contextTier !== undefined
+            ? { contextTier: state.contextTier }
             : {}),
         };
       }

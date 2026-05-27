@@ -5,6 +5,10 @@ import type { DatabaseSync } from "./db.js";
 import type { ProvidersConfig } from "./providers/types.js";
 import { assertMcpServerConfig, type McpServerConfig } from "./mcp-config.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
+import {
+  isCopilotContextTier,
+  type CopilotContextTier,
+} from "../shared/copilot-context.js";
 
 export type ThemePreference = "light" | "dark" | "system";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -24,6 +28,7 @@ export interface AppSettings {
   customInstructions?: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
   browser?: BrowserSettings;
 }
 
@@ -151,6 +156,13 @@ export function createSettingsStore(db: DatabaseSync) {
     if (updates.customInstructions !== undefined) current.customInstructions = updates.customInstructions;
     if ("model" in updates) current.model = updates.model || undefined;
     if ("reasoningEffort" in updates) current.reasoningEffort = updates.reasoningEffort || undefined;
+    if ("contextTier" in updates) {
+      const contextTier = updates.contextTier as unknown;
+      if (contextTier !== undefined && contextTier !== "" && !isCopilotContextTier(contextTier)) {
+        throw new Error("contextTier must be default or long_context");
+      }
+      current.contextTier = isCopilotContextTier(contextTier) ? contextTier : undefined;
+    }
     if ("browser" in updates) current.browser = normalizeBrowserSettings(updates.browser);
 
     persistSettings(current);

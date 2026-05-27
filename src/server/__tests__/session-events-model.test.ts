@@ -93,6 +93,40 @@ describe("deriveModelStateFromEventsContent", () => {
     });
   });
 
+  it("derives and preserves contextTier across model changes", () => {
+    const lines = [
+      JSON.stringify({
+        type: "session.start",
+        data: { selectedModel: "gpt-5.5", contextTier: "long_context" },
+      }),
+      JSON.stringify({
+        type: "session.model_change",
+        data: { newModel: "gpt-5.5", reasoningEffort: "high" },
+      }),
+    ];
+    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+  });
+
+  it("clears contextTier when model_change explicitly sends null", () => {
+    const lines = [
+      JSON.stringify({
+        type: "session.start",
+        data: { selectedModel: "gpt-5.5", contextTier: "long_context" },
+      }),
+      JSON.stringify({
+        type: "session.model_change",
+        data: { newModel: "gpt-5.5", contextTier: null },
+      }),
+    ];
+    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
+      model: "gpt-5.5",
+    });
+  });
+
   it("skips malformed lines gracefully", () => {
     const lines = [
       "not json at all {{{",

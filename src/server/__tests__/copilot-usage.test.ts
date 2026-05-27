@@ -329,6 +329,70 @@ describe("readCopilotUsageSummary", () => {
     expect(session.models[0].estimatedCostUsd).toBeCloseTo(22.05);
   });
 
+  it("uses SDK long-context pricing when Bridge recorded a long context tier", async () => {
+    const copilotHome = createCopilotHome();
+    const sessionDir = createSession(copilotHome, "session-1");
+    writeFileSync(join(sessionDir, "bridge-model-state.json"), JSON.stringify({
+      model: "gpt-5.5",
+      contextTier: "long_context",
+    }));
+    writeEvents(copilotHome, "session-1", [
+      {
+        type: "session.shutdown",
+        timestamp: "2026-01-05T10:00:00.000Z",
+        data: {
+          modelMetrics: {
+            "gpt-5.5": {
+              requests: { count: 1 },
+              usage: {
+                inputTokens: 1_000_000,
+                outputTokens: 1_000_000,
+                cacheReadTokens: 1_000_000,
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({
+      copilotHome,
+      sdkModels: [{
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        billing: {
+          tokenPrices: {
+            inputPrice: 500,
+            outputPrice: 3000,
+            cachePrice: 50,
+            batchSize: 1_000_000,
+            contextMax: 272_000,
+            longContext: {
+              inputPrice: 1000,
+              outputPrice: 4500,
+              cachePrice: 100,
+              contextMax: 1_050_000,
+            },
+          },
+        },
+      }],
+    });
+
+    expect(summary.models[0]).toMatchObject({
+      model: "gpt-5.5",
+      contextTier: "long_context",
+      contextTierLabel: "Long context",
+      pricingKey: "gpt-5.5:long_context",
+      pricedAs: "gpt-5.5:long_context",
+    });
+    expect(summary.models[0].costBreakdownUsd).toMatchObject({
+      input: 10,
+      cachedInput: 1,
+      output: 45,
+    });
+    expect(summary.models[0].estimatedCostUsd).toBeCloseTo(56);
+  });
+
   it("resolves generic model variants through the pricing resolver", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [

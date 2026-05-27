@@ -1,15 +1,21 @@
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
   COPILOT_TOKEN_PRICING_UNIT,
+  getCopilotPricingRatesFromModelMetadata,
   resolveCopilotPricingModel,
   usdToCopilotAiCredits,
+  type CopilotPricingRatesUsdPerMillionTokens,
   type CopilotModelMetadataForPricing,
   type CopilotPricingModelResolutionStatus,
-  type PublicCopilotPricingCatalogEntry,
 } from "../shared/copilot-pricing.js";
+import {
+  isCopilotContextTier,
+  type CopilotContextTier,
+} from "../shared/copilot-context.js";
+import { BRIDGE_SESSION_MODEL_STATE_FILE } from "./session-model-state-sidecar.js";
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
 
@@ -53,6 +59,8 @@ export interface CopilotUsageModelPricingMetadata {
   pricingStatus: CopilotPricingModelResolutionStatus;
   pricingSource: CopilotPricingModelResolutionStatus;
   normalizedPricingModel: string | null;
+  contextTier?: CopilotContextTier;
+  contextTierLabel?: string;
 }
 
 export interface CopilotUsageUnpricedModelRow extends CopilotUsageTotals, CopilotUsageModelPricingMetadata {
@@ -130,6 +138,7 @@ interface SessionScanResult {
 
 interface AssistantUsageAccumulator {
   model: string;
+  contextTier?: CopilotContextTier;
   outputTokens: number;
   timestamp: string | null;
 }
@@ -192,10 +201,11 @@ export async function readCopilotUsageSummary({
         }
 
         for (const row of result.modelRows) {
-          const existing = modelTotals.get(row.model) ?? createZeroModelRow(row.model, 0);
+          const key = usageModelKey(row.model, row.contextTier);
+          const existing = modelTotals.get(key) ?? createZeroModelRow(row.model, 0, row.contextTier);
           existing.sessions += row.sessions;
           addTotals(existing, row);
-          modelTotals.set(row.model, existing);
+          modelTotals.set(key, existing);
         }
         continue;
       }
@@ -332,6 +342,12 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
   let sawShutdown = false;
   let latestShutdownAt: string | null = null;
   let selectedModel = "unknown";
+  let selectedContextTier: CopilotContextTier | undefined;
+  const persistedState = await readPersistedUsageModelState(join(sessionStateDir, sessionId));
+  if (persistedState.model) {
+    selectedModel = persistedState.model;
+    selectedContextTier = persistedState.contextTier;
+  }
   const usableShutdowns: Array<{ shutdownAt: string | null; modelMetrics: Record<string, unknown> }> = [];
   const assistantUsageByRequest = new Map<string, AssistantUsageAccumulator>();
   let fallbackEventIndex = 0;
@@ -354,16 +370,25 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
       const data = asRecord(eventRecord?.data);
       if (eventRecord?.type === "session.start") {
         selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
+        selectedContextTier = normalizeContextTier(data?.contextTier)
+          ?? (persistedState.model === selectedModel ? persistedState.contextTier : undefined);
         continue;
       }
 
       if (eventRecord?.type === "session.resume") {
         selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
+        selectedContextTier = normalizeContextTier(data?.contextTier)
+          ?? (persistedState.model === selectedModel ? persistedState.contextTier : selectedContextTier);
         continue;
       }
 
       if (eventRecord?.type === "session.model_change") {
         selectedModel = normalizeModelName(data?.newModel) ?? selectedModel;
+        if ("contextTier" in (data ?? {})) {
+          selectedContextTier = normalizeContextTier(data?.contextTier);
+        } else if (persistedState.model === selectedModel) {
+          selectedContextTier = persistedState.contextTier;
+        }
         continue;
       }
 
@@ -374,11 +399,13 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
             ? data.requestId.trim()
             : `event:${fallbackEventIndex++}`;
           const messageModel = normalizeModelName(data?.model) ?? selectedModel;
-          const key = `${messageModel}\u0000${requestId}`;
+          const contextTier = messageModel === selectedModel ? selectedContextTier : undefined;
+          const key = `${usageModelKey(messageModel, contextTier)}\u0000${requestId}`;
           const existing = assistantUsageByRequest.get(key);
           if (!existing || outputTokens > existing.outputTokens) {
             assistantUsageByRequest.set(key, {
               model: messageModel,
+              ...(contextTier ? { contextTier } : {}),
               outputTokens,
               timestamp: eventAt,
             });
@@ -426,12 +453,14 @@ async function scanSession(sessionStateDir: string, sessionId: string): Promise<
     }
     for (const [modelName, metrics] of Object.entries(usableShutdown.modelMetrics)) {
       const model = modelName.trim() || "unknown";
-      const existing = modelTotals.get(model) ?? createZeroModelRow(model, 0);
+      const contextTier = model === persistedState.model ? persistedState.contextTier : undefined;
+      const key = usageModelKey(model, contextTier);
+      const existing = modelTotals.get(key) ?? createZeroModelRow(model, 0, contextTier);
       if (existing.sessions === 0) {
         existing.sessions = 1;
       }
       addTotals(existing, extractTotals(metrics));
-      modelTotals.set(model, existing);
+      modelTotals.set(key, existing);
     }
   }
 
@@ -446,11 +475,12 @@ function buildAssistantUsageRows(usageByRequest: Map<string, AssistantUsageAccum
   const includedUsageAts: string[] = [];
 
   for (const usage of usageByRequest.values()) {
-    const existing = modelTotals.get(usage.model) ?? createZeroModelRow(usage.model, 1);
+    const key = usageModelKey(usage.model, usage.contextTier);
+    const existing = modelTotals.get(key) ?? createZeroModelRow(usage.model, 1, usage.contextTier);
     existing.requests += 1;
     existing.outputTokens += usage.outputTokens;
     existing.totalTokens += usage.outputTokens;
-    modelTotals.set(usage.model, existing);
+    modelTotals.set(key, existing);
     if (usage.timestamp) {
       includedUsageAts.push(usage.timestamp);
     }
@@ -538,12 +568,17 @@ function applyCostEstimateToModelRow(
   sdkModels: readonly CopilotModelMetadataForPricing[] | undefined,
 ): void {
   const resolution = resolveCopilotPricingModel(row.model, { sdkModels });
+  const sdkModelId = "sdkModelId" in resolution ? resolution.sdkModelId : undefined;
+  const sdkModel = sdkModels?.find((model) => model.id === row.model || model.id === sdkModelId);
+  const contextTierLabel = formatUsageContextTierLabel(row.contextTier);
   Object.assign(row, {
-    pricingKey: resolution.sku,
-    pricedAs: resolution.sku,
+    pricingKey: resolution.sku ? usagePricingKey(resolution.sku, row.contextTier) : null,
+    pricedAs: resolution.sku ? usagePricingKey(resolution.sku, row.contextTier) : null,
     pricingStatus: resolution.status,
     pricingSource: resolution.source,
     normalizedPricingModel: resolution.normalizedModel,
+    ...(row.contextTier ? { contextTier: row.contextTier } : {}),
+    ...(contextTierLabel ? { contextTierLabel } : {}),
   } satisfies CopilotUsageModelPricingMetadata);
 
   const billableOutputTokens = Math.max(0, row.outputTokens) + Math.max(0, row.reasoningTokens);
@@ -555,7 +590,9 @@ function applyCostEstimateToModelRow(
     return;
   }
 
-  const costBreakdownUsd = calculateCostBreakdownUsd(resolution.entry, row);
+  const rates = getCopilotPricingRatesFromModelMetadata(sdkModel, row.contextTier)
+    ?? resolution.entry.rates;
+  const costBreakdownUsd = calculateCostBreakdownUsd(rates, row);
   assignCostEstimate(row, {
     estimatedCostUsd: costBreakdownUsd.total,
     estimatedAiCredits: usdToCopilotAiCredits(costBreakdownUsd.total),
@@ -566,10 +603,9 @@ function applyCostEstimateToModelRow(
 }
 
 function calculateCostBreakdownUsd(
-  entry: PublicCopilotPricingCatalogEntry,
+  rates: CopilotPricingRatesUsdPerMillionTokens,
   usage: CopilotUsageTotals,
 ): CopilotUsageCostBreakdownUsd {
-  const rates = entry.rates;
   const breakdown = {
     input: calculateTokenCostUsd(usage.inputTokens, rates.input),
     cachedInput: calculateTokenCostUsd(usage.cacheReadTokens, rates.cachedInput),
@@ -626,6 +662,8 @@ function createUnpricedModelReportRow(row: CopilotUsageModelRow): CopilotUsageUn
     pricingStatus: "unpriced",
     pricingSource: "unpriced",
     normalizedPricingModel: row.normalizedPricingModel,
+    ...(row.contextTier ? { contextTier: row.contextTier } : {}),
+    ...(row.contextTierLabel ? { contextTierLabel: row.contextTierLabel } : {}),
   };
 }
 
@@ -707,13 +745,19 @@ function createUnpricedPricingMetadata(normalizedPricingModel: string | null = n
   };
 }
 
-function createZeroModelRow(model: string, sessions: number): CopilotUsageModelRow {
+function createZeroModelRow(
+  model: string,
+  sessions: number,
+  contextTier?: CopilotContextTier,
+): CopilotUsageModelRow {
   return {
     ...createZeroTotals(),
     ...createZeroCostEstimate(),
     ...createUnpricedPricingMetadata(null),
     model,
     sessions,
+    ...(contextTier ? { contextTier } : {}),
+    ...(contextTier ? { contextTierLabel: formatUsageContextTierLabel(contextTier) } : {}),
   };
 }
 
@@ -814,6 +858,41 @@ function normalizeModelName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized || null;
+}
+
+function normalizeContextTier(value: unknown): CopilotContextTier | undefined {
+  return isCopilotContextTier(value) ? value : undefined;
+}
+
+function usageModelKey(model: string, contextTier: CopilotContextTier | undefined): string {
+  return `${model}\u0000${contextTier ?? ""}`;
+}
+
+function usagePricingKey(sku: string, contextTier: CopilotContextTier | undefined): string {
+  return contextTier === "long_context" ? `${sku}:long_context` : sku;
+}
+
+function formatUsageContextTierLabel(contextTier: CopilotContextTier | undefined): string | undefined {
+  if (!contextTier) return undefined;
+  return contextTier === "long_context" ? "Long context" : "Standard context";
+}
+
+async function readPersistedUsageModelState(
+  sessionStateDir: string,
+): Promise<{ model?: string; contextTier?: CopilotContextTier }> {
+  try {
+    const raw = JSON.parse(await readFile(join(sessionStateDir, BRIDGE_SESSION_MODEL_STATE_FILE), "utf8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const record = raw as Record<string, unknown>;
+    const model = normalizeModelName(record.model) ?? undefined;
+    const contextTier = normalizeContextTier(record.contextTier);
+    return {
+      ...(model ? { model } : {}),
+      ...(contextTier ? { contextTier } : {}),
+    };
+  } catch {
+    return {};
+  }
 }
 
 function normalizeTimestamp(value: unknown): string | null {

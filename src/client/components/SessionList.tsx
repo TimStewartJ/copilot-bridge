@@ -7,6 +7,7 @@ import {
   patchSessionModel,
   refreshModels,
   type BatchAction,
+  type CopilotContextTier,
   type ModelInfo,
   type ReasoningEffort,
   type Session,
@@ -20,6 +21,10 @@ import TaskPickerDialog from "./TaskPickerDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
+import {
+  getContextTierLabel,
+  modelSupportsLongContext,
+} from "../../shared/copilot-context.js";
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -52,7 +57,11 @@ export function formatSessionModelLabel(
   if (!state.model) return "Unknown";
   const modelLabel = models?.find((model) => model.id === state.model)?.name ?? state.model;
   const effortLabel = formatReasoningEffortLabel(state.reasoningEffort);
-  return effortLabel ? `${modelLabel} · ${effortLabel}` : modelLabel;
+  const contextTierLabel = getContextTierLabel(
+    models?.find((model) => model.id === state.model),
+    state.contextTier,
+  );
+  return [modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
 }
 
 export function formatDeferSummaryLabel(deferSummary?: Session["deferSummary"]): string | null {
@@ -314,6 +323,7 @@ export default function SessionList({
   const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
   const [reasoningDraft, setReasoningDraft] = useState<"" | ReasoningEffort>("");
+  const [contextTierDraft, setContextTierDraft] = useState<"" | CopilotContextTier>("");
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
@@ -353,6 +363,7 @@ export default function SessionList({
   const modelDialogLookup = modelDialogSessionId ? sessionModelLookups[modelDialogSessionId] : undefined;
   const availableModels = getAvailableModels(modelOptions);
   const selectedDialogModel = modelOptions?.find((model) => model.id === modelDraft);
+  const selectedDialogModelSupportsLongContext = modelSupportsLongContext(selectedDialogModel);
   const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;
   const currentReasoningEffort = modelDialogLookup?.data?.reasoningEffort;
   const currentEffortLookupReady = !!modelDialogLookup
@@ -492,6 +503,7 @@ export default function SessionList({
     setModelDialogSessionId(sessionId);
     setModelDraft(currentState?.model ?? "");
     setReasoningDraft("");
+    setContextTierDraft(currentState?.contextTier ?? "");
     setModelSwitchError(null);
     setModelOptionsError(null);
     closeMenu();
@@ -516,16 +528,21 @@ export default function SessionList({
         : !canKeepCurrentReasoningEffort
           ? preferredReasoningEffort
         : undefined;
+      const submittedContextTier = selectedDialogModelSupportsLongContext
+        ? (contextTierDraft || "default")
+        : undefined;
       const result = await patchSessionModel(
         modelDialogSessionId,
         model,
         submittedReasoningEffort,
+        submittedContextTier,
       );
       const nextReasoningEffort = result.reasoningEffort
         ?? (submittedReasoningEffort || modelDialogLookup?.data?.reasoningEffort);
       const nextState: SessionModelState = {
         model: result.modelId ?? result.model,
         ...(nextReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
+        ...(result.contextTier ? { contextTier: result.contextTier } : {}),
         source: "live",
       };
       sessionModelLookupVersionRef.current[modelDialogSessionId] =
@@ -542,12 +559,14 @@ export default function SessionList({
     }
   }, [
     modelDialogLookup?.data?.reasoningEffort,
+    contextTierDraft,
     modelDialogSessionId,
     modelDraft,
     reasoningDraft,
     reasoningDraftCanBeSubmitted,
     canKeepCurrentReasoningEffort,
     preferredReasoningEffort,
+    selectedDialogModelSupportsLongContext,
     supportedReasoningEfforts,
   ]);
 
@@ -666,7 +685,9 @@ export default function SessionList({
               />
             )}
             {session.triggeredBy === "schedule" && session.scheduleEnabled && (
-              <Clock size={10} className="text-accent shrink-0 mr-0.5" title={`Scheduled: ${session.scheduleName ?? ""}`} />
+              <span title={`Scheduled: ${session.scheduleName ?? ""}`} className="inline-flex shrink-0 mr-0.5">
+                <Clock size={10} className="text-accent" />
+              </span>
             )}
             <span className="truncate">
               {session.summary || id.slice(0, 8)}
@@ -699,7 +720,11 @@ export default function SessionList({
             {session.hasPlan && " · "}
             {session.hasPlan && <ClipboardList size={10} className="inline" />}
             {hasDraft?.(id) && " · "}
-            {hasDraft?.(id) && <Pencil size={10} className="inline text-warning" title="Has draft" />}
+            {hasDraft?.(id) && (
+              <span title="Has draft">
+                <Pencil size={10} className="inline text-warning" />
+              </span>
+            )}
           </div>
         </button>
       </div>
@@ -1009,7 +1034,12 @@ export default function SessionList({
                 <select
                   id="session-model-select"
                   value={modelDraft}
-                  onChange={(event) => setModelDraft(event.target.value)}
+                  onChange={(event) => {
+                    const nextModel = event.target.value;
+                    setModelDraft(nextModel);
+                    const modelInfo = modelOptions?.find((model) => model.id === nextModel);
+                    setContextTierDraft(modelSupportsLongContext(modelInfo) ? "default" : "");
+                  }}
                   disabled={modelOptionsLoading}
                   className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none disabled:opacity-50"
                 >
@@ -1043,6 +1073,33 @@ export default function SessionList({
                 </div>
               )}
             </div>
+
+            {selectedDialogModelSupportsLongContext && (
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-text-secondary" htmlFor="session-context-tier-select">
+                  Context tier
+                </label>
+                <select
+                  id="session-context-tier-select"
+                  value={contextTierDraft || "default"}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setContextTierDraft(next === "long_context" ? "long_context" : "default");
+                  }}
+                  className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none"
+                >
+                  <option value="default">
+                    {getContextTierLabel(selectedDialogModel, "default") ?? "Standard context"}
+                  </option>
+                  <option value="long_context">
+                    {getContextTierLabel(selectedDialogModel, "long_context") ?? "Long context"} · higher price
+                  </option>
+                </select>
+                <div className="text-[11px] text-text-faint">
+                  Current: {getContextTierLabel(selectedDialogModel, modelDialogLookup?.data?.contextTier) ?? "standard context"}
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="block text-xs font-medium text-text-secondary" htmlFor="session-reasoning-select">

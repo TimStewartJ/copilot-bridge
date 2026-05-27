@@ -35,6 +35,33 @@ function createMockSession(currentModelId?: string) {
   };
 }
 
+const GPT_55_TIERED_MODEL = {
+  id: "gpt-5.5",
+  name: "GPT-5.5",
+  capabilities: {
+    limits: {
+      max_context_window_tokens: 1_050_000,
+      max_prompt_tokens: 922_000,
+      max_output_tokens: 128_000,
+    },
+  },
+  billing: {
+    tokenPrices: {
+      inputPrice: 500,
+      outputPrice: 3000,
+      cachePrice: 50,
+      batchSize: 1_000_000,
+      contextMax: 272_000,
+      longContext: {
+        inputPrice: 1000,
+        outputPrice: 4500,
+        cachePrice: 100,
+        contextMax: 1_050_000,
+      },
+    },
+  },
+};
+
 describe("SessionManager.setSessionModel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -64,6 +91,43 @@ describe("SessionManager.setSessionModel", () => {
     expect(result).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
   });
 
+  it("caps tiered models when selecting the default context tier", async () => {
+    const manager = createManager(makeTestDir("model-context-default"));
+    const session = createMockSession("gpt-5.5");
+    manager.backend = {};
+    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    manager.sessionObjects.set("session-1", session);
+
+    const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "default");
+
+    expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
+      modelCapabilities: {
+        limits: {
+          max_context_window_tokens: 272_000,
+          max_prompt_tokens: 144_000,
+        },
+      },
+    });
+    expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "default" });
+    await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
+      model: "gpt-5.5",
+      contextTier: "default",
+    });
+  });
+
+  it("leaves tiered model limits uncapped when selecting long context", async () => {
+    const manager = createManager(makeTestDir("model-context-long"));
+    const session = createMockSession("gpt-5.5");
+    manager.backend = {};
+    manager.modelMetadataForContextTiers = [GPT_55_TIERED_MODEL];
+    manager.sessionObjects.set("session-1", session);
+
+    const result = await manager.setSessionModel("session-1", "gpt-5.5", undefined, "long_context");
+
+    expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", undefined);
+    expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "long_context" });
+  });
+
   it("resumes a cold (non-cached) session WITHOUT model config, then sets model", async () => {
     const manager = createManager();
     const session = createMockSession("previous-model");
@@ -82,6 +146,32 @@ describe("SessionManager.setSessionModel", () => {
     expect(result.model).toBe("gpt-5.5");
     // Should cache the resumed session
     expect(manager.sessionObjects.get("cold-session")).toBe(session);
+  });
+
+  it("reapplies persisted model capability overrides when resuming before a switch", async () => {
+    const copilotHome = makeTestDir("model-context-resume");
+    const manager = createManager(copilotHome);
+    const session = createMockSession("previous-model");
+    const resumeSession = vi.fn().mockResolvedValue(session);
+    manager.backend = { resumeSession };
+    mkdirSync(join(copilotHome, "session-state", "cold-session"), { recursive: true });
+    const modelCapabilities = {
+      limits: {
+        max_context_window_tokens: 272_000,
+        max_prompt_tokens: 144_000,
+      },
+    };
+    writeFileSync(
+      join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"),
+      JSON.stringify({ model: "gpt-5.5", contextTier: "default", modelCapabilities }),
+    );
+
+    await manager.setSessionModel("cold-session", "claude-opus-4.7");
+
+    expect(resumeSession).toHaveBeenCalledWith(
+      "cold-session",
+      expect.objectContaining({ modelCapabilities }),
+    );
   });
 
   it("does not let a superseded cold switch resume overwrite a newer cached session", async () => {
@@ -144,6 +234,7 @@ describe("SessionManager.setSessionModel", () => {
 
     const switching = manager.setSessionModel("session-1", "gpt-5.5");
     manager.evictAllCachedSessions();
+    await vi.waitFor(() => expect(session.setModel).toHaveBeenCalled());
 
     expect(session.disconnect).not.toHaveBeenCalled();
     expect(manager.sessionObjects.get("session-1")).toBe(session);
@@ -313,6 +404,15 @@ describe("PATCH /api/sessions/:id/model route", () => {
     expect(res.body.error).toMatch(/reasoningEffort/i);
   });
 
+  it("returns 400 when contextTier is invalid", async () => {
+    const { app } = createTestApp();
+    const res = await supertest(app)
+      .patch(`/api/sessions/${sessionId}/model`)
+      .send({ model: "gpt-5.5", contextTier: "huge" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/contextTier/i);
+  });
+
   it("returns 200 with model info on success", async () => {
     const { app } = createTestApp();
     const res = await supertest(app)
@@ -320,6 +420,44 @@ describe("PATCH /api/sessions/:id/model route", () => {
       .send({ model: "  gpt-5.5  " });
     expect(res.status).toBe(200);
     expect(res.body.model).toBe("gpt-5.5");
+  });
+
+  it("passes valid contextTier values to the session manager", async () => {
+    const setSessionModel = vi.fn(async (
+      _id: string,
+      model: string,
+      reasoningEffort?: string,
+      contextTier?: string,
+    ) => ({
+      model,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(contextTier ? { contextTier } : {}),
+    }));
+    const { app } = createTestApp({
+      sessionManager: {
+        listSessions: async () => [],
+        listSessionsFromDisk: () => [],
+        getSessionActivity: () => [],
+        isSessionBusy: () => false,
+        getSessionRunState: () => "idle",
+        getPendingUserInputCount: () => 0,
+        isSessionWarm: () => false,
+        setSessionModel,
+        getSessionModelState: async () => ({ source: "unknown" as const }),
+      } as any,
+    });
+
+    const res = await supertest(app)
+      .patch(`/api/sessions/${sessionId}/model`)
+      .send({ model: "gpt-5.5", reasoningEffort: "high", contextTier: "long_context" });
+
+    expect(res.status).toBe(200);
+    expect(setSessionModel).toHaveBeenCalledWith(sessionId, "gpt-5.5", "high", "long_context");
+    expect(res.body).toMatchObject({
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
   });
 
   it("accepts valid reasoningEffort values", async () => {
