@@ -3,12 +3,13 @@
 // avoiding fragile CSS selectors that break when search engines change their DOM.
 
 import { createHash, randomUUID } from "node:crypto";
-import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand, BrowserLane } from "./agent-browser.js";
 import { ab, browserLaneFallbackTelemetry, createBrowserLaneFallbackState, getBridgeBrowserTarget, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBrowserLaneFallback } from "./agent-browser.js";
-import { requireToolHandlers } from "./tool-handler.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
+import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
+import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 
 async function takeSnapshot(
   selector: string | undefined,
@@ -238,9 +239,9 @@ function webSearchFailure(
   });
 }
 
-export function createWebSearchTools(ctx: AppContext) {
-  return requireToolHandlers([
-    defineTool("browser_web_search", {
+export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
+  return [
+    defineBridgeTool("browser_web_search", {
       description:
         "Search the web using a real browser. Returns structured results from Google with " +
         "automatic Bing and DuckDuckGo fallbacks. Use this as a browser-backed fallback when the GitHub " +
@@ -541,5 +542,9 @@ export function createWebSearchTools(ctx: AppContext) {
         }
       },
     }),
-  ]);
+  ];
+}
+
+export function registerWebSearchTools(server: BridgeToolsMcpServer, ctx: AppContext): void {
+  registerBridgeToolDefinitions(server, createWebSearchTools(ctx));
 }
