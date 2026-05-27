@@ -3,7 +3,7 @@ import type { ModelInfo } from "@github/copilot-sdk";
 
 export const DISPOSABLE_TITLE_SESSION_ID_PREFIX = "b17e1000";
 
-const TITLE_SYSTEM_PROMPT = `Generate a short title for a coding session based on the user's message.
+const TITLE_SYSTEM_PROMPT = `Generate a short title for a chat session based on the user's message.
 
 Rules:
 - Use 2-6 words.
