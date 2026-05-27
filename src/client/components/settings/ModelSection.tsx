@@ -12,6 +12,25 @@ import {
   type CopilotContextTier,
 } from "../../../shared/copilot-context.js";
 
+export function shouldClearUnsupportedContextTier({
+  contextTier,
+  modelsLoaded,
+  currentModel,
+  selectedModelSupportsLongContext,
+  selectedModelKnown,
+}: {
+  contextTier?: CopilotContextTier;
+  modelsLoaded: boolean;
+  currentModel: string;
+  selectedModelSupportsLongContext: boolean;
+  selectedModelKnown: boolean;
+}): boolean {
+  return Boolean(contextTier)
+    && modelsLoaded
+    && (!currentModel || selectedModelKnown)
+    && !selectedModelSupportsLongContext;
+}
+
 export function ModelSection({
   draft,
   setDraft,
@@ -32,6 +51,7 @@ export function ModelSection({
   const selectedModel = availableModels.find((model) => model.id === currentModel);
   const supportsLongContext = modelSupportsLongContext(selectedModel);
   const currentContextTier = supportsLongContext ? (draft.contextTier ?? "default") : "";
+  const modelsLoaded = models !== undefined;
   const formatMultiplier = (multiplier: unknown) =>
     typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier !== 1
       ? ` (${multiplier}×)`
@@ -50,11 +70,17 @@ export function ModelSection({
   };
 
   useEffect(() => {
-    if (!draft.contextTier || supportsLongContext) return;
+    if (!shouldClearUnsupportedContextTier({
+      contextTier: draft.contextTier,
+      modelsLoaded,
+      currentModel,
+      selectedModelSupportsLongContext: supportsLongContext,
+      selectedModelKnown: selectedModel !== undefined,
+    })) return;
     const next = structuredClone(draft);
     next.contextTier = undefined;
     setDraft(next);
-  }, [draft, setDraft, supportsLongContext]);
+  }, [currentModel, draft, modelsLoaded, selectedModel, setDraft, supportsLongContext]);
 
   return (
     <SettingsSection
