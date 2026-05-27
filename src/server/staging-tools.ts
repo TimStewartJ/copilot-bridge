@@ -2,7 +2,6 @@
 // Each session gets an isolated worktree to make changes, run quality checks,
 // and deploy only after validation passes.
 
-import { defineTool } from "@github/copilot-sdk";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import type express from "express";
@@ -10,7 +9,6 @@ import { randomBytes } from "node:crypto";
 import { dependencySyncHash, DEPENDENCY_SYNC_GIT_PATHSPEC, preparePatchedPackagesForInstall } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import { isRestartPending } from "./session-manager.js";
-import { requireToolHandlers } from "./tool-handler.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -646,8 +644,8 @@ export const __testing = {
   listStagingPreviewParents,
 };
 
-export const STAGING_TOOLS = requireToolHandlers([
-  defineTool("staging_init", {
+export const STAGING_TOOLS: BridgeToolDefinition[] = [
+  defineBridgeTool("staging_init", {
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
       "Returns the staging directory path where you should make all edits. " +
@@ -732,7 +730,7 @@ export const STAGING_TOOLS = requireToolHandlers([
     },
   }),
 
-  defineTool("staging_preview", {
+  defineBridgeTool("staging_preview", {
     description:
       "Build and serve a preview of the staged frontend changes. " +
       "Runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
@@ -907,7 +905,7 @@ export const STAGING_TOOLS = requireToolHandlers([
     },
   }),
 
-  defineTool("staging_deploy", {
+  defineBridgeTool("staging_deploy", {
     description:
       "Deploy validated changes from a staging worktree to production. " +
       "Commits changes in staging (if uncommitted changes exist), rebases the staging branch onto the latest production HEAD, " +
@@ -1353,7 +1351,7 @@ export const STAGING_TOOLS = requireToolHandlers([
     },
   }),
 
-  defineTool("staging_cleanup", {
+  defineBridgeTool("staging_cleanup", {
     description: "Abandon a staging worktree and discard all changes. Use ONLY when you want to completely discard your work and start over — NOT for merge/rebase conflicts (resolve those in-place and retry staging_deploy instead). RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
@@ -1382,18 +1380,14 @@ export const STAGING_TOOLS = requireToolHandlers([
       return { success: true, message: `Staging worktree removed: ${stagingDir}` };
     },
   }),
-]);
+];
 
 export interface RegisterStagingToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
 export function createStagingToolDefinitions(): BridgeToolDefinition[] {
-  return STAGING_TOOLS.map((tool) => defineBridgeTool(tool.name, {
-    description: (tool as any).description,
-    parameters: (tool as any).parameters,
-    handler: (args) => (tool as any).handler(args, {}),
-  }));
+  return [...STAGING_TOOLS];
 }
 
 export function registerStagingTools(

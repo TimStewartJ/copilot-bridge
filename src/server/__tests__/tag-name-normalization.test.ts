@@ -7,6 +7,8 @@ import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
 import { createBridgeTools } from "../session-manager.js";
 import { createTagStore } from "../tag-store.js";
+import { createTagToolDefinitions } from "../tools/tag-tools.js";
+import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp, makeTestDir, setupTestDb } from "./helpers.js";
 
@@ -15,9 +17,13 @@ const NFD_CAFE = "Cafe\u0301";
 const CAFE_KEY = "CAFÉ";
 
 function getTool(ctx: AppContext, name: string) {
-  const tool = createBridgeTools(ctx).find((candidate) => candidate.name === name);
+  const tool = [
+    ...createBridgeTools(ctx),
+    ...createTaskToolDefinitions(ctx),
+    ...createTagToolDefinitions(ctx),
+  ].find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
-  return tool;
+  return tool as any;
 }
 
 function createInvocation(toolName: string) {

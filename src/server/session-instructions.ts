@@ -1,6 +1,6 @@
 // System instruction constants used when constructing Copilot sessions.
 
-export const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql"];
+export const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql", "report_intent"];
 
 export const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.`;
 

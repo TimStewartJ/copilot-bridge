@@ -1,8 +1,12 @@
-import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "../app-context.js";
 import { parseDeferId } from "../defer-ids.js";
 import { emitSessionDeferSummary } from "../defer-summary.js";
 import { toolFailure } from "../tool-results.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "../agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 
 const DEFER_MAX_PROMPT_BYTES = 32 * 1024; // 32 KB
 const DEFER_MAX_HORIZON_DAYS = 30;
@@ -67,9 +71,14 @@ function formatLoop(loop: any) {
   };
 }
 
-export function createDeferTools(ctx: AppContext) {
+export interface RegisterDeferToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-    defineTool("defer_create", {
+    defineBridgeTool("defer_create", {
+      scope: "session",
       description: "Create a same-session defer. Use delaySeconds or runAt for a one-shot follow-up in this session. Use intervalSeconds for same-session polling/recurrence with an explicit stop condition such as maxRuns or expiresAt; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
       parameters: {
         type: "object",
@@ -208,7 +217,8 @@ export function createDeferTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("defer_cancel", {
+    defineBridgeTool("defer_cancel", {
+      scope: "session",
       description: "Cancel a pending or running same-session defer by public deferId. Works for one-shot and recurring interval defers. Use the deferId from defer_create, defer_list, or recurring prompt metadata.",
       parameters: {
         type: "object",
@@ -257,7 +267,8 @@ export function createDeferTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("defer_list", {
+    defineBridgeTool("defer_list", {
+      scope: "session",
       description: "List active same-session defers for this session. Includes one-shot and recurring interval defers using public deferId values.",
       parameters: { type: "object", properties: {} },
       handler: async (args: any, invocation: any) => {
@@ -286,4 +297,14 @@ export function createDeferTools(ctx: AppContext) {
       },
     }),
   ];
+}
+
+export function registerDeferTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterDeferToolsOptions = {},
+): void {
+  const definitions = createDeferToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

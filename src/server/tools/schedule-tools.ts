@@ -1,4 +1,3 @@
-import { defineTool } from "@github/copilot-sdk";
 import { basename, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schedulerModule from "../scheduler.js";
@@ -7,6 +6,12 @@ import { findUnknownFields, formatUnknownFieldsError, normalizeScheduleAutoArchi
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTask } from "./helpers.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+  type BridgeToolDefinition,
+  type BridgeToolsMcpServer,
+} from "../agent-tools-mcp/index.js";
 
 function isPathAtOrUnder(parent: string, candidate: string): boolean {
   const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
@@ -90,9 +95,13 @@ function rejectUnknownFields(args: unknown, allowedFields: readonly string[]) {
   return unknownFields.length > 0 ? toolFailure(formatUnknownFieldsError(unknownFields)) : undefined;
 }
 
-export function createScheduleTools(ctx: AppContext) {
+export interface RegisterScheduleToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("schedule_create", {
+  defineBridgeTool("schedule_create", {
     description: "Create durable task-level automation that runs on a cron schedule or at a specific time. Each trigger starts a fresh session linked to the task. For same-session follow-up or polling, use defer_create instead.",
     parameters: {
       type: "object",
@@ -149,7 +158,7 @@ export function createScheduleTools(ctx: AppContext) {
       return { success: true, message: `Schedule "${schedule.name}" created (${schedule.type})`, scheduleId: schedule.id, timezone: schedule.timezone, nextRunAt: schedule.nextRunAt };
     },
   }),
-  defineTool("schedule_update", {
+  defineBridgeTool("schedule_update", {
     description: "Update a scheduled session's settings. Only provided fields are changed.",
     parameters: {
       type: "object",
@@ -199,7 +208,7 @@ export function createScheduleTools(ctx: AppContext) {
       return { success: true, message: `Schedule "${schedule.name}" updated`, nextRunAt: schedule.nextRunAt };
     },
   }),
-  defineTool("schedule_delete", {
+  defineBridgeTool("schedule_delete", {
     description: "Delete a scheduled session permanently.",
     parameters: {
       type: "object",
@@ -218,7 +227,7 @@ export function createScheduleTools(ctx: AppContext) {
       return { success: true, message: "Schedule deleted" };
     },
   }),
-  defineTool("schedule_list", {
+  defineBridgeTool("schedule_list", {
     description: "List all scheduled sessions, optionally filtered by task.",
     parameters: {
       type: "object",
@@ -249,7 +258,7 @@ export function createScheduleTools(ctx: AppContext) {
       };
     },
   }),
-  defineTool("schedule_trigger", {
+  defineBridgeTool("schedule_trigger", {
     description: "Manually trigger a scheduled session right now, regardless of its cron schedule.",
     parameters: {
       type: "object",
@@ -265,4 +274,14 @@ export function createScheduleTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerScheduleTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterScheduleToolsOptions = {},
+): void {
+  const definitions = createScheduleToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

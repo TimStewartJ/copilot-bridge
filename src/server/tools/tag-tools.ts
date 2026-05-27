@@ -1,18 +1,27 @@
-import { defineTool } from "@github/copilot-sdk";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTag, ensureTagStore } from "./helpers.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+  type BridgeToolDefinition,
+  type BridgeToolsMcpServer,
+} from "../agent-tools-mcp/index.js";
 
-export function createTagTools(ctx: AppContext) {
+export interface RegisterTagToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createTagToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("tag_list", {
+  defineBridgeTool("tag_list", {
     description: "List all tags with their IDs, names, and colors",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       return { tags: ctx.tagStore?.listTags().map((t) => ({ id: t.id, name: t.name, color: t.color })) };
     },
   }),
-  defineTool("tag_create", {
+  defineBridgeTool("tag_create", {
     description: "Create a new tag for organizing tasks, groups, and docs",
     parameters: { type: "object", properties: { name: { type: "string", description: "Tag name (e.g., 'python', 'frontend', 'urgent')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate, emerald, indigo, pink" } }, required: ["name"] },
     handler: async (args: any) => {
@@ -23,7 +32,7 @@ export function createTagTools(ctx: AppContext) {
       return { success: true, message: `Tag "${tag.name}" created`, tagId: tag.id };
     },
   }),
-  defineTool("tag_update", {
+  defineBridgeTool("tag_update", {
     description: "Update a tag's name, color, or instructions",
     parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID" }, name: { type: "string", description: "New name" }, color: { type: "string", description: "New color" }, instructions: { type: "string", description: "Custom instructions for sessions with this tag" } }, required: ["tagId"] },
     handler: async (args: any) => {
@@ -45,7 +54,7 @@ export function createTagTools(ctx: AppContext) {
       return { success: true, message: `Tag updated` };
     },
   }),
-  defineTool("tag_delete", {
+  defineBridgeTool("tag_delete", {
     description: "Delete a tag. Removes it from all entities.",
     parameters: { type: "object", properties: { tagId: { type: "string", description: "The tag ID to delete" } }, required: ["tagId"] },
     handler: async (args: any) => {
@@ -55,4 +64,14 @@ export function createTagTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerTagTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterTagToolsOptions = {},
+): void {
+  const definitions = createTagToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

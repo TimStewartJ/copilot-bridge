@@ -6,19 +6,20 @@ import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
 import { initializeDocsFts } from "../db.js";
 
 describe("createBridgeTools", () => {
-  it("does not expose report_intent in the SDK tool list (it is registered via MCP)", () => {
+  it("provides compatibility access to MCP-backed report_intent definitions", () => {
     const { ctx } = createTestApp();
     const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "report_intent");
-    expect(tool).toBeUndefined();
+    expect(tool).toBeTruthy();
+    expect(tool?.scope).toBeUndefined();
   });
 
-  it("does not expose self-admin or staging tools (they are registered via MCP)", () => {
+  it("provides compatibility access to MCP-backed self-admin and staging definitions", () => {
     const { ctx } = createTestApp();
     const toolNames = new Set(createBridgeTools(ctx).map((tool) => tool.name));
-    expect(toolNames.has("self_restart")).toBe(false);
-    expect(toolNames.has("self_update")).toBe(false);
-    expect(toolNames.has("staging_init")).toBe(false);
-    expect(toolNames.has("staging_deploy")).toBe(false);
+    expect(toolNames.has("self_restart")).toBe(true);
+    expect(toolNames.has("self_update")).toBe(true);
+    expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_deploy")).toBe(true);
   });
 
   it("docs_search returns a diagnosable tool failure when docs FTS is unhealthy", async () => {

@@ -1,10 +1,15 @@
-import { defineTool } from "@github/copilot-sdk";
 import { InvalidTaskUpdateError, normalizeOptionalText, normalizeOptionalTimestamp } from "../task-store.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import type { Task } from "../task-store.js";
 import type { TagStore } from "../tag-store.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+  type BridgeToolDefinition,
+  type BridgeToolsMcpServer,
+} from "../agent-tools-mcp/index.js";
 
 function hasOwn(args: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(args, key);
@@ -38,9 +43,13 @@ function compactTaskInfoSessionIds(sessionIds: readonly string[]): {
   };
 }
 
-export function createTaskTools(ctx: AppContext) {
+export interface RegisterTaskToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("task_link_work_item", {
+  defineBridgeTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
@@ -50,7 +59,7 @@ export function createTaskTools(ctx: AppContext) {
       return { success: true, message: `Work item ${args.workItemId} (${args.provider ?? "ado"}) linked to task` };
     },
   }),
-  defineTool("task_unlink_work_item", {
+  defineBridgeTool("task_unlink_work_item", {
     description: "Remove a work item from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: "string", description: "The work item ID" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "workItemId"] },
     handler: async (args: any) => {
@@ -60,7 +69,7 @@ export function createTaskTools(ctx: AppContext) {
       return { success: true, message: `Work item ${args.workItemId} unlinked from task` };
     },
   }),
-  defineTool("task_link_pr", {
+  defineBridgeTool("task_link_pr", {
     description: "Link a pull request to a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Defaults to ado." } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
@@ -70,7 +79,7 @@ export function createTaskTools(ctx: AppContext) {
       return { success: true, message: `PR #${args.prId} from ${args.repoName} linked to task` };
     },
   }),
-  defineTool("task_unlink_pr", {
+  defineBridgeTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository name" }, prId: { type: "number", description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear)" } }, required: ["taskId", "repoName", "prId"] },
     handler: async (args: any) => {
@@ -80,7 +89,7 @@ export function createTaskTools(ctx: AppContext) {
       return { success: true, message: `PR #${args.prId} from ${args.repoName} unlinked from task` };
     },
   }),
-  defineTool("task_update", {
+  defineBridgeTool("task_update", {
     description: "Update a task's title, kind, muted state, notes, working directory, group, and/or tags. Only provided fields are changed.",
     parameters: {
       type: "object",
@@ -140,7 +149,7 @@ export function createTaskTools(ctx: AppContext) {
       return { success: true, message: `Task updated (${fields})`, kind: updatedTask.kind };
     },
   }),
-  defineTool("task_update_momentum", {
+  defineBridgeTool("task_update_momentum", {
     description: "Update a task's momentum: next action, waiting on, and follow-up. Always provide an explicit followUp decision so stale follow-up dates are not left behind.",
     parameters: {
       type: "object",
@@ -247,7 +256,7 @@ export function createTaskTools(ctx: AppContext) {
       };
     },
   }),
-  defineTool("task_get_info", {
+  defineBridgeTool("task_get_info", {
     description: "Get task details including title, kind, status, linked session counts/previews, work items, PRs, and notes",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
@@ -261,14 +270,14 @@ export function createTaskTools(ctx: AppContext) {
       };
     },
   }),
-  defineTool("task_list", {
+  defineBridgeTool("task_list", {
     description: "List all tasks with their IDs, titles, kinds, muted states, statuses, and group IDs",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, kind: t.kind, muted: t.muted, status: t.status, groupId: t.groupId })) };
     },
   }),
-  defineTool("task_create", {
+  defineBridgeTool("task_create", {
     description: "Create a new task",
     parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind. Defaults to task." }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { type: "string", description: "Optional task group ID to create the task in" } }, required: ["title"] },
     handler: async (args: any) => {
@@ -297,4 +306,14 @@ export function createTaskTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerTaskTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterTaskToolsOptions = {},
+): void {
+  const definitions = createTaskToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

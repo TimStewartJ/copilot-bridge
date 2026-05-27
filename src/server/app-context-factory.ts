@@ -36,8 +36,14 @@ import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
 import { createDeferLoopStore } from "./defer-loop-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
-import { createBridgeTools, createSessionManager } from "./session-manager.js";
+import { createSessionManager } from "./session-manager.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
+import {
+  BridgeToolsMcpServer,
+  buildBridgeToolsMcpServerConfig,
+  createBridgeToolsMcpEndpoint,
+  registerAllBridgeTools,
+} from "./agent-tools-mcp/index.js";
 
 export interface CreateAppContextOptions {
   runtimePaths: RuntimePaths;
@@ -154,15 +160,30 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   };
 
   const excludedToolNames = new Set(options.excludedToolNames ?? []);
-  const tools = createBridgeTools(ctx).filter((tool: { name: string }) => !excludedToolNames.has(tool.name));
+  const bridgeToolsMcpServer = new BridgeToolsMcpServer(ctx, {
+    onError: (error) => {
+      console.warn("[bridge-tools-mcp]", error.message);
+    },
+  });
+  registerAllBridgeTools(bridgeToolsMcpServer, ctx, { excludedToolNames });
+  const bridgeToolsMcpEndpoint = createBridgeToolsMcpEndpoint({ dataDir });
+  const bridgeToolsMcpConfig = buildBridgeToolsMcpServerConfig({
+    endpoint: bridgeToolsMcpEndpoint,
+    toolNames: bridgeToolsMcpServer.getToolNames("global"),
+    distributionMode: runtimePaths.distributionMode,
+  });
+  ctx.bridgeToolsMcpServer = bridgeToolsMcpServer;
+  ctx.bridgeToolsMcpConfig = bridgeToolsMcpConfig;
+  ctx.bridgeToolsMcpEndpoint = bridgeToolsMcpEndpoint;
+
   const sessionManager = createSessionManager(ctx, {
-    tools,
     config: {
       get sessionMcpServers() {
         return settingsStore.getMcpServers();
       },
       ...(options.sessionModel ? { model: options.sessionModel } : {}),
     },
+    ...(bridgeToolsMcpConfig ? { builtInMcpServers: { [bridgeToolsMcpConfig.name]: bridgeToolsMcpConfig.config } } : {}),
     ...(copilotHome ? { copilotHome } : {}),
     runtimePaths,
   });
@@ -198,6 +219,11 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   return { ctx, db };
 }
 
+export async function startBridgeToolsMcpServer(ctx: AppContext): Promise<void> {
+  if (!ctx.bridgeToolsMcpServer || !ctx.bridgeToolsMcpConfig || !ctx.bridgeToolsMcpEndpoint) return;
+  await ctx.bridgeToolsMcpServer.listen(ctx.bridgeToolsMcpEndpoint);
+}
+
 export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
   ctx.scheduler?.initialize(ctx.sessionManager, {
     scheduleStore: ctx.scheduleStore,
@@ -217,4 +243,5 @@ export async function shutdownAppContextServices(ctx: AppContext): Promise<void>
   ctx.scheduler?.shutdown();
   await ctx.voiceJobManager.shutdown();
   await ctx.sessionManager.gracefulShutdown();
+  await ctx.bridgeToolsMcpServer?.close();
 }

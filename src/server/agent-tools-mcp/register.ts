@@ -1,19 +1,25 @@
 import { isBridgeReleaseMode } from "../distribution-mode.js";
 import type { AppContext } from "../app-context.js";
+import { registerAttachmentTools } from "../tools/attachment-tools.js";
+import { registerBrowserSessionTools } from "../browser-session-tools.js";
 import { registerChecklistTools } from "../tools/checklist-tools.js";
 import { registerDocsTools } from "../tools/docs-tools.js";
+import { registerDeferTools } from "../tools/defer-tools.js";
 import { registerFeedTools } from "../tools/feed-tools.js";
 import { registerReportIntentTool } from "../tools/report-intent-tool.js";
 import { registerScheduleTools } from "../tools/schedule-tools.js";
 import { registerSelfAdminTools } from "../tools/self-admin-tools.js";
+import { registerSessionTools } from "../tools/session-tools.js";
 import { registerTagTools } from "../tools/tag-tools.js";
 import { registerTaskTools } from "../tools/task-tools.js";
 import { registerTaskGroupTools } from "../tools/task-group-tools.js";
+import { registerVisualTools } from "../tools/visual-tools.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "../tools/helpers.js";
 import { registerStagingTools, STAGING_TOOLS } from "../staging-tools.js";
 import { registerWebSearchTools } from "../web-search-tools.js";
 import { registerBrowserFetchTools } from "../browser-fetch-tools.js";
 import { registerBrowserExecTools } from "../browser-exec-tools.js";
+import { registerComputerUseSessionTools, registerComputerUseStatelessTools } from "../computer-use-tools.js";
 import type { BridgeToolsMcpServer } from "./server.js";
 
 export interface RegisterAllBridgeToolsOptions {
@@ -48,4 +54,11 @@ export function registerAllBridgeTools(
   registerWebSearchTools(server, ctx);
   registerBrowserFetchTools(server, ctx);
   registerBrowserExecTools(server, ctx);
+  registerComputerUseStatelessTools(server, ctx);
+  registerSessionTools(server, ctx, { hiddenTools });
+  registerAttachmentTools(server, ctx, { hiddenTools });
+  registerVisualTools(server, ctx, { hiddenTools });
+  registerDeferTools(server, ctx, { hiddenTools });
+  registerBrowserSessionTools(server, ctx, { hiddenTools });
+  registerComputerUseSessionTools(server, ctx);
 }

@@ -6,6 +6,7 @@ import { createApiRouter } from "./api-router.js";
 import {
   createAppContext,
   initializeSchedulerAndDeferredRunners,
+  startBridgeToolsMcpServer,
   shutdownAppContextServices,
 } from "./app-context-factory.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
@@ -105,6 +106,7 @@ async function main(): Promise<void> {
     );
   });
 
+  await startBridgeToolsMcpServer(ctx);
   await ctx.sessionManager.initialize();
   ctx.voiceJobManager.resumePendingJobs();
   initializeSchedulerAndDeferredRunners(ctx);

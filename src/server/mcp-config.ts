@@ -7,6 +7,7 @@ export interface LocalMcpServerConfig extends McpServerConfigBase {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  workingDirectory?: string;
 }
 
 export interface RemoteMcpServerConfig extends McpServerConfigBase {
@@ -74,7 +75,8 @@ export function isMcpServerConfig(config: unknown): config is McpServerConfig {
   return typeof config.command === "string"
     && config.command.trim().length > 0
     && isStringArray(config.args)
-    && (config.env === undefined || isStringRecord(config.env));
+    && (config.env === undefined || isStringRecord(config.env))
+    && (config.workingDirectory === undefined || typeof config.workingDirectory === "string");
 }
 
 export function assertMcpServerConfig(config: unknown): asserts config is McpServerConfig {

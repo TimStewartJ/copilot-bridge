@@ -3,7 +3,7 @@
 //
 // This file is the only place outside of agent-backend/index.ts that
 // imports the Copilot SDK on the server side (apart from the per-tool
-// defineTool calls and SDK-specific helpers which Step 2 owns).
+// legacy SDK tool registration and SDK-specific helpers which Step 2 owns).
 // SessionManager and SessionRunner consume AgentBackend / AgentSession
 // from this module and never reach for CopilotClient again.
 //

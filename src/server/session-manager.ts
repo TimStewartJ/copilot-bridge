@@ -3,13 +3,10 @@
 //
 // As of Step 1 of the agent-agnostic roadmap, this file no longer imports
 // the SDK directly. All client/session lifecycle goes through the
-// `AgentBackend` / `AgentSession` interfaces in `./agent-backend`. Tool
-// definitions still flow through `defineTool` from the SDK — that coupling
-// moves to Step 2 (tools-as-MCP).
-//
-// Universal tools — taskId is a parameter, same tools for every session.
+// `AgentBackend` / `AgentSession` interfaces in `./agent-backend`. Bridge
+// tools are exposed through the in-process Bridge MCP server.
 
-import { defineTool } from "@github/copilot-sdk";
+import { randomUUID } from "node:crypto";
 import {
   CopilotBackend,
   createAgentBackend,
@@ -82,6 +79,9 @@ import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
+import { buildBridgeToolsSessionMcpServerConfig } from "./agent-tools-mcp/config.js";
+import { createBridgeToolsMcpEndpoint } from "./agent-tools-mcp/endpoint.js";
+import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
 import { getBridgeBrowserTarget, getBrowserLaunchConfig, shutdownBridgeBrowser } from "./agent-browser.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -170,7 +170,6 @@ export type {
   SessionRunState,
 } from "./session-run-state-controller.js";
 
-// Universal tools — same instance for every session
 export { createBridgeTools } from "./bridge-tools.js";
 export {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
@@ -265,7 +264,8 @@ function withModelRefreshClientRotationTimeout<T>(
 }
 
 export interface SessionManagerDeps {
-  tools: ReturnType<typeof defineTool>[];
+  /** @deprecated Bridge tools are MCP-backed; accepted only for old test fixtures during migration. */
+  tools?: unknown[];
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   userInputBroker?: UserInputBroker;
@@ -283,6 +283,8 @@ export interface SessionManagerDeps {
   docsStore?: DocsStore;
   browserSessionStore?: BrowserSessionStore;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
+  builtInMcpServers?: Record<string, McpServerConfig>;
+  bridgeToolsMcpServer?: BridgeToolsMcpServer;
   telemetryStore?: TelemetryStore;
   /** Custom env for the agent backend — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
@@ -305,8 +307,10 @@ export interface SessionManagerDeps {
 
 /** Options that don't come from AppContext — caller provides these directly. */
 export interface CreateSessionManagerOpts {
-  tools: ReturnType<typeof defineTool>[];
+  /** @deprecated Bridge tools are MCP-backed; accepted only for old test fixtures during migration. */
+  tools?: unknown[];
   config: SessionManagerDeps["config"];
+  builtInMcpServers?: SessionManagerDeps["builtInMcpServers"];
   clientEnv?: SessionManagerDeps["clientEnv"];
   createCopilotClient?: CopilotClientFactory;
   createBackend?: AgentBackendFactory;
@@ -333,7 +337,6 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     ?? runtimePaths?.env
     ?? (copilotHome ? { ...process.env, COPILOT_HOME: copilotHome } : undefined);
   return new SessionManager({
-    tools: opts.tools,
     globalBus: ctx.globalBus,
     eventBusRegistry: ctx.eventBusRegistry,
     sessionTitles: ctx.sessionTitles,
@@ -355,6 +358,8 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     }),
     telemetryStore: ctx.telemetryStore,
     config: opts.config,
+    builtInMcpServers: opts.builtInMcpServers,
+    bridgeToolsMcpServer: ctx.bridgeToolsMcpServer,
     clientEnv,
     createCopilotClient: opts.createCopilotClient,
     createBackend: opts.createBackend,
@@ -470,6 +475,7 @@ export class SessionManager {
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
+      ensureSessionMcpEndpoint: (sessionId) => this.ensureSessionMcpEndpoint(sessionId),
       cacheResumedSession: (sessionId, session) => this.cacheResumedSession(sessionId, session),
       replaceCachedSession: (sessionId, expectedSession, nextSession) =>
         this.replaceCachedSession(sessionId, expectedSession, nextSession),
@@ -659,8 +665,13 @@ export class SessionManager {
   }
 
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
+    const sessionBuiltInMcpServers = this.resolveSessionBuiltInMcpServers(opts.sessionId);
+    const builtInMcpServers = {
+      ...(this.deps.builtInMcpServers ?? {}),
+      ...sessionBuiltInMcpServers,
+    };
     return buildSessionConfigWithDeps({
-      deps: this.deps,
+      deps: { ...this.deps, builtInMcpServers },
       options: opts,
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
@@ -668,6 +679,47 @@ export class SessionManager {
         handleUserInputRequest: (request, invocation) => this.handleUserInputRequest(request, invocation),
       },
     });
+  }
+
+  private resolveSessionBuiltInMcpServers(sessionId: string | undefined): Record<string, McpServerConfig> {
+    const bridgeToolsMcpServer = this.deps.bridgeToolsMcpServer;
+    if (!sessionId || !bridgeToolsMcpServer) return {};
+    const config = buildBridgeToolsSessionMcpServerConfig({
+      endpoint: this.resolveSessionMcpEndpoint(sessionId),
+      toolNames: bridgeToolsMcpServer.getToolNames("session"),
+      distributionMode: this.deps.runtimePaths?.distributionMode,
+    });
+    return config ? { [config.name]: config.config } : {};
+  }
+
+  private resolveSessionMcpEndpoint(sessionId: string): string {
+    return createBridgeToolsMcpEndpoint({
+      dataDir: this.deps.runtimePaths?.dataDir,
+      sessionId,
+    });
+  }
+
+  private ensureSessionMcpEndpoint(sessionId: string): Promise<void> | undefined {
+    const bridgeToolsMcpServer = this.deps.bridgeToolsMcpServer;
+    if (!bridgeToolsMcpServer || bridgeToolsMcpServer.getToolNames("session").length === 0) return;
+    return bridgeToolsMcpServer.listenForSession(sessionId, this.resolveSessionMcpEndpoint(sessionId));
+  }
+
+  private async closeSessionMcpEndpoint(sessionId: string): Promise<void> {
+    await this.deps.bridgeToolsMcpServer?.closeSessionEndpoint(sessionId);
+  }
+
+  private async rejectMismatchedCreatedSession(
+    expectedSessionId: string,
+    session: AgentSession,
+    backend: AgentBackend,
+  ): Promise<never> {
+    try { await session.disconnect?.(); } catch { /* best-effort */ }
+    try { await backend.deleteSession(session.sessionId); } catch { /* best-effort */ }
+    await this.closeSessionMcpEndpoint(expectedSessionId);
+    throw new Error(
+      `Agent backend returned session ${session.sessionId} instead of requested Bridge session ${expectedSessionId}`,
+    );
   }
 
   private createBackend(): AgentBackend {
@@ -1093,6 +1145,8 @@ export class SessionManager {
       let session = this.sessionObjects.get(sessionId);
       if (!session) {
         console.log(`[sdk] [${sid}] Resuming session for MCP auth...`);
+        const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+        if (endpointReady) await endpointReady;
         session = await Promise.race([
           client.resumeSession(sessionId, resumeConfig),
           new Promise<never>((_, reject) =>
@@ -1210,9 +1264,22 @@ export class SessionManager {
     }
 
     const t0 = Date.now();
-    const sessionConfig = this.buildSessionConfig();
-    const session = await client.createSession(sessionConfig);
+    const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
+    const endpointReady = bridgeSessionId ? this.ensureSessionMcpEndpoint(bridgeSessionId) : undefined;
+    if (endpointReady) await endpointReady;
+    let session: AgentSession;
+    let sessionConfig: any;
+    try {
+      sessionConfig = this.buildSessionConfig(bridgeSessionId ? { sessionId: bridgeSessionId } : {});
+      session = await client.createSession(sessionConfig);
+    } catch (error) {
+      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
+      throw error;
+    }
     const duration = Date.now() - t0;
+    if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
+      await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
+    }
 
     this.sessionObjects.set(session.sessionId, session);
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
@@ -1240,6 +1307,25 @@ export class SessionManager {
     const t0 = Date.now();
     const result = await backend.forkSession(sourceSessionId, forkOpts);
     const duration = Date.now() - t0;
+    const endpointReady = this.ensureSessionMcpEndpoint(result.sessionId);
+    if (endpointReady) await endpointReady;
+    if (this.deps.bridgeToolsMcpServer && typeof (backend as any).resumeSession === "function") {
+      try {
+        const forkResumeConfig = this.buildSessionConfig({
+          sessionId: result.sessionId,
+          task: sourceTask,
+          groupNotes: this.lookupGroupNotes(sourceTask?.groupId),
+          forResume: true,
+        });
+        const forkedSession = await backend.resumeSession(result.sessionId, forkResumeConfig);
+        this.cacheResumedSession(result.sessionId, forkedSession);
+        this.probeMcpStatus(result.sessionId, forkedSession);
+      } catch (error) {
+        await this.closeSessionMcpEndpoint(result.sessionId);
+        try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
+        throw error;
+      }
+    }
     this.persistSessionWorkspace(result.sessionId, sourceCwd);
 
     console.log(`[sdk] Forked session ${sourceSessionId.slice(0, 8)} → ${result.sessionId.slice(0, 8)}`);
@@ -1285,17 +1371,30 @@ export class SessionManager {
     };
 
     const t0 = Date.now();
+    const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
+    const endpointReady = bridgeSessionId ? this.ensureSessionMcpEndpoint(bridgeSessionId) : undefined;
+    if (endpointReady) await endpointReady;
     const sessionConfig = this.buildSessionConfig({
+      ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
       task,
       isNewTask: isPlaceholder,
       prDescriptions,
       scheduleContext,
       groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
     });
-    const session = await client.createSession(
-      sessionConfig,
-    );
+    let session: AgentSession;
+    try {
+      session = await client.createSession(
+        sessionConfig,
+      );
+    } catch (error) {
+      if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
+      throw error;
+    }
     const duration = Date.now() - t0;
+    if (bridgeSessionId && session.sessionId !== bridgeSessionId) {
+      await this.rejectMismatchedCreatedSession(bridgeSessionId, session, client);
+    }
 
     this.sessionObjects.set(session.sessionId, session);
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
@@ -1429,6 +1528,8 @@ export class SessionManager {
         this.beginSessionResume(sessionId);
         const tResume = Date.now();
         try {
+          const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+          if (endpointReady) await endpointReady;
           this.sessionObjects.delete(sessionId);
           session = await Promise.race([
             client.resumeSession(sessionId, msgResumeConfig),
@@ -1453,6 +1554,8 @@ export class SessionManager {
       this.beginSessionResume(sessionId);
       const tResume = Date.now();
       try {
+        const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+        if (endpointReady) await endpointReady;
         session = await Promise.race([
           client.resumeSession(sessionId, msgResumeConfig),
           new Promise<never>((_, reject) =>
@@ -1560,6 +1663,8 @@ export class SessionManager {
     const warmPromise = (async () => {
       this.beginSessionResume(sessionId);
       try {
+        const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+        if (endpointReady) await endpointReady;
         const session = await Promise.race([
           client.resumeSession(sessionId, resumeConfig),
           new Promise<never>((_, reject) =>
@@ -1619,6 +1724,7 @@ export class SessionManager {
       }
     }
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+    await this.closeSessionMcpEndpoint(sessionId);
 
     // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
     const copilotHome = this.getCopilotHome();
@@ -1660,6 +1766,8 @@ export class SessionManager {
       this.mcpStatus.delete(sessionId);
 
       console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
+      const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+      if (endpointReady) await endpointReady;
       const session = await Promise.race([
         client.resumeSession(sessionId, resumeConfig),
         new Promise<never>((_, reject) =>
@@ -1763,6 +1871,8 @@ export class SessionManager {
         });
           this.beginSessionResume(sessionId);
           try {
+            const endpointReady = this.ensureSessionMcpEndpoint(sessionId);
+            if (endpointReady) await endpointReady;
             session = await Promise.race([
               client.resumeSession(sessionId, resumeConfig),
               new Promise<never>((_, reject) =>

@@ -170,6 +170,34 @@ describe("session-config-builder", () => {
     expect(cfg.githubMcpToolOptions).toEqual(createGitHubCopilotMcpToolOptions());
   });
 
+  it("injects Bridge-owned MCP servers and prevents user config from overriding them", () => {
+    const bridgeMcp = {
+      type: "stdio" as const,
+      command: "node",
+      args: ["bridge-shim.js"],
+      tools: ["tag_list"],
+    };
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        config: {
+          sessionMcpServers: {
+            "bridge-tools": { command: "malicious-bridge-tools", args: [] },
+            custom: { command: "custom-mcp", args: [] },
+          },
+        },
+        builtInMcpServers: {
+          "bridge-tools": bridgeMcp,
+        },
+      }),
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      custom: { command: "custom-mcp", args: [] },
+      "bridge-tools": bridgeMcp,
+    });
+  });
+
   it("preserves an existing SDK-named GitHub MCP server instead of adding SDK-hosted GitHub MCP options", () => {
     const cfg = buildSessionConfig({
       deps: createDeps({
@@ -261,6 +289,7 @@ describe("session-config-builder", () => {
       name: "Task MCP",
       config: { command: "task-mcp", args: ["serve"] },
     });
+
     const tag = tagStore.createTag("Task tools");
     tagStore.addTagMcpServerRef(tag.id, taskServer.id);
     tagStore.setEntityTags("task", "task-1", [tag.id]);
@@ -290,6 +319,40 @@ describe("session-config-builder", () => {
       },
     });
     expect(cfg.githubMcpToolOptions).toBeUndefined();
+  });
+
+  it("preserves Bridge-owned MCP servers when task tags rebuild MCP selection", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const taskServer = mcpServerStore.createMcpServer({
+      name: "Task MCP",
+      config: { command: "task-mcp", args: ["serve"] },
+    });
+    const tag = tagStore.createTag("Task tools");
+    tagStore.addTagMcpServerRef(tag.id, taskServer.id);
+    tagStore.setEntityTags("task", "task-1", [tag.id]);
+    const bridgeMcp = {
+      type: "stdio" as const,
+      command: "node",
+      args: ["bridge-shim.js"],
+      tools: ["tag_list"],
+    };
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        mcpServerStore,
+        tagStore,
+        builtInMcpServers: {
+          "bridge-tools": bridgeMcp,
+        },
+      }),
+      options: { task: createTask() },
+      callbacks: createCallbacks(),
+    });
+
+    expect(cfg.mcpServers).toEqual({
+      "Task MCP": { command: "task-mcp", args: ["serve"] },
+      "bridge-tools": bridgeMcp,
+    });
   });
 
   it("adds MCP servers selected by inherited group tags", () => {
