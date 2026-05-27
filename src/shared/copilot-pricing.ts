@@ -29,10 +29,7 @@ export interface CopilotTokenUsageForPricing {
   readonly outputTokens?: number;
 }
 
-export interface CopilotModelMetadataForPricing {
-  readonly id: string;
-  readonly name?: string | null;
-}
+export interface CopilotModelMetadataForPricing extends CopilotModelContextMetadata {}
 
 export interface ResolveCopilotPricingModelOptions {
   readonly sdkModels?: readonly CopilotModelMetadataForPricing[];
@@ -136,6 +133,25 @@ export function getCopilotPricingEntry(sku: string): PublicCopilotPricingCatalog
   return isPublicCopilotPricingSku(sku) ? COPILOT_PUBLIC_PRICING_BY_SKU[sku] : undefined;
 }
 
+export function getCopilotPricingRatesFromModelMetadata(
+  model: CopilotModelMetadataForPricing | undefined,
+  contextTier: CopilotContextTier | undefined,
+): CopilotPricingRatesUsdPerMillionTokens | undefined {
+  const tokenPrices = model?.billing?.tokenPrices;
+  if (!tokenPrices) return undefined;
+  const tierPrices = contextTier === "long_context" && tokenPrices.longContext
+    ? tokenPrices.longContext
+    : tokenPrices;
+  const batchSize = typeof tokenPrices.batchSize === "number" && Number.isFinite(tokenPrices.batchSize) && tokenPrices.batchSize > 0
+    ? tokenPrices.batchSize
+    : 1_000_000;
+  const input = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.inputPrice, batchSize);
+  const output = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.outputPrice, batchSize);
+  const cachedInput = tokenPriceCentsPerBatchToUsdPerMillion(tierPrices.cachePrice, batchSize);
+  if (input === undefined || output === undefined || cachedInput === undefined) return undefined;
+  return { input, output, cachedInput };
+}
+
 export function resolveCopilotPricingModel(
   observedModel: string | null | undefined,
   options: ResolveCopilotPricingModelOptions = {},
@@ -216,6 +232,14 @@ function assertNonNegativeFiniteNumber(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name} must be a non-negative finite number.`);
   }
+}
+
+function tokenPriceCentsPerBatchToUsdPerMillion(
+  value: CopilotTokenPrices[keyof CopilotTokenPrices],
+  batchSize: number,
+): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  return (value / 100) * (COPILOT_TOKEN_PRICING_UNIT / batchSize);
 }
 
 function resolveCopilotPricingModelFromSdkName(
@@ -322,3 +346,8 @@ function createUnpricedCopilotPricingResolution(
     entry: null,
   };
 }
+import type {
+  CopilotContextTier,
+  CopilotModelContextMetadata,
+  CopilotTokenPrices,
+} from "./copilot-context.js";

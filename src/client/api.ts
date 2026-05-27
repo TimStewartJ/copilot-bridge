@@ -1,6 +1,10 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
+import type {
+  CopilotContextTier,
+  CopilotModelContextMetadata,
+} from "../shared/copilot-context.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
@@ -540,16 +544,19 @@ export async function patchSession(id: string, updates: { archived: boolean }): 
 // ── Session model ─────────────────────────────────────────────────
 
 export type SessionModelSource = "live" | "events" | "unknown";
+export type { CopilotContextTier };
 
 export interface SessionModelState {
   model?: string;
   reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
   source: SessionModelSource;
 }
 
 export interface SessionModelSwitchResult {
   model: string;
   reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
   modelId?: string;
 }
 
@@ -566,11 +573,16 @@ export async function patchSessionModel(
   sessionId: string,
   model: string,
   reasoningEffort?: string,
+  contextTier?: CopilotContextTier,
 ): Promise<SessionModelSwitchResult> {
   const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/model`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) }),
+    body: JSON.stringify({
+      model,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(contextTier !== undefined ? { contextTier } : {}),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -1398,6 +1410,8 @@ export interface CopilotUsageModelPricingMetadata {
   pricingStatus: CopilotPricingModelResolutionStatus;
   pricingSource: CopilotPricingModelResolutionStatus;
   normalizedPricingModel: string | null;
+  contextTier?: CopilotContextTier;
+  contextTierLabel?: string;
 }
 
 export interface CopilotUsageUnpricedModelRow extends CopilotUsageTotals, CopilotUsageModelPricingMetadata {
@@ -1494,6 +1508,7 @@ export interface AppSettings {
   customInstructions?: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  contextTier?: CopilotContextTier;
   browser?: BrowserSettings;
 }
 
@@ -1504,6 +1519,9 @@ export function serializeSettingsPatch(updates: Partial<AppSettings>): string {
   }
   if ("reasoningEffort" in updates && updates.reasoningEffort === undefined) {
     normalized.reasoningEffort = "";
+  }
+  if ("contextTier" in updates && updates.contextTier === undefined) {
+    normalized.contextTier = "";
   }
   return JSON.stringify(normalized);
 }
@@ -1806,11 +1824,10 @@ export async function fetchGlobalMcpStatus(): Promise<McpServerStatus[]> {
 
 // ── Models API ──────────────────────────────────────────────────
 
-export interface ModelInfo {
+export interface ModelInfo extends CopilotModelContextMetadata {
   id: string;
   name: string;
   policy?: { state: "enabled" | "disabled" | "unconfigured" };
-  billing?: { multiplier?: number };
   supportedReasoningEfforts?: ReasoningEffort[];
   defaultReasoningEffort?: ReasoningEffort;
 }

@@ -50,6 +50,7 @@ import {
 import { createCopilotUsageReader } from "./copilot-usage.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
+import { isCopilotContextTier } from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
@@ -167,7 +168,55 @@ function toCopilotModelMetadataForPricing(value: unknown): CopilotModelMetadataF
   const id = record.id.trim();
   if (!id) return null;
   const name = typeof record.name === "string" ? record.name.trim() : "";
-  return name ? { id, name } : { id };
+  const billing = isRecord(record.billing) ? sanitizeCopilotBilling(record.billing) : undefined;
+  const capabilities = isRecord(record.capabilities) ? sanitizeCopilotCapabilities(record.capabilities) : undefined;
+  return {
+    id,
+    ...(name ? { name } : {}),
+    ...(billing ? { billing } : {}),
+    ...(capabilities ? { capabilities } : {}),
+  };
+}
+
+function sanitizeCopilotBilling(record: Record<string, unknown>): CopilotModelMetadataForPricing["billing"] | undefined {
+  const multiplier = typeof record.multiplier === "number" && Number.isFinite(record.multiplier)
+    ? record.multiplier
+    : undefined;
+  const tokenPrices = isRecord(record.tokenPrices) ? sanitizeCopilotTokenPrices(record.tokenPrices) : undefined;
+  if (multiplier === undefined && !tokenPrices) return undefined;
+  return {
+    ...(multiplier !== undefined ? { multiplier } : {}),
+    ...(tokenPrices ? { tokenPrices } : {}),
+  };
+}
+
+function sanitizeCopilotTokenPrices(record: Record<string, unknown>): NonNullable<NonNullable<CopilotModelMetadataForPricing["billing"]>["tokenPrices"]> | undefined {
+  const tokenPrices = {
+    ...copyFiniteNumber(record, "inputPrice"),
+    ...copyFiniteNumber(record, "outputPrice"),
+    ...copyFiniteNumber(record, "cachePrice"),
+    ...copyFiniteNumber(record, "batchSize"),
+    ...copyFiniteNumber(record, "contextMax"),
+    ...(isRecord(record.longContext) ? { longContext: sanitizeCopilotTokenPrices(record.longContext) } : {}),
+  };
+  return Object.keys(tokenPrices).length > 0 ? tokenPrices : undefined;
+}
+
+function sanitizeCopilotCapabilities(record: Record<string, unknown>): CopilotModelMetadataForPricing["capabilities"] | undefined {
+  const limits = isRecord(record.limits)
+    ? {
+        ...copyFiniteNumber(record.limits, "max_context_window_tokens"),
+        ...copyFiniteNumber(record.limits, "max_prompt_tokens"),
+        ...copyFiniteNumber(record.limits, "max_output_tokens"),
+      }
+    : undefined;
+  if (!limits || Object.keys(limits).length === 0) return undefined;
+  return { limits };
+}
+
+function copyFiniteNumber<const Key extends string>(record: Record<string, unknown>, key: Key): { [K in Key]?: number } {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? { [key]: value } as { [K in Key]?: number } : {};
 }
 
 function sanitizeCopilotModelMetadataForPricing(value: unknown): readonly CopilotModelMetadataForPricing[] {
@@ -1883,7 +1932,7 @@ export function createApiRouter(ctx: AppContext): express.Router {
     if (!isCanonicalSessionId(sessionId)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
-    const { model, reasoningEffort } = req.body ?? {};
+    const { model, reasoningEffort, contextTier } = req.body ?? {};
     const normalizedModel = typeof model === "string" ? model.trim() : "";
 
     if (!normalizedModel) {
@@ -1894,9 +1943,12 @@ export function createApiRouter(ctx: AppContext): express.Router {
         error: `reasoningEffort must be one of: ${[...VALID_REASONING_EFFORTS].join(", ")}`,
       });
     }
+    if (contextTier !== undefined && !isCopilotContextTier(contextTier)) {
+      return res.status(400).json({ error: "contextTier must be default or long_context" });
+    }
 
     try {
-      const result = await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort);
+      const result = await ctx.sessionManager.setSessionModel(sessionId, normalizedModel, reasoningEffort, contextTier);
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3889,18 +3941,20 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const mcpChanged = JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers);
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
+      const contextTierChanged = prev.contextTier !== updated.contextTier;
 
       // MCP server changes can't be hot-swapped on a live session — evict so the
       // next resume rebuilds with the new MCP config.
       if (mcpChanged) {
         console.log("[settings] MCP servers changed — evicting cached sessions for re-resume");
         ctx.sessionManager.evictAllCachedSessions();
-      } else if (modelChanged || reasoningChanged) {
+      } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached
         // sessions keep the model already persisted in their SDK state.
         const reasons = [
           modelChanged ? "model" : null,
           reasoningChanged ? "reasoning effort" : null,
+          contextTierChanged ? "context tier" : null,
         ].filter(Boolean).join(" & ");
         console.log(`[settings] ${reasons} changed — applies to new sessions only`);
       }

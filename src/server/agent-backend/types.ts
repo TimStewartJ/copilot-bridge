@@ -105,10 +105,11 @@ export interface AgentSendArgs {
 
 /**
  * Options for `AgentSession.setModel(...)`. Copilot SDK accepts an optional
- * `{ reasoningEffort }` second argument.
+ * `{ reasoningEffort, modelCapabilities }` second argument.
  */
 export interface AgentSetModelOptions {
   reasoningEffort?: string;
+  modelCapabilities?: unknown;
   [extra: string]: unknown;
 }
 

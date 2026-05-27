@@ -32,6 +32,12 @@ import {
   buildGitHubCopilotSearchMcpServer,
   GITHUB_COPILOT_MCP_SERVER_NAME,
 } from "./github-copilot-mcp.js";
+import {
+  getModelCapabilitiesOverrideForContextTier,
+  normalizeCopilotContextTier,
+  resolveContextTierForModel,
+  type CopilotModelContextMetadata,
+} from "../shared/copilot-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -59,6 +65,7 @@ export interface SessionConfigOptions {
    * event logs) rather than re-applying the global settings default.
    */
   forResume?: boolean;
+  modelMetadata?: readonly CopilotModelContextMetadata[];
 }
 
 export interface SessionConfigBuilderDeps {
@@ -221,6 +228,16 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     // Reasoning effort: settings store > SDK default
     const reasoningEffort = settings?.reasoningEffort;
     if (reasoningEffort) cfg.reasoningEffort = reasoningEffort;
+
+    const modelMetadata = model
+      ? params.options?.modelMetadata?.find((candidate) => candidate.id === model)
+      : undefined;
+    const contextTier = resolveContextTierForModel(
+      modelMetadata,
+      normalizeCopilotContextTier(settings?.contextTier),
+    );
+    const modelCapabilities = getModelCapabilitiesOverrideForContextTier(modelMetadata, contextTier);
+    if (modelCapabilities) cfg.modelCapabilities = modelCapabilities;
   }
 
   if (workingDirectory) {

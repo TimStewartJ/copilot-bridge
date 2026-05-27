@@ -128,6 +128,18 @@ import {
   type DerivedModelState,
 } from "./session-events-model.js";
 import {
+  getModelCapabilitiesOverrideForContextTier,
+  normalizeCopilotContextTier,
+  resolveContextTierForModel,
+  type CopilotContextTier,
+  type CopilotModelContextMetadata,
+} from "../shared/copilot-context.js";
+import {
+  readPersistedSessionModelState,
+  writePersistedSessionModelState,
+  type PersistedSessionModelState,
+} from "./session-model-state-sidecar.js";
+import {
   buildSessionNameResumeConfig,
   createSessionNameRpc,
   type SetSessionNameOptions,
@@ -374,6 +386,7 @@ export class SessionManager {
   private sessionObjects = new Map<string, AgentSession>();
   private mcpStatus = new Map<string, McpServerStatus[]>(); // per-session MCP server status
   private liveSessionModelState = new Map<string, DerivedModelState>();
+  private modelMetadataForContextTiers: readonly CopilotModelContextMetadata[] | undefined;
   private pendingSessionEvictions = new Set<string>();
   private readonly workspaceController: SessionWorkspaceController;
   private readonly userInputController: SessionUserInputController;
@@ -664,15 +677,83 @@ export class SessionManager {
       ...(this.deps.builtInMcpServers ?? {}),
       ...sessionBuiltInMcpServers,
     };
-    return buildSessionConfigWithDeps({
+    const cfg = buildSessionConfigWithDeps({
       deps: { ...this.deps, builtInMcpServers, permissionPolicy: this.backend?.permissionPolicy },
-      options: opts,
+      options: {
+        ...opts,
+        modelMetadata: opts.modelMetadata ?? this.modelMetadataForContextTiers,
+      },
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
         getCopilotHome: () => this.getCopilotHome(),
         handleUserInputRequest: (request, invocation) => this.handleUserInputRequest(request, invocation),
       },
     });
+    if (opts.forResume && opts.sessionId) {
+      const persistedState = this.readPersistedSessionModelState(opts.sessionId);
+      if (persistedState.modelCapabilities) {
+        cfg.modelCapabilities = persistedState.modelCapabilities;
+      }
+    }
+    return cfg;
+  }
+
+  private async loadModelMetadataForContextTiers(
+    client = this.getBackend(),
+    options: { refresh?: boolean } = {},
+  ): Promise<readonly CopilotModelContextMetadata[] | undefined> {
+    if (!options.refresh && this.modelMetadataForContextTiers) {
+      return this.modelMetadataForContextTiers;
+    }
+    const listModels = (client as { listModels?: unknown }).listModels;
+    if (typeof listModels !== "function") {
+      return this.modelMetadataForContextTiers;
+    }
+    try {
+      const models = await listModels.call(client);
+      this.modelMetadataForContextTiers = models as readonly CopilotModelContextMetadata[];
+      return this.modelMetadataForContextTiers;
+    } catch (error) {
+      console.warn(
+        "[sdk] Failed to load model metadata for context-tier configuration:",
+        error instanceof Error ? error.message : String(error),
+      );
+      return this.modelMetadataForContextTiers;
+    }
+  }
+
+  private resolveModelContextTier(
+    modelId: string,
+    requestedContextTier?: string,
+    modelMetadata = this.modelMetadataForContextTiers,
+  ): { contextTier?: CopilotContextTier; modelCapabilities?: Record<string, unknown> } {
+    const model = modelMetadata?.find((candidate) => candidate.id === modelId);
+    const contextTier = resolveContextTierForModel(model, normalizeCopilotContextTier(requestedContextTier));
+    return {
+      ...(contextTier ? { contextTier } : {}),
+      ...(contextTier
+        ? { modelCapabilities: getModelCapabilitiesOverrideForContextTier(model, contextTier) as Record<string, unknown> | undefined }
+        : {}),
+    };
+  }
+
+  private persistSessionModelState(
+    sessionId: string,
+    state: DerivedModelState & { modelCapabilities?: Record<string, unknown> },
+  ): void {
+    try {
+      writePersistedSessionModelState(this.getSessionStateDir(sessionId), state);
+    } catch (error) {
+      console.warn(
+        `[sdk] [${sessionId.slice(0, 8)}] Failed to persist Bridge model state: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private readPersistedSessionModelState(sessionId: string): PersistedSessionModelState {
+    return readPersistedSessionModelState(this.getSessionStateDir(sessionId));
   }
 
   private resolveSessionBuiltInMcpServers(sessionId: string | undefined): Record<string, McpServerConfig> {
@@ -878,6 +959,7 @@ export class SessionManager {
     const client = await this.getBackendAfterRotation();
     const t0 = Date.now();
     const models = await client.listModels();
+    this.modelMetadataForContextTiers = models as readonly CopilotModelContextMetadata[];
     this.recordSpan("session.listModels", Date.now() - t0);
     return models;
   }
@@ -886,6 +968,7 @@ export class SessionManager {
     const t0 = Date.now();
     const client = await this.rotateBackendForModelRefresh();
     const models = await client.listModels();
+    this.modelMetadataForContextTiers = models as readonly CopilotModelContextMetadata[];
     this.recordSpan("session.refreshModels", Date.now() - t0, undefined, {
       count: Array.isArray(models) ? models.length : undefined,
     });
@@ -1261,10 +1344,14 @@ export class SessionManager {
     const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
     const endpointReady = bridgeSessionId ? this.ensureSessionMcpEndpoint(bridgeSessionId) : undefined;
     if (endpointReady) await endpointReady;
+    const modelMetadata = await this.loadModelMetadataForContextTiers(client);
     let session: AgentSession;
     let sessionConfig: any;
     try {
-      sessionConfig = this.buildSessionConfig(bridgeSessionId ? { sessionId: bridgeSessionId } : {});
+      sessionConfig = this.buildSessionConfig({
+        ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+        ...(modelMetadata ? { modelMetadata } : {}),
+      });
       session = await client.createSession(sessionConfig);
     } catch (error) {
       if (bridgeSessionId) await this.closeSessionMcpEndpoint(bridgeSessionId);
@@ -1276,6 +1363,19 @@ export class SessionManager {
     }
 
     this.sessionObjects.set(session.sessionId, session);
+    const settings = this.deps.settingsStore?.getSettings();
+    const model = sessionConfig.model;
+    if (typeof model === "string" && model.trim()) {
+      const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);
+      const state = {
+        model,
+        ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
+        ...(contextTier ? { contextTier } : {}),
+        ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
+      };
+      this.liveSessionModelState.set(session.sessionId, state);
+      this.persistSessionModelState(session.sessionId, state);
+    }
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
     this.invalidateSessionListCache("session:create");
@@ -1368,6 +1468,7 @@ export class SessionManager {
     const bridgeSessionId = this.deps.bridgeToolsMcpServer ? randomUUID() : undefined;
     const endpointReady = bridgeSessionId ? this.ensureSessionMcpEndpoint(bridgeSessionId) : undefined;
     if (endpointReady) await endpointReady;
+    const modelMetadata = await this.loadModelMetadataForContextTiers(client);
     const sessionConfig = this.buildSessionConfig({
       ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
       task,
@@ -1375,6 +1476,7 @@ export class SessionManager {
       prDescriptions,
       scheduleContext,
       groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
+      ...(modelMetadata ? { modelMetadata } : {}),
     });
     let session: AgentSession;
     try {
@@ -1391,6 +1493,19 @@ export class SessionManager {
     }
 
     this.sessionObjects.set(session.sessionId, session);
+    const settings = this.deps.settingsStore?.getSettings();
+    const model = sessionConfig.model;
+    if (typeof model === "string" && model.trim()) {
+      const { contextTier } = this.resolveModelContextTier(model, settings?.contextTier, modelMetadata);
+      const state = {
+        model,
+        ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
+        ...(contextTier ? { contextTier } : {}),
+        ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
+      };
+      this.liveSessionModelState.set(session.sessionId, state);
+      this.persistSessionModelState(session.sessionId, state);
+    }
     this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
     this.probeMcpStatus(session.sessionId, session);
     this.invalidateSessionListCache("session:create-task");
@@ -1844,7 +1959,8 @@ export class SessionManager {
     sessionId: string,
     model: string,
     reasoningEffort?: string,
-  ): Promise<{ model: string; reasoningEffort?: string; modelId?: string }> {
+    contextTier?: string,
+  ): Promise<{ model: string; reasoningEffort?: string; contextTier?: CopilotContextTier; modelId?: string }> {
     const client = this.getBackend();
     if (isRestartPending()) throw new Error("Cannot switch model while a restart is pending");
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
@@ -1881,6 +1997,7 @@ export class SessionManager {
       }
 
       const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
+      const persistedState = this.readPersistedSessionModelState(sessionId);
       const liveState = this.liveSessionModelState.get(sessionId);
       let currentModelBeforeSwitch: string | undefined;
       if (reasoningEffort === undefined && liveState?.reasoningEffort !== undefined) {
@@ -1898,9 +2015,23 @@ export class SessionManager {
       const effectiveReasoningEffort = reasoningEffort
         ?? knownLiveReasoningEffort
         ?? eventsState.reasoningEffort;
-      const opts = effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : undefined;
+      const modelMetadata = await this.loadModelMetadataForContextTiers(client);
+      const effectiveRequestedContextTier = contextTier
+        ?? (liveState?.model === model ? liveState.contextTier : undefined)
+        ?? (eventsState.model === model ? eventsState.contextTier : undefined)
+        ?? (persistedState.model === model ? persistedState.contextTier : undefined);
+      const resolvedContext = this.resolveModelContextTier(model, effectiveRequestedContextTier, modelMetadata);
+      const setModelOptions = {
+        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
+      };
+      const opts = Object.keys(setModelOptions).length > 0 ? setModelOptions : undefined;
       await session.setModel(model, opts);
-      console.log(`[sdk] [${sid}] setSessionModel(${model}${effectiveReasoningEffort ? `, ${effectiveReasoningEffort}` : ""})`);
+      console.log(
+        `[sdk] [${sid}] setSessionModel(${model}${effectiveReasoningEffort ? `, ${effectiveReasoningEffort}` : ""}${
+          resolvedContext.contextTier ? `, ${resolvedContext.contextTier}` : ""
+        })`,
+      );
 
       let modelId: string | undefined;
       try {
@@ -1914,11 +2045,19 @@ export class SessionManager {
       this.liveSessionModelState.set(sessionId, {
         model: liveModel,
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
+      });
+      this.persistSessionModelState(sessionId, {
+        model: liveModel,
+        ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
+        ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
       });
 
       return {
         model,
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
         ...(modelId ? { modelId } : {}),
       };
     } finally {
@@ -1940,8 +2079,9 @@ export class SessionManager {
    */
   async getSessionModelState(
     sessionId: string,
-  ): Promise<{ model?: string; reasoningEffort?: string; source: "live" | "events" | "unknown" }> {
+  ): Promise<{ model?: string; reasoningEffort?: string; contextTier?: CopilotContextTier; source: "live" | "events" | "unknown" }> {
     const eventsState = deriveModelStateFromEventsFile(this.getSessionEventsPath(sessionId));
+    const persistedState = this.readPersistedSessionModelState(sessionId);
 
     const cached = this.sessionObjects.get(sessionId);
     if (cached) {
@@ -1953,10 +2093,14 @@ export class SessionManager {
             const liveState = this.liveSessionModelState.get(sessionId);
             const reasoningEffort = liveState?.model === liveModelId
               ? liveState.reasoningEffort
-              : eventsState.reasoningEffort;
+              : eventsState.reasoningEffort ?? persistedState.reasoningEffort;
+            const contextTier = liveState?.model === liveModelId
+              ? liveState.contextTier
+              : eventsState.contextTier ?? (persistedState.model === liveModelId ? persistedState.contextTier : undefined);
             return {
               model: liveModelId,
               ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+              ...(contextTier !== undefined ? { contextTier } : {}),
               source: "live",
             };
           }
@@ -1964,8 +2108,19 @@ export class SessionManager {
       } catch { /* best-effort */ }
     }
 
-    if (eventsState.model !== undefined || eventsState.reasoningEffort !== undefined) {
-      return { ...eventsState, source: "events" };
+    const mergedEventsState = {
+      ...persistedState,
+      ...eventsState,
+      contextTier: eventsState.contextTier ?? (
+        !eventsState.model || eventsState.model === persistedState.model ? persistedState.contextTier : undefined
+      ),
+    };
+    if (
+      mergedEventsState.model !== undefined
+      || mergedEventsState.reasoningEffort !== undefined
+      || mergedEventsState.contextTier !== undefined
+    ) {
+      return { ...mergedEventsState, source: "events" };
     }
 
     return { source: "unknown" };

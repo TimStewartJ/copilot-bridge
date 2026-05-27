@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { refreshModels, type AppSettings } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
@@ -6,6 +6,11 @@ import { queryKeys } from "../../queryClient";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
+import {
+  getContextTierLabel,
+  modelSupportsLongContext,
+  type CopilotContextTier,
+} from "../../../shared/copilot-context.js";
 
 export function ModelSection({
   draft,
@@ -24,6 +29,9 @@ export function ModelSection({
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const currentModel = draft.model ?? "";
+  const selectedModel = availableModels.find((model) => model.id === currentModel);
+  const supportsLongContext = modelSupportsLongContext(selectedModel);
+  const currentContextTier = supportsLongContext ? (draft.contextTier ?? "default") : "";
   const formatMultiplier = (multiplier: unknown) =>
     typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier !== 1
       ? ` (${multiplier}×)`
@@ -40,6 +48,13 @@ export function ModelSection({
       setRefreshing(false);
     }
   };
+
+  useEffect(() => {
+    if (!draft.contextTier || supportsLongContext) return;
+    const next = structuredClone(draft);
+    next.contextTier = undefined;
+    setDraft(next);
+  }, [draft, setDraft, supportsLongContext]);
 
   return (
     <SettingsSection
@@ -87,6 +102,12 @@ export function ModelSection({
               onChange={(e) => {
                 const next = structuredClone(draft);
                 next.model = e.target.value || undefined;
+                const nextModel = availableModels.find((model) => model.id === next.model);
+                if (!modelSupportsLongContext(nextModel)) {
+                  next.contextTier = undefined;
+                } else if (!next.contextTier) {
+                  next.contextTier = "default";
+                }
                 setDraft(next);
               }}
               className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none cursor-pointer"
@@ -102,6 +123,29 @@ export function ModelSection({
               <p className="text-xs text-text-faint">
                 Model ID: <code className="text-text-muted">{currentModel}</code>
               </p>
+            )}
+            {supportsLongContext && (
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-text-secondary" htmlFor="context-tier-select">
+                  Context tier
+                </label>
+                <select
+                  id="context-tier-select"
+                  value={currentContextTier}
+                  onChange={(e) => {
+                    const next = structuredClone(draft);
+                    next.contextTier = e.target.value as CopilotContextTier;
+                    setDraft(next);
+                  }}
+                  className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none cursor-pointer"
+                >
+                  <option value="default">{getContextTierLabel(selectedModel, "default") ?? "Standard context"}</option>
+                  <option value="long_context">{getContextTierLabel(selectedModel, "long_context") ?? "Long context"} · higher price</option>
+                </select>
+                <p className="text-xs text-text-faint">
+                  Long context uses the model&apos;s larger context window and different token pricing.
+                </p>
+              </div>
             )}
           </div>
         )}

@@ -210,20 +210,6 @@
     "message": "Argument of type '{ field: string; order: string; }' is not assignable to parameter of type 'DbSortState'.\n  Types of property 'order' are incompatible.\n    Type 'string' is not assignable to type '\"asc\" | \"desc\"'."
   },
   {
-    "code": 2322,
-    "file": "src/client/components/SessionList.tsx",
-    "line": 669,
-    "character": 72,
-    "message": "Type '{ size: number; className: string; title: string; }' is not assignable to type 'IntrinsicAttributes & Omit<LucideProps, \"ref\"> & RefAttributes<SVGSVGElement>'.\n  Property 'title' does not exist on type 'IntrinsicAttributes & Omit<LucideProps, \"ref\"> & RefAttributes<SVGSVGElement>'."
-  },
-  {
-    "code": 2322,
-    "file": "src/client/components/SessionList.tsx",
-    "line": 702,
-    "character": 82,
-    "message": "Type '{ size: number; className: string; title: string; }' is not assignable to type 'IntrinsicAttributes & Omit<LucideProps, \"ref\"> & RefAttributes<SVGSVGElement>'.\n  Property 'title' does not exist on type 'IntrinsicAttributes & Omit<LucideProps, \"ref\"> & RefAttributes<SVGSVGElement>'."
-  },
-  {
     "code": 18048,
     "file": "src/client/components/settings/CopilotUsageSection.tsx",
     "line": 85,

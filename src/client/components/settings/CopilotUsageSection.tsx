@@ -239,7 +239,7 @@ export function CopilotUsageSection() {
                     </thead>
                     <tbody>
                       {data.models.map((row) => (
-                        <ModelRow key={row.model} row={row} />
+                        <ModelRow key={`${row.model}:${row.contextTier ?? "default"}`} row={row} />
                       ))}
                     </tbody>
                   </table>
@@ -310,10 +310,13 @@ function UnpricedModelsWarning({
         <div className="flex flex-wrap gap-1">
           {models.map((row) => (
             <span
-              key={row.model}
+              key={`${row.model}:${row.contextTier ?? "default"}`}
               className="rounded-full border border-warning/20 bg-bg-primary px-2 py-0.5 text-[11px] font-medium text-text-secondary"
             >
               {row.model}
+              {row.contextTierLabel && (
+                <span className="text-text-faint"> · {row.contextTierLabel}</span>
+              )}
               {row.normalizedPricingModel && row.normalizedPricingModel !== row.model && (
                 <span className="text-text-faint"> · normalized {row.normalizedPricingModel}</span>
               )}
@@ -328,7 +331,12 @@ function UnpricedModelsWarning({
 function ModelRow({ row }: { row: CopilotUsageModelRow }) {
   return (
     <tr className="border-b border-border last:border-b-0">
-      <td className="px-4 py-3 font-medium text-text-primary">{row.model}</td>
+      <td className="px-4 py-3 font-medium text-text-primary">
+        <div>{row.model}</div>
+        {row.contextTierLabel && (
+          <div className="text-[11px] font-normal text-text-faint">{row.contextTierLabel}</div>
+        )}
+      </td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.sessions)}</td>
       <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.requests)}</td>
       <td className="px-4 py-3 text-right font-medium text-text-primary">{formatCurrencyUsd(row.estimatedCostUsd)}</td>
