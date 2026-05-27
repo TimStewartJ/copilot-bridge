@@ -2,14 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppContext } from "../app-context.js";
 import { createBridgeTools } from "../session-manager.js";
 import { toolFailure } from "../tool-results.js";
+import { createChecklistToolDefinitions } from "../tools/checklist-tools.js";
+import { createDocsToolDefinitions } from "../tools/docs-tools.js";
+import { createTagToolDefinitions } from "../tools/tag-tools.js";
+import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { createTestApp } from "./helpers.js";
 
 const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
 
 function getTool(ctx: AppContext, name: string) {
-  const tool = createBridgeTools(ctx).find((candidate) => candidate.name === name);
+  const tool = [
+    ...createBridgeTools(ctx),
+    ...createTaskToolDefinitions(ctx),
+    ...createChecklistToolDefinitions(ctx),
+    ...createTagToolDefinitions(ctx),
+    ...createDocsToolDefinitions(ctx),
+  ].find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
-  return tool;
+  return tool as any;
 }
 
 function createInvocation(toolName: string) {
