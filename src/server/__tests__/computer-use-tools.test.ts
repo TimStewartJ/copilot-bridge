@@ -70,8 +70,8 @@ describe("computer use tools", () => {
     });
 
     const mod = await import("../computer-use-tools.js");
-    const tools = Object.fromEntries(mod.createComputerUseTools({} as any).map((tool: any) => [tool.name, tool]));
-    const result = await tools.computer_screenshot.handler({}) as any;
+    const tools = Object.fromEntries(mod.createStatelessComputerUseTools().map((tool: any) => [tool.name, tool]));
+    const result = await tools.computer_screenshot.handler({}, {} as any) as any;
 
     expect(result).toEqual({
       textResultForLlm: "Screenshot failed: Failed to load computer.node: missing native binding",
@@ -86,8 +86,8 @@ describe("computer use tools", () => {
     }));
 
     const mod = await import("../computer-use-tools.js");
-    const tools = Object.fromEntries(mod.createComputerUseTools({} as any).map((tool: any) => [tool.name, tool]));
-    const result = await tools.computer_screenshot.handler({}) as any;
+    const tools = Object.fromEntries(mod.createStatelessComputerUseTools().map((tool: any) => [tool.name, tool]));
+    const result = await tools.computer_screenshot.handler({}, {} as any) as any;
 
     expect(result).toEqual({
       textResultForLlm: "Missing desktop permissions: Screen Recording. Grant them to the bridge process or terminal in OS settings, then try again.",

@@ -1,11 +1,20 @@
-import { defineTool } from "@github/copilot-sdk";
 import { normalizeSessionTitle } from "../session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "../agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 
-export function createSessionTools(ctx: AppContext) {
+export interface RegisterSessionToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("session_rename", {
+  defineBridgeTool("session_rename", {
+    scope: "session",
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
     parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename" }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["title"] },
     handler: async (args: any, invocation: any) => {
@@ -24,7 +33,8 @@ export function createSessionTools(ctx: AppContext) {
       return { success: true, sessionId, message: `Session renamed to "${title}"` };
     },
   }),
-  defineTool("session_set_workspace", {
+  defineBridgeTool("session_set_workspace", {
+    scope: "session",
     description: "Switch the current session's workspace for future turns. Set an explicit cwd or reset back to the linked task's current default workspace snapshot.",
     parameters: {
       type: "object",
@@ -87,4 +97,14 @@ export function createSessionTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerSessionTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterSessionToolsOptions = {},
+): void {
+  const definitions = createSessionToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

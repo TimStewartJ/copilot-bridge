@@ -1,7 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createBridgeTools } from "../session-manager.js";
 import * as scheduler from "../scheduler.js";
+import { createScheduleToolDefinitions } from "../tools/schedule-tools.js";
 import { createMockSessionManager, createTestApp } from "./helpers.js";
+
+function getTool(ctx: ReturnType<typeof createTestApp>["ctx"], name: string) {
+  const tool = [
+    ...createBridgeTools(ctx),
+    ...createScheduleToolDefinitions(ctx),
+  ].find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`${name} tool not found`);
+  return tool as any;
+}
 
 describe("schedule tools", () => {
   afterEach(() => {
@@ -19,8 +29,7 @@ describe("schedule tools", () => {
       globalBus: ctx.globalBus,
     });
 
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_create");
-    if (!tool) throw new Error("schedule_create tool not found");
+    const tool = getTool(ctx, "schedule_create");
 
     const result = await tool.handler(
       {
@@ -62,8 +71,7 @@ describe("schedule tools", () => {
       globalBus: ctx.globalBus,
     });
 
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_update");
-    if (!tool) throw new Error("schedule_update tool not found");
+    const tool = getTool(ctx, "schedule_update");
 
     const result = await tool.handler(
       {
@@ -95,8 +103,7 @@ describe("schedule tools", () => {
       type: "cron",
       cron: "0 0 * * *",
     });
-    const tool = createBridgeTools(ctx).find((candidate) => candidate.name === "schedule_list");
-    if (!tool) throw new Error("schedule_list tool not found");
+    const tool = getTool(ctx, "schedule_list");
 
     const result = await tool.handler(
       { taskId: task.id },

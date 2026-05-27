@@ -1,8 +1,13 @@
-import { defineTool } from "@github/copilot-sdk";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureChecklistItem, ensureTask } from "./helpers.js";
 import { ChecklistNotFoundError, ChecklistValidationError } from "../checklist-store.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+  type BridgeToolDefinition,
+  type BridgeToolsMcpServer,
+} from "../agent-tools-mcp/index.js";
 
 function checklistToolFailure(error: unknown) {
   if (error instanceof ChecklistValidationError || error instanceof ChecklistNotFoundError) {
@@ -11,9 +16,13 @@ function checklistToolFailure(error: unknown) {
   throw error;
 }
 
-export function createChecklistTools(ctx: AppContext) {
+export interface RegisterChecklistToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("checklist_add", {
+  defineBridgeTool("checklist_add", {
     description: "Add a checklist item to a task's checklist, or create a global checklist item if no taskId is provided",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID. Omit to create a global (unparented) checklist item." }, text: { type: "string", description: "The checklist item text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
     handler: async (args: any) => {
@@ -33,7 +42,7 @@ export function createChecklistTools(ctx: AppContext) {
       }
     },
   }),
-  defineTool("checklist_list", {
+  defineBridgeTool("checklist_list", {
     description: "List all checklist items for a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" } }, required: ["taskId"] },
     handler: async (args: any) => {
@@ -46,7 +55,7 @@ export function createChecklistTools(ctx: AppContext) {
       };
     },
   }),
-  defineTool("checklist_update", {
+  defineBridgeTool("checklist_update", {
     description: "Update a checklist item's text, done status, or deadline",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: ["string", "null"], description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
@@ -65,7 +74,7 @@ export function createChecklistTools(ctx: AppContext) {
       }
     },
   }),
-  defineTool("checklist_remove", {
+  defineBridgeTool("checklist_remove", {
     description: "Remove a checklist item from a task's checklist",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" } }, required: ["checklistItemId"] },
     handler: async (args: any) => {
@@ -80,4 +89,14 @@ export function createChecklistTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerChecklistTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterChecklistToolsOptions = {},
+): void {
+  const definitions = createChecklistToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

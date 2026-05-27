@@ -1,12 +1,21 @@
-import { defineTool } from "@github/copilot-sdk";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { sessionVisualOwner } from "../visual-artifacts.js";
 import { emitVisualPublished, publishVisualFromToolArgs, visualPublishedToolResult } from "./visual-tool-publisher.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "../agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 
-export function createVisualTools(ctx: AppContext) {
+export interface RegisterVisualToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createVisualToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("publish_visual", {
+  defineBridgeTool("publish_visual", {
+    scope: "session",
     description:
       "Publish a visual artifact that appears as a rendered card in the chat. " +
       "Use kind \"image\" for screenshots, charts, and photos (PNG/JPEG/GIF/WebP/BMP). " +
@@ -45,4 +54,14 @@ export function createVisualTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerVisualTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterVisualToolsOptions = {},
+): void {
+  const definitions = createVisualToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

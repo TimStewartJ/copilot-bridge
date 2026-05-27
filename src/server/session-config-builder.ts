@@ -1,4 +1,4 @@
-import { approveAll, type SectionOverride, type defineTool } from "@github/copilot-sdk";
+import { approveAll, type SectionOverride } from "@github/copilot-sdk";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
@@ -60,7 +60,8 @@ export interface SessionConfigOptions {
 }
 
 export interface SessionConfigBuilderDeps {
-  tools: ReturnType<typeof defineTool>[];
+  /** @deprecated Bridge tools are MCP-backed; accepted only for old test fixtures during migration. */
+  tools?: unknown[];
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
@@ -68,6 +69,8 @@ export interface SessionConfigBuilderDeps {
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
+  builtInMcpServers?: Record<string, McpServerConfig>;
+  resolveBuiltInMcpServers?: (opts: { sessionId?: string }) => Record<string, McpServerConfig>;
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
 }
@@ -154,10 +157,16 @@ function resolveSessionMcpServers(
 function addBuiltInMcpServers(
   deps: SessionConfigBuilderDeps,
   servers: Record<string, McpServerConfig>,
+  sessionId?: string,
 ): Record<string, McpServerConfig> {
+  const merged = {
+    ...servers,
+    ...(deps.builtInMcpServers ?? {}),
+    ...(deps.resolveBuiltInMcpServers?.({ sessionId }) ?? {}),
+  };
   const builtInServer = buildGitHubCopilotSearchMcpServer(deps.clientEnv);
-  if (!builtInServer || servers[builtInServer.name]) return servers;
-  return { ...servers, [builtInServer.name]: builtInServer.config };
+  if (!builtInServer || merged[builtInServer.name]) return merged;
+  return { ...merged, [builtInServer.name]: builtInServer.config };
 }
 
 function shouldUseSdkGitHubMcp(
@@ -180,9 +189,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       callbacks.handleUserInputRequest(request, invocation),
     streaming: true,
     includeSubAgentStreamingEvents: false,
-    tools: deps.tools,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],
-    mcpServers: addBuiltInMcpServers(deps, resolvedMcpServers),
+    mcpServers: addBuiltInMcpServers(deps, resolvedMcpServers, sessionId),
     skillDirectories: [
       join(REPO_ROOT, "skills"),
       join(callbacks.getCopilotHome(), "skills"),
@@ -201,6 +209,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // persisted session model; only Bridge-owned runtime config (tools, MCP,
   // user-input handlers, system context) is refreshed on resume.
   if (!forResume) {
+    if (sessionId) cfg.sessionId = sessionId;
+
     // Model priority: settings store > deps.config > SDK default
     const model = settings?.model ?? deps.config.model;
     if (model) cfg.model = model;
@@ -304,6 +314,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       cfg.mcpServers = addBuiltInMcpServers(
         deps,
         resolveSessionMcpServers(deps, resolved.mcpServerIds, resolved.mergedMcpServers),
+        sessionId,
       );
     }
 

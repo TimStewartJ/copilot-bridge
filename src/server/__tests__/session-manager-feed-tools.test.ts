@@ -3,13 +3,17 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AppContext } from "../app-context.js";
 import { createBridgeTools } from "../session-manager.js";
+import { createFeedToolDefinitions } from "../tools/feed-tools.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./helpers.js";
 
 function getTool(ctx: AppContext, name: string) {
-  const tool = createBridgeTools(ctx).find((candidate) => candidate.name === name);
+  const tool = [
+    ...createBridgeTools(ctx),
+    ...createFeedToolDefinitions(ctx),
+  ].find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
-  return tool;
+  return tool as any;
 }
 
 function createInvocation(toolName: string) {

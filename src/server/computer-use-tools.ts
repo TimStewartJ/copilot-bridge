@@ -7,11 +7,12 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan, withBridgeBrowserSession } from "./agent-browser.js";
 import { getOrCreateBrowserSessionStore } from "./browser-session-store.js";
-import { requireToolHandlers } from "./tool-handler.js";
+import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
+import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { toolFailure } from "./tool-results.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -117,10 +118,7 @@ function getComputerModule(): ComputerModule {
   }
 }
 
-export function createComputerUseTools(ctx: AppContext) {
-  if (!COMPUTER_USE_ENABLED) return [];
-
-  // Eagerly try to load — log warning at startup if bindings aren't available
+function eagerComputerUseCheck(): void {
   try {
     const mod = getComputerModule();
     const startupPermissionError = getPermissionError(mod, ["screen", "accessibility"]);
@@ -130,15 +128,11 @@ export function createComputerUseTools(ctx: AppContext) {
   } catch {
     console.warn("[computer-use] COMPUTER_USE=true but native bindings unavailable — tools will error at runtime");
   }
+}
 
-  const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
-    copilotHome: ctx.copilotHome,
-    telemetryStore: ctx.telemetryStore,
-    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
-  });
-
-  const tools = requireToolHandlers([
-    defineTool("computer_screenshot", {
+export function createStatelessComputerUseTools(): BridgeToolDefinition[] {
+  return [
+    defineBridgeTool("computer_screenshot", {
       description:
         "Take a screenshot of the desktop. Returns the image as a base64-encoded PNG. " +
         "Optionally crop to a specific region by providing x, y, width, height.",
@@ -192,14 +186,12 @@ export function createComputerUseTools(ctx: AppContext) {
             type: "image",
             mimeType: "image/png",
             data: Buffer.from(buf).toString("base64"),
-            width: hasCrop ? args.width : display.width,
-            height: hasCrop ? args.height : display.height,
           };
         });
       },
     }),
 
-    defineTool("computer_click", {
+    defineBridgeTool("computer_click", {
       description:
         "Click the mouse at the specified coordinates. Supports left, right, middle, and double click.",
       parameters: {
@@ -233,7 +225,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_type", {
+    defineBridgeTool("computer_type", {
       description:
         "Type text using the keyboard. The text is typed as if the user pressed each key. " +
         "For special keys or key combinations, use computer_key instead.",
@@ -255,7 +247,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_key", {
+    defineBridgeTool("computer_key", {
       description:
         "Send a key combination. Use '+' to combine modifier keys. " +
         "Examples: 'enter', 'ctrl+c', 'ctrl+shift+t', 'alt+tab', 'cmd+a', 'backspace', 'escape', 'tab', " +
@@ -278,7 +270,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_cursor_position", {
+    defineBridgeTool("computer_cursor_position", {
       description: "Get the current mouse cursor position on screen.",
       parameters: { type: "object" as const, properties: {} },
       handler: async () => {
@@ -292,7 +284,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_scroll", {
+    defineBridgeTool("computer_scroll", {
       description:
         "Scroll the mouse wheel at the specified coordinates. " +
         "Use positive scrollY to scroll down, negative to scroll up. " +
@@ -320,7 +312,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_move", {
+    defineBridgeTool("computer_move", {
       description: "Move the mouse cursor to the specified coordinates without clicking.",
       parameters: {
         type: "object" as const,
@@ -341,7 +333,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_drag", {
+    defineBridgeTool("computer_drag", {
       description: "Drag from one coordinate to another (press, move, release).",
       parameters: {
         type: "object" as const,
@@ -364,7 +356,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_clipboard_read", {
+    defineBridgeTool("computer_clipboard_read", {
       description: "Read the current contents of the system clipboard.",
       parameters: { type: "object" as const, properties: {} },
       handler: async () => {
@@ -376,7 +368,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_clipboard_write", {
+    defineBridgeTool("computer_clipboard_write", {
       description: "Write text to the system clipboard.",
       parameters: {
         type: "object" as const,
@@ -394,7 +386,7 @@ export function createComputerUseTools(ctx: AppContext) {
       },
     }),
 
-    defineTool("computer_display_info", {
+    defineBridgeTool("computer_display_info", {
       description: "Get the current display dimensions and resolution.",
       parameters: { type: "object" as const, properties: {} },
       handler: async () => {
@@ -404,8 +396,32 @@ export function createComputerUseTools(ctx: AppContext) {
         });
       },
     }),
+  ];
+}
 
-    defineTool("computer_open_browser", {
+export function registerComputerUseStatelessTools(server: BridgeToolsMcpServer, ctx: AppContext): void {
+  if (!COMPUTER_USE_ENABLED) return;
+  void ctx;
+  eagerComputerUseCheck();
+  const tools = createStatelessComputerUseTools();
+  registerBridgeToolDefinitions(server, tools);
+  console.log(`[computer-use] Registered ${tools.length} stateless tools via Bridge MCP: ${tools.map(t => t.name).join(", ")}`);
+}
+
+export function createComputerUseSessionTools(ctx: AppContext): BridgeToolDefinition[] {
+  if (!COMPUTER_USE_ENABLED) return [];
+
+  eagerComputerUseCheck();
+
+  const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
+    copilotHome: ctx.copilotHome,
+    telemetryStore: ctx.telemetryStore,
+    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+  });
+
+  return [
+    defineBridgeTool("computer_open_browser", {
+      scope: "session",
       description:
         "Open a URL in a visible browser window on the desktop for computer-use interaction. " +
         "The browser window is visible in screenshots and can be controlled with computer_click, " +
@@ -500,8 +516,15 @@ export function createComputerUseTools(ctx: AppContext) {
         });
       },
     }),
-  ]);
+  ];
+}
 
-  console.log(`[computer-use] Registered ${tools.length} tools: ${tools.map(t => t.name).join(", ")}`);
-  return tools;
+/** @deprecated Use createComputerUseSessionTools; kept for direct tests during migration. */
+export const createComputerUseTools = createComputerUseSessionTools;
+
+export function registerComputerUseSessionTools(server: BridgeToolsMcpServer, ctx: AppContext): void {
+  if (!COMPUTER_USE_ENABLED) return;
+  const tools = createComputerUseSessionTools(ctx);
+  registerBridgeToolDefinitions(server, tools);
+  console.log(`[computer-use] Registered ${tools.length} session-scoped tools via Bridge MCP: ${tools.map(t => t.name).join(", ")}`);
 }

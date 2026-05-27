@@ -1,4 +1,3 @@
-import { defineTool } from "@github/copilot-sdk";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "../app-context.js";
@@ -6,6 +5,12 @@ import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } f
 import { toolFailure } from "../tool-results.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "../visual-artifacts.js";
 import { publishVisualFromToolArgs, stripVisualSource } from "./visual-tool-publisher.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+  type BridgeToolDefinition,
+  type BridgeToolsMcpServer,
+} from "../agent-tools-mcp/index.js";
 
 const FEED_SAVE_FIELDS = [
   "id",
@@ -97,9 +102,13 @@ function normalizeVisualPayload(value: unknown): Record<string, unknown> | null 
   return visual;
 }
 
-export function createFeedTools(ctx: AppContext) {
+export interface RegisterFeedToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createFeedToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-    defineTool("feed_save", {
+    defineBridgeTool("feed_save", {
       description: "Create or update a durable dashboard feed card. Use this sparingly for finite, user-relevant queue items that should remain visible after chat, not for narration, progress logs, routine status updates, staging previews, or generic completion summaries. Use key for recurring or ongoing cards you plan to update in place; omit key for distinct historical cards. Optional body supports concise Markdown for scannable text. Optional action defines a prompt preview button that starts a normal user-visible session only after confirmation; omit action to preserve it, or pass null to clear it. Optional visual publishes a feed-owned image, Mermaid diagram, Vega-Lite chart, or sandboxed HTML preview; omit visual to preserve the current visual, or pass null to clear it. To revive a dismissed or done keyed card, explicitly pass status: 'active'.",
       parameters: {
         type: "object",
@@ -220,7 +229,7 @@ export function createFeedTools(ctx: AppContext) {
         }
       },
     }),
-    defineTool("feed_list", {
+    defineBridgeTool("feed_list", {
       description: "List durable dashboard feed cards. Defaults to active cards only. Returns { cards, nextCursor }; pass a non-null nextCursor back as cursor with the identical filters to continue, and stop when nextCursor is null. Cursor pagination is available for status-scoped lists (default active, or explicit active/done/dismissed); includeDismissed without status is a mixed inspection that may not provide a cursor, so request each status separately for complete paged scans. Use keyPrefix to inspect a keyed proposal family without loading unrelated cards. Use this to inspect existing cards before updating them; prefer updating keyed cards over creating near-duplicates.",
       parameters: {
         type: "object",
@@ -253,7 +262,7 @@ export function createFeedTools(ctx: AppContext) {
         }
       },
     }),
-    defineTool("feed_delete", {
+    defineBridgeTool("feed_delete", {
       description: "Delete a durable dashboard feed card by id or key. Prefer setting status to done or dismissed when the card remains useful as history.",
       parameters: {
         type: "object",
@@ -279,4 +288,14 @@ export function createFeedTools(ctx: AppContext) {
       },
     }),
   ];
+}
+
+export function registerFeedTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterFeedToolsOptions = {},
+): void {
+  const definitions = createFeedToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

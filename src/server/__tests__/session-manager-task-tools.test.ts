@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { AppContext } from "../app-context.js";
 import { createBridgeTools } from "../session-manager.js";
+import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./helpers.js";
 
 function getTool(ctx: AppContext, name: string) {
-  const tool = createBridgeTools(ctx).find((candidate) => candidate.name === name);
+  const tool = [
+    ...createBridgeTools(ctx),
+    ...createTaskToolDefinitions(ctx),
+  ].find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
-  return tool;
+  return tool as any;
 }
 
 function createInvocation(toolName: string) {

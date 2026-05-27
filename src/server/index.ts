@@ -27,6 +27,7 @@ import {
 import {
   createAppContext,
   initializeSchedulerAndDeferredRunners,
+  startBridgeToolsMcpServer,
   shutdownAppContextServices,
 } from "./app-context-factory.js";
 
@@ -112,6 +113,7 @@ async function main(): Promise<void> {
   console.log("╚════════════════════════════════════════╝");
   console.log();
 
+  await startBridgeToolsMcpServer(defaultContext);
   await sessionManager.initialize();
   configureRestartStateStore(runtimePaths);
   await refreshRestartState();

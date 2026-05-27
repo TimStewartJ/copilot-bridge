@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { defineTool } from "@github/copilot-sdk";
 import type { AppContext } from "./app-context.js";
 import { getBrowserLaunchConfig, safeRecordBrowserSpan, withBridgeBrowserSession, isAgentBrowserInstalled } from "./agent-browser.js";
 import { captureFinalBrowserState, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, type BrowserAutomationRunFailure, type BrowserAutomationStepResult } from "./browser-automation.js";
 import { getOrCreateBrowserSessionStore, type BrowserSessionMode } from "./browser-session-store.js";
-import { requireToolHandlers } from "./tool-handler.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "./agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 import { joinFailureSections, toolFailure, toolFailureWithContext } from "./tool-results.js";
 
 const AGENT_BROWSER_INSTALL_GUIDANCE =
@@ -48,15 +51,20 @@ function browserSessionExecFailure(
   });
 }
 
-export function createBrowserSessionTools(ctx: AppContext) {
+export interface RegisterBrowserSessionToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   const browserSessionStore = getOrCreateBrowserSessionStore(ctx, {
     copilotHome: ctx.copilotHome,
     telemetryStore: ctx.telemetryStore,
     getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
   });
 
-  return requireToolHandlers([
-    defineTool("browser_session_start", {
+  return [
+    defineBridgeTool("browser_session_start", {
+      scope: "session",
       description:
         "Create an explicit browser session handle for multi-turn continuity. Use mode='persistent' " +
         "to reuse the shared primary browser state across turns, or mode='isolated' for a disposable " +
@@ -112,7 +120,8 @@ export function createBrowserSessionTools(ctx: AppContext) {
         };
       },
     }),
-    defineTool("browser_session_exec", {
+    defineBridgeTool("browser_session_exec", {
+      scope: "session",
       description:
         "Execute structured browser automation steps against an explicit browser session handle. " +
         "Use this when a browser workflow must persist across multiple turns.",
@@ -208,7 +217,8 @@ export function createBrowserSessionTools(ctx: AppContext) {
         return result.value;
       },
     }),
-    defineTool("browser_session_get_state", {
+    defineBridgeTool("browser_session_get_state", {
+      scope: "session",
       description:
         "Inspect the current state of an explicit browser session handle. By default returns URL and title; " +
         "optionally capture a fresh accessibility snapshot too.",
@@ -268,7 +278,8 @@ export function createBrowserSessionTools(ctx: AppContext) {
         return result.value;
       },
     }),
-    defineTool("browser_session_close", {
+    defineBridgeTool("browser_session_close", {
+      scope: "session",
       description: "Close an explicit browser session handle and release any associated isolated browser resources.",
       parameters: {
         type: "object" as const,
@@ -286,5 +297,18 @@ export function createBrowserSessionTools(ctx: AppContext) {
         return { success: true, browserSessionId: args.browserSessionId };
       },
     }),
-  ]);
+  ];
+}
+
+/** @deprecated Use createBrowserSessionToolDefinitions; kept for direct tests during migration. */
+export const createBrowserSessionTools = createBrowserSessionToolDefinitions;
+
+export function registerBrowserSessionTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterBrowserSessionToolsOptions = {},
+): void {
+  const definitions = createBrowserSessionToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }

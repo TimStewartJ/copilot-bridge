@@ -908,7 +908,7 @@ describe("staging tools", () => {
 
   it("queues a restart for dependency-changing deploys without syncing production dependencies in-process", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -973,7 +973,7 @@ describe("staging tools", () => {
 
   it("uses a matching preview validation stamp to run smoke-only deploy validation", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1048,7 +1048,7 @@ describe("staging tools", () => {
 
   it("skips the deploy validation stamp if the pushed production HEAD differs from the validated staging commit", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1108,7 +1108,7 @@ describe("staging tools", () => {
 
   it("blocks restart when deploy validation fails on the rebased staging tree", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1170,7 +1170,7 @@ describe("staging tools", () => {
 
   it("blocks restart when pushing the merged production branch fails", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1242,7 +1242,7 @@ describe("staging tools", () => {
 
   it("aborts a failed push-retry rebase before resetting production", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1307,7 +1307,7 @@ describe("staging tools", () => {
     mockDataFilePresence({ restartSignal: false });
 
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1335,7 +1335,7 @@ describe("staging tools", () => {
 
   it("preserves an existing rollback checkpoint during deploy", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1386,7 +1386,7 @@ describe("staging tools", () => {
 
   it("only removes rollback checkpoints created by the current deploy attempt", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-parent-");
@@ -1809,7 +1809,7 @@ describe("staging tools", () => {
 
   it("runs deploy validation before writing the checkpoint, merging, pushing, or signaling restart", async () => {
     const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy");
+    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
     if (!deployTool) throw new Error("staging_deploy tool not found");
 
     const stagingParent = createTempDir("bridge-stage-ordering-");

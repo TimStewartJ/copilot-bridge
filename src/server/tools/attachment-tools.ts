@@ -1,4 +1,3 @@
-import { defineTool } from "@github/copilot-sdk";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { publishOutboundAttachment } from "../outbound-attachments.js";
@@ -6,10 +5,20 @@ import { renderPublishedAttachment, resolvePublishableAttachmentSourcePath } fro
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { BRIDGE_TOOLS_REPO_ROOT, getAttachmentApiBasePath } from "./helpers.js";
+import {
+  defineBridgeTool,
+  registerBridgeToolDefinitions,
+} from "../agent-tools-mcp/adapter.js";
+import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 
-export function createAttachmentTools(ctx: AppContext) {
+export interface RegisterAttachmentToolsOptions {
+  hiddenTools?: ReadonlySet<string>;
+}
+
+export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
-  defineTool("send_attachment", {
+  defineBridgeTool("send_attachment", {
+    scope: "session",
     description:
       "Publish a file as an attachment the user can open or download. " +
       "Use this when the user asks you to send them a file, export, image, report, or other artifact. " +
@@ -59,4 +68,14 @@ export function createAttachmentTools(ctx: AppContext) {
     },
   }),
   ];
+}
+
+export function registerAttachmentTools(
+  server: BridgeToolsMcpServer,
+  ctx: AppContext,
+  options: RegisterAttachmentToolsOptions = {},
+): void {
+  const definitions = createAttachmentToolDefinitions(ctx)
+    .filter((tool) => !options.hiddenTools?.has(tool.name));
+  registerBridgeToolDefinitions(server, definitions);
 }
