@@ -45,11 +45,10 @@ describe("BridgeToolsMcpServer transport", () => {
       tmpDir: join("tmp", "bridge"),
     })).toMatch(/^tmp[/\\]bridge[/\\]copilot-bridge-mcp-123-[a-f0-9]{8}-[a-f0-9]{10}\.sock$/);
   });
-  it("serves a tool through the stdio shim over a local socket", async () => {
+  it("serves a tool through the stdio shim over a local endpoint", async () => {
     const tempDir = makeTestDir("mcp-transport");
     const endpoint = createBridgeToolsMcpEndpoint({
       dataDir: tempDir,
-      platform: "linux",
       pid: process.pid,
       tmpDir: tempDir,
     });
@@ -121,13 +120,11 @@ describe("BridgeToolsMcpServer transport", () => {
     const sessionId = "bridge-session-1";
     const globalEndpoint = createBridgeToolsMcpEndpoint({
       dataDir: tempDir,
-      platform: "linux",
       pid: process.pid,
       tmpDir: tempDir,
     });
     const sessionEndpoint = createBridgeToolsMcpEndpoint({
       dataDir: tempDir,
-      platform: "linux",
       pid: process.pid,
       sessionId,
       tmpDir: tempDir,
