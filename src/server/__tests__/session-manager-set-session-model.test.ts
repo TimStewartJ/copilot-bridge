@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { SessionManager } from "../session-manager.js";
+import { clearRestartPending, SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, createTestApp, makeTestDir } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -65,6 +65,7 @@ const GPT_55_TIERED_MODEL = {
 describe("SessionManager.setSessionModel", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    clearRestartPending();
   });
 
   it("calls setModel on a cached session and returns model info", async () => {
