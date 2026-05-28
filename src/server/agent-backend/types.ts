@@ -136,6 +136,14 @@ export interface AgentSession {
   readonly sessionId: string;
 
   send(args: AgentSendArgs): Promise<unknown>;
+  /**
+   * Send a message and block until the agent finishes (resolves on
+   * `session.idle`). Optional — Copilot SDK provides this convenience
+   * via `session.sendAndWait`; other backends (Claude Code, Codex, ACP)
+   * may not, in which case callers should fall back to `send` + their
+   * own event-loop wait.
+   */
+  sendAndWait?(args: AgentSendArgs, timeoutMs?: number): Promise<unknown>;
   abort(): Promise<unknown>;
   setModel(model: string, opts?: AgentSetModelOptions): Promise<unknown>;
   disconnect?(): Promise<unknown> | void;
