@@ -1,12 +1,22 @@
 import type { ToolResultObject } from "@github/copilot-sdk";
 
 export type ToolFailureResultType = Exclude<ToolResultObject["resultType"], "success">;
+export type BridgeToolNextAction = "respond" | "wait" | "retry" | "manual_recovery";
 
 export interface ToolFailureOptions {
   detail?: string;
   sessionLog?: string;
   resultType?: ToolFailureResultType;
   toolTelemetry?: Record<string, unknown>;
+}
+
+export interface BridgeToolControlMetadata {
+  summary: string;
+  changed?: boolean;
+  terminal?: boolean;
+  toolNextAction?: BridgeToolNextAction;
+  retryable?: boolean;
+  pollAfterMs?: number;
 }
 
 export interface OkResult<T> {
@@ -44,6 +54,40 @@ function mergeFailureText(summary: string | undefined, detail: string | undefine
 
 function getDisplayText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function formatNextAction(nextAction: BridgeToolNextAction | undefined, pollAfterMs: number | undefined): string | undefined {
+  switch (nextAction) {
+    case "respond":
+      return "respond to the user; do not call another tool for this status";
+    case "wait":
+      return pollAfterMs
+        ? `wait at least ${Math.ceil(pollAfterMs / 1000)}s before checking again`
+        : "wait; do not issue marker or no-op tools";
+    case "retry":
+      return "retry the intended operation directly";
+    case "manual_recovery":
+      return "report the blocker and wait for manual recovery";
+    default:
+      return undefined;
+  }
+}
+
+function formatBridgeToolControlText(metadata: BridgeToolControlMetadata): string {
+  const contract = Object.fromEntries(
+    Object.entries({
+      changed: metadata.changed,
+      terminal: metadata.terminal,
+      nextAction: metadata.toolNextAction,
+      retryable: metadata.retryable,
+      pollAfterMs: metadata.pollAfterMs,
+    }).filter(([, value]) => value !== undefined),
+  );
+  const lines = [metadata.summary];
+  const nextAction = formatNextAction(metadata.toolNextAction, metadata.pollAfterMs);
+  if (nextAction) lines.push(`Next action: ${nextAction}.`);
+  if (Object.keys(contract).length > 0) lines.push(`Bridge tool contract: ${JSON.stringify(contract)}.`);
+  return lines.join("\n");
 }
 
 function normalizeToolTelemetry(toolTelemetry: Record<string, unknown> | undefined): ToolResultObject["toolTelemetry"] {
@@ -114,6 +158,17 @@ export function toolFailure(summary: string, options: ToolFailureOptions = {}): 
     ...(sessionLog ? { sessionLog } : {}),
     ...(toolTelemetry ? { toolTelemetry } : {}),
   };
+}
+
+export function bridgeToolResult<T extends object>(
+  result: T & BridgeToolControlMetadata,
+): T & BridgeToolControlMetadata & { content: [{ type: "text"; text: string }]; message: string } & Record<string, unknown> {
+  const text = formatBridgeToolControlText(result);
+  return {
+    ...result,
+    message: "message" in result && typeof result.message === "string" ? result.message : result.summary,
+    content: [{ type: "text", text }],
+  } as T & BridgeToolControlMetadata & { content: [{ type: "text"; text: string }]; message: string } & Record<string, unknown>;
 }
 
 export function toolFailureWithContext<T extends object>(

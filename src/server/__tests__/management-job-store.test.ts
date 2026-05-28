@@ -13,7 +13,9 @@ import {
 import {
   runClaimedManagementJob,
 } from "../../management-job-runner.js";
+import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { createStagingToolDefinitions } from "../staging-tools.js";
+import { registerManagementJobTools } from "../tools/management-job-tools.js";
 import { makeTestDir } from "./helpers.js";
 
 function testDataDir(name: string): string {
@@ -129,6 +131,7 @@ describe("management job runner", () => {
         log: () => {},
         dispatch: async (_job, _options: ManagementJobDispatchOptions) => ({ success: true, previewPath: "/staging/x/" }),
       });
+
       expect(success.store.get(job.id)).toMatchObject({
         status: "succeeded",
         result: { success: true, previewPath: "/staging/x/" },
@@ -162,6 +165,42 @@ describe("management job runner", () => {
   });
 });
 
+describe("management job status tool", () => {
+  it("surfaces terminal and next-action contracts in tool text", async () => {
+    const { db, store, dataDir } = createStore("status-tool");
+    try {
+      const ctx = { managementJobStore: store } as any;
+      const server = new BridgeToolsMcpServer(ctx);
+      registerManagementJobTools(server, ctx);
+      const tool = (server as any).tools.get("management_job_status");
+      const job = store.enqueue("staging_preview", { stagingDir: join(dataDir, "staging") });
+
+      const queued = await tool.handler({ jobId: job.id }, {} as any);
+      expect(queued).toMatchObject({
+        success: true,
+        terminal: false,
+        toolNextAction: "wait",
+        pollAfterMs: 10_000,
+      });
+      expect(queued.content[0].text).toContain('"terminal":false');
+      expect(queued.content[0].text).toContain('"nextAction":"wait"');
+
+      store.succeed(job.id, { success: true, previewUrl: "https://bridge.example/staging/x/" });
+      const succeeded = await tool.handler({ jobId: job.id }, {} as any);
+      expect(succeeded).toMatchObject({
+        success: true,
+        terminal: true,
+        toolNextAction: "respond",
+      });
+      expect(succeeded.content[0].text).toContain("https://bridge.example/staging/x/");
+      expect(succeeded.content[0].text).toContain('"nextAction":"respond"');
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("staging management tool enqueue", () => {
   it("queues preview and deploy without running heavy staging flows", async () => {
     const { db, store, dataDir } = createStore("staging-tools");
@@ -176,6 +215,9 @@ describe("staging management tool enqueue", () => {
 
       const previewResult = await preview.handler({ stagingDir, validate: false }, {} as any) as any;
       expect(previewResult).toMatchObject({ success: true, status: "queued" });
+      expect(previewResult).toMatchObject({ terminal: true, toolNextAction: "respond" });
+      expect(previewResult.message).not.toContain("poll");
+      expect(previewResult.content[0].text).toContain('"nextAction":"respond"');
       expect(store.get(previewResult.jobId)).toMatchObject({
         type: "staging_preview",
         input: { stagingDir, validate: false, profile: "clone" },
@@ -183,6 +225,8 @@ describe("staging management tool enqueue", () => {
 
       const deployResult = await deploy.handler({ stagingDir, message: "Ship it" }, {} as any) as any;
       expect(deployResult).toMatchObject({ success: true, status: "queued" });
+      expect(deployResult).toMatchObject({ terminal: true, toolNextAction: "respond" });
+      expect(deployResult.message).not.toContain("poll");
       expect(store.get(deployResult.jobId)).toMatchObject({
         type: "staging_deploy",
         input: { stagingDir, message: "Ship it" },

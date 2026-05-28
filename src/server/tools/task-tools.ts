@@ -1,5 +1,5 @@
 import { InvalidTaskUpdateError, normalizeOptionalText, normalizeOptionalTimestamp } from "../task-store.js";
-import { toolFailure } from "../tool-results.js";
+import { bridgeToolResult, toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import type { Task } from "../task-store.js";
 import type { TagStore } from "../tag-store.js";
@@ -215,15 +215,19 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         waitingOn: targetWaitingOn,
         nextTouchAt: targetNextTouchAt,
       })) {
-        return {
+        return bridgeToolResult({
           success: true,
           changed: false,
+          terminal: true,
+          toolNextAction: "respond",
+          retryable: false,
+          summary: "Task momentum is already current; no changes were applied. No further task momentum call is needed.",
           message: "Task momentum is already current; no changes were applied.",
           nextAction: task.value.nextAction ?? null,
           waitingOn: task.value.waitingOn ?? null,
           nextTouchAt: task.value.nextTouchAt ?? null,
           kind: task.value.kind,
-        };
+        });
       }
 
       const updates: Record<string, unknown> = {};

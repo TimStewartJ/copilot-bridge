@@ -243,6 +243,49 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("emits a tool_loop_candidate telemetry span when an obvious no-op shell tool starts (observe only)", async () => {
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-loop-guard", "deploy now");
+    await flushMicrotasks();
+
+    getHandler()?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    getHandler()?.({
+      type: "tool.execution_start",
+      data: {
+        toolCallId: "tool-1",
+        toolName: "bash",
+        arguments: { command: "true", description: "No-op" },
+      },
+      timestamp: "2026-04-24T12:00:01.000Z",
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState("session-loop-guard")).toBe("busy");
+    expect(latestSpanMetadata(telemetryStore, "session.run.tool_loop_candidate", "session-loop-guard")).toMatchObject({
+      toolName: "bash",
+      loopReason: "no_op_shell",
+    });
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:02.000Z",
+    });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-loop-guard")).toBe("idle");
+  });
+
   it("records usage after turn end as session overhead", async () => {
     const { manager, sessionContextStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
 import { clearRestartPending, isRestartPending, triggerRestartPending } from "../restart-controller.js";
 import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "../restart-signal.js";
-import { toolFailure } from "../tool-results.js";
+import { bridgeToolResult, toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import {
   defineBridgeTool,
@@ -11,7 +11,7 @@ import {
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./helpers.js";
-import { ActiveManagementJobError } from "../management-job-store.js";
+import { ActiveManagementJobError, type ManagementJob } from "../management-job-store.js";
 
 function getDataDir(ctx: AppContext): string {
   return ctx.runtimePaths?.dataDir ?? join(BRIDGE_TOOLS_REPO_ROOT, "data");
@@ -32,8 +32,18 @@ function requireManagementJobStore(ctx: AppContext) {
   return ctx.managementJobStore;
 }
 
-function queuedManagementJobMessage(jobId: string, action: string): string {
-  return `${action} queued as management job ${jobId}. The launcher-supervised runner will process it in the background; use management_job_status to monitor progress.`;
+function queuedManagementJobResult(job: ManagementJob, action: string) {
+  return bridgeToolResult({
+    success: true,
+    jobId: job.id,
+    status: job.status,
+    terminal: true,
+    toolNextAction: "respond",
+    retryable: false,
+    summary:
+      `${action} queued as management job ${job.id}. ` +
+      "The launcher-supervised runner will process it in the background; respond to the user with the job id and do not check status unless the user asks.",
+  });
 }
 
 function getActiveManagementJob(error: unknown) {
@@ -72,7 +82,7 @@ export interface RegisterSelfAdminToolsOptions {
 export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
   defineBridgeTool("self_restart", {
-    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will run operational restart checks, sync dependencies if needed, and swap processes without the full deploy validation gate unless source files changed. IMPORTANT: This session counts as active — after a successful restart signal, do not make further tool calls or you will block the restart. Status/progress-only tool calls may be batched with self_restart in the same tool-calling message; do not create no-op companion tool calls solely to satisfy tool-batching guidance. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
+    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will run operational restart checks, sync dependencies if needed, and swap processes without the full deploy validation gate unless source files changed. IMPORTANT: This session counts as active — after a successful restart signal, do not make further tool calls or you will block the restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const signalFile = getSignalFile(ctx);
@@ -97,10 +107,13 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
       const waitNote = otherBusy > 0
         ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
         : "";
-      return {
+      return bridgeToolResult({
         success: true,
-        message: `Restart signal sent.${waitNote} Do NOT make any more tool calls — this session is considered active and will block the restart until it is idle.`,
-      };
+        terminal: true,
+        toolNextAction: "respond",
+        retryable: false,
+        summary: `Restart signal sent.${waitNote} Stop issuing tools so the current session can become idle and the launcher can restart.`,
+      });
     },
   }),
   defineBridgeTool("self_update", {
@@ -108,7 +121,7 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
       "Pull the latest code from the remote repository and restart the server. " +
       "Use this to update the Copilot Bridge to the latest version without the full staging workflow. " +
       "Saves a rollback checkpoint before pulling so the launcher can sync dependencies, rebuild, health-check, and roll back if needed. " +
-      "Returns immediately with a management job id; poll management_job_status for progress. " +
+      "Returns immediately with a management job id and Bridge-monitored background status. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
@@ -126,12 +139,7 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
 
       try {
         const job = requireManagementJobStore(ctx).enqueue("self_update", {});
-        return {
-          success: true,
-          jobId: job.id,
-          status: job.status,
-          message: queuedManagementJobMessage(job.id, "Self-update"),
-        };
+        return queuedManagementJobResult(job, "Self-update");
       } catch (error) {
         const activeJob = getActiveManagementJob(error);
         if (activeJob) {

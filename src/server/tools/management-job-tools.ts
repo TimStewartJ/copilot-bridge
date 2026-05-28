@@ -4,10 +4,78 @@ import {
   registerBridgeToolDefinitions,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
-import { toolFailure } from "../tool-results.js";
+import { bridgeToolResult, getToolResultDisplayText, toolFailure, type BridgeToolNextAction } from "../tool-results.js";
+import type { ManagementJob } from "../management-job-store.js";
 
 export interface RegisterManagementJobToolsOptions {
   hiddenTools?: ReadonlySet<string>;
+}
+
+const MANAGEMENT_JOB_POLL_AFTER_MS = 10_000;
+const MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
+const TERMINAL_MANAGEMENT_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+
+function isStaleRunningJob(job: ManagementJob, now = Date.now()): boolean {
+  if (job.status !== "running") return false;
+  const rawHeartbeat = job.heartbeatAt ?? job.startedAt;
+  if (!rawHeartbeat) return true;
+  const heartbeatAt = Date.parse(rawHeartbeat);
+  return !Number.isFinite(heartbeatAt) || now - heartbeatAt >= MANAGEMENT_JOB_STALE_AFTER_MS;
+}
+
+function getJobResultSummary(job: ManagementJob): string | undefined {
+  const displayText = getToolResultDisplayText(job.result);
+  if (displayText) return displayText;
+  if (!job.result || typeof job.result !== "object") return undefined;
+  const result = job.result as { message?: unknown; previewUrl?: unknown; previewPath?: unknown; commitSha?: unknown };
+  if (typeof result.message === "string" && result.message.trim()) return result.message.trim();
+  if (typeof result.previewUrl === "string" && result.previewUrl.trim()) return `Preview is ready: ${result.previewUrl.trim()}`;
+  if (typeof result.previewPath === "string" && result.previewPath.trim()) return `Preview is ready at ${result.previewPath.trim()}`;
+  if (typeof result.commitSha === "string" && result.commitSha.trim()) return `Deployment completed at ${result.commitSha.trim()}.`;
+  return undefined;
+}
+
+function getManagementJobContract(job: ManagementJob): {
+  summary: string;
+  terminal: boolean;
+  toolNextAction: BridgeToolNextAction;
+  retryable: boolean;
+  pollAfterMs?: number;
+  stalled?: boolean;
+} {
+  if (isStaleRunningJob(job)) {
+    return {
+      summary: `Management job ${job.id} (${job.type}) appears stalled. Stop checking status and report the stuck job to the user.`,
+      terminal: true,
+      toolNextAction: "respond",
+      retryable: true,
+      stalled: true,
+    };
+  }
+  if (TERMINAL_MANAGEMENT_JOB_STATUSES.has(job.status)) {
+    const outcome = job.status === "succeeded"
+      ? "succeeded"
+      : job.status === "failed" ? "failed" : "was cancelled";
+    const resultSummary = job.status === "succeeded"
+      ? getJobResultSummary(job)
+      : job.error ?? getJobResultSummary(job);
+    return {
+      summary: [
+        `Management job ${job.id} (${job.type}) ${outcome}. This status is terminal.`,
+        resultSummary,
+      ].filter(Boolean).join("\n"),
+      terminal: true,
+      toolNextAction: "respond",
+      retryable: job.status !== "succeeded",
+    };
+  }
+  return {
+    summary: `Management job ${job.id} (${job.type}) is ${job.status}. Wait for the background runner; do not issue marker or no-op tools.`,
+    terminal: false,
+    toolNextAction: "wait",
+    retryable: false,
+    pollAfterMs: MANAGEMENT_JOB_POLL_AFTER_MS,
+  };
 }
 
 function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
@@ -43,8 +111,10 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
         const maxBytes = Number.isInteger(args.logTailBytes) && args.logTailBytes > 0
           ? Math.min(Number(args.logTailBytes), 64 * 1024)
           : undefined;
-        return {
+        const contract = getManagementJobContract(job);
+        return bridgeToolResult({
           success: true,
+          ...contract,
           jobId: job.id,
           type: job.type,
           status: job.status,
@@ -58,7 +128,7 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
           heartbeatAt: job.heartbeatAt,
           runnerPid: job.runnerPid,
           cancelRequestedAt: job.cancelRequestedAt,
-        };
+        });
       },
     }),
   ];

@@ -186,7 +186,7 @@ describe("SessionManager session config", () => {
     expect(content).not.toContain("Should not be injected");
   });
 
-  it("nudges active tasks with no next action, blocker, or follow-up", () => {
+  it("reports active tasks with no next action, blocker, or follow-up without a tool-use nudge", () => {
     const db = setupTestDb();
     const globalBus = createTestBus();
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
@@ -206,7 +206,8 @@ describe("SessionManager session config", () => {
     const content = cfg.systemMessage.content;
 
     expect(content).toContain("Task momentum:");
-    expect(content).toContain("- Next action / waiting on / follow up: none set; update with the task momentum tool when clear.");
+    expect(content).toContain("- Next action / waiting on / follow up: none set.");
+    expect(content).not.toContain("update with the task momentum tool");
   });
 
   it("includes stored task momentum in newly created task sessions", async () => {
