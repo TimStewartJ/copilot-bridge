@@ -1379,10 +1379,22 @@ describe("staging tools", () => {
     ) as {
       resultType: string;
       textResultForLlm: string;
+      terminal?: boolean;
+      toolNextAction?: string;
+      retryable?: boolean;
+      isError?: boolean;
+      content?: Array<{ type: string; text: string }>;
     };
 
     expect(result.resultType).toBe("failure");
     expect(result.textResultForLlm).toContain("A restart is already pending");
+    expect(result.textResultForLlm).not.toContain("Wait for it to complete");
+    expect(result.terminal).toBe(true);
+    expect(result.toolNextAction).toBe("respond");
+    expect(result.retryable).toBe(false);
+    expect(result.isError).toBe(true);
+    expect(result.content?.[0]?.text).toContain('"nextAction":"respond"');
+    expect(result.content?.[0]?.text).toContain("end your turn");
     expect(triggerRestartPendingMock).not.toHaveBeenCalled();
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
   });
