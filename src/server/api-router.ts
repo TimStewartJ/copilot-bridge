@@ -101,6 +101,10 @@ import {
   toManagementJobDetailResponse,
   toManagementJobSummaryResponse,
 } from "./management-job-response.js";
+import {
+  ManagementJobEnqueueError,
+  enqueueManagementJob,
+} from "./management-job-enqueue.js";
 
 function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
   if (!isDocsFtsUnavailableError(error)) return null;
@@ -4017,6 +4021,52 @@ export function createApiRouter(ctx: AppContext): express.Router {
       status: job.status,
     });
   }
+
+  router.post("/management-jobs", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Management job enqueue")) return;
+    try {
+      const store = requireManagementJobStore(ctx, res);
+      if (!store) return;
+
+      const body = (req.body && typeof req.body === "object" && !Array.isArray(req.body))
+        ? req.body as { type?: unknown; input?: unknown }
+        : null;
+      if (!body) {
+        return res.status(400).json({ error: "Request body must be a JSON object." });
+      }
+
+      const type = typeof body.type === "string" ? body.type : "";
+      const { job, reused } = enqueueManagementJob(ctx, { type, input: body.input });
+
+      if (!reused) emitManagementJobChanged(job);
+
+      const now = new Date();
+      const staleAfterMs = managementJobStaleAfterMs();
+      res.status(reused ? 200 : 201).json({
+        jobId: job.id,
+        status: job.status,
+        enqueuedAt: job.createdAt,
+        reused,
+        job: toManagementJobDetailResponse(job, {
+          now,
+          staleAfterMs,
+          logTail: store.readLogTail(job),
+        }),
+      });
+    } catch (err) {
+      if (err instanceof ManagementJobEnqueueError) {
+        const body: Record<string, unknown> = { error: err.message };
+        if (err.activeJob) {
+          body.activeJob = toManagementJobSummaryResponse(err.activeJob, {
+            now: new Date(),
+            staleAfterMs: managementJobStaleAfterMs(),
+          });
+        }
+        return res.status(err.statusCode).json(body);
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   router.get("/management-jobs", (req, res) => {
     try {

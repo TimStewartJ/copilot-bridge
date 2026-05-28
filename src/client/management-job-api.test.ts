@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import {
   cancelManagementJob,
+  enqueueManagementJob,
   fetchManagementJob,
   fetchManagementJobLog,
   fetchManagementJobs,
   retryManagementJob,
+  type EnqueueManagementJobResponse,
   type ManagementJobDetail,
   type ManagementJobListResponse,
 } from "./management-job-api";
@@ -104,6 +106,43 @@ describe("management job client API", () => {
       status: 409,
       message: "cannot retry",
       details: { reason: "active_job" },
+    });
+  });
+
+  it("posts an enqueue request with type and input", async () => {
+    const response: EnqueueManagementJobResponse = {
+      jobId: detail.id,
+      status: "queued",
+      enqueuedAt: detail.createdAt,
+      reused: false,
+      job: detail,
+    };
+    stubJsonResponse(response, { status: 201 });
+
+    await expect(
+      enqueueManagementJob({ type: "staging_preview", input: { stagingDir: "staging-fixture" } }),
+    ).resolves.toEqual(response);
+    expect(fetchMock()).toHaveBeenLastCalledWith(
+      "/api/management-jobs",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "staging_preview", input: { stagingDir: "staging-fixture" } }),
+      },
+    );
+  });
+
+  it("surfaces enqueue conflicts as ApiError with activeJob in details", async () => {
+    stubJsonResponse(
+      { error: "A staging_deploy management job is already queued.", activeJob: { id: "deploy-1", type: "staging_deploy", status: "queued" } },
+      { ok: false, status: 409, statusText: "Conflict" },
+    );
+
+    const request = enqueueManagementJob({ type: "self_update" });
+    await expect(request).rejects.toBeInstanceOf(ApiError);
+    await expect(request).rejects.toMatchObject({
+      status: 409,
+      details: { activeJob: { id: "deploy-1", type: "staging_deploy", status: "queued" } },
     });
   });
 });
