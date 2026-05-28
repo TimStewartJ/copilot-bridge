@@ -387,6 +387,33 @@ function stagingFailure(
   });
 }
 
+/**
+ * Restart-pending failure with a protocol-level Bridge tool contract.
+ *
+ * Tells the agent (via terminal + nextAction:"respond" + retryable:false in
+ * both the structured fields and the model-visible text) to end its turn
+ * rather than polling/sleeping/retrying. Polling keeps the session "active"
+ * which itself blocks the launcher's restart cutover — a deadlock the prior
+ * "Wait for it to complete" wording inadvertently encouraged.
+ */
+function stagingRestartPendingFailure(
+  stagingDir: string,
+  verb: "deploying" | "previewing",
+) {
+  const summary = "A restart is already pending — end your turn so the restart can complete.";
+  const detail = `A restart is already pending; this session's continued tool calls are themselves one of the restart blockers. Respond to the user and do not poll, sleep, or retry. The user can re-invoke ${verb === "deploying" ? "the deploy" : "the preview"} after the restart finishes.`;
+  return bridgeToolResult({
+    ...stagingFailure(summary, detail, {
+      toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE },
+    }),
+    isError: true,
+    summary,
+    terminal: true,
+    toolNextAction: "respond" as const,
+    retryable: false,
+  });
+}
+
 function commandFailure(
   summary: string,
   detail: string,
@@ -913,11 +940,7 @@ export async function runStagingDeployJob(
   }
 
   if (isRestartPending() || existsSync(SIGNAL_FILE)) {
-    return stagingFailure(
-      "A restart is already pending.",
-      "A restart is already pending. Wait for it to complete before deploying.",
-      { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
-    );
+    return stagingRestartPendingFailure(stagingDir, "deploying");
   }
 
   const prefix = basename(stagingDir);
@@ -1493,11 +1516,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       }
 
       if (isRestartPending() || existsSync(SIGNAL_FILE)) {
-        return stagingFailure(
-          "A restart is already pending.",
-          "A restart is already pending. Wait for it to complete before deploying.",
-          { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
-        );
+        return stagingRestartPendingFailure(stagingDir, "deploying");
       }
       return await runStagingDeployJob({ stagingDir, message });
     },
@@ -1551,11 +1570,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
     );
   }
   if (isRestartPending() || existsSync(SIGNAL_FILE)) {
-    return stagingFailure(
-      "A restart is already pending.",
-      "A restart is already pending. Wait for it to complete before previewing.",
-      { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
-    );
+    return stagingRestartPendingFailure(stagingDir, "previewing");
   }
   const store = ctx.managementJobStore;
   if (!store) {
@@ -1588,11 +1603,7 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
     );
   }
   if (isRestartPending() || existsSync(SIGNAL_FILE)) {
-    return stagingFailure(
-      "A restart is already pending.",
-      "A restart is already pending. Wait for it to complete before deploying.",
-      { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
-    );
+    return stagingRestartPendingFailure(stagingDir, "deploying");
   }
   const store = ctx.managementJobStore;
   if (!store) {
