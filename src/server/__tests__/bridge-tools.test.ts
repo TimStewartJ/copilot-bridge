@@ -54,7 +54,7 @@ describe("Bridge MCP tool definitions", () => {
 
 describe("registerAllBridgeTools (MCP)", () => {
   it("hides git-backed tools in release mode while keeping self_restart available", () => {
-    const runtimePaths = makeTestRuntimePaths("release-tools-mcp", { distributionMode: "release" });
+    const runtimePaths = makeTestRuntimePaths("release-tools-mcp", { distributionMode: "release" }, {});
     const { ctx } = createTestApp({ runtimePaths });
     const server = new BridgeToolsMcpServer(ctx);
     registerAllBridgeTools(server, ctx);

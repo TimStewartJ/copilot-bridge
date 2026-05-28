@@ -74,10 +74,12 @@ describe("runSelfUpdateJob active-release drift", () => {
     writeRestartSignalFileMock.mockReset();
     removeRollbackCheckpointMock.mockReset();
     runValidationCommandMock.mockClear();
+    vi.unstubAllEnvs();
     vi.resetModules();
   });
 
   it("activates HEAD when the checkout is unchanged but active release is older", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     const oldSha = "1111111111111111111111111111111111111111";
     const headSha = "2222222222222222222222222222222222222222";
     const dataDir = makeTestDir("self-update-drift");
@@ -110,6 +112,7 @@ describe("runSelfUpdateJob active-release drift", () => {
   });
 
   it("fails drift activation when active release is not an ancestor of HEAD", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     const oldSha = "1111111111111111111111111111111111111111";
     const dataDir = makeTestDir("self-update-drift-failure");
     activeReleaseMock.value = manifest(oldSha, dataDir);
