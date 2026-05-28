@@ -3,7 +3,7 @@
 // tool/sub-agent event rendering. SessionManager remains the public facade
 // and delegates the run-loop concerns here.
 
-import type { AgentBackend, AgentSession } from "./agent-backend/index.js";
+import type { AgentBackend, AgentSession, AgentSlashCommandResult } from "./agent-backend/index.js";
 import { readFileSync, statSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -47,6 +47,7 @@ import {
   getProviderTurnIdFromEvent,
   normalizeLiveSessionContextEvent,
 } from "./session-context-normalizer.js";
+import { parseSlashCommandPrompt, type ParsedSlashCommand } from "./slash-command.js";
 
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
@@ -150,12 +151,34 @@ export interface StartWorkOptions {
   mode?: SendMode;
 }
 
-async function setSessionModeForSend(session: AgentSession, mode: SendMode): Promise<void> {
+async function setSessionModeForSend(session: AgentSession, mode: string): Promise<void> {
   if (typeof session.setSendMode !== "function") {
     if (mode === DEFAULT_SEND_MODE) return;
     throw new Error("Session mode switching is not available in this Copilot SDK build");
   }
   await session.setSendMode({ mode });
+}
+
+function slashCommandResultToText(result: Extract<AgentSlashCommandResult, { kind: "text" | "completed" | "select" }>): string {
+  if (result.kind === "text") return result.text;
+  if (result.kind === "completed") return result.message ?? "";
+  const optionLines = result.options.map((option, index) => {
+    const label = option.label ?? option.value ?? `Option ${index + 1}`;
+    return option.description ? `- ${label}: ${option.description}` : `- ${label}`;
+  });
+  return [
+    `${result.title}:`,
+    ...optionLines,
+    "",
+    "Interactive command selection is not available in Bridge yet. Re-run the command with a concrete subcommand or argument.",
+  ].join("\n");
+}
+
+async function invokeSlashCommand(session: AgentSession, command: ParsedSlashCommand): Promise<AgentSlashCommandResult> {
+  if (typeof session.invokeSlashCommand !== "function") {
+    throw new Error("Slash command invocation is not available in this agent backend");
+  }
+  return session.invokeSlashCommand({ name: command.name, input: command.input });
 }
 
 function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -374,6 +397,19 @@ export class SessionRunner {
 
     const sid = sessionId.slice(0, 8);
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
+    const command = parseSlashCommandPrompt(prompt);
+    if (command) {
+      const result = await invokeSlashCommand(session, command);
+      if (result.kind === "send") {
+        throw new Error(`Slash command /${command.name} cannot start a new agent turn while this session is busy`);
+      }
+      const text = slashCommandResultToText(result);
+      if (text) {
+        bus.emit({ type: "assistant_partial", content: text });
+      }
+      return;
+    }
+
     const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
     const t0 = Date.now();
@@ -479,7 +515,11 @@ export class SessionRunner {
     const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
     const activeRunController = runController ?? this.createRunController(sessionId, bus);
-    const mode = options.mode ?? DEFAULT_SEND_MODE;
+    const parsedCommand = parseSlashCommandPrompt(prompt);
+    let sendPrompt = prompt;
+    let displayPrompt: string | undefined;
+    let mode: string = options.mode ?? DEFAULT_SEND_MODE;
+    let commandResult: AgentSlashCommandResult | undefined;
 
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
@@ -489,8 +529,28 @@ export class SessionRunner {
       startLog: `[sdk] [${sid}] Sending ${mode} prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       historyTruncation: options.historyTruncation,
       execute: async (session) => {
+        if (parsedCommand) {
+          commandResult = await invokeSlashCommand(session, parsedCommand);
+          if (commandResult.kind !== "send") {
+            bus.clearPendingPrompt();
+            activeRunController.markPromptAccepted();
+            activeRunController.completeDone(slashCommandResultToText(commandResult));
+            return;
+          }
+          sendPrompt = commandResult.prompt;
+          displayPrompt = commandResult.displayPrompt;
+          mode = commandResult.mode ?? mode;
+          bus.setPendingPrompt(displayPrompt ?? sendPrompt);
+          this.deps.runStateController.setSessionRunMetadata(sessionId, {
+            pendingPrompt: displayPrompt ?? sendPrompt,
+          });
+        }
         await setSessionModeForSend(session, mode);
-        await session.send({ prompt, ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}) });
+        await session.send({
+          prompt: sendPrompt,
+          ...(displayPrompt ? { displayPrompt } : {}),
+          ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
+        });
       },
     });
   }

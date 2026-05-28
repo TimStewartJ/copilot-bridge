@@ -207,6 +207,7 @@ export function createMockSessionManager() {
     getSessionActivity: () => [],
     isSessionBusy: () => false,
     getSessionRunState: () => "idle",
+    listSlashCommands: async () => ({ supported: false, commands: [] }),
     getPendingUserInputCount: () => 0,
     isSessionWarm: () => false,
     createSession: async () => ({ sessionId: "test-session" }),
