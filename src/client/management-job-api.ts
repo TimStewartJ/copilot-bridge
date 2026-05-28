@@ -63,7 +63,15 @@ async function parseApiError(res: Response): Promise<ApiError> {
   const message = err && typeof err === "object" && "error" in err && typeof err.error === "string"
     ? err.error
     : res.statusText;
-  const details = err && typeof err === "object" && "details" in err ? err.details : undefined;
+  let details = err && typeof err === "object" && "details" in err ? err.details : undefined;
+  if (err && typeof err === "object" && "activeJob" in err && err.activeJob !== undefined) {
+    const activeJob = (err as { activeJob: unknown }).activeJob;
+    if (details && typeof details === "object" && !Array.isArray(details)) {
+      details = { ...(details as Record<string, unknown>), activeJob };
+    } else if (details === undefined) {
+      details = { activeJob };
+    }
+  }
   return new ApiError(message || res.statusText, res.status, details);
 }
 
@@ -141,5 +149,31 @@ export async function retryManagementJob(id: string): Promise<RetryManagementJob
   return managementJobFetch<RetryManagementJobResponse>(
     `/api/management-jobs/${encodeURIComponent(id)}/retry`,
     { method: "POST", headers: { "Content-Type": "application/json" } },
+  );
+}
+
+export interface EnqueueManagementJobRequest {
+  type: ManagementJobType;
+  input?: Record<string, unknown>;
+}
+
+export interface EnqueueManagementJobResponse {
+  jobId: string;
+  status: ManagementJobStatus;
+  enqueuedAt: string;
+  reused: boolean;
+  job: ManagementJobDetail;
+}
+
+export async function enqueueManagementJob(
+  request: EnqueueManagementJobRequest,
+): Promise<EnqueueManagementJobResponse> {
+  return managementJobFetch<EnqueueManagementJobResponse>(
+    "/api/management-jobs",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
   );
 }

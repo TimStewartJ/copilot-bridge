@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { request } from "./api-routes-test-helpers.js";
-import { createTestApp } from "./helpers.js";
+import { createTestApp, makeTestDir } from "./helpers.js";
 import { createManagementJobStore, type ManagementJobStore } from "../management-job-store.js";
+import { clearRestartPending, triggerRestartPending } from "../restart-controller.js";
 
 function createManagementJobApiTestApp(): ReturnType<typeof createTestApp> & { store: ManagementJobStore } {
   const local = createTestApp();
@@ -13,9 +14,14 @@ function createManagementJobApiTestApp(): ReturnType<typeof createTestApp> & { s
   return { ...local, store };
 }
 
+function makeRealStagingDir(label: string): string {
+  return makeTestDir(`bridge-mgmt-enqueue-${label}`);
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  clearRestartPending();
 });
 
 describe("management job API routes", () => {
@@ -191,6 +197,209 @@ describe("management job API routes", () => {
       id: activeDeploy.id,
       type: "staging_deploy",
       status: "queued",
+    });
+  });
+
+  describe("POST /management-jobs", () => {
+    it("enqueues a new self_update job and emits a changed event", async () => {
+      const { app, store, ctx } = createManagementJobApiTestApp();
+      const events: unknown[] = [];
+      const unsubscribe = ctx.globalBus.subscribe((event) => {
+        if ((event as { type?: string }).type === "management-job:changed") {
+          events.push(event);
+        }
+      });
+
+      try {
+        const res = await request(app)
+          .post("/api/management-jobs")
+          .send({ type: "self_update" });
+
+        expect(res.status).toBe(201);
+        expect(res.body.reused).toBe(false);
+        expect(res.body.status).toBe("queued");
+        expect(typeof res.body.jobId).toBe("string");
+        expect(res.body.enqueuedAt).toBe(res.body.job.createdAt);
+        expect(res.body.job).toMatchObject({ type: "self_update", input: {} });
+        expect(store.get(res.body.jobId)?.type).toBe("self_update");
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ jobId: res.body.jobId, jobType: "self_update" });
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("returns the existing self_update job on duplicate POST with reused: true", async () => {
+      const { app, ctx } = createManagementJobApiTestApp();
+      const events: unknown[] = [];
+      const unsubscribe = ctx.globalBus.subscribe((event) => {
+        if ((event as { type?: string }).type === "management-job:changed") events.push(event);
+      });
+      try {
+        const first = await request(app).post("/api/management-jobs").send({ type: "self_update" });
+        expect(first.status).toBe(201);
+        expect(events).toHaveLength(1);
+
+        const second = await request(app).post("/api/management-jobs").send({ type: "self_update" });
+        expect(second.status).toBe(200);
+        expect(second.body.reused).toBe(true);
+        expect(second.body.jobId).toBe(first.body.jobId);
+        expect(second.body.enqueuedAt).toBe(first.body.enqueuedAt);
+        // No second emission for idempotent reuse.
+        expect(events).toHaveLength(1);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("returns 409 with activeJob when a different exclusive job is active", async () => {
+      const { app, store } = createManagementJobApiTestApp();
+      const stagingDir = makeRealStagingDir("conflict-deploy");
+      const deploy = store.enqueue("staging_deploy", { stagingDir, message: "Ship it" });
+
+      const res = await request(app).post("/api/management-jobs").send({ type: "self_update" });
+
+      expect(res.status).toBe(409);
+      expect(res.body.activeJob).toMatchObject({
+        id: deploy.id,
+        type: "staging_deploy",
+        status: "queued",
+      });
+      expect(res.body.error).toContain("staging_deploy");
+    });
+
+    it("reuses an active staging_preview job when stagingDir, profile, and validate match", async () => {
+      const { app } = createManagementJobApiTestApp();
+      const stagingDir = makeRealStagingDir("preview-reuse");
+
+      const first = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir } });
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir } });
+      expect(second.status).toBe(200);
+      expect(second.body.reused).toBe(true);
+      expect(second.body.jobId).toBe(first.body.jobId);
+    });
+
+    it("treats validate mismatches as conflicts in both directions", async () => {
+      const { app } = createManagementJobApiTestApp();
+      const dirA = makeRealStagingDir("preview-validate-tf");
+      const dirB = makeRealStagingDir("preview-validate-ft");
+
+      const validateFalseFirst = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir: dirA, validate: false } });
+      expect(validateFalseFirst.status).toBe(201);
+      const validateTrueSecond = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir: dirA, validate: true } });
+      expect(validateTrueSecond.status).toBe(409);
+      expect(validateTrueSecond.body.activeJob.id).toBe(validateFalseFirst.body.jobId);
+
+      const validateTrueFirst = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir: dirB, validate: true } });
+      expect(validateTrueFirst.status).toBe(201);
+      const validateFalseSecond = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir: dirB, validate: false } });
+      expect(validateFalseSecond.status).toBe(409);
+      expect(validateFalseSecond.body.activeJob.id).toBe(validateTrueFirst.body.jobId);
+    });
+
+    it("rejects non-boolean validate values", async () => {
+      const { app } = createManagementJobApiTestApp();
+      const stagingDir = makeRealStagingDir("preview-validate-string");
+      const res = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir, validate: "false" } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("validate must be a boolean");
+    });
+
+    it("never silently reuses staging_deploy", async () => {
+      const { app } = createManagementJobApiTestApp();
+      const stagingDir = makeRealStagingDir("deploy-strict");
+
+      const first = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_deploy", input: { stagingDir, message: "first" } });
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_deploy", input: { stagingDir, message: "second" } });
+      expect(second.status).toBe(409);
+      expect(second.body.activeJob.id).toBe(first.body.jobId);
+    });
+
+    it("rejects unknown types, missing fields, and non-object bodies", async () => {
+      const { app } = createManagementJobApiTestApp();
+
+      const noType = await request(app).post("/api/management-jobs").send({});
+      expect(noType.status).toBe(400);
+
+      const badType = await request(app).post("/api/management-jobs").send({ type: "drop_db" });
+      expect(badType.status).toBe(400);
+      expect(badType.body.error).toContain("Unsupported management job type");
+
+      const arrayBody = await request(app)
+        .post("/api/management-jobs")
+        .set("Content-Type", "application/json")
+        .send(JSON.stringify([1, 2, 3]));
+      expect(arrayBody.status).toBe(400);
+
+      const noStagingDir = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: {} });
+      expect(noStagingDir.status).toBe(400);
+      expect(noStagingDir.body.error).toContain("stagingDir");
+
+      const missingPath = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_preview", input: { stagingDir: "/no/such/path/here-mgmt-test" } });
+      expect(missingPath.status).toBe(400);
+      expect(missingPath.body.error).toContain("Staging directory not found");
+
+      const noMessage = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "staging_deploy", input: { stagingDir: makeRealStagingDir("deploy-nomsg") } });
+      expect(noMessage.status).toBe(400);
+      expect(noMessage.body.error).toContain("message");
+
+      const badInput = await request(app)
+        .post("/api/management-jobs")
+        .send({ type: "self_update", input: "nope" });
+      expect(badInput.status).toBe(400);
+    });
+
+    it("rejects enqueue when a restart is pending", async () => {
+      const { app } = createManagementJobApiTestApp();
+      triggerRestartPending();
+      try {
+        const res = await request(app).post("/api/management-jobs").send({ type: "self_update" });
+        expect(res.status).toBe(409);
+        expect(res.body.error).toContain("restart is already pending");
+      } finally {
+        clearRestartPending();
+      }
+    });
+
+    it("rejects cross-site mutations", async () => {
+      const { app, store } = createManagementJobApiTestApp();
+
+      const res = await request(app)
+        .post("/api/management-jobs")
+        .set("Host", "localhost:3333")
+        .set("Origin", "https://evil.example.test")
+        .send({ type: "self_update" });
+
+      expect(res.status).toBe(403);
+      expect(store.listActive(["self_update"])).toHaveLength(0);
     });
   });
 });
