@@ -6,6 +6,7 @@ import {
   warmSession,
   loginMcpServer,
   fetchMcpStatus,
+  fetchSessionContext,
   reportTiming,
   submitUserInputResponse,
   type Attachment,
@@ -27,6 +28,7 @@ import { useOverlayParam } from "../hooks/useOverlayParam";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
+import type { SessionContextResponse } from "../../shared/session-context.js";
 import MessageBubble from "./MessageBubble";
 import {
   MessageActionsMenu,
@@ -223,6 +225,12 @@ function renderRefreshingHistoryTailSkeleton(isLoading: boolean) {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof DOMException !== "undefined" && error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
 }
 
 function isNewerActivityTimestamp(currentActivityAt?: string, cachedActivityAt?: string): boolean {
@@ -451,6 +459,9 @@ export default function ChatView({
   const [creating, setCreating] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([]);
   const [manualMcpOverride, setManualMcpOverride] = useState<McpServerStatus[] | null>(null);
+  const [sessionContext, setSessionContext] = useState<SessionContextResponse | null>(null);
+  const [sessionContextError, setSessionContextError] = useState<string | null>(null);
+  const [sessionContextLoading, setSessionContextLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [forkingBoundaryEventId, setForkingBoundaryEventId] = useState<string | null>(null);
@@ -492,6 +503,7 @@ export default function ChatView({
   const latestMessageAnchorKeyRef = useRef<string | null>(null);
   const anchoredMessageKeyRef = useRef<string | null>(null);
   const pendingLiveAnchorCarryRef = useRef(false);
+  const contextRefreshStreamingRef = useRef(false);
   const pendingRenderedReadThroughRef = useRef<{
     sessionId: string;
     readThroughActivityAt: string;
@@ -601,6 +613,7 @@ export default function ChatView({
     runMode,
     pendingUserInputs = [],
     mcpServers: streamMcpServers,
+    contextSummary: streamContextSummary,
     sendMessage,
     startFleet,
     abortSession,
@@ -626,6 +639,46 @@ export default function ChatView({
     setManualMcpOverride(result.servers);
     return result;
   }, [sessionId]);
+
+  const refreshSessionContext = useCallback(async (
+    targetSessionId: string,
+    options: { background?: boolean; signal?: AbortSignal } = {},
+  ) => {
+    if (!options.background) setSessionContextLoading(true);
+    setSessionContextError(null);
+    try {
+      const nextContext = await fetchSessionContext(targetSessionId, { signal: options.signal });
+      if (options.signal?.aborted) return;
+      setSessionContext(nextContext);
+    } catch (error) {
+      if (options.signal?.aborted || isAbortError(error)) return;
+      setSessionContextError(getErrorMessage(error));
+    } finally {
+      if (!options.signal?.aborted) setSessionContextLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId) {
+      contextRefreshStreamingRef.current = false;
+      setSessionContext(null);
+      setSessionContextError(null);
+      setSessionContextLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setSessionContext(null);
+    setSessionContextError(null);
+    void refreshSessionContext(sessionId, { signal: controller.signal });
+    return () => controller.abort();
+  }, [historySignal, refreshSessionContext, reloadToken, sessionId]);
+
+  useEffect(() => {
+    const wasStreaming = contextRefreshStreamingRef.current;
+    contextRefreshStreamingRef.current = isStreaming;
+    if (!sessionId || !wasStreaming || isStreaming) return;
+    void refreshSessionContext(sessionId, { background: true });
+  }, [isStreaming, refreshSessionContext, sessionId]);
 
   const cancelFollowScroll = useCallback(() => {
     if (followScrollFrameRef.current != null) {
@@ -1773,6 +1826,11 @@ export default function ChatView({
       )}
       {/* MCP server status */}
       <McpStatusBar
+        chatEntries={displayEntries}
+        context={sessionContext}
+        contextError={sessionContextError}
+        contextLoading={sessionContextLoading}
+        liveContextSummary={streamContextSummary}
         servers={effectiveMcpServers}
         onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
         onRefresh={sessionId ? refreshMcpStatus : undefined}

@@ -10,6 +10,7 @@ import type {
   VisualArtifact,
 } from "./api";
 import { API_BASE, sendChatMessage, startFleetRun } from "./api";
+import type { SessionContextSummary } from "../shared/session-context.js";
 import type { SendMode } from "../shared/send-mode.js";
 
 export interface PendingTool {
@@ -50,6 +51,7 @@ export interface StreamState {
   isStreaming: boolean;
   hadVisibleOutput: boolean;
   mcpServers: McpServerStatus[];
+  contextSummary: SessionContextSummary | null;
   pendingOrigin: PendingOrigin;
   runMode?: SendMode;
 }
@@ -339,6 +341,25 @@ function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function normalizeStreamContextSummary(value: unknown): SessionContextSummary | null {
+  if (!isRecord(value)) return null;
+  const summary = isRecord(value.summary) ? value.summary : value;
+  return summary as unknown as SessionContextSummary;
+}
+
+function getStreamContextSummary(event: Record<string, unknown>): SessionContextSummary | null {
+  const directSummary = event.type === "context_status" || event.type === "context" || event.type === "context_update"
+    ? normalizeStreamContextSummary(event)
+    : null;
+  return normalizeStreamContextSummary(event.summary)
+    ?? normalizeStreamContextSummary(event.contextSummary)
+    ?? normalizeStreamContextSummary(isRecord(event.context) ? event.context.summary : undefined)
+    ?? normalizeStreamContextSummary(event.context)
+    ?? normalizeStreamContextSummary(event.context_status)
+    ?? normalizeStreamContextSummary(event.contextStatus)
+    ?? directSummary;
+}
+
 function normalizeSnapshotTool(rawTool: unknown, activeTurnId: string | undefined): SnapshotTool | undefined {
   if (!isRecord(rawTool)) return undefined;
   return {
@@ -449,6 +470,7 @@ export function useSessionStream(
     intentText: "",
     hadVisibleOutput: false,
     mcpServers: [],
+    contextSummary: null,
     pendingOrigin: null,
     ...partial,
     streamStatus: status,
@@ -480,6 +502,7 @@ export function useSessionStream(
     }
     setStreamState((s) => mkState("sending", {
       mcpServers: s.mcpServers,
+      contextSummary: s.contextSummary,
       pendingOrigin,
       runMode: pendingOrigin === "fleet" ? undefined : (runMode ?? s.runMode),
       pendingUserInputs: pendingOrigin === "reconnect" ? s.pendingUserInputs : [],
@@ -488,7 +511,7 @@ export function useSessionStream(
     fetch(`${API_BASE}/api/sessions/${sid}/stream`, { signal: abort.signal })
       .then(async (res) => {
         if (!res.ok || !res.body) {
-          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
           return;
         }
 
@@ -567,7 +590,7 @@ export function useSessionStream(
                       }]);
                     }
                     activeTurnId = undefined;
-                    setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                    setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                     refreshTitle(event.terminalType === "done");
                     break;
                   }
@@ -579,6 +602,7 @@ export function useSessionStream(
                   const pendingUserInputs = normalizePendingUserInputRequests(event.pendingUserInputs);
                   const snapshotToolState = buildSnapshotToolState(event, sid);
                   const tools = snapshotToolState.activeTools;
+                  const contextSummary = getStreamContextSummary(event);
                   activeToolMeta.clear();
                   pendingToolPrelude.clear();
                   for (const t of tools) activeToolMeta.set(t.toolCallId, t);
@@ -595,6 +619,7 @@ export function useSessionStream(
                     currentTurnTools: snapshotToolState.currentTurnTools,
                     intentText: event.intentText ?? "",
                     mcpServers: event.mcpServers ?? prev.mcpServers,
+                    contextSummary: contextSummary ?? prev.contextSummary,
                     streamStatus: hasVisibleSnapshotOutput || tools.length > 0 ? "streaming" : "thinking",
                     isStreaming: true,
                     hadVisibleOutput: prev.hadVisibleOutput || hasVisibleSnapshotOutput || tools.length > 0,
@@ -862,7 +887,7 @@ export function useSessionStream(
                       ...(activeTurnId ? { turnId: activeTurnId } : {}),
                     }]);
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   refreshTitle(true);
                   accumulatedContent = "";
                   activeTurnId = undefined;
@@ -879,7 +904,7 @@ export function useSessionStream(
                       ...(activeTurnId ? { turnId: activeTurnId } : {}),
                     }]);
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   accumulatedContent = "";
                   activeTurnId = undefined;
                   break;
@@ -896,7 +921,7 @@ export function useSessionStream(
                       ...(activeTurnId ? { turnId: activeTurnId } : {}),
                     }]);
                   }
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   accumulatedContent = "";
                   activeTurnId = undefined;
                   break;
@@ -910,14 +935,23 @@ export function useSessionStream(
                     ...(event.timestamp ? { timestamp: event.timestamp } : {}),
                     ...(activeTurnId ? { turnId: activeTurnId } : {}),
                   }]);
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   activeTurnId = undefined;
                   break;
                 case "mcp_status":
                   setStreamState((s) => ({ ...s, mcpServers: event.servers ?? [] }));
                   break;
+                case "context_update":
+                case "context_status":
+                case "context": {
+                  const contextSummary = getStreamContextSummary(event);
+                  if (contextSummary) {
+                    setStreamState((s) => ({ ...s, contextSummary }));
+                  }
+                  break;
+                }
                 case "idle":
-                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+                  setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
                   break;
               }
             } catch { /* skip malformed */ }
@@ -934,7 +968,7 @@ export function useSessionStream(
             if (sid === sessionRef.current) connectStream(sid);
           }, 1000);
         } else {
-          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+          setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
         }
       });
   }, []); // stable — callbacks accessed via refs
@@ -970,7 +1004,7 @@ export function useSessionStream(
       connectStream(sessionId, "message", mode);
     } catch (err) {
       if (startedFromIdle) {
-        setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+        setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
       }
       throw err;
     }
@@ -984,7 +1018,7 @@ export function useSessionStream(
       retryCountRef.current = 0;
       connectStream(sessionId, "fleet");
     } catch (err) {
-      setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers }));
+      setStreamState((s) => mkState("idle", { mcpServers: s.mcpServers, contextSummary: s.contextSummary }));
       throw err;
     }
   }, [sessionId, connectStream]);

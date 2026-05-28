@@ -5,7 +5,7 @@
 
 import type { AgentBackend, AgentSession } from "./agent-backend/index.js";
 import { readFileSync, statSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
@@ -15,6 +15,7 @@ import type { EventBusRegistry } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
+import type { SessionContextStore } from "./session-context-store.js";
 import type { Task } from "./task-store.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
 import {
@@ -40,6 +41,11 @@ import {
   type QuietIntervalDeferTailTruncationRequest,
 } from "./session-history-truncation.js";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
+import {
+  createSessionContextTruncationMarker,
+  getProviderTurnIdFromEvent,
+  normalizeLiveSessionContextEvent,
+} from "./session-context-normalizer.js";
 
 const DEFAULT_FLEET_PROMPT = "Implement the current plan using Fleet. Run independent tracks in parallel where possible, respect dependencies in the plan, and report the results in this session.";
 
@@ -204,6 +210,7 @@ export interface SessionRunnerDeps {
   globalBus: GlobalBus;
   sessionMetaStore?: SessionMetaStore;
   telemetryStore?: TelemetryStore;
+  sessionContextStore?: SessionContextStore;
   copilotHome?: string;
 
   isSessionBusy(sessionId: string): boolean;
@@ -615,8 +622,12 @@ export class SessionRunner {
     const toolNameMap = new Map<string, string>();
     const toolStartTimes = new Map<string, number>();
     const subAgentMap = new Map<string, string>();
+    const subAgentTurnIdMap = new Map<string, string>();
     const subAgentResponseMap = new Map<string, string>();
     const activeExternalTools = new Map<string, ActiveExternalToolCall>();
+    const contextTelemetryProvider = this.client?.id ?? "copilot";
+    const contextTelemetryProviderSessionId = sessionId;
+    let currentBridgeTurnId: string | undefined;
     let lastExternalToolWaitSpanAt = 0;
     const rememberToolName = (toolCallId: unknown, toolName: unknown): string | undefined => {
       if (typeof toolName !== "string") return undefined;
@@ -718,6 +729,47 @@ export class SessionRunner {
     const getEventTimestampIso = (event: any): string | undefined => {
       const eventTime = getEventTimestampMs(event);
       return eventTime === undefined ? undefined : new Date(eventTime).toISOString();
+    };
+    const publishContextSummary = (summary: ReturnType<SessionContextStore["getSummary"]>): void => {
+      if (summary) bus.emit({ type: "context_update", summary });
+    };
+    const getSubagentContextTurnId = (data: any): string | undefined => {
+      const toolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
+      const parentToolCallId = typeof data?.parentToolCallId === "string" ? data.parentToolCallId : undefined;
+      return (toolCallId ? subAgentTurnIdMap.get(toolCallId) : undefined)
+        ?? (parentToolCallId ? subAgentTurnIdMap.get(parentToolCallId) : undefined);
+    };
+    const recordLiveContextTelemetry = (event: any): void => {
+      const store = this.deps.sessionContextStore;
+      if (!store) return;
+      const data = event?.data;
+      const subagentTurnId = getSubagentContextTurnId(data);
+      const bridgeTurnId = subagentTurnId ?? currentBridgeTurnId;
+      const attribution = subagentTurnId
+        ? "subagent_turn"
+        : bridgeTurnId
+          ? "turn"
+          : "session_overhead";
+      const normalized = normalizeLiveSessionContextEvent(event, {
+        sessionId,
+        provider: contextTelemetryProvider,
+        providerSessionId: contextTelemetryProviderSessionId,
+        bridgeTurnId,
+        providerTurnId: getProviderTurnIdFromEvent(event),
+        attribution,
+      });
+      if (!normalized) return;
+      publishContextSummary(store.recordContextEvent(normalized));
+    };
+    const endCurrentContextTurn = (event: any): void => {
+      if (!currentBridgeTurnId) return;
+      this.deps.sessionContextStore?.recordTurnEnd({
+        sessionId,
+        bridgeTurnId: currentBridgeTurnId,
+        endedAt: getEventTimestampIso(event),
+        model: typeof event?.data?.model === "string" ? event.data.model : undefined,
+      });
+      currentBridgeTurnId = undefined;
     };
     const shouldRecordCompletionAttention = (reason: "done" | "error"): boolean => {
       const attention = opts.completionAttention;
@@ -893,6 +945,7 @@ export class SessionRunner {
         this.touchSessionRun(sessionId, eventAt);
       }
       const data = (event as any).data;
+      recordLiveContextTelemetry(event);
       if (opts.attentionMode !== "quiet") {
         this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
       }
@@ -912,7 +965,18 @@ export class SessionRunner {
           break;
         case "assistant.turn_start":
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
-          bus.emit({ type: "thinking" });
+          currentBridgeTurnId = `turn-${randomUUID()}`;
+          this.deps.sessionContextStore?.recordTurnStart({
+            sessionId,
+            provider: contextTelemetryProvider,
+            providerSessionId: contextTelemetryProviderSessionId,
+            providerTurnId: getProviderTurnIdFromEvent(event),
+            bridgeTurnId: currentBridgeTurnId,
+            attribution: "turn",
+            startedAt: getEventTimestampIso(event),
+            model: typeof data?.model === "string" ? data.model : undefined,
+          });
+          bus.emit({ type: "thinking", turnId: currentBridgeTurnId });
           break;
         case "assistant.message_delta":
           if (data?.parentToolCallId) break;
@@ -1029,7 +1093,21 @@ export class SessionRunner {
         case "subagent.started": {
           const displayName = `🤖 ${data?.agentDisplayName ?? data?.agentName ?? "agent"}`;
           console.log(`[sdk] [${sid}] ${displayName}`);
-          if (data?.toolCallId) subAgentMap.set(data.toolCallId, displayName);
+          if (data?.toolCallId) {
+            subAgentMap.set(data.toolCallId, displayName);
+            const subagentBridgeTurnId = `subagent-${randomUUID()}`;
+            subAgentTurnIdMap.set(data.toolCallId, subagentBridgeTurnId);
+            this.deps.sessionContextStore?.recordTurnStart({
+              sessionId,
+              provider: contextTelemetryProvider,
+              providerSessionId: contextTelemetryProviderSessionId,
+              providerTurnId: getProviderTurnIdFromEvent(event),
+              bridgeTurnId: subagentBridgeTurnId,
+              attribution: "subagent_turn",
+              startedAt: getEventTimestampIso(event),
+              model: typeof data?.model === "string" ? data.model : undefined,
+            });
+          }
           bus.emit({
             type: "tool_update",
             toolCallId: data?.toolCallId,
@@ -1039,13 +1117,33 @@ export class SessionRunner {
           break;
         }
         case "subagent.completed":
-        case "subagent.failed":
+        case "subagent.failed": {
+          const subagentToolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
+          const subagentBridgeTurnId = subagentToolCallId
+            ? subAgentTurnIdMap.get(subagentToolCallId)
+            : undefined;
+          if (subagentBridgeTurnId) {
+            this.deps.sessionContextStore?.recordTurnEnd({
+              sessionId,
+              bridgeTurnId: subagentBridgeTurnId,
+              endedAt: getEventTimestampIso(event),
+              model: typeof data?.model === "string" ? data.model : undefined,
+            });
+          }
+          if (subagentToolCallId) {
+            subAgentMap.delete(subagentToolCallId);
+            subAgentTurnIdMap.delete(subagentToolCallId);
+            subAgentResponseMap.delete(subagentToolCallId);
+          }
           break;
+        }
         case "assistant.turn_end": {
+          endCurrentContextTurn(event);
           break;
         }
         case "session.error":
           console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
+          endCurrentContextTurn(event);
           recordRunCompletion(event, context, "error", {
             errorMessagePresent: typeof data?.message === "string",
             errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
@@ -1056,6 +1154,7 @@ export class SessionRunner {
         case "abort": {
           const reason = data?.reason ?? "user initiated";
           console.log(`[sdk] [${sid}] 🛑 Aborted: ${reason}`);
+          endCurrentContextTurn(event);
           const partialContent = lastAssistantContent ?? bus.getSnapshot().accumulatedContent ?? "";
           recordRunCompletion(event, context, "aborted", {
             partialContentLength: partialContent.length,
@@ -1065,6 +1164,7 @@ export class SessionRunner {
           break;
         }
         case "session.shutdown": {
+          endCurrentContextTurn(event);
           const shutdownType = getSessionShutdownType(data);
           if (shutdownType === "error") {
             const message = data?.message ?? data?.reason ?? "session shutdown";
@@ -1110,6 +1210,7 @@ export class SessionRunner {
             break;
           }
           console.log(`[sdk] [${sid}] 💤 ${event.type} — done: ${content.length} chars (${elapsed}s)`);
+          endCurrentContextTurn(event);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
           recordRunCompletion(event, context, "done", {
             finalContentLength: content.length,
@@ -1181,6 +1282,15 @@ export class SessionRunner {
         recordSpan: (name, duration, spanSessionId, metadata) => this.recordSpan(name, duration, spanSessionId, metadata),
       });
       if (result.status !== "truncated") return;
+      publishContextSummary(this.deps.sessionContextStore?.recordContextEvent(createSessionContextTruncationMarker({
+        sessionId,
+        provider: contextTelemetryProvider,
+        providerSessionId: contextTelemetryProviderSessionId,
+        eventId: result.eventId,
+        eventsRemoved: result.eventsRemoved,
+        candidateEventsToRemove: result.candidateEventsToRemove,
+        reason: "replace-quiet-interval-defer-tail",
+      })) ?? null);
       bus.emit({
         type: "history_truncated",
         eventId: result.eventId,
@@ -1193,6 +1303,7 @@ export class SessionRunner {
     if (cachedMcp?.length) {
       bus.emit({ type: "mcp_status", servers: cachedMcp });
     }
+    publishContextSummary(this.deps.sessionContextStore?.getSummary(sessionId) ?? null);
 
     const heartbeatLog = setInterval(() => {
       const elapsed = ((Date.now() - sendStart) / 1000).toFixed(0);

@@ -9,6 +9,7 @@ import type {
   UserInputCancelReason,
   UserInputRequestId,
 } from "./user-input-types.js";
+import type { SessionContextSummary } from "../shared/session-context.js";
 
 export type {
   NativeUserInputRequest,
@@ -32,6 +33,7 @@ export interface StreamEvent {
   message?: string;
   intent?: string;
   turnId?: string;
+  summary?: SessionContextSummary;
   [key: string]: unknown;
 }
 
@@ -64,6 +66,7 @@ export interface BusSnapshot {
   finalContent?: string;
   errorMessage?: string;
   turnId?: string;
+  contextSummary: SessionContextSummary | null;
   /** The user prompt that initiated this turn (for reconnect recovery) */
   pendingPrompt?: string;
   /** Pending native user input requests only; answered/canceled requests are omitted. */
@@ -179,6 +182,7 @@ export class SessionEventBus {
   /** The user prompt that initiated this turn (for reconnect recovery) */
   private pendingPrompt?: string;
   private pendingUserInputs = new Map<UserInputRequestId, PendingUserInputRequestView>();
+  private contextSummary: SessionContextSummary | null = null;
 
   constructor(
     private sessionId: string,
@@ -198,6 +202,10 @@ export class SessionEventBus {
   clearPendingPrompt(expectedPrompt?: string): void {
     if (expectedPrompt !== undefined && this.pendingPrompt !== expectedPrompt) return;
     this.pendingPrompt = undefined;
+  }
+
+  setContextSummary(summary: SessionContextSummary | null): void {
+    this.contextSummary = summary;
   }
 
   emitUserInputRequested(request: PendingUserInputRequestView, timestamp?: string): void {
@@ -407,6 +415,9 @@ export class SessionEventBus {
       case "mcp_status":
         this.mcpServers = (event.servers as unknown[]) ?? [];
         break;
+      case "context_update":
+        this.contextSummary = event.summary ?? null;
+        break;
     }
 
     // Broadcast to live listeners
@@ -431,6 +442,7 @@ export class SessionEventBus {
       finalContent: this.finalContent,
       errorMessage: this.errorMessage,
       mcpServers: [...this.mcpServers],
+      contextSummary: this.contextSummary,
       pendingPrompt: this.pendingPrompt,
       pendingUserInputs: [...this.pendingUserInputs.values()],
       ...(turnId ? { turnId } : {}),

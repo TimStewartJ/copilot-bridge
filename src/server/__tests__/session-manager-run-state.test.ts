@@ -18,6 +18,7 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
+import { createSessionContextStore } from "../session-context-store.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
@@ -26,6 +27,7 @@ describe("SessionManager run state", () => {
   function createManager(opts: { copilotHome?: string; runtimePaths?: RuntimePaths; telemetry?: boolean } = {}) {
     const db = setupTestDb();
     const telemetryStore = opts.telemetry ? createTelemetryStore(db) : undefined;
+    const sessionContextStore = createSessionContextStore(db);
     const globalBus = createTestBus();
     const eventBusRegistry = createEventBusRegistry();
     const runtimePaths = opts.runtimePaths ?? makeTestRuntimePaths(
@@ -48,12 +50,13 @@ describe("SessionManager run state", () => {
       } as any,
       config: { sessionMcpServers: {} },
       telemetryStore,
+      sessionContextStore,
       clientEnv: runtimePaths.env,
       copilotHome,
       runtimePaths,
     }) as any;
 
-    return { manager, globalBus, eventBusRegistry, db, telemetryStore };
+    return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore };
   }
 
   function makeSession(opts: { replayOnSubscribe?: any | (() => any) } = {}) {
@@ -238,6 +241,125 @@ describe("SessionManager run state", () => {
       timestamp: "2026-04-24T12:00:00.000Z",
     });
     await flushMicrotasks();
+  });
+
+  it("records usage after turn end as session overhead", async () => {
+    const { manager, sessionContextStore } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    const handler = getHandler();
+    handler?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-05-01T10:00:00.000Z",
+    });
+    handler?.({
+      type: "usage_info",
+      id: "usage-in-turn",
+      timestamp: "2026-05-01T10:00:01.000Z",
+      data: { contextWindow: 100, tokensUsed: 10 },
+    });
+    handler?.({
+      type: "assistant.turn_end",
+      data: {},
+      timestamp: "2026-05-01T10:00:02.000Z",
+    });
+    handler?.({
+      type: "usage_info",
+      id: "usage-after-turn",
+      timestamp: "2026-05-01T10:00:03.000Z",
+      data: { contextWindow: 100, tokensUsed: 11 },
+    });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    handler?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-05-01T10:00:04.000Z",
+    });
+    await flushMicrotasks();
+
+    const snapshots = sessionContextStore.getSessionContext("session-1").events
+      .filter((event) => event.type === "context_snapshot");
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toMatchObject({
+      providerEventId: "usage-in-turn",
+      attribution: "turn",
+      tokensUsed: 10,
+    });
+    expect(snapshots[0].bridgeTurnId).toEqual(expect.any(String));
+    expect(snapshots[1]).toMatchObject({
+      providerEventId: "usage-after-turn",
+      attribution: "session_overhead",
+      bridgeTurnId: null,
+      tokensUsed: 11,
+    });
+  });
+
+  it("cleans subagent context attribution after subagent completion", async () => {
+    const { manager, sessionContextStore } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "hello");
+    await flushMicrotasks();
+    const handler = getHandler();
+    handler?.({
+      type: "assistant.turn_start",
+      data: {},
+      timestamp: "2026-05-01T11:00:00.000Z",
+    });
+    handler?.({
+      type: "subagent.started",
+      data: { toolCallId: "agent-call-1", agentName: "explore" },
+      timestamp: "2026-05-01T11:00:01.000Z",
+    });
+    handler?.({
+      type: "usage_info",
+      id: "usage-subagent",
+      timestamp: "2026-05-01T11:00:02.000Z",
+      data: { parentToolCallId: "agent-call-1", contextWindow: 100, tokensUsed: 20 },
+    });
+    handler?.({
+      type: "subagent.completed",
+      data: { toolCallId: "agent-call-1" },
+      timestamp: "2026-05-01T11:00:03.000Z",
+    });
+    handler?.({
+      type: "usage_info",
+      id: "usage-after-subagent",
+      timestamp: "2026-05-01T11:00:04.000Z",
+      data: { parentToolCallId: "agent-call-1", contextWindow: 100, tokensUsed: 21 },
+    });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    handler?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-05-01T11:00:05.000Z",
+    });
+    await flushMicrotasks();
+
+    const snapshots = sessionContextStore.getSessionContext("session-1").events
+      .filter((event) => event.type === "context_snapshot");
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toMatchObject({
+      providerEventId: "usage-subagent",
+      attribution: "subagent_turn",
+      tokensUsed: 20,
+    });
+    expect(snapshots[1]).toMatchObject({
+      providerEventId: "usage-after-subagent",
+      attribution: "turn",
+      tokensUsed: 21,
+    });
   });
 
   it("fails delivery before sending when SDK session mode cannot be set", async () => {
