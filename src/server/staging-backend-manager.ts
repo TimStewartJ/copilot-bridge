@@ -17,6 +17,11 @@ import {
   shouldSpawnDetachedProcessGroup,
   waitForProcessTreeExit,
 } from "./platform.js";
+import { BRIDGE_CONTROL_ROOT_ENV } from "./control-root.js";
+import {
+  BRIDGE_ACTIVE_RELEASE_ROOT_ENV,
+  BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV,
+} from "./distribution-mode.js";
 import { prependNodePath } from "./validation-command-env.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import {
@@ -281,10 +286,21 @@ function clearPushSubscriptionsInStagingDb(dbPath: string): void {
   }
 }
 
+function resolveStagingPreviewRuntimePaths(stagingDir: string): RuntimePaths {
+  const dataDir = join(stagingDir, "data");
+  return resolveRuntimePaths(process.env, {
+    distributionMode: "development",
+    dataDir,
+    docsDir: join(dataDir, "docs"),
+    copilotHome: join(dataDir, ".copilot"),
+  });
+}
+
 /** Seed a staging data directory from production data, with schedules disabled.
  *  Uses the worktree's own data/ directory (already gitignored). */
 export function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): RuntimePaths {
-  const dataDir = join(stagingDir, "data");
+  const runtimePaths = resolveStagingPreviewRuntimePaths(stagingDir);
+  const dataDir = runtimePaths.dataDir;
   mkdirSync(dataDir, { recursive: true });
 
   const productionDataDir = options.productionDataDir ?? PRODUCTION_DATA_DIR;
@@ -311,24 +327,15 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
   // Copy docs directory (source of truth is filesystem, not SQLite)
   const docsSrc = join(productionDataDir, "docs");
   if (existsSync(docsSrc)) {
-    cpSync(docsSrc, join(dataDir, "docs"), { recursive: true });
+    cpSync(docsSrc, runtimePaths.docsDir, { recursive: true });
   }
 
   log(`Seeded staging data at ${dataDir}`);
-  return resolveRuntimePaths(process.env, {
-    dataDir,
-    docsDir: join(dataDir, "docs"),
-    copilotHome: join(dataDir, ".copilot"),
-  });
+  return runtimePaths;
 }
 
-function getExistingPreviewRuntime(stagingDir: string, _profile: StagingPreviewProfile): RuntimePaths | null {
-  const dataDir = join(stagingDir, "data");
-  const runtimePaths = resolveRuntimePaths(process.env, {
-    dataDir,
-    docsDir: join(dataDir, "docs"),
-    copilotHome: join(dataDir, ".copilot"),
-  });
+export function getExistingPreviewRuntime(stagingDir: string, _profile: StagingPreviewProfile): RuntimePaths | null {
+  const runtimePaths = resolveStagingPreviewRuntimePaths(stagingDir);
   const requiredPaths = [
     join(runtimePaths.dataDir, "bridge.db"),
     runtimePaths.docsDir,
@@ -728,6 +735,9 @@ export function buildStagingBackendSpawnConfig(
   const env = prependNodePath({
     ...process.env,
     ...runtimePaths.env,
+    BRIDGE_DISTRIBUTION_MODE: "development",
+    [BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV]: "development",
+    [BRIDGE_CONTROL_ROOT_ENV]: stagingDir,
     BRIDGE_ENV_FILE: join(stagingDir, ".env"),
     BRIDGE_STAGING_PREVIEW: "true",
     BRIDGE_STAGING_API_BASE_PATH: apiBasePath,
@@ -735,6 +745,7 @@ export function buildStagingBackendSpawnConfig(
     BRIDGE_STAGING_MODEL: STAGING_PREVIEW_MODEL,
   }, dirname(process.execPath));
   delete env.PORT;
+  delete env[BRIDGE_ACTIVE_RELEASE_ROOT_ENV];
 
   return {
     command: process.execPath,

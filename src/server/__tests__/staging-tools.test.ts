@@ -456,6 +456,8 @@ describe("staging tools", () => {
 
   it("skips staging artifact management in release mode", async () => {
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
+    vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", undefined);
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", undefined);
     const mod = await loadStagingToolsModule();
     expect(mod.shouldManageStagingArtifacts()).toBe(false);
   });
@@ -548,6 +550,37 @@ describe("staging tools", () => {
     expect(spawnConfig.env.BRIDGE_STAGING_MODEL).toBe("claude-haiku-4.5");
     expect(spawnConfig.env.BRIDGE_ENV_FILE).toBe(join(stagingDir, ".env"));
     expect(spawnConfig.args.join("\n")).not.toContain("task-store.ts");
+  });
+
+  it("keeps staged backend child processes in source distribution mode under a release-slot parent", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "release");
+    vi.stubEnv("BRIDGE_CONTROL_ROOT", join(tmpdir(), "bridge-release-control"));
+    vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", join(tmpdir(), "bridge-release-slot"));
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const stagingDir = createTempDir("bridge-stage-child-source-mode-");
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+    const runtimePaths = mod.__testing.getExistingPreviewRuntime(stagingDir, "clone");
+    const spawnConfig = mod.__testing.buildStagingBackendSpawnConfig(
+      stagingDir,
+      runtimePaths!,
+      "/staging/source-mode/api",
+      { tsxLoader: "file:///tmp/tsx-loader.mjs" },
+    );
+
+    expect(runtimePaths).not.toBeNull();
+    expect(runtimePaths!.dataDir).toBe(seededDataDir);
+    expect(runtimePaths!.distributionMode).toBe("development");
+    expect(runtimePaths!.env.BRIDGE_DISTRIBUTION_MODE).toBe("development");
+    expect(spawnConfig.env.BRIDGE_DISTRIBUTION_MODE).toBe("development");
+    expect(spawnConfig.env.BRIDGE_CONTROL_DISTRIBUTION_MODE).toBe("development");
+    expect(spawnConfig.env.BRIDGE_CONTROL_ROOT).toBe(stagingDir);
+    expect(spawnConfig.env.BRIDGE_DATA_DIR).toBe(join(stagingDir, "data"));
+    expect(spawnConfig.env.BRIDGE_DOCS_DIR).toBe(join(stagingDir, "data", "docs"));
+    expect(spawnConfig.env.COPILOT_HOME).toBe(join(stagingDir, "data", ".copilot"));
+    expect("BRIDGE_ACTIVE_RELEASE_ROOT" in spawnConfig.env).toBe(false);
   });
 
   it("reseeds a staging SQLite database even when stale target files already exist", async () => {

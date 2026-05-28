@@ -44,6 +44,7 @@ import {
   cleanupStagingBackendResources,
   createStagingProxyHandler,
   forgetStagingPreviewBackend,
+  getExistingPreviewRuntime,
   hasActiveStagingBackend,
   getStagingRouter,
   hasPendingStagingBackendStart,
@@ -694,6 +695,7 @@ export const __testing = {
   seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}) {
     return seedStagingData(stagingDir, options).dataDir;
   },
+  getExistingPreviewRuntime,
   startStagingBackendProcess,
   createStagingProxyHandler,
   buildStagingBackendSpawnConfig,

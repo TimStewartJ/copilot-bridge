@@ -2,14 +2,6 @@ import "./log-timestamps.js";
 import "./load-bridge-env.js";
 import express from "express";
 import { createServer, type Server } from "node:http";
-import { createApiRouter } from "./api-router.js";
-import {
-  createAppContext,
-  initializeSchedulerAndDeferredRunners,
-  startBridgeToolsMcpServer,
-  shutdownAppContextServices,
-} from "./app-context-factory.js";
-import { resolveRuntimePaths } from "./runtime-paths.js";
 
 const STAGING_EXCLUDED_TOOLS = new Set([
   "self_restart",
@@ -19,6 +11,13 @@ const STAGING_EXCLUDED_TOOLS = new Set([
   "staging_deploy",
   "staging_cleanup",
 ]);
+
+function configureStagingPreviewSourceEnvironment(): void {
+  process.env.BRIDGE_DISTRIBUTION_MODE = "development";
+  process.env.BRIDGE_CONTROL_DISTRIBUTION_MODE = "development";
+  process.env.BRIDGE_CONTROL_ROOT = process.cwd();
+  delete process.env.BRIDGE_ACTIVE_RELEASE_ROOT;
+}
 
 type ReadyMessage = {
   type: "ready";
@@ -59,6 +58,22 @@ async function main(): Promise<void> {
   if (!apiBasePath) {
     throw new Error("BRIDGE_STAGING_API_BASE_PATH is required");
   }
+
+  configureStagingPreviewSourceEnvironment();
+  const [
+    { createApiRouter },
+    {
+      createAppContext,
+      initializeSchedulerAndDeferredRunners,
+      startBridgeToolsMcpServer,
+      shutdownAppContextServices,
+    },
+    { resolveRuntimePaths },
+  ] = await Promise.all([
+    import("./api-router.js"),
+    import("./app-context-factory.js"),
+    import("./runtime-paths.js"),
+  ]);
 
   const runtimePaths = resolveRuntimePaths(process.env);
   const { ctx, db } = createAppContext({
