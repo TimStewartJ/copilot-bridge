@@ -99,7 +99,7 @@ import { log } from "./staging-log.js";
 export { buildPreviewPrefix } from "./staging-preview-shared.js";
 export { parsePreviewPrefix, shouldManageStagingArtifacts } from "./staging-preview-shared.js";
 export { getStagingRouter, registerExpressApp } from "./staging-backend-manager.js";
-import { toolFailure } from "./tool-results.js";
+import { bridgeToolResult, toolFailure } from "./tool-results.js";
 import {
   extractCommandFailureLogPath,
   extractCommandFailureLogWriteError,
@@ -109,7 +109,7 @@ import { createValidationCommandEnv, prependNodePath } from "./validation-comman
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
-import { ActiveManagementJobError } from "./management-job-store.js";
+import { ActiveManagementJobError, type ManagementJob } from "./management-job-store.js";
 
 
 type StagingRunOptions = { timeoutMs?: number; isolateRuntimeEnv?: boolean; env?: NodeJS.ProcessEnv; log?: (message: string) => void };
@@ -1300,17 +1300,30 @@ export async function runStagingDeployJob(
 
   const deployElapsedMs = Date.now() - deployStartedAt;
   writeLog(`Deploy completed in ${formatCommandDuration(deployElapsedMs)}`);
-  return {
+  return bridgeToolResult({
     success: true,
     commitSha,
     elapsedMs: deployElapsedMs,
     validationElapsedMs,
-    message: `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent — do NOT make any more tool calls once cutover begins.`,
-  };
+    terminal: true,
+    toolNextAction: "respond",
+    retryable: false,
+    summary: `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent; stop issuing tools so cutover can proceed.`,
+  });
 }
 
-function queueMessage(jobId: string, action: string): string {
-  return `${action} queued as management job ${jobId}. The launcher-supervised runner will process it in the background; use management_job_status to monitor progress.`;
+function queuedStagingJobResult(job: ManagementJob, action: string) {
+  return bridgeToolResult({
+    success: true,
+    jobId: job.id,
+    status: job.status,
+    terminal: true,
+    toolNextAction: "respond",
+    retryable: false,
+    summary:
+      `${action} queued as management job ${job.id}. ` +
+      "The launcher-supervised runner will process it in the background; respond to the user with the job id and do not check status unless the user asks.",
+  });
 }
 
 function activeManagementJobFailure(error: ActiveManagementJobError) {
@@ -1456,7 +1469,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       "Supports retries: if a previous deploy failed due to rebase conflicts, resolve them in the staging worktree " +
       "(git rebase <prodBranch>, fix conflicts, git add + git rebase --continue) then call staging_deploy again — " +
       "it will skip the commit step and proceed to merge. " +
-      "Returns immediately with a management job id; poll management_job_status for progress. " +
+      "Returns immediately with a management job id and Bridge-monitored background status. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
@@ -1554,12 +1567,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
       validate: args.validate !== false,
       profile: resolvePreviewProfile(args.profile),
     });
-    return {
-      success: true,
-      jobId: job.id,
-      status: job.status,
-      message: queueMessage(job.id, "Staging preview"),
-    };
+    return queuedStagingJobResult(job, "Staging preview");
   } catch (error) {
     const activeJob = getActiveManagementJob(error);
     if (activeJob) return activeManagementJobFailure({ activeJob } as ActiveManagementJobError);
@@ -1592,12 +1600,7 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
   }
   try {
     const job = store.enqueue("staging_deploy", { stagingDir, message });
-    return {
-      success: true,
-      jobId: job.id,
-      status: job.status,
-      message: queueMessage(job.id, "Staging deploy"),
-    };
+    return queuedStagingJobResult(job, "Staging deploy");
   } catch (error) {
     const activeJob = getActiveManagementJob(error);
     if (activeJob) return activeManagementJobFailure({ activeJob } as ActiveManagementJobError);

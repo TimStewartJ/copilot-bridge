@@ -142,12 +142,16 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } as any) as { success: boolean; jobId: string; status: string; message: string };
+    } as any) as { success: boolean; jobId: string; status: string; message: string; terminal: boolean; toolNextAction: string; content: Array<{ text: string }> };
 
     expect(result.success).toBe(true);
     expect(result.status).toBe("queued");
     expect(result.jobId).toMatch(/^[0-9a-f-]{36}$/);
     expect(result.message).toContain("management job");
+    expect(result.message).not.toContain("poll");
+    expect(result.terminal).toBe(true);
+    expect(result.toolNextAction).toBe("respond");
+    expect(result.content[0].text).toContain('"nextAction":"respond"');
     expect(execSyncMock).not.toHaveBeenCalled();
     expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);

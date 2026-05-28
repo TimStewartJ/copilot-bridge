@@ -526,11 +526,15 @@ describe("staging tools", () => {
     const stagingDir = createTempDir("bridge-stage-child-entrypoint-");
 
     const runtimePaths = {
+      distributionMode: "release" as const,
       workspaceDir: join(stagingDir, "workspace"),
       dataDir: join(stagingDir, "data"),
       docsDir: join(stagingDir, "docs"),
       copilotHome: join(stagingDir, ".copilot"),
-      env: {},
+      env: {
+        BRIDGE_DISTRIBUTION_MODE: "release",
+        BRIDGE_ACTIVE_RELEASE_ROOT: join(stagingDir, "release-slot"),
+      },
     };
     const spawnConfig = mod.__testing.buildStagingBackendSpawnConfig(
       stagingDir,
@@ -548,6 +552,9 @@ describe("staging tools", () => {
     expect(spawnConfig.env.BRIDGE_STAGING_API_BASE_PATH).toBe("/staging/test/api");
     expect(spawnConfig.env.BRIDGE_STAGING_BACKEND_PORT).toBe("0");
     expect(spawnConfig.env.BRIDGE_STAGING_MODEL).toBe("claude-haiku-4.5");
+    expect(spawnConfig.env.BRIDGE_DISTRIBUTION_MODE).toBe("development");
+    expect(spawnConfig.env.BRIDGE_CONTROL_DISTRIBUTION_MODE).toBe("development");
+    expect(spawnConfig.env.BRIDGE_ACTIVE_RELEASE_ROOT).toBeUndefined();
     expect(spawnConfig.env.BRIDGE_ENV_FILE).toBe(join(stagingDir, ".env"));
     expect(spawnConfig.args.join("\n")).not.toContain("task-store.ts");
   });

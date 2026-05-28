@@ -31,6 +31,7 @@ import {
 } from "./session-run-state-controller.js";
 import type { SessionUserInputController } from "./session-user-input-controller.js";
 import { getToolExecutionDisplayText } from "./tool-results.js";
+import { createToolLoopGuard } from "./tool-loop-guard.js";
 import type {
   RoutedSdkAttachment,
   StartWorkAttachment,
@@ -628,6 +629,7 @@ export class SessionRunner {
 
     const toolNameMap = new Map<string, string>();
     const toolStartTimes = new Map<string, number>();
+    const toolLoopGuard = createToolLoopGuard();
     const subAgentMap = new Map<string, string>();
     const subAgentTurnIdMap = new Map<string, string>();
     const subAgentResponseMap = new Map<string, string>();
@@ -1023,6 +1025,19 @@ export class SessionRunner {
           break;
         case "tool.execution_start": {
           const toolName = data?.toolName ?? data?.name ?? "unknown";
+          const loopCandidate = toolLoopGuard.detectCandidate(toolName, data?.arguments);
+          if (loopCandidate) {
+            console.warn(
+              `[sdk] [${sid}] 🔍 tool-loop candidate: ${toolName} (${loopCandidate.reason}: ${loopCandidate.detail}, count=${loopCandidate.count})`,
+            );
+            recordRunSpan("session.run.tool_loop_candidate", 0, {
+              toolName,
+              loopReason: loopCandidate.reason,
+              loopDetail: loopCandidate.detail,
+              loopFingerprint: loopCandidate.fingerprint,
+              loopCount: loopCandidate.count,
+            });
+          }
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);
             toolStartTimes.set(data.toolCallId, Date.now());

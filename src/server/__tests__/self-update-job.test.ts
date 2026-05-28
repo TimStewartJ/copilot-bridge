@@ -66,6 +66,14 @@ function manifest(commitSha: string, dataDir: string) {
   };
 }
 
+function sourceManagedEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    BRIDGE_DISTRIBUTION_MODE: "development",
+    BRIDGE_CONTROL_DISTRIBUTION_MODE: "development",
+  };
+}
+
 describe("runSelfUpdateJob active-release drift", () => {
   afterEach(() => {
     activeReleaseMock.value = null;
@@ -85,6 +93,8 @@ describe("runSelfUpdateJob active-release drift", () => {
     const dataDir = makeTestDir("self-update-drift");
     activeReleaseMock.value = manifest(oldSha, dataDir);
     reusableReleaseMock.value = manifest(headSha, dataDir);
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
 
     const { runSelfUpdateJob } = await import("../self-update-job.js");
     const result = await runSelfUpdateJob({}, {
@@ -92,7 +102,7 @@ describe("runSelfUpdateJob active-release drift", () => {
       runtimePaths: {
         dataDir,
         docsDir: join(dataDir, "docs"),
-        env: process.env,
+        env: sourceManagedEnv(),
       },
       log: () => {},
     }) as any;
@@ -116,6 +126,8 @@ describe("runSelfUpdateJob active-release drift", () => {
     const oldSha = "1111111111111111111111111111111111111111";
     const dataDir = makeTestDir("self-update-drift-failure");
     activeReleaseMock.value = manifest(oldSha, dataDir);
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
     runValidationCommandMock.mockImplementation(async (options: { command: string }) => {
       if (options.command.startsWith("git merge-base --is-ancestor")) return { ok: false, output: "" };
       return {
@@ -136,7 +148,7 @@ describe("runSelfUpdateJob active-release drift", () => {
       runtimePaths: {
         dataDir,
         docsDir: join(dataDir, "docs"),
-        env: process.env,
+        env: sourceManagedEnv(),
       },
       log: () => {},
     }) as any;
