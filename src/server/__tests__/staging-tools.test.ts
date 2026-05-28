@@ -460,6 +460,20 @@ describe("staging tools", () => {
     expect(mod.shouldManageStagingArtifacts()).toBe(false);
   });
 
+  it("manages staging artifacts for source-managed release-slot servers", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
+    const mod = await loadStagingToolsModule();
+    expect(mod.shouldManageStagingArtifacts()).toBe(true);
+  });
+
+  it("manages staging artifacts for legacy source-managed release-slot servers", async () => {
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "release");
+    vi.stubEnv("BRIDGE_ACTIVE_RELEASE_ROOT", join(tmpdir(), "bridge-release-slot"));
+    const mod = await loadStagingToolsModule();
+    expect(mod.shouldManageStagingArtifacts()).toBe(true);
+  });
+
   it("builds and parses staging preview prefixes", async () => {
     const mod = await loadStagingToolsModule();
     const stagingDir = join(tmpdir(), "bridge-staging", "abc12345");

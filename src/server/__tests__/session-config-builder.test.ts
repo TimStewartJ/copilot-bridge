@@ -4,9 +4,10 @@ import { buildSessionConfig, type SessionConfigBuilderCallbacks, type SessionCon
 import type { Task } from "../task-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
-import { setupTestDb } from "./helpers.js";
+import { makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createTagStore } from "../tag-store.js";
+import { resolveBridgeControlRoot } from "../control-root.js";
 import {
   GITHUB_COPILOT_MCP_SERVER_NAME,
   GITHUB_COPILOT_MCP_READONLY_URL,
@@ -56,6 +57,8 @@ function createMcpRegistryDeps() {
     tagStore: createTagStore(db),
   };
 }
+
+const TEST_REPO_ROOT = resolveBridgeControlRoot(join(import.meta.dirname, "..", "..", ".."));
 
 function createGitHubCopilotMcpToolOptions() {
   return {
@@ -113,6 +116,36 @@ describe("session-config-builder", () => {
     });
 
     expect(cfg.onPermissionRequest).toBe(permissionPolicy);
+  });
+
+  it("keeps staging instructions for source-managed release-slot sessions", () => {
+    const runtimePaths = makeTestRuntimePaths(
+      "source-release-slot-session-config",
+      { distributionMode: "release" },
+      { BRIDGE_CONTROL_DISTRIBUTION_MODE: "development" },
+    );
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ runtimePaths }),
+      callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => TEST_REPO_ROOT }),
+    });
+
+    expect(cfg.systemMessage.sections.code_change_rules?.content).toContain("staging_deploy");
+  });
+
+  it("omits staging instructions when source management is unavailable", () => {
+    const runtimePaths = makeTestRuntimePaths(
+      "packaged-release-session-config",
+      { distributionMode: "release" },
+      { BRIDGE_CONTROL_DISTRIBUTION_MODE: "release" },
+    );
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({ runtimePaths }),
+      callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => TEST_REPO_ROOT }),
+    });
+
+    expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
   });
 
   it("uses default-enabled registry MCP servers for unlinked sessions", () => {

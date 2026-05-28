@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { isBridgeReleaseMode } from "../distribution-mode.js";
+import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
 import { clearRestartPending, isRestartPending, triggerRestartPending } from "../restart-controller.js";
 import { writeRestartSignalFile, type RestartReleaseCandidate, type RestartValidationMode } from "../restart-signal.js";
 import { toolFailure } from "../tool-results.js";
@@ -21,8 +21,8 @@ function getSignalFile(ctx: AppContext): string {
   return join(getDataDir(ctx), "restart.signal");
 }
 
-function isReleaseMode(ctx: AppContext): boolean {
-  return ctx.runtimePaths?.distributionMode === "release" || isBridgeReleaseMode(process.env, BRIDGE_TOOLS_REPO_ROOT);
+function isSourceManagementUnavailable(ctx: AppContext): boolean {
+  return !isBridgeSourceManagementAvailable(ctx.runtimePaths?.env ?? process.env, BRIDGE_TOOLS_REPO_ROOT);
 }
 
 function requireManagementJobStore(ctx: AppContext) {
@@ -112,7 +112,7 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      if (isReleaseMode(ctx)) {
+      if (isSourceManagementUnavailable(ctx)) {
         return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
       }
 

@@ -13,6 +13,7 @@ import type { McpServerConfig } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type { AgentPermissionPolicy } from "./agent-backend/index.js";
+import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import {
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
@@ -307,7 +308,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // Staging rules — only when working on the bridge repo itself
   const isSelfRepo = !workingDirectory || resolve(workingDirectory) === resolve(REPO_ROOT);
   const sections: Partial<Record<string, SectionOverride>> = {};
-  if (isSelfRepo) {
+  if (isSelfRepo && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT)) {
     sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
   }
 
