@@ -38,6 +38,7 @@ import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createSessionManager } from "./session-manager.js";
 import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
+import { createManagementJobStore } from "./management-job-store.js";
 import {
   BridgeToolsMcpServer,
   buildBridgeToolsMcpServerConfig,
@@ -98,6 +99,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   });
   const voiceJobStore = createVoiceJobStore(db);
   const pushSubscriptionStore = createPushSubscriptionStore(db);
+  const managementJobStore = createManagementJobStore(db, { dataDir });
   const docsStore = createDocsStore(runtimePaths.docsDir);
   const docsIndex = createDocsIndex(db, docsStore);
   const docsSnapshotStore = createDocsSnapshotStore(
@@ -149,6 +151,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     transcriptionService: createTranscriptionService(),
     voiceJobManager: null as any,
     pushSubscriptionStore,
+    managementJobStore,
     deferredPromptStore,
     deferLoopStore,
     scheduler,

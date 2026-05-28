@@ -6,6 +6,7 @@ import type { DatabaseSync } from "./db.js";
 import { openDatabase } from "./db.js";
 import { createDocsStore } from "./docs-store.js";
 import { createGlobalBus } from "./global-bus.js";
+import { createManagementJobStore } from "./management-job-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createTaskStore } from "./task-store.js";
 import express from "express";
@@ -22,6 +23,12 @@ interface PreviewResult {
   error?: string;
 }
 
+interface QueuedPreviewResult {
+  success: true;
+  jobId: string;
+  status: "queued" | "running";
+}
+
 interface PreviewSmokeSource {
   rootDir: string;
   dataDir: string;
@@ -34,7 +41,7 @@ interface PreviewSmokeSource {
 interface StagingToolsModule {
   STAGING_TOOLS: Array<{
     name: string;
-    handler?: (args: { stagingDir: string; validate?: boolean }, invocation?: unknown) => Promise<PreviewResult>;
+    handler?: (args: { stagingDir: string; validate?: boolean }, invocation?: unknown) => Promise<PreviewResult | QueuedPreviewResult>;
   }>;
   buildPreviewPrefix(stagingDir: string): string;
   cleanupPreviewTarget(
@@ -45,6 +52,11 @@ interface StagingToolsModule {
   getActivePreviews(): ReadonlyMap<string, string>;
   getStagingRouter(prefix: string): express.RequestHandler | undefined;
   registerExpressApp(app: express.Application): void;
+  registerExistingPreviewsFromDisk(options?: { stagingParent?: string }): number;
+  createStagingToolDefinitions(ctx: unknown): Array<{
+    name: string;
+    handler?: (args: { stagingDir: string; validate?: boolean }, invocation?: unknown) => Promise<PreviewResult | QueuedPreviewResult>;
+  }>;
 }
 
 const PREVIEW_SMOKE_ENV_KEYS = [
@@ -88,11 +100,50 @@ function createSmokeApp(stagingTools: StagingToolsModule) {
   return app;
 }
 
-function findPreviewTool(stagingTools: StagingToolsModule) {
-  const tool = stagingTools.STAGING_TOOLS.find((candidate) => candidate.name === "staging_preview");
+async function requestWithBackendRetry(app: express.Application, path: string): Promise<request.Response> {
+  let last = await request(app).get(path);
+  for (let attempt = 0; attempt < 10 && (last.status === 503 || last.status === 502); attempt++) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    last = await request(app).get(path);
+  }
+  return last;
+}
+
+function findPreviewTool(stagingTools: StagingToolsModule, ctx: unknown) {
+  const tool = stagingTools.createStagingToolDefinitions(ctx).find((candidate) => candidate.name === "staging_preview");
   assert(tool, "staging_preview tool not found");
   assert(typeof tool.handler === "function", "staging_preview handler not found");
   return tool as { handler: NonNullable<typeof tool.handler> };
+}
+
+function isQueuedPreviewResult(value: PreviewResult | QueuedPreviewResult): value is QueuedPreviewResult {
+  return typeof (value as { jobId?: unknown }).jobId === "string";
+}
+
+async function resolveQueuedPreviewResult(
+  source: PreviewSmokeSource,
+  jobId: string,
+): Promise<PreviewResult> {
+  const [{ createManagementJobStore }, { runClaimedManagementJob }] = await Promise.all([
+    import("./management-job-store.js"),
+    import("../management-job-runner.js"),
+  ]);
+  const db = openDatabase(source.dataDir);
+  try {
+    const store = createManagementJobStore(db, { dataDir: source.dataDir });
+    const claimed = store.claimNext({ runnerPid: process.pid, staleAfterMs: 1 });
+    assert(claimed?.id === jobId, `expected to claim queued preview job ${jobId}`);
+    await runClaimedManagementJob(store, claimed, {
+      heartbeatIntervalMs: 100,
+      log: (message) => console.log(`[preview-smoke job] ${message}`),
+    });
+    const completed = store.get(jobId);
+    assert(completed, `queued preview job disappeared: ${jobId}`);
+    assert.equal(completed.status, "succeeded", completed.error ?? "preview job failed");
+    return completed.result as PreviewResult;
+  } finally {
+    db.close();
+  }
 }
 
 function resolveStagingDir(input?: string): string {
@@ -236,14 +287,29 @@ async function main(): Promise<void> {
 
     const prefix = stagingTools.buildPreviewPrefix(stagingDir);
     const app = createSmokeApp(stagingTools);
-    const previewTool = findPreviewTool(stagingTools);
     const validationNote = validate ? "with validation" : "without validation";
     console.log(`[preview-smoke] building staging preview ${validationNote} for ${stagingDir}`);
-    const result = await previewTool.handler({ stagingDir, validate }, {});
+    const initialResult = await (async () => {
+      const db = openDatabase(source.dataDir);
+      try {
+        const previewTool = findPreviewTool(stagingTools, {
+          managementJobStore: createManagementJobStore(db, { dataDir: source.dataDir }),
+        });
+        return await previewTool.handler({ stagingDir, validate }, {});
+      } finally {
+        db.close();
+      }
+    })();
+    const result = isQueuedPreviewResult(initialResult)
+      ? await resolveQueuedPreviewResult(source, initialResult.jobId)
+      : initialResult;
+    stagingTools.registerExistingPreviewsFromDisk({ stagingParent: dirname(stagingDir) });
     assert.equal(result.success, true, result.error ?? "preview failed");
     assert.equal(result.profile, "clone");
     assert.equal(result.previewPath, `/staging/${prefix}/`);
-    assert.equal(result.backendReady, true, result.backendError ?? "preview backend did not start");
+    if (result.backendError) {
+      throw new Error(result.backendError);
+    }
 
     const previewDist = stagingTools.getActivePreviews().get(prefix);
     assert(previewDist && existsSync(previewDist), "preview dist directory was not registered");
@@ -253,7 +319,7 @@ async function main(): Promise<void> {
     assert.match(previewRes.headers["content-type"] ?? "", /text\/html/, "preview root did not serve HTML");
     assert.match(previewRes.text, /<!doctype html>/i, "preview root did not serve the Vite index");
 
-    const tasksRes = await request(app).get(`${result.previewPath}api/tasks`);
+    const tasksRes = await requestWithBackendRetry(app, `${result.previewPath}api/tasks`);
     assert.equal(tasksRes.status, 200, "tasks API did not return 200");
     assert(Array.isArray(tasksRes.body.tasks), "tasks response did not include an array");
 
@@ -263,14 +329,14 @@ async function main(): Promise<void> {
     assert.equal(createTaskRes.status, 200, "creating a task through staging preview failed");
     assert.equal(createTaskRes.body.task.cwd, undefined, "staging preview unexpectedly defaulted new tasks into a workspace");
 
-    const settingsRes = await request(app).get(`${result.previewPath}api/settings`);
+    const settingsRes = await requestWithBackendRetry(app, `${result.previewPath}api/settings`);
     assert.equal(settingsRes.status, 200, "settings API did not return 200");
 
-    const schedulesRes = await request(app).get(`${result.previewPath}api/schedules?taskId=${encodeURIComponent(source.taskId)}`);
+    const schedulesRes = await requestWithBackendRetry(app, `${result.previewPath}api/schedules?taskId=${encodeURIComponent(source.taskId)}`);
     assert.equal(schedulesRes.status, 200, "schedules API did not return 200");
     assert(Array.isArray(schedulesRes.body), "schedules response was not an array");
 
-    const docsTreeRes = await request(app).get(`${result.previewPath}api/docs/tree`);
+    const docsTreeRes = await requestWithBackendRetry(app, `${result.previewPath}api/docs/tree`);
     assert.equal(docsTreeRes.status, 200, "docs tree API did not return 200");
     assert(Array.isArray(docsTreeRes.body.tree), "docs tree response did not include an array");
 

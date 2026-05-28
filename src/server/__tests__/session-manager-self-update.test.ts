@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { openMemoryDatabase } from "../db.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { toolFailure } from "../tool-results.js";
+import { createManagementJobStore } from "../management-job-store.js";
+import { makeTestDir } from "./helpers.js";
 
 type ExistsSyncPath = Parameters<typeof import("node:fs").existsSync>[0];
 type WriteFileSyncArgs = Parameters<typeof import("node:fs").writeFileSync>;
@@ -75,6 +77,7 @@ vi.mock("../release-slots.js", () => ({
 
 function createToolContext() {
   const db = openMemoryDatabase();
+  const dataDir = join(makeTestDir("self-update-management-jobs"), "data");
   return {
     taskStore: { findTaskBySessionId: () => undefined } as any,
     taskGroupStore: {} as any,
@@ -91,15 +94,19 @@ function createToolContext() {
     globalBus: createGlobalBus(),
     eventBusRegistry: createEventBusRegistry(),
     sessionManager: { evictAllCachedSessions() {} } as any,
+    runtimePaths: { dataDir, docsDir: join(dataDir, "docs"), env: process.env },
+    managementJobStore: createManagementJobStore(db, { dataDir }),
   } as any;
 }
 
 async function loadTestModules() {
   vi.resetModules();
   const sessionMod = await import("../session-manager.js");
+  const restartControllerMod = await import("../restart-controller.js");
   const selfAdminMod = await import("../tools/self-admin-tools.js");
   return {
     ...sessionMod,
+    ...restartControllerMod,
     createSelfAdminToolDefinitions: selfAdminMod.createSelfAdminToolDefinitions,
   };
 }
@@ -120,30 +127,10 @@ afterEach(async () => {
 });
 
 describe("self_update", () => {
-  it("queues restart-only dependency sync when pulled changes touch dependency inputs", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-    const newSha = "2222222222222222222222222222222222222222";
-    let headReads = 0;
-
+  it("enqueues a durable management job without running git in the tool handler", async () => {
     existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
+      if (isDataFilePath(String(path), "restart.signal")) return false;
       return undefined;
-    });
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git pull --rebase origin main") return "Updating 1111111..2222222\n";
-      if (cmd === "git rev-parse --short HEAD") return "22222222\n";
-      if (cmd === "git rev-parse HEAD") {
-        headReads += 1;
-        return `${headReads === 1 ? oldSha : newSha}\n`;
-      }
-      if (cmd === `git diff "${oldSha}" HEAD --name-only -- package.json package-lock.json patches`) {
-        return "package-lock.json\n";
-      }
-      throw new Error(`Unexpected command: ${cmd}`);
     });
 
     const mod = await loadTestModules();
@@ -155,105 +142,26 @@ describe("self_update", () => {
       toolCallId: "tool-1",
       toolName: "self_update",
       arguments: {},
-    } as any) as {
-      success: boolean;
-      previousSha: string;
-      newSha: string;
-      message: string;
-    };
-    const commands = execSyncMock.mock.calls.map(([cmd]) => cmd);
-    const writtenPaths = writeFileSyncCallMock.mock.calls.map(([file]) => String(file));
+    } as any) as { success: boolean; jobId: string; status: string; message: string };
 
-    expect(result).toMatchObject({
-      success: true,
-      previousSha: "11111111",
-      newSha: "22222222",
-    });
-    expect(result.message).toContain("Restart queued; the launcher will swap to the prepared release slot");
-    expect(result.message).toContain("Dependency inputs changed — the inactive release slot has its own dependency install.");
-    expect(commands).not.toContain("npm install --no-audit --no-fund --include=dev");
-    expect(writtenPaths.some((file) => isDataFilePath(file, "pre-deploy-sha"))).toBe(true);
-    expect(writtenPaths.some((file) => isDataFilePath(file, "restart.signal"))).toBe(true);
-    expect(writtenPaths.some((file) => isDataFilePath(file, "deps-hash"))).toBe(false);
-
-    mod.clearRestartPending();
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("queued");
+    expect(result.jobId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.message).toContain("management job");
+    expect(execSyncMock).not.toHaveBeenCalled();
+    expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
+    expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(false);
   });
 
-  it("clears restart state when self_update cannot write the restart signal", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-    const newSha = "2222222222222222222222222222222222222222";
-    let headReads = 0;
-
+  it("rejects duplicate active deploy/update management jobs", async () => {
     existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
+      if (isDataFilePath(String(path), "restart.signal")) return false;
       return undefined;
-    });
-    writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
-      if (isDataFilePath(String(args[0]), "restart.signal")) {
-        throw new Error("disk full");
-      }
-    });
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git pull --rebase origin main") return "Updating 1111111..2222222\n";
-      if (cmd === "git rev-parse --short HEAD") return "22222222\n";
-      if (cmd === "git rev-parse HEAD") {
-        headReads += 1;
-        return `${headReads === 1 ? oldSha : newSha}\n`;
-      }
-      if (cmd === `git diff "${oldSha}" HEAD --name-only -- package.json package-lock.json patches`) return "";
-      throw new Error(`Unexpected command: ${cmd}`);
     });
 
     const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
-    if (!tool) throw new Error("self_update tool not found");
-
-    const result = await tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_update",
-      arguments: {},
-    } as any) as any;
-
-    expect(result).toMatchObject({ resultType: "failure" });
-    expect(result.textResultForLlm).toContain("Updated code but restart signal could not be written.");
-    expect(mod.isRestartPending()).toBe(false);
-    expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal"))).toBe(true);
-  });
-
-  it("preserves an existing rollback checkpoint when pulling new commits", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-    const newSha = "2222222222222222222222222222222222222222";
-    let headReads = 0;
-
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return true;
-      return undefined;
-    });
-    readFileSyncOverrideMock.mockImplementation((path) =>
-      isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
-    );
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git pull --rebase origin main") return "Updating 1111111..2222222\n";
-      if (cmd === "git rev-parse --short HEAD") return "22222222\n";
-      if (cmd === "git rev-parse HEAD") {
-        headReads += 1;
-        return `${headReads === 1 ? oldSha : newSha}\n`;
-      }
-      if (cmd === `git diff "${oldSha}" HEAD --name-only -- package.json package-lock.json patches`) return "";
-      throw new Error(`Unexpected command: ${cmd}`);
-    });
-
-    const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
+    const ctx = createToolContext();
+    const tool = mod.createSelfAdminToolDefinitions(ctx).find((candidate) => candidate.name === "self_update");
     if (!tool) throw new Error("self_update tool not found");
 
     await tool.handler({}, {
@@ -262,175 +170,15 @@ describe("self_update", () => {
       toolName: "self_update",
       arguments: {},
     } as any);
-
-    expect(
-      writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(false);
-    expect(
-      writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal")),
-    ).toBe(true);
-
-    mod.clearRestartPending();
-  });
-
-  it("cleans up a rollback checkpoint created by a failed pull", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
-      return undefined;
-    });
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git rev-parse HEAD") return `${oldSha}\n`;
-      if (cmd === "git pull --rebase origin main") throw new Error("pull failed");
-      if (cmd === "git rebase --abort") return "";
-      throw new Error(`Unexpected command: ${cmd}`);
-    });
-
-    const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
-    if (!tool) throw new Error("self_update tool not found");
-
-    const result = await tool.handler({}, {
+    const duplicate = await tool.handler({}, {
       sessionId: "session-1",
-      toolCallId: "tool-1",
+      toolCallId: "tool-2",
       toolName: "self_update",
       arguments: {},
     } as any) as any;
 
-    expect(result).toMatchObject({ resultType: "failure" });
-    expect(result.textResultForLlm).toContain("Git pull failed — likely due to merge conflicts or network issues.");
-    expect(result.textResultForLlm).toContain("pull failed");
-    expect(
-      writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(true);
-    expect(
-      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(true);
-  });
-
-  it("keeps a preserved rollback checkpoint when pull fails", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return true;
-      return undefined;
-    });
-    readFileSyncOverrideMock.mockImplementation((path) =>
-      isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
-    );
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git rev-parse HEAD") return `${oldSha}\n`;
-      if (cmd === "git pull --rebase origin main") throw new Error("pull failed");
-      if (cmd === "git rebase --abort") return "";
-      throw new Error(`Unexpected command: ${cmd}`);
-    });
-
-    const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
-    if (!tool) throw new Error("self_update tool not found");
-
-    const result = await tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_update",
-      arguments: {},
-    } as any) as any;
-
-    expect(result).toMatchObject({ resultType: "failure" });
-    expect(result.textResultForLlm).toContain("Git pull failed — likely due to merge conflicts or network issues.");
-    expect(result.textResultForLlm).toContain("pull failed");
-    expect(
-      writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(false);
-    expect(
-      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(false);
-  });
-
-  it("only removes a rollback checkpoint on no-op updates when the current operation created it", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return false;
-      return undefined;
-    });
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
-      if (cmd === "git rev-parse --short HEAD") return "11111111\n";
-      if (cmd === "git rev-parse HEAD") return `${oldSha}\n`;
-      throw new Error(`Unexpected command: ${cmd}`);
-    });
-
-    const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
-    if (!tool) throw new Error("self_update tool not found");
-
-    await tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_update",
-      arguments: {},
-    } as any);
-
-    expect(
-      writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(true);
-    expect(
-      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(true);
-  });
-
-  it("does not remove a preserved rollback checkpoint on no-op updates", async () => {
-    const oldSha = "1111111111111111111111111111111111111111";
-
-    existsSyncOverrideMock.mockImplementation((path) => {
-      const normalized = String(path);
-      if (isDataFilePath(normalized, "restart.signal")) return false;
-      if (isDataFilePath(normalized, "pre-deploy-sha")) return true;
-      return undefined;
-    });
-    readFileSyncOverrideMock.mockImplementation((path) =>
-      isDataFilePath(String(path), "pre-deploy-sha") ? "preserved-checkpoint\n" : undefined,
-    );
-
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd === "git rev-parse --abbrev-ref HEAD") return "main\n";
-      if (cmd === "git pull --rebase origin main") return "Already up to date.\n";
-      if (cmd === "git rev-parse --short HEAD") return "11111111\n";
-      if (cmd === "git rev-parse HEAD") return `${oldSha}\n`;
-      throw new Error(`Unexpected command: ${cmd}`);
-    });
-
-    const mod = await loadTestModules();
-    const tool = mod.createSelfAdminToolDefinitions(createToolContext()).find((candidate) => candidate.name === "self_update");
-    if (!tool) throw new Error("self_update tool not found");
-
-    await tool.handler({}, {
-      sessionId: "session-1",
-      toolCallId: "tool-1",
-      toolName: "self_update",
-      arguments: {},
-    } as any);
-
-    expect(
-      writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(false);
-    expect(
-      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha")),
-    ).toBe(false);
+    expect(duplicate).toMatchObject({ resultType: "failure" });
+    expect(duplicate.textResultForLlm).toContain("already active");
   });
 
   it("normalizes direct restart-pending failures", async () => {
