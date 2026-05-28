@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  fetchSlashCommands,
   fetchMessages,
   fetchMessagesFast,
   warmSession,
@@ -14,6 +15,7 @@ import {
   type ChatMessage,
   type McpServerStatus,
   type PendingUserInputRequestView,
+  type SlashCommandInfo,
   type ToolCall,
   type UserInputAnswerEndpointPayload,
 } from "../api";
@@ -470,6 +472,9 @@ export default function ChatView({
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
+  const [slashCommandsSupported, setSlashCommandsSupported] = useState(false);
+  const slashCommandFetchKeyRef = useRef<string | null>(null);
   const {
     bind: bindMessageMenu,
     menu: messageMenu,
@@ -619,6 +624,33 @@ export default function ChatView({
     abortSession,
     reconnect,
   } = useSessionStream(sessionId, handleNewEntries, onMessageSent);
+
+  useEffect(() => {
+    if (!sessionId || loading || creating) {
+      setSlashCommands([]);
+      setSlashCommandsSupported(false);
+      slashCommandFetchKeyRef.current = null;
+      return;
+    }
+    const fetchKey = `${sessionId}:${isStreaming ? "busy" : "idle"}`;
+    if (slashCommandFetchKeyRef.current === fetchKey) return;
+    slashCommandFetchKeyRef.current = fetchKey;
+    let cancelled = false;
+    fetchSlashCommands(sessionId)
+      .then((result) => {
+        if (cancelled) return;
+        setSlashCommands(result.commands);
+        setSlashCommandsSupported(result.supported);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSlashCommands([]);
+        setSlashCommandsSupported(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creating, isStreaming, loading, sessionId]);
 
   // Prefer a manual override immediately after reload, then return to live stream updates.
   const effectiveMcpServers = (manualMcpOverride ?? (streamMcpServers?.length > 0 ? streamMcpServers : mcpStatus)) ?? [];
@@ -1958,6 +1990,8 @@ export default function ChatView({
         onRetryVoiceJobUpload={onRetryVoiceJobUpload}
         disabled={composerDisabled}
         disabledHint={composerDisabledHint}
+        slashCommands={slashCommands}
+        slashCommandsSupported={slashCommandsSupported}
       />
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (

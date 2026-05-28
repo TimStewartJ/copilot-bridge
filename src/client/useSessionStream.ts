@@ -995,7 +995,7 @@ export function useSessionStream(
     try {
       const response = await sendChatMessage(sessionId, prompt, attachments, mode);
       retryCountRef.current = 0;
-      if (response.mode === "steered") {
+      if (response.mode === "steered" || response.mode === "command") {
         if (startedFromIdle && sessionRef.current === sessionId) {
           connectStream(sessionId, "reconnect");
         }

@@ -13,6 +13,7 @@ import {
   type AgentBackendFactory,
   type AgentModelInfo,
   type AgentSession,
+  type AgentSlashCommandInfo,
   type CopilotClientFactory,
 } from "./agent-backend/index.js";
 import { existsSync } from "node:fs";
@@ -405,6 +406,7 @@ export class SessionManager {
   private sessionDiskListBuilds = new Map<string, { generation: number; promise: Promise<any[]> }>();
   private sessionDiskListCacheGeneration = 0;
   private warmSessionPromises = new Map<string, Promise<void>>();
+  private slashCommandListCache = new Map<string, AgentSlashCommandInfo[]>();
   private static SESSION_LIST_TTL = 60_000; // 1 minute TTL
   private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
@@ -1183,6 +1185,7 @@ export class SessionManager {
       return current;
     }
     this.sessionObjects.set(sessionId, session);
+    this.slashCommandListCache.delete(sessionId);
     this.maybeAutoNameSession(sessionId, { session });
     return session;
   }
@@ -1194,7 +1197,24 @@ export class SessionManager {
       return current;
     }
     this.sessionObjects.set(sessionId, nextSession);
+    this.slashCommandListCache.delete(sessionId);
     return nextSession;
+  }
+
+  async listSlashCommands(sessionId: string): Promise<{ supported: boolean; commands: AgentSlashCommandInfo[] }> {
+    const cached = this.slashCommandListCache.get(sessionId);
+    if (cached) return { supported: true, commands: cached };
+
+    const session = this.sessionObjects.get(sessionId);
+    if (!session || typeof session.listSlashCommands !== "function") {
+      return { supported: false, commands: [] };
+    }
+
+    const result = await session.listSlashCommands();
+    if (!result) return { supported: false, commands: [] };
+    const commands = result.commands;
+    this.slashCommandListCache.set(sessionId, commands);
+    return { supported: true, commands };
   }
 
   /** Get cached MCP status for a session, or probe live if session is cached */
@@ -1390,6 +1410,7 @@ export class SessionManager {
     }
 
     this.sessionObjects.set(session.sessionId, session);
+    this.slashCommandListCache.delete(session.sessionId);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
     if (typeof model === "string" && model.trim()) {
@@ -1520,6 +1541,7 @@ export class SessionManager {
     }
 
     this.sessionObjects.set(session.sessionId, session);
+    this.slashCommandListCache.delete(session.sessionId);
     const settings = this.deps.settingsStore?.getSettings();
     const model = sessionConfig.model;
     if (typeof model === "string" && model.trim()) {
@@ -1957,6 +1979,7 @@ export class SessionManager {
     try { session.disconnect?.(); } catch { /* best-effort */ }
     this.sessionObjects.delete(sessionId);
     this.liveSessionModelState.delete(sessionId);
+    this.slashCommandListCache.delete(sessionId);
     return true;
   }
 

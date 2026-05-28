@@ -182,6 +182,82 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped2.setSendMode!({ mode: "immediate" })).rejects.toThrow(/mode switching is not available/);
   });
 
+  it("invokeSlashCommand delegates to rpc.commands.invoke and normalizes agent prompts", async () => {
+    const invoke = vi.fn(async () => ({
+      kind: "agent-prompt",
+      prompt: "work on objective",
+      displayPrompt: "Autopilot objective: objective",
+      mode: "autopilot",
+    }));
+    const session = createFakeSession({ commands: { invoke } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.invokeSlashCommand!({ name: "goal", input: "objective" })).resolves.toEqual({
+      kind: "send",
+      prompt: "work on objective",
+      displayPrompt: "Autopilot objective: objective",
+      mode: "autopilot",
+    });
+    expect(invoke).toHaveBeenCalledWith({ name: "goal", input: "objective" });
+
+    const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped2.invokeSlashCommand!({ name: "goal" })).rejects.toThrow(/Slash command invocation is not available/);
+  });
+
+  it("invokeSlashCommand normalizes text and completed command results", async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ kind: "text", text: "command output", markdown: true })
+      .mockResolvedValueOnce({ kind: "completed", message: "done" });
+    const session = createFakeSession({ commands: { invoke } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.invokeSlashCommand!({ name: "context" })).resolves.toEqual({
+      kind: "text",
+      text: "command output",
+      markdown: true,
+    });
+    await expect(wrapped.invokeSlashCommand!({ name: "noop" })).resolves.toEqual({
+      kind: "completed",
+      message: "done",
+    });
+  });
+
+  it("listSlashCommands delegates to rpc.commands.list and normalizes metadata", async () => {
+    const list = vi.fn(async () => ({
+      commands: [{
+        name: "autopilot",
+        aliases: ["goal"],
+        description: "Toggle autopilot mode or set an explicit objective",
+        kind: "builtin",
+        input: { hint: "[on|off|objective]", preserveMultilineInput: true },
+        allowDuringAgentExecution: true,
+        experimental: true,
+      }],
+    }));
+    const session = createFakeSession({ commands: { list } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.listSlashCommands!()).resolves.toEqual({
+      commands: [{
+        name: "autopilot",
+        aliases: ["goal"],
+        description: "Toggle autopilot mode or set an explicit objective",
+        kind: "builtin",
+        input: { hint: "[on|off|objective]", preserveMultilineInput: true },
+        allowDuringAgentExecution: true,
+        experimental: true,
+      }],
+    });
+    expect(list).toHaveBeenCalledWith({
+      includeBuiltins: true,
+      includeSkills: true,
+      includeClientCommands: true,
+    });
+
+    const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
+    await expect(wrapped2.listSlashCommands!()).resolves.toBeUndefined();
+  });
+
   it("startFleet delegates to rpc.fleet.start and throws when unavailable", async () => {
     const start = vi.fn(async () => undefined);
     const session = createFakeSession({ fleet: { start } });

@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Square, Paperclip, FileText, X, Loader2, Mic, SendHorizontal } from "lucide-react";
-import type { BlobAttachment, Attachment } from "../api";
+import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { useVoiceInput } from "../hooks/useVoiceInput";
@@ -26,6 +26,36 @@ import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 py-3 sm:px-4 md:px-6 md:py-4 lg:px-8";
+
+interface SlashDraftState {
+  query: string;
+  hasArgumentStart: boolean;
+}
+
+function parseSlashDraft(value: string): SlashDraftState | null {
+  if (!value.startsWith("/") || value.startsWith("//")) return null;
+  const match = value.match(/^\/([^\s/]*)([\s\S]*)$/);
+  if (!match) return null;
+  return {
+    query: match[1] ?? "",
+    hasArgumentStart: (match[2] ?? "").length > 0,
+  };
+}
+
+function slashCommandTokens(command: SlashCommandInfo): string[] {
+  return [command.name, ...(command.aliases ?? [])].map((token) => token.toLowerCase());
+}
+
+function matchesSlashQuery(command: SlashCommandInfo, query: string): boolean {
+  const normalized = query.toLowerCase();
+  if (!normalized) return true;
+  return slashCommandTokens(command).some((token) => token.startsWith(normalized));
+}
+
+function isExactSlashCommand(command: SlashCommandInfo, query: string): boolean {
+  const normalized = query.toLowerCase();
+  return slashCommandTokens(command).some((token) => token === normalized);
+}
 
 /** Read a File as base64 (fallback for draft mode without sessionId) */
 function readFileAsBase64(file: File): Promise<string> {
@@ -65,6 +95,8 @@ interface ChatInputProps {
   /** When true, input is visible but send is disabled (e.g., session warming up) */
   disabled?: boolean;
   disabledHint?: string;
+  slashCommands?: SlashCommandInfo[];
+  slashCommandsSupported?: boolean;
 }
 
 export default function ChatInput({
@@ -82,6 +114,8 @@ export default function ChatInput({
   onRetryVoiceJobUpload,
   disabled,
   disabledHint,
+  slashCommands = [],
+  slashCommandsSupported = false,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -103,6 +137,7 @@ export default function ChatInput({
   const previousVoiceJobRef = useRef<VoiceBackgroundJob | null>(null);
   const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
+  const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
   const {
     bind: bindSendModeMenu,
     menu: sendModeMenu,
@@ -138,6 +173,17 @@ export default function ChatInput({
   const updateDraft = useCallback((value: string, nextAttachments = attachmentsRef.current) => {
     onDraftChange?.(value, nextAttachments);
   }, [onDraftChange]);
+
+  const applyComposerText = useCallback((value: string) => {
+    inputRef.current = value;
+    setInput(value);
+    updateDraft(value);
+    queueMicrotask(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange?.(value.length, value.length);
+      adjustTextareaHeight();
+    });
+  }, [adjustTextareaHeight, updateDraft]);
 
   const clearComposer = useCallback(() => {
     revokePreviewUrls(attachmentsRef.current);
@@ -343,6 +389,15 @@ export default function ChatInput({
     });
   }, [updateDraft]);
 
+  const insertSlashCommand = useCallback((command: SlashCommandInfo) => {
+    const current = inputRef.current;
+    const draft = parseSlashDraft(current);
+    if (!draft) return;
+    const tokenEnd = 1 + draft.query.length;
+    const rest = current.slice(tokenEnd);
+    applyComposerText(`/${command.name}${rest || " "}`);
+  }, [applyComposerText]);
+
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const pastedFiles: File[] = [];
     for (const item of Array.from(e.clipboardData.items)) {
@@ -380,6 +435,23 @@ export default function ChatInput({
   }, [updateDraft]);
 
   const manualSendBlockedByVoiceJob = !!activeVoiceJob?.serverOwned && isDraftComposerKey(composerKey);
+  const slashDraft = useMemo(() => parseSlashDraft(input), [input]);
+  const exactSlashCommand = useMemo(() => {
+    if (!slashDraft || !slashCommandsSupported) return undefined;
+    return slashCommands.find((command) => isExactSlashCommand(command, slashDraft.query));
+  }, [slashCommands, slashCommandsSupported, slashDraft]);
+  const slashSuggestions = useMemo(() => {
+    if (!slashDraft || !slashCommandsSupported) return [];
+    if (slashDraft.hasArgumentStart && exactSlashCommand) return [];
+    return slashCommands
+      .filter((command) => matchesSlashQuery(command, slashDraft.query))
+      .slice(0, 8);
+  }, [exactSlashCommand, slashCommands, slashCommandsSupported, slashDraft]);
+  const agentBusy = Boolean(onAbort);
+
+  useEffect(() => {
+    setSelectedSlashCommandIndex(0);
+  }, [slashDraft?.query, slashSuggestions.length]);
 
   const handleSend = useCallback((mode: SendMode = DEFAULT_SEND_MODE) => {
     if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
@@ -417,11 +489,29 @@ export default function ChatInput({
   }, [clearComposer, composerKey, disabled, manualSendBlockedByVoiceJob, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if ((e as any).isComposing || (e as any).keyCode === 229) return;
+    if (slashSuggestions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedSlashCommandIndex((index) => (index + 1) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedSlashCommandIndex((index) => (index + slashSuggestions.length - 1) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        insertSlashCommand(slashSuggestions[selectedSlashCommandIndex] ?? slashSuggestions[0]!);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
-  }, [handleSend]);
+  }, [handleSend, insertSlashCommand, selectedSlashCommandIndex, slashSuggestions]);
 
   const hasContent = input.trim().length > 0 || attachments.length > 0;
   const canSend = hasContent && uploading === 0 && !disabled && !manualSendBlockedByVoiceJob;
@@ -540,6 +630,57 @@ export default function ChatInput({
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {slashCommandsSupported && (slashSuggestions.length > 0 || exactSlashCommand) && (
+          <div
+            className="mb-2 overflow-hidden rounded-lg border border-border bg-bg-primary shadow-lg"
+            role="listbox"
+            aria-label="Slash command suggestions"
+          >
+            {slashSuggestions.length > 0 ? (
+              slashSuggestions.map((command, index) => {
+                const commandDisabled = agentBusy && !command.allowDuringAgentExecution;
+                return (
+                  <button
+                    key={command.name}
+                    type="button"
+                    role="option"
+                    aria-selected={index === selectedSlashCommandIndex}
+                    disabled={commandDisabled}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertSlashCommand(command)}
+                    title={commandDisabled ? "This command cannot run while the agent is busy." : undefined}
+                    className={`block w-full px-3 py-2 text-left text-sm transition-colors ${
+                      index === selectedSlashCommandIndex
+                        ? "bg-accent/10 text-text-primary"
+                        : "text-text-secondary hover:bg-bg-elevated"
+                    } ${commandDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-text-primary">/{command.name}</span>
+                      {command.input?.hint && (
+                        <span className="truncate text-xs text-text-faint">{command.input.hint}</span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-text-muted">
+                      {command.description}
+                    </span>
+                  </button>
+                );
+              })
+            ) : exactSlashCommand ? (
+              <div className="px-3 py-2 text-sm">
+                <div className="font-medium text-text-primary">/{exactSlashCommand.name}</div>
+                <div className="mt-0.5 text-xs text-text-muted">{exactSlashCommand.description}</div>
+                {exactSlashCommand.input?.hint && (
+                  <div className="mt-1 text-xs text-text-faint">
+                    {exactSlashCommand.input.required ? "Required: " : "Hint: "}
+                    {exactSlashCommand.input.hint}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
         )}
 
