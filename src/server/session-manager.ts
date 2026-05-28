@@ -492,6 +492,7 @@ export class SessionManager {
         this.replaceCachedSession(sessionId, expectedSession, nextSession),
       probeMcpStatus: (sessionId, session) => this.probeMcpStatus(sessionId, session),
       markCachedSessionForEviction: (sessionId, reason) => this.markCachedSessionForEviction(sessionId, reason),
+      deferMcpStatusSessionEviction: (sessionId, reason) => this.deferMcpStatusSessionEviction(sessionId, reason),
       flushPendingSessionEviction: (sessionId) => this.flushPendingSessionEviction(sessionId),
       cancelPendingUserInputRequests: (sessionId, reason, message) =>
         this.cancelPendingUserInputRequests(sessionId, reason, message),
@@ -624,6 +625,28 @@ export class SessionManager {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] Scheduling cached session refresh after ${reason}`);
     }
     this.flushPendingSessionEviction(sessionId);
+  }
+
+  /**
+   * Defer a cached-session eviction until the current run fully completes.
+   *
+   * Unlike {@link markCachedSessionForEviction}, this does NOT attempt an
+   * immediate flush. The eviction is queued in {@link pendingSessionEvictions}
+   * and drained by the run controller's `.finally()` hook in `SessionRunner`,
+   * which only fires after `setSessionRunState(sessionId, "idle")`. This
+   * closes a race where a mid-turn MCP status flip (e.g. `connected → not_configured`)
+   * could otherwise drop the cached `AgentSession` while the SDK was still
+   * persisting the in-flight turn's `fc_call_*` items to disk, causing the
+   * next resume to re-write duplicate items (manifesting as upstream
+   * `CAPIError: 400 Duplicate item found`).
+   */
+  private deferMcpStatusSessionEviction(sessionId: string, reason: string): void {
+    if (!this.sessionObjects.has(sessionId)) return;
+    const alreadyPending = this.pendingSessionEvictions.has(sessionId);
+    this.pendingSessionEvictions.add(sessionId);
+    if (!alreadyPending) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Deferring cached session refresh until run completion: ${reason}`);
+    }
   }
 
   private syncRestartWaitingIfPending(): void {

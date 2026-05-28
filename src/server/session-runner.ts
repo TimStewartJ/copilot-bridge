@@ -228,6 +228,13 @@ export interface SessionRunnerDeps {
   replaceCachedSession(sessionId: string, expectedSession: any, nextSession: any): any;
   probeMcpStatus(sessionId: string, session: any): void;
   markCachedSessionForEviction(sessionId: string, reason: string): void;
+  /**
+   * Queue a cached-session eviction without immediately attempting a flush.
+   * The eviction is drained by the run controller's `.finally()` hook after
+   * `setSessionRunState(sessionId, "idle")`, avoiding a race with in-flight
+   * SDK persistence of the current turn's events. See SessionManager.deferMcpStatusSessionEviction.
+   */
+  deferMcpStatusSessionEviction(sessionId: string, reason: string): void;
   flushPendingSessionEviction(sessionId: string): void;
   cancelPendingUserInputRequests(
     sessionId: string,
@@ -1255,7 +1262,7 @@ export class SessionRunner {
             && status === "not_configured"
             && isConfiguredMcpServer(name)
           ) {
-            this.deps.markCachedSessionForEviction(sessionId, "mcp_status_connected_to_not_configured");
+            this.deps.deferMcpStatusSessionEviction(sessionId, "mcp_status_connected_to_not_configured");
           }
           console.log(`[sdk] [${sid}] 🔌 MCP ${name}: ${status}${data?.error ? ` — ${data.error}` : ""}`);
           bus.emit({ type: "mcp_status", servers: current });

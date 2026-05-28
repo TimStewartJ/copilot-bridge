@@ -160,6 +160,61 @@ describe("SessionManager stale cached session recovery", () => {
 
     await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
 
+    // Eviction must be deferred — disconnect must NOT happen mid-run /
+    // before the run lifecycle's `.finally()` drains pending evictions.
+    expect(cachedSession.disconnect).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.get("session-1")).toBe(cachedSession);
+    expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
+
+    // Simulate the SessionRunner's `.finally()` drain that runs in production
+    // after `setSessionRunState(sessionId, "idle")`. (`_doWork` is a test seam
+    // that bypasses `startBackgroundRun`'s wrapper.)
+    manager.flushPendingSessionEviction("session-1");
+
+    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.sessionObjects.has("session-1")).toBe(false);
+    expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
+  });
+
+  it("defers MCP-status eviction without flushing, even when no run is busy", () => {
+    // Regression: previously markCachedSessionForEviction (called inline from
+    // the mcp_server_status_changed handler) immediately invoked
+    // flushPendingSessionEviction. If isSessionBusy transiently returned
+    // false (e.g. around terminal-event ordering), the cached AgentSession
+    // was disconnected while the SDK was still persisting the in-flight
+    // turn's `fc_call_*` items to disk, leading to duplicate items on the
+    // next resume and upstream `CAPIError: 400 Duplicate item found`.
+    //
+    // The new deferMcpStatusSessionEviction must only enqueue the eviction
+    // and rely on the run controller's `.finally()` drain — it must never
+    // call flush itself, regardless of busy state.
+    const { manager } = createManager();
+    const cachedSession = createSession(() => {});
+    manager.sessionObjects.set("session-1", cachedSession);
+
+    // Sanity: with no active run, isSessionBusy is false.
+    expect(manager.isSessionBusy("session-1")).toBe(false);
+
+    manager.deferMcpStatusSessionEviction(
+      "session-1",
+      "mcp_status_connected_to_not_configured",
+    );
+
+    // Eviction is queued but NOT yet performed.
+    expect(cachedSession.disconnect).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.get("session-1")).toBe(cachedSession);
+    expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
+
+    // Repeated calls are idempotent (no duplicate queueing, no flush).
+    manager.deferMcpStatusSessionEviction(
+      "session-1",
+      "mcp_status_connected_to_not_configured",
+    );
+    expect(cachedSession.disconnect).not.toHaveBeenCalled();
+
+    // The drain path (invoked by SessionRunner's `.finally()` after
+    // setSessionRunState(sessionId, "idle")) performs the eviction.
+    manager.flushPendingSessionEviction("session-1");
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
     expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
