@@ -21,6 +21,7 @@ import { createDocsSnapshotStore, STARTUP_SNAPSHOT_MIN_INTERVAL_MS } from "./doc
 import { createTagStore } from "./tag-store.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
 import { createTelemetryStore } from "./telemetry-store.js";
+import { createSessionContextStore } from "./session-context-store.js";
 import { createVoiceJobStore } from "./voice-job-store.js";
 import { createPushNotificationService, initPushEventNotifications } from "./push-notification-service.js";
 import { createPushSubscriptionStore } from "./push-subscription-store.js";
@@ -92,6 +93,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const tagStore = createTagStore(db);
   const mcpServerStore = createMcpServerStore(db);
   const telemetryStore = createTelemetryStore(db);
+  const sessionContextStore = createSessionContextStore(db);
   const cliSessionCatalog = createCopilotCliSessionCatalog({
     copilotHome: runtimePaths.copilotHome,
     recordSpan: (name, duration, sessionId, metadata) =>
@@ -145,6 +147,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     tagStore,
     mcpServerStore,
     telemetryStore,
+    sessionContextStore,
     globalBus: defaultGlobalBus,
     eventBusRegistry: defaultEventBusRegistry,
     sessionManager: null as any,

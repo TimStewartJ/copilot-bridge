@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatEntry, PendingUserInputRequestView } from "../api";
+import type { SessionContextResponse } from "../../shared/session-context.js";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -24,9 +25,11 @@ const submitUserInputResponseMock = vi.hoisted(() => vi.fn());
 const fetchMessagesMock = vi.hoisted(() => vi.fn());
 const fetchMessagesFastMock = vi.hoisted(() => vi.fn());
 const fetchMcpStatusMock = vi.hoisted(() => vi.fn());
+const fetchSessionContextMock = vi.hoisted(() => vi.fn());
 const warmSessionMock = vi.hoisted(() => vi.fn());
 const reportTimingMock = vi.hoisted(() => vi.fn());
 const chatInputMock = vi.hoisted(() => vi.fn());
+const mcpStatusBarMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../useSessionStream", () => ({
   useSessionStream: (...args: unknown[]) => useSessionStreamMock(...args),
@@ -39,6 +42,7 @@ vi.mock("../api", async (importOriginal) => {
     fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
     fetchMessagesFast: (...args: unknown[]) => fetchMessagesFastMock(...args),
     fetchMcpStatus: (...args: unknown[]) => fetchMcpStatusMock(...args),
+    fetchSessionContext: (...args: unknown[]) => fetchSessionContextMock(...args),
     warmSession: (...args: unknown[]) => warmSessionMock(...args),
     reportTiming: (...args: unknown[]) => reportTimingMock(...args),
     submitUserInputResponse: (...args: unknown[]) => submitUserInputResponseMock(...args),
@@ -53,7 +57,10 @@ vi.mock("./ChatInput", () => ({
 }));
 
 vi.mock("./McpStatusBar", () => ({
-  default: () => null,
+  default: (props: unknown) => {
+    mcpStatusBarMock(props);
+    return null;
+  },
 }));
 
 vi.mock("./MessageBubble", () => ({
@@ -114,6 +121,7 @@ type RenderChatViewOptions = {
   activeSessionActivityAt?: string;
   busySignal?: number;
   fetchMessagesFastResult?: Promise<FetchMessagesFastResult> | FetchMessagesFastResult;
+  fetchSessionContextResult?: Promise<SessionContextResponse> | SessionContextResponse;
   pendingUserInputs?: PendingUserInputRequestView[];
   seedQueryClient?: (queryClient: QueryClient) => void;
   streamOverrides?: Record<string, unknown>;
@@ -126,6 +134,21 @@ type RenderChatViewOptions = {
 
 function createMessage(id: string, content = id): ChatEntry {
   return { id, role: "assistant", content };
+}
+
+function createEmptyContext(): SessionContextResponse {
+  return {
+    provider: "test",
+    summary: null,
+    turns: [],
+    events: [],
+    capabilities: {
+      contextWindow: "unavailable",
+      modelUsage: "unavailable",
+      compaction: "unavailable",
+      truncation: "unavailable",
+    },
+  };
 }
 
 function getMessageContent(entry: ChatEntry | undefined): string | undefined {
@@ -278,6 +301,12 @@ async function renderChatView(
   );
   fetchMessagesMock.mockResolvedValue({ messages: [], hasMore: false, total: 0 });
   fetchMcpStatusMock.mockResolvedValue([]);
+  const fetchSessionContextResult = options.fetchSessionContextResult ?? createEmptyContext();
+  fetchSessionContextMock.mockReturnValue(
+    fetchSessionContextResult instanceof Promise
+      ? fetchSessionContextResult
+      : Promise.resolve(fetchSessionContextResult),
+  );
   warmSessionMock.mockResolvedValue(undefined);
   reportTimingMock.mockResolvedValue(undefined);
   submitUserInputResponseMock.mockResolvedValue({
@@ -296,6 +325,7 @@ async function renderChatView(
     pendingOrigin: "message",
     pendingUserInputs: nextOptions.pendingUserInputs ?? pendingUserInputs,
     mcpServers: [],
+    contextSummary: null,
     sendMessage: sendMessageMock,
     startFleet: startFleetMock,
     abortSession: abortSessionMock,
@@ -377,6 +407,30 @@ describe("ChatView cached resume loading state", () => {
       const props = chatInputMock.mock.calls.at(-1)?.[0] as { disabled?: boolean; disabledHint?: string };
       expect(props.disabled).toBe(true);
       expect(props.disabledHint).toBe(hint);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps rendering chat when session context fetch fails", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "visible history")],
+        busy: false,
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      fetchSessionContextResult: Promise.reject(new Error("context offline")),
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("visible history") ?? false);
+      await waitUntilAct(act, () => mcpStatusBarMock.mock.calls.some((call) => (
+        (call[0] as { contextError?: string }).contextError === "context offline"
+      )));
+      expect(dom.container.textContent).toContain("visible history");
     } finally {
       await cleanup();
     }

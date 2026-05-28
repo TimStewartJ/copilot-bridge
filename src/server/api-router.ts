@@ -49,6 +49,7 @@ import {
 } from "./visual-artifacts.js";
 import { createCopilotUsageReader } from "./copilot-usage.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
+import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
 import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { isCopilotContextTier } from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
@@ -122,6 +123,13 @@ function getErrorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
     : undefined;
+}
+
+function parseContextEventLimit(value: unknown): number {
+  if (typeof value !== "string" || !value.trim()) return DEFAULT_CONTEXT_EVENT_LIMIT;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_CONTEXT_EVENT_LIMIT;
+  return Math.max(1, Math.min(MAX_CONTEXT_EVENT_LIMIT, Math.floor(parsed)));
 }
 
 async function getSessionEventLogSizeBytes(ctx: AppContext, sessionId: string): Promise<number> {
@@ -1879,6 +1887,66 @@ export function createApiRouter(ctx: AppContext): express.Router {
       const status = getSessionStatus(ctx, req.params.id);
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
       res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, warm });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Provider-neutral context telemetry for chat health indicators.
+  router.get("/sessions/:id/context", async (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const limit = parseContextEventLimit(req.query.limit);
+    try {
+      const result = await timeRequestOperation(
+        res,
+        "sessions.context.read",
+        async () => {
+          if (!ctx.sessionContextStore) {
+            return {
+              provider: "copilot",
+              summary: null,
+              turns: [],
+              events: [],
+              capabilities: {
+                contextWindow: "unavailable",
+                modelUsage: "unavailable",
+                compaction: "unavailable",
+                truncation: "unavailable",
+              },
+            };
+          }
+          try {
+            await ctx.sessionContextStore.backfillSessionContextFromEventsFile({
+              sessionId,
+              provider: "copilot",
+              providerSessionId: sessionId,
+              eventsPath: join(getCopilotHome(ctx), "session-state", sessionId, "events.jsonl"),
+            });
+          } catch (error) {
+            console.warn(
+              `[sessions] Context telemetry backfill failed for ${sessionId}:`,
+              error instanceof Error ? error.message : error,
+            );
+          }
+          return ctx.sessionContextStore.getSessionContext(sessionId, { limit }) ?? {
+            provider: "copilot",
+            summary: null,
+            turns: [],
+            events: [],
+            capabilities: {
+              contextWindow: "unavailable",
+              modelUsage: "unavailable",
+              compaction: "unavailable",
+              truncation: "unavailable",
+            },
+          };
+        },
+        { sessionId, limit },
+      );
+      res.json(result);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

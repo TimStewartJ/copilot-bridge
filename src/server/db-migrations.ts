@@ -708,6 +708,103 @@ function migrateTaskWorkItemIdsToText(db: DatabaseSync): void {
   }
 }
 
+function ensureSessionContextTelemetryTables(db: DatabaseSync): void {
+  // Keep this DDL as a historical compatibility snapshot. Do not import the
+  // current baseline from db.ts: future baseline columns must be added below
+  // with ALTER TABLE so existing databases upgrade safely.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_context_summary (
+      sessionId TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      updatedAt TEXT NOT NULL,
+      currentModel TEXT,
+      latestBridgeTurnId TEXT,
+      latestSnapshotAt TEXT,
+      contextWindow INTEGER,
+      tokensUsed INTEGER,
+      tokensRemaining INTEGER,
+      usageRatio REAL,
+      modelUsageJson TEXT,
+      provenanceJson TEXT,
+      contextWindowCapability TEXT NOT NULL DEFAULT 'unavailable',
+      modelUsageCapability TEXT NOT NULL DEFAULT 'unavailable',
+      snapshotCount INTEGER NOT NULL DEFAULT 0,
+      compactionCount INTEGER NOT NULL DEFAULT 0,
+      truncationCount INTEGER NOT NULL DEFAULT 0,
+      shutdownCount INTEGER NOT NULL DEFAULT 0,
+      lastSnapshotHash TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_context_summary_provider
+      ON session_context_summary(provider, providerSessionId);
+    CREATE TABLE IF NOT EXISTS session_context_turns (
+      sessionId TEXT NOT NULL,
+      bridgeTurnId TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      providerTurnId TEXT,
+      attribution TEXT NOT NULL,
+      startedAt TEXT,
+      endedAt TEXT,
+      latestEventAt TEXT,
+      model TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      PRIMARY KEY (sessionId, bridgeTurnId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_context_turns_provider
+      ON session_context_turns(provider, providerSessionId, providerTurnId);
+    CREATE TABLE IF NOT EXISTS session_context_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sessionId TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      providerEventId TEXT,
+      providerTurnId TEXT,
+      bridgeTurnId TEXT,
+      attribution TEXT NOT NULL,
+      type TEXT NOT NULL,
+      occurredAt TEXT NOT NULL,
+      model TEXT,
+      contextWindow INTEGER,
+      tokensUsed INTEGER,
+      tokensRemaining INTEGER,
+      usageRatio REAL,
+      modelUsageJson TEXT,
+      provenanceJson TEXT,
+      metadataJson TEXT,
+      dedupeKey TEXT NOT NULL,
+      snapshotHash TEXT,
+      contextWindowCapability TEXT NOT NULL DEFAULT 'unavailable',
+      modelUsageCapability TEXT NOT NULL DEFAULT 'unavailable',
+      createdAt TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_context_events_dedupe
+      ON session_context_events(sessionId, dedupeKey);
+    CREATE INDEX IF NOT EXISTS idx_session_context_events_session_recent
+      ON session_context_events(sessionId, occurredAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_session_context_events_provider
+      ON session_context_events(provider, providerSessionId, providerEventId);
+    CREATE TABLE IF NOT EXISTS session_context_backfills (
+      sessionId TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      eventsPath TEXT NOT NULL,
+      fileSize INTEGER NOT NULL,
+      mtimeMs REAL NOT NULL,
+      backfilledAt TEXT NOT NULL
+    );
+  `);
+  const summaryCols = db.prepare("PRAGMA table_info(session_context_summary)").all() as any[];
+  if (!summaryCols.some((column) => column.name === "provenanceJson")) {
+    db.exec("ALTER TABLE session_context_summary ADD COLUMN provenanceJson TEXT");
+  }
+  const eventCols = db.prepare("PRAGMA table_info(session_context_events)").all() as any[];
+  if (!eventCols.some((column) => column.name === "provenanceJson")) {
+    db.exec("ALTER TABLE session_context_events ADD COLUMN provenanceJson TEXT");
+  }
+}
+
 interface TagNameKeyMigrationRow {
   id: string;
   name: string;
@@ -960,6 +1057,14 @@ const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     transaction: "auto",
     description: "Rebuild task_work_items when itemId was stored as INTEGER so string identifiers are preserved.",
     apply: migrateTaskWorkItemIdsToText,
+  },
+  {
+    id: "session-context-telemetry-tables",
+    category: "schema-upgrade",
+    runMode: "every-open",
+    transaction: "auto",
+    description: "Create provider-neutral session context telemetry tables.",
+    apply: ensureSessionContextTelemetryTables,
   },
 ];
 

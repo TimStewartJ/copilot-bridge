@@ -1,0 +1,14 @@
+{
+  "type": "session.usage_info",
+  "id": "usage-info-1",
+  "timestamp": "2026-05-01T10:05:01.000Z",
+  "ephemeral": true,
+  "data": {
+    "currentTokens": 42000,
+    "tokenLimit": 200000,
+    "messagesLength": 12,
+    "conversationTokens": 18000,
+    "systemTokens": 20000,
+    "toolDefinitionsTokens": 4000
+  }
+}

@@ -6,6 +6,7 @@ import type {
   CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { SessionContextResponse } from "../shared/session-context.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
   NativeUserInputResponse as NativeUserInputResponseType,
@@ -13,6 +14,14 @@ import type {
   UserInputRequestId as UserInputRequestIdType,
 } from "../server/user-input-types.js";
 export type { McpServerConfig };
+export type {
+  SessionContextCapabilities,
+  SessionContextEvent,
+  SessionContextResponse,
+  SessionContextSummary,
+  SessionContextTokenUsage,
+  SessionContextTurn,
+} from "../shared/session-context.js";
 export type {
   NativeUserInputRequest,
   NativeUserInputResponse,
@@ -147,6 +156,7 @@ export function getSessionReadThroughActivityTime(
 export interface ToolCall {
   toolCallId: string;
   name: string;
+  turnId?: string;
   args?: ToolArgs;
   result?: string;
   /** Latest non-final progress or partial output surfaced while the tool is running */
@@ -663,6 +673,17 @@ export async function fetchMessagesFast(
   const qs = params.toString();
   return apiFetch<{ messages: ChatEntry[]; runState: SessionRunState; busy: boolean; total: number; hasMore: boolean; warm: boolean; lastVisibleActivityAt?: string }>(
     `/api/sessions/${sessionId}/messages-fast${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export async function fetchSessionContext(
+  sessionId: string,
+  options?: { signal?: AbortSignal },
+): Promise<SessionContextResponse> {
+  return apiFetch<SessionContextResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/context`,
+    undefined,
+    options,
   );
 }
 

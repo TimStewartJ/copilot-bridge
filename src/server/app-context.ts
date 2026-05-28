@@ -19,6 +19,7 @@ import type { DocsSnapshotStore } from "./docs-snapshot-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
+import type { SessionContextStore } from "./session-context-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionManager } from "./session-manager.js";
@@ -55,6 +56,7 @@ export interface AppContext {
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;
   telemetryStore?: TelemetryStore;
+  sessionContextStore?: SessionContextStore;
   globalBus: GlobalBus;
   eventBusRegistry: EventBusRegistry;
   sessionManager: SessionManager;

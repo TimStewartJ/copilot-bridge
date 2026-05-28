@@ -168,27 +168,6 @@
     "message": "Type '{ status: VoiceBackgroundJobStatus; submitMode: VoiceSubmitMode; serverOwned: boolean | undefined; } | null' is not assignable to type 'VoiceUiJobState | null'.\n  Type '{ status: VoiceBackgroundJobStatus; submitMode: VoiceSubmitMode; serverOwned: boolean | undefined; }' is not assignable to type 'VoiceUiJobState'.\n    Types of property 'status' are incompatible.\n      Type 'VoiceBackgroundJobStatus' is not assignable to type '\"accepted\" | \"transcribing\" | \"sending\" | \"uploading\"'.\n        Type '\"error\"' is not assignable to type '\"accepted\" | \"transcribing\" | \"sending\" | \"uploading\"'."
   },
   {
-    "code": 2339,
-    "file": "src/client/components/ChatView.tsx",
-    "line": 1431,
-    "character": 20,
-    "message": "Property 'turnId' does not exist on type 'ToolCall'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/components/ChatView.tsx",
-    "line": 1441,
-    "character": 51,
-    "message": "Property 'turnId' does not exist on type 'ToolCall'."
-  },
-  {
-    "code": 2339,
-    "file": "src/client/components/ChatView.tsx",
-    "line": 1441,
-    "character": 60,
-    "message": "Property 'turnId' does not exist on type 'ToolCall'."
-  },
-  {
     "code": 2345,
     "file": "src/client/components/DocsView.tsx",
     "line": 1626,

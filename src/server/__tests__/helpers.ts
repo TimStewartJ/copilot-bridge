@@ -24,6 +24,7 @@ import { createFeedStore } from "../feed-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
+import { createSessionContextStore } from "../session-context-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
 import { createPushNotificationService } from "../push-notification-service.js";
 import { createPushSubscriptionStore } from "../push-subscription-store.js";
@@ -337,6 +338,7 @@ export function createTestApp(overrides?: Partial<AppContext>) {
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
     telemetryStore: createTelemetryStore(db),
+    sessionContextStore: createSessionContextStore(db),
     docsStore,
     docsIndex,
     docsSnapshotStore,

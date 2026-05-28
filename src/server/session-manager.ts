@@ -73,6 +73,7 @@ import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js"
 import type { SettingsStore } from "./settings-store.js";
 import type { TagStore } from "./tag-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
+import type { SessionContextStore } from "./session-context-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
@@ -294,6 +295,7 @@ export interface SessionManagerDeps {
   builtInMcpServers?: Record<string, McpServerConfig>;
   bridgeToolsMcpServer?: BridgeToolsMcpServer;
   telemetryStore?: TelemetryStore;
+  sessionContextStore?: SessionContextStore;
   /** Custom env for the agent backend — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
   /**
@@ -363,6 +365,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     }),
     telemetryStore: ctx.telemetryStore,
+    sessionContextStore: ctx.sessionContextStore,
     config: opts.config,
     builtInMcpServers: opts.builtInMcpServers,
     bridgeToolsMcpServer: ctx.bridgeToolsMcpServer,
@@ -474,6 +477,7 @@ export class SessionManager {
       globalBus: deps.globalBus,
       sessionMetaStore: deps.sessionMetaStore,
       telemetryStore: deps.telemetryStore,
+      sessionContextStore: deps.sessionContextStore,
       copilotHome: deps.copilotHome,
       isSessionBusy: (sessionId) => this.isSessionBusy(sessionId),
       hasPlan: (sessionId) => this.hasPlan(sessionId),

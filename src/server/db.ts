@@ -44,6 +44,10 @@ const SQLITE_STATE_TABLES = [
   "defer_loops",
   "push_subscriptions",
   "management_jobs",
+  "session_context_summary",
+  "session_context_turns",
+  "session_context_events",
+  "session_context_backfills",
 ] as const;
 type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
 
@@ -661,6 +665,89 @@ function initSchema(db: DatabaseSync): void {
       createdAt TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_telemetry_ingest_keys_created ON telemetry_ingest_keys(createdAt);
+
+    -- Provider-neutral per-session context telemetry
+    CREATE TABLE IF NOT EXISTS session_context_summary (
+      sessionId TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      updatedAt TEXT NOT NULL,
+      currentModel TEXT,
+      latestBridgeTurnId TEXT,
+      latestSnapshotAt TEXT,
+      contextWindow INTEGER,
+      tokensUsed INTEGER,
+      tokensRemaining INTEGER,
+      usageRatio REAL,
+      modelUsageJson TEXT,
+      provenanceJson TEXT,
+      contextWindowCapability TEXT NOT NULL DEFAULT 'unavailable',
+      modelUsageCapability TEXT NOT NULL DEFAULT 'unavailable',
+      snapshotCount INTEGER NOT NULL DEFAULT 0,
+      compactionCount INTEGER NOT NULL DEFAULT 0,
+      truncationCount INTEGER NOT NULL DEFAULT 0,
+      shutdownCount INTEGER NOT NULL DEFAULT 0,
+      lastSnapshotHash TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_context_summary_provider
+      ON session_context_summary(provider, providerSessionId);
+    CREATE TABLE IF NOT EXISTS session_context_turns (
+      sessionId TEXT NOT NULL,
+      bridgeTurnId TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      providerTurnId TEXT,
+      attribution TEXT NOT NULL,
+      startedAt TEXT,
+      endedAt TEXT,
+      latestEventAt TEXT,
+      model TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      PRIMARY KEY (sessionId, bridgeTurnId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_context_turns_provider
+      ON session_context_turns(provider, providerSessionId, providerTurnId);
+    CREATE TABLE IF NOT EXISTS session_context_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sessionId TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      providerEventId TEXT,
+      providerTurnId TEXT,
+      bridgeTurnId TEXT,
+      attribution TEXT NOT NULL,
+      type TEXT NOT NULL,
+      occurredAt TEXT NOT NULL,
+      model TEXT,
+      contextWindow INTEGER,
+      tokensUsed INTEGER,
+      tokensRemaining INTEGER,
+      usageRatio REAL,
+      modelUsageJson TEXT,
+      provenanceJson TEXT,
+      metadataJson TEXT,
+      dedupeKey TEXT NOT NULL,
+      snapshotHash TEXT,
+      contextWindowCapability TEXT NOT NULL DEFAULT 'unavailable',
+      modelUsageCapability TEXT NOT NULL DEFAULT 'unavailable',
+      createdAt TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_context_events_dedupe
+      ON session_context_events(sessionId, dedupeKey);
+    CREATE INDEX IF NOT EXISTS idx_session_context_events_session_recent
+      ON session_context_events(sessionId, occurredAt DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_session_context_events_provider
+      ON session_context_events(provider, providerSessionId, providerEventId);
+    CREATE TABLE IF NOT EXISTS session_context_backfills (
+      sessionId TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      providerSessionId TEXT,
+      eventsPath TEXT NOT NULL,
+      fileSize INTEGER NOT NULL,
+      mtimeMs REAL NOT NULL,
+      backfilledAt TEXT NOT NULL
+    );
 
     -- Canonical MCP server registry
     CREATE TABLE IF NOT EXISTS mcp_servers (

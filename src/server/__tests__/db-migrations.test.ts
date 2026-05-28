@@ -142,6 +142,7 @@ describe("database migration registry", () => {
       "task-groups-notes-column",
       "tasks-kind-momentum-and-status-repair",
       "task-work-items-text-item-id",
+      "session-context-telemetry-tables",
     ]);
   });
 
@@ -165,6 +166,7 @@ describe("database migration registry", () => {
       "task-groups-notes-column": "auto",
       "tasks-kind-momentum-and-status-repair": "self",
       "task-work-items-text-item-id": "auto",
+      "session-context-telemetry-tables": "auto",
     });
   });
 

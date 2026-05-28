@@ -304,6 +304,64 @@ describe("createVisualEntryFromPublishedEvent", () => {
 });
 
 describe("useSessionStream user input state", () => {
+  it("tracks summary-only context updates from the live stream", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      await emitAndWait(act, sse, {
+        type: "context_update",
+        summary: { tokensUsed: 12_000, contextWindow: 100_000, usageRatio: 0.12 },
+      }, () => getState().contextSummary?.tokensUsed === 12_000);
+
+      expect(getState().contextSummary).toMatchObject({
+        tokensUsed: 12_000,
+        contextWindow: 100_000,
+        usageRatio: 0.12,
+      });
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
+  });
+
+  it("hydrates context summary from reconnect snapshots", async () => {
+    await withSessionStreamHarness(async ({ getState, act }) => {
+      const sse = createControlledSseResponse();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse.response);
+
+      await act(async () => {
+        getState().reconnect("session-1");
+      });
+      await waitUntilAct(act, () => fetchMock.mock.calls.length === 1);
+
+      await emitAndWait(act, sse, {
+        type: "snapshot",
+        accumulatedContent: "",
+        activeTools: [],
+        intentText: "",
+        complete: false,
+        contextSummary: { tokensUsed: 24_000, contextWindow: 120_000, usageRatio: 0.2 },
+      }, () => getState().contextSummary?.tokensUsed === 24_000);
+
+      expect(getState().contextSummary).toMatchObject({
+        tokensUsed: 24_000,
+        contextWindow: 120_000,
+        usageRatio: 0.2,
+      });
+      await act(async () => {
+        sse.close();
+        await waitTick();
+      });
+    });
+  });
+
   it("hydrates pending requests from snapshots and removes answered or canceled requests", async () => {
     await withSessionStreamHarness(async ({ getState, act }) => {
       const sse = createControlledSseResponse();
