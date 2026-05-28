@@ -15,6 +15,7 @@ import {
   getStagingRouter,
   registerExistingPreviewsFromDisk,
   registerExpressApp,
+  startStagingPreviewDiscoveryPoller,
 } from "./staging-tools.js";
 import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
   initKeepAlive();
 
   registerExistingPreviewsFromDisk();
+  startStagingPreviewDiscoveryPoller();
 
   const port = config.web.port;
   // Event loop lag monitor — measures how late setInterval fires vs expected

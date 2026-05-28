@@ -213,6 +213,32 @@ export function readActiveRelease(dataDir: string): ReleaseSlotManifest | null {
   }
 }
 
+export function findReleaseSlotByCommit(
+  dataDir: string,
+  commitSha: string,
+  options: { validationMode?: RestartValidationMode } = {},
+): ReleaseSlotManifest | null {
+  const releaseParent = getReleaseSlotsDir(dataDir);
+  if (!existsSync(releaseParent)) return null;
+  const candidates = (() => {
+    try {
+      return readdirSync(releaseParent, { withFileTypes: true }) as Dirent[];
+    } catch {
+      return [];
+    }
+  })();
+
+  return candidates
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => readReleaseSlotManifest(join(releaseParent, entry.name), dataDir))
+    .filter((manifest): manifest is ReleaseSlotManifest =>
+      !!manifest
+      && manifest.commitSha === commitSha
+      && (!options.validationMode || manifest.validationMode === options.validationMode)
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+}
+
 export async function writeActiveRelease(dataDir: string, manifest: ReleaseSlotManifest): Promise<void> {
   await mkdir(dataDir, { recursive: true });
   const activePath = getActiveReleaseFile(dataDir);

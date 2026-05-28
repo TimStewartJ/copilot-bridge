@@ -34,6 +34,7 @@ import type { PushSubscriptionStore } from "./push-subscription-store.js";
 import type { PushNotificationService } from "./push-notification-service.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/index.js";
 import type { McpServerConfig } from "./mcp-config.js";
+import type { ManagementJobStore } from "./management-job-store.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -60,6 +61,7 @@ export interface AppContext {
   transcriptionService: TranscriptionService;
   voiceJobManager: VoiceJobManager;
   pushSubscriptionStore?: PushSubscriptionStore;
+  managementJobStore?: ManagementJobStore;
   pushNotificationService?: PushNotificationService;
   /** Deferred prompt persistence */
   deferredPromptStore?: DeferredPromptStore;

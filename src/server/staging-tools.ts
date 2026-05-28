@@ -107,7 +107,16 @@ import {
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 import { runValidationCommand } from "./validation-command-runner.js";
+import type { AppContext } from "./app-context.js";
+import { ActiveManagementJobError } from "./management-job-store.js";
 
+
+type StagingRunOptions = { timeoutMs?: number; isolateRuntimeEnv?: boolean; env?: NodeJS.ProcessEnv; log?: (message: string) => void };
+type StagingCommandRunner = (
+  cmd: string,
+  cwd: string,
+  options?: StagingRunOptions,
+) => Promise<{ ok: boolean; output: string }>;
 
 async function cleanupPreviewArtifactsForStagingDir(stagingDir: string): Promise<void> {
   for (const target of listPreviewTargetsForStagingDir(stagingDir)) {
@@ -121,9 +130,10 @@ async function cleanupPreviewResources(
 ): Promise<void> {
   const removeDist = options.removeDist ?? true;
   const ownedByThisProcess = activePreviews.has(prefix) || hasStagingBackendState(prefix);
-  if (!ownedByThisProcess) return;
 
-  await cleanupStagingBackendResources(prefix, { removeData: options.removeData });
+  if (ownedByThisProcess) {
+    await cleanupStagingBackendResources(prefix, { removeData: options.removeData });
+  }
   if (removeDist) {
     removeStagingDist(prefix);
   }
@@ -143,12 +153,17 @@ export async function cleanupPreviewTarget(
  * If package files or patch-package files differ, replace the node_modules
  * symlink with a real npm install so builds use the correct dependency state.
  */
-async function ensureStagingDeps(stagingDir: string): Promise<{ ok: boolean; command?: string; output?: string }> {
+async function ensureStagingDeps(
+  stagingDir: string,
+  options: { runCommand?: StagingCommandRunner; log?: (message: string) => void } = {},
+): Promise<{ ok: boolean; command?: string; output?: string }> {
+  const writeLog = options.log ?? log;
+  const runCommand = options.runCommand ?? run;
   if (dependencySyncHash(stagingDir) === dependencySyncHash(PRODUCTION_ROOT)) {
     return { ok: true };
   }
 
-  log("Staging dependency inputs differ from production — installing dependencies in staging...");
+  writeLog("Staging dependency inputs differ from production — installing dependencies in staging...");
 
   // If node_modules is a symlink/junction, remove it so npm can create a real directory.
   // If it's already a real directory, leave it — npm install is incremental.
@@ -158,9 +173,9 @@ async function ensureStagingDeps(stagingDir: string): Promise<{ ok: boolean; com
       const stat = lstatSync(stagingModules);
       if (stat.isSymbolicLink()) {
         removeDirectoryLink(stagingModules, PRODUCTION_ROOT);
-        log("Removed node_modules symlink for fresh install");
+        writeLog("Removed node_modules symlink for fresh install");
       } else {
-        log("node_modules is a real directory — running incremental install");
+        writeLog("node_modules is a real directory — running incremental install");
       }
     } catch {
       // lstat failed — try to proceed anyway
@@ -169,19 +184,19 @@ async function ensureStagingDeps(stagingDir: string): Promise<{ ok: boolean; com
 
   const prepared = preparePatchedPackagesForInstall(stagingDir);
   if (prepared.packages.length > 0) {
-    log(`Prepared patched packages for staging install: ${prepared.packages.join(", ")}`);
+    writeLog(`Prepared patched packages for staging install: ${prepared.packages.join(", ")}`);
   }
 
-  const installResult = await run(STAGING_INSTALL_COMMAND, stagingDir, {
+  const installResult = await runCommand(STAGING_INSTALL_COMMAND, stagingDir, {
     timeoutMs: STAGING_INSTALL_TIMEOUT_MS,
   });
   if (installResult.ok) {
     prepared.discard();
-    log("Staging npm install succeeded");
+    writeLog("Staging npm install succeeded");
     return { ok: true };
   }
   prepared.restore();
-  log(`Staging npm install failed: ${installResult.output.slice(-300)}`);
+  writeLog(`Staging npm install failed: ${installResult.output.slice(-300)}`);
   return { ok: false, command: STAGING_INSTALL_COMMAND, output: installResult.output };
 }
 
@@ -271,6 +286,49 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
   return registeredPreviewDirs;
 }
 
+let previewDiscoveryPoller: ReturnType<typeof setInterval> | null = null;
+
+function previewDiscoveryPollIntervalMs(): number {
+  const value = Number(process.env.BRIDGE_STAGING_PREVIEW_DISCOVERY_INTERVAL_MS ?? "");
+  return Number.isInteger(value) && value > 0 ? value : 2_000;
+}
+
+export function startStagingPreviewDiscoveryPoller(options: {
+  intervalMs?: number;
+  log?: (msg: string) => void;
+} = {}): void {
+  if (previewDiscoveryPoller) return;
+  const intervalMs = options.intervalMs ?? previewDiscoveryPollIntervalMs();
+  const writeLog = options.log ?? log;
+  previewDiscoveryPoller = setInterval(() => {
+    try {
+      void cleanupMissingRegisteredPreviews(writeLog)
+        .then(() => registerExistingPreviewsFromDisk({ log: writeLog }))
+        .catch((error) => {
+          writeLog(`Warning: staging preview discovery poll failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    } catch (error) {
+      writeLog(`Warning: staging preview discovery poll failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, intervalMs);
+  previewDiscoveryPoller.unref?.();
+}
+
+export function stopStagingPreviewDiscoveryPoller(): void {
+  if (!previewDiscoveryPoller) return;
+  clearInterval(previewDiscoveryPoller);
+  previewDiscoveryPoller = null;
+}
+
+async function cleanupMissingRegisteredPreviews(writeLog: (msg: string) => void): Promise<void> {
+  for (const [prefix, distDir] of [...activePreviews.entries()]) {
+    if (existsSync(join(distDir, "index.html"))) continue;
+    writeLog(`Staging preview ${prefix} disappeared from disk — cleaning up in-process backend state`);
+    activePreviews.delete(prefix);
+    await cleanupStagingBackendResources(prefix);
+  }
+}
+
 
 function removeStagingDist(prefix: string): void {
   for (const previewParent of listStagingPreviewParents()) {
@@ -285,7 +343,7 @@ function removeStagingDist(prefix: string): void {
 async function run(
   cmd: string,
   cwd: string,
-  options: { timeoutMs?: number; isolateRuntimeEnv?: boolean; env?: NodeJS.ProcessEnv } = {},
+  options: StagingRunOptions = {},
 ): Promise<{ ok: boolean; output: string }> {
   // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
   // resolve the correct Node binary (v22+ required for node:sqlite) instead of
@@ -297,8 +355,9 @@ async function run(
     : undefined;
   const baseEnv = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
   const env = withNonInteractiveCommandEnv({ ...baseEnv, ...options.env });
+  options.log?.(`$ ${cmd}\n[cwd] ${cwd}`);
   try {
-    return await runValidationCommand({
+    const result = await runValidationCommand({
       rootDir: PRODUCTION_ROOT,
       source: "staging",
       command: cmd,
@@ -308,6 +367,8 @@ async function run(
       killProcessTree,
       failureOutputFormat: "plain",
     });
+    if (result.output.trim()) options.log?.(result.output.trimEnd());
+    return result;
   } finally {
     validationEnv?.cleanup();
   }
@@ -644,6 +705,628 @@ export const __testing = {
   listStagingPreviewParents,
 };
 
+export interface StagingPreviewJobInput {
+  stagingDir: string;
+  validate?: boolean;
+  profile?: string;
+}
+
+export interface StagingJobRunOptions {
+  log?: (message: string) => void;
+  startBackend?: boolean;
+  registerInProcess?: boolean;
+}
+
+export async function runStagingPreviewJob(
+  args: StagingPreviewJobInput,
+  options: StagingJobRunOptions = {},
+): Promise<Record<string, unknown>> {
+  const { stagingDir } = args;
+  const profile = resolvePreviewProfile(args.profile);
+  const shouldValidate = args.validate !== false;
+  const writeLog = options.log ?? log;
+  const runCommand: StagingCommandRunner = (cmd, cwd, runOptions = {}) =>
+    run(cmd, cwd, { ...runOptions, log: writeLog });
+
+  if (!existsSync(stagingDir)) {
+    return stagingFailure(
+      "Staging directory not found.",
+      `Staging directory not found: ${stagingDir}. Call staging_init first.`,
+      {
+        sessionLog: `Missing staging directory: ${stagingDir}`,
+        toolTelemetry: { stagingDir },
+      },
+    );
+  }
+
+  const target = createPreviewTarget(stagingDir, profile);
+  const { prefix, basePath, outDir } = target;
+
+  writeLog(`Building ${profile} staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
+
+  const previewParent = dirname(outDir);
+  if (!existsSync(previewParent)) {
+    mkdirSync(previewParent, { recursive: true });
+  }
+
+  const depsResult = await ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+  if (!depsResult.ok) {
+    return commandFailure(
+      "Staging dependency install failed.",
+      "Staging dependency inputs changed and npm install failed. Fix the staging worktree dependencies and retry.",
+      depsResult.command!,
+      stagingDir,
+      depsResult.output!,
+      { stagingDir },
+    );
+  }
+
+  if (shouldValidate) {
+    const preValidationHead = await runCommand("git rev-parse HEAD", stagingDir);
+    const preValidationCommitSha = preValidationHead.ok ? preValidationHead.output.trim() : "";
+    const preValidationDependencyHash = dependencySyncHash(stagingDir);
+    const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
+      cwd: stagingDir,
+      run: (command, validationOptions) => runCommand(command, stagingDir, validationOptions),
+      log: writeLog,
+    });
+    if (!validationResult.ok) {
+      return commandFailure(
+        "Staging preview validation failed.",
+        "The staged changes did not pass the preview validation gate.",
+        validationResult.step.command,
+        stagingDir,
+        validationResult.result.output,
+        { stagingDir, gateId: validationResult.gate.id },
+      );
+    }
+    const postValidationHead = await runCommand("git rev-parse HEAD", stagingDir);
+    const postValidationCommitSha = postValidationHead.ok ? postValidationHead.output.trim() : "";
+    const postValidationDependencyHash = dependencySyncHash(stagingDir);
+    if (
+      preValidationCommitSha
+      && postValidationCommitSha
+      && preValidationCommitSha === postValidationCommitSha
+      && preValidationDependencyHash === postValidationDependencyHash
+    ) {
+      try {
+        writeStagingValidationStamp(PRODUCTION_DATA_DIR, {
+          stagingPrefix: prefix,
+          stagingCommitSha: postValidationCommitSha,
+          dependencyHash: postValidationDependencyHash,
+          gateId: PREVIEW_GATE.id,
+          gateVersion: PREVIEW_GATE_VERSION,
+          command: PREVIEW_GATE_COMMAND,
+          source: "staging_preview",
+          validatedAt: new Date().toISOString(),
+        });
+        writeLog(`Staging preview validation stamp written for ${prefix} at ${postValidationCommitSha}`);
+      } catch (error) {
+        writeLog(`Staging preview validation stamp could not be written; deploy will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else {
+      const reason = !preValidationCommitSha
+        ? `staging HEAD could not be read before validation: ${preValidationHead.ok ? "empty git rev-parse output" : preValidationHead.output.slice(-200)}`
+        : !postValidationCommitSha
+          ? `staging HEAD could not be read after validation: ${postValidationHead.ok ? "empty git rev-parse output" : postValidationHead.output.slice(-200)}`
+          : preValidationCommitSha !== postValidationCommitSha
+            ? `staging HEAD changed during validation (${preValidationCommitSha} -> ${postValidationCommitSha})`
+            : "dependency inputs changed during validation";
+      writeLog(`Staging preview validation stamp skipped because ${reason}`);
+    }
+  } else {
+    writeLog("Skipping staging preview validation");
+  }
+
+  const buildResult = await runCommand(
+    `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
+    stagingDir,
+  );
+  if (!buildResult.ok) {
+    return commandFailure(
+      "Staging preview build failed.",
+      `Vite could not build the staging preview for ${basePath}.`,
+      `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
+      stagingDir,
+      buildResult.output,
+      { stagingDir, previewPath: basePath, outDir },
+    );
+  }
+
+  const registerInProcess = options.registerInProcess ?? options.startBackend === true;
+  if (registerInProcess) {
+    activePreviews.set(prefix, outDir);
+    rememberRestorablePreviewTarget(target);
+  }
+
+  let backendReady = false;
+  let backendError: string | undefined;
+
+  if (options.startBackend === true) {
+    if (hasRegisteredExpressApp()) {
+      try {
+        await initializeStagingBackend(prefix, stagingDir, profile);
+        backendReady = true;
+      } catch (err) {
+        backendError = err instanceof Error ? err.message : String(err);
+        await cleanupPreviewResources(prefix, { removeDist: false });
+        writeLog(`Staging backend failed (frontend-only preview): ${backendError}`);
+      }
+    } else {
+      writeLog("Express app not registered — frontend-only preview");
+    }
+  } else {
+    writeLog("Preview build complete; live server will discover the frontend and restore the backend lazily.");
+  }
+
+  const fullUrl = buildPublicUrl(basePath) ?? null;
+  const localUrl = `http://localhost:${config.web.port}${basePath}`;
+  const backendNote = backendReady
+    ? " Backend API is live at the same path (/api routes)."
+    : backendError
+      ? ` Backend failed to start: ${backendError}. Frontend-only preview.`
+      : options.startBackend === true
+        ? " Frontend-only preview (no Express app registered)."
+        : " Backend API will start lazily in the live server after preview discovery.";
+
+  writeLog(`Staging preview ready at ${fullUrl || localUrl}`);
+  return {
+    success: true,
+    profile,
+    previewPath: basePath,
+    previewUrl: fullUrl,
+    localUrl,
+    backendReady,
+    backendError,
+    message: (fullUrl
+      ? `Staging preview is live at ${fullUrl} (also available locally at ${localUrl}) — share this link with the user and wait for confirmation before deploying.`
+      : `Staging preview is live locally at ${localUrl} — share this link with the user and wait for confirmation before deploying.`) + backendNote,
+  };
+}
+
+export interface StagingDeployJobInput {
+  stagingDir: string;
+  message: string;
+}
+
+export async function runStagingDeployJob(
+  args: StagingDeployJobInput,
+  options: StagingJobRunOptions = {},
+): Promise<Record<string, unknown>> {
+  const { stagingDir, message } = args;
+  const deployStartedAt = Date.now();
+  const writeLog = options.log ?? log;
+  const runCommand: StagingCommandRunner = (cmd, cwd, runOptions = {}) =>
+    run(cmd, cwd, { ...runOptions, log: writeLog });
+
+  if (!existsSync(stagingDir)) {
+    return stagingFailure(
+      "Staging directory not found.",
+      `Staging directory not found: ${stagingDir}. Call staging_init first.`,
+      {
+        sessionLog: `Missing staging directory: ${stagingDir}`,
+        toolTelemetry: { stagingDir },
+      },
+    );
+  }
+
+  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+    return stagingFailure(
+      "A restart is already pending.",
+      "A restart is already pending. Wait for it to complete before deploying.",
+      { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
+    );
+  }
+
+  const prefix = basename(stagingDir);
+  const branch = `staging/${prefix}`;
+
+  writeLog(`Deploying from ${stagingDir} (branch: ${branch})`);
+  ensureNodeModulesIgnored(stagingDir);
+
+  await runCommand("git add -A", stagingDir);
+  const status = await runCommand("git --no-pager status --porcelain", stagingDir);
+  const hasUncommittedChanges = status.ok && !!status.output.trim();
+
+  if (hasUncommittedChanges) {
+    const msgFile = join(stagingDir, ".commit-msg");
+    try {
+      writeFileSync(
+        msgFile,
+        `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
+      );
+      const commitResult = await runCommand(`git commit -F "${msgFile}"`, stagingDir);
+      if (!commitResult.ok) {
+        return commandFailure(
+          "Failed to commit staged changes.",
+          "Failed to create the staging deploy commit. Resolve the git issue and retry.",
+          `git commit -F "${msgFile}"`,
+          stagingDir,
+          commitResult.output,
+          { stagingDir, branch },
+        );
+      }
+    } finally {
+      try {
+        unlinkSync(msgFile);
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+  }
+
+  const prodBranchResult = await runCommand("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+  const prodBranch = prodBranchResult.ok ? prodBranchResult.output.trim() : "main";
+
+  const aheadCheck = await runCommand(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
+  if (!aheadCheck.ok) {
+    return commandFailure(
+      "Failed to compare staging changes with production.",
+      `Failed to verify whether ${branch} is ahead of ${prodBranch}.`,
+      `git log ${prodBranch}..${branch} --oneline`,
+      PRODUCTION_ROOT,
+      aheadCheck.output,
+      { stagingDir, branch, prodBranch },
+    );
+  }
+  if (!aheadCheck.output.trim()) {
+    return stagingFailure(
+      "Nothing to deploy from this staging worktree.",
+      `Nothing to deploy — ${branch} has no commits ahead of ${prodBranch}.`,
+      {
+        sessionLog: joinFailureSections(
+          `Nothing to deploy — ${branch} has no commits ahead of ${prodBranch}.`,
+          `Command: git log ${prodBranch}..${branch} --oneline`,
+          `Working directory: ${PRODUCTION_ROOT}`,
+          "(no commits returned)",
+        ),
+        toolTelemetry: { stagingDir, branch, prodBranch },
+      },
+    );
+  }
+
+  const stashResult = await runCommand("git stash --include-untracked", PRODUCTION_ROOT);
+  const didStash = stashResult.ok && !stashResult.output.includes("No local changes");
+  if (didStash) {
+    writeLog("Stashed uncommitted production changes");
+  }
+  const unstashProduction = async () => {
+    if (didStash) {
+      await runCommand("git stash pop", PRODUCTION_ROOT);
+      writeLog("Restored stashed production changes");
+    }
+  };
+
+  const pullResult = await runCommand(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+  if (pullResult.ok) {
+    writeLog("Pulled latest production from origin");
+  } else {
+    writeLog(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
+  }
+
+  const rebaseResult = await runCommand(`git rebase ${prodBranch}`, stagingDir);
+  if (!rebaseResult.ok) {
+    await runCommand("git rebase --abort", stagingDir);
+    await unstashProduction();
+    writeLog("Staging rebase failed — manual conflict resolution needed");
+    return commandFailure(
+      "Staging branch conflicts with production.",
+      `Staging branch has conflicts with the latest production code. ` +
+        `The rebase has been aborted and your staging worktree is intact.\n\n` +
+        `To resolve (all commands run in the staging directory ${stagingDir}):\n` +
+        `1. git rebase ${prodBranch}\n` +
+        "2. Resolve conflicting files shown by git\n" +
+        "3. git add <resolved-files>\n" +
+        "4. git rebase --continue\n" +
+        "5. Repeat steps 2-4 if there are more conflicts\n" +
+        "6. Call staging_deploy again — it will skip the commit and proceed to merge",
+      `git rebase ${prodBranch}`,
+      stagingDir,
+      rebaseResult.output,
+      { stagingDir, branch, prodBranch },
+    );
+  }
+  writeLog("Staging branch rebased onto production");
+
+  const depsResult = await ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
+  if (!depsResult.ok) {
+    await unstashProduction();
+    return commandFailure(
+      "Staging dependency install failed.",
+      "Staging dependency inputs changed after rebase and npm install failed. The rebased staging worktree is still intact for retry-after-fix.",
+      depsResult.command!,
+      stagingDir,
+      depsResult.output!,
+      { stagingDir, branch, prodBranch },
+    );
+  }
+
+  let validatedCommitSha = "";
+  let dependencyHash: string | null = null;
+  const stagingStamp = readStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+  let stagingValidation: ReturnType<typeof validateStagingValidationStamp> = {
+    valid: false,
+    reason: "missing staging validation stamp",
+  };
+  if (stagingStamp) {
+    const candidateHeadResult = await runCommand("git rev-parse HEAD", stagingDir);
+    const candidateCommitSha = candidateHeadResult.ok ? candidateHeadResult.output.trim() : "";
+    if (candidateCommitSha) {
+      dependencyHash = dependencySyncHash(stagingDir);
+      stagingValidation = validateStagingValidationStamp(stagingStamp, {
+        stagingPrefix: prefix,
+        stagingCommitSha: candidateCommitSha,
+        dependencyHash,
+        gateId: PREVIEW_GATE.id,
+        gateVersion: PREVIEW_GATE_VERSION,
+        command: PREVIEW_GATE_COMMAND,
+      });
+      if (stagingValidation.valid) {
+        validatedCommitSha = candidateCommitSha;
+      }
+    } else {
+      writeLog(`Preview validation stamp not used: staging HEAD could not be read (${candidateHeadResult.ok ? "empty git rev-parse output" : candidateHeadResult.output.slice(-200)})`);
+    }
+  }
+  const deployGate = stagingValidation.valid ? DEPLOY_SMOKE_GATE : STAGING_DEPLOY_GATE;
+  if (stagingValidation.valid) {
+    writeLog(`Preview validation stamp matched for ${prefix} at ${validatedCommitSha} — running smoke-only deploy validation`);
+  } else {
+    writeLog(`Preview validation stamp not used: ${stagingValidation.reason}`);
+  }
+
+  const validationResult = await runValidationGateAsync(deployGate, {
+    cwd: stagingDir,
+    run: (command, validationOptions) => runCommand(command, stagingDir, { ...validationOptions, env: deployValidationEnv() }),
+    log: writeLog,
+  });
+  if (!validationResult.ok) {
+    await unstashProduction();
+    return commandFailure(
+      "Staging deploy validation failed.",
+      "The rebased staging worktree did not pass the deploy validation gate. The staging worktree is still intact for retry-after-fix.",
+      validationResult.step.command,
+      stagingDir,
+      validationResult.result.output,
+      { stagingDir, branch, prodBranch, gateId: validationResult.gate.id },
+    );
+  }
+  if (!validatedCommitSha) {
+    const validatedHeadResult = await runCommand("git rev-parse HEAD", stagingDir);
+    if (!validatedHeadResult.ok) {
+      await unstashProduction();
+      return commandFailure(
+        "Failed to identify the validated staging commit.",
+        "Deploy validation passed, but the staging commit SHA could not be read. The staging worktree is still intact for retry.",
+        "git rev-parse HEAD",
+        stagingDir,
+        validatedHeadResult.output,
+        { stagingDir, branch, prodBranch },
+      );
+    }
+    validatedCommitSha = validatedHeadResult.output.trim();
+    if (!validatedCommitSha) {
+      await unstashProduction();
+      return stagingFailure(
+        "Failed to identify the validated staging commit.",
+        "Deploy validation passed, but git rev-parse returned an empty commit SHA. The staging worktree is still intact for retry.",
+        { toolTelemetry: { stagingDir, branch, prodBranch } },
+      );
+    }
+  }
+  dependencyHash ??= dependencySyncHash(stagingDir);
+  const validationElapsedMs = validationResult.results.reduce((total, entry) => total + entry.elapsedMs, 0);
+  const releaseSlotResult = await prepareReleaseSlot({
+    sourceDir: stagingDir,
+    dataDir: PRODUCTION_DATA_DIR,
+    commitSha: validatedCommitSha,
+    source: "staging_deploy",
+    validationMode: "deploy",
+    run: (command, cwd, runOptions) => runCommand(command, cwd, runOptions),
+    log: writeLog,
+    installCommand: STAGING_INSTALL_COMMAND,
+    installTimeoutMs: STAGING_INSTALL_TIMEOUT_MS,
+  });
+  if (!releaseSlotResult.ok) {
+    await unstashProduction();
+    return commandFailure(
+      "Release slot preparation failed.",
+      "The rebased staging worktree passed deploy validation, but preparing the inactive release slot failed. The staging worktree is still intact for retry-after-fix.",
+      releaseSlotResult.command,
+      releaseSlotResult.cwd,
+      releaseSlotResult.output,
+      { stagingDir, branch, prodBranch },
+    );
+  }
+  const releaseCandidate = releaseSlotResult.manifest;
+
+  const headResult = await runCommand("git rev-parse HEAD", PRODUCTION_ROOT);
+  const preDeploySha = headResult.ok ? headResult.output.trim() : "";
+  let rollbackCheckpoint = { sha: "", createdByCurrentOperation: false };
+  if (preDeploySha) {
+    if (!existsSync(PRODUCTION_DATA_DIR)) mkdirSync(PRODUCTION_DATA_DIR, { recursive: true });
+    rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(PRE_DEPLOY_SHA_FILE, preDeploySha);
+    writeLog(
+      rollbackCheckpoint.createdByCurrentOperation
+        ? `Pre-deploy SHA saved: ${rollbackCheckpoint.sha}`
+        : `Using preserved pre-deploy SHA: ${rollbackCheckpoint.sha}`,
+    );
+  }
+
+  const mergeResult = await runCommand(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
+  if (!mergeResult.ok) {
+    await runCommand("git merge --abort", PRODUCTION_ROOT);
+    await unstashProduction();
+    removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
+    return commandFailure(
+      "Merge into production failed after rebase.",
+      `Merge failed after rebase (unexpected). The merge has been aborted.\n` +
+        `Your staging worktree is still intact. Try running 'git rebase ${prodBranch}' ` +
+        "in the staging directory to resolve conflicts, then call staging_deploy again.",
+      `git merge "${branch}" --no-edit`,
+      PRODUCTION_ROOT,
+      mergeResult.output,
+      { stagingDir, branch, prodBranch },
+    );
+  }
+
+  const newHead = await runCommand("git rev-parse --short HEAD", PRODUCTION_ROOT);
+  const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
+  writeLog(`Merged to production: ${commitSha}`);
+
+  const pkgChanged = await runCommand(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
+  if (pkgChanged.ok && pkgChanged.output.trim()) {
+    writeLog("Dependency inputs changed — launcher will sync production dependencies during restart");
+  }
+
+  let pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+  let retryRebaseFailed = false;
+  if (!pushResult.ok) {
+    writeLog("Push failed, attempting pull --rebase before retry...");
+    const retryRebase = await runCommand(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
+    if (retryRebase.ok) {
+      pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+    } else {
+      retryRebaseFailed = true;
+    }
+  }
+  if (!pushResult.ok) {
+    if (preDeploySha) {
+      const resetCommand = `git reset --hard ${preDeploySha}`;
+      if (retryRebaseFailed) {
+        writeLog("Push retry rebase failed — aborting any in-progress production rebase before reset");
+        const abortRebase = await runCommand("git rebase --abort", PRODUCTION_ROOT);
+        if (!abortRebase.ok) {
+          writeLog(`Warning: git rebase --abort failed before push-failure reset: ${abortRebase.output.slice(-200)}`);
+        }
+      }
+      writeLog(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
+      const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
+      if (!resetResult.ok) {
+        return commandFailure(
+          "Push to origin failed and production reset failed.",
+          `The production merge succeeded locally, but pushing ${prodBranch} to origin failed and resetting the local production checkout back to ${preDeploySha} also failed. ` +
+            "Restart signaling was blocked, the rollback checkpoint was preserved, and manual recovery is required before retrying. " +
+            "If production changes were stashed, restore them only after recovering the checkout.",
+          resetCommand,
+          PRODUCTION_ROOT,
+          joinFailureSections(pushResult.output, resetResult.output) ?? resetResult.output,
+          { stagingDir, branch, prodBranch, commitSha, preDeploySha },
+        );
+      }
+      removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
+      writeLog(`Production checkout reset to pre-deploy SHA after push failure: ${preDeploySha}`);
+    }
+    await unstashProduction();
+    return commandFailure(
+      preDeploySha
+        ? "Push to origin failed; production merge reverted and restart blocked."
+        : "Push to origin failed; restart blocked.",
+      preDeploySha
+        ? `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. The local production checkout was reset back to ${preDeploySha}, restart signaling was blocked, and the staging worktree was left intact so deployment can be retried.`
+        : `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. Restart signaling was blocked, the rollback checkpoint was preserved, and the staging worktree was left intact for manual recovery.`,
+      `git push origin ${prodBranch}`,
+      PRODUCTION_ROOT,
+      pushResult.output,
+      { stagingDir, branch, prodBranch, commitSha, ...(preDeploySha ? { revertedTo: preDeploySha } : {}) },
+    );
+  }
+  writeLog("Pushed to origin");
+
+  const deployedHeadResult = await runCommand("git rev-parse HEAD", PRODUCTION_ROOT);
+  const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
+  if (deployedCommitSha && deployedCommitSha === validatedCommitSha) {
+    try {
+      writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
+        commitSha: deployedCommitSha,
+        dependencyHash,
+        gateId: DEPLOY_GATE.id,
+        gateVersion: DEPLOY_GATE_VERSION,
+        command: DEPLOY_CHECK_COMMAND,
+        source: "staging_deploy",
+        validatedAt: new Date().toISOString(),
+      });
+      writeLog(`Deploy validation stamp written for ${deployedCommitSha}`);
+    } catch (error) {
+      writeLog(`Deploy validation stamp could not be written; launcher will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else {
+    writeLog(
+      deployedCommitSha
+        ? `Deploy validation stamp skipped because production HEAD changed after validation (${validatedCommitSha} → ${deployedCommitSha})`
+        : "Deploy validation stamp skipped because production HEAD could not be read after push",
+    );
+  }
+
+  await unstashProduction();
+
+  if (!existsSync(PRODUCTION_DATA_DIR)) mkdirSync(PRODUCTION_DATA_DIR, { recursive: true });
+  try {
+    writeRestartSignalOrRollback(SIGNAL_FILE, "deploy", "staging_deploy", releaseCandidate);
+  } catch (err) {
+    const failureMessage = err instanceof Error ? err.message : String(err);
+    writeLog(`Restart signal failed after deploy: ${failureMessage}`);
+    let cleanupNote = "";
+    try {
+      await cleanupPreviewArtifactsForStagingDir(stagingDir);
+      await removeWorktree(stagingDir, branch);
+      deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+      writeLog("Staging worktree cleaned up after restart signal failure");
+    } catch (cleanupErr) {
+      cleanupNote = `\n\nPost-deploy cleanup also failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`;
+      writeLog(`Warning: post-deploy cleanup failed after restart signal failure: ${cleanupErr}`);
+    }
+    return stagingFailure(
+      "Deployment pushed but restart signal failed.",
+      `Deployment ${commitSha} was pushed to ${prodBranch}, but the launcher restart signal could not be written. Manual restart is required.\n\n${failureMessage}${cleanupNote}`,
+      {
+        sessionLog: `Deployment ${commitSha} was pushed, but writing ${SIGNAL_FILE} failed: ${failureMessage}${cleanupNote}`,
+        toolTelemetry: { stagingDir, branch, prodBranch, commitSha, signalFile: SIGNAL_FILE },
+      },
+    );
+  }
+  writeLog("Restart signal sent");
+
+  try {
+    await cleanupPreviewArtifactsForStagingDir(stagingDir);
+    await removeWorktree(stagingDir, branch);
+    deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
+    writeLog("Staging worktree cleaned up");
+  } catch (err) {
+    writeLog(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
+  }
+
+  const deployElapsedMs = Date.now() - deployStartedAt;
+  writeLog(`Deploy completed in ${formatCommandDuration(deployElapsedMs)}`);
+  return {
+    success: true,
+    commitSha,
+    elapsedMs: deployElapsedMs,
+    validationElapsedMs,
+    message: `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent — do NOT make any more tool calls once cutover begins.`,
+  };
+}
+
+function queueMessage(jobId: string, action: string): string {
+  return `${action} queued as management job ${jobId}. The launcher-supervised runner will process it in the background; use management_job_status to monitor progress.`;
+}
+
+function activeManagementJobFailure(error: ActiveManagementJobError) {
+  return stagingFailure(
+    "A deploy/update management job is already active.",
+    `Job ${error.activeJob.id} (${error.activeJob.type}) is ${error.activeJob.status}. Wait for it to finish before deploying or updating.`,
+    { toolTelemetry: { activeJobId: error.activeJob.id, activeJobType: error.activeJob.type } },
+  );
+}
+
+function getActiveManagementJob(error: unknown) {
+  if (error instanceof ActiveManagementJobError) return error.activeJob;
+  if (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "ActiveManagementJobError") {
+    return (error as { activeJob?: unknown }).activeJob as ActiveManagementJobError["activeJob"] | undefined;
+  }
+  return undefined;
+}
+
 export const STAGING_TOOLS: BridgeToolDefinition[] = [
   defineBridgeTool("staging_init", {
     description:
@@ -733,8 +1416,8 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
   defineBridgeTool("staging_preview", {
     description:
       "Build and serve a preview of the staged frontend changes. " +
-      "Runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
-      "Also spins up a staged backend with isolated data and a real Copilot SDK instance. " +
+      "Queues a management job that runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
+      "The live server discovers the built preview from disk and restores the staged backend lazily. " +
       "Share the preview URL with the user and wait for confirmation before calling staging_deploy.",
     parameters: {
       type: "object",
@@ -749,9 +1432,6 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
     },
     handler: async (args: any) => {
       const { stagingDir } = args;
-      const profile = resolvePreviewProfile(args.profile);
-      const shouldValidate = args.validate !== false;
-
       if (!existsSync(stagingDir)) {
         return stagingFailure(
           "Staging directory not found.",
@@ -762,146 +1442,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
           },
         );
       }
-
-      const target = createPreviewTarget(stagingDir, profile);
-      const { prefix, basePath, outDir } = target;
-
-      log(`Building ${profile} staging preview: ${stagingDir} → ${outDir} (base: ${basePath})`);
-
-      const previewParent = dirname(outDir);
-      if (!existsSync(previewParent)) {
-        mkdirSync(previewParent, { recursive: true });
-      }
-
-      // Install deps if staging package.json diverged from production
-      const depsResult = await ensureStagingDeps(stagingDir);
-      if (!depsResult.ok) {
-        return commandFailure(
-          "Staging dependency install failed.",
-          "Staging dependency inputs changed and npm install failed. Fix the staging worktree dependencies and retry.",
-          depsResult.command!,
-          stagingDir,
-          depsResult.output!,
-          { stagingDir },
-        );
-      }
-
-      if (shouldValidate) {
-        const preValidationHead = await run("git rev-parse HEAD", stagingDir);
-        const preValidationCommitSha = preValidationHead.ok ? preValidationHead.output.trim() : "";
-        const preValidationDependencyHash = dependencySyncHash(stagingDir);
-        const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
-          cwd: stagingDir,
-          run: (command, options) => run(command, stagingDir, options),
-          log,
-        });
-        if (!validationResult.ok) {
-          return commandFailure(
-            "Staging preview validation failed.",
-            "The staged changes did not pass the preview validation gate.",
-            validationResult.step.command,
-            stagingDir,
-            validationResult.result.output,
-            { stagingDir, gateId: validationResult.gate.id },
-          );
-        }
-        const postValidationHead = await run("git rev-parse HEAD", stagingDir);
-        const postValidationCommitSha = postValidationHead.ok ? postValidationHead.output.trim() : "";
-        const postValidationDependencyHash = dependencySyncHash(stagingDir);
-        if (
-          preValidationCommitSha
-          && postValidationCommitSha
-          && preValidationCommitSha === postValidationCommitSha
-          && preValidationDependencyHash === postValidationDependencyHash
-        ) {
-          try {
-            writeStagingValidationStamp(PRODUCTION_DATA_DIR, {
-              stagingPrefix: prefix,
-              stagingCommitSha: postValidationCommitSha,
-              dependencyHash: postValidationDependencyHash,
-              gateId: PREVIEW_GATE.id,
-              gateVersion: PREVIEW_GATE_VERSION,
-              command: PREVIEW_GATE_COMMAND,
-              source: "staging_preview",
-              validatedAt: new Date().toISOString(),
-            });
-            log(`Staging preview validation stamp written for ${prefix} at ${postValidationCommitSha}`);
-          } catch (error) {
-            log(`Staging preview validation stamp could not be written; deploy will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        } else {
-          const reason = !preValidationCommitSha
-            ? `staging HEAD could not be read before validation: ${preValidationHead.ok ? "empty git rev-parse output" : preValidationHead.output.slice(-200)}`
-            : !postValidationCommitSha
-              ? `staging HEAD could not be read after validation: ${postValidationHead.ok ? "empty git rev-parse output" : postValidationHead.output.slice(-200)}`
-              : preValidationCommitSha !== postValidationCommitSha
-                ? `staging HEAD changed during validation (${preValidationCommitSha} -> ${postValidationCommitSha})`
-                : "dependency inputs changed during validation";
-          log(`Staging preview validation stamp skipped because ${reason}`);
-        }
-      } else {
-        log("Skipping staging preview validation");
-      }
-
-      // Build the client with the staging base path
-      const buildResult = await run(
-        `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
-        stagingDir,
-      );
-      if (!buildResult.ok) {
-        return commandFailure(
-          "Staging preview build failed.",
-          `Vite could not build the staging preview for ${basePath}.`,
-          `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
-          stagingDir,
-          buildResult.output,
-          { stagingDir, previewPath: basePath, outDir },
-        );
-      }
-
-      // Register the preview for Express to serve
-      activePreviews.set(prefix, outDir);
-      rememberRestorablePreviewTarget(target);
-
-      // ── Staged backend ──────────────────────────────────────────
-      let backendReady = false;
-      let backendError: string | undefined;
-
-      if (hasRegisteredExpressApp()) {
-        try {
-          await initializeStagingBackend(prefix, stagingDir, profile);
-          backendReady = true;
-        } catch (err) {
-          backendError = err instanceof Error ? err.message : String(err);
-          await cleanupPreviewResources(prefix, { removeDist: false });
-          log(`Staging backend failed (frontend-only preview): ${backendError}`);
-        }
-      } else {
-        log("Express app not registered — frontend-only preview");
-      }
-
-      const fullUrl = buildPublicUrl(basePath) ?? null;
-      const localUrl = `http://localhost:${config.web.port}${basePath}`;
-
-      const backendNote = backendReady
-        ? " Backend API is live at the same path (/api routes)."
-        : backendError
-          ? ` Backend failed to start: ${backendError}. Frontend-only preview.`
-          : " Frontend-only preview (no Express app registered).";
-
-      log(`Staging preview ready at ${fullUrl || localUrl}`);
-      return {
-        success: true,
-        profile,
-        previewPath: basePath,
-        previewUrl: fullUrl,
-        localUrl,
-        backendReady,
-        backendError,
-        message: (fullUrl
-          ? `Staging preview is live at ${fullUrl} (also available locally at ${localUrl}) — share this link with the user and wait for confirmation before deploying.`
-          : `Staging preview is live locally at ${localUrl} — share this link with the user and wait for confirmation before deploying.`) + backendNote,
-      };
+      return await runStagingPreviewJob(args, { startBackend: true, registerInProcess: true });
     },
   }),
 
@@ -909,12 +1450,11 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
     description:
       "Deploy validated changes from a staging worktree to production. " +
       "Commits changes in staging (if uncommitted changes exist), rebases the staging branch onto the latest production HEAD, " +
-      "merges to main, signals the launcher to restart, and auto-cleans the worktree. " +
+      "merges to main, signals the launcher to restart, and auto-cleans the worktree from a queued management job. " +
       "Supports retries: if a previous deploy failed due to rebase conflicts, resolve them in the staging worktree " +
       "(git rebase <prodBranch>, fix conflicts, git add + git rebase --continue) then call staging_deploy again — " +
       "it will skip the commit step and proceed to merge. " +
-      "IMPORTANT: After a successful deploy, do not make further tool calls because the server will restart. " +
-      "Status/progress-only tool calls may be batched with staging_deploy in the same tool-calling message; do not create no-op companion tool calls solely to satisfy tool-batching guidance. " +
+      "Returns immediately with a management job id; poll management_job_status for progress. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
@@ -926,8 +1466,6 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
     },
     handler: async (args: any) => {
       const { stagingDir, message } = args;
-      const deployStartedAt = Date.now();
-
       if (!existsSync(stagingDir)) {
         return stagingFailure(
           "Staging directory not found.",
@@ -946,408 +1484,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
           { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
         );
       }
-
-      const prefix = basename(stagingDir);
-      const branch = `staging/${prefix}`;
-
-      log(`Deploying from ${stagingDir} (branch: ${branch})`);
-
-      // Ensure node_modules is ignored before staging (prevents accidental commit of symlinks)
-      ensureNodeModulesIgnored(stagingDir);
-
-      // Stage and commit if there are uncommitted changes (skip on retry after conflict resolution)
-      await run("git add -A", stagingDir);
-      const status = await run("git --no-pager status --porcelain", stagingDir);
-      const hasUncommittedChanges = status.ok && !!status.output.trim();
-
-      if (hasUncommittedChanges) {
-        const msgFile = join(stagingDir, ".commit-msg");
-        try {
-          writeFileSync(
-            msgFile,
-            `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
-          );
-          const commitResult = await run(`git commit -F "${msgFile}"`, stagingDir);
-          if (!commitResult.ok) {
-            return commandFailure(
-              "Failed to commit staged changes.",
-              "Failed to create the staging deploy commit. Resolve the git issue and retry.",
-              `git commit -F "${msgFile}"`,
-              stagingDir,
-              commitResult.output,
-              { stagingDir, branch },
-            );
-          }
-        } finally {
-          try { unlinkSync(msgFile); } catch {}
-        }
-      }
-
-      // Determine production branch
-      const prodBranchResult = await run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
-      const prodBranch = prodBranchResult.ok ? prodBranchResult.output.trim() : "main";
-
-      // Verify there are commits to merge
-      const aheadCheck = await run(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
-      if (!aheadCheck.ok) {
-        return commandFailure(
-          "Failed to compare staging changes with production.",
-          `Failed to verify whether ${branch} is ahead of ${prodBranch}.`,
-          `git log ${prodBranch}..${branch} --oneline`,
-          PRODUCTION_ROOT,
-          aheadCheck.output,
-          { stagingDir, branch, prodBranch },
-        );
-      }
-      if (!aheadCheck.output.trim()) {
-        return stagingFailure(
-          "Nothing to deploy from this staging worktree.",
-          `Nothing to deploy — ${branch} has no commits ahead of ${prodBranch}.`,
-          {
-            sessionLog: joinFailureSections(
-              `Nothing to deploy — ${branch} has no commits ahead of ${prodBranch}.`,
-              `Command: git log ${prodBranch}..${branch} --oneline`,
-              `Working directory: ${PRODUCTION_ROOT}`,
-              "(no commits returned)",
-            ),
-            toolTelemetry: { stagingDir, branch, prodBranch },
-          },
-        );
-      }
-
-      // Stash any uncommitted changes so they don't block pull/push
-      const stashResult = await run("git stash --include-untracked", PRODUCTION_ROOT);
-      const didStash = stashResult.ok && !stashResult.output.includes("No local changes");
-      if (didStash) {
-        log("Stashed uncommitted production changes");
-      }
-      const unstashProduction = async () => {
-        if (didStash) {
-          await run("git stash pop", PRODUCTION_ROOT);
-          log("Restored stashed production changes");
-        }
-      };
-
-      // Pull latest production so the rebase target is current
-      const pullResult = await run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
-      if (pullResult.ok) {
-        log("Pulled latest production from origin");
-      } else {
-        log(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
-      }
-
-      // Rebase staging branch onto updated production HEAD for a clean merge
-      const rebaseResult = await run(`git rebase ${prodBranch}`, stagingDir);
-      if (!rebaseResult.ok) {
-        await run("git rebase --abort", stagingDir);
-        await unstashProduction();
-        log(`Staging rebase failed — manual conflict resolution needed`);
-        return commandFailure(
-          "Staging branch conflicts with production.",
-          `Staging branch has conflicts with the latest production code. ` +
-            `The rebase has been aborted and your staging worktree is intact.\n\n` +
-            `To resolve (all commands run in the staging directory ${stagingDir}):\n` +
-            `1. git rebase ${prodBranch}\n` +
-            `2. Resolve conflicting files shown by git\n` +
-            `3. git add <resolved-files>\n` +
-            `4. git rebase --continue\n` +
-            `5. Repeat steps 2-4 if there are more conflicts\n` +
-            `6. Call staging_deploy again — it will skip the commit and proceed to merge`,
-          `git rebase ${prodBranch}`,
-          stagingDir,
-          rebaseResult.output,
-          { stagingDir, branch, prodBranch },
-        );
-      }
-      log("Staging branch rebased onto production");
-
-      const depsResult = await ensureStagingDeps(stagingDir);
-      if (!depsResult.ok) {
-        await unstashProduction();
-        return commandFailure(
-          "Staging dependency install failed.",
-          "Staging dependency inputs changed after rebase and npm install failed. The rebased staging worktree is still intact for retry-after-fix.",
-          depsResult.command!,
-          stagingDir,
-          depsResult.output!,
-          { stagingDir, branch, prodBranch },
-        );
-      }
-
-      let validatedCommitSha = "";
-      let dependencyHash: string | null = null;
-      const stagingStamp = readStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
-      let stagingValidation: ReturnType<typeof validateStagingValidationStamp> = {
-        valid: false,
-        reason: "missing staging validation stamp",
-      };
-      if (stagingStamp) {
-        const candidateHeadResult = await run("git rev-parse HEAD", stagingDir);
-        const candidateCommitSha = candidateHeadResult.ok ? candidateHeadResult.output.trim() : "";
-        if (candidateCommitSha) {
-          dependencyHash = dependencySyncHash(stagingDir);
-          stagingValidation = validateStagingValidationStamp(stagingStamp, {
-            stagingPrefix: prefix,
-            stagingCommitSha: candidateCommitSha,
-            dependencyHash,
-            gateId: PREVIEW_GATE.id,
-            gateVersion: PREVIEW_GATE_VERSION,
-            command: PREVIEW_GATE_COMMAND,
-          });
-          if (stagingValidation.valid) {
-            validatedCommitSha = candidateCommitSha;
-          }
-        } else {
-          log(`Preview validation stamp not used: staging HEAD could not be read (${candidateHeadResult.ok ? "empty git rev-parse output" : candidateHeadResult.output.slice(-200)})`);
-        }
-      }
-      const deployGate = stagingValidation.valid ? DEPLOY_SMOKE_GATE : STAGING_DEPLOY_GATE;
-      if (stagingValidation.valid) {
-        log(`Preview validation stamp matched for ${prefix} at ${validatedCommitSha} — running smoke-only deploy validation`);
-      } else {
-        log(`Preview validation stamp not used: ${stagingValidation.reason}`);
-      }
-
-      const validationResult = await runValidationGateAsync(deployGate, {
-        cwd: stagingDir,
-        run: (command, options) => run(command, stagingDir, { ...options, env: deployValidationEnv() }),
-        log,
-      });
-      if (!validationResult.ok) {
-        await unstashProduction();
-        return commandFailure(
-          "Staging deploy validation failed.",
-          "The rebased staging worktree did not pass the deploy validation gate. The staging worktree is still intact for retry-after-fix.",
-          validationResult.step.command,
-          stagingDir,
-          validationResult.result.output,
-          { stagingDir, branch, prodBranch, gateId: validationResult.gate.id },
-        );
-      }
-      if (!validatedCommitSha) {
-        const validatedHeadResult = await run("git rev-parse HEAD", stagingDir);
-        if (!validatedHeadResult.ok) {
-          await unstashProduction();
-          return commandFailure(
-            "Failed to identify the validated staging commit.",
-            "Deploy validation passed, but the staging commit SHA could not be read. The staging worktree is still intact for retry.",
-            "git rev-parse HEAD",
-            stagingDir,
-            validatedHeadResult.output,
-            { stagingDir, branch, prodBranch },
-          );
-        }
-        validatedCommitSha = validatedHeadResult.output.trim();
-        if (!validatedCommitSha) {
-          await unstashProduction();
-          return stagingFailure(
-            "Failed to identify the validated staging commit.",
-            "Deploy validation passed, but git rev-parse returned an empty commit SHA. The staging worktree is still intact for retry.",
-            { toolTelemetry: { stagingDir, branch, prodBranch } },
-          );
-        }
-      }
-      dependencyHash ??= dependencySyncHash(stagingDir);
-      const validationElapsedMs = validationResult.results.reduce((total, entry) => total + entry.elapsedMs, 0);
-      const releaseSlotResult = await prepareReleaseSlot({
-        sourceDir: stagingDir,
-        dataDir: PRODUCTION_DATA_DIR,
-        commitSha: validatedCommitSha,
-        source: "staging_deploy",
-        validationMode: "deploy",
-        run: (command, cwd, options) => run(command, cwd, options),
-        log,
-        installCommand: STAGING_INSTALL_COMMAND,
-        installTimeoutMs: STAGING_INSTALL_TIMEOUT_MS,
-      });
-      if (!releaseSlotResult.ok) {
-        await unstashProduction();
-        return commandFailure(
-          "Release slot preparation failed.",
-          "The rebased staging worktree passed deploy validation, but preparing the inactive release slot failed. The staging worktree is still intact for retry-after-fix.",
-          releaseSlotResult.command,
-          releaseSlotResult.cwd,
-          releaseSlotResult.output,
-          { stagingDir, branch, prodBranch },
-        );
-      }
-      const releaseCandidate = releaseSlotResult.manifest;
-
-      // Store pre-deploy SHA so the launcher can roll back to exactly this point
-      const headResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
-      const preDeploySha = headResult.ok ? headResult.output.trim() : "";
-      let rollbackCheckpoint = { sha: "", createdByCurrentOperation: false };
-      if (preDeploySha) {
-        const dataDir = join(PRODUCTION_ROOT, "data");
-        if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-        rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(PRE_DEPLOY_SHA_FILE, preDeploySha);
-        log(
-          rollbackCheckpoint.createdByCurrentOperation
-            ? `Pre-deploy SHA saved: ${rollbackCheckpoint.sha}`
-            : `Using preserved pre-deploy SHA: ${rollbackCheckpoint.sha}`,
-        );
-      }
-      // Merge into production (should be fast-forward after rebase)
-      const mergeResult = await run(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
-      if (!mergeResult.ok) {
-        await run("git merge --abort", PRODUCTION_ROOT);
-        await unstashProduction();
-        removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
-        return commandFailure(
-          "Merge into production failed after rebase.",
-          `Merge failed after rebase (unexpected). The merge has been aborted.\n` +
-            `Your staging worktree is still intact. Try running 'git rebase ${prodBranch}' ` +
-            `in the staging directory to resolve conflicts, then call staging_deploy again.`,
-          `git merge "${branch}" --no-edit`,
-          PRODUCTION_ROOT,
-          mergeResult.output,
-          { stagingDir, branch, prodBranch },
-        );
-      }
-
-      const newHead = await run("git rev-parse --short HEAD", PRODUCTION_ROOT);
-      const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
-      log(`Merged to production: ${commitSha}`);
-
-      // Let the launcher own production dependency sync during restart.
-      const pkgChanged = await run(`git diff "${preDeploySha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`, PRODUCTION_ROOT);
-      if (pkgChanged.ok && pkgChanged.output.trim()) {
-        log("Dependency inputs changed — launcher will sync production dependencies during restart");
-      }
-
-      // Push to origin so other deployments can pick up the change
-      let pushResult = await run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
-      let retryRebaseFailed = false;
-      if (!pushResult.ok) {
-        // Push may fail if remote has new commits — pull --rebase and retry once
-        log("Push failed, attempting pull --rebase before retry...");
-        const retryRebase = await run(`git pull --rebase origin ${prodBranch}`, PRODUCTION_ROOT);
-        if (retryRebase.ok) {
-          pushResult = await run(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
-        } else {
-          retryRebaseFailed = true;
-        }
-      }
-      if (!pushResult.ok) {
-        if (preDeploySha) {
-          const resetCommand = `git reset --hard ${preDeploySha}`;
-          if (retryRebaseFailed) {
-            log("Push retry rebase failed — aborting any in-progress production rebase before reset");
-            const abortRebase = await run("git rebase --abort", PRODUCTION_ROOT);
-            if (!abortRebase.ok) {
-              log(`Warning: git rebase --abort failed before push-failure reset: ${abortRebase.output.slice(-200)}`);
-            }
-          }
-          log(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
-          const resetResult = await run(resetCommand, PRODUCTION_ROOT);
-          if (!resetResult.ok) {
-            return commandFailure(
-              "Push to origin failed and production reset failed.",
-              `The production merge succeeded locally, but pushing ${prodBranch} to origin failed and resetting the local production checkout back to ${preDeploySha} also failed. ` +
-                `Restart signaling was blocked, the rollback checkpoint was preserved, and manual recovery is required before retrying. ` +
-                `If production changes were stashed, restore them only after recovering the checkout.`,
-              resetCommand,
-              PRODUCTION_ROOT,
-              joinFailureSections(pushResult.output, resetResult.output) ?? resetResult.output,
-              { stagingDir, branch, prodBranch, commitSha, preDeploySha },
-            );
-          }
-          removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
-          log(`Production checkout reset to pre-deploy SHA after push failure: ${preDeploySha}`);
-        }
-        await unstashProduction();
-        return commandFailure(
-          preDeploySha
-            ? "Push to origin failed; production merge reverted and restart blocked."
-            : "Push to origin failed; restart blocked.",
-          preDeploySha
-            ? `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. The local production checkout was reset back to ${preDeploySha}, restart signaling was blocked, and the staging worktree was left intact so deployment can be retried.`
-            : `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. Restart signaling was blocked, the rollback checkpoint was preserved, and the staging worktree was left intact for manual recovery.`,
-          `git push origin ${prodBranch}`,
-          PRODUCTION_ROOT,
-          pushResult.output,
-          { stagingDir, branch, prodBranch, commitSha, ...(preDeploySha ? { revertedTo: preDeploySha } : {}) },
-        );
-      }
-      log("Pushed to origin");
-
-      const deployedHeadResult = await run("git rev-parse HEAD", PRODUCTION_ROOT);
-      const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
-      if (deployedCommitSha && deployedCommitSha === validatedCommitSha) {
-        try {
-          // Staging validation covers at least the production deploy gate for this
-          // commit; staging-only smoke remains enforced before promotion.
-          writeDeployValidationStamp(PRODUCTION_DATA_DIR, {
-            commitSha: deployedCommitSha,
-            dependencyHash,
-            gateId: DEPLOY_GATE.id,
-            gateVersion: DEPLOY_GATE_VERSION,
-            command: DEPLOY_CHECK_COMMAND,
-            source: "staging_deploy",
-            validatedAt: new Date().toISOString(),
-          });
-          log(`Deploy validation stamp written for ${deployedCommitSha}`);
-        } catch (error) {
-          log(`Deploy validation stamp could not be written; launcher will run the full gate: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      } else {
-        log(
-          deployedCommitSha
-            ? `Deploy validation stamp skipped because production HEAD changed after validation (${validatedCommitSha} → ${deployedCommitSha})`
-            : "Deploy validation stamp skipped because production HEAD could not be read after push",
-        );
-      }
-
-      await unstashProduction();
-
-      // Signal launcher to restart
-      const dataDir = join(PRODUCTION_ROOT, "data");
-      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-      try {
-        writeRestartSignalOrRollback(SIGNAL_FILE, "deploy", "staging_deploy", releaseCandidate);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log(`Restart signal failed after deploy: ${message}`);
-        let cleanupNote = "";
-        try {
-          await cleanupPreviewArtifactsForStagingDir(stagingDir);
-          await removeWorktree(stagingDir, branch);
-          deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
-          log("Staging worktree cleaned up after restart signal failure");
-        } catch (cleanupErr) {
-          cleanupNote = `\n\nPost-deploy cleanup also failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`;
-          log(`Warning: post-deploy cleanup failed after restart signal failure: ${cleanupErr}`);
-        }
-        return stagingFailure(
-          "Deployment pushed but restart signal failed.",
-          `Deployment ${commitSha} was pushed to ${prodBranch}, but the launcher restart signal could not be written. Manual restart is required.\n\n${message}${cleanupNote}`,
-          {
-            sessionLog: `Deployment ${commitSha} was pushed, but writing ${SIGNAL_FILE} failed: ${message}${cleanupNote}`,
-            toolTelemetry: { stagingDir, branch, prodBranch, commitSha, signalFile: SIGNAL_FILE },
-          },
-        );
-      }
-      log("Restart signal sent");
-
-      // Cleanup staging worktree and branch (best-effort — deploy already succeeded)
-      try {
-        await cleanupPreviewArtifactsForStagingDir(stagingDir);
-        await removeWorktree(stagingDir, branch);
-        deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
-        log("Staging worktree cleaned up");
-      } catch (err) {
-        log(`Warning: post-deploy cleanup failed (non-fatal): ${err}`);
-      }
-
-      const deployElapsedMs = Date.now() - deployStartedAt;
-      log(`Deploy completed in ${formatCommandDuration(deployElapsedMs)}`);
-      return {
-        success: true,
-        commitSha,
-        elapsedMs: deployElapsedMs,
-        validationElapsedMs,
-        message: `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent — do NOT make any more tool calls.`,
-      };
+      return await runStagingDeployJob({ stagingDir, message });
     },
   }),
 
@@ -1386,15 +1523,105 @@ export interface RegisterStagingToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
-export function createStagingToolDefinitions(): BridgeToolDefinition[] {
-  return [...STAGING_TOOLS];
+function enqueueStagingPreview(ctx: AppContext, args: any) {
+  const { stagingDir } = args;
+  if (!existsSync(stagingDir)) {
+    return stagingFailure(
+      "Staging directory not found.",
+      `Staging directory not found: ${stagingDir}. Call staging_init first.`,
+      {
+        sessionLog: `Missing staging directory: ${stagingDir}`,
+        toolTelemetry: { stagingDir },
+      },
+    );
+  }
+  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+    return stagingFailure(
+      "A restart is already pending.",
+      "A restart is already pending. Wait for it to complete before previewing.",
+      { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
+    );
+  }
+  const store = ctx.managementJobStore;
+  if (!store) {
+    return stagingFailure("Staging preview could not be queued.", "Management job store is not available.");
+  }
+  try {
+    const job = store.enqueue("staging_preview", {
+      stagingDir,
+      validate: args.validate !== false,
+      profile: resolvePreviewProfile(args.profile),
+    });
+    return {
+      success: true,
+      jobId: job.id,
+      status: job.status,
+      message: queueMessage(job.id, "Staging preview"),
+    };
+  } catch (error) {
+    const activeJob = getActiveManagementJob(error);
+    if (activeJob) return activeManagementJobFailure({ activeJob } as ActiveManagementJobError);
+    return stagingFailure("Staging preview could not be queued.", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function enqueueStagingDeploy(ctx: AppContext, args: any) {
+  const { stagingDir, message } = args;
+  if (!existsSync(stagingDir)) {
+    return stagingFailure(
+      "Staging directory not found.",
+      `Staging directory not found: ${stagingDir}. Call staging_init first.`,
+      {
+        sessionLog: `Missing staging directory: ${stagingDir}`,
+        toolTelemetry: { stagingDir },
+      },
+    );
+  }
+  if (isRestartPending() || existsSync(SIGNAL_FILE)) {
+    return stagingFailure(
+      "A restart is already pending.",
+      "A restart is already pending. Wait for it to complete before deploying.",
+      { toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE } },
+    );
+  }
+  const store = ctx.managementJobStore;
+  if (!store) {
+    return stagingFailure("Staging deploy could not be queued.", "Management job store is not available.");
+  }
+  try {
+    const job = store.enqueue("staging_deploy", { stagingDir, message });
+    return {
+      success: true,
+      jobId: job.id,
+      status: job.status,
+      message: queueMessage(job.id, "Staging deploy"),
+    };
+  } catch (error) {
+    const activeJob = getActiveManagementJob(error);
+    if (activeJob) return activeManagementJobFailure({ activeJob } as ActiveManagementJobError);
+    return stagingFailure("Staging deploy could not be queued.", error instanceof Error ? error.message : String(error));
+  }
+}
+
+export function createStagingToolDefinitions(ctx?: AppContext): BridgeToolDefinition[] {
+  if (!ctx) return [...STAGING_TOOLS];
+  return STAGING_TOOLS.map((tool) => {
+    if (tool.name === "staging_preview") {
+      return { ...tool, handler: async (args: any) => enqueueStagingPreview(ctx, args) };
+    }
+    if (tool.name === "staging_deploy") {
+      return { ...tool, handler: async (args: any) => enqueueStagingDeploy(ctx, args) };
+    }
+    return tool;
+  });
 }
 
 export function registerStagingTools(
   server: BridgeToolsMcpServer,
+  ctx: AppContext,
   options: RegisterStagingToolsOptions = {},
 ): void {
-  const definitions = createStagingToolDefinitions()
+  const definitions = createStagingToolDefinitions(ctx)
     .filter((tool) => !options.hiddenTools?.has(tool.name));
   registerBridgeToolDefinitions(server, definitions);
 }

@@ -7,6 +7,7 @@ import { registerDocsTools } from "../tools/docs-tools.js";
 import { registerDeferTools } from "../tools/defer-tools.js";
 import { registerFeedTools } from "../tools/feed-tools.js";
 import { registerReportIntentTool } from "../tools/report-intent-tool.js";
+import { registerManagementJobTools } from "../tools/management-job-tools.js";
 import { registerScheduleTools } from "../tools/schedule-tools.js";
 import { registerSelfAdminTools } from "../tools/self-admin-tools.js";
 import { registerSessionTools } from "../tools/session-tools.js";
@@ -42,6 +43,7 @@ export function registerAllBridgeTools(
   }
 
   registerReportIntentTool(server, ctx);
+  registerManagementJobTools(server, ctx, { hiddenTools });
   registerTaskTools(server, ctx, { hiddenTools });
   registerTaskGroupTools(server, ctx, { hiddenTools });
   registerTagTools(server, ctx, { hiddenTools });
@@ -50,7 +52,7 @@ export function registerAllBridgeTools(
   registerScheduleTools(server, ctx, { hiddenTools });
   registerDocsTools(server, ctx, { hiddenTools });
   registerSelfAdminTools(server, ctx, { hiddenTools });
-  registerStagingTools(server, { hiddenTools });
+  registerStagingTools(server, ctx, { hiddenTools });
   registerWebSearchTools(server, ctx);
   registerBrowserFetchTools(server, ctx);
   registerBrowserExecTools(server, ctx);

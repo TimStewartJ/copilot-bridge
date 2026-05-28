@@ -43,6 +43,7 @@ const SQLITE_STATE_TABLES = [
   "deferred_prompts",
   "defer_loops",
   "push_subscriptions",
+  "management_jobs",
 ] as const;
 type SqliteStateTable = typeof SQLITE_STATE_TABLES[number];
 
@@ -398,6 +399,7 @@ export function openDatabase(dataDir: string): DatabaseSync {
 
   // Enable WAL mode for better concurrency and performance
   db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
 
   initSchema(db);
@@ -407,6 +409,7 @@ export function openDatabase(dataDir: string): DatabaseSync {
 /** Open an in-memory database (for tests) */
 export function openMemoryDatabase(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
   initSchema(db);
   return db;
@@ -766,6 +769,32 @@ function initSchema(db: DatabaseSync): void {
       updatedAt TEXT NOT NULL,
       lastSeenAt TEXT NOT NULL
     );
+
+    -- Durable management jobs (self update / staging preview / staging deploy)
+    CREATE TABLE IF NOT EXISTS management_jobs (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      input TEXT NOT NULL DEFAULT '{}',
+      result TEXT,
+      error TEXT,
+      logPath TEXT,
+      runnerPid INTEGER,
+      heartbeatAt TEXT,
+      cancelRequestedAt TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      startedAt TEXT,
+      completedAt TEXT,
+      CHECK (type IN ('self_update', 'staging_preview', 'staging_deploy')),
+      CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_management_jobs_status_created
+      ON management_jobs(status, createdAt);
+    CREATE INDEX IF NOT EXISTS idx_management_jobs_active_update_deploy
+      ON management_jobs(type, status, createdAt);
+    CREATE INDEX IF NOT EXISTS idx_management_jobs_heartbeat
+      ON management_jobs(status, heartbeatAt);
   `);
 
   // Ordered, idempotent compatibility migrations live in db-migrations.ts so

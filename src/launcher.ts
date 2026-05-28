@@ -81,6 +81,8 @@ import {
 } from "./launcher-recovery.js";
 import { isChildProcessActive, resolveServerLaunchDistributionMode } from "./launcher-process.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
+import { openDatabase } from "./server/db.js";
+import { createManagementJobStore } from "./server/management-job-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -99,6 +101,8 @@ const PRE_DEPLOY_SHA_FILE = join(DATA_DIR, "pre-deploy-sha");
 const FAILED_ROLLBACK_STATE_FILE = join(DATA_DIR, "rollback-required");
 const SOURCE_SERVER_ENTRY = "src/server/index.ts";
 const COMPILED_SERVER_ENTRY = "dist/server/index.js";
+const SOURCE_MANAGEMENT_JOB_RUNNER_ENTRY = "src/management-job-runner.ts";
+const COMPILED_MANAGEMENT_JOB_RUNNER_ENTRY = "dist/management-job-runner.js";
 if (!process.env.BRIDGE_LAUNCHER_LOG_PATH) {
   process.env.BRIDGE_LAUNCHER_LOG_PATH = join(DATA_DIR, "launcher.log");
 }
@@ -143,6 +147,8 @@ const TUNNEL_BACKOFF_CAP = 60_000; // 60s max backoff
 
 let serverProcess: ChildProcess | null = null;
 let serverLaunchTarget: ServerLaunchTarget | null = null;
+let managementJobRunnerProcess: ChildProcess | null = null;
+let cyclingManagementJobRunner = false;
 let tunnelProcess: ChildProcess | null = null;
 let currentTunnelUrl: string | null = null;
 let consecutiveFailures = 0;
@@ -915,6 +921,84 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   return child;
 }
 
+function managementJobRunnerArgs(): string[] {
+  const sourceEntry = join(ROOT, SOURCE_MANAGEMENT_JOB_RUNNER_ENTRY);
+  if (existsSync(sourceEntry)) {
+    return [TSX_CLI, sourceEntry];
+  }
+  return [join(ROOT, COMPILED_MANAGEMENT_JOB_RUNNER_ENTRY)];
+}
+
+function startManagementJobRunner(): ChildProcess {
+  if (managementJobRunnerProcess) return managementJobRunnerProcess;
+  const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
+    BRIDGE_DATA_DIR: DATA_DIR,
+    BRIDGE_DISTRIBUTION_MODE: DISTRIBUTION.mode,
+    [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
+    BRIDGE_LAUNCHER_LOG_PATH: LAUNCHER_LOG_PATH,
+  });
+  if (currentTunnelUrl) env.BRIDGE_TUNNEL_URL = currentTunnelUrl;
+  log("Starting management job runner...");
+  const child = spawn(NODE_PATH, managementJobRunnerArgs(), {
+    cwd: ROOT,
+    stdio: ["ignore", "inherit", "inherit"],
+    env,
+    detached: shouldSpawnDetachedProcessGroup(),
+  });
+  managementJobRunnerProcess = child;
+  child.on("exit", (code, signal) => {
+    log(`Management job runner exited with code ${code}${signal ? ` (signal ${signal})` : ""}`);
+    if (managementJobRunnerProcess === child) {
+      managementJobRunnerProcess = null;
+    }
+    if (!shuttingDown && !cyclingManagementJobRunner) {
+      setTimeout(() => {
+        if (!shuttingDown && !managementJobRunnerProcess) startManagementJobRunner();
+      }, CRASH_RESTART_DELAY);
+    }
+  });
+  return child;
+}
+
+function killManagementJobRunner(): void {
+  if (!managementJobRunnerProcess) return;
+  log("Stopping management job runner...");
+  killProcessTree(managementJobRunnerProcess);
+  managementJobRunnerProcess = null;
+}
+
+function cycleManagementJobRunner(reason: string): void {
+  if (!managementJobRunnerProcess) {
+    startManagementJobRunner();
+    return;
+  }
+  if (hasRunningManagementJobs()) {
+    log(`Skipping management job runner cycle after ${reason} because a job is running`);
+    return;
+  }
+  log(`Cycling management job runner after ${reason}`);
+  cyclingManagementJobRunner = true;
+  killManagementJobRunner();
+  setTimeout(() => {
+    cyclingManagementJobRunner = false;
+    if (!shuttingDown) startManagementJobRunner();
+  }, CRASH_RESTART_DELAY);
+}
+
+function hasRunningManagementJobs(): boolean {
+  let db: ReturnType<typeof openDatabase> | null = null;
+  try {
+    db = openDatabase(DATA_DIR);
+    const store = createManagementJobStore(db, { dataDir: DATA_DIR });
+    return store.listActive().some((job) => job.status === "running");
+  } catch (error) {
+    log(`Unable to inspect management jobs before runner cycle; leaving runner active: ${error instanceof Error ? error.message : String(error)}`);
+    return true;
+  } finally {
+    db?.close();
+  }
+}
+
 function killProcessTree(proc: ChildProcess | null): ProcessTreeKillResult | null {
   if (!proc || !proc.pid) return null;
   return platformKillTree(proc.pid);
@@ -1081,6 +1165,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       return "failed";
     }
     consecutiveFailures = 0;
+    startManagementJobRunner();
     await ensureTunnelAfterRollback();
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
@@ -1121,6 +1206,9 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       if (pruned > 0) {
         log(`Pruned ${pruned} stale release slot artifact(s)`);
       }
+      cycleManagementJobRunner("successful release activation");
+    } else {
+      startManagementJobRunner();
     }
     log("✅ Server restarted successfully");
     consecutiveFailures = 0;
@@ -1175,6 +1263,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
         return "failed";
       }
       consecutiveFailures = 0;
+      startManagementJobRunner();
       await ensureTunnelAfterRollback();
       log("✅ Previous server restored after failed release candidate");
       return "recovered-via-rollback";
@@ -1208,6 +1297,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       return "failed";
     }
     consecutiveFailures = 0;
+    startManagementJobRunner();
     await ensureTunnelAfterRollback();
     log("✅ Recovery completed via rollback");
     return "recovered-via-rollback";
@@ -1405,6 +1495,10 @@ async function main() {
     }
   }
 
+  if (startupDecision.startServer) {
+    startManagementJobRunner();
+  }
+
   // Poll for restart signal
   setInterval(async () => {
     if (!restarting && !recoveringServer && existsSync(SIGNAL_FILE)) {
@@ -1422,6 +1516,7 @@ async function main() {
 process.on("SIGINT", () => {
   log("Shutting down...");
   shuttingDown = true;
+  killManagementJobRunner();
   killServer();
   killTunnel();
   process.exit(0);
@@ -1429,6 +1524,7 @@ process.on("SIGINT", () => {
 
 process.on("SIGTERM", () => {
   shuttingDown = true;
+  killManagementJobRunner();
   killServer();
   killTunnel();
   process.exit(0);
