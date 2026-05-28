@@ -82,6 +82,8 @@ describe("SessionManager run state", () => {
           releaseSend = resolve;
         });
       }),
+      invokeSlashCommand: vi.fn(),
+      listSlashCommands: vi.fn(),
       abort: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn(),
     };
@@ -219,7 +221,7 @@ describe("SessionManager run state", () => {
   });
 
   it("sets the SDK session mode before sending normal work", async () => {
-    const { manager } = createManager();
+    const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -403,6 +405,127 @@ describe("SessionManager run state", () => {
       attribution: "turn",
       tokensUsed: 21,
     });
+  });
+
+  it("routes slash command agent prompts through the backend before sending", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    session.invokeSlashCommand.mockResolvedValueOnce({
+      kind: "send",
+      prompt: "The user set this explicit autopilot objective with /autopilot:\n\nfix tests",
+      displayPrompt: "Autopilot objective: fix tests",
+      mode: "autopilot",
+    });
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "/goal fix tests");
+    await flushMicrotasks();
+
+    expect(session.invokeSlashCommand).toHaveBeenCalledWith({ name: "goal", input: "fix tests" });
+    expect(session.setSendMode).toHaveBeenCalledWith({ mode: "autopilot" });
+    await flushMicrotasks();
+    expect(session.send).toHaveBeenCalledWith({
+      prompt: "The user set this explicit autopilot objective with /autopilot:\n\nfix tests",
+      displayPrompt: "Autopilot objective: fix tests",
+    });
+
+    getHandler()?.({
+      type: "user.message",
+      data: { content: "Autopilot objective: fix tests" },
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    const bus = eventBusRegistry.getBus("session-1");
+    expect(bus?.getSnapshot().pendingPrompt).toBeUndefined();
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:01.000Z",
+    });
+    await flushMicrotasks();
+  });
+
+  it("completes text-only slash commands without sending an agent prompt", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session } = makeSession();
+    session.invokeSlashCommand.mockResolvedValueOnce({ kind: "text", text: "Command output" });
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    await expect(manager.startWorkAndWaitForDelivery("session-1", "/context")).resolves.toBeUndefined();
+    await flushMicrotasks();
+
+    expect(session.invokeSlashCommand).toHaveBeenCalledWith({ name: "context", input: "" });
+    expect(session.send).not.toHaveBeenCalled();
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().finalContent).toBe("Command output");
+    expect(manager.getSessionRunState("session-1")).toBe("idle");
+  });
+
+  it("does not dispatch escaped slash prompts as commands", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-1", "//goal literal");
+    await flushMicrotasks();
+
+    expect(session.invokeSlashCommand).not.toHaveBeenCalled();
+    expect(session.send).toHaveBeenCalledWith({ prompt: "//goal literal" });
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({
+      type: "session.idle",
+      data: {},
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    await flushMicrotasks();
+  });
+
+  it("lists slash commands from the cached live session without resuming", async () => {
+    const { manager } = createManager();
+    const { session } = makeSession();
+    session.listSlashCommands.mockResolvedValue({
+      commands: [{
+        name: "goal",
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        allowDuringAgentExecution: true,
+      }],
+    });
+    manager.sessionObjects.set("session-1", session);
+    manager.backend = {
+      resumeSession: vi.fn(),
+    };
+
+    await expect(manager.listSlashCommands("session-1")).resolves.toEqual({
+      supported: true,
+      commands: [{
+        name: "goal",
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        allowDuringAgentExecution: true,
+      }],
+    });
+    await expect(manager.listSlashCommands("session-1")).resolves.toEqual({
+      supported: true,
+      commands: [{
+        name: "goal",
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        allowDuringAgentExecution: true,
+      }],
+    });
+    expect(session.listSlashCommands).toHaveBeenCalledOnce();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
+    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
   });
 
   it("fails delivery before sending when SDK session mode cannot be set", async () => {

@@ -113,6 +113,56 @@ export interface AgentSetModelOptions {
   [extra: string]: unknown;
 }
 
+export interface AgentSlashCommandInvocation {
+  name: string;
+  input?: string;
+}
+
+export interface AgentSlashCommandInput {
+  hint: string;
+  required?: boolean;
+  completion?: string;
+  preserveMultilineInput?: boolean;
+}
+
+export interface AgentSlashCommandInfo {
+  name: string;
+  aliases?: string[];
+  description: string;
+  kind: string;
+  input?: AgentSlashCommandInput;
+  allowDuringAgentExecution: boolean;
+  experimental?: boolean;
+}
+
+export interface AgentSlashCommandList {
+  commands: AgentSlashCommandInfo[];
+}
+
+export type AgentSlashCommandResult =
+  | {
+    kind: "send";
+    prompt: string;
+    displayPrompt?: string;
+    mode?: string;
+  }
+  | {
+    kind: "text";
+    text: string;
+    markdown?: boolean;
+    preserveAnsi?: boolean;
+  }
+  | {
+    kind: "completed";
+    message?: string;
+  }
+  | {
+    kind: "select";
+    command: string;
+    title: string;
+    options: Array<{ label?: string; value?: string; description?: string }>;
+  };
+
 /**
  * Subscription callback for live session events. Step 1 keeps the payload
  * `unknown`; the existing session-runner pattern-matches on Copilot event
@@ -156,6 +206,12 @@ export interface AgentSession {
 
   /** Switch the session's send mode. Optional — older SDK builds may lack `mode.set`. */
   setSendMode?(opts: { mode: string }): Promise<unknown>;
+
+  /** Invoke a session-scoped slash command. Optional for agent backends that do not expose commands. */
+  invokeSlashCommand?(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult>;
+
+  /** List session-scoped slash commands. Optional for agent backends that do not expose commands. */
+  listSlashCommands?(): Promise<AgentSlashCommandList | undefined>;
 
   /** Start a Fleet run. Optional — only present on Copilot SDK builds that ship Fleet. */
   startFleet?(opts: { prompt: string }): Promise<unknown>;

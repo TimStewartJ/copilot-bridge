@@ -566,6 +566,51 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
+  it("POST /api/chat routes busy slash commands through command steering", async () => {
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.startWork = vi.fn();
+    ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "busy-session", prompt: "/goal finish the migration" });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "command" });
+    expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith("busy-session", "/goal finish the migration", undefined);
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it("GET /api/sessions/:id/slash-commands returns command metadata", async () => {
+    ctx.sessionManager.listSlashCommands = vi.fn().mockResolvedValue({
+      supported: true,
+      commands: [{
+        name: "goal",
+        aliases: ["autopilot"],
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        input: { hint: "objective" },
+        allowDuringAgentExecution: true,
+      }],
+    });
+
+    const res = await request(app).get("/api/sessions/test-session/slash-commands");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      supported: true,
+      commands: [{
+        name: "goal",
+        aliases: ["autopilot"],
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        input: { hint: "objective" },
+        allowDuringAgentExecution: true,
+      }],
+    });
+    expect(ctx.sessionManager.listSlashCommands).toHaveBeenCalledWith("test-session");
+  });
+
   it("POST /api/chat reports when a busy session cannot accept steering yet", async () => {
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));

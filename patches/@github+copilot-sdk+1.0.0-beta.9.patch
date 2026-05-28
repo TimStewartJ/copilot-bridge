@@ -1,8 +1,8 @@
 diff --git a/node_modules/@github/copilot-sdk/dist/cjs/client.js b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-index 1dc0634..d8fac71 100644
+index 42bc6cc..f07a357 100644
 --- a/node_modules/@github/copilot-sdk/dist/cjs/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/cjs/client.js
-@@ -639,6 +639,7 @@ class CopilotClient {
+@@ -783,6 +783,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -10,7 +10,7 @@ index 1dc0634..d8fac71 100644
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
          defaultAgent: config.defaultAgent,
-@@ -766,6 +767,7 @@ class CopilotClient {
+@@ -915,6 +916,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -19,10 +19,10 @@ index 1dc0634..d8fac71 100644
          customAgents: toWireCustomAgents(config.customAgents),
          defaultAgent: config.defaultAgent,
 diff --git a/node_modules/@github/copilot-sdk/dist/client.js b/node_modules/@github/copilot-sdk/dist/client.js
-index 1f3c400..283d5fa 100644
+index 4016bd9..5e16e30 100644
 --- a/node_modules/@github/copilot-sdk/dist/client.js
 +++ b/node_modules/@github/copilot-sdk/dist/client.js
-@@ -625,6 +625,7 @@ class CopilotClient {
+@@ -769,6 +769,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),
@@ -30,7 +30,7 @@ index 1f3c400..283d5fa 100644
          envValueMode: "direct",
          customAgents: toWireCustomAgents(config.customAgents),
          defaultAgent: config.defaultAgent,
-@@ -752,6 +753,7 @@ class CopilotClient {
+@@ -901,6 +902,7 @@ class CopilotClient {
          streaming: config.streaming,
          includeSubAgentStreamingEvents: config.includeSubAgentStreamingEvents ?? true,
          mcpServers: toWireMcpServers(config.mcpServers),

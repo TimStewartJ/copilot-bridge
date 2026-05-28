@@ -631,7 +631,29 @@ export async function forkSession(id: string, opts?: { toEventId?: string }): Pr
 
 export interface ChatMessageAcceptedResponse {
   status: "accepted";
-  mode?: "steered";
+  mode?: "steered" | "command";
+}
+
+export interface SlashCommandInput {
+  hint: string;
+  required?: boolean;
+  completion?: string;
+  preserveMultilineInput?: boolean;
+}
+
+export interface SlashCommandInfo {
+  name: string;
+  aliases?: string[];
+  description: string;
+  kind: string;
+  input?: SlashCommandInput;
+  allowDuringAgentExecution: boolean;
+  experimental?: boolean;
+}
+
+export interface SlashCommandListResponse {
+  supported: boolean;
+  commands: SlashCommandInfo[];
 }
 
 export async function sendChatMessage(
@@ -646,6 +668,10 @@ export async function sendChatMessage(
     ...(attachments?.length ? { attachments } : {}),
     ...(mode ? { mode } : {}),
   });
+}
+
+export async function fetchSlashCommands(sessionId: string): Promise<SlashCommandListResponse> {
+  return apiFetch<SlashCommandListResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/slash-commands`);
 }
 
 export async function fetchMessages(

@@ -25,6 +25,10 @@ import type {
   AgentModelInfo,
   AgentPermissionPolicy,
   AgentSendArgs,
+  AgentSlashCommandInfo,
+  AgentSlashCommandInvocation,
+  AgentSlashCommandList,
+  AgentSlashCommandResult,
   AgentSession,
   AgentSessionConfig,
   AgentSessionEventHandler,
@@ -44,6 +48,88 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   externalToolEvents: true,
   forkBoundaries: true,
 };
+
+function normalizeString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return values.length > 0 ? values : undefined;
+}
+
+function normalizeCopilotSlashCommandInfo(command: any): AgentSlashCommandInfo | null {
+  const name = normalizeString(command?.name);
+  const description = normalizeString(command?.description);
+  if (!name || !description) return null;
+  const input = command.input && typeof command.input === "object"
+    ? {
+        hint: normalizeString(command.input.hint) ?? "",
+        ...(typeof command.input.required === "boolean" ? { required: command.input.required } : {}),
+        ...(normalizeString(command.input.completion) ? { completion: command.input.completion } : {}),
+        ...(typeof command.input.preserveMultilineInput === "boolean"
+          ? { preserveMultilineInput: command.input.preserveMultilineInput }
+          : {}),
+      }
+    : undefined;
+  return {
+    name,
+    ...(normalizeStringArray(command.aliases) ? { aliases: normalizeStringArray(command.aliases) } : {}),
+    description,
+    kind: normalizeString(command.kind) ?? "unknown",
+    ...(input ? { input } : {}),
+    allowDuringAgentExecution: command.allowDuringAgentExecution === true,
+    ...(typeof command.experimental === "boolean" ? { experimental: command.experimental } : {}),
+  };
+}
+
+function normalizeCopilotSlashCommandList(result: any): AgentSlashCommandList {
+  const commands = Array.isArray(result?.commands)
+    ? result.commands
+        .map(normalizeCopilotSlashCommandInfo)
+        .filter((command: AgentSlashCommandInfo | null): command is AgentSlashCommandInfo => command !== null)
+    : [];
+  return { commands };
+}
+
+function normalizeCopilotSlashCommandResult(result: any): AgentSlashCommandResult {
+  switch (result?.kind) {
+    case "agent-prompt": {
+      const prompt = normalizeString(result.prompt);
+      if (!prompt) throw new Error("Slash command returned an empty agent prompt");
+      const displayPrompt = normalizeString(result.displayPrompt);
+      const mode = normalizeString(result.mode);
+      return {
+        kind: "send",
+        prompt,
+        ...(displayPrompt ? { displayPrompt } : {}),
+        ...(mode ? { mode } : {}),
+      };
+    }
+    case "text":
+      return {
+        kind: "text",
+        text: normalizeString(result.text) ?? "",
+        ...(typeof result.markdown === "boolean" ? { markdown: result.markdown } : {}),
+        ...(typeof result.preserveAnsi === "boolean" ? { preserveAnsi: result.preserveAnsi } : {}),
+      };
+    case "completed":
+      return {
+        kind: "completed",
+        ...(normalizeString(result.message) ? { message: result.message } : {}),
+      };
+    case "select-subcommand":
+      return {
+        kind: "select",
+        command: normalizeString(result.command) ?? "",
+        title: normalizeString(result.title) ?? "Select an option",
+        options: Array.isArray(result.options) ? result.options : [],
+      };
+    default:
+      throw new Error(`Unsupported slash command result: ${normalizeString(result?.kind) ?? "unknown"}`);
+  }
+}
 
 /**
  * Wraps a CopilotSession so the rest of the Bridge talks to AgentSession.
@@ -98,6 +184,29 @@ class CopilotAgentSession implements AgentSession {
       throw new Error("Session mode switching is not available in this Copilot SDK build");
     }
     return setMode.call(this.session.rpc.mode, opts);
+  }
+
+  async invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult> {
+    const invoke = this.session?.rpc?.commands?.invoke;
+    if (typeof invoke !== "function") {
+      throw new Error("Slash command invocation is not available in this agent backend");
+    }
+    const result = await invoke.call(this.session.rpc.commands, {
+      name: command.name,
+      ...(command.input ? { input: command.input } : {}),
+    });
+    return normalizeCopilotSlashCommandResult(result);
+  }
+
+  async listSlashCommands(): Promise<AgentSlashCommandList | undefined> {
+    const list = this.session?.rpc?.commands?.list;
+    if (typeof list !== "function") return undefined;
+    const result = await list.call(this.session.rpc.commands, {
+      includeBuiltins: true,
+      includeSkills: true,
+      includeClientCommands: true,
+    });
+    return normalizeCopilotSlashCommandList(result);
   }
 
   async startFleet(opts: { prompt: string }): Promise<unknown> {

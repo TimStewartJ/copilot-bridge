@@ -53,6 +53,7 @@ import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-
 import type { CopilotModelMetadataForPricing } from "../shared/copilot-pricing.js";
 import { isCopilotContextTier } from "../shared/copilot-context.js";
 import { isSendMode } from "../shared/send-mode.js";
+import { parseSlashCommandPrompt } from "./slash-command.js";
 import { InvalidTaskUpdateError, type Task } from "./task-store.js";
 import { FeedCardNotFoundError, FeedCardValidationError, type FeedCardStatus } from "./feed-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
@@ -2092,6 +2093,16 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
   });
 
+  // GET /sessions/:id/slash-commands — list slash commands available on the live session.
+  router.get("/sessions/:id/slash-commands", async (req, res) => {
+    try {
+      const result = await ctx.sessionManager.listSlashCommands(req.params.id);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // PATCH /sessions/:id/model — explicitly switch the model for a single session
   router.patch("/sessions/:id/model", async (req, res) => {
     const sessionId = req.params.id;
@@ -2256,7 +2267,10 @@ export function createApiRouter(ctx: AppContext): express.Router {
     try {
       if (ctx.sessionManager.isSessionBusy(sessionId)) {
         await ctx.sessionManager.steerSession(sessionId, prompt, attachments);
-        res.status(202).json({ status: "accepted", mode: "steered" });
+        res.status(202).json({
+          status: "accepted",
+          mode: parseSlashCommandPrompt(prompt) ? "command" : "steered",
+        });
         return;
       }
 

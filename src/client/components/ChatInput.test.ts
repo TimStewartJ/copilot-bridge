@@ -20,6 +20,12 @@ function findButtonByText(root: any, text: string): any {
   return button;
 }
 
+function findButtonContainingText(root: any, text: string): any {
+  const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.textContent?.includes(text));
+  if (!button) throw new Error(`Button not found containing: ${text}`);
+  return button;
+}
+
 function findButtonByAriaLabel(root: any, label: string): any {
   const button = queryButtonByAriaLabel(root, label);
   if (!button) throw new Error(`Button not found with aria-label: ${label}`);
@@ -220,5 +226,91 @@ describe("ChatInput voice retry", () => {
     });
 
     expect(onSend).toHaveBeenCalledWith("hello", undefined, "interactive");
+  });
+
+  it("shows slash command suggestions and inserts a selected command", async () => {
+    await renderChatInput({
+      slashCommandsSupported: true,
+      slashCommands: [{
+        name: "goal",
+        aliases: ["autopilot"],
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        input: { hint: "objective", preserveMultilineInput: true },
+        allowDuringAgentExecution: true,
+      }],
+    });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "/go fix tests",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    expect(getHarness().dom.container.textContent).toContain("/goal");
+    expect(getHarness().dom.container.textContent).toContain("Set an autopilot objective");
+
+    const goalButton = findButtonContainingText(getHarness().dom.container, "/goal");
+    await getHarness().act(async () => {
+      getReactProps(goalButton)?.onClick?.();
+    });
+
+    expect(findTextarea(getHarness().dom.container).value).toBe("/goal fix tests");
+  });
+
+  it("shows argument hints after an exact slash command", async () => {
+    await renderChatInput({
+      slashCommandsSupported: true,
+      slashCommands: [{
+        name: "goal",
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        input: { hint: "objective", required: true },
+        allowDuringAgentExecution: true,
+      }],
+    });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "/goal ",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    expect(getHarness().dom.container.textContent).toContain("Required: objective");
+  });
+
+  it("does not show slash suggestions for escaped literal slash prompts", async () => {
+    await renderChatInput({
+      slashCommandsSupported: true,
+      slashCommands: [{
+        name: "goal",
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        allowDuringAgentExecution: true,
+      }],
+    });
+
+    const textarea = findTextarea(getHarness().dom.container);
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onChange?.({
+        target: {
+          value: "//goal literal",
+          style: { height: "" },
+          scrollHeight: 48,
+        },
+      });
+    });
+
+    expect(getHarness().dom.container.textContent).not.toContain("Set an autopilot objective");
   });
 });
