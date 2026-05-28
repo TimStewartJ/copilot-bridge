@@ -1,7 +1,7 @@
 import { readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isBridgeReleaseMode } from "./distribution-mode.js";
+import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { resolveBridgeControlRoot } from "./control-root.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 
@@ -140,8 +140,11 @@ export function listPreviewTargetsForStagingDir(stagingDir: string): PreviewTarg
   return [createPreviewTarget(stagingDir)];
 }
 
-export function shouldManageStagingArtifacts(): boolean {
-  return !isBridgeReleaseMode(process.env, PRODUCTION_ROOT);
+export function shouldManageStagingArtifacts(
+  env: NodeJS.ProcessEnv = process.env,
+  rootDir = PRODUCTION_ROOT,
+): boolean {
+  return isBridgeSourceManagementAvailable(env, rootDir);
 }
 
 export function directoryMtimeMs(path: string): number {

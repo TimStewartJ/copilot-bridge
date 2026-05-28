@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { BridgeToolsMcpServer, registerAllBridgeTools } from "../agent-tools-mcp/index.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
-import { createTestApp, makeTestRuntimePaths } from "./helpers.js";
+import { createTestApp, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 import { initializeDocsFts } from "../db.js";
 
 describe("Bridge MCP tool definitions", () => {
@@ -64,6 +64,39 @@ describe("registerAllBridgeTools (MCP)", () => {
     expect(toolNames.has("self_update")).toBe(false);
     expect(toolNames.has("staging_init")).toBe(false);
     expect(toolNames.has("staging_deploy")).toBe(false);
+  });
+
+  it("keeps git-backed tools available for source-managed release-slot servers", () => {
+    const runtimePaths = makeTestRuntimePaths(
+      "source-release-slot-tools-mcp",
+      { distributionMode: "release" },
+      { BRIDGE_CONTROL_DISTRIBUTION_MODE: "development" },
+    );
+    const { ctx } = createTestApp({ runtimePaths });
+    const server = new BridgeToolsMcpServer(ctx);
+    registerAllBridgeTools(server, ctx);
+    const toolNames = new Set(server.getToolNames());
+
+    expect(toolNames.has("self_restart")).toBe(true);
+    expect(toolNames.has("self_update")).toBe(true);
+    expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_deploy")).toBe(true);
+  });
+
+  it("keeps git-backed tools available for release-slot servers launched before the control-mode env existed", () => {
+    const runtimePaths = makeTestRuntimePaths(
+      "legacy-source-release-slot-tools-mcp",
+      { distributionMode: "release" },
+      { BRIDGE_ACTIVE_RELEASE_ROOT: makeTestDir("bridge-release-slot") },
+    );
+    const { ctx } = createTestApp({ runtimePaths });
+    const server = new BridgeToolsMcpServer(ctx);
+    registerAllBridgeTools(server, ctx);
+    const toolNames = new Set(server.getToolNames());
+
+    expect(toolNames.has("self_update")).toBe(true);
+    expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_deploy")).toBe(true);
   });
 
   it("exposes git-backed tools in non-release mode", () => {

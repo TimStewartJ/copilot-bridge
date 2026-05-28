@@ -31,6 +31,11 @@ describe("resolveServerLaunchDistributionMode", () => {
   it("forces release mode for release-slot launches from a development launcher", () => {
     expect(resolveServerLaunchDistributionMode("development", true)).toBe("release");
   });
+
+  it("preserves release mode for packaged release launches", () => {
+    expect(resolveServerLaunchDistributionMode("release", false)).toBe("release");
+    expect(resolveServerLaunchDistributionMode("release", true)).toBe("release");
+  });
 });
 
 describe("waitForChildExit", () => {

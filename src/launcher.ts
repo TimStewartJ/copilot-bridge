@@ -39,7 +39,11 @@ import {
   writeRestartState,
 } from "./server/restart-state.js";
 import { canUseDevtunnelCli, getDevtunnelCliStatus, resolveBridgeTunnelName } from "./server/tunnel.js";
-import { resolveBridgeDistribution } from "./server/distribution-mode.js";
+import {
+  BRIDGE_ACTIVE_RELEASE_ROOT_ENV,
+  BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV,
+  resolveBridgeDistribution,
+} from "./server/distribution-mode.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
   markUpdateInstallActivationFailed,
@@ -877,9 +881,10 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
     BRIDGE_DISTRIBUTION_MODE: resolveServerLaunchDistributionMode(DISTRIBUTION.mode, target.release !== undefined),
+    [BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV]: DISTRIBUTION.mode,
     [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
     ...(target.release ? {
-      BRIDGE_ACTIVE_RELEASE_ROOT: target.root,
+      [BRIDGE_ACTIVE_RELEASE_ROOT_ENV]: target.root,
       BRIDGE_RELEASE_SLOT_ID: target.release.id,
     } : {}),
   });
@@ -934,6 +939,7 @@ function startManagementJobRunner(): ChildProcess {
   const env = buildBridgeChildEnv(process.env, MANAGED_ENV_KEYS, BRIDGE_ENV_PATH, {
     BRIDGE_DATA_DIR: DATA_DIR,
     BRIDGE_DISTRIBUTION_MODE: DISTRIBUTION.mode,
+    [BRIDGE_CONTROL_DISTRIBUTION_MODE_ENV]: DISTRIBUTION.mode,
     [BRIDGE_CONTROL_ROOT_ENV]: ROOT,
     BRIDGE_LAUNCHER_LOG_PATH: LAUNCHER_LOG_PATH,
   });

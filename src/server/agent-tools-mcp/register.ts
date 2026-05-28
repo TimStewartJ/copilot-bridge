@@ -1,4 +1,4 @@
-import { isBridgeReleaseMode } from "../distribution-mode.js";
+import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
 import type { AppContext } from "../app-context.js";
 import { registerAttachmentTools } from "../tools/attachment-tools.js";
 import { registerBrowserSessionTools } from "../browser-session-tools.js";
@@ -27,8 +27,8 @@ export interface RegisterAllBridgeToolsOptions {
   excludedToolNames?: Iterable<string>;
 }
 
-function isReleaseMode(ctx: AppContext): boolean {
-  return ctx.runtimePaths?.distributionMode === "release" || isBridgeReleaseMode(process.env, BRIDGE_TOOLS_REPO_ROOT);
+function isSourceManagementUnavailable(ctx: AppContext): boolean {
+  return !isBridgeSourceManagementAvailable(ctx.runtimePaths?.env ?? process.env, BRIDGE_TOOLS_REPO_ROOT);
 }
 
 export function registerAllBridgeTools(
@@ -37,7 +37,7 @@ export function registerAllBridgeTools(
   options: RegisterAllBridgeToolsOptions = {},
 ): void {
   const hiddenTools = new Set<string>(options.excludedToolNames ?? []);
-  if (isReleaseMode(ctx)) {
+  if (isSourceManagementUnavailable(ctx)) {
     hiddenTools.add("self_update");
     for (const tool of STAGING_TOOLS) hiddenTools.add(tool.name);
   }
