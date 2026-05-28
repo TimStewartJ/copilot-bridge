@@ -1,4 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
+import type { ManagementJobFilters } from "./management-job-api";
 
 const CHAT_CACHE_GC_TIME = 15 * 60 * 1000;
 
@@ -26,6 +27,10 @@ export const queryKeys = {
   tasks: ["tasks"] as const,
   taskGroups: ["task-groups"] as const,
   restartStatus: ["restart-status"] as const,
+  managementJobsRoot: ["management-jobs"] as const,
+  managementJobs: (filters?: ManagementJobFilters) =>
+    ["management-jobs", "list", filters ?? {}] as const,
+  managementJob: (id: string) => ["management-jobs", "detail", id] as const,
   sessions: (opts?: { includeArchived?: boolean }) =>
     ["sessions", opts ?? {}] as const,
   task: (id: string) => ["task", id] as const,

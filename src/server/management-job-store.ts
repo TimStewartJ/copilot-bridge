@@ -29,6 +29,7 @@ export interface ManagementJob {
 export interface ManagementJobStore {
   enqueue(type: ManagementJobType, input?: unknown): ManagementJob;
   get(id: string): ManagementJob | null;
+  list(options?: ManagementJobListOptions): ManagementJob[];
   listActive(types?: readonly ManagementJobType[]): ManagementJob[];
   claimNext(options?: ClaimNextManagementJobOptions): ManagementJob | null;
   heartbeat(id: string, runnerPid?: number): void;
@@ -46,6 +47,13 @@ export interface CreateManagementJobStoreOptions {
 export interface ClaimNextManagementJobOptions {
   runnerPid?: number;
   staleAfterMs?: number;
+}
+
+export interface ManagementJobListOptions {
+  types?: readonly ManagementJobType[];
+  statuses?: readonly ManagementJobStatus[];
+  limit?: number;
+  order?: "created-desc" | "created-asc";
 }
 
 interface ManagementJobRow {
@@ -77,7 +85,10 @@ export class ActiveManagementJobError extends Error {
 
 const ACTIVE_STATUSES: readonly ManagementJobStatus[] = ["queued", "running"];
 const EXCLUSIVE_DEPLOY_TYPES: readonly ManagementJobType[] = ["self_update", "staging_deploy"];
-const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
+export const DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
+export const DEFAULT_MANAGEMENT_JOB_LIST_LIMIT = 50;
+export const MAX_MANAGEMENT_JOB_LIST_LIMIT = 200;
+const DEFAULT_STALE_AFTER_MS = DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS;
 const DEFAULT_LOG_TAIL_BYTES = 16 * 1024;
 
 function nowIso(now: () => Date): string {
@@ -113,6 +124,21 @@ function assertManagementJobType(value: string): ManagementJobType {
 function assertManagementJobStatus(value: string): ManagementJobStatus {
   if ((MANAGEMENT_JOB_STATUSES as readonly string[]).includes(value)) return value as ManagementJobStatus;
   throw new Error(`Unknown management job status in database: ${value}`);
+}
+
+export function isManagementJobType(value: string): value is ManagementJobType {
+  return (MANAGEMENT_JOB_TYPES as readonly string[]).includes(value);
+}
+
+export function isManagementJobStatus(value: string): value is ManagementJobStatus {
+  return (MANAGEMENT_JOB_STATUSES as readonly string[]).includes(value);
+}
+
+export function getManagementJobStaleAfterMs(env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = Number(env.BRIDGE_MANAGEMENT_JOB_STALE_AFTER_MS);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS;
 }
 
 function rowToJob(row: ManagementJobRow): ManagementJob {
@@ -152,6 +178,27 @@ function runImmediateTransaction<T>(db: DatabaseSync, operation: () => T): T {
 
 function placeholders(values: readonly unknown[]): string {
   return values.map(() => "?").join(", ");
+}
+
+function normalizeManagementJobListLimit(limit: number | undefined): number {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return DEFAULT_MANAGEMENT_JOB_LIST_LIMIT;
+  return Math.min(MAX_MANAGEMENT_JOB_LIST_LIMIT, Math.max(1, Math.floor(limit)));
+}
+
+function validateListTypes(types: readonly ManagementJobType[] | undefined): readonly ManagementJobType[] | undefined {
+  if (types === undefined) return undefined;
+  for (const type of types) {
+    if (!isManagementJobType(type)) throw new Error(`Unsupported management job type: ${String(type)}`);
+  }
+  return types;
+}
+
+function validateListStatuses(statuses: readonly ManagementJobStatus[] | undefined): readonly ManagementJobStatus[] | undefined {
+  if (statuses === undefined) return undefined;
+  for (const status of statuses) {
+    if (!isManagementJobStatus(status)) throw new Error(`Unsupported management job status: ${String(status)}`);
+  }
+  return statuses;
 }
 
 function findActiveExclusiveJob(db: DatabaseSync): ManagementJob | null {
@@ -273,6 +320,39 @@ export function createManagementJobStore(
     get(id) {
       const row = getJobRow(db, id);
       return row ? rowToJob(row) : null;
+    },
+
+    list(options = {}) {
+      const types = validateListTypes(options.types);
+      const statuses = validateListStatuses(options.statuses);
+      if (types?.length === 0 || statuses?.length === 0) return [];
+
+      const limit = normalizeManagementJobListLimit(options.limit);
+      const order = options.order ?? "created-desc";
+      if (order !== "created-desc" && order !== "created-asc") {
+        throw new Error(`Unsupported management job list order: ${String(order)}`);
+      }
+
+      const clauses: string[] = [];
+      const params: Array<string | number> = [];
+      if (types) {
+        clauses.push(`type IN (${placeholders(types)})`);
+        params.push(...types);
+      }
+      if (statuses) {
+        clauses.push(`status IN (${placeholders(statuses)})`);
+        params.push(...statuses);
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+      const direction = order === "created-asc" ? "ASC" : "DESC";
+      const rows = db.prepare(`
+        SELECT *
+        FROM management_jobs
+        ${where}
+        ORDER BY createdAt ${direction}
+        LIMIT ?
+      `).all(...params, limit) as unknown as ManagementJobRow[];
+      return rows.map(rowToJob);
     },
 
     listActive(types = MANAGEMENT_JOB_TYPES) {

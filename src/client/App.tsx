@@ -497,6 +497,9 @@ export default function App() {
       case "task:changed":
         taskChangeInvalidator.handleTaskChange(event.taskId);
         break;
+      case "management-job:changed":
+        void queryClient.invalidateQueries({ queryKey: queryKeys.managementJobsRoot });
+        break;
       case "feed:changed":
         invalidateFeed();
         break;
@@ -514,7 +517,6 @@ export default function App() {
         break;
     }
   }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateFeed, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
-
   useEffect(() => {
     if (!restartBanner.shouldReload) return;
     const timer = window.setTimeout(() => window.location.reload(), 1000);
@@ -527,11 +529,9 @@ export default function App() {
     const previousTasks = previousTasksRef.current;
     const reopenedTaskIds = new Set<string>();
     const completedTasks: Array<{ feedback: TaskCompletionFeedback; sortTime: number }> = [];
-
     for (const task of tasks) {
       const previousTask = previousTasks.get(task.id);
       if (!previousTask) continue;
-
       if (!isTaskCompleted(previousTask) && isTaskCompleted(task)) {
         completedTasks.push({
           feedback: buildTaskCompletionFeedback(task, previousTask.status),

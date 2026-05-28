@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
 import type { DeferSummary, RestartStatusPhase } from "./api";
+import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
 
 export type StatusEvent =
   | { type: "session:busy" | "session:stalled" | "session:idle"; sessionId?: string }
@@ -28,6 +29,7 @@ export type StatusEvent =
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
   | { type: "schedule:changed"; scheduleId?: string }
   | { type: "task:changed"; taskId?: string }
+  | { type: "management-job:changed"; jobId?: string; jobType?: ManagementJobType; status?: ManagementJobStatus }
   | { type: "feed:changed"; cardId?: string; dedupeKey?: string; taskId?: string; sessionId?: string }
   | { type: "readstate:changed"; readState?: Record<string, string> };
 

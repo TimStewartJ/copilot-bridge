@@ -6,6 +6,8 @@ import { openDatabase, type DatabaseSync } from "./server/db.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
   createManagementJobStore,
+  DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS,
+  getManagementJobStaleAfterMs,
   type ManagementJob,
   type ManagementJobStore,
 } from "./server/management-job-store.js";
@@ -27,7 +29,7 @@ export interface ManagementJobRunnerOptions {
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
-const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
+const DEFAULT_STALE_AFTER_MS = DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS;
 
 function runnerLog(message: string): void {
   console.log(`[management-job-runner] ${message}`);
@@ -134,7 +136,7 @@ async function main(): Promise<void> {
       shouldStop: () => stopping,
       pollIntervalMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_POLL_INTERVAL_MS) || DEFAULT_POLL_INTERVAL_MS,
       heartbeatIntervalMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_HEARTBEAT_INTERVAL_MS) || DEFAULT_HEARTBEAT_INTERVAL_MS,
-      staleAfterMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_STALE_AFTER_MS) || DEFAULT_STALE_AFTER_MS,
+      staleAfterMs: getManagementJobStaleAfterMs(process.env),
     });
   } finally {
     db?.close();
