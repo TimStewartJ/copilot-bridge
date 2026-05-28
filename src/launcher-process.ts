@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import type { BridgeDistributionMode } from "./server/distribution-mode.js";
 
 type ExitAwareChildProcess = Pick<ChildProcess, "exitCode" | "signalCode" | "once" | "off">;
 
@@ -7,6 +8,13 @@ export function isChildProcessActive(
   activeProc: Pick<ChildProcess, "exitCode" | "signalCode"> | null,
 ): boolean {
   return proc !== null && proc === activeProc && proc.exitCode === null && proc.signalCode === null;
+}
+
+export function resolveServerLaunchDistributionMode(
+  launcherMode: BridgeDistributionMode,
+  isReleaseSlot: boolean,
+): BridgeDistributionMode {
+  return isReleaseSlot ? "release" : launcherMode;
 }
 
 export async function waitForChildExit(proc: ExitAwareChildProcess | null, timeoutMs: number): Promise<boolean> {
