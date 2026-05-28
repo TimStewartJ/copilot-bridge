@@ -62,6 +62,13 @@ class CopilotAgentSession implements AgentSession {
     return this.session.send(args);
   }
 
+  sendAndWait(args: AgentSendArgs, timeoutMs?: number): Promise<unknown> {
+    if (typeof this.session.sendAndWait !== "function") {
+      throw new Error("Session sendAndWait is not available in this Copilot SDK build");
+    }
+    return this.session.sendAndWait(args, timeoutMs);
+  }
+
   abort(): Promise<unknown> {
     return this.session.abort();
   }
