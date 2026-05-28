@@ -1,4 +1,4 @@
-export type CategoryId = "general" | "integrations" | "diagnostics";
+export type CategoryId = "general" | "integrations" | "management" | "usage" | "diagnostics";
 
 export type SectionId =
   | "system-prompt"
@@ -11,6 +11,7 @@ export type SectionId =
   | "tags"
   | "mcp-servers"
   | "voice-input"
+  | "management-jobs"
   | "browser-diagnostics"
   | "updates"
   | "bridge-status"
@@ -36,7 +37,17 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   {
     id: "diagnostics",
     label: "Diagnostics",
-    sections: ["browser-diagnostics", "voice-input", "bridge-status", "local-copilot-usage"],
+    sections: ["bridge-status", "browser-diagnostics", "voice-input"],
+  },
+  {
+    id: "management",
+    label: "Management",
+    sections: ["management-jobs"],
+  },
+  {
+    id: "usage",
+    label: "Copilot Usage",
+    sections: ["local-copilot-usage"],
   },
 ];
 

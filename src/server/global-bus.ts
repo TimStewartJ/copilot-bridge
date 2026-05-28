@@ -2,13 +2,17 @@
 // Pushes run-state/title/intent events to all connected SSE clients
 
 import type { DeferSummary } from "./defer-summary.js";
+import type { ManagementJobStatus, ManagementJobType } from "./management-job-store.js";
 import type { RestartPhase } from "./restart-state.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "feed:changed";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-pending" | "server:restart-cleared" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "feed:changed" | "management-job:changed";
   sessionId?: string;
   cardId?: string;
   dedupeKey?: string;
+  jobId?: string;
+  jobType?: ManagementJobType;
+  status?: ManagementJobStatus;
   title?: string;
   intent?: string;
   archived?: boolean;

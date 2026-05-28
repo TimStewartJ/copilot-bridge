@@ -76,6 +76,45 @@ describe("management job store", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  it("lists jobs with filters, limits, and newest-first ordering", () => {
+    let current = new Date("2026-05-18T20:00:00.000Z");
+    const { db, store, dataDir } = createStore("list-filters", () => current);
+    try {
+      const first = store.enqueue("staging_preview", { index: 1 });
+      current = new Date("2026-05-18T20:00:01.000Z");
+      const cancelled = store.enqueue("staging_deploy", { index: 2 });
+      store.cancel(cancelled.id);
+      current = new Date("2026-05-18T20:00:02.000Z");
+      const failed = store.enqueue("self_update", { index: 3 });
+      store.fail(failed.id, "boom");
+
+      expect(store.list().map((job) => job.id)).toEqual([failed.id, cancelled.id, first.id]);
+      expect(store.list({ order: "created-asc" }).map((job) => job.id)).toEqual([first.id, cancelled.id, failed.id]);
+      expect(store.list({ types: ["staging_preview"] }).map((job) => job.id)).toEqual([first.id]);
+      expect(store.list({ statuses: ["cancelled"] }).map((job) => job.id)).toEqual([cancelled.id]);
+      expect(store.list({ types: ["self_update"], statuses: ["failed"] }).map((job) => job.id)).toEqual([failed.id]);
+      expect(store.list({ limit: 2 }).map((job) => job.id)).toEqual([failed.id, cancelled.id]);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies default and maximum list limits", () => {
+    const { db, store, dataDir } = createStore("list-limit");
+    try {
+      for (let index = 0; index < 205; index += 1) {
+        store.enqueue("staging_preview", { index });
+      }
+
+      expect(store.list()).toHaveLength(50);
+      expect(store.list({ limit: 500 })).toHaveLength(200);
+    } finally {
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("management job runner", () => {

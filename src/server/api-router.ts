@@ -86,6 +86,21 @@ import {
 } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
+import {
+  ActiveManagementJobError,
+  isManagementJobStatus,
+  isManagementJobType,
+  MAX_MANAGEMENT_JOB_LIST_LIMIT,
+  type ManagementJob,
+  type ManagementJobStatus,
+  type ManagementJobStore,
+  type ManagementJobType,
+} from "./management-job-store.js";
+import {
+  managementJobStaleAfterMs,
+  toManagementJobDetailResponse,
+  toManagementJobSummaryResponse,
+} from "./management-job-response.js";
 
 function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
   if (!isDocsFtsUnavailableError(error)) return null;
@@ -854,6 +869,85 @@ function restartStatusEventFromState(state: Parameters<typeof restartStatusRespo
         serverInstanceId: status.serverInstanceId,
       }
     : { type: "server:restart-cleared" as const, serverInstanceId: status.serverInstanceId };
+}
+
+const MAX_MANAGEMENT_JOB_LOG_TAIL_BYTES = 64 * 1024;
+
+class ManagementJobApiError extends Error {
+  constructor(message: string, readonly statusCode = 400) {
+    super(message);
+    this.name = "ManagementJobApiError";
+  }
+}
+
+function queryParamValues(value: unknown): string[] {
+  const rawValues = Array.isArray(value) ? value : [value];
+  return rawValues.flatMap((raw) => {
+    if (raw === undefined || raw === null) return [];
+    return String(raw).split(",");
+  }).map((raw) => raw.trim()).filter(Boolean);
+}
+
+function parseManagementJobTypes(value: unknown): ManagementJobType[] | undefined {
+  const values = queryParamValues(value);
+  if (values.length === 0) return undefined;
+  return values.map((value) => {
+    if (!isManagementJobType(value)) {
+      throw new ManagementJobApiError(`Unsupported management job type "${value}".`);
+    }
+    return value;
+  });
+}
+
+function parseManagementJobStatuses(value: unknown): ManagementJobStatus[] | undefined {
+  const values = queryParamValues(value);
+  if (values.length === 0) return undefined;
+  return values.map((value) => {
+    if (!isManagementJobStatus(value)) {
+      throw new ManagementJobApiError(`Unsupported management job status "${value}".`);
+    }
+    return value;
+  });
+}
+
+function parsePositiveIntegerQuery(
+  value: unknown,
+  name: string,
+  max: number,
+  defaultValue?: number,
+): number | undefined {
+  const values = queryParamValues(value);
+  if (values.length === 0) return defaultValue;
+  const raw = values[0];
+  if (!/^\d+$/.test(raw)) {
+    throw new ManagementJobApiError(`${name} must be a positive integer.`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new ManagementJobApiError(`${name} must be a positive integer.`);
+  }
+  return Math.min(parsed, max);
+}
+
+function requireManagementJobStore(ctx: AppContext, res: express.Response): ManagementJobStore | null {
+  const store = ctx.managementJobStore;
+  if (!store) {
+    res.status(503).json({ error: "Management job store is not available." });
+    return null;
+  }
+  return store;
+}
+
+function managementJobConflictBody(
+  message: string,
+  job: ManagementJob,
+  now: Date,
+  staleAfterMs: number,
+): { error: string; job: ReturnType<typeof toManagementJobSummaryResponse> } {
+  return {
+    error: message,
+    job: toManagementJobSummaryResponse(job, { now, staleAfterMs }),
+  };
 }
 
 export function createApiRouter(ctx: AppContext): express.Router {
@@ -3914,6 +4008,166 @@ export function createApiRouter(ctx: AppContext): express.Router {
     }
     return false;
   }
+
+  function emitManagementJobChanged(job: ManagementJob): void {
+    ctx.globalBus.emit({
+      type: "management-job:changed",
+      jobId: job.id,
+      jobType: job.type,
+      status: job.status,
+    });
+  }
+
+  router.get("/management-jobs", (req, res) => {
+    try {
+      const store = requireManagementJobStore(ctx, res);
+      if (!store) return;
+
+      const types = parseManagementJobTypes(req.query.type);
+      const statuses = parseManagementJobStatuses(req.query.status);
+      const limit = parsePositiveIntegerQuery(req.query.limit, "limit", MAX_MANAGEMENT_JOB_LIST_LIMIT);
+      const staleAfterMs = managementJobStaleAfterMs();
+      const fetchedAt = new Date();
+      const jobs = store.list({ types, statuses, limit });
+      const activeJobs = store.listActive();
+      const activeSummaries = activeJobs.map((job) =>
+        toManagementJobSummaryResponse(job, { now: fetchedAt, staleAfterMs })
+      );
+
+      res.json({
+        jobs: jobs.map((job) => toManagementJobSummaryResponse(job, { now: fetchedAt, staleAfterMs })),
+        activeCount: activeJobs.length,
+        runningCount: activeJobs.filter((job) => job.status === "running").length,
+        queuedCount: activeJobs.filter((job) => job.status === "queued").length,
+        staleCount: activeSummaries.filter((job) => job.stale).length,
+        staleAfterMs,
+        fetchedAt: fetchedAt.toISOString(),
+      });
+    } catch (err) {
+      if (err instanceof ManagementJobApiError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/management-jobs/:id", (req, res) => {
+    try {
+      const store = requireManagementJobStore(ctx, res);
+      if (!store) return;
+      const job = store.get(req.params.id);
+      if (!job) return res.status(404).json({ error: "Management job not found." });
+
+      const now = new Date();
+      const staleAfterMs = managementJobStaleAfterMs();
+      res.json(toManagementJobDetailResponse(job, {
+        now,
+        staleAfterMs,
+        logTail: store.readLogTail(job),
+      }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/management-jobs/:id/log", (req, res) => {
+    try {
+      const store = requireManagementJobStore(ctx, res);
+      if (!store) return;
+      const tailBytes = parsePositiveIntegerQuery(
+        req.query.tailBytes,
+        "tailBytes",
+        MAX_MANAGEMENT_JOB_LOG_TAIL_BYTES,
+      );
+      const job = store.get(req.params.id);
+      if (!job) return res.status(404).json({ error: "Management job not found." });
+      res.json({ jobId: job.id, logTail: store.readLogTail(job, tailBytes) });
+    } catch (err) {
+      if (err instanceof ManagementJobApiError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/management-jobs/:id/cancel", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Management job cancellation")) return;
+    try {
+      const store = requireManagementJobStore(ctx, res);
+      if (!store) return;
+      const job = store.get(req.params.id);
+      if (!job) return res.status(404).json({ error: "Management job not found." });
+
+      const now = new Date();
+      const staleAfterMs = managementJobStaleAfterMs();
+      if (job.status !== "queued") {
+        const target = job.status === "running" ? "running" : "terminal";
+        return res.status(409).json(managementJobConflictBody(
+          `Cannot cancel ${target} management jobs yet.`,
+          job,
+          now,
+          staleAfterMs,
+        ));
+      }
+
+      const cancelled = store.cancel(job.id, "Cancelled from Management Jobs UI.");
+      if (!cancelled) return res.status(404).json({ error: "Management job not found." });
+      emitManagementJobChanged(cancelled);
+      res.json(toManagementJobDetailResponse(cancelled, {
+        now: new Date(),
+        staleAfterMs,
+        logTail: store.readLogTail(cancelled),
+      }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/management-jobs/:id/retry", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Management job retry")) return;
+    try {
+      const store = requireManagementJobStore(ctx, res);
+      if (!store) return;
+      const job = store.get(req.params.id);
+      if (!job) return res.status(404).json({ error: "Management job not found." });
+
+      const now = new Date();
+      const staleAfterMs = managementJobStaleAfterMs();
+      if (job.status !== "failed" && job.status !== "cancelled") {
+        return res.status(409).json(managementJobConflictBody(
+          "Only failed or cancelled management jobs can be retried.",
+          job,
+          now,
+          staleAfterMs,
+        ));
+      }
+
+      try {
+        const retried = store.enqueue(job.type, job.input);
+        emitManagementJobChanged(retried);
+        res.json({
+          job: toManagementJobDetailResponse(retried, {
+            now: new Date(),
+            staleAfterMs,
+            logTail: store.readLogTail(retried),
+          }),
+          retriedFrom: job.id,
+        });
+      } catch (err) {
+        if (err instanceof ActiveManagementJobError) {
+          return res.status(409).json({
+            error: err.message,
+            activeJob: toManagementJobSummaryResponse(err.activeJob, { now: new Date(), staleAfterMs }),
+          });
+        }
+        throw err;
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   router.get("/updates/check", async (req, res) => {
     try {

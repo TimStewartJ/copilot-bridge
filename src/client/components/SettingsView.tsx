@@ -17,6 +17,7 @@ import {
   UpdatesSection,
   BridgeCommitsSection,
   CopilotUsageSection,
+  ManagementJobsSection,
   BrowserDiagnosticsSection,
   SettingsCategoryNav,
 } from "./settings";
@@ -305,10 +306,17 @@ export default function SettingsView() {
             </CategoryPanel>
 
             <CategoryPanel category="diagnostics" activeCategory={activeCategory}>
-              <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} />
               <BridgeCommitsSection />
-              <CopilotUsageSection />
+              <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} />
               <VoiceInputSection />
+            </CategoryPanel>
+
+            <CategoryPanel category="management" activeCategory={activeCategory}>
+              <ManagementJobsSection />
+            </CategoryPanel>
+
+            <CategoryPanel category="usage" activeCategory={activeCategory}>
+              <CopilotUsageSection />
             </CategoryPanel>
           </div>
         </div>

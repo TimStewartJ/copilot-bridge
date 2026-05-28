@@ -9,12 +9,18 @@ import {
 } from "./settings-layout.js";
 
 describe("SETTINGS_CATEGORIES", () => {
-  it("has exactly 3 categories", () => {
-    expect(SETTINGS_CATEGORIES).toHaveLength(3);
+  it("has exactly 5 categories", () => {
+    expect(SETTINGS_CATEGORIES).toHaveLength(5);
   });
 
   it("has expected category ids in order", () => {
-    expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual(["general", "integrations", "diagnostics"]);
+    expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual([
+      "general",
+      "integrations",
+      "diagnostics",
+      "management",
+      "usage",
+    ]);
   });
 
   it("each category has a non-empty label", () => {
@@ -23,9 +29,9 @@ describe("SETTINGS_CATEGORIES", () => {
     }
   });
 
-  it("covers all 14 sections across categories", () => {
+  it("covers all 15 sections across categories", () => {
     const allSections = SETTINGS_CATEGORIES.flatMap((c) => c.sections);
-    expect(allSections).toHaveLength(14);
+    expect(allSections).toHaveLength(15);
   });
 
   it("sections are non-overlapping across categories", () => {
@@ -46,6 +52,7 @@ describe("SETTINGS_CATEGORIES", () => {
       "tags",
       "mcp-servers",
       "updates",
+      "management-jobs",
       "browser-diagnostics",
       "voice-input",
       "bridge-status",
@@ -58,9 +65,15 @@ describe("SETTINGS_CATEGORIES", () => {
   it("shows updates first in general settings", () => {
     const general = getCategoryMeta("general");
     const diagnostics = getCategoryMeta("diagnostics");
+    const management = getCategoryMeta("management");
+    const usage = getCategoryMeta("usage");
 
     expect(general!.sections[0]).toBe("updates");
     expect(diagnostics!.sections).not.toContain("updates");
+    expect(management!.sections).toEqual(["management-jobs"]);
+    expect(usage!.sections).toEqual(["local-copilot-usage"]);
+    expect(diagnostics!.sections).not.toContain("management-jobs");
+    expect(diagnostics!.sections).not.toContain("local-copilot-usage");
   });
 });
 
@@ -74,6 +87,8 @@ describe("normalizeCategory", () => {
   it("returns valid category ids as-is", () => {
     expect(normalizeCategory("general")).toBe("general");
     expect(normalizeCategory("integrations")).toBe("integrations");
+    expect(normalizeCategory("management")).toBe("management");
+    expect(normalizeCategory("usage")).toBe("usage");
     expect(normalizeCategory("diagnostics")).toBe("diagnostics");
   });
 
@@ -109,10 +124,25 @@ describe("getCategoryMeta", () => {
     expect(integrations!.id).toBe("integrations");
     expect(integrations!.sections).toContain("mcp-servers");
 
+    const management = getCategoryMeta("management");
+    expect(management).toBeDefined();
+    expect(management!.id).toBe("management");
+    expect(management!.label).toBe("Management");
+    expect(management!.sections).toContain("management-jobs");
+
+    const usage = getCategoryMeta("usage");
+    expect(usage).toBeDefined();
+    expect(usage!.id).toBe("usage");
+    expect(usage!.label).toBe("Copilot Usage");
+    expect(usage!.sections).toContain("local-copilot-usage");
+
     const diagnostics = getCategoryMeta("diagnostics");
     expect(diagnostics).toBeDefined();
     expect(diagnostics!.id).toBe("diagnostics");
-    expect(diagnostics!.sections).toContain("local-copilot-usage");
+    expect(diagnostics!.sections[0]).toBe("bridge-status");
+    expect(diagnostics!.sections).toContain("browser-diagnostics");
+    expect(diagnostics!.sections).not.toContain("management-jobs");
+    expect(diagnostics!.sections).not.toContain("local-copilot-usage");
   });
 
   it("returns undefined for an invalid cast", () => {
